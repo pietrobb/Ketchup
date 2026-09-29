@@ -4,11 +4,12 @@ use ketchup_core::document::{
     OccurrenceId, OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution,
     SlotSegment, TagId, Transform,
 };
+use ketchup_core::persistence;
 use ketchup_core::state_view::{
-    AGENT_STATE_VIEW_V1, COMPLETE_STATE_VIEW_V1, encode_semantic_state,
+    AGENT_STATE_VIEW, COMPLETE_STATE_VIEW, encode_semantic_state,
     encode_semantic_state_with_evaluation,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn fixture_document(reverse_nodes: bool) -> DocumentStore {
     let nodes = if reverse_nodes {
@@ -52,18 +53,13 @@ fn fixture_document(reverse_nodes: bool) -> DocumentStore {
             id: FeatureId(11),
             definition_id: DefinitionId(10),
             name: "Rectangle".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [600.0, 0.0], [600.0, 580.0], [0.0, 580.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [600.0, 0.0], [600.0, 580.0], [0.0, 580.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: FeatureId(12),
             definition_id: DefinitionId(10),
             name: "Extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: FeatureId(11),
-                height: Dimension::new("720.000", 720.0).unwrap(),
-            },
+            kind: FeatureKind::extrusion(FeatureId(11), Dimension::new("720.000", 720.0).unwrap()),
         },
         CanonicalCommand::CreateTag {
             id: TagId(7),
@@ -144,24 +140,25 @@ fn assert_golden(name: &str, actual: &str) {
 }
 
 #[test]
-fn complete_and_agent_v1_match_independently_versioned_golden_fixtures() {
-    assert_ne!(COMPLETE_STATE_VIEW_V1, AGENT_STATE_VIEW_V1);
+fn complete_and_agent_views_match_golden_fixtures() {
+    assert_ne!(COMPLETE_STATE_VIEW, AGENT_STATE_VIEW);
     let state = encode_semantic_state(&fixture_document(false).current());
-    let complete = state.complete_v1();
-    let agent = state.agent_v1();
+    let complete = state.complete();
+    let agent = state.agent();
 
-    assert_golden("complete-v1.txt", &complete);
+    assert_golden("complete.txt", &complete);
     assert!(!complete.contains("<durable>"));
     assert!(
         !complete.contains(&format!(
-            "source.document_id={}",
+            "document_id={}",
             fixture_document(false).current().document_id().0
-        )) || complete.contains("source.document_id=")
+        )) || complete.contains("document_id=")
     );
-    assert_golden("agent-v1.txt", &agent);
-    assert!(complete.contains("height.f64_bits=4086800000000000"));
-    assert!(complete.contains("occurrence.30.transform.f64_bits="));
-    assert!(!agent.contains("transform.f64_bits"));
+    assert_golden("agent.txt", &agent);
+    assert!(complete.contains("features.12.kind.Pad.extent.Blind.millimetres=720.0"));
+    assert!(complete.contains("occurrences.30.transform.matrix=[1.0,"));
+    assert!(agent.contains("occurrences.30={id:30,"));
+    assert!(!agent.contains("occurrences.30.transform"));
     assert!(agent.contains("evaluation=not_supplied"));
 }
 
@@ -173,18 +170,17 @@ fn one_encoder_is_deterministic_and_complete_output_detects_semantic_drift() {
         value
             .lines()
             .filter(|line| {
-                !line.starts_with("source.document_id=")
-                    && !line.starts_with("source.canonical_digest=")
+                !line.starts_with("document_id=") && !line.starts_with("source.canonical_digest=")
             })
             .collect::<Vec<_>>()
             .join("\n")
     };
     assert_eq!(
-        normalize(encode_semantic_state(&first.current()).complete_v1()),
-        normalize(encode_semantic_state(&reordered.current()).complete_v1())
+        normalize(encode_semantic_state(&first.current()).complete()),
+        normalize(encode_semantic_state(&reordered.current()).complete())
     );
 
-    let before = encode_semantic_state(&first.current()).complete_v1();
+    let before = encode_semantic_state(&first.current()).complete();
     let mut changed = first;
     changed
         .apply_batch(&CommandBatch::new(vec![
@@ -194,9 +190,9 @@ fn one_encoder_is_deterministic_and_complete_output_detects_semantic_drift() {
             },
         ]))
         .unwrap();
-    let after = encode_semantic_state(&changed.current()).complete_v1();
+    let after = encode_semantic_state(&changed.current()).complete();
     assert_ne!(before, after);
-    assert!(after.contains("occurrence.31.visible=true"));
+    assert!(after.contains("occurrences.31.visible=true"));
 }
 
 #[test]
@@ -259,42 +255,38 @@ fn final_m2_state_view_covers_graph_overrides_and_supplied_evaluation_without_mu
     };
     let report = snapshot.evaluate(&identity).unwrap();
     let state = encode_semantic_state_with_evaluation(&snapshot, Some(&report));
-    let complete = state.complete_v1();
-    let agent = state.agent_v1();
+    let complete = state.complete();
+    let agent = state.agent();
 
     for expected in [
-        "evaluator_node.1.kind=parameter",
-        "evaluator_node.1.source=\"4.5\"",
-        "evaluator_node.1.dependencies=[]",
-        "evaluator_node.1.output_port.0.name=\"value\"",
-        "evaluator_node.1.output_port.0.type=number",
-        "evaluator_node.2.kind=expression",
-        "evaluator_node.2.source=\"$1 * 2\"",
-        "evaluator_node.2.dependencies=[1]",
-        "evaluator_node.2.input_port.0.name=\"node_1\"",
-        "evaluator_node.2.input_port.0.type=number",
-        "evaluator_node.2.output_port.0.name=\"value\"",
-        "evaluator_node.2.output_port.0.type=number",
-        "evaluator_node.3.kind=rule",
-        "evaluator_node.3.source=\"$2 + 1\"",
-        "evaluator_node.3.dependencies=[2]",
-        "evaluator_node.3.input_port.0.name=\"source\"",
-        "evaluator_node.3.input_port.0.type=number",
-        "evaluator_node.3.output_port.0.name=\"items\"",
-        "evaluator_node.3.output_port.0.type=number",
-        "evaluator_node.3.rule_output.1.slot_path=3:\"items\":\"cabinet\"/3:\"items\":\"drawer\"",
-        "evaluator_node.3.override_parameter.\"offset\".merge_policy=replace",
-        "override.7.target.root=3",
-        "override.7.target.slot_path=3:\"items\":\"cabinet\"/3:\"items\":\"drawer\"",
-        "override.7.parameter=\"offset\"",
-        "override.7.health=resolved",
-        "evaluation.evaluator=\"state-view-test-evaluator\"",
-        "evaluation.schema=\"state-view-test-schema\"",
-        "evaluation.tolerance=\"state-view-test-tolerance\"",
-        "evaluation.backend=Some(\"state-view-test-backend\")",
+        "evaluator_nodes.1.kind.Parameter.value.source_token=\"4.5\"",
+        "evaluator_nodes.1.dependencies=[]",
+        "evaluator_nodes.1.output_ports.0.name=\"value\"",
+        "evaluator_nodes.1.output_ports.0.value_type=\"Number\"",
+        "evaluator_nodes.2.kind.Expression.source=\"$1 * 2\"",
+        "evaluator_nodes.2.dependencies=[1]",
+        "evaluator_nodes.2.input_ports.0.name=\"node_1\"",
+        "evaluator_nodes.2.input_ports.0.value_type=\"Number\"",
+        "evaluator_nodes.2.output_ports.0.name=\"value\"",
+        "evaluator_nodes.3.kind.Rule.source=\"$2 + 1\"",
+        "evaluator_nodes.3.dependencies=[2]",
+        "evaluator_nodes.3.input_ports.0.name=\"source\"",
+        "evaluator_nodes.3.output_ports.0.name=\"items\"",
+        "evaluator_nodes.3.kind.Rule.outputs.0.children.0.segment.semantic_key=\"drawer\"",
+        "evaluator_nodes.3.kind.Rule.allowed_parameters.0.name=\"offset\"",
+        "evaluator_nodes.3.kind.Rule.allowed_parameters.0.merge_policy=\"Replace\"",
+        "overrides.7.target.root_rule_node_id=3",
+        "overrides.7.target.slot_path.0.semantic_key=\"cabinet\"",
+        "overrides.7.target.slot_path.1.semantic_key=\"drawer\"",
+        "overrides.7.parameter=\"offset\"",
+        "overrides.7.health=\"Resolved\"",
+        "evaluation.identity.evaluator=\"state-view-test-evaluator\"",
+        "evaluation.identity.schema=\"state-view-test-schema\"",
+        "evaluation.identity.tolerance=\"state-view-test-tolerance\"",
+        "evaluation.identity.backend=\"state-view-test-backend\"",
         "evaluation.current=true",
         "evaluation.recomputed_nodes=[1,2,3]",
-        "derived_output.1.slot_path=3:\"items\":\"cabinet\"/3:\"items\":\"drawer\"",
+        "evaluation.outputs.3:3:items:cabinet:3:items:drawer.value=10.0",
     ] {
         assert!(
             complete.contains(expected),
@@ -307,32 +299,29 @@ fn final_m2_state_view_covers_graph_overrides_and_supplied_evaluation_without_mu
         "evaluation.document_id={}",
         snapshot.document_id().0
     )));
-    assert!(complete.contains(&format!("evaluation.revision={revision}")));
-    assert!(complete.contains(&format!("evaluation.canonical_digest={canonical_digest}")));
+    assert!(complete.contains(&format!("evaluation.revision_id={revision}")));
     assert!(complete.contains(&format!(
-        "override.7.value.f64_bits={:016x}",
-        6.25_f64.to_bits()
+        "evaluation.canonical_digest=\"{canonical_digest}\""
     )));
+    assert!(complete.contains(&format!("overrides.7.value_bits={}", 6.25_f64.to_bits())));
 
     for (id, value) in [(1, 4.5_f64), (2, 9.0_f64), (3, 10.0_f64)] {
         let result = report.node(NodeId(id)).unwrap();
         assert!(complete.contains(&format!(
-            "evaluator_node.{id}.evaluation.input_digest={}",
+            "evaluation.nodes.{id}.input_digest=\"{}\"",
             result.input_digest
         )));
         assert!(complete.contains(&format!(
-            "evaluator_node.{id}.evaluation.result_digest={}",
+            "evaluation.nodes.{id}.result_digest=\"{}\"",
             result.result_digest
         )));
-        assert!(complete.contains(&format!(
-            "evaluator_node.{id}.evaluation.status=evaluated:{:016x}",
-            value.to_bits()
-        )));
+        assert!(complete.contains(&format!("evaluation.nodes.{id}.status.Evaluated={value:?}")));
     }
 
-    assert!(agent.contains(
-        "summary.counts=evaluator_nodes:3,overrides:1,parameter_bindings:0,spaces:0,clearance_volumes:0,persistent_dimensions:0,tags:0,collections:0,definitions:0,features:0,occurrences:0,grounded_occurrences:0,assembly_mates:0,groups:0,local_groups:0,local_occurrences:0"
-    ));
+    assert!(
+        agent
+            .contains("summary.counts=evaluator_nodes:3,overrides:1,feature_parameter_bindings:0,")
+    );
     assert!(agent.contains("evaluation.current=true"));
     assert!(!agent.contains("evaluation=not_supplied"));
 
@@ -340,4 +329,81 @@ fn final_m2_state_view_covers_graph_overrides_and_supplied_evaluation_without_mu
     assert_eq!(snapshot.revision_id(), revision);
     assert_eq!(store.current().canonical_digest(), canonical_digest);
     assert_eq!(store.current().revision_id(), revision);
+}
+
+fn committed_documents(directory: &Path, found: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        if path.is_dir() {
+            if name != "target" && name != "invalid" && !name.starts_with('.') {
+                committed_documents(&path, found);
+            }
+        } else if name.ends_with(".ketchup")
+            || path
+                .ancestors()
+                .any(|ancestor| ancestor.ends_with("fixtures/persistence"))
+        {
+            found.push(path);
+        }
+    }
+}
+
+/// Every field name and text the native file stores, anywhere in `value`.
+fn saved_names(value: &ciborium::Value, names: &mut std::collections::BTreeSet<String>) {
+    match value {
+        ciborium::Value::Text(text) => {
+            names.insert(text.clone());
+        }
+        ciborium::Value::Array(items) => items.iter().for_each(|item| saved_names(item, names)),
+        ciborium::Value::Map(entries) => {
+            for (key, value) in entries {
+                saved_names(key, names);
+                saved_names(value, names);
+            }
+        }
+        ciborium::Value::Tag(_, inner) => saved_names(inner, names),
+        _ => {}
+    }
+}
+
+#[test]
+fn complete_view_names_every_field_and_text_each_committed_document_stores() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap()
+        .to_path_buf();
+    let mut documents = Vec::new();
+    for directory in ["crates", "examples"] {
+        committed_documents(&root.join(directory), &mut documents);
+    }
+    assert!(documents.len() >= 10, "{documents:?}");
+    let mut checked_names = 0;
+    for path in documents {
+        let snapshot = persistence::load(&std::fs::read(&path).unwrap())
+            .unwrap()
+            .snapshot();
+        let mut names = std::collections::BTreeSet::new();
+        let _ =
+            ketchup_core::testing::rewrite_saved_snapshot(&persistence::save(&snapshot), |saved| {
+                saved_names(
+                    ketchup_core::testing::cbor_entry(saved, "product"),
+                    &mut names,
+                );
+            });
+        let complete = encode_semantic_state(&snapshot).complete();
+        for name in &names {
+            assert!(
+                complete.contains(name.as_str()) || complete.contains(&format!("{name:?}")),
+                "{}: the complete view omits {name:?}",
+                path.display()
+            );
+        }
+        checked_names += names.len();
+    }
+    assert!(
+        checked_names > 500,
+        "only {checked_names} saved names checked"
+    );
 }

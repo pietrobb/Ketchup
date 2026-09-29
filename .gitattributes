@@ -13,6 +13,8 @@ artifacts/r0/occt-cmake-config.json -text !eol
 *.cpp text eol=lf
 *.step text eol=lf
 *.png binary
+*.bin binary
+*.ketchup binary
 *.exe binary
 *.dll binary
 *.lib binary

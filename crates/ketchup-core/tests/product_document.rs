@@ -1,3 +1,4 @@
+use ciborium::Value;
 use ketchup_core::document::{
     BooleanOperation, CanonicalCommand, CanonicalError, CollectionId, CommandBatch,
     ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit,
@@ -17,11 +18,13 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::producer_exact_graph;
 use ketchup_core::persistence;
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
     SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec,
 };
 use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::testing::{cbor_entry, rewrite_saved_snapshot, with_document_id};
 
 const CABINET: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(10);
@@ -55,9 +58,7 @@ fn parameter_paths_are_general_bounded_and_canonical() {
 
 #[test]
 fn parameter_descriptors_are_derived_from_feature_and_sketch_structure() {
-    let profile = FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [4.0, 2.0]],
-    };
+    let profile = FeatureKind::polygon(&[[0.0, 0.0], [4.0, 2.0]]);
     assert_eq!(
         profile
             .parameter_descriptors()
@@ -65,10 +66,10 @@ fn parameter_descriptors_are_derived_from_feature_and_sketch_structure() {
             .map(|descriptor| (descriptor.path().as_str(), descriptor.value_type()))
             .collect::<Vec<_>>(),
         vec![
-            ("points.0.x", ParameterValueType::Length),
-            ("points.0.y", ParameterValueType::Length),
-            ("points.1.x", ParameterValueType::Length),
-            ("points.1.y", ParameterValueType::Length),
+            ("segments.0.start.x", ParameterValueType::Length),
+            ("segments.0.start.y", ParameterValueType::Length),
+            ("segments.1.start.x", ParameterValueType::Length),
+            ("segments.1.start.y", ParameterValueType::Length),
         ]
     );
 
@@ -131,73 +132,6 @@ fn parameter_descriptors_are_derived_from_feature_and_sketch_structure() {
     );
 }
 
-fn body_contract_tail_len(snapshot: &Snapshot) -> usize {
-    4 + snapshot
-        .definitions()
-        .map(|definition| {
-            let bodies = definition
-                .bodies()
-                .map(|body| {
-                    8 + 4
-                        + body.name().len()
-                        + 1
-                        + 1
-                        + usize::from(body.consumed_by().is_some()) * 8
-                })
-                .sum::<usize>();
-            let ownership = definition
-                .feature_ids()
-                .iter()
-                .map(|feature_id| {
-                    let ownership = definition.feature_body_ownership(*feature_id).unwrap();
-                    8 + 4
-                        + ownership.input_body_ids().len() * 8
-                        + 1
-                        + usize::from(ownership.output_body_id().is_some()) * 8
-                })
-                .sum::<usize>();
-            8 + 4 + bodies + 8 + 4 + ownership
-        })
-        .sum::<usize>()
-}
-
-/// Product sections appended after schema 34, each written as a u32 count followed
-/// by its entries. This fixture holds none of them, so only the counts are removed.
-const EMPTY_TRAILING_SECTION_COUNTS: usize = 8;
-
-fn strip_schema_53_occurrence_colors(bytes: &mut Vec<u8>, snapshot: &Snapshot) {
-    // These legacy fixtures contain only uncolored root occurrences. Unlike tail
-    // sections, schema 53's color presence byte must be removed from each record.
-    assert_eq!(snapshot.local_occurrences().count(), 0);
-    for occurrence in snapshot.occurrences() {
-        assert_eq!(occurrence.color(), None);
-        let mut record_prefix = Vec::new();
-        record_prefix.extend_from_slice(&occurrence.id().0.to_le_bytes());
-        record_prefix.extend_from_slice(&occurrence.definition_id().0.to_le_bytes());
-        record_prefix.extend_from_slice(&(occurrence.name().len() as u32).to_le_bytes());
-        record_prefix.extend_from_slice(occurrence.name().as_bytes());
-        let offsets = bytes
-            .windows(record_prefix.len())
-            .enumerate()
-            .filter_map(|(offset, value)| (value == record_prefix).then_some(offset))
-            .collect::<Vec<_>>();
-        assert_eq!(offsets.len(), 1, "fixture occurrence record must be unique");
-        let color_offset = offsets[0]
-            + record_prefix.len()
-            + 16 * 8 // transform
-            + 1 + usize::from(occurrence.parent().is_some()) * 8
-            + 1 + usize::from(occurrence.tag().is_some()) * 8
-            + 1; // visibility
-        assert_eq!(bytes.remove(color_offset), 0, "absent color presence byte");
-    }
-}
-
-fn strip_schema_34_tail(bytes: &mut Vec<u8>, snapshot: &Snapshot) {
-    bytes.truncate(
-        bytes.len() - body_contract_tail_len(snapshot) - 4 * EMPTY_TRAILING_SECTION_COUNTS,
-    );
-}
-
 fn seed_product_document() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
@@ -210,18 +144,18 @@ fn seed_product_document() -> DocumentStore {
                 id: PROFILE,
                 definition_id: CABINET,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [600.0, 0.0], [600.0, 580.0], [0.0, 580.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [600.0, 0.0],
+                    [600.0, 580.0],
+                    [0.0, 580.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: CABINET,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: height("720"),
-                },
+                kind: FeatureKind::extrusion(PROFILE, height("720")),
             },
             CanonicalCommand::CreateGroup {
                 id: GROUP,
@@ -299,10 +233,12 @@ fn make_unique_clones_features_and_repoints_only_one_occurrence() {
     );
     assert!(matches!(
         snapshot.feature(FeatureId(13)).unwrap().kind(),
-        FeatureKind::Extrusion {
-            profile: FeatureId(12),
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(FeatureId(12)),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::NewBody,
             ..
-        }
+        })
     ));
     assert_eq!(snapshot.scene_query()[0].shared_occurrence_count, 1);
     assert_eq!(snapshot.scene_query()[1].shared_occurrence_count, 1);
@@ -332,41 +268,21 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
         expected.feature(EXTRUSION).unwrap().kind()
     );
 
-    let mut schema_fifteen = persistence::save(&expected);
-    let manifest_length = u32::from_le_bytes(schema_fifteen[12..16].try_into().unwrap()) as usize;
-    let payload_offset = 16 + manifest_length;
-    strip_schema_53_occurrence_colors(&mut schema_fifteen, &expected);
-    strip_schema_34_tail(&mut schema_fifteen, &expected);
-    schema_fifteen.truncate(schema_fifteen.len() - 24);
-    schema_fifteen[10..12].copy_from_slice(&15_u16.to_le_bytes());
-    let payload_length = (schema_fifteen.len() - payload_offset) as u64;
-    schema_fifteen[16..24].copy_from_slice(&payload_length.to_le_bytes());
-    let checksum = ketchup_core::graph::sha256_bytes(&schema_fifteen[payload_offset..]);
-    schema_fifteen[24..56].copy_from_slice(&checksum);
-    let previous_current = persistence::load(&schema_fifteen).unwrap();
+    // The same document as written by schema 15 and by schema 9.
+    let schema_fifteen = include_bytes!("fixtures/persistence/legacy/product-schema15.bin");
+    let previous_current = persistence::load(schema_fifteen).unwrap();
     assert_eq!(previous_current.source_schema(), 15);
     assert_eq!(
         previous_current.snapshot().canonical_digest(),
-        expected.canonical_digest()
+        with_document_id(&expected, previous_current.snapshot().document_id()).canonical_digest()
     );
 
-    let mut schema_nine = persistence::save(&expected);
-    let manifest_length = u32::from_le_bytes(schema_nine[12..16].try_into().unwrap()) as usize;
-    let payload_offset = 16 + manifest_length;
-    strip_schema_53_occurrence_colors(&mut schema_nine, &expected);
-    strip_schema_34_tail(&mut schema_nine, &expected);
-    schema_nine.drain(payload_offset + 25..payload_offset + 29);
-    schema_nine.truncate(schema_nine.len() - 36);
-    schema_nine[10..12].copy_from_slice(&9_u16.to_le_bytes());
-    let payload_length = (schema_nine.len() - payload_offset) as u64;
-    schema_nine[16..24].copy_from_slice(&payload_length.to_le_bytes());
-    let checksum = ketchup_core::graph::sha256_bytes(&schema_nine[payload_offset..]);
-    schema_nine[24..56].copy_from_slice(&checksum);
-    let legacy_current = persistence::load(&schema_nine).unwrap();
+    let schema_nine = include_bytes!("fixtures/persistence/legacy/product-schema9.bin");
+    let legacy_current = persistence::load(schema_nine).unwrap();
     assert_eq!(legacy_current.source_schema(), 9);
     assert_eq!(
         legacy_current.snapshot().canonical_digest(),
-        expected.canonical_digest()
+        with_document_id(&expected, legacy_current.snapshot().document_id()).canonical_digest()
     );
 }
 
@@ -419,14 +335,14 @@ fn profile_parameter_edit_and_history_baseline_are_canonical() {
         .unwrap();
 
     assert!(matches!(
-        document.current().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm == &resized
+        document.current().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm == &resized
     ));
     assert_eq!(document.visible_undo_steps(), 1);
     document.undo().unwrap();
     assert!(matches!(
-        document.current().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm[1][0] == 600.0
+        document.current().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm[1][0] == 600.0
     ));
 }
 
@@ -449,8 +365,8 @@ fn closed_profile_contract_preserves_exact_points_and_rejects_invalid_batches_at
         ]))
         .unwrap();
     assert!(matches!(
-        document.current().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm == &exact_points
+        document.current().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm == &exact_points
     ));
 
     let valid_digest = document.current().canonical_digest();
@@ -458,7 +374,6 @@ fn closed_profile_contract_preserves_exact_points_and_rejects_invalid_batches_at
     let invalid_profiles = [
         vec![[0.0, 0.0], [10.0, 0.0]],
         vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 0.0]],
-        vec![[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]],
         vec![[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 10.0]],
         vec![[0.0, 0.0], [1.0e-10, 0.0], [10.0, 10.0], [0.0, 10.0]],
         vec![
@@ -487,6 +402,20 @@ fn closed_profile_contract_preserves_exact_points_and_rejects_invalid_batches_at
         assert_eq!(document.visible_undo_steps(), undo_steps);
         assert!(document.current().definition(DefinitionId(99)).is_none());
     }
+
+    let clockwise = vec![[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]];
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetProfilePoints {
+                id: PROFILE,
+                points_mm: clockwise.clone(),
+            },
+        ]))
+        .expect("loop direction does not make a closed profile invalid");
+    assert!(matches!(
+        document.current().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm == &clockwise
+    ));
 }
 
 #[test]
@@ -512,9 +441,7 @@ fn general_revolve_is_canonical_atomic_cloneable_and_losslessly_persistent() {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Closed profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: profile.clone(),
-                },
+                kind: FeatureKind::polygon(&profile),
             },
             CanonicalCommand::CreateFeature {
                 id: REVOLVE,
@@ -614,9 +541,7 @@ fn general_revolve_is_canonical_atomic_cloneable_and_losslessly_persistent() {
                     id: PROFILE,
                     definition_id: DEFINITION,
                     name: "Closed profile".to_owned(),
-                    kind: FeatureKind::Profile {
-                        points_mm: profile.clone(),
-                    },
+                    kind: FeatureKind::polygon(&profile),
                 },
                 CanonicalCommand::CreateFeature {
                     id: REVOLVE,
@@ -654,9 +579,7 @@ fn m6_invalid_profile_or_revolve_axis_rolls_back_atomically() {
                 id: PROFILE,
                 definition_id: BOTTLE,
                 name: "Offset half-profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[1.0, 0.0], [20.0, 0.0], [20.0, 100.0], [1.0, 100.0]],
-                },
+                kind: FeatureKind::polygon(&[[1.0, 0.0], [20.0, 0.0], [20.0, 100.0], [1.0, 100.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: REVOLVE,
@@ -690,9 +613,7 @@ fn m6_invalid_profile_or_revolve_axis_rolls_back_atomically() {
             id: PROFILE,
             definition_id: BOTTLE,
             name: "Self-intersecting profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [20.0, 100.0], [20.0, 0.0], [0.0, 100.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 100.0], [20.0, 0.0], [0.0, 100.0]]),
         }]))
         .err()
         .expect("self-intersecting profile must fail");
@@ -986,20 +907,26 @@ fn conversion_collision_and_local_ownership_cycle_fail_atomically() {
     ownership
         .convert_group_to_component(GROUP, "Owner")
         .unwrap();
-    let mut bytes = persistence::save(&ownership.current());
-    let mut marker = Vec::new();
-    marker.extend_from_slice(&DefinitionId(2).0.to_le_bytes());
-    marker.extend_from_slice(&LocalOccurrenceId(FIRST.0).0.to_le_bytes());
-    marker.extend_from_slice(&CABINET.0.to_le_bytes());
-    let offset = bytes
-        .windows(marker.len())
-        .position(|window| window == marker)
-        .expect("local occurrence record is present");
-    bytes[offset + 16..offset + 24].copy_from_slice(&DefinitionId(2).0.to_le_bytes());
-    let manifest_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    let payload_offset = 16 + manifest_length;
-    let checksum = ketchup_core::graph::sha256_bytes(&bytes[payload_offset..]);
-    bytes[24..56].copy_from_slice(&checksum);
+    // Make the local occurrence inside component 2 instantiate component 2 itself.
+    let bytes = rewrite_saved_snapshot(&persistence::save(&ownership.current()), |saved| {
+        let product = cbor_entry(saved, "product");
+        let local_occurrences = cbor_entry(product, "local_occurrences")
+            .as_map_mut()
+            .expect("a CBOR map");
+        let (_, occurrence) = local_occurrences
+            .iter_mut()
+            .find(|(key, _)| {
+                let mut key = key.clone();
+                *cbor_entry(&mut key, "definition_id") == Value::from(2)
+                    && *cbor_entry(&mut key, "local_id") == Value::from(FIRST.0)
+            })
+            .expect("local occurrence record is present");
+        assert_eq!(
+            *cbor_entry(occurrence, "definition_id"),
+            Value::from(CABINET.0)
+        );
+        *cbor_entry(occurrence, "definition_id") = Value::from(2);
+    });
     assert!(matches!(
         persistence::load(&bytes),
         Err(persistence::PersistenceError::InvalidCanonicalData(
@@ -1128,7 +1055,8 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     let derived_from =
         DerivedIdentity::new(RULE, SlotPath::new(vec![segment.clone()]).unwrap()).unwrap();
     let target =
-        FeatureParameterTarget::new(PROFILE, "points.1.x", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(PROFILE, "segments.1.start.x", ParameterValueType::Length)
+            .unwrap();
     let binding = FeatureParameterBinding {
         target: target.clone(),
         derived_from: derived_from.clone(),
@@ -1160,16 +1088,24 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     assert_eq!(bound.feature_parameter_binding(&target), Some(&binding));
     assert_eq!(bound.feature_parameter_bindings().count(), 1);
     let state = ketchup_core::state_view::encode_semantic_state(&bound);
-    for view in [state.complete_v1(), state.agent_v1()] {
-        assert!(view.contains("parameter_binding.10.points.1.x.value_type=length"));
-        assert!(view.contains("parameter_binding.10.points.1.x.derived_from.root=202"));
-        assert!(view.contains(
-            "parameter_binding.10.points.1.x.derived_from.slot_path=202:\"dimensions\":\"extrusion_height\""
-        ));
+    let binding_path = "feature_parameter_bindings.10:\"segments.1.start.x\":Length";
+    for line in [
+        "target.value_type=\"Length\"",
+        "derived_from.root_rule_node_id=202",
+        "derived_from.slot_path.0.output_port=\"dimensions\"",
+        "derived_from.slot_path.0.semantic_key=\"extrusion_height\"",
+    ] {
+        assert!(
+            state.complete().contains(&format!("{binding_path}.{line}")),
+            "missing {line}"
+        );
     }
+    assert!(state.agent().contains(&format!(
+        "{binding_path}={{target:{{feature_id:10,path:\"segments.1.start.x\",value_type:\"Length\"}},derived_from:{{root_rule_node_id:202,slot_path:[{{producer_rule_id:202,output_port:\"dimensions\",semantic_key:\"extrusion_height\"}}]}}}}"
+    )));
     assert!(matches!(
-        bound.feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm[1][0] == 600.0
+        bound.feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm[1][0] == 600.0
     ));
 
     let invalid_target =
@@ -1193,7 +1129,8 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     assert_eq!(document.visible_undo_steps(), undo_before_invalid);
 
     let invalid_type =
-        FeatureParameterTarget::new(PROFILE, "points.1.x", ParameterValueType::Angle).unwrap();
+        FeatureParameterTarget::new(PROFILE, "segments.1.start.x", ParameterValueType::Angle)
+            .unwrap();
     assert!(matches!(
         document.apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
@@ -1240,8 +1177,8 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
         Some(&binding)
     );
     assert!(matches!(
-        loaded.snapshot().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm[1][0] == 600.0
+        loaded.snapshot().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm[1][0] == 600.0
     ));
     assert_eq!(document.visible_undo_steps(), saved_undo);
 
@@ -1265,7 +1202,8 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
     const RULE: NodeId = NodeId(202);
     let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
     let target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let mut document = seed_product_document();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1316,14 +1254,14 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
     assert_eq!(revision.evaluation().unwrap().identity, identity);
     assert!(matches!(
         revision.snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "42" && height.millimetres() == 42.0
     ));
 
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
     assert!(matches!(
         document.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "720" && height.millimetres() == 720.0
     ));
     assert_eq!(document.redo().unwrap().canonical_digest(), recomputed);
@@ -1381,7 +1319,7 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
         .unwrap();
     assert!(matches!(
         document.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "42" && height.millimetres() == 42.0
     ));
     assert_eq!(
@@ -1403,7 +1341,7 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
     document.apply_batch(&recompute).unwrap();
     assert!(matches!(
         document.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "44" && height.millimetres() == 44.0
     ));
     assert_eq!(
@@ -1443,10 +1381,7 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
                 id: SECOND_EXTRUSION,
                 definition_id: CABINET,
                 name: "Second extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: height("3"),
-                },
+                kind: FeatureKind::extrusion(PROFILE, height("3")),
             },
             CanonicalCommand::CreateEvaluatorNode {
                 id: GOOD_SOURCE,
@@ -1481,7 +1416,7 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
                 target: FeatureParameterTarget::new(
                     EXTRUSION,
-                    "height",
+                    "extent.distance",
                     ParameterValueType::Length,
                 )
                 .unwrap(),
@@ -1494,7 +1429,7 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
                 target: FeatureParameterTarget::new(
                     SECOND_EXTRUSION,
-                    "height",
+                    "extent.distance",
                     ParameterValueType::Length,
                 )
                 .unwrap(),
@@ -1522,7 +1457,7 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
     assert_eq!(document.visible_undo_steps(), undo_before);
     assert!(matches!(
         document.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "720" && height.millimetres() == 720.0
     ));
     assert!(matches!(
@@ -1531,7 +1466,7 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
             .feature(SECOND_EXTRUSION)
             .unwrap()
             .kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "3" && height.millimetres() == 3.0
     ));
 }
@@ -1648,8 +1583,8 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     assert!(!revision.recomputed_nodes().contains(&UNRELATED_SOURCE));
     assert!(!revision.recomputed_nodes().contains(&UNRELATED_RULE));
     assert!(matches!(
-        revision.snapshot().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm }
+        revision.snapshot().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm)
             if points_mm == &vec![[0.0, 0.0], [650.0, 0.0], [650.0, 580.0], [0.0, 580.0]]
     ));
     assert_eq!(
@@ -1674,8 +1609,8 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     assert_eq!(reopened.snapshot().canonical_digest(), resized_digest);
     assert_eq!(reopened.snapshot().feature_parameter_bindings().count(), 2);
     assert!(matches!(
-        reopened.snapshot().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm[1][0] == 650.0 && points_mm[2][1] == 580.0
+        reopened.snapshot().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm[1][0] == 650.0 && points_mm[2][1] == 580.0
     ));
 
     assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
@@ -1752,7 +1687,7 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
                     PersistentDimensionTarget::FeatureParameter(
                         FeatureParameterTarget::new(
                             PROFILE,
-                            "points.1.x",
+                            "segments.1.start.x",
                             ParameterValueType::Length,
                         )
                         .unwrap(),
@@ -1779,7 +1714,7 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
                         producer_feature_id: EXTRUSION,
                         semantic_role: "top".to_owned(),
                         source_element_id: "face:top".to_owned(),
-                        path: ParameterPath::new("height").unwrap(),
+                        path: ParameterPath::new("extent.distance").unwrap(),
                         value_type: ParameterValueType::Length,
                     },
                     DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
@@ -1791,11 +1726,17 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
 
     let canonical = document.current();
     let state = encode_semantic_state(&canonical);
-    for view in [state.complete_v1(), state.agent_v1()] {
-        assert!(view.contains("persistent_dimension.1.target=feature:10:points.1.x"));
-        assert!(view.contains("persistent_dimension.1.value_type=length"));
-        assert!(view.contains("persistent_dimension.3.value_type=length"));
+    for line in [
+        "persistent_dimensions.1.target.FeatureParameter.feature_id=10",
+        "persistent_dimensions.1.target.FeatureParameter.path=\"segments.1.start.x\"",
+        "persistent_dimensions.1.target.FeatureParameter.value_type=\"Length\"",
+        "persistent_dimensions.3.target.ExactFeatureParameter.value_type=\"Length\"",
+    ] {
+        assert!(state.complete().contains(line), "missing {line}");
     }
+    assert!(state.agent().contains(
+        "persistent_dimensions.1={id:1,name:\"Profile width\",target:{FeatureParameter:{feature_id:10,path:\"segments.1.start.x\",value_type:\"Length\"}},"
+    ));
     let width = canonical
         .project_persistent_dimension(WIDTH_DIMENSION)
         .unwrap();
@@ -1827,7 +1768,7 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
             producer_feature_id: EXTRUSION,
             semantic_role: String::new(),
             source_element_id: String::new(),
-            path: ParameterPath::new("height").unwrap(),
+            path: ParameterPath::new("extent.distance").unwrap(),
             value_type: ParameterValueType::Length,
         },
         presentation: DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
@@ -1851,7 +1792,8 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
             .unwrap()
             .target,
         PersistentDimensionTarget::FeatureParameter(
-            FeatureParameterTarget::new(PROFILE, "points.1.x", ParameterValueType::Length).unwrap()
+            FeatureParameterTarget::new(PROFILE, "segments.1.start.x", ParameterValueType::Length)
+                .unwrap()
         )
     );
     assert_eq!(
@@ -2135,18 +2077,13 @@ fn seed_separate_solid_tool_document(
                 id: FeatureId(102),
                 definition_id: DefinitionId(101),
                 name: "Target profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 80.0], [0.0, 80.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 80.0], [0.0, 80.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(103),
                 definition_id: DefinitionId(101),
                 name: "Target body".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(102),
-                    height: height("50"),
-                },
+                kind: FeatureKind::extrusion(FeatureId(102), height("50")),
             },
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(201),
@@ -2156,23 +2093,18 @@ fn seed_separate_solid_tool_document(
                 id: FeatureId(202),
                 definition_id: DefinitionId(201),
                 name: "Tool profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [0.0, 0.0],
-                        [40.0, 0.0],
-                        [40.0, tool_depth_mm],
-                        [0.0, tool_depth_mm],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [40.0, 0.0],
+                    [40.0, tool_depth_mm],
+                    [0.0, tool_depth_mm],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(203),
                 definition_id: DefinitionId(201),
                 name: "Tool body".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(202),
-                    height: height("50"),
-                },
+                kind: FeatureKind::extrusion(FeatureId(202), height("50")),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(301),
@@ -2466,8 +2398,8 @@ fn separate_occurrence_intersect_is_canonical_exact_unique_and_persistent() {
     let state = encode_semantic_state(&document.current());
     assert!(
         state
-            .complete_v1()
-            .contains("feature.408.operation=intersect")
+            .complete()
+            .contains("features.408.kind.Boolean.operation=\"Intersect\"")
     );
     let graph =
         ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(401), FeatureId(408))
@@ -2572,8 +2504,8 @@ fn separate_occurrence_split_is_stable_unique_persistent_and_exact_ready() {
     ));
     assert!(
         encode_semantic_state(&document.current())
-            .complete_v1()
-            .contains("feature.408.operation=split")
+            .complete()
+            .contains("features.408.kind.Boolean.operation=\"Split\"")
     );
     let graph =
         ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(401), FeatureId(408))
@@ -2672,9 +2604,12 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Source rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 20.0], [110.0, 20.0], [110.0, 100.0], [10.0, 100.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [10.0, 20.0],
+                    [110.0, 20.0],
+                    [110.0, 100.0],
+                    [10.0, 100.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: OFFSET,
@@ -2705,17 +2640,13 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
             if distance.source_token() == "5.000" && distance.millimetres() == 5.0
     ));
     let state = encode_semantic_state(&document.current());
+    assert!(state.complete().contains("features.703.kind.PlanarOffset."));
     assert!(
         state
-            .complete_v1()
-            .contains("feature.703.kind=planar_offset")
+            .complete()
+            .contains("features.703.kind.PlanarOffset.distance.source_token=\"5.000\"")
     );
-    assert!(
-        state
-            .complete_v1()
-            .contains("feature.703.distance.source=\"5.000\"")
-    );
-    assert!(state.agent_v1().contains("kind:planar_offset"));
+    assert!(state.agent().contains("kind:{PlanarOffset:"));
 
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -3314,15 +3245,18 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Rectangular section".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-5.0, -10.0], [5.0, -10.0], [5.0, 10.0], [-5.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [-5.0, -10.0],
+                    [5.0, -10.0],
+                    [5.0, 10.0],
+                    [-5.0, 10.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: PATH,
                 definition_id: DEFINITION,
                 name: "Tangent line-arc path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -3376,10 +3310,18 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
         }
     ));
     let state = encode_semantic_state(&document.current());
-    assert!(state.complete_v1().contains("feature.714.kind=sweep"));
-    assert!(state.complete_v1().contains("feature.714.profile=712"));
-    assert!(state.complete_v1().contains("feature.714.path=713"));
-    assert!(state.agent_v1().contains("kind:sweep"));
+    assert!(state.complete().contains("features.714.kind.Sweep."));
+    assert!(
+        state
+            .complete()
+            .contains("features.714.kind.Sweep.profile=712")
+    );
+    assert!(
+        state
+            .complete()
+            .contains("features.714.kind.Sweep.path=713")
+    );
+    assert!(state.agent().contains("kind:{Sweep:"));
 
     document.make_unique(OCCURRENCE, "Unique sweep").unwrap();
     let unique = document.current();
@@ -3418,15 +3360,13 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PATH,
                 definition_id: DEFINITION,
                 name: "Bent path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -3468,15 +3408,13 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PATH,
                 definition_id: DEFINITION,
                 name: "Sub-tolerance path segment".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -3518,15 +3456,18 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Spline section".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-5.0, -10.0], [5.0, -10.0], [5.0, 10.0], [-5.0, 10.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-5.0, -10.0],
+                    [5.0, -10.0],
+                    [5.0, 10.0],
+                    [-5.0, 10.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: PATH,
                 definition_id: DEFINITION,
                 name: "Straight path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: [0.0, 0.0],
                         end_mm: [0.0, 125.0],
@@ -3573,17 +3514,13 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                 id: LOWER,
                 definition_id: DEFINITION,
                 name: "Lower spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: lower_points.clone(),
-                },
+                kind: FeatureKind::closed_spline(&lower_points),
             },
             CanonicalCommand::CreateFeature {
                 id: UPPER,
                 definition_id: DEFINITION,
                 name: "Upper spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: upper_points.clone(),
-                },
+                kind: FeatureKind::closed_spline(&upper_points),
             },
             CanonicalCommand::CreateFeature {
                 id: LOFT,
@@ -3624,17 +3561,17 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
     let state = encode_semantic_state(&document.current());
     assert!(
         state
-            .complete_v1()
-            .contains("feature.722.kind=spline_profile")
+            .complete()
+            .contains("features.722.kind.Profile.segments.0.Spline.")
     );
-    assert!(state.complete_v1().contains("feature.724.kind=loft"));
+    assert!(state.complete().contains("features.724.kind.Loft."));
     assert!(
         state
-            .complete_v1()
-            .contains("feature.724.section.1=profile:723")
+            .complete()
+            .contains("features.724.kind.Loft.sections.1.profile=723")
     );
-    assert!(state.agent_v1().contains("kind:spline_profile"));
-    assert!(state.agent_v1().contains("kind:loft"));
+    assert!(state.agent().contains("{Spline:"));
+    assert!(state.agent().contains("kind:{Loft:"));
 
     document.make_unique(OCCURRENCE, "Unique loft").unwrap();
     let unique = document.current();
@@ -3646,11 +3583,11 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
     };
     assert!(matches!(
         unique.feature(*unique_lower).unwrap().kind(),
-        FeatureKind::SplineProfile { control_points_mm } if control_points_mm == &lower_points
+        kind if kind.closed_spline_points() == Some(lower_points.as_slice())
     ));
     assert!(matches!(
         unique.feature(*unique_upper).unwrap().kind(),
-        FeatureKind::SplineProfile { control_points_mm } if control_points_mm == &upper_points
+        kind if kind.closed_spline_points() == Some(upper_points.as_slice())
     ));
     assert!(matches!(
         unique.feature(*unique_loft).unwrap().kind(),
@@ -3713,14 +3650,12 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                 id: LOWER,
                 definition_id: DEFINITION,
                 name: "Underspecified spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::closed_spline(&[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]),
             },
         ]))
         .err()
         .expect("underspecified spline profile must reject atomically");
-    assert_eq!(error, CanonicalError::InvalidSplineProfile);
+    assert_eq!(error, CanonicalError::InvalidProfile);
     assert_eq!(invalid_spline.current().canonical_digest(), empty);
     assert_eq!(invalid_spline.visible_undo_steps(), 0);
 }
@@ -3783,7 +3718,7 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
                 id: FeatureId(502),
                 definition_id: DefinitionId(501),
                 name: "Exact circle".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: circular_profile_segments(false),
                     closed: true,
                 },
@@ -3792,10 +3727,7 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
                 id: FeatureId(503),
                 definition_id: DefinitionId(501),
                 name: "Pending exact cylinder".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(502),
-                    height: height("25"),
-                },
+                kind: FeatureKind::extrusion(FeatureId(502), height("25")),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(504),
@@ -3813,7 +3745,7 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
     assert_eq!(document.visible_undo_steps(), 1);
     assert!(matches!(
         document.current().feature(FeatureId(502)).unwrap().kind(),
-        FeatureKind::SegmentProfile { segments, closed: true }
+        FeatureKind::Profile { segments, closed: true }
             if segments == &circular_profile_segments(false)
     ));
     let exact_graph =
@@ -3835,7 +3767,7 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
     assert_eq!(reopened.snapshot().canonical_digest(), applied);
     assert!(matches!(
         reopened.snapshot().feature(FeatureId(502)).unwrap().kind(),
-        FeatureKind::SegmentProfile { segments, closed: true }
+        FeatureKind::Profile { segments, closed: true }
             if segments == &circular_profile_segments(false)
     ));
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
@@ -3856,11 +3788,11 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
         .feature_ids()
         .iter()
         .filter_map(|feature_id| unique_snapshot.feature(*feature_id))
-        .find(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
+        .find(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
         .expect("make unique must clone the segment-authoritative profile");
     assert!(matches!(
         cloned_segment_profile.kind(),
-        FeatureKind::SegmentProfile { segments, closed: true }
+        FeatureKind::Profile { segments, closed: true }
             if segments == &circular_profile_segments(false)
     ));
 
@@ -3875,7 +3807,7 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
                 id: FeatureId(502),
                 definition_id: DefinitionId(501),
                 name: "Exact circle".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: circular_profile_segments(true),
                     closed: true,
                 },
@@ -3939,7 +3871,7 @@ fn segment_profile_rejects_discontinuity_and_radius_mismatch_atomically() {
                     id: FeatureId(602),
                     definition_id: DefinitionId(601),
                     name: "Invalid segment profile".to_owned(),
-                    kind: FeatureKind::SegmentProfile {
+                    kind: FeatureKind::Profile {
                         segments,
                         closed: true,
                     },
@@ -3986,15 +3918,13 @@ fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Small rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PATH,
                 definition_id: DEFINITION,
                 name: "Line-cubic-line C1 path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments,
                     closed: false,
                 },
@@ -4023,8 +3953,8 @@ fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
     assert_eq!(document.redo().unwrap().canonical_digest(), swept_digest);
     assert!(
         encode_semantic_state(&document.current())
-            .complete_v1()
-            .contains("feature.802.segment.1=cubic_bezier")
+            .complete()
+            .contains("features.802.kind.Profile.segments.1.CubicBezier.")
     );
 
     let bytes = persistence::save(&document.current());
@@ -4038,7 +3968,7 @@ fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert!(matches!(
         reopened.snapshot().feature(PATH).unwrap().kind(),
-        FeatureKind::SegmentProfile { segments, closed: false } if segments == &path_segments
+        FeatureKind::Profile { segments, closed: false } if segments == &path_segments
     ));
 
     let mut invalid_segments = path_segments;
@@ -4110,8 +4040,8 @@ fn spatial_sweep_path_is_canonical_visible_persistent_and_bounded() {
     assert_eq!(document.redo().unwrap().canonical_digest(), digest);
     assert!(
         encode_semantic_state(&document.current())
-            .complete_v1()
-            .contains("feature.902.segment.0=line")
+            .complete()
+            .contains("features.902.kind.SpatialPath.segments.0.Line.")
     );
 
     let bytes = persistence::save(&document.current());
@@ -4160,9 +4090,7 @@ fn v12_spatial_sweep_is_canonical_persistent_and_rejects_uncompilable_bounds() {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Small rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PATH,

@@ -44,14 +44,15 @@ use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand,
     CanonicalError, ClassificationCategoryId, ClassificationDimensionId, CloneDefinitionPlan,
     CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentId, DocumentStore, EdgeFinishKind, EvaluationIdentity,
-    EvaluatorParameterEdit, FeatureId, FeatureKind, FeatureParameterTarget, GroupId, HighRiskClass,
-    HighRiskScope, InstancePath, LoftContinuity, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
-    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalGoal,
-    ProposalPrepareError, ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
-    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
-    TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
+    DimensionPresentation, DocumentId, DocumentStore, EdgeFinishKind, EdgeRef, EvaluationIdentity,
+    EvaluatorParameterEdit, FaceRef, FeatureId, FeatureKind, FeatureParameterTarget, GroupId,
+    HighRiskClass, HighRiskScope, InstancePath, LoftContinuity, LoftSection,
+    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
+    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalCommitError,
+    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
+    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
+    SolidToolPlan, SpatialPathSegment, TagId, TipReplacementParent, TipReplacementProposal,
+    Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -103,14 +104,14 @@ use ketchup_core::sheet_metal::{
     SheetMetalManufacturingProjection, project_sheet_metal_manufacturing,
 };
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
-    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
-    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
+    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
+    SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
 #[cfg(test)]
 use ketchup_core::space::ClearanceOwner;
 use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
-use ketchup_core::state_view::{AGENT_STATE_VIEW_V1, encode_semantic_state};
+use ketchup_core::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
 use ketchup_core::three_mf_export::{
     ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
 };
@@ -1499,10 +1500,13 @@ fn assistant_subtracted_box_feature_commands(
             definition_id,
             name: format!("{} base pad", item.name),
             kind: FeatureKind::Pad(PadSpec {
-                sketch: sketch_id,
-                region,
+                profile: PadProfile::SketchRegion {
+                    sketch: sketch_id,
+                    region,
+                },
                 direction: FeatureDirection::AlongNormal,
                 extent: FeatureExtent::Blind(height),
+                operation: PadOperation::NewBody,
             }),
         },
     ];
@@ -1543,10 +1547,13 @@ fn assistant_subtracted_box_feature_commands(
                 definition_id,
                 name: format!("{} cut {} tool", item.name, index + 1),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: cut_sketch,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: cut_sketch,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(distance),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateFeature {
@@ -3335,7 +3342,7 @@ fn bounded_assistant_state_view(content: &str) -> serde_json::Value {
         &content[..line_end]
     };
     serde_json::json!({
-        "format": AGENT_STATE_VIEW_V1,
+        "format": AGENT_STATE_VIEW,
         "complete": complete,
         "byte_length": content.len(),
         "sha256": ketchup_core::graph::sha256_hex(content.as_bytes()),
@@ -3834,7 +3841,7 @@ impl AssistantRequestSnapshot {
             std::thread::sleep(Duration::from_millis(1));
         }
         let semantic_state = encode_semantic_state(&self.snapshot);
-        let state_view = bounded_assistant_state_view(&semantic_state.agent_v1());
+        let state_view = bounded_assistant_state_view(&semantic_state.agent());
         let (fea_faces_complete, fea_faces) =
             assistant_fea_face_context(&self.snapshot, &self.topology_results);
         let project_memory = self.project_memory.retrieval_context(&self.query);
@@ -10256,7 +10263,7 @@ impl KetchupApp {
     fn assistant_context_for(&self, query: &str) -> serde_json::Value {
         let snapshot = self.document.current();
         let semantic_state = encode_semantic_state(&snapshot);
-        let state_view = bounded_assistant_state_view(&semantic_state.agent_v1());
+        let state_view = bounded_assistant_state_view(&semantic_state.agent());
         let (fea_faces_complete, fea_faces) =
             assistant_fea_face_context(&snapshot, &self.topology_results);
         let project_memory = self.assistant_memory.retrieval_context(query);
@@ -11020,18 +11027,18 @@ impl KetchupApp {
                         id: feature,
                         definition_id: definition,
                         name: format!("{} profile", item.name),
-                        kind: FeatureKind::Profile {
-                            points_mm: vec![[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]],
-                        },
+                        kind: FeatureKind::polygon(&[
+                            [0.0, 0.0],
+                            [width, 0.0],
+                            [width, depth],
+                            [0.0, depth],
+                        ]),
                     },
                     CanonicalCommand::CreateFeature {
                         id: extrusion,
                         definition_id: definition,
                         name: format!("{} extrusion", item.name),
-                        kind: FeatureKind::Extrusion {
-                            profile: feature,
-                            height: height_dimension,
-                        },
+                        kind: FeatureKind::extrusion(feature, height_dimension),
                     },
                 ]);
             } else {
@@ -12591,10 +12598,7 @@ impl KetchupApp {
                                 .find_map(|feature_id| {
                                     matches!(
                                         snapshot.feature(*feature_id)?.kind(),
-                                        FeatureKind::Profile { .. }
-                                            | FeatureKind::SegmentProfile { .. }
-                                            | FeatureKind::SplineProfile { .. }
-                                            | FeatureKind::Sketch(_)
+                                        FeatureKind::Profile { .. } | FeatureKind::Sketch(_)
                                     )
                                     .then_some(*feature_id)
                                 })
@@ -14263,8 +14267,7 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let profile = snapshot.feature(item.profile_feature_id)?;
         let is_closed = match profile.kind() {
-            FeatureKind::Profile { points_mm } => points_mm.len() >= 3,
-            FeatureKind::SegmentProfile { closed, .. } => *closed,
+            FeatureKind::Profile { closed, .. } => *closed,
             _ => false,
         };
         if !is_closed || profile.definition_id() != selection.definition_id {
@@ -14548,9 +14551,7 @@ impl KetchupApp {
             return None;
         }
         let profile = snapshot.feature(item.profile_feature_id)?;
-        let FeatureKind::Profile { points_mm } = profile.kind() else {
-            return None;
-        };
+        let points_mm = profile.kind().polygon_points()?;
         let [south_west, south_east, north_east, north_west] = points_mm.as_slice() else {
             return None;
         };
@@ -15121,10 +15122,10 @@ impl KetchupApp {
             ),
             TopologicalElementKind::Vertex => None,
         }
-        .and_then(|feature| match feature {
-            FeatureKind::TopologyShell { removed_faces, .. } => Some(removed_faces),
-            FeatureKind::TopologyEdgeFinish { edges, .. } => Some(edges),
-            _ => None,
+        .and_then(|feature| {
+            feature
+                .topological_picks()
+                .map(|(_, picks)| picks.into_iter().cloned().collect())
         })?;
         Some((
             selection.definition_id,
@@ -15348,29 +15349,6 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub fn latest_general_shell_parameters(&self) -> Option<(FeatureId, String, f64)> {
-        self.document
-            .current()
-            .features()
-            .filter_map(|feature| {
-                let FeatureKind::Shell {
-                    removed_faces,
-                    thickness,
-                    ..
-                } = feature.kind()
-                else {
-                    return None;
-                };
-                Some((
-                    feature.id(),
-                    removed_faces.first()?.as_str().to_owned(),
-                    thickness.millimetres(),
-                ))
-            })
-            .last()
-    }
-
-    #[must_use]
     pub fn latest_topology_shell_parameters(
         &self,
     ) -> Option<(FeatureId, TopologicalElementRef, f64)> {
@@ -15386,7 +15364,7 @@ impl KetchupApp {
             .current()
             .features()
             .filter_map(|feature| {
-                let FeatureKind::TopologyShell {
+                let FeatureKind::Shell {
                     removed_faces,
                     thickness,
                     ..
@@ -15394,7 +15372,15 @@ impl KetchupApp {
                 else {
                     return None;
                 };
-                Some((feature.id(), removed_faces.clone(), thickness.millimetres()))
+                Some((
+                    feature.id(),
+                    removed_faces
+                        .iter()
+                        .filter_map(FaceRef::topological)
+                        .cloned()
+                        .collect(),
+                    thickness.millimetres(),
+                ))
             })
             .last()
     }
@@ -15416,7 +15402,7 @@ impl KetchupApp {
             .current()
             .features()
             .filter_map(|feature| {
-                let FeatureKind::TopologyEdgeFinish {
+                let FeatureKind::EdgeFinish {
                     edges,
                     kind,
                     amount,
@@ -15425,7 +15411,16 @@ impl KetchupApp {
                 else {
                     return None;
                 };
-                Some((feature.id(), edges.clone(), *kind, amount.millimetres()))
+                Some((
+                    feature.id(),
+                    edges
+                        .iter()
+                        .filter_map(EdgeRef::topological)
+                        .cloned()
+                        .collect(),
+                    *kind,
+                    amount.millimetres(),
+                ))
             })
             .last()
     }
@@ -15518,7 +15513,12 @@ impl KetchupApp {
                             };
                             let has_current_geometry = matches!(
                                 feature.kind(),
-                                FeatureKind::Extrusion { .. } | FeatureKind::ImportedExactBody(_)
+                                FeatureKind::Pad(PadSpec {
+                                    profile: PadProfile::Feature(_),
+                                    extent: FeatureExtent::Blind(_),
+                                    operation: PadOperation::NewBody,
+                                    ..
+                                }) | FeatureKind::ImportedExactBody(_)
                             ) || self
                                 .exact_results
                                 .get_render(&snapshot, item.definition_id)
@@ -18021,7 +18021,7 @@ impl KetchupApp {
             .current()
             .features()
             .filter(|feature| {
-                let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+                let FeatureKind::Profile { segments, closed } = feature.kind() else {
                     return false;
                 };
                 exact_circle_geometry(segments, *closed).is_some()
@@ -18038,7 +18038,7 @@ impl KetchupApp {
             .filter_map(|occurrence| {
                 let definition = snapshot.definition(occurrence.definition_id())?;
                 let (center, radius) = definition.feature_ids().iter().find_map(|feature_id| {
-                    let FeatureKind::SegmentProfile { segments, closed } =
+                    let FeatureKind::Profile { segments, closed } =
                         snapshot.feature(*feature_id)?.kind()
                     else {
                         return None;
@@ -18088,7 +18088,7 @@ impl KetchupApp {
             .current()
             .features()
             .filter(|feature| {
-                let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+                let FeatureKind::Profile { segments, closed } = feature.kind() else {
                     return false;
                 };
                 exact_arc_profile_geometry(segments, *closed).is_some()
@@ -18106,7 +18106,7 @@ impl KetchupApp {
                 let definition = snapshot.definition(occurrence.definition_id())?;
                 let (start, end, center, clockwise) =
                     definition.feature_ids().iter().find_map(|feature_id| {
-                        let FeatureKind::SegmentProfile { segments, closed } =
+                        let FeatureKind::Profile { segments, closed } =
                             snapshot.feature(*feature_id)?.kind()
                         else {
                             return None;
@@ -19353,15 +19353,13 @@ impl KetchupApp {
                 id: profile_feature_id,
                 definition_id,
                 name: self.catalog.text("model-default-profile"),
-                kind: FeatureKind::Profile {
-                    points_mm: profile_points_mm,
-                },
+                kind: FeatureKind::polygon(&profile_points_mm),
             },
             CanonicalCommand::CreateFeature {
                 id: path_feature_id,
                 definition_id,
                 name: self.catalog.text("model-sweep-path"),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: path_start_mm,
                         end_mm: path_end_mm,
@@ -19454,7 +19452,7 @@ impl KetchupApp {
                 id: profile_feature_id,
                 definition_id,
                 name: self.catalog.text("model-default-profile"),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: profile_segments,
                     closed: true,
                 },
@@ -19558,7 +19556,7 @@ impl KetchupApp {
                     "model-spline-profile",
                     &BTreeMap::from([("number", (index + 1).to_string())]),
                 ),
-                kind: FeatureKind::SplineProfile { control_points_mm },
+                kind: FeatureKind::closed_spline(&control_points_mm),
             });
             loft_sections.push(LoftSection {
                 profile: feature_id,
@@ -19657,7 +19655,7 @@ impl KetchupApp {
                 id: profile_id,
                 definition_id,
                 name: self.catalog.text(profile_name_key),
-                kind: FeatureKind::SegmentProfile { segments, closed },
+                kind: FeatureKind::Profile { segments, closed },
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence_id,
@@ -19741,7 +19739,7 @@ impl KetchupApp {
                 id: profile_id,
                 definition_id,
                 name: self.catalog.text("model-default-profile"),
-                kind: FeatureKind::Profile { points_mm },
+                kind: FeatureKind::polygon(&points_mm),
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence_id,
@@ -22349,7 +22347,12 @@ impl KetchupApp {
         let feature = snapshot.feature(body_feature_id)?;
         if !matches!(
             feature.kind(),
-            FeatureKind::Extrusion { .. } | FeatureKind::ImportedExactBody(_)
+            FeatureKind::Pad(PadSpec {
+                profile: PadProfile::Feature(_),
+                extent: FeatureExtent::Blind(_),
+                operation: PadOperation::NewBody,
+                ..
+            }) | FeatureKind::ImportedExactBody(_)
         ) && self
             .exact_results
             .get_render(&snapshot, selection.definition_id)
@@ -23573,7 +23576,11 @@ impl KetchupApp {
             && item.extrusion_feature_id.is_none()
             && planning_snapshot
                 .feature(item.profile_feature_id)
-                .is_some_and(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
+                .is_some_and(|feature| {
+                    // Pulling below a profile is planned from its polygon.
+                    matches!(feature.kind(), FeatureKind::Profile { .. })
+                        && feature.kind().polygon_points().is_none()
+                })
         {
             return false;
         }
@@ -24844,7 +24851,7 @@ impl KetchupApp {
             };
             matches!(
                 snapshot.feature(*target)?.kind(),
-                FeatureKind::Extrusion { profile, .. } if *profile == profile_id
+                FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(profile), extent: FeatureExtent::Blind(_), operation: PadOperation::NewBody, .. }) if *profile == profile_id
             )
             .then_some((*target, *transform))
         });
@@ -24880,9 +24887,7 @@ impl KetchupApp {
                     ),
                 )
             }
-            FeatureKind::Profile { .. }
-            | FeatureKind::SegmentProfile { .. }
-            | FeatureKind::SplineProfile { .. } => (
+            FeatureKind::Profile { .. } => (
                 Vec3::ZERO,
                 Vec3::new(1.0, 0.0, 0.0),
                 Vec3::new(0.0, 1.0, 0.0),
@@ -25072,14 +25077,7 @@ impl KetchupApp {
                         .collect(),
                 })
                 .collect(),
-            FeatureKind::Profile { points_mm } => {
-                let mut path = points_mm.iter().copied().map(world).collect::<Vec<_>>();
-                if let Some(first) = path.first().copied() {
-                    path.push(first);
-                }
-                vec![path]
-            }
-            FeatureKind::SegmentProfile { segments, .. } => segments
+            FeatureKind::Profile { segments, .. } => segments
                 .iter()
                 .map(|segment| match segment {
                     ProfileSegment::Line { start_mm, end_mm } => {
@@ -25112,19 +25110,12 @@ impl KetchupApp {
                             ])
                         })
                         .collect(),
+                    // The guide runs through the points the spline passes through.
+                    ProfileSegment::Spline { points_mm } => {
+                        points_mm.iter().copied().map(world).collect()
+                    }
                 })
                 .collect(),
-            FeatureKind::SplineProfile { control_points_mm } => {
-                let mut path = control_points_mm
-                    .iter()
-                    .copied()
-                    .map(world)
-                    .collect::<Vec<_>>();
-                if let Some(first) = path.first().copied() {
-                    path.push(first);
-                }
-                vec![path]
-            }
             _ => Vec::new(),
         }
     }
@@ -25146,7 +25137,7 @@ impl KetchupApp {
                     .iter()
                     .filter_map(|feature_id| snapshot.feature(*feature_id))
                     .filter_map(|feature| match feature.kind() {
-                        FeatureKind::SegmentProfile {
+                        FeatureKind::Profile {
                             segments,
                             closed: false,
                         } => Some(segments),
@@ -25213,14 +25204,25 @@ impl KetchupApp {
                             FeatureKind::RigidTransform { target, transform } => {
                                 Some((*target, *transform))
                             }
-                            FeatureKind::Extrusion { .. } => Some((*tool, Transform::identity())),
+                            FeatureKind::Pad(PadSpec {
+                                profile: PadProfile::Feature(_),
+                                extent: FeatureExtent::Blind(_),
+                                operation: PadOperation::NewBody,
+                                ..
+                            }) => Some((*tool, Transform::identity())),
                             _ => None,
                         })
                 else {
                     continue;
                 };
                 let Some(profile_id) = snapshot.feature(extrusion_id).and_then(|feature| {
-                    let FeatureKind::Extrusion { profile, .. } = feature.kind() else {
+                    let FeatureKind::Pad(PadSpec {
+                        profile: PadProfile::Feature(profile),
+                        extent: FeatureExtent::Blind(_),
+                        operation: PadOperation::NewBody,
+                        ..
+                    }) = feature.kind()
+                    else {
                         return None;
                     };
                     Some(*profile)
@@ -25229,8 +25231,7 @@ impl KetchupApp {
                 };
                 let Some((center_mm, radius_mm)) =
                     snapshot.feature(profile_id).and_then(|feature| {
-                        let FeatureKind::SegmentProfile { segments, closed } = feature.kind()
-                        else {
+                        let FeatureKind::Profile { segments, closed } = feature.kind() else {
                             return None;
                         };
                         exact_circle_geometry(segments, *closed)
@@ -26246,11 +26247,10 @@ impl KetchupApp {
                 if self.proxy_preview_is_active(item) {
                     return None;
                 }
-                let FeatureKind::Profile { points_mm } =
-                    snapshot.feature(item.profile_feature_id)?.kind()
-                else {
-                    return None;
-                };
+                let points_mm = snapshot
+                    .feature(item.profile_feature_id)?
+                    .kind()
+                    .polygon_points()?;
                 let segments = points_mm
                     .iter()
                     .enumerate()
@@ -26270,8 +26270,12 @@ impl KetchupApp {
             })
             .map(|preview| f64::from_bits(preview.plan.new_extent_mm_bits))
             .or_else(|| {
-                let FeatureKind::Extrusion { height, .. } =
-                    snapshot.feature(item.extrusion_feature_id?)?.kind()
+                let FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(_),
+                    extent: FeatureExtent::Blind(height),
+                    operation: PadOperation::NewBody,
+                    ..
+                }) = snapshot.feature(item.extrusion_feature_id?)?.kind()
                 else {
                     return None;
                 };
@@ -26374,10 +26378,7 @@ impl KetchupApp {
                 && snapshot
                     .feature(item.profile_feature_id)
                     .is_some_and(|feature| {
-                        matches!(
-                            feature.kind(),
-                            FeatureKind::SegmentProfile { closed: false, .. }
-                        )
+                        matches!(feature.kind(), FeatureKind::Profile { closed: false, .. })
                     })
             {
                 return false;
@@ -26482,7 +26483,13 @@ impl KetchupApp {
             .rev()
             .find_map(|feature_id| {
                 let feature = snapshot.feature(*feature_id)?;
-                let FeatureKind::Pocket { depth, .. } = feature.kind() else {
+                let FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(_),
+                    extent: FeatureExtent::Blind(depth),
+                    operation: PadOperation::Cut { .. },
+                    ..
+                }) = feature.kind()
+                else {
                     return None;
                 };
                 Some((*feature_id, depth.clone()))
@@ -26666,7 +26673,7 @@ impl KetchupApp {
                 id: profile_id,
                 definition_id,
                 name: self.catalog.text("model-line-profile"),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments,
                     closed: true,
                 },
@@ -27090,18 +27097,16 @@ impl KetchupApp {
             self.push_pull_drag = None;
             self.push_pull_anchor = None;
             self.push_pull_distance_input = self.value_input.clone();
-            if self.start_preview_for(planning) {
-                if self.confirm_push_pull_preview() {
-                    self.digest = self.catalog.format(
-                        "digest-exact-value-applied",
-                        &BTreeMap::from([(
-                            "value",
-                            parse_distance_mm(&self.value_input)
-                                .map_or_else(String::new, format_signed_mm),
-                        )]),
-                    );
-                    return true;
-                }
+            if self.start_preview_for(planning) && self.confirm_push_pull_preview() {
+                self.digest = self.catalog.format(
+                    "digest-exact-value-applied",
+                    &BTreeMap::from([(
+                        "value",
+                        parse_distance_mm(&self.value_input)
+                            .map_or_else(String::new, format_signed_mm),
+                    )]),
+                );
+                return true;
             }
         }
         if self.active_tool == ActiveTool::Move {
@@ -29796,11 +29801,7 @@ impl KetchupApp {
                 item.extrusion_feature_id.is_none()
                     && snapshot.feature(item.profile_feature_id).is_some_and(
                         |feature| match feature.kind() {
-                            FeatureKind::Profile { points_mm } => points_mm.len() >= 3,
-                            FeatureKind::SegmentProfile { closed, .. } => *closed,
-                            FeatureKind::SplineProfile { control_points_mm } => {
-                                control_points_mm.len() >= 3
-                            }
+                            FeatureKind::Profile { closed, .. } => *closed,
                             FeatureKind::Sketch(_) => true,
                             _ => false,
                         },
@@ -36576,24 +36577,22 @@ fn create_box_batch(
             id: profile_id,
             definition_id,
             name: profile_name.to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![
-                    [0.0, 0.0],
-                    [size_mm.x, 0.0],
-                    [size_mm.x, size_mm.y],
-                    [0.0, size_mm.y],
-                ],
-            },
+            kind: FeatureKind::polygon(&[
+                [0.0, 0.0],
+                [size_mm.x, 0.0],
+                [size_mm.x, size_mm.y],
+                [0.0, size_mm.y],
+            ]),
         },
         CanonicalCommand::CreateFeature {
             id: extrusion_id,
             definition_id,
             name: extrusion_name.to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: profile_id,
-                height: Dimension::new(format_height(size_mm.z), size_mm.z)
+            kind: FeatureKind::extrusion(
+                profile_id,
+                Dimension::new(format_height(size_mm.z), size_mm.z)
                     .expect("validated box height is canonical"),
-            },
+            ),
         },
         CanonicalCommand::CreateOccurrence {
             id: occurrence_id,
@@ -36959,10 +36958,9 @@ fn push_pull_batch(
                 id,
                 definition_id: selection.definition_id,
                 name: "Face Offset".to_owned(),
-                kind: FeatureKind::TopologyFaceOffset {
+                kind: FeatureKind::FaceOffset {
                     target: reference.producer_feature_id,
-                    face: Some(reference.clone()),
-                    profile_face: None,
+                    face: FaceRef::from(reference.clone()),
                     distance: Dimension::new(distance_mm.to_string(), distance_mm).ok()?,
                 },
             }]));
@@ -36977,7 +36975,7 @@ fn push_pull_batch(
         if extrusion.definition_id() != selection.definition_id
             || !matches!(
                 extrusion.kind(),
-                FeatureKind::Extrusion { profile, .. } if *profile == item.profile_feature_id
+                FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(profile), extent: FeatureExtent::Blind(_), operation: PadOperation::NewBody, .. }) if *profile == item.profile_feature_id
             )
         {
             return None;
@@ -37022,10 +37020,13 @@ fn push_pull_batch(
             definition_id: selection.definition_id,
             name: "Pad".to_owned(),
             kind: FeatureKind::Pad(PadSpec {
-                sketch: item.profile_feature_id,
-                region: region.id,
+                profile: PadProfile::SketchRegion {
+                    sketch: item.profile_feature_id,
+                    region: region.id,
+                },
                 direction: FeatureDirection::AlongNormal,
                 extent: FeatureExtent::Blind(Dimension::new(source_token, new_extent_mm).ok()?),
+                operation: PadOperation::NewBody,
             }),
         }]));
     }
@@ -37051,17 +37052,12 @@ fn push_pull_batch(
                     id: extrusion_id,
                     definition_id: selection.definition_id,
                     name: "Extrusion".to_owned(),
-                    kind: FeatureKind::Extrusion {
-                        profile: item.profile_feature_id,
-                        height: dimension,
-                    },
+                    kind: FeatureKind::extrusion(item.profile_feature_id, dimension),
                 });
             }
         }
         Axis::X | Axis::Y => {
-            let FeatureKind::Profile { points_mm } = profile.kind() else {
-                return None;
-            };
+            let points_mm = profile.kind().polygon_points()?;
             let coordinate = |point: &[f64; 2]| match axis {
                 Axis::X => point[0],
                 Axis::Y => point[1],

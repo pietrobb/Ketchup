@@ -58,7 +58,7 @@ def build(session, output, *, overwrite=False):
     base = document.box("Base with blind hole", 100, 80, 20)
     definition = only(base["created"]["definition_ids"])
     base_occurrence = only(base["created"]["occurrence_ids"])
-    pad = created_feature(base, {"Pad", "Extrusion"})
+    pad = created_feature(base, {"Pad"})
     # The hole is at one end; the second body's support footprint avoids it.
     sketch = document.create_sketch(definition, "Hole profile",
                                     rectangle(10, 10, origin_mm=(10, 10)))

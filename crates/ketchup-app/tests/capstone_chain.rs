@@ -10,7 +10,7 @@
 //! developer entry point is called — and every assertion reads document state
 //! rather than painted text.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::{Key, Vec2, accesskit::Role};
 use harness::{Shell, ctrl};

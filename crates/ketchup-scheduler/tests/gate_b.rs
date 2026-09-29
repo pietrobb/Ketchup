@@ -21,6 +21,7 @@ const READER_SAMPLES: usize = 1_000;
 
 #[test]
 fn formal_gate_b() {
+    let _turn = crate::integration_support::file_turn();
     let stale_current_inserts = exercise_schedule_permutations();
     let changed_read_digest_accepted = exercise_proposal_race();
     let committed_revision_damage = exercise_crash_recovery();

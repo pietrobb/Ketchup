@@ -1,6 +1,6 @@
 //! Independent Program 7 shared-change UI verification through AccessKit.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
@@ -16,6 +16,7 @@ use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -170,9 +171,7 @@ fn feature_label(shell: &Shell, feature_id: FeatureId) -> String {
 /// A square that starts on its east edge, so the exact worker names the east
 /// side face as the first line's side.
 fn profile(size: f64) -> FeatureKind {
-    FeatureKind::Profile {
-        points_mm: vec![[size, 0.0], [size, size], [0.0, size], [0.0, 0.0]],
-    }
+    FeatureKind::polygon(&[[size, 0.0], [size, size], [0.0, size], [0.0, 0.0]])
 }
 
 fn exact_worker_path() -> PathBuf {
@@ -245,27 +244,25 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             id: REPLACEMENT_SOURCE_EXTRUSION,
             definition_id: REPLACEMENT_SOURCE,
             name: "Source extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: REPLACEMENT_SOURCE_PROFILE,
-                height: Dimension::from_decimal("10").unwrap(),
-            },
+            kind: FeatureKind::extrusion(
+                REPLACEMENT_SOURCE_PROFILE,
+                Dimension::from_decimal("10").unwrap(),
+            ),
         },
         CanonicalCommand::CreateFeature {
             id: REPLACEMENT_TARGET_PROFILE,
             definition_id: REPLACEMENT_TARGET,
             name: "Target profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[10.0, 0.0], [10.0, 8.0], [0.0, 8.0], [0.0, 0.0]],
-            },
+            kind: FeatureKind::polygon(&[[10.0, 0.0], [10.0, 8.0], [0.0, 8.0], [0.0, 0.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: REPLACEMENT_TARGET_EXTRUSION,
             definition_id: REPLACEMENT_TARGET,
             name: "Target extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: REPLACEMENT_TARGET_PROFILE,
-                height: Dimension::from_decimal("10").unwrap(),
-            },
+            kind: FeatureKind::extrusion(
+                REPLACEMENT_TARGET_PROFILE,
+                Dimension::from_decimal("10").unwrap(),
+            ),
         },
         CanonicalCommand::CreateOccurrence {
             id: REPLACEMENT_SELECTED,
@@ -300,9 +297,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             id: FeatureId(122),
             definition_id: REPLACEMENT_TARGET,
             name: "Unmatched target feature".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[1.0, 1.0], [2.0, 1.0], [1.0, 2.0]],
-            },
+            kind: FeatureKind::polygon(&[[1.0, 1.0], [2.0, 1.0], [1.0, 2.0]]),
         });
     }
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -465,28 +460,23 @@ fn write_shared_fixture(
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Shared extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: CUT_PROFILE,
                 definition_id: DEFINITION,
                 name: "Cut profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[2.0, 2.0], [8.0, 2.0], [8.0, 8.0], [2.0, 8.0]],
-                },
+                kind: FeatureKind::polygon(&[[2.0, 2.0], [8.0, 2.0], [8.0, 8.0], [2.0, 8.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: POCKET,
                 definition_id: DEFINITION,
                 name: "Pocket".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: EXTRUSION,
-                    profile: CUT_PROFILE,
-                    depth: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    EXTRUSION,
+                    CUT_PROFILE,
+                    Dimension::from_decimal("5").unwrap(),
+                ),
             },
             CanonicalCommand::CreateOccurrence {
                 id: FIRST,
@@ -661,10 +651,7 @@ fn write_multibody_fixture(path: &Path, cross_body_union: bool) {
             id: EXTRUSION,
             definition_id: DEFINITION,
             name: "Base extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: PROFILE,
-                height: Dimension::from_decimal("8").unwrap(),
-            },
+            kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("8").unwrap()),
         },
         CanonicalCommand::CreateBody {
             definition_id: DEFINITION,
@@ -686,10 +673,7 @@ fn write_multibody_fixture(path: &Path, cross_body_union: bool) {
             id: TOOL_EXTRUSION,
             definition_id: DEFINITION,
             name: "Tool extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: TOOL_PROFILE,
-                height: Dimension::from_decimal("3").unwrap(),
-            },
+            kind: FeatureKind::extrusion(TOOL_PROFILE, Dimension::from_decimal("3").unwrap()),
         },
         CanonicalCommand::SetActiveBody {
             definition_id: DEFINITION,
@@ -1357,7 +1341,7 @@ fn make_unique_serial_accesskit_replay_rebinds_locally_exports_and_persists() {
     );
     assert!(matches!(
         shell.app().document_snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 20.0
     ));
     assert!(matches!(
         shell
@@ -1366,7 +1350,7 @@ fn make_unique_serial_accesskit_replay_rebinds_locally_exports_and_persists() {
             .feature(FORK_EXTRUSION)
             .unwrap()
             .kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 35.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 35.0
     ));
     assert_eq!(
         [FIRST, SECOND].map(|id| shell
@@ -1814,13 +1798,13 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     assert_eq!(shell.app().undo_step_count(), initial.2 + 1);
     assert!(matches!(
         shell.app().document_snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 35.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 35.0
     ));
     let edited_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert!(matches!(
         shell.app().document_snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 20.0
     ));
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), edited_digest);
@@ -1858,7 +1842,7 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     assert_eq!(stamp(&shell), after_intervening_edit);
     assert!(matches!(
         shell.app().document_snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 35.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 35.0
     ));
 
     click_preview(&mut shell, "feature-history-preview-suppress");
@@ -1921,7 +1905,7 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     );
     assert!(matches!(
         shell.app().document_snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 35.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 35.0
     ));
 }
 
@@ -2021,6 +2005,6 @@ fn cross_body_invalid_boundary_and_invalid_value_preserve_history_and_outputs() 
     assert_eq!(stamp(&shell), before_invalid);
     assert!(matches!(
         shell.app().document_snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 8.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 8.0
     ));
 }

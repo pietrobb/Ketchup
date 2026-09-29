@@ -867,7 +867,11 @@ pub fn plan_smart_push_pull(
     let feature = snapshot
         .feature(target)
         .ok_or(InteractionError::FeatureNotFound(target))?;
-    let FeatureKind::Extrusion { height, .. } = feature.kind() else {
+    let FeatureKind::Pad(ketchup_core::sketch::PadSpec {
+        extent: ketchup_core::sketch::FeatureExtent::Blind(height),
+        ..
+    }) = feature.kind()
+    else {
         return Err(InteractionError::FeatureNotFound(target));
     };
     let new_height_text = new_height_text.into();

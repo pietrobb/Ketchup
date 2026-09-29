@@ -94,13 +94,14 @@ impl ExactFaceRole {
 /// references; they still load and resolve like any other lost reference.
 const SUBSHAPE_REFERENCE_TYPES: [&str; 4] = ["planar_face", "cylindrical_face", "face", "edge"];
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ReferenceStability {
     Guaranteed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BodySubshapeRef {
+    #[serde(serialize_with = "crate::document::derived")]
     pub schema: String,
     pub document_id: DocumentId,
     pub definition_id: DefinitionId,
@@ -111,13 +112,21 @@ pub struct BodySubshapeRef {
     pub expected_type: String,
     pub expected_cardinality: u32,
     pub stability: ReferenceStability,
+    // The evaluation that last resolved the reference; a later evaluation replaces it in place.
+    #[serde(serialize_with = "crate::document::derived")]
     pub canonical_input_digest: String,
+    #[serde(serialize_with = "crate::document::derived")]
     pub exact_input_digest: String,
+    #[serde(serialize_with = "crate::document::derived")]
     pub result_fingerprint: String,
+    #[serde(serialize_with = "crate::document::derived")]
     pub evaluator: String,
+    #[serde(serialize_with = "crate::document::derived")]
     pub backend: String,
+    #[serde(serialize_with = "crate::document::derived")]
     pub tolerance: String,
     pub lineage_digest: String,
+    #[serde(serialize_with = "crate::document::derived")]
     pub corroborating_geometry_fingerprint: String,
 }
 
@@ -6359,7 +6368,7 @@ pub(crate) fn exact_mixed_profile(
                     clockwise: *clockwise,
                 });
             }
-            ProfileSegment::CubicBezier { .. } => return None,
+            ProfileSegment::CubicBezier { .. } | ProfileSegment::Spline { .. } => return None,
         }
     }
     let area = signed_area.abs();

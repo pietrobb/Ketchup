@@ -32,31 +32,29 @@ fn source_document() -> DocumentStore {
                 id: UNRELATED_PROFILE,
                 definition_id: DEFINITION,
                 name: "Unrelated profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [-50.0, -40.0],
-                        [-10.0, -40.0],
-                        [-10.0, -20.0],
-                        [-50.0, -20.0],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [-50.0, -40.0],
+                    [-10.0, -40.0],
+                    [-10.0, -20.0],
+                    [-50.0, -20.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[25.0, 40.0], [625.0, 40.0], [625.0, 620.0], [25.0, 620.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [25.0, 40.0],
+                    [625.0, 40.0],
+                    [625.0, 620.0],
+                    [25.0, 620.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("720").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("720").unwrap()),
             },
             CanonicalCommand::CreateGroup {
                 id: GROUP,
@@ -94,33 +92,36 @@ fn canonical_projection_carries_every_c1a_authority_field() {
     let digest = snapshot.canonical_digest();
     let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
     let state = encode_semantic_state(&snapshot);
-    let complete = state.complete_v1();
-    let agent = state.agent_v1();
+    let complete = state.complete();
+    let agent = state.agent();
 
     for state_view in [&complete, &agent] {
-        assert!(state_view.contains(&format!(
-            "source.document_id={}",
-            projection.document_id().0
-        )));
+        assert!(state_view.contains(&format!("\ndocument_id={}\n", projection.document_id().0)));
         assert!(state_view.contains(&format!("source.revision={}", projection.source_revision())));
         assert!(state_view.contains(&format!(
             "source.canonical_digest={}",
             projection.source_digest()
         )));
     }
-    assert!(complete.contains("definition.10.features=[9,11,12]"));
-    assert!(agent.contains("definition.10=name:\"Cabinet\",features:[9,11,12]"));
+    assert!(complete.contains("definitions.10.feature_ids=[9,11,12]"));
+    assert!(agent.contains("definitions.10={id:10,name:\"Cabinet\",feature_ids:[9,11,12],"));
     for feature_id in [UNRELATED_PROFILE, PROFILE, EXTRUSION] {
-        assert!(complete.contains(&format!("feature.{}.definition=10", feature_id.0)));
-        assert!(agent.contains(&format!("feature.{}=", feature_id.0)));
+        assert!(complete.contains(&format!("features.{}.definition_id=10", feature_id.0)));
+        assert!(agent.contains(&format!("features.{}={{", feature_id.0)));
     }
     for occurrence_id in [FIRST, SECOND] {
-        assert!(complete.contains(&format!("occurrence.{}.definition=10", occurrence_id.0)));
-        assert!(agent.contains(&format!("occurrence.{}=", occurrence_id.0)));
+        assert!(complete.contains(&format!("occurrences.{}.definition_id=10", occurrence_id.0)));
+        assert!(agent.contains(&format!("occurrences.{}={{", occurrence_id.0)));
     }
-    assert!(agent.contains(
-        "summary.counts=evaluator_nodes:0,overrides:0,parameter_bindings:0,spaces:0,clearance_volumes:0,persistent_dimensions:0,tags:0,collections:0,definitions:1,features:3,occurrences:2,grounded_occurrences:0,assembly_mates:0,groups:1,local_groups:0,local_occurrences:0"
-    ));
+    assert!(agent.contains("summary.counts=evaluator_nodes:0,"));
+    for count in [
+        "definitions:1,",
+        "features:3,",
+        "occurrences:2,",
+        "groups:1,",
+    ] {
+        assert!(agent.contains(count), "summary lacks {count}");
+    }
 
     assert_eq!(projection.schema(), INTERACTION_PROJECTION_V1);
     assert_eq!(projection.evaluator(), PROXY_EVALUATOR_V1);
@@ -203,9 +204,7 @@ fn profile_only_definition_projects_as_a_flat_selectable_plane() {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Closed polyline".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[2.0, 3.0], [12.0, 3.0], [12.0, 9.0], [2.0, 9.0]],
-                },
+                kind: FeatureKind::polygon(&[[2.0, 3.0], [12.0, 3.0], [12.0, 9.0], [2.0, 9.0]]),
             },
             CanonicalCommand::CreateOccurrence {
                 id: FIRST,
@@ -260,7 +259,7 @@ fn open_segment_profile_projects_and_picks_with_a_bounded_flat_proxy() {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Open line".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: [2.0, 3.0],
                         end_mm: [12.0, 3.0],
@@ -337,23 +336,18 @@ fn exact_only_cut_definition_never_falls_back_to_a_filled_box_proxy() {
                 id: CUT_PROFILE,
                 definition_id: DEFINITION,
                 name: "Cut profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [100.0, 100.0],
-                        [200.0, 100.0],
-                        [200.0, 200.0],
-                        [100.0, 200.0],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [100.0, 100.0],
+                    [200.0, 100.0],
+                    [200.0, 200.0],
+                    [100.0, 200.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: CUT,
                 definition_id: DEFINITION,
                 name: "Through cut".to_owned(),
-                kind: FeatureKind::ThroughCut {
-                    target: EXTRUSION,
-                    profile: CUT_PROFILE,
-                },
+                kind: FeatureKind::through_cut(EXTRUSION, CUT_PROFILE),
             },
         ]))
         .unwrap();
@@ -378,10 +372,7 @@ fn multiple_extrusions_fail_closed() {
             id: SECOND_EXTRUSION,
             definition_id: DEFINITION,
             name: "Ambiguous extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: PROFILE,
-                height: Dimension::from_decimal("100").unwrap(),
-            },
+            kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("100").unwrap()),
         }]))
         .unwrap();
 

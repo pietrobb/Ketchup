@@ -3205,7 +3205,7 @@ fn dxf_plan_is_deterministic_one_step_undoable_and_persistent() {
     assert_eq!(
         committed
             .features()
-            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
             .count(),
         2
     );

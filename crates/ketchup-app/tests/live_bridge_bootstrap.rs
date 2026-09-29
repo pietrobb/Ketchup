@@ -1,5 +1,5 @@
 //! Bootstrap contract against real pipes/TCP and the actual offscreen app, not OS input.
-mod harness;
+use crate::harness;
 use harness::Shell;
 use ketchup_app::{
     AppCommand,
@@ -197,6 +197,9 @@ fn input_and_output_pipe_stalls_have_deadlines() {
     drop(tx);
 }
 
+// Hang guard, not a latency bound: the merged test binary runs other files' tests alongside.
+const RESPONSE_DEADLINE: Duration = Duration::from_secs(30);
+
 fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request) -> Response {
     let bytes = serde_json::to_vec(&Envelope {
         version: 1,
@@ -210,9 +213,7 @@ fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request
         .unwrap();
     stream.write_all(&bytes).unwrap();
     let mut reader = stream.try_clone().unwrap();
-    reader
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
+    reader.set_read_timeout(Some(RESPONSE_DEADLINE)).unwrap();
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let mut header = [0; 4];
@@ -224,7 +225,7 @@ fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request
         tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + RESPONSE_DEADLINE;
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;

@@ -125,18 +125,13 @@ fn contact_recipe_document(signed_gap_mm: f64) -> DocumentStore {
         id: FeatureId(id),
         definition_id: DefinitionId(definition_id),
         name: format!("Panel {definition_id} profile"),
-        kind: FeatureKind::Profile {
-            points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-        },
+        kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
     };
     let extrusion = |id, definition_id, profile_id| CanonicalCommand::CreateFeature {
         id: FeatureId(id),
         definition_id: DefinitionId(definition_id),
         name: format!("Panel {definition_id} extrusion"),
-        kind: FeatureKind::Extrusion {
-            profile: FeatureId(profile_id),
-            height: Dimension::new("10", 10.0).unwrap(),
-        },
+        kind: FeatureKind::extrusion(FeatureId(profile_id), Dimension::new("10", 10.0).unwrap()),
     };
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -188,7 +183,7 @@ fn contact_recipe_document(signed_gap_mm: f64) -> DocumentStore {
             (
                 recipe_key(&format!("{name}-extrusion")),
                 FeatureId(extrusion_id),
-                RecognizedRecipeFeatureKind::Extrusion,
+                RecognizedRecipeFeatureKind::Pad,
             ),
         ],
     };
@@ -369,18 +364,13 @@ fn assembly_retention_finds_an_unjoined_back_panel_and_passes_after_a_fixed_conn
             id: FeatureId(1),
             definition_id: DefinitionId(1),
             name: "Panel profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: FeatureId(2),
             definition_id: DefinitionId(1),
             name: "Panel solid".into(),
-            kind: FeatureKind::Extrusion {
-                profile: FeatureId(1),
-                height: Dimension::new("10", 10.0).unwrap(),
-            },
+            kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
         },
         CanonicalCommand::UpsertClassificationDimension {
             id: ClassificationDimensionId(7),
@@ -1291,18 +1281,18 @@ fn furniture_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Shelf profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [500.0, 0.0], [500.0, 300.0], [0.0, 300.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [500.0, 0.0],
+                    [500.0, 300.0],
+                    [0.0, 300.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Shelf solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("20", 20.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("20", 20.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
@@ -1324,18 +1314,18 @@ fn furniture_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
                 id: FeatureId(3),
                 definition_id: DefinitionId(2),
                 name: "Case profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [400.0, 0.0], [400.0, 400.0], [0.0, 400.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [400.0, 0.0],
+                    [400.0, 400.0],
+                    [0.0, 400.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: DefinitionId(2),
                 name: "Case solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(3),
-                    height: Dimension::new("800", 800.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(3), Dimension::new("800", 800.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(2),
@@ -1427,35 +1417,35 @@ fn gravity_support_does_not_propagate_through_an_unproven_envelope_contact() {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Outer profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [100.0, 0.0],
+                    [100.0, 100.0],
+                    [0.0, 100.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Outer solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("10", 10.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(3),
                 definition_id: DefinitionId(1),
                 name: "Opening profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[20.0, 20.0], [80.0, 20.0], [80.0, 80.0], [20.0, 80.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [20.0, 20.0],
+                    [80.0, 20.0],
+                    [80.0, 80.0],
+                    [20.0, 80.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: DefinitionId(1),
                 name: "Opening solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(3),
-                    height: Dimension::new("10", 10.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(3), Dimension::new("10", 10.0).unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(5),
@@ -1484,18 +1474,13 @@ fn gravity_support_does_not_propagate_through_an_unproven_envelope_contact() {
                 id: FeatureId(6),
                 definition_id: DefinitionId(2),
                 name: "Load profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(7),
                 definition_id: DefinitionId(2),
                 name: "Load solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(6),
-                    height: Dimension::new("10", 10.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(6), Dimension::new("10", 10.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(2),

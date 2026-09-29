@@ -14,7 +14,7 @@
 //! rejected by name while the ridge beam floats, accepted once it is lowered
 //! onto the posts that carry it.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::accesskit::Role;
 use harness::Shell;

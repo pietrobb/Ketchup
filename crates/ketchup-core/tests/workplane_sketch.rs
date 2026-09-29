@@ -15,6 +15,7 @@ use ketchup_core::sketch::{
     SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec,
     WorkplaneSupport, WorkplaneSupportHealth,
 };
+use ketchup_core::sketch::{PadOperation, PadProfile};
 use ketchup_core::state_view::encode_semantic_state;
 use ketchup_core::testing::box_package;
 
@@ -3539,18 +3540,13 @@ fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
                 id: profile,
                 definition_id: DEFINITION,
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: extrusion,
                 definition_id: DEFINITION,
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::from_decimal("10").unwrap()),
             },
         ]))
         .unwrap();
@@ -3689,75 +3685,64 @@ fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
         );
     }
     let state = encode_semantic_state(&snapshot);
-    let complete = state.complete_v1();
-    assert!(state.agent_v1().contains(&format!(
-        "kind:workplane,definition:{},support:planar_face:producer:{},role:{:?},health:Resolved",
-        DEFINITION.0, extrusion.0, reference.semantic_role
+    let complete = state.complete();
+    let agent = state.agent();
+    assert!(agent.contains(&format!(
+        "features.{}={{id:{},definition_id:{},",
+        face_plane.0, face_plane.0, DEFINITION.0
     )));
+    assert!(agent.contains("kind:{Workplane:{support:{PlanarFace:{reference:{"));
+    assert!(agent.contains(&format!(
+        "producer_feature_id:{},semantic_role:{:?},",
+        extrusion.0, reference.semantic_role
+    )));
+    let support = format!(
+        "features.{}.kind.Workplane.support.PlanarFace",
+        face_plane.0
+    );
     for expected in [
+        format!("{support}.reference.document_id={}", document_id.0),
+        format!("{support}.reference.definition_id={}", DEFINITION.0),
+        format!("{support}.reference.profile_feature_id={}", profile.0),
+        format!("{support}.reference.producer_feature_id={}", extrusion.0),
         format!(
-            "feature.{}.support.document_id={}",
-            face_plane.0, document_id.0
+            "{support}.reference.semantic_role={:?}",
+            reference.semantic_role
         ),
         format!(
-            "feature.{}.support.definition_id={}",
-            face_plane.0, DEFINITION.0
+            "{support}.reference.source_element_id={:?}",
+            reference.source_element_id
         ),
         format!(
-            "feature.{}.support.profile_feature_id={}",
-            face_plane.0, profile.0
+            "{support}.reference.expected_type={:?}",
+            reference.expected_type
+        ),
+        format!("{support}.reference.expected_cardinality=1"),
+        format!("{support}.reference.stability=\"Guaranteed\""),
+        format!(
+            "{support}.reference.canonical_input_digest={:?}",
+            reference.canonical_input_digest
         ),
         format!(
-            "feature.{}.support.producer_feature_id={}",
-            face_plane.0, extrusion.0
+            "{support}.reference.exact_input_digest={:?}",
+            reference.exact_input_digest
         ),
         format!(
-            "feature.{}.support.semantic_role={:?}",
-            face_plane.0, reference.semantic_role
+            "{support}.reference.result_fingerprint={:?}",
+            reference.result_fingerprint
+        ),
+        format!("{support}.reference.evaluator={:?}", reference.evaluator),
+        format!("{support}.reference.backend={:?}", reference.backend),
+        format!("{support}.reference.tolerance={:?}", reference.tolerance),
+        format!(
+            "{support}.reference.lineage_digest={:?}",
+            reference.lineage_digest
         ),
         format!(
-            "feature.{}.support.source_element_id={:?}",
-            face_plane.0, reference.source_element_id
+            "{support}.reference.corroborating_geometry_fingerprint={:?}",
+            reference.corroborating_geometry_fingerprint
         ),
-        format!(
-            "feature.{}.support.expected_type={:?}",
-            face_plane.0, reference.expected_type
-        ),
-        format!("feature.{}.support.expected_cardinality=1", face_plane.0),
-        format!("feature.{}.support.stability=Guaranteed", face_plane.0),
-        format!(
-            "feature.{}.support.canonical_input_digest={:?}",
-            face_plane.0, reference.canonical_input_digest
-        ),
-        format!(
-            "feature.{}.support.exact_input_digest={:?}",
-            face_plane.0, reference.exact_input_digest
-        ),
-        format!(
-            "feature.{}.support.result_fingerprint={:?}",
-            face_plane.0, reference.result_fingerprint
-        ),
-        format!(
-            "feature.{}.support.evaluator={:?}",
-            face_plane.0, reference.evaluator
-        ),
-        format!(
-            "feature.{}.support.backend={:?}",
-            face_plane.0, reference.backend
-        ),
-        format!(
-            "feature.{}.support.tolerance={:?}",
-            face_plane.0, reference.tolerance
-        ),
-        format!(
-            "feature.{}.support.lineage_digest={:?}",
-            face_plane.0, reference.lineage_digest
-        ),
-        format!(
-            "feature.{}.support.geometry_fingerprint={:?}",
-            face_plane.0, reference.corroborating_geometry_fingerprint
-        ),
-        format!("feature.{}.support.health=Resolved", face_plane.0),
+        format!("{support}.health=\"Resolved\""),
     ] {
         assert!(
             complete.contains(&expected),
@@ -4511,10 +4496,13 @@ fn constraint_edits_that_invalidate_a_downstream_pad_region_fail_closed() {
                 definition_id: DEFINITION,
                 name: "Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: SKETCH,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: SKETCH,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("5").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))

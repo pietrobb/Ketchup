@@ -6,10 +6,10 @@ use ketchup_core::cam::{
 };
 use ketchup_core::document::{
     BodyKind, BooleanOperation, CanonicalCommand, CanonicalError, ChamferEdgeSide, ChamferMode,
-    CommandBatch, DefinitionId, Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind,
-    FeatureParameterTarget, FilletRadiusStation, InstancePath, LoftContinuity, LoftSection, NodeId,
-    OccurrenceId, ParameterValueType, ProfileSegment, ShellDirection, Snapshot, SolidToolPlan,
-    SpatialPathSegment, SurfaceBodySpec, Transform,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, EdgeFinishKind, EdgeRef, FaceRef,
+    FeatureId, FeatureKind, FeatureParameterTarget, FilletRadiusStation, InstancePath,
+    LoftContinuity, LoftSection, NodeId, OccurrenceId, ParameterValueType, ProfileSegment,
+    ShellDirection, Snapshot, SolidToolPlan, SpatialPathSegment, SurfaceBodySpec, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10,
@@ -28,9 +28,10 @@ use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle, plan_iges_import, plan_step_import};
 use ketchup_core::persistence;
+use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PocketSpec, PrincipalPlane,
-    SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
     WorkplaneSupportHealth,
 };
 use ketchup_core::topology::{
@@ -270,6 +271,7 @@ fn assert_surface_interchange_roundtrip(
 
 #[test]
 fn exact_worker_converts_verified_step_to_iges_and_reinspects_exact_evidence() {
+    let _turn = crate::integration_support::file_turn();
     let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpora/r0/step/self-authored-box.step");
     let directory = tempfile::tempdir().unwrap();
@@ -337,18 +339,13 @@ fn simple_extrusion_document() -> (DocumentStore, DefinitionId, FeatureId, Occur
                 id: profile,
                 definition_id: definition,
                 name: "Safety profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [8.0, 0.0], [8.0, 6.0], [0.0, 6.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [8.0, 0.0], [8.0, 6.0], [0.0, 6.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: extrusion,
                 definition_id: definition,
                 name: "Safety extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: dimension(5.0),
-                },
+                kind: FeatureKind::extrusion(profile, dimension(5.0)),
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence,
@@ -371,6 +368,7 @@ fn simple_extrusion_graph() -> ExactBRepGraph {
 
 #[test]
 fn exact_graph_volume_mesh_is_identity_bound_bounded_and_cancellable() {
+    let _turn = crate::integration_support::file_turn();
     let graph = simple_extrusion_graph();
     let options = ExactVolumeMeshWireOptions {
         surface_deflection_mm: 0.1,
@@ -425,6 +423,7 @@ fn exact_graph_volume_mesh_is_identity_bound_bounded_and_cancellable() {
 
 #[test]
 fn exact_volume_mesh_builds_occurrence_bound_fea_and_rejects_stale_or_unknown_faces() {
+    let _turn = crate::integration_support::file_turn();
     let (mut document, definition, extrusion, occurrence) = simple_extrusion_document();
     let snapshot = document.current();
     let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, extrusion).unwrap();
@@ -533,18 +532,13 @@ fn cam_simulation_document() -> (DocumentStore, CamPlan) {
                 id: profile,
                 definition_id: definition,
                 name: "20x10 profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: solid,
                 definition_id: definition,
                 name: "20x10x5 target".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: dimension(5.0),
-                },
+                kind: FeatureKind::extrusion(profile, dimension(5.0)),
             },
         ]))
         .unwrap();
@@ -590,6 +584,7 @@ fn cam_simulation_document() -> (DocumentStore, CamPlan) {
 
 #[test]
 fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refusals() {
+    let _turn = crate::integration_support::file_turn();
     let (mut document, plan) = cam_simulation_document();
     let face = [CamOperation::Face {
         id: 1,
@@ -746,6 +741,7 @@ fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refu
 
 #[test]
 fn exact_pair_batch_reuses_graphs_and_handles_contact_containment_transforms_and_failure() {
+    let _turn = crate::integration_support::file_turn();
     use ketchup_scheduler::pair_query::EXACT_PAIR_IDENTITY;
     use ketchup_scheduler::{ExactPairCandidate, ExactPairRelation};
     let graph = simple_extrusion_graph();
@@ -946,35 +942,25 @@ fn generated_boolean_document(
             id: base_profile,
             definition_id: definition,
             name: "Generated target profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: base_points,
-            },
+            kind: FeatureKind::polygon(&base_points),
         },
         CanonicalCommand::CreateFeature {
             id: base,
             definition_id: definition,
             name: "Generated target body".into(),
-            kind: FeatureKind::Extrusion {
-                profile: base_profile,
-                height: dimension(13.0 * scale_z),
-            },
+            kind: FeatureKind::extrusion(base_profile, dimension(13.0 * scale_z)),
         },
         CanonicalCommand::CreateFeature {
             id: tool_profile,
             definition_id: definition,
             name: "Generated tool profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: tool_points,
-            },
+            kind: FeatureKind::polygon(&tool_points),
         },
         CanonicalCommand::CreateFeature {
             id: tool,
             definition_id: definition,
             name: "Generated tool body".into(),
-            kind: FeatureKind::Extrusion {
-                profile: tool_profile,
-                height: dimension(19.0 * scale_z),
-            },
+            kind: FeatureKind::extrusion(tool_profile, dimension(19.0 * scale_z)),
         },
     ];
     commands.extend(
@@ -996,6 +982,7 @@ fn generated_boolean_document(
 
 #[test]
 fn worker_evaluates_v9_curved_sweep_with_deterministic_topology_and_mesh() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(89);
     let profile = FeatureId(890);
     let path = FeatureId(891);
@@ -1011,15 +998,13 @@ fn worker_evaluates_v9_curved_sweep_with_deterministic_topology_and_mesh() {
                 id: profile,
                 definition_id: definition,
                 name: "Section".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,
                 definition_id: definition,
                 name: "Line-arc path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -1087,6 +1072,7 @@ fn worker_evaluates_v9_curved_sweep_with_deterministic_topology_and_mesh() {
 
 #[test]
 fn worker_evaluates_v10_multisegment_sweep_with_step_round_trip() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(90);
     let profile = FeatureId(900);
     let path = FeatureId(901);
@@ -1102,15 +1088,13 @@ fn worker_evaluates_v10_multisegment_sweep_with_step_round_trip() {
                 id: profile,
                 definition_id: definition,
                 name: "Section".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,
                 definition_id: definition,
                 name: "Line-arc-line path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -1180,6 +1164,7 @@ fn worker_evaluates_v10_multisegment_sweep_with_step_round_trip() {
 
 #[test]
 fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
+    let _turn = crate::integration_support::file_turn();
     let (document, definition, base, tool, _) = generated_boolean_document([1.0, 1.0, 1.0], 0);
     let snapshot = document.current();
     let directory = tempfile::tempdir().unwrap();
@@ -1556,6 +1541,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
 
 #[test]
 fn generated_boolean_graph_properties_cover_all_operations_and_rigid_variants() {
+    let _turn = crate::integration_support::file_turn();
     let samples = generated_boolean_scales();
     assert_eq!(samples, generated_boolean_scales());
     assert_eq!(samples.len(), 6);
@@ -1678,6 +1664,7 @@ fn generated_boolean_graph_properties_cover_all_operations_and_rigid_variants() 
 
 #[test]
 fn generated_boolean_graph_property_verifier_confirms_round_trip_and_scaling() {
+    let _turn = crate::integration_support::file_turn();
     let samples = generated_boolean_scales();
     assert_eq!(samples, generated_boolean_scales());
     assert_eq!(samples.len(), 6);
@@ -1787,6 +1774,7 @@ fn generated_boolean_graph_property_verifier_confirms_round_trip_and_scaling() {
 
 #[test]
 fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
+    let _turn = crate::integration_support::file_turn();
     let (mut document, definition, base, _, operations) =
         generated_boolean_document([1.0, 1.0, 1.0], 0);
     document
@@ -1905,6 +1893,7 @@ fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
 
 #[test]
 fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(2);
     let plane = FeatureId(100);
     let sketch_id = FeatureId(101);
@@ -1943,10 +1932,13 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
                 definition_id: definition,
                 name: "Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(25.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -2027,6 +2019,7 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
 
 #[test]
 fn worker_evaluates_a_bounded_profile_pocket_as_a_body_cut() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(3);
     let base_profile = FeatureId(200);
     let base = FeatureId(201);
@@ -2044,45 +2037,31 @@ fn worker_evaluates_a_bounded_profile_pocket_as_a_body_cut() {
                 id: base_profile,
                 definition_id: definition,
                 name: "Base boundary".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [30.0, 0.0], [30.0, 20.0], [0.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [30.0, 0.0], [30.0, 20.0], [0.0, 20.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: base_profile,
-                    height: dimension(10.0),
-                },
+                kind: FeatureKind::extrusion(base_profile, dimension(10.0)),
             },
             CanonicalCommand::CreateFeature {
                 id: pocket_profile,
                 definition_id: definition,
                 name: "Triangular pocket".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[6.0, 5.0], [24.0, 7.0], [12.0, 16.0]],
-                },
+                kind: FeatureKind::polygon(&[[6.0, 5.0], [24.0, 7.0], [12.0, 16.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: pocket,
                 definition_id: definition,
                 name: "Pocket".into(),
-                kind: FeatureKind::Pocket {
-                    target: base,
-                    profile: pocket_profile,
-                    depth: dimension(4.0),
-                },
+                kind: FeatureKind::pocket(base, pocket_profile, dimension(4.0)),
             },
             CanonicalCommand::CreateFeature {
                 id: through_cut,
                 definition_id: definition,
                 name: "Through cut".into(),
-                kind: FeatureKind::ThroughCut {
-                    target: base,
-                    profile: pocket_profile,
-                },
+                kind: FeatureKind::through_cut(base, pocket_profile),
             },
         ]))
         .unwrap();
@@ -2109,6 +2088,7 @@ fn worker_evaluates_a_bounded_profile_pocket_as_a_body_cut() {
 
 #[test]
 fn worker_booleans_an_unequal_body_transformed_by_its_workplane_frame() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(4);
     let base_profile = FeatureId(300);
     let base = FeatureId(301);
@@ -2137,18 +2117,18 @@ fn worker_booleans_an_unequal_body_transformed_by_its_workplane_frame() {
                 id: base_profile,
                 definition_id: definition,
                 name: "Rectangular base".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, -10.0], [30.0, -10.0], [30.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, -10.0],
+                    [30.0, -10.0],
+                    [30.0, 10.0],
+                    [0.0, 10.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: base_profile,
-                    height: dimension(10.0),
-                },
+                kind: FeatureKind::extrusion(base_profile, dimension(10.0)),
             },
             CanonicalCommand::CreateFeature {
                 id: plane,
@@ -2167,10 +2147,13 @@ fn worker_booleans_an_unequal_body_transformed_by_its_workplane_frame() {
                 definition_id: definition,
                 name: "Transverse tool".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(25.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateFeature {
@@ -2209,6 +2192,7 @@ fn worker_booleans_an_unequal_body_transformed_by_its_workplane_frame() {
 
 #[test]
 fn disjoint_body_booleans_return_exact_results_or_typed_refusals_atomically() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(5);
     let base_profile = FeatureId(400);
     let base = FeatureId(401);
@@ -2229,35 +2213,25 @@ fn disjoint_body_booleans_return_exact_results_or_typed_refusals_atomically() {
                 id: base_profile,
                 definition_id: definition,
                 name: "Base profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: base_profile,
-                    height: dimension(5.0),
-                },
+                kind: FeatureKind::extrusion(base_profile, dimension(5.0)),
             },
             CanonicalCommand::CreateFeature {
                 id: tool_profile,
                 definition_id: definition,
                 name: "Remote tool profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[30.0, 0.0], [35.0, 0.0], [35.0, 5.0], [30.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[30.0, 0.0], [35.0, 0.0], [35.0, 5.0], [30.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: tool,
                 definition_id: definition,
                 name: "Remote tool".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: tool_profile,
-                    height: dimension(7.0),
-                },
+                kind: FeatureKind::extrusion(tool_profile, dimension(7.0)),
             },
         ]))
         .unwrap();
@@ -2321,6 +2295,7 @@ fn disjoint_body_booleans_return_exact_results_or_typed_refusals_atomically() {
 
 #[test]
 fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed() {
+    let _turn = crate::integration_support::file_turn();
     let valid_graph = simple_extrusion_graph();
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
@@ -2382,15 +2357,18 @@ fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed()
                 id: profile,
                 definition_id: definition,
                 name: "Spline sweep profile".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-3.0, -2.0], [4.0, -2.0], [4.0, 3.0], [-3.0, 3.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-3.0, -2.0],
+                    [4.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 3.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,
                 definition_id: definition,
                 name: "Straight path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: [0.0, 0.0],
                         end_mm: [20.0, 0.0],
@@ -2418,6 +2396,7 @@ fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed()
 
 #[test]
 fn worker_evaluates_circle_sketch_revolve_in_its_workplane_frame() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(60);
     let workplane = FeatureId(600);
     let sketch = FeatureId(601);
@@ -2478,6 +2457,7 @@ fn worker_evaluates_circle_sketch_revolve_in_its_workplane_frame() {
 
 #[test]
 fn worker_evaluates_compound_mixed_sketch_revolve_with_stable_persistence_and_undo() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(61);
     let workplane = FeatureId(610);
     let sketch_id = FeatureId(611);
@@ -2639,6 +2619,7 @@ fn worker_evaluates_compound_mixed_sketch_revolve_with_stable_persistence_and_un
 
 #[test]
 fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_identity() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(6);
     let revolve_profile = FeatureId(500);
     let revolve = FeatureId(501);
@@ -2659,9 +2640,7 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
                 id: revolve_profile,
                 definition_id: definition,
                 name: "Asymmetric revolve boundary".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[2.0, -4.0], [7.0, -3.0], [5.0, 6.0], [2.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[2.0, -4.0], [7.0, -3.0], [5.0, 6.0], [2.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: revolve,
@@ -2678,7 +2657,7 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
                 id: sweep_profile,
                 definition_id: definition,
                 name: "Curved sweep boundary".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [-2.0, -3.0],
@@ -2706,7 +2685,7 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
                 id: sweep_path,
                 definition_id: definition,
                 name: "Oblique sweep path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: [10.0, -5.0],
                         end_mm: [24.0, 17.0],
@@ -2727,17 +2706,23 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
                 id: loft_lower,
                 definition_id: definition,
                 name: "Lower spline".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-8.0, -5.0], [9.0, -4.0], [8.0, 6.0], [-7.0, 5.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -5.0],
+                    [9.0, -4.0],
+                    [8.0, 6.0],
+                    [-7.0, 5.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: loft_upper,
                 definition_id: definition,
                 name: "Upper spline".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-4.0, -3.0], [6.0, -2.0], [5.0, 4.0], [-3.0, 3.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-4.0, -3.0],
+                    [6.0, -2.0],
+                    [5.0, 4.0],
+                    [-3.0, 3.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: loft,
@@ -2783,6 +2768,7 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
 
 #[test]
 fn worker_evaluates_mixed_planar_profile_loft_as_one_exact_solid() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(97);
     let plane = FeatureId(969);
     let lower = FeatureId(970);
@@ -2939,6 +2925,7 @@ fn worker_evaluates_mixed_planar_profile_loft_as_one_exact_solid() {
 
 #[test]
 fn worker_evaluates_loft_with_matching_profile_holes_and_rejects_mismatched_wires() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(2021);
     let plane = FeatureId(20_210);
     let profiles = [FeatureId(20_211), FeatureId(20_212), FeatureId(20_213)];
@@ -3032,6 +3019,7 @@ fn worker_evaluates_loft_with_matching_profile_holes_and_rejects_mismatched_wire
 
 #[test]
 fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomically() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(202_100);
     let lower = FeatureId(202_101);
     let upper = FeatureId(202_102);
@@ -3048,25 +3036,34 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                 id: lower,
                 definition_id: definition,
                 name: "Lower guided section".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-8.0, -5.0], [8.0, -5.0], [8.0, 5.0], [-8.0, 5.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -5.0],
+                    [8.0, -5.0],
+                    [8.0, 5.0],
+                    [-8.0, 5.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(202_107),
                 definition_id: definition,
                 name: "Middle guided section".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-10.0, -2.0], [7.0, -6.0], [11.0, 4.0], [-3.0, 8.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-10.0, -2.0],
+                    [7.0, -6.0],
+                    [11.0, 4.0],
+                    [-3.0, 8.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: upper,
                 definition_id: definition,
                 name: "Upper guided section".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-5.0, -3.0], [5.0, -3.0], [5.0, 3.0], [-5.0, 3.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-5.0, -3.0],
+                    [5.0, -3.0],
+                    [5.0, 3.0],
+                    [-5.0, 3.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: guide,
@@ -3281,6 +3278,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
 
 #[test]
 fn worker_evaluates_mixed_spline_and_sketch_loft_in_shifted_rotated_frames() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(1975);
     let lower = FeatureId(19_750);
     let middle_plane = FeatureId(19_751);
@@ -3299,9 +3297,12 @@ fn worker_evaluates_mixed_spline_and_sketch_loft_in_shifted_rotated_frames() {
                 id: lower,
                 definition_id: definition,
                 name: "Legacy spline section".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-10.0, -6.0], [10.0, -6.0], [9.0, 7.0], [-8.0, 8.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-10.0, -6.0],
+                    [10.0, -6.0],
+                    [9.0, 7.0],
+                    [-8.0, 8.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: middle_plane,
@@ -3420,6 +3421,7 @@ fn worker_evaluates_mixed_spline_and_sketch_loft_in_shifted_rotated_frames() {
 
 #[test]
 fn planar_surface_body_round_trips_rebuilds_and_remains_distinct_from_a_solid() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(95);
     let profile = FeatureId(950);
     let surface = FeatureId(951);
@@ -3436,9 +3438,7 @@ fn planar_surface_body_round_trips_rebuilds_and_remains_distinct_from_a_solid() 
                 id: profile,
                 definition_id: definition,
                 name: "Surface boundary".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 25.0], [0.0, 25.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 25.0], [0.0, 25.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: surface,
@@ -3450,10 +3450,7 @@ fn planar_surface_body_round_trips_rebuilds_and_remains_distinct_from_a_solid() 
                 id: solid,
                 definition_id: definition,
                 name: "Comparison solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: dimension(5.0),
-                },
+                kind: FeatureKind::extrusion(profile, dimension(5.0)),
             },
         ]))
         .unwrap();
@@ -3549,6 +3546,7 @@ fn planar_surface_body_round_trips_rebuilds_and_remains_distinct_from_a_solid() 
 
 #[test]
 fn loft_surface_is_open_exact_geometry_and_planar_surface_rejects_profile_holes() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(2050);
     let lower = FeatureId(20_500);
     let upper = FeatureId(20_501);
@@ -3567,17 +3565,23 @@ fn loft_surface_is_open_exact_geometry_and_planar_surface_rejects_profile_holes(
                 id: lower,
                 definition_id: definition,
                 name: "Lower surface section".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-10.0, -5.0], [10.0, -5.0], [10.0, 5.0], [-10.0, 5.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-10.0, -5.0],
+                    [10.0, -5.0],
+                    [10.0, 5.0],
+                    [-10.0, 5.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: upper,
                 definition_id: definition,
                 name: "Upper surface section".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-6.0, -3.0], [6.0, -3.0], [6.0, 3.0], [-6.0, 3.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-6.0, -3.0],
+                    [6.0, -3.0],
+                    [6.0, 3.0],
+                    [-6.0, 3.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: surface,
@@ -3669,6 +3673,7 @@ fn loft_surface_is_open_exact_geometry_and_planar_surface_rejects_profile_holes(
 
 #[test]
 fn surface_trim_and_extend_round_trip_through_the_real_worker() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(2051);
     let target_profile = FeatureId(20_510);
     let cutter_profile = FeatureId(20_511);
@@ -3689,17 +3694,13 @@ fn surface_trim_and_extend_round_trip_through_the_real_worker() {
                 id: target_profile,
                 definition_id: definition,
                 name: "Target boundary".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 25.0], [0.0, 25.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 25.0], [0.0, 25.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: cutter_profile,
                 definition_id: definition,
                 name: "Cutter boundary".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 5.0], [30.0, 5.0], [30.0, 20.0], [10.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[[10.0, 5.0], [30.0, 5.0], [30.0, 20.0], [10.0, 20.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: target,
@@ -3736,10 +3737,7 @@ fn surface_trim_and_extend_round_trip_through_the_real_worker() {
                 id: solid,
                 definition_id: definition,
                 name: "Solid comparison".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: target_profile,
-                    height: dimension(5.0),
-                },
+                kind: FeatureKind::extrusion(target_profile, dimension(5.0)),
             },
         ]))
         .unwrap();
@@ -3828,6 +3826,7 @@ fn surface_trim_and_extend_round_trip_through_the_real_worker() {
 
 #[test]
 fn surface_knit_round_trips_and_real_worker_requires_connected_watertight_inputs() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(2052);
     let mut commands = vec![CanonicalCommand::CreateDefinition {
         id: definition,
@@ -3961,18 +3960,13 @@ fn surface_knit_round_trips_and_real_worker_requires_connected_watertight_inputs
             id: solid_profile,
             definition_id: definition,
             name: "Solid comparison profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: solid,
             definition_id: definition,
             name: "Solid comparison".into(),
-            kind: FeatureKind::Extrusion {
-                profile: solid_profile,
-                height: dimension(2.0),
-            },
+            kind: FeatureKind::extrusion(solid_profile, dimension(2.0)),
         },
         CanonicalCommand::CreateFeature {
             id: open_knit,
@@ -4108,6 +4102,7 @@ fn surface_knit_round_trips_and_real_worker_requires_connected_watertight_inputs
 
 #[test]
 fn surface_thicken_round_trips_and_real_worker_preserves_associative_identity() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(2053);
     let profile = FeatureId(20_550);
     let surface = FeatureId(20_551);
@@ -4125,9 +4120,7 @@ fn surface_thicken_round_trips_and_real_worker_preserves_associative_identity() 
                 id: profile,
                 definition_id: definition,
                 name: "Surface boundary".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: surface,
@@ -4139,18 +4132,13 @@ fn surface_thicken_round_trips_and_real_worker_preserves_associative_identity() 
                 id: solid_profile,
                 definition_id: definition,
                 name: "Solid comparison profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[30.0, 0.0], [32.0, 0.0], [32.0, 2.0], [30.0, 2.0]],
-                },
+                kind: FeatureKind::polygon(&[[30.0, 0.0], [32.0, 0.0], [32.0, 2.0], [30.0, 2.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: solid,
                 definition_id: definition,
                 name: "Solid comparison".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: solid_profile,
-                    height: dimension(2.0),
-                },
+                kind: FeatureKind::extrusion(solid_profile, dimension(2.0)),
             },
             CanonicalCommand::CreateFeature {
                 id: thicken,
@@ -4259,6 +4247,7 @@ fn surface_thicken_round_trips_and_real_worker_preserves_associative_identity() 
 
 #[test]
 fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(96);
     let profile = FeatureId(960);
     let offset = FeatureId(961);
@@ -4273,7 +4262,7 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
                 id: profile,
                 definition_id: definition,
                 name: "Line-arc capsule".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -4386,6 +4375,7 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
 
 #[test]
 fn worker_evaluates_framed_cubic_sketch_planar_offset() {
+    let _turn = crate::integration_support::file_turn();
     const DEFINITION: DefinitionId = DefinitionId(97);
     const WORKPLANE: FeatureId = FeatureId(970);
     const SKETCH: FeatureId = FeatureId(971);
@@ -4473,6 +4463,7 @@ fn worker_evaluates_framed_cubic_sketch_planar_offset() {
 
 #[test]
 fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
+    let _turn = crate::integration_support::file_turn();
     const DEFINITION: DefinitionId = DefinitionId(98);
     const WORKPLANE: FeatureId = FeatureId(980);
     const CIRCLE: FeatureId = FeatureId(981);
@@ -4655,6 +4646,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
 
 #[test]
 fn worker_preserves_large_bounded_rectangle_offset_through_graph_v6() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(99);
     let profile = FeatureId(990);
     let offset = FeatureId(991);
@@ -4670,9 +4662,7 @@ fn worker_preserves_large_bounded_rectangle_offset_through_graph_v6() {
                 id: profile,
                 definition_id: definition,
                 name: "Rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: offset,
@@ -4715,6 +4705,7 @@ fn worker_preserves_large_bounded_rectangle_offset_through_graph_v6() {
 
 #[test]
 fn worker_evaluates_signed_linear_intervals_through_one_graph_protocol() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(7);
     let workplane = FeatureId(600);
     let sketch_id = FeatureId(601);
@@ -4772,10 +4763,13 @@ fn worker_evaluates_signed_linear_intervals_through_one_graph_protocol() {
                 definition_id: definition,
                 name: "One-sided".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(10.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateFeature {
@@ -4783,10 +4777,13 @@ fn worker_evaluates_signed_linear_intervals_through_one_graph_protocol() {
                 definition_id: definition,
                 name: "Symmetric oblique".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::Vector([1.0, 0.0, 1.0]),
                     extent: FeatureExtent::Symmetric(dimension(10.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateFeature {
@@ -4794,13 +4791,16 @@ fn worker_evaluates_signed_linear_intervals_through_one_graph_protocol() {
                 definition_id: definition,
                 name: "Unequal bidirectional".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Bidirectional {
                         along: FeatureExtentEnd::Blind(dimension(7.0)),
                         opposite: FeatureExtentEnd::Blind(dimension(3.0)),
                     },
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -4878,6 +4878,7 @@ fn worker_evaluates_signed_linear_intervals_through_one_graph_protocol() {
 
 #[test]
 fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(88);
     let base_profile = FeatureId(880);
     let base = FeatureId(881);
@@ -4895,18 +4896,13 @@ fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
                 id: base_profile,
                 definition_id: definition,
                 name: "Base profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Base extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: base_profile,
-                    height: dimension(19.0),
-                },
+                kind: FeatureKind::extrusion(base_profile, dimension(19.0)),
             },
         ]))
         .unwrap();
@@ -4948,10 +4944,9 @@ fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
                 id: offset,
                 definition_id: definition,
                 name: "Positive top face offset".into(),
-                kind: FeatureKind::TopologyFaceOffset {
+                kind: FeatureKind::FaceOffset {
                     target: base,
-                    face: Some(top_face),
-                    profile_face: None,
+                    face: FaceRef::from(top_face),
                     distance: dimension(5.0),
                 },
             },
@@ -4959,18 +4954,13 @@ fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
                 id: cut_profile,
                 definition_id: definition,
                 name: "Interior cut profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[9.0, 7.0], [16.0, 7.0], [16.0, 12.0], [9.0, 12.0]],
-                },
+                kind: FeatureKind::polygon(&[[9.0, 7.0], [16.0, 7.0], [16.0, 12.0], [9.0, 12.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: cut,
                 definition_id: definition,
                 name: "Through all offset body".into(),
-                kind: FeatureKind::ThroughCut {
-                    target: offset,
-                    profile: cut_profile,
-                },
+                kind: FeatureKind::through_cut(offset, cut_profile),
             },
         ]))
         .unwrap();
@@ -5060,6 +5050,7 @@ fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
 
 #[test]
 fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
+    let _turn = crate::integration_support::file_turn();
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
 
@@ -5079,9 +5070,12 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: revolve_profile,
                 definition_id: revolve_definition,
                 name: "Revolve profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, -10.0], [10.0, -10.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, -10.0],
+                    [10.0, -10.0],
+                    [10.0, 10.0],
+                    [0.0, 10.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: revolve,
@@ -5098,18 +5092,13 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: revolve_cut_profile,
                 definition_id: revolve_definition,
                 name: "Revolve cut profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -5.0], [2.0, -5.0], [2.0, 5.0], [-2.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -5.0], [2.0, -5.0], [2.0, 5.0], [-2.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: revolve_cut,
                 definition_id: revolve_definition,
                 name: "Revolve through all".into(),
-                kind: FeatureKind::ThroughCut {
-                    target: revolve,
-                    profile: revolve_cut_profile,
-                },
+                kind: FeatureKind::through_cut(revolve, revolve_cut_profile),
             },
         ]))
         .unwrap();
@@ -5155,22 +5144,23 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: lower,
                 definition_id: loft_definition,
                 name: "Lower loft profile".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![
-                        [-10.0, -10.0],
-                        [10.0, -10.0],
-                        [10.0, 10.0],
-                        [-10.0, 10.0],
-                    ],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-10.0, -10.0],
+                    [10.0, -10.0],
+                    [10.0, 10.0],
+                    [-10.0, 10.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: upper,
                 definition_id: loft_definition,
                 name: "Upper loft profile".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-8.0, -8.0], [8.0, -8.0], [8.0, 8.0], [-8.0, 8.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -8.0],
+                    [8.0, -8.0],
+                    [8.0, 8.0],
+                    [-8.0, 8.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: loft,
@@ -5195,18 +5185,13 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: loft_cut_profile,
                 definition_id: loft_definition,
                 name: "Loft cut profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: loft_cut,
                 definition_id: loft_definition,
                 name: "Loft through all".into(),
-                kind: FeatureKind::ThroughCut {
-                    target: loft,
-                    profile: loft_cut_profile,
-                },
+                kind: FeatureKind::through_cut(loft, loft_cut_profile),
             },
         ]))
         .unwrap();
@@ -5297,18 +5282,13 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: imported_cut_profile,
                 definition_id: imported_definition,
                 name: "Imported cut profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
-                },
+                kind: FeatureKind::polygon(&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]),
             },
             CanonicalCommand::CreateFeature {
                 id: imported_cut,
                 definition_id: imported_definition,
                 name: "Imported through all".into(),
-                kind: FeatureKind::ThroughCut {
-                    target: imported,
-                    profile: imported_cut_profile,
-                },
+                kind: FeatureKind::through_cut(imported, imported_cut_profile),
             },
         ]))
         .unwrap();
@@ -5386,18 +5366,13 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: stale_profile,
                 definition_id: stale_definition,
                 name: "Stale imported cut profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
-                },
+                kind: FeatureKind::polygon(&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]),
             },
             CanonicalCommand::CreateFeature {
                 id: stale_cut,
                 definition_id: stale_definition,
                 name: "Stale imported through all".into(),
-                kind: FeatureKind::ThroughCut {
-                    target: stale_import_id,
-                    profile: stale_profile,
-                },
+                kind: FeatureKind::through_cut(stale_import_id, stale_profile),
             },
         ]))
         .unwrap();
@@ -5413,6 +5388,7 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
 
 #[test]
 fn worker_evaluates_open_and_closed_shell_directions_atomically() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(18);
     let profile = FeatureId(1_800);
     let base = FeatureId(1_801);
@@ -5459,18 +5435,13 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
                 id: profile,
                 definition_id: definition,
                 name: "Asymmetric rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Exact base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: dimension(19.0),
-                },
+                kind: FeatureKind::extrusion(profile, dimension(19.0)),
             },
         ]))
         .unwrap();
@@ -5500,14 +5471,13 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
                 "{direction:?} {} shell",
                 if *open { "open" } else { "closed" }
             ),
-            kind: FeatureKind::TopologyShell {
+            kind: FeatureKind::Shell {
                 target: base,
                 removed_faces: if *open {
-                    vec![opening.clone()]
+                    vec![FaceRef::from(opening.clone())]
                 } else {
                     Vec::new()
                 },
-                profile_faces: Vec::new(),
                 thickness: dimension(1.5),
                 direction: *direction,
             },
@@ -5562,7 +5532,7 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
     for (id, direction, open) in cases {
         assert!(matches!(
             reopened.feature(id).unwrap().kind(),
-            FeatureKind::TopologyShell {
+            FeatureKind::Shell {
                 removed_faces,
                 direction: actual,
                 ..
@@ -5579,10 +5549,9 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
                 id: FeatureId(1_808),
                 definition_id: definition,
                 name: "Invalid zero-thickness shell".into(),
-                kind: FeatureKind::TopologyShell {
+                kind: FeatureKind::Shell {
                     target: base,
                     removed_faces: Vec::new(),
-                    profile_faces: Vec::new(),
                     thickness: dimension(0.0),
                     direction: ketchup_core::document::ShellDirection::Outward,
                 },
@@ -5596,6 +5565,7 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
 
 #[test]
 fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atomically() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(19);
     let profile = FeatureId(1_900);
     let base = FeatureId(1_901);
@@ -5612,18 +5582,13 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                 id: profile,
                 definition_id: definition,
                 name: "Asymmetric rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Exact base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: dimension(19.0),
-                },
+                kind: FeatureKind::extrusion(profile, dimension(19.0)),
             },
         ]))
         .unwrap();
@@ -5650,10 +5615,9 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                 id: constant,
                 definition_id: definition,
                 name: "Constant fillet".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: base,
-                    edges: vec![edge.clone()],
-                    profile_edges: Vec::new(),
+                    edges: vec![EdgeRef::from(edge.clone())],
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.5),
                     fillet_radius_stations: Vec::new(),
@@ -5665,10 +5629,9 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                 id: variable,
                 definition_id: definition,
                 name: "Variable fillet".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: base,
-                    edges: vec![edge.clone()],
-                    profile_edges: Vec::new(),
+                    edges: vec![EdgeRef::from(edge.clone())],
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.5),
                     fillet_radius_stations: vec![
@@ -5758,10 +5721,9 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
             id: FeatureId(1_904),
             definition_id: definition,
             name: "Invalid variable fillet".into(),
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: base,
-                edges: vec![edge],
-                profile_edges: Vec::new(),
+                edges: vec![EdgeRef::from(edge)],
                 kind: EdgeFinishKind::Fillet,
                 amount: dimension(0.5),
                 fillet_radius_stations: vec![FilletRadiusStation {
@@ -5781,6 +5743,7 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
 
 #[test]
 fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(17);
     let profile = FeatureId(1_700);
     let base = FeatureId(1_701);
@@ -5800,18 +5763,13 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
                 id: profile,
                 definition_id: definition,
                 name: "Unequal rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Exact base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: dimension(19.0),
-                },
+                kind: FeatureKind::extrusion(profile, dimension(19.0)),
             },
         ]))
         .unwrap();
@@ -5876,10 +5834,9 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
 
     let advanced = |edge: &TopologicalElementRef,
                     face: &TopologicalElementRef,
-                    mode: ChamferMode| FeatureKind::TopologyEdgeFinish {
+                    mode: ChamferMode| FeatureKind::EdgeFinish {
         target: base,
-        edges: vec![edge.clone()],
-        profile_edges: Vec::new(),
+        edges: vec![EdgeRef::from(edge.clone())],
         kind: EdgeFinishKind::Chamfer,
         amount: dimension(0.75),
         fillet_radius_stations: Vec::new(),
@@ -5931,13 +5888,12 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
                 id: shared_face_edges,
                 definition_id: definition,
                 name: "Shared-side-face chamfer".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: base,
                     edges: shared_sides
                         .iter()
-                        .map(|selection| selection.edge.clone())
+                        .map(|selection| EdgeRef::from(selection.edge.clone()))
                         .collect(),
-                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Chamfer,
                     amount: dimension(0.25),
                     fillet_radius_stations: Vec::new(),
@@ -6021,6 +5977,7 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
 
 #[test]
 fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(8);
     let profile = FeatureId(700);
     let base = FeatureId(701);
@@ -6042,18 +5999,13 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 id: profile,
                 definition_id: definition,
                 name: "Unequal rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: base,
                 definition_id: definition,
                 name: "Exact base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: dimension(19.0),
-                },
+                kind: FeatureKind::extrusion(profile, dimension(19.0)),
             },
         ]))
         .unwrap();
@@ -6101,10 +6053,9 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 id: shell,
                 definition_id: definition,
                 name: "Selected-face shell".into(),
-                kind: FeatureKind::TopologyShell {
+                kind: FeatureKind::Shell {
                     target: base,
-                    removed_faces: faces.clone(),
-                    profile_faces: Vec::new(),
+                    removed_faces: faces.clone().into_iter().map(FaceRef::from).collect(),
                     thickness: dimension(1.5),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },
@@ -6113,10 +6064,9 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 id: fillet,
                 definition_id: definition,
                 name: "Selected-edge fillet".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: base,
-                    edges: vec![edges[0].clone()],
-                    profile_edges: Vec::new(),
+                    edges: vec![EdgeRef::from(edges[0].clone())],
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.75),
                     fillet_radius_stations: Vec::new(),
@@ -6128,10 +6078,9 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 id: chamfer,
                 definition_id: definition,
                 name: "Selected-edge chamfer".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: base,
-                    edges: edges.clone(),
-                    profile_edges: Vec::new(),
+                    edges: edges.clone().into_iter().map(EdgeRef::from).collect(),
                     kind: EdgeFinishKind::Chamfer,
                     amount: dimension(0.75),
                     fillet_radius_stations: Vec::new(),
@@ -6211,10 +6160,9 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             id: noncanonical_shell,
             definition_id: definition,
             name: "Noncanonical selected-face shell".into(),
-            kind: FeatureKind::TopologyShell {
+            kind: FeatureKind::Shell {
                 target: base,
-                removed_faces: reversed_faces,
-                profile_faces: Vec::new(),
+                removed_faces: reversed_faces.into_iter().map(FaceRef::from).collect(),
                 thickness: dimension(1.5),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },
@@ -6226,10 +6174,12 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             id: duplicate_chamfer,
             definition_id: definition,
             name: "Duplicate selected-edge chamfer".into(),
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: base,
-                edges: vec![edges[0].clone(), edges[0].clone()],
-                profile_edges: Vec::new(),
+                edges: vec![
+                    EdgeRef::from(edges[0].clone()),
+                    EdgeRef::from(edges[0].clone())
+                ],
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
@@ -6244,10 +6194,12 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             id: mixed_chamfer,
             definition_id: definition,
             name: "Mixed selected-edge chamfer".into(),
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: base,
-                edges: vec![faces[0].clone(), edges[0].clone()],
-                profile_edges: Vec::new(),
+                edges: vec![
+                    EdgeRef::from(faces[0].clone()),
+                    EdgeRef::from(edges[0].clone())
+                ],
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
@@ -6376,10 +6328,9 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             id: stale_finish,
             definition_id: definition,
             name: "Stale selected edge".into(),
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: base,
-                edges: vec![stale_edge],
-                profile_edges: Vec::new(),
+                edges: vec![EdgeRef::from(stale_edge)],
                 kind: EdgeFinishKind::Fillet,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
@@ -6404,6 +6355,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
 
 #[test]
 fn worker_preserves_cubic_sketch_region_hole_volume_and_result_identity() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(92);
     let workplane = FeatureId(920);
     let sketch_id = FeatureId(921);
@@ -6469,10 +6421,13 @@ fn worker_preserves_cubic_sketch_region_hole_volume_and_result_identity() {
                 definition_id: definition,
                 name: "Compound Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(12.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -6559,6 +6514,7 @@ fn worker_preserves_cubic_sketch_region_hole_volume_and_result_identity() {
 
 #[test]
 fn worker_cuts_a_compound_sketch_pocket_while_preserving_its_inner_island() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(93);
     let base_plane = FeatureId(929);
     let base_sketch_id = FeatureId(930);
@@ -6617,10 +6573,13 @@ fn worker_cuts_a_compound_sketch_pocket_while_preserving_its_inner_island() {
                 definition_id: definition,
                 name: "Base".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: base_sketch_id,
-                    region: base_region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: base_sketch_id,
+                        region: base_region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(10.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -6698,13 +6657,17 @@ fn worker_cuts_a_compound_sketch_pocket_while_preserving_its_inner_island() {
                 id: pocket,
                 definition_id: definition,
                 name: "Compound Pocket".into(),
-                kind: FeatureKind::SketchPocket(PocketSpec {
-                    target: base,
-                    sketch: pocket_sketch_id,
-                    region: pocket_region,
-                    support: Box::new(top),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: pocket_sketch_id,
+                        region: pocket_region,
+                    },
                     direction: FeatureDirection::OppositeNormal,
                     extent: FeatureExtent::Blind(dimension(4.0)),
+                    operation: PadOperation::Cut {
+                        target: base,
+                        start: CutStart::Support(Box::new(top)),
+                    },
                 }),
             },
         ]))
@@ -6731,6 +6694,7 @@ fn worker_cuts_a_compound_sketch_pocket_while_preserving_its_inner_island() {
 
 #[test]
 fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(800);
     let profile = FeatureId(801);
     let path = FeatureId(802);
@@ -6746,15 +6710,13 @@ fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
                 id: profile,
                 definition_id: definition,
                 name: "Small rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,
                 definition_id: definition,
                 name: "Line-cubic-line C1 path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -6828,6 +6790,7 @@ fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
 
 #[test]
 fn worker_evaluates_closed_non_planar_v12_sweep_with_mesh_and_step_round_trip() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(810);
     let profile = FeatureId(811);
     let path = FeatureId(812);
@@ -6869,9 +6832,7 @@ fn worker_evaluates_closed_non_planar_v12_sweep_with_mesh_and_step_round_trip() 
                 id: profile,
                 definition_id: definition,
                 name: "Spatial section".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,
@@ -6935,6 +6896,7 @@ fn worker_evaluates_closed_non_planar_v12_sweep_with_mesh_and_step_round_trip() 
 
 #[test]
 fn worker_evaluates_general_sketch_profiles_on_a_mixed_spatial_path() {
+    let _turn = crate::integration_support::file_turn();
     let spatial_segments = vec![
         SpatialPathSegment::Line {
             start_mm: [0.0, 0.0, 0.0],
@@ -7167,4 +7129,52 @@ fn worker_evaluates_general_sketch_profiles_on_a_mixed_spatial_path() {
     let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
     assert_eq!(package.topology_counts[4], 1);
     assert!(package.volume_mm3.is_finite() && package.volume_mm3 > 0.0);
+}
+
+#[test]
+fn a_closed_profile_drawn_either_way_round_extrudes_the_same_solid() {
+    let _turn = crate::integration_support::file_turn();
+    let definition = DefinitionId(1);
+    let square = [[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]];
+    let reversed = |points: &[[f64; 2]]| points.iter().rev().copied().collect::<Vec<_>>();
+    let graph = |profile: FeatureKind| {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Loop".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(1),
+                    definition_id: definition,
+                    name: "Profile".into(),
+                    kind: profile,
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(2),
+                    definition_id: definition,
+                    name: "Extrusion".into(),
+                    kind: FeatureKind::extrusion(FeatureId(1), dimension(10.0)),
+                },
+            ]))
+            .unwrap();
+        ExactBRepGraph::from_snapshot(&document.current(), definition, FeatureId(2))
+    };
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let volumes = [square.to_vec(), reversed(&square)].map(|points| {
+        let package = supervisor
+            .evaluate_exact_brep_graph(&graph(FeatureKind::polygon(&points)).unwrap())
+            .unwrap();
+        assert_eq!(package.topology_counts[4], 1);
+        package.volume_mm3
+    });
+    assert!((volumes[0] - 4_000.0).abs() <= 1.0e-7);
+    assert!((volumes[1] - volumes[0]).abs() <= 1.0e-7);
+    // Exact spline extrusion is not supported yet; loop direction must not be what
+    // stops a closed spline from compiling into the exact graph.
+    for points in [square.to_vec(), reversed(&square)] {
+        graph(FeatureKind::closed_spline(&points)).expect("closed spline in either direction");
+    }
 }

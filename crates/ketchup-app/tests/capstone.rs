@@ -4,7 +4,7 @@
 //! through the designed shell exactly as a user drives them, and every
 //! assertion reads document or camera state rather than painted text.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::{Key, Vec2};
 use harness::{Shell, ctrl};

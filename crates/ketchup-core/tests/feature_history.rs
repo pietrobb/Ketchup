@@ -28,9 +28,7 @@ fn stamp(document: &DocumentStore) -> (u64, String, usize, usize) {
 }
 
 fn profile() -> FeatureKind {
-    FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-    }
+    FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]])
 }
 
 fn seed_two_body_history() -> DocumentStore {
@@ -51,10 +49,7 @@ fn seed_two_body_history() -> DocumentStore {
                 id: BASE_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: BASE_PROFILE,
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(BASE_PROFILE, Dimension::from_decimal("5").unwrap()),
             },
             CanonicalCommand::CreateBody {
                 definition_id: DEFINITION,
@@ -76,10 +71,7 @@ fn seed_two_body_history() -> DocumentStore {
                 id: TOOL_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Tool extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: TOOL_PROFILE,
-                    height: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::extrusion(TOOL_PROFILE, Dimension::from_decimal("2").unwrap()),
             },
             CanonicalCommand::SetActiveBody {
                 definition_id: DEFINITION,
@@ -118,10 +110,7 @@ fn seed_single_body() -> DocumentStore {
                 id: BASE_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: BASE_PROFILE,
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(BASE_PROFILE, Dimension::from_decimal("5").unwrap()),
             },
         ]))
         .unwrap();

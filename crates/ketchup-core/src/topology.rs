@@ -10,7 +10,9 @@ const TOPOLOGICAL_REFERENCE_BINARY_V1: u16 = 1;
 const MAX_TOPOLOGICAL_REFERENCE_BYTES: usize = 128 * 1024;
 const MAX_TOPOLOGICAL_REFERENCE_TOKEN_BYTES: usize = 16 * 1024;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum TopologicalElementKind {
     Face,
     Edge,
@@ -37,7 +39,9 @@ impl TopologicalElementKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum TopologicalReferenceStability {
     Guaranteed,
     BestEffort,
@@ -90,7 +94,7 @@ impl fmt::Display for TopologicalReferenceError {
 
 impl std::error::Error for TopologicalReferenceError {}
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct TopologicalElementRef {
     pub schema: String,
     pub document_id: DocumentId,

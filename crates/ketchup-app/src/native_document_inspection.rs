@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use ketchup_core::document::FeatureKind;
+use ketchup_core::sketch::{PadOperation, PadProfile, PadSpec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDocumentInspection {
@@ -50,16 +51,19 @@ pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, 
     let snapshot = loaded.snapshot();
     let profiles = snapshot
         .features()
-        .filter(|feature| {
-            matches!(
-                feature.kind(),
-                FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
-            )
-        })
+        .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
         .count();
     let extrusions = snapshot
         .features()
-        .filter(|feature| matches!(feature.kind(), FeatureKind::Extrusion { .. }))
+        .filter(|feature| {
+            matches!(
+                feature.kind(),
+                FeatureKind::Pad(PadSpec {
+                    operation: PadOperation::NewBody,
+                    ..
+                })
+            )
+        })
         .count();
     let profile_extrusion_definition_ids = snapshot
         .definitions()
@@ -68,15 +72,19 @@ pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, 
                 let Some(feature) = snapshot.feature(*feature_id) else {
                     return false;
                 };
-                let FeatureKind::Extrusion { profile, .. } = feature.kind() else {
+                let FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(profile),
+                    operation: PadOperation::NewBody,
+                    ..
+                }) = feature.kind()
+                else {
                     return false;
                 };
                 snapshot.feature(*profile).is_some_and(|profile_feature| {
                     profile_feature.definition_id() == definition.id()
                         && matches!(
                             profile_feature.kind(),
-                            FeatureKind::Profile { .. }
-                                | FeatureKind::SegmentProfile { closed: true, .. }
+                            FeatureKind::Profile { closed: true, .. }
                         )
                 })
             })

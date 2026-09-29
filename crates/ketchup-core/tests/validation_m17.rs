@@ -1986,24 +1986,22 @@ fn circular_drill_document_at(center: [f64; 2]) -> DocumentStore {
                 id: GRAPH_BASE_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "100 x 50 timber profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BASE_BODY,
                 definition_id: GRAPH_DEFINITION,
                 name: "1000 mm timber stock".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: GRAPH_BASE_PROFILE,
-                    height: Dimension::from_decimal("1000").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    GRAPH_BASE_PROFILE,
+                    Dimension::from_decimal("1000").unwrap(),
+                ),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_TOOL_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "10 mm drilling profile".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         arc(east, north),
                         arc(north, west),
@@ -2017,11 +2015,11 @@ fn circular_drill_document_at(center: [f64; 2]) -> DocumentStore {
                 id: GRAPH_BOOLEAN,
                 definition_id: GRAPH_DEFINITION,
                 name: "50 mm circular drilling".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: GRAPH_BASE_BODY,
-                    profile: GRAPH_TOOL_PROFILE,
-                    depth: Dimension::from_decimal("50").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    GRAPH_BASE_BODY,
+                    GRAPH_TOOL_PROFILE,
+                    Dimension::from_decimal("50").unwrap(),
+                ),
             },
             occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
             occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
@@ -2052,42 +2050,40 @@ fn rectangular_profile_removal_document(through: bool) -> DocumentStore {
                 id: GRAPH_BASE_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "100 x 50 timber profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BASE_BODY,
                 definition_id: GRAPH_DEFINITION,
                 name: "1000 mm timber stock".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: GRAPH_BASE_PROFILE,
-                    height: Dimension::from_decimal("1000").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    GRAPH_BASE_PROFILE,
+                    Dimension::from_decimal("1000").unwrap(),
+                ),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_TOOL_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "20 x 15 rectangular profile cut".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 10.0], [30.0, 10.0], [30.0, 25.0], [10.0, 25.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [10.0, 10.0],
+                    [30.0, 10.0],
+                    [30.0, 25.0],
+                    [10.0, 25.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BOOLEAN,
                 definition_id: GRAPH_DEFINITION,
                 name: "20 mm rectangular profile cut".to_owned(),
                 kind: if through {
-                    FeatureKind::ThroughCut {
-                        target: GRAPH_BASE_BODY,
-                        profile: GRAPH_TOOL_PROFILE,
-                    }
+                    FeatureKind::through_cut(GRAPH_BASE_BODY, GRAPH_TOOL_PROFILE)
                 } else {
-                    FeatureKind::Pocket {
-                        target: GRAPH_BASE_BODY,
-                        profile: GRAPH_TOOL_PROFILE,
-                        depth: Dimension::from_decimal("20").unwrap(),
-                    }
+                    FeatureKind::pocket(
+                        GRAPH_BASE_BODY,
+                        GRAPH_TOOL_PROFILE,
+                        Dimension::from_decimal("20").unwrap(),
+                    )
                 },
             },
             occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
@@ -2111,24 +2107,22 @@ fn arc_profile_cut_document() -> DocumentStore {
                 id: GRAPH_BASE_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "100 x 50 timber profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BASE_BODY,
                 definition_id: GRAPH_DEFINITION,
                 name: "1000 mm timber stock".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: GRAPH_BASE_PROFILE,
-                    height: Dimension::from_decimal("1000").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    GRAPH_BASE_PROFILE,
+                    Dimension::from_decimal("1000").unwrap(),
+                ),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_TOOL_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "Arc profile cut".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [10.0, 10.0],
@@ -2156,11 +2150,11 @@ fn arc_profile_cut_document() -> DocumentStore {
                 id: GRAPH_BOOLEAN,
                 definition_id: GRAPH_DEFINITION,
                 name: "18 mm arc profile cut".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: GRAPH_BASE_BODY,
-                    profile: GRAPH_TOOL_PROFILE,
-                    depth: Dimension::from_decimal("18").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    GRAPH_BASE_BODY,
+                    GRAPH_TOOL_PROFILE,
+                    Dimension::from_decimal("18").unwrap(),
+                ),
             },
             occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
             occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
@@ -2183,42 +2177,38 @@ fn irregular_profile_cut_document() -> DocumentStore {
                 id: GRAPH_BASE_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "100 x 50 timber profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BASE_BODY,
                 definition_id: GRAPH_DEFINITION,
                 name: "1000 mm timber stock".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: GRAPH_BASE_PROFILE,
-                    height: Dimension::from_decimal("1000").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    GRAPH_BASE_PROFILE,
+                    Dimension::from_decimal("1000").unwrap(),
+                ),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_TOOL_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "Irregular profile cut".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [10.0, 10.0],
-                        [40.0, 10.0],
-                        [40.0, 20.0],
-                        [25.0, 30.0],
-                        [10.0, 20.0],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [10.0, 10.0],
+                    [40.0, 10.0],
+                    [40.0, 20.0],
+                    [25.0, 30.0],
+                    [10.0, 20.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BOOLEAN,
                 definition_id: GRAPH_DEFINITION,
                 name: "18 mm irregular profile cut".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: GRAPH_BASE_BODY,
-                    profile: GRAPH_TOOL_PROFILE,
-                    depth: Dimension::from_decimal("18").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    GRAPH_BASE_BODY,
+                    GRAPH_TOOL_PROFILE,
+                    Dimension::from_decimal("18").unwrap(),
+                ),
             },
             occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
             occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
@@ -2241,35 +2231,31 @@ fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
                 id: GRAPH_BASE_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "Base profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BASE_BODY,
                 definition_id: GRAPH_DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: GRAPH_BASE_PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    GRAPH_BASE_PROFILE,
+                    Dimension::from_decimal("10").unwrap(),
+                ),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_TOOL_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "Tool profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[8.0, 0.0], [10.0, 0.0], [10.0, 10.0], [8.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[8.0, 0.0], [10.0, 0.0], [10.0, 10.0], [8.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_TOOL_BODY,
                 definition_id: GRAPH_DEFINITION,
                 name: "Tool extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: GRAPH_TOOL_PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    GRAPH_TOOL_PROFILE,
+                    Dimension::from_decimal("10").unwrap(),
+                ),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BOOLEAN,
@@ -2380,18 +2366,16 @@ fn straight_timber_document() -> DocumentStore {
                 id: EXACT_PROFILE,
                 definition_id: EXACT_DEFINITION,
                 name: "100 x 50 profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXACT_BODY,
                 definition_id: EXACT_DEFINITION,
                 name: "1000 mm stock".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: EXACT_PROFILE,
-                    height: Dimension::from_decimal("1000").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    EXACT_PROFILE,
+                    Dimension::from_decimal("1000").unwrap(),
+                ),
             },
             occurrence(EXACT_LEFT, EXACT_DEFINITION, 0.0),
             occurrence(EXACT_RIGHT, EXACT_DEFINITION, 200.0),
@@ -2414,18 +2398,13 @@ fn exact_only_document() -> DocumentStore {
                 id: EXACT_PROFILE,
                 definition_id: EXACT_DEFINITION,
                 name: "Exact profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXACT_BODY,
                 definition_id: EXACT_DEFINITION,
                 name: "Exact body".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: EXACT_PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(EXACT_PROFILE, Dimension::from_decimal("10").unwrap()),
             },
             occurrence(EXACT_LEFT, EXACT_DEFINITION, 0.0),
             occurrence(EXACT_RIGHT, EXACT_DEFINITION, 20.0),
@@ -2461,18 +2440,13 @@ fn mixed_document() -> DocumentStore {
                 id: EXACT_PROFILE,
                 definition_id: EXACT_DEFINITION,
                 name: "Exact profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXACT_BODY,
                 definition_id: EXACT_DEFINITION,
                 name: "Exact body".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: EXACT_PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(EXACT_PROFILE, Dimension::from_decimal("10").unwrap()),
             },
             occurrence(EXACT_LEFT, EXACT_DEFINITION, 0.0),
             occurrence(EXACT_RIGHT, EXACT_DEFINITION, 20.0),

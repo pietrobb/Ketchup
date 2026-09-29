@@ -14,6 +14,7 @@ use crate::exact_validation::{
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::joinery::{DowelHole, project_dowel_joint_contract};
 use crate::prismatic::TolerancePolicy;
+use crate::sketch::{PadOperation, PadSpec};
 use crate::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
     ValidationState,
@@ -3892,15 +3893,21 @@ fn local_dimensions(
             extrusion_id,
             ..
         } => {
-            let FeatureKind::Profile { points_mm } = snapshot
+            let Some(points_mm) = snapshot
                 .feature(*profile_id)
                 .filter(|feature| feature.definition_id() == *definition_id)
                 .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?
                 .kind()
+                .polygon_points()
             else {
                 return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
             };
-            let FeatureKind::Extrusion { profile, height } = snapshot
+            let FeatureKind::Pad(
+                pad @ PadSpec {
+                    operation: PadOperation::NewBody,
+                    ..
+                },
+            ) = snapshot
                 .feature(*extrusion_id)
                 .filter(|feature| feature.definition_id() == *definition_id)
                 .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?
@@ -3908,7 +3915,10 @@ fn local_dimensions(
             else {
                 return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
             };
-            if profile != profile_id {
+            let Some((profile, height)) = pad.blind_along_normal() else {
+                return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+            };
+            if profile != *profile_id {
                 return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
             }
             points_mm

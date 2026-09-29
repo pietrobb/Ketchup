@@ -1,7 +1,9 @@
 //! Test doubles for code that needs exact evaluation results without running
-//! the OCCT worker. Enabled by the `testing` feature; never used by the product.
+//! the OCCT worker, a way to write invalid saved documents, and a way to compare a
+//! model built by commands with the same model read from a committed file. Enabled by
+//! the `testing` feature; never used by the product.
 
-use crate::document::{DefinitionId, FeatureId, Snapshot};
+use crate::document::{DefinitionId, DocumentId, DocumentStore, FeatureId, Snapshot};
 use crate::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use crate::exact_product::{
     ExactBRepGraphFaceEvidence, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
@@ -126,4 +128,45 @@ pub fn box_package(
         },
     )
     .map(ExactBodyPackage::Graph)
+}
+
+/// Returns `snapshot` as if it belonged to document `document_id`. Every new document
+/// gets its own identity, so a model built by commands in a test matches a committed
+/// file only once both carry the identity stored in that file.
+///
+/// # Panics
+/// Panics when `snapshot` stops being a valid document, which a new identity cannot cause.
+#[must_use]
+pub fn with_document_id(snapshot: &Snapshot, document_id: DocumentId) -> Snapshot {
+    let mut product = snapshot.product().clone();
+    product.document_id = document_id;
+    DocumentStore::from_product(snapshot.revision_id(), product)
+        .expect("a document stays valid under another identity")
+        .current()
+}
+
+/// Edits the snapshot stored in `saved` (the output of `persistence::save`), a CBOR map
+/// `{revision_id, product}`, and reseals the checksum, so a test can hand the loader data
+/// that no command would produce. Map keys are the serde field names of the document types.
+#[must_use]
+pub fn rewrite_saved_snapshot(saved: &[u8], edit: impl FnOnce(&mut ciborium::Value)) -> Vec<u8> {
+    crate::persistence::snapshot_codec::rewrite(saved, edit)
+}
+
+/// Returns the entry of a CBOR map by text key or integer key.
+///
+/// # Panics
+/// Panics when `value` is not a map or has no such entry.
+pub fn cbor_entry(
+    value: &mut ciborium::Value,
+    key: impl Into<ciborium::Value>,
+) -> &mut ciborium::Value {
+    let key = key.into();
+    value
+        .as_map_mut()
+        .expect("a CBOR map")
+        .iter_mut()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, entry)| entry)
+        .unwrap_or_else(|| panic!("CBOR map has no entry {key:?}"))
 }

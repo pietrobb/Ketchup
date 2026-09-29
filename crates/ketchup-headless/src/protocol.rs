@@ -2113,9 +2113,10 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|feature| feature["kind"] == "Pocket")
-                .count(),
-            1
+                .filter(|feature| feature["kind"] == "Pad")
+                .map(|feature| feature["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["Wall feature", "Opening"]
         );
 
         let undone = request(
@@ -2386,18 +2387,18 @@ mod tests {
                     id: profile,
                     definition_id: definition,
                     name: "20x10 profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-                    },
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [20.0, 0.0],
+                        [20.0, 10.0],
+                        [0.0, 10.0],
+                    ]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: solid,
                     definition_id: definition,
                     name: "20x10x5 target".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile,
-                        height: Dimension::new("5", 5.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(profile, Dimension::new("5", 5.0).unwrap()),
                 },
             ]))
             .unwrap();
@@ -2643,7 +2644,7 @@ mod tests {
                     id: profile,
                     definition_id: definition,
                     name: "Circular section".into(),
-                    kind: FeatureKind::SegmentProfile {
+                    kind: FeatureKind::Profile {
                         segments: vec![
                             ProfileSegment::CircularArc {
                                 start_mm: [10.0, 0.0],
@@ -2665,10 +2666,7 @@ mod tests {
                     id: solid,
                     definition_id: definition,
                     name: "Cylinder".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile,
-                        height: Dimension::new("20", 20.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(profile, Dimension::new("20", 20.0).unwrap()),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: occurrence,
@@ -2779,18 +2777,18 @@ mod tests {
                     id: profile,
                     definition_id: definition,
                     name: "80x40 profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]],
-                    },
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [80.0, 0.0],
+                        [80.0, 40.0],
+                        [0.0, 40.0],
+                    ]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: solid,
                     definition_id: definition,
                     name: "80x40x12 bracket".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile,
-                        height: Dimension::new("12", 12.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(profile, Dimension::new("12", 12.0).unwrap()),
                 },
             ]))
             .unwrap();

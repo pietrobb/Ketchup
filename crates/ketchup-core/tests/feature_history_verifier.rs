@@ -27,9 +27,7 @@ fn stamp(document: &DocumentStore) -> (u64, String, usize, usize) {
 }
 
 fn profile(size: f64) -> FeatureKind {
-    FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]],
-    }
+    FeatureKind::polygon(&[[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]])
 }
 
 fn seed_single_body() -> DocumentStore {
@@ -50,10 +48,7 @@ fn seed_single_body() -> DocumentStore {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("5").unwrap()),
             },
         ]))
         .unwrap();
@@ -106,19 +101,13 @@ fn seed_permuted(reverse: bool) -> DocumentStore {
         id: FeatureId(11),
         definition_id: DEFINITION,
         name: "Extrusion A".to_owned(),
-        kind: FeatureKind::Extrusion {
-            profile: FeatureId(10),
-            height: Dimension::from_decimal("1").unwrap(),
-        },
+        kind: FeatureKind::extrusion(FeatureId(10), Dimension::from_decimal("1").unwrap()),
     };
     let extrusion_b = CanonicalCommand::CreateFeature {
         id: FeatureId(21),
         definition_id: DEFINITION,
         name: "Extrusion B".to_owned(),
-        kind: FeatureKind::Extrusion {
-            profile: FeatureId(20),
-            height: Dimension::from_decimal("2").unwrap(),
-        },
+        kind: FeatureKind::extrusion(FeatureId(20), Dimension::from_decimal("2").unwrap()),
     };
     let commands = if reverse {
         vec![profile_b, profile_a, extrusion_b, extrusion_a]
@@ -189,10 +178,7 @@ fn hidden_body_selection_and_cancel_remain_observational_and_isolated() {
                 id: FeatureId(21),
                 definition_id: DEFINITION,
                 name: "Hidden extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(20),
-                    height: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(20), Dimension::from_decimal("2").unwrap()),
             },
             CanonicalCommand::SetActiveBody {
                 definition_id: DEFINITION,

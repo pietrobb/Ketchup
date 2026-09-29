@@ -1,3 +1,4 @@
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeSet;
 
 use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest};
@@ -232,18 +233,13 @@ fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Exact mechanism body".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateGroup {
                 id: COMPONENT_GROUP,
@@ -1231,7 +1227,7 @@ fn helix_path_is_a_persistent_non_solid_construction_feature() {
     ));
     assert!(!candidate.features().any(|feature| matches!(
         feature.kind(),
-        FeatureKind::Sweep { .. } | FeatureKind::SegmentProfile { .. }
+        FeatureKind::Sweep { .. } | FeatureKind::Profile { .. }
     )));
 
     document.apply_batch(&batch).unwrap();
@@ -1959,34 +1955,30 @@ fn same_program_boolean_resolves_host_assigned_body_outputs_atomically() {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Target profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Target body".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("10", 10.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(3),
                 definition_id: DefinitionId(1),
                 name: "First opening".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[2.0, 2.0], [12.0, 2.0], [12.0, 12.0], [2.0, 12.0]],
-                },
+                kind: FeatureKind::polygon(&[[2.0, 2.0], [12.0, 2.0], [12.0, 12.0], [2.0, 12.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: DefinitionId(1),
                 name: "Second opening".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[20.0, 10.0], [30.0, 10.0], [30.0, 20.0], [20.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [20.0, 10.0],
+                    [30.0, 10.0],
+                    [30.0, 20.0],
+                    [20.0, 20.0],
+                ]),
             },
         ]))
         .unwrap();
@@ -2106,18 +2098,13 @@ fn same_program_set_dimension_updates_existing_boolean_inputs_atomically() {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Adjustable body".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("10", 10.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(3),
@@ -2175,7 +2162,7 @@ fn same_program_set_dimension_updates_existing_boolean_inputs_atomically() {
     let candidate = document.preview_batch(&batch).unwrap();
     assert!(matches!(
         candidate.feature(FeatureId(2)).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 20.0
     ));
     assert!(matches!(
         candidate.feature(FeatureId(4)).unwrap().kind(),
@@ -2254,11 +2241,15 @@ fn create_part_sketch_and_pocket_resolve_typed_program_outputs_atomically() {
     let candidate = document.preview_batch(&batch).unwrap();
     assert!(matches!(
         candidate.feature(FeatureId(6)).unwrap().kind(),
-        FeatureKind::Pocket {
-            target: FeatureId(3),
-            profile: FeatureId(5),
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(FeatureId(5)),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::Cut {
+                target: FeatureId(3),
+                ..
+            },
             ..
-        }
+        })
     ));
     ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(6)).unwrap();
 
@@ -2374,11 +2365,15 @@ fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
     let candidate = document.preview_batch(&batch).unwrap();
     assert!(matches!(
         candidate.feature(FeatureId(9)).unwrap().kind(),
-        FeatureKind::Pocket {
-            target: FeatureId(6),
-            profile: FeatureId(8),
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(FeatureId(8)),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::Cut {
+                target: FeatureId(6),
+                ..
+            },
             ..
-        }
+        })
     ));
     ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(9)).unwrap();
 }
@@ -2440,11 +2435,15 @@ fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one
     assert_eq!(after_move.features().count(), 6);
     assert!(matches!(
         after_move.feature(FeatureId(6)).unwrap().kind(),
-        FeatureKind::Pocket {
-            target: FeatureId(3),
-            profile: FeatureId(5),
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(FeatureId(5)),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::Cut {
+                target: FeatureId(3),
+                ..
+            },
             ..
-        }
+        })
     ));
     ExactBRepGraph::from_snapshot(&after_move, DefinitionId(1), FeatureId(6)).unwrap();
 }
@@ -2652,7 +2651,12 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
             .filter(|command| matches!(
                 command,
                 CanonicalCommand::CreateFeature {
-                    kind: FeatureKind::Pocket { .. },
+                    kind: FeatureKind::Pad(PadSpec {
+                        profile: PadProfile::Feature(_),
+                        extent: FeatureExtent::Blind(_),
+                        operation: PadOperation::Cut { .. },
+                        ..
+                    }),
                     ..
                 }
             ))
@@ -2683,13 +2687,23 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
                 .feature(binding.first_pocket_feature_id)
                 .unwrap()
                 .kind(),
-            FeatureKind::Pocket { .. }
+            FeatureKind::Pad(PadSpec {
+                profile: PadProfile::Feature(_),
+                extent: FeatureExtent::Blind(_),
+                operation: PadOperation::Cut { .. },
+                ..
+            })
         ) && matches!(
             committed
                 .feature(binding.second_pocket_feature_id)
                 .unwrap()
                 .kind(),
-            FeatureKind::Pocket { .. }
+            FeatureKind::Pad(PadSpec {
+                profile: PadProfile::Feature(_),
+                extent: FeatureExtent::Blind(_),
+                operation: PadOperation::Cut { .. },
+                ..
+            })
         )
     }));
     let projection =
@@ -2751,7 +2765,12 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
             .filter(|command| matches!(
                 command,
                 CanonicalCommand::CreateFeature {
-                    kind: FeatureKind::Pocket { .. },
+                    kind: FeatureKind::Pad(PadSpec {
+                        profile: PadProfile::Feature(_),
+                        extent: FeatureExtent::Blind(_),
+                        operation: PadOperation::Cut { .. },
+                        ..
+                    }),
                     ..
                 }
             ))
@@ -3240,7 +3259,12 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
             .filter(|command| matches!(
                 command,
                 CanonicalCommand::CreateFeature {
-                    kind: FeatureKind::Pocket { .. },
+                    kind: FeatureKind::Pad(PadSpec {
+                        profile: PadProfile::Feature(_),
+                        extent: FeatureExtent::Blind(_),
+                        operation: PadOperation::Cut { .. },
+                        ..
+                    }),
                     ..
                 }
             ))
@@ -3262,7 +3286,15 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
     assert_eq!(
         committed
             .features()
-            .filter(|feature| matches!(feature.kind(), FeatureKind::Pocket { .. }))
+            .filter(|feature| matches!(
+                feature.kind(),
+                FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(_),
+                    extent: FeatureExtent::Blind(_),
+                    operation: PadOperation::Cut { .. },
+                    ..
+                })
+            ))
             .count(),
         13
     );
@@ -3627,7 +3659,12 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
             .filter(|id| {
                 matches!(
                     snapshot.feature(*id).unwrap().kind(),
-                    FeatureKind::Pocket { .. }
+                    FeatureKind::Pad(PadSpec {
+                        profile: PadProfile::Feature(_),
+                        extent: FeatureExtent::Blind(_),
+                        operation: PadOperation::Cut { .. },
+                        ..
+                    })
                 )
             })
             .collect::<Vec<_>>()
@@ -3709,7 +3746,12 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
             && pair["physical_probe_coincidence"]["maximum_endpoint_error_mm"] == 0.0
     }));
     let profile_id = match bound.feature(first_pockets[0]).unwrap().kind() {
-        FeatureKind::Pocket { profile, .. } => *profile,
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(profile),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::Cut { .. },
+            ..
+        }) => *profile,
         _ => unreachable!(),
     };
     let revision_before_invalid_move = bound.revision_id();
@@ -4269,18 +4311,13 @@ fn missing_topology_evidence_cannot_authorize_a_finish() {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("30", 30.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("30", 30.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
@@ -4742,17 +4779,13 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
                 id: FeatureId(1),
                 definition_id: definition,
                 name: "Outer profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: definition,
                 name: "Cutter profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[5.0, -5.0], [15.0, -5.0], [15.0, 15.0], [5.0, 15.0]],
-                },
+                kind: FeatureKind::polygon(&[[5.0, -5.0], [15.0, -5.0], [15.0, 15.0], [5.0, 15.0]]),
             },
         ]))
         .unwrap();

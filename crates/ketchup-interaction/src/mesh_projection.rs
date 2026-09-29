@@ -302,7 +302,9 @@ pub fn canonical_profile_feature_mesh(
 ) -> Option<CanonicalPlanarProfileMesh> {
     let feature = snapshot.feature(feature_id)?;
     match feature.kind() {
-        FeatureKind::SegmentProfile {
+        // A rectangle's prism is its own box, drawn and picked face by face.
+        kind if kind.is_axis_aligned_rectangle() => None,
+        FeatureKind::Profile {
             segments,
             closed: true,
         } => {
@@ -407,6 +409,8 @@ fn segment_profile_boundary(segments: &[ProfileSegment]) -> Option<Vec<[f64; 2]>
                     ]
                 })
                 .collect(),
+            // Splines are drawn from the exact kernel's tessellation only.
+            ProfileSegment::Spline { .. } => return None,
         };
         if boundary.is_empty() {
             boundary.extend(sampled);

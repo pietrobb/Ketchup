@@ -1,7 +1,8 @@
 //! Program 3 rigid-assembly authoring replayed offscreen through AccessKit.
 
-mod harness;
+use crate::harness;
 
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -263,18 +264,13 @@ fn write_drag_fixture(path: &Path, mover_transform: Transform, joint_kind: Assem
                 id: profile,
                 definition_id: definition,
                 name: "Unit profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: extrusion,
                 definition_id: definition,
                 name: "Unit body".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::from_decimal("1").unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::from_decimal("1").unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: obstacle,
@@ -1655,7 +1651,7 @@ fn definition_edit_requires_reviewed_assembly_recompute_before_solve() {
     assert_eq!(shell.app().document_revision(), definition_revision + 1);
     assert!(matches!(
         shell.app().document_snapshot().feature(FeatureId(2)).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 120.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 120.0
     ));
     wait_for_stable_references(&mut shell);
     open_assembly_editor(&mut shell);
@@ -1892,7 +1888,7 @@ fn lost_reference_solve_after_open_is_fail_closed_without_exact_results() {
             .feature(FeatureId(2))
             .unwrap()
             .kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 120.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 120.0
     ));
     open_assembly_editor(&mut reopened);
     let before_lost = (

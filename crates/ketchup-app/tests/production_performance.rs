@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use harness::Shell;
 use ketchup_application::{DocumentSession, SessionSettings};
@@ -129,8 +129,11 @@ while ($pending.Count -gt 0) {{
 }}
 [uint64]$sum = 0
 foreach ($id in $ids) {{
-    $process = Get-Process -Id $id -ErrorAction Stop
-    $sum = $sum + [uint64]$process.PeakPagedMemorySize64
+    # A descendant that exited after the listing no longer holds memory.
+    $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if ($null -ne $process) {{
+        $sum = $sum + [uint64]$process.PeakPagedMemorySize64
+    }}
 }}
 [Console]::Write($sum)"#,
         std::process::id()
@@ -269,7 +272,11 @@ fn verify_memory_high_water_observes_child_allocation() {
     let release_path = directory.path().join("release");
     let high_water_before = process_tree_memory_high_water_bytes();
     let child = Command::new(std::env::current_exe().expect("test executable path"))
-        .args(["--exact", "memory_high_water_probe_child", "--nocapture"])
+        .args([
+            "--exact",
+            &crate::integration_support::test_name(module_path!(), "memory_high_water_probe_child"),
+            "--nocapture",
+        ])
         .env(MEMORY_PROBE_ENV, "1")
         .env(MEMORY_PROBE_READY_ENV, &ready_path)
         .env(MEMORY_PROBE_RELEASE_ENV, &release_path)
@@ -301,11 +308,13 @@ fn verify_memory_high_water_observes_child_allocation() {
 
 #[test]
 fn process_tree_memory_high_water_observes_child_allocation() {
+    let _turn = crate::integration_support::file_turn();
     verify_memory_high_water_observes_child_allocation();
 }
 
 #[test]
 fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_parity_claims() {
+    let _turn = crate::integration_support::file_turn();
     let worker = exact_worker_path();
     assert!(
         worker.is_file(),

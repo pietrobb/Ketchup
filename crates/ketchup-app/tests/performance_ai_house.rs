@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::AppCommand;

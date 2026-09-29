@@ -14,12 +14,12 @@ pub const MAX_SLOT_PATH_SEGMENTS: usize = 64;
 pub const MAX_RULE_OUTPUT_DEPTH: usize = 64;
 pub const MAX_RULE_OUTPUTS: usize = 16_384;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ValueType {
     Number,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PortSpec {
     name: String,
     value_type: ValueType,
@@ -46,7 +46,7 @@ impl PortSpec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExpressionAst {
     Number(f64),
     Node(NodeId),
@@ -121,7 +121,9 @@ impl ExpressionAst {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SlotSegment {
     pub producer_rule_id: NodeId,
     pub output_port: String,
@@ -149,7 +151,9 @@ impl SlotSegment {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SlotPath(Vec<SlotSegment>);
 
 impl SlotPath {
@@ -169,7 +173,9 @@ impl SlotPath {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DerivedIdentity {
     pub root_rule_node_id: NodeId,
     pub slot_path: SlotPath,
@@ -187,12 +193,14 @@ impl DerivedIdentity {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum OverrideMergePolicy {
     Replace,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct OverrideParameterSpec {
     name: String,
     merge_policy: OverrideMergePolicy,
@@ -219,7 +227,7 @@ impl OverrideParameterSpec {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RuleOutput {
     segment: SlotSegment,
     children: Vec<RuleOutput>,
@@ -256,24 +264,26 @@ impl RuleOutput {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SlotResolution {
     Resolved,
     Ambiguous { segment_index: usize },
     Lost { segment_index: usize },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum EvaluatorNodeKind {
     Parameter {
         value: Dimension,
     },
     Expression {
         source: String,
+        #[serde(serialize_with = "crate::document::derived")]
         ast: ExpressionAst,
     },
     Rule {
         source: String,
+        #[serde(serialize_with = "crate::document::derived")]
         ast: ExpressionAst,
         outputs: Vec<RuleOutput>,
         allowed_parameters: Vec<OverrideParameterSpec>,
@@ -299,7 +309,7 @@ impl EvaluatorNodeKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EvaluatorNode {
     pub(crate) id: NodeId,
     pub(crate) name: String,
@@ -476,7 +486,7 @@ impl EvaluatorNode {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CanonicalOverride {
     pub id: u64,
     pub target: DerivedIdentity,
@@ -516,7 +526,7 @@ impl CanonicalOverride {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct EvaluationIdentity {
     pub evaluator: String,
     pub schema: String,
@@ -549,41 +559,41 @@ impl EvaluationIdentity {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum DiagnosticCode {
     DependencyFailed,
     DivisionByZero,
     NonFiniteResult,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct EvaluationDiagnostic {
     pub node_id: NodeId,
     pub code: DiagnosticCode,
     pub message: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub enum EvaluationStatus {
     Evaluated(f64),
     Error(Vec<EvaluationDiagnostic>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct NodeEvaluation {
     pub status: EvaluationStatus,
     pub input_digest: String,
     pub result_digest: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct DerivedOutput {
     pub value: f64,
     pub input_digest: String,
     pub result_digest: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct EvaluationReport {
     pub identity: EvaluationIdentity,
     pub document_id: Option<crate::document::DocumentId>,

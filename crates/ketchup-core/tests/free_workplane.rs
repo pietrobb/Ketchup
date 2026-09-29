@@ -9,6 +9,7 @@ use ketchup_core::persistence;
 use ketchup_core::sketch::{
     PrincipalPlane, SketchError, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
+use ketchup_core::testing::with_document_id;
 use serde_json::json;
 
 fn frame() -> WorkplaneFrame {
@@ -173,12 +174,11 @@ fn schema_51_keeps_principal_offset_semantics_and_rejects_the_new_tag() {
             }),
         }]))
         .unwrap();
-    let snapshot = legacy.current();
-    let mut bytes = persistence::save(&snapshot);
-    // Only the envelope version changes; the legacy payload and checksum stay intact.
-    bytes[10..12].copy_from_slice(&51_u16.to_le_bytes());
-    let loaded = persistence::load(&bytes).unwrap();
+    // The same document as written by schema 51.
+    let bytes = include_bytes!("fixtures/persistence/legacy/workplane-offset-schema51.bin");
+    let loaded = persistence::load(bytes).unwrap();
     assert_eq!(loaded.source_schema(), 51);
+    let snapshot = with_document_id(&legacy.current(), loaded.snapshot().document_id());
     assert_eq!(
         loaded.snapshot().canonical_digest(),
         snapshot.canonical_digest()
@@ -189,15 +189,13 @@ fn schema_51_keeps_principal_offset_semantics_and_rejects_the_new_tag() {
             snapshot.feature(id).unwrap().kind()
         );
     }
-    let free = document(WorkplaneSpec {
-        support: WorkplaneSupport::Free,
-        frame: frame(),
-    });
-    let mut bytes = persistence::save(&free.current());
-    bytes[10..12].copy_from_slice(&51_u16.to_le_bytes());
+    // A free workplane labelled schema 51, which predates the free support tag.
+    let bytes = include_bytes!("fixtures/persistence/invalid/workplane-free-schema51.bin");
     assert!(matches!(
-        persistence::load(&bytes),
-        Err(persistence::PersistenceError::InvalidFeatureKind(4))
+        persistence::load(bytes),
+        Err(persistence::PersistenceError::Legacy(
+            persistence::LegacyError::InvalidFeatureKind(4)
+        ))
     ));
 }
 

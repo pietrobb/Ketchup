@@ -36,25 +36,39 @@ const MAX_DRAWING_SCALE_TERM: u32 = 1_000_000;
 const DRAWING_TITLE_BLOCK_HEIGHT_MM: f64 = 36.0;
 const DRAWING_LAYOUT_GAP_MM: f64 = 5.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingSheetId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingDimensionId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingNoteId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingDatumId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingFeatureControlFrameId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingBomBalloonId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingViewFrame {
     horizontal_bits: [u64; 3],
     vertical_bits: [u64; 3],
@@ -62,21 +76,6 @@ pub struct DrawingViewFrame {
 }
 
 impl DrawingViewFrame {
-    pub fn new(direction: [f64; 3], up: [f64; 3]) -> Result<Self, DrawingError> {
-        let depth = normalized(direction).ok_or(DrawingError::InvalidView)?;
-        let horizontal = normalized(cross(up, depth)).ok_or(DrawingError::InvalidView)?;
-        let vertical = normalized(cross(depth, horizontal)).ok_or(DrawingError::InvalidView)?;
-        Ok(Self::from_axes(horizontal, vertical, depth))
-    }
-
-    fn from_axes(horizontal: [f64; 3], vertical: [f64; 3], depth: [f64; 3]) -> Self {
-        Self {
-            horizontal_bits: horizontal.map(canonical_view_component).map(f64::to_bits),
-            vertical_bits: vertical.map(canonical_view_component).map(f64::to_bits),
-            depth_bits: depth.map(canonical_view_component).map(f64::to_bits),
-        }
-    }
-
     pub(crate) fn from_persisted_axes(
         horizontal: [f64; 3],
         vertical: [f64; 3],
@@ -102,6 +101,21 @@ impl DrawingViewFrame {
         Ok(Self::from_axes(horizontal, vertical, depth))
     }
 
+    pub fn new(direction: [f64; 3], up: [f64; 3]) -> Result<Self, DrawingError> {
+        let depth = normalized(direction).ok_or(DrawingError::InvalidView)?;
+        let horizontal = normalized(cross(up, depth)).ok_or(DrawingError::InvalidView)?;
+        let vertical = normalized(cross(depth, horizontal)).ok_or(DrawingError::InvalidView)?;
+        Ok(Self::from_axes(horizontal, vertical, depth))
+    }
+
+    fn from_axes(horizontal: [f64; 3], vertical: [f64; 3], depth: [f64; 3]) -> Self {
+        Self {
+            horizontal_bits: horizontal.map(canonical_view_component).map(f64::to_bits),
+            vertical_bits: vertical.map(canonical_view_component).map(f64::to_bits),
+            depth_bits: depth.map(canonical_view_component).map(f64::to_bits),
+        }
+    }
+
     #[must_use]
     pub fn horizontal(self) -> [f64; 3] {
         self.horizontal_bits.map(f64::from_bits)
@@ -118,7 +132,9 @@ impl DrawingViewFrame {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingSectionPlane {
     frame: DrawingViewFrame,
     depth_bits: u64,
@@ -146,7 +162,9 @@ impl DrawingSectionPlane {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingDetailRegion {
     frame: DrawingViewFrame,
     center_bits: [u64; 2],
@@ -199,7 +217,9 @@ impl DrawingDetailRegion {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum OrthographicViewKind {
     Front,
     Top,
@@ -321,7 +341,7 @@ impl OrthographicViewKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawingDimensionTolerance {
     #[default]
     None,
@@ -396,7 +416,7 @@ impl DrawingDimensionTolerance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingLinearDimension {
     id: DrawingDimensionId,
     view_stable_name: String,
@@ -502,7 +522,7 @@ pub enum DrawingDimensionUnit {
     Degrees,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingAngularDimension {
     id: DrawingDimensionId,
     view_stable_name: String,
@@ -602,13 +622,13 @@ impl DrawingAngularDimension {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawingCircularDimensionKind {
     Radius,
     Diameter,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingCircularDimension {
     id: DrawingDimensionId,
     view_stable_name: String,
@@ -715,7 +735,7 @@ impl DrawingCircularDimension {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawingMaterialCondition {
     None,
     MaximumMaterial,
@@ -735,7 +755,7 @@ impl DrawingMaterialCondition {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawingGeometricCharacteristic {
     Straightness,
     Flatness,
@@ -782,7 +802,7 @@ impl DrawingGeometricCharacteristic {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingDatumReference {
     label: String,
     material_condition: DrawingMaterialCondition,
@@ -814,7 +834,7 @@ impl DrawingDatumReference {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingDatumSymbol {
     id: DrawingDatumId,
     view_stable_name: String,
@@ -899,7 +919,7 @@ impl DrawingDatumSymbol {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingFeatureControlFrame {
     id: DrawingFeatureControlFrameId,
     view_stable_name: String,
@@ -1036,7 +1056,7 @@ impl DrawingFeatureControlFrame {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingBomBalloon {
     id: DrawingBomBalloonId,
     view_stable_name: String,
@@ -1120,7 +1140,7 @@ impl DrawingBomBalloon {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingNote {
     id: DrawingNoteId,
     position_bits: [u64; 2],
@@ -1246,7 +1266,7 @@ impl DrawingAnnotations {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawingSource {
     Definition(DefinitionId),
     RigidAssembly { occurrence_ids: Vec<OccurrenceId> },
@@ -1266,7 +1286,7 @@ impl DrawingSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawingPageSize {
     A0,
     A1,
@@ -1299,7 +1319,7 @@ impl DrawingPageSize {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawingPageOrientation {
     Portrait,
     Landscape,
@@ -1315,7 +1335,9 @@ impl DrawingPageOrientation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DrawingScale {
     numerator: u32,
     denominator: u32,
@@ -1361,7 +1383,7 @@ impl Default for DrawingScale {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingMargins {
     left_mm: u16,
     right_mm: u16,
@@ -1392,7 +1414,7 @@ impl Default for DrawingMargins {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingPageTemplate {
     size: DrawingPageSize,
     orientation: DrawingPageOrientation,
@@ -1477,7 +1499,7 @@ impl Default for DrawingPageTemplate {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingTitleBlock {
     title: String,
     drawing_number: String,
@@ -1487,6 +1509,20 @@ pub struct DrawingTitleBlock {
 }
 
 impl DrawingTitleBlock {
+    pub(crate) fn from_persisted(
+        title: String,
+        drawing_number: String,
+        revision: String,
+        author: String,
+        parametric: bool,
+    ) -> Result<Self, DrawingError> {
+        if parametric {
+            Self::parametric(title, drawing_number, revision, author)
+        } else {
+            Self::new(title, drawing_number, revision, author)
+        }
+    }
+
     pub fn new(
         title: impl Into<String>,
         drawing_number: impl Into<String>,
@@ -1537,20 +1573,6 @@ impl DrawingTitleBlock {
         Ok(value)
     }
 
-    pub(crate) fn from_persisted(
-        title: String,
-        drawing_number: String,
-        revision: String,
-        author: String,
-        parametric: bool,
-    ) -> Result<Self, DrawingError> {
-        if parametric {
-            Self::parametric(title, drawing_number, revision, author)
-        } else {
-            Self::new(title, drawing_number, revision, author)
-        }
-    }
-
     #[must_use]
     pub const fn is_parametric(&self) -> bool {
         self.parametric
@@ -1577,9 +1599,8 @@ impl DrawingTitleBlock {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawingSheet {
-    schema: &'static str,
     id: DrawingSheetId,
     name: String,
     source: DrawingSource,
@@ -1852,7 +1873,6 @@ impl DrawingSheet {
         }
         page.validate()?;
         Ok(Self {
-            schema: ORTHOGRAPHIC_DRAWING_SCHEMA_V2,
             id,
             name,
             source,
@@ -1914,7 +1934,7 @@ impl DrawingSheet {
 
     #[must_use]
     pub const fn schema(&self) -> &'static str {
-        self.schema
+        ORTHOGRAPHIC_DRAWING_SCHEMA_V2
     }
 
     #[must_use]

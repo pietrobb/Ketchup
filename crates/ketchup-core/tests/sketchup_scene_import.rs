@@ -4,6 +4,7 @@ use ketchup_core::import::{
     inspect_sketchup_scene, plan_sketchup_scene_import,
 };
 use ketchup_core::persistence;
+use ketchup_core::testing::with_document_id;
 use serde_json::json;
 
 fn shared_tetrahedron_scene() -> Vec<u8> {
@@ -120,74 +121,12 @@ fn schema_30_sketchup_document_remains_losslessly_loadable() {
     let batch =
         plan_sketchup_scene_import(&document.current(), &source, "schema-30.kscene").unwrap();
     document.apply_batch(&batch).unwrap();
-    let snapshot = document.current();
-    let mut encoded = persistence::save(&snapshot);
-    let manifest_length = u32::from_le_bytes(encoded[12..16].try_into().unwrap()) as usize;
-    let payload_offset = 16 + manifest_length;
-    for occurrence in snapshot.occurrences() {
-        assert_eq!(occurrence.color(), None);
-        let mut record_prefix = Vec::new();
-        record_prefix.extend_from_slice(&occurrence.id().0.to_le_bytes());
-        record_prefix.extend_from_slice(&occurrence.definition_id().0.to_le_bytes());
-        record_prefix.extend_from_slice(&(occurrence.name().len() as u32).to_le_bytes());
-        record_prefix.extend_from_slice(occurrence.name().as_bytes());
-        let offsets = encoded
-            .windows(record_prefix.len())
-            .enumerate()
-            .filter_map(|(offset, value)| (value == record_prefix).then_some(offset))
-            .collect::<Vec<_>>();
-        assert_eq!(offsets.len(), 1);
-        let color_offset = offsets[0]
-            + record_prefix.len()
-            + 16 * 8
-            + 1
-            + usize::from(occurrence.parent().is_some()) * 8
-            + 1
-            + usize::from(occurrence.tag().is_some()) * 8
-            + 1;
-        assert_eq!(encoded.remove(color_offset), 0);
-    }
-    let body_contract_bytes = 4 + snapshot
-        .definitions()
-        .map(|definition| {
-            8 + 4
-                + definition
-                    .bodies()
-                    .map(|body| {
-                        8 + 4
-                            + body.name().len()
-                            + 1
-                            + 1
-                            + usize::from(body.consumed_by().is_some()) * 8
-                    })
-                    .sum::<usize>()
-                + 8
-                + 4
-                + definition
-                    .feature_ids()
-                    .iter()
-                    .filter_map(|feature_id| {
-                        definition
-                            .feature_body_ownership(*feature_id)
-                            .map(|ownership| {
-                                8 + 4
-                                    + ownership.input_body_ids().len() * 8
-                                    + 1
-                                    + usize::from(ownership.output_body_id().is_some()) * 8
-                            })
-                    })
-                    .sum::<usize>()
-        })
-        .sum::<usize>();
-    encoded.truncate(encoded.len() - 44 - body_contract_bytes);
-    encoded[10..12].copy_from_slice(&30_u16.to_le_bytes());
-    let payload_length = (encoded.len() - payload_offset) as u64;
-    encoded[16..24].copy_from_slice(&payload_length.to_le_bytes());
-    let checksum = ketchup_core::graph::sha256_bytes(&encoded[payload_offset..]);
-    encoded[24..56].copy_from_slice(&checksum);
-
-    let reopened = persistence::load(&encoded).unwrap();
+    // The same import as written by schema 30: occurrences without the color byte and
+    // definitions without the body contract.
+    let encoded = include_bytes!("fixtures/persistence/legacy/sketchup-scene-schema30.bin");
+    let reopened = persistence::load(encoded).unwrap();
     assert_eq!(reopened.source_schema(), 30);
+    let snapshot = with_document_id(&document.current(), reopened.snapshot().document_id());
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(
         reopened.snapshot().canonical_digest(),

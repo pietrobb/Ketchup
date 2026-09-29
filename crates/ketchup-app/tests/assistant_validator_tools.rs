@@ -6,7 +6,7 @@
 //! stops publishing the validator catalog, or the sidecar stops understanding it,
 //! the coupling breaks here instead of in the operator's UI.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::accesskit::Role;
 use harness::Shell;

@@ -3,6 +3,7 @@ use crate::assembly_joint::{
     sample_assembly_motion_study,
 };
 use crate::document::{DefinitionId, FeatureKind, OccurrenceId, Snapshot, Transform};
+use crate::sketch::{PadOperation, PadSpec};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -16,15 +17,21 @@ const UNIT_NORMAL_EPSILON: f64 = 1.0e-9;
 const ORTHONORMAL_EPSILON: f64 = 1.0e-9;
 const FRAME_MATCH_EPSILON_MM: f64 = 1.0e-6;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct MechanicalInterfaceId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct MechanicalConditionId(pub u64);
 
 /// What the interface is used for mechanically. Roles are structural, not product
 /// specific: every role must be backed by at least one condition that proves it.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum MechanicalRole {
     Mounting,
     Support,
@@ -45,7 +52,7 @@ impl MechanicalRole {
 /// A planar frame captured from real body geometry, expressed in body-local
 /// millimetres: the face centroid, its outward unit normal, its area and the
 /// local bounding box of the face itself.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MechanicalPlanarFrame {
     origin_mm: [f64; 3],
     normal: [f64; 3],
@@ -121,7 +128,7 @@ impl MechanicalPlanarFrame {
 /// * authored extruded-profile bodies carry an empty fingerprint and the ordinal
 ///   selects one of the six canonical box faces, which the validator recomputes
 ///   from the document itself.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MechanicalInterface {
     pub(crate) schema: String,
     pub(crate) id: MechanicalInterfaceId,
@@ -198,7 +205,7 @@ impl MechanicalInterface {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MechanicalAxisAlignment {
     Parallel,
     Perpendicular,
@@ -214,7 +221,7 @@ impl MechanicalAxisAlignment {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MechanicalConditionKind {
     /// Two faces must stay coplanar at a fixed offset with opposed normals over
     /// the whole path — the general form of "this part is bolted onto that wall".
@@ -334,7 +341,7 @@ impl MechanicalConditionKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MechanicalCondition {
     pub(crate) schema: String,
     pub(crate) id: MechanicalConditionId,
@@ -903,17 +910,22 @@ fn authored_box(snapshot: &Snapshot, definition_id: DefinitionId) -> Option<[[f6
         .filter(|feature| feature.definition_id() == definition_id)
     {
         match feature.kind() {
-            FeatureKind::Profile { points_mm } => {
+            kind @ FeatureKind::Profile { .. } => {
                 if profile_points.is_some() {
                     return None;
                 }
-                profile_points = Some(points_mm.clone());
+                profile_points = Some(kind.polygon_points()?);
             }
-            FeatureKind::Extrusion { height, .. } => {
+            FeatureKind::Pad(
+                pad @ PadSpec {
+                    operation: PadOperation::NewBody,
+                    ..
+                },
+            ) => {
                 if height_mm.is_some() {
                     return None;
                 }
-                height_mm = Some(height.millimetres());
+                height_mm = Some(pad.blind_along_normal()?.1.millimetres());
             }
             _ => return None,
         }

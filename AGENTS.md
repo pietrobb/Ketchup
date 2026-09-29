@@ -70,6 +70,10 @@ reproduced failure that they catch, or explicit approval by the owner.
 - Do not grow `crates/ketchup-app/src/lib.rs` or `crates/ketchup-core/src/document.rs`. Put new
   code in new modules.
 - New code: functions under ~150 lines, files under ~3000 lines.
+- Integration tests build as one binary per crate: add `tests/<name>.rs` as `mod <name>;` in
+  that crate's `tests/integration.rs`; run one file with `cargo test -p <crate> --test
+  integration <name>::`. A test that starts external processes (workers, plugins) takes
+  `crate::integration_support::file_turn()` first; the app harness `Shell` takes it itself.
 - Report the net line delta in every PR description.
 
 ## 7. Communication

@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use eframe::egui::Key;
 use harness::{Shell, ctrl};

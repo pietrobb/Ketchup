@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use std::collections::BTreeSet;
 

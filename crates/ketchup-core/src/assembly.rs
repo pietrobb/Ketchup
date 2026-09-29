@@ -10,10 +10,12 @@ pub const ASSEMBLY_MATE_SCHEMA_V1: &str = "ketchup.assembly-mate.v1";
 pub const RIGID_BODY_DEGREES_OF_FREEDOM: u8 = 6;
 const MAX_ASSEMBLY_DISTANCE_MM: f64 = 1_000_000.0;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct AssemblyMateId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AssemblyReferenceHealth {
     Resolved,
     Broken,
@@ -21,13 +23,13 @@ pub enum AssemblyReferenceHealth {
     Lost,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum AssemblyDofStatus {
     Grounded,
     PendingSolve,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct AssemblyDofDiagnostic {
     pub(crate) occurrence_id: OccurrenceId,
     pub(crate) status: AssemblyDofStatus,
@@ -57,7 +59,7 @@ impl AssemblyDofDiagnostic {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlanarFaceAttachment {
     reference: BodySubshapeRef,
     local_origin_mm: [f64; 3],
@@ -129,13 +131,13 @@ impl PlanarFaceAttachment {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AxialAttachmentKind {
     Axis,
     CylindricalFace,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AxialAttachment {
     reference: BodySubshapeRef,
     kind: AxialAttachmentKind,
@@ -249,7 +251,7 @@ impl AxialAttachment {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AssemblyMateAttachment {
     ReferenceOnly(BodySubshapeRef),
     PlanarFace(PlanarFaceAttachment),
@@ -267,7 +269,7 @@ impl AssemblyMateAttachment {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyMateEndpoint {
     pub(crate) instance_path: InstancePath,
     pub(crate) attachment: AssemblyMateAttachment,
@@ -424,7 +426,7 @@ impl AssemblyMateEndpoint {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AssemblyMateKind {
     CoincidentPlanar { offset_mm: f64, reversed: bool },
     ConcentricAxial { reversed: bool },
@@ -450,7 +452,7 @@ impl AssemblyMateKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyMate {
     pub(crate) schema: String,
     pub(crate) id: AssemblyMateId,

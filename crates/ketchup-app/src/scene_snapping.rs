@@ -222,13 +222,7 @@ impl SceneSnapGeometry {
             normal: [0.0, 0.0, 1.0],
         };
         let segments = match feature.kind() {
-            FeatureKind::Profile { points_mm } => (0..points_mm.len())
-                .map(|i| ProfileSegment::Line {
-                    start_mm: points_mm[i],
-                    end_mm: points_mm[(i + 1) % points_mm.len()],
-                })
-                .collect::<Vec<_>>(),
-            FeatureKind::SegmentProfile { segments, .. } => segments.clone(),
+            FeatureKind::Profile { segments, .. } => segments.clone(),
             FeatureKind::Sketch(sketch) => {
                 let Some(workplane) = snapshot.feature(sketch.workplane) else {
                     return false;
@@ -338,6 +332,8 @@ impl SceneSnapGeometry {
                         ]
                     })
                     .collect(),
+                // Only the exact kernel knows where a spline runs between its points.
+                ProfileSegment::Spline { .. } => continue,
             };
             self.edge(
                 reference,
@@ -389,7 +385,12 @@ impl KetchupApp {
                 continue;
             };
             let semantic = match feature.kind() {
-                FeatureKind::Extrusion { profile, height } => {
+                FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(profile),
+                    direction,
+                    extent: FeatureExtent::Blind(height),
+                    operation: PadOperation::NewBody,
+                }) => {
                     let first_point = geometry.points.len();
                     let bottom = geometry.profile(
                         snapshot,
@@ -399,18 +400,18 @@ impl KetchupApp {
                         Vec3::ZERO,
                     );
                     let normal = match snapshot.feature(*profile).map(|f| f.kind()) {
-                        Some(FeatureKind::Sketch(sketch)) => match snapshot
-                            .feature(sketch.workplane)
-                            .map(|f| f.kind())
-                        {
-                            Some(FeatureKind::Workplane(w)) => {
-                                Vec3::new(w.frame.normal[0], w.frame.normal[1], w.frame.normal[2])
+                        Some(FeatureKind::Sketch(sketch)) => {
+                            match snapshot.feature(sketch.workplane).map(|f| f.kind()) {
+                                Some(FeatureKind::Workplane(w)) => w.frame.normal,
+                                _ => continue,
                             }
-                            _ => continue,
-                        },
-                        _ => Vec3::new(0.0, 0.0, 1.0),
+                        }
+                        _ => [0.0, 0.0, 1.0],
                     };
-                    let offset = normal * height.millimetres();
+                    let Some([x, y, z]) = direction.vector(normal) else {
+                        continue;
+                    };
+                    let offset = Vec3::new(x, y, z) * height.millimetres();
                     let corners: Vec<_> = geometry.points[first_point..]
                         .iter()
                         .filter(|(_, kind, _)| *kind == SnapKind::Endpoint)

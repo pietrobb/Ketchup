@@ -1,8 +1,8 @@
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode, CommandBatch,
-    DefinitionId, Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind,
-    FeatureParameterTarget, FilletRadiusStation, LoftContinuity, LoftSection, ParameterValueType,
-    ProfileSegment, ProposalContext, ProposalPrincipal, SpatialPathSegment,
+    DefinitionId, Dimension, DocumentStore, EdgeFinishKind, EdgeRef, FaceRef, FeatureId,
+    FeatureKind, FeatureParameterTarget, FilletRadiusStation, LoftContinuity, LoftSection,
+    ParameterValueType, ProfileSegment, ProposalContext, ProposalPrincipal, SpatialPathSegment,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{ExactFaceRole, body_exact_graph};
@@ -12,11 +12,11 @@ use ketchup_core::feature_history::{
     prepare_body_profile_translation,
 };
 use ketchup_core::persistence;
+use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
-    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
-    SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
+    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use ketchup_core::testing::box_package;
 use ketchup_core::topology::{
@@ -110,10 +110,13 @@ fn seed_body_parameter_edit() -> DocumentStore {
                 definition_id: DEFINITION,
                 name: "Pad".to_owned(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: SKETCH,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: SKETCH,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("5").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -334,10 +337,13 @@ fn seed_movable_circular_pocket() -> DocumentStore {
                 definition_id: DEFINITION,
                 name: "Base pad".to_owned(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: OFFSET,
-                    region: base_region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: OFFSET,
+                        region: base_region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("10").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -417,18 +423,22 @@ fn seed_movable_circular_pocket() -> DocumentStore {
         ]))
         .unwrap();
     let proposal = document
-        .plan_pad_pocket(
+        .plan_pad(
             CUT,
             DEFINITION,
             "Circular cut",
-            PadPocketOperation::Pocket(PocketSpec {
-                target: PAD,
-                sketch: CUT_SKETCH,
-                region: cut_region,
-                support: Box::new(top),
+            PadSpec {
+                profile: PadProfile::SketchRegion {
+                    sketch: CUT_SKETCH,
+                    region: cut_region,
+                },
                 direction: FeatureDirection::OppositeNormal,
                 extent: FeatureExtent::Blind(Dimension::from_decimal("8").unwrap()),
-            }),
+                operation: PadOperation::Cut {
+                    target: PAD,
+                    start: CutStart::Support(Box::new(top)),
+                },
+            },
             ProposalContext::canonical_preview(),
         )
         .unwrap();
@@ -493,24 +503,19 @@ fn seed_movable_rounded_slot_pocket() -> DocumentStore {
                 id: OFFSET,
                 definition_id: DEFINITION,
                 name: "Board outline".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PAD,
                 definition_id: DEFINITION,
                 name: "Board".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: OFFSET,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(OFFSET, Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: CUT_SKETCH,
                 definition_id: DEFINITION,
                 name: "Rounded fitting slot".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: rounded_slot_segments(),
                     closed: true,
                 },
@@ -519,11 +524,15 @@ fn seed_movable_rounded_slot_pocket() -> DocumentStore {
                 id: CUT,
                 definition_id: DEFINITION,
                 name: "6 mm fitting pocket".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: PAD,
-                    profile: CUT_SKETCH,
-                    depth: Dimension::from_decimal("6").unwrap(),
-                },
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(CUT_SKETCH),
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("6").unwrap()),
+                    operation: PadOperation::Cut {
+                        target: PAD,
+                        start: CutStart::ProfilePlane,
+                    },
+                }),
             },
         ]))
         .unwrap();
@@ -543,24 +552,19 @@ fn seed_movable_circular_through_cut() -> DocumentStore {
                 id: OFFSET,
                 definition_id: DEFINITION,
                 name: "Base rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PAD,
                 definition_id: DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: OFFSET,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(OFFSET, Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: CUT_SKETCH,
                 definition_id: DEFINITION,
                 name: "Circular cut profile".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: circle_segments([12.0, 14.0], 2.5),
                     closed: true,
                 },
@@ -569,10 +573,7 @@ fn seed_movable_circular_through_cut() -> DocumentStore {
                 id: FeatureId(16),
                 definition_id: DEFINITION,
                 name: "Cutting cylinder".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: CUT_SKETCH,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(CUT_SKETCH, Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: CUT,
@@ -643,9 +644,9 @@ fn circular_pocket_profile_moves_without_changing_radius_and_is_one_undo_step() 
     ));
     assert!(matches!(
         committed_snapshot.feature(CUT).unwrap().kind(),
-        FeatureKind::SketchPocket(spec)
-            if spec.target == PAD
-                && spec.sketch == CUT_SKETCH
+        FeatureKind::Pad(spec)
+            if spec.operation.target() == Some(PAD)
+                && spec.profile.feature_id() == CUT_SKETCH
                 && spec.extent.blind_distance().unwrap().millimetres() == 8.0
     ));
 
@@ -676,8 +677,7 @@ fn rounded_fitting_pocket_moves_without_changing_shape_or_depth() {
     assert_eq!(stamp(&document), before);
     document.commit_proposal(&preview.proposal).unwrap();
     let moved = document.current();
-    let FeatureKind::SegmentProfile { segments, closed } =
-        moved.feature(CUT_SKETCH).unwrap().kind()
+    let FeatureKind::Profile { segments, closed } = moved.feature(CUT_SKETCH).unwrap().kind()
     else {
         panic!("expected moved rounded fitting slot")
     };
@@ -719,7 +719,7 @@ fn rounded_fitting_pocket_moves_without_changing_shape_or_depth() {
     }
     assert!(matches!(
         moved.feature(CUT).unwrap().kind(),
-        FeatureKind::Pocket { target, profile, depth }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(profile), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { target, .. }, .. })
             if *target == PAD
                 && *profile == CUT_SKETCH
                 && depth.millimetres() == 6.0
@@ -751,8 +751,7 @@ fn circular_through_cut_profile_moves_and_remains_exact() {
     );
     document.commit_proposal(&preview.proposal).unwrap();
     let moved = document.current();
-    let FeatureKind::SegmentProfile { segments, closed } =
-        moved.feature(CUT_SKETCH).unwrap().kind()
+    let FeatureKind::Profile { segments, closed } = moved.feature(CUT_SKETCH).unwrap().kind()
     else {
         panic!("expected moved circular profile")
     };
@@ -831,7 +830,7 @@ fn brep_only_cut_translation_preserves_valid_overlap_and_rejects_disjoint_tools(
             let candidate = document.preview_batch(preview.proposal.batch()).unwrap();
             ExactBRepGraph::from_snapshot(&candidate, DEFINITION, CUT).unwrap();
             document.commit_proposal(&preview.proposal).unwrap();
-            let FeatureKind::SegmentProfile { segments, .. } = document
+            let FeatureKind::Profile { segments, .. } = document
                 .current()
                 .feature(CUT_SKETCH)
                 .unwrap()
@@ -890,9 +889,7 @@ const TOOL_EXTRUSION: FeatureId = FeatureId(31);
 const UNION: FeatureId = FeatureId(40);
 
 fn profile() -> FeatureKind {
-    FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]],
-    }
+    FeatureKind::polygon(&[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]])
 }
 
 fn seed_cross_body_history() -> DocumentStore {
@@ -913,10 +910,7 @@ fn seed_cross_body_history() -> DocumentStore {
                 id: BASE_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: BASE_PROFILE,
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(BASE_PROFILE, Dimension::from_decimal("5").unwrap()),
             },
             CanonicalCommand::CreateBody {
                 definition_id: DEFINITION,
@@ -932,18 +926,13 @@ fn seed_cross_body_history() -> DocumentStore {
                 id: TOOL_PROFILE,
                 definition_id: DEFINITION,
                 name: "Tool profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[6.0, 0.0], [12.0, 0.0], [12.0, 8.0], [6.0, 8.0]],
-                },
+                kind: FeatureKind::polygon(&[[6.0, 0.0], [12.0, 0.0], [12.0, 8.0], [6.0, 8.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: TOOL_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Tool extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: TOOL_PROFILE,
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(TOOL_PROFILE, Dimension::from_decimal("5").unwrap()),
             },
             CanonicalCommand::SetActiveBody {
                 definition_id: DEFINITION,
@@ -1100,9 +1089,7 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
     const SHELL: FeatureId = FeatureId(112);
     const EDGE_FINISH: FeatureId = FeatureId(113);
 
-    let rectangle = || FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
-    };
+    let rectangle = || FeatureKind::polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]);
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1114,9 +1101,7 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                 id: REVOLVE_PROFILE,
                 definition_id: DEFINITION,
                 name: "Revolve profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [3.0, 0.0], [3.0, 8.0], [0.0, 8.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [3.0, 0.0], [3.0, 8.0], [0.0, 8.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: REVOLVE,
@@ -1159,17 +1144,23 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                 id: LOFT_LOWER,
                 definition_id: DEFINITION,
                 name: "Loft lower".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-4.0, -2.0],
+                    [5.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 4.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: LOFT_UPPER,
                 definition_id: DEFINITION,
                 name: "Loft upper".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-2.0, -1.0], [3.0, -1.0], [2.5, 2.0], [-1.5, 2.5]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-2.0, -1.0],
+                    [3.0, -1.0],
+                    [2.5, 2.0],
+                    [-1.5, 2.5],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: LOFT,
@@ -1200,10 +1191,10 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                 id: FINISH_BASE,
                 definition_id: DEFINITION,
                 name: "Finish base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FINISH_PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    FINISH_PROFILE,
+                    Dimension::from_decimal("10").unwrap(),
+                ),
             },
         ]))
         .unwrap();
@@ -1217,10 +1208,9 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
             id: FACE_OFFSET,
             definition_id: DEFINITION,
             name: "Face offset".into(),
-            kind: FeatureKind::TopologyFaceOffset {
+            kind: FeatureKind::FaceOffset {
                 target: FINISH_BASE,
-                face: Some(face),
-                profile_face: None,
+                face: FaceRef::from(face),
                 distance: Dimension::from_decimal("0.5").unwrap(),
             },
         }]))
@@ -1235,10 +1225,9 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
             id: SHELL,
             definition_id: DEFINITION,
             name: "Shell".into(),
-            kind: FeatureKind::TopologyShell {
+            kind: FeatureKind::Shell {
                 target: FACE_OFFSET,
-                removed_faces: vec![shell_face],
-                profile_faces: Vec::new(),
+                removed_faces: vec![FaceRef::from(shell_face)],
                 thickness: Dimension::from_decimal("1").unwrap(),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },
@@ -1251,10 +1240,9 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
             id: EDGE_FINISH,
             definition_id: DEFINITION,
             name: "Edge finish".into(),
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: SHELL,
-                edges: vec![edge],
-                profile_edges: Vec::new(),
+                edges: vec![EdgeRef::from(edge)],
                 kind: EdgeFinishKind::Fillet,
                 amount: Dimension::from_decimal("0.5").unwrap(),
                 fillet_radius_stations: vec![
@@ -1353,18 +1341,13 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 14.0], [0.0, 14.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 14.0], [0.0, 14.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: BASE,
                 definition_id: DEFINITION,
                 name: "Base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("12").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("12").unwrap()),
             },
         ]))
         .unwrap();
@@ -1380,10 +1363,9 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
                 id: TWO_DISTANCE,
                 definition_id: DEFINITION,
                 name: "Two-distance chamfer".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: BASE,
-                    edges: vec![two_edge.clone()],
-                    profile_edges: Vec::new(),
+                    edges: vec![EdgeRef::from(two_edge.clone())],
                     kind: EdgeFinishKind::Chamfer,
                     amount: Dimension::from_decimal("1").unwrap(),
                     fillet_radius_stations: Vec::new(),
@@ -1400,10 +1382,9 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
                 id: DISTANCE_ANGLE,
                 definition_id: DEFINITION,
                 name: "Distance-angle chamfer".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: BASE,
-                    edges: vec![angle_edge.clone()],
-                    profile_edges: Vec::new(),
+                    edges: vec![EdgeRef::from(angle_edge.clone())],
                     kind: EdgeFinishKind::Chamfer,
                     amount: Dimension::from_decimal("1").unwrap(),
                     fillet_radius_stations: Vec::new(),
@@ -1449,14 +1430,14 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
     assert_eq!(stamp(&document), before);
     assert!(matches!(
         candidate.feature(TWO_DISTANCE).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             chamfer_mode: ChamferMode::TwoDistance { second_distance },
             ..
         } if second_distance.millimetres() == 3.0
     ));
     assert!(matches!(
         candidate.feature(DISTANCE_ANGLE).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             chamfer_mode: ChamferMode::DistanceAngle { angle_degrees },
             ..
         } if *angle_degrees == 45.0
@@ -1467,7 +1448,7 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
     document.commit_proposal(&preview.proposal).unwrap();
     assert_eq!(document.visible_undo_steps(), before.2 + 1);
     let edited_digest = document.current().canonical_digest();
-    assert_eq!(persistence::CURRENT_SCHEMA, 97);
+    assert_eq!(persistence::CURRENT_SCHEMA, 98);
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), edited_digest);

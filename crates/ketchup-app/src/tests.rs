@@ -2,9 +2,12 @@ use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_core::assistant_sidecar::AssistantCadLoftSection;
-use ketchup_core::document::{InstancePathStep, ProposalGoal, SpatialPathSegment};
+use ketchup_core::document::{
+    EdgeRef, FaceRef, InstancePathStep, ProposalGoal, SpatialPathSegment,
+};
 use ketchup_core::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepOperation};
 use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 #[path = "planning_topology_tests.rs"]
 mod planning_topology;
 
@@ -179,18 +182,18 @@ fn cad_edit_append_boolean_is_host_id_assigned_exact_and_one_step() {
                     id: FeatureId(3),
                     definition_id: INITIAL_BOX_DEFINITION,
                     name: "Tool profile".to_owned(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[40.0, 0.0], [120.0, 0.0], [120.0, 60.0], [40.0, 60.0]],
-                    },
+                    kind: FeatureKind::polygon(&[
+                        [40.0, 0.0],
+                        [120.0, 0.0],
+                        [120.0, 60.0],
+                        [40.0, 60.0],
+                    ]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: FeatureId(4),
                     definition_id: INITIAL_BOX_DEFINITION,
                     name: "Tool extrusion".to_owned(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(3),
-                        height: Dimension::new("20", 20.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(FeatureId(3), Dimension::new("20", 20.0).unwrap()),
                 },
             ]))
             .unwrap();
@@ -254,9 +257,7 @@ fn cad_edit_append_pocket_is_host_id_assigned_exact_and_one_step() {
             id: FeatureId(3),
             definition_id: INITIAL_BOX_DEFINITION,
             name: "Pocket profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[20.0, 15.0], [40.0, 15.0], [40.0, 35.0], [20.0, 35.0]],
-            },
+            kind: FeatureKind::polygon(&[[20.0, 15.0], [40.0, 15.0], [40.0, 35.0], [20.0, 35.0]]),
         }]))
         .unwrap();
     let baseline = app.document.current().clone();
@@ -279,11 +280,12 @@ fn cad_edit_append_pocket_is_host_id_assigned_exact_and_one_step() {
         [CanonicalCommand::CreateFeature {
             id: FeatureId(4),
             definition_id: INITIAL_BOX_DEFINITION,
-            kind: FeatureKind::Pocket {
-                target: FeatureId(2),
-                profile: FeatureId(3),
-                depth,
-            },
+            kind: FeatureKind::Pad(PadSpec {
+                profile: PadProfile::Feature(FeatureId(3)),
+                extent: FeatureExtent::Blind(depth),
+                operation: PadOperation::Cut { target: FeatureId(2), .. },
+                ..
+            }),
             ..
         }] if depth.millimetres() == 8.0
     ));
@@ -328,9 +330,12 @@ fn cad_edit_append_planar_offset_is_host_id_assigned_exact_and_one_step() {
                 id: FeatureId(3),
                 definition_id: DefinitionId(2),
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 20.0], [90.0, 20.0], [90.0, 60.0], [10.0, 60.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [10.0, 20.0],
+                    [90.0, 20.0],
+                    [90.0, 60.0],
+                    [10.0, 60.0],
+                ]),
             },
         ]))
         .unwrap();
@@ -397,15 +402,13 @@ fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Sweep profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -3.0], [2.0, -3.0], [2.0, 3.0], [-2.0, 3.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -3.0], [2.0, -3.0], [2.0, 3.0], [-2.0, 3.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Sweep path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: [10.0, -5.0],
                         end_mm: [24.0, 17.0],
@@ -478,9 +481,7 @@ fn cad_edit_append_spatial_sweep_preflights_v12_without_mutation_and_is_one_step
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Spatial sweep profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
@@ -585,9 +586,7 @@ fn cad_edit_append_spatial_sweep_rejects_combined_envelope_without_mutation() {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Bounded sweep profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
@@ -636,9 +635,7 @@ fn cad_edit_append_spatial_sweep_rejects_suppressed_and_cross_definition_paths_a
                 id: FeatureId(3),
                 definition_id: DefinitionId(2),
                 name: "Spatial sweep profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
@@ -746,17 +743,23 @@ fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Lower spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-8.0, -4.0], [9.0, -3.0], [7.0, 6.0], [-6.0, 5.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -4.0],
+                    [9.0, -3.0],
+                    [7.0, 6.0],
+                    [-6.0, 5.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Upper spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-4.0, -2.0],
+                    [5.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 4.0],
+                ]),
             },
         ]))
         .unwrap();
@@ -879,7 +882,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
         [CanonicalCommand::CreateFeature {
             id: FeatureId(3),
             definition_id: INITIAL_BOX_DEFINITION,
-            kind: FeatureKind::TopologyShell {
+            kind: FeatureKind::Shell {
                 target: FeatureId(2),
                 removed_faces,
                 thickness,
@@ -888,12 +891,13 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
             },
             ..
         }] if removed_faces.len() == 2
-            && removed_faces.iter().all(|reference| {
+            && removed_faces.iter().filter_map(FaceRef::topological).all(|reference| {
                 reference.producer_feature_id == FeatureId(2)
                     && reference.kind == TopologicalElementKind::Face
             })
             && removed_faces
                 .iter()
+                .filter_map(FaceRef::topological)
                 .map(|reference| reference.lineage_digest.clone())
                 .collect::<Vec<_>>() == expected_reference_ids
             && thickness.millimetres() == 2.0
@@ -960,7 +964,7 @@ fn cad_edit_fillet_edges_uses_host_references_and_one_step() {
         [CanonicalCommand::CreateFeature {
             id: FeatureId(3),
             definition_id: INITIAL_BOX_DEFINITION,
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: FeatureId(2),
                 edges,
                 kind: EdgeFinishKind::Fillet,
@@ -969,12 +973,13 @@ fn cad_edit_fillet_edges_uses_host_references_and_one_step() {
             },
             ..
         }] if edges.len() == 2
-            && edges.iter().all(|reference| {
+            && edges.iter().filter_map(EdgeRef::topological).all(|reference| {
                 reference.producer_feature_id == FeatureId(2)
                     && reference.kind == TopologicalElementKind::Edge
             })
             && edges
                 .iter()
+                .filter_map(EdgeRef::topological)
                 .map(|reference| reference.lineage_digest.clone())
                 .collect::<Vec<_>>() == expected_reference_ids
             && amount.millimetres() == 2.0
@@ -1041,7 +1046,7 @@ fn cad_edit_chamfer_edges_uses_host_references_and_one_step() {
         [CanonicalCommand::CreateFeature {
             id: FeatureId(3),
             definition_id: INITIAL_BOX_DEFINITION,
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: FeatureId(2),
                 edges,
                 kind: EdgeFinishKind::Chamfer,
@@ -1052,6 +1057,7 @@ fn cad_edit_chamfer_edges_uses_host_references_and_one_step() {
         }] if edges.len() == 2
             && edges
                 .iter()
+                .filter_map(EdgeRef::topological)
                 .map(|reference| reference.lineage_digest.clone())
                 .collect::<Vec<_>>() == expected_reference_ids
             && amount.millimetres() == 2.0
@@ -1175,9 +1181,12 @@ fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Pocket profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[20.0, 15.0], [40.0, 15.0], [40.0, 35.0], [20.0, 35.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [20.0, 15.0],
+                    [40.0, 15.0],
+                    [40.0, 35.0],
+                    [20.0, 35.0],
+                ]),
             },
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(2),
@@ -1187,9 +1196,7 @@ fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
                 id: FeatureId(4),
                 definition_id: DefinitionId(2),
                 name: "Other profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]),
             },
         ]))
         .unwrap();
@@ -1273,9 +1280,10 @@ fn cad_edit_append_planar_offset_rejects_unsupported_inputs_without_mutation() {
     assert_eq!(app.document.visible_undo_steps(), baseline_undo);
 
     for (points_mm, distance_mm, expected_code) in [
+        // Inset past its 16.6 mm inradius, the triangle would vanish.
         (
             vec![[0.0, 0.0], [80.0, 0.0], [40.0, 40.0]],
-            5.0,
+            -20.0,
             "canonical.invalid_planar_offset",
         ),
         (
@@ -1295,7 +1303,7 @@ fn cad_edit_append_planar_offset_rejects_unsupported_inputs_without_mutation() {
                     id: FeatureId(3),
                     definition_id: DefinitionId(2),
                     name: "Invalid offset profile".to_owned(),
-                    kind: FeatureKind::Profile { points_mm },
+                    kind: FeatureKind::polygon(&points_mm),
                 },
             ]))
             .unwrap();
@@ -1321,15 +1329,13 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Sweep profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Sweep path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: [0.0, 0.0],
                         end_mm: [20.0, 0.0],
@@ -1341,9 +1347,12 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
                 id: FeatureId(5),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Unsupported spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-3.0, -2.0], [4.0, -2.0], [4.0, 3.0], [-3.0, 3.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-3.0, -2.0],
+                    [4.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 3.0],
+                ]),
             },
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(2),
@@ -1353,33 +1362,13 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
                 id: FeatureId(6),
                 definition_id: DefinitionId(2),
                 name: "Other profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(7),
-                definition_id: INITIAL_BOX_DEFINITION,
-                name: "Zero-area boundary".to_owned(),
-                kind: FeatureKind::SegmentProfile {
-                    segments: vec![
-                        ProfileSegment::Line {
-                            start_mm: [0.0, 0.0],
-                            end_mm: [10.0, 0.0],
-                        },
-                        ProfileSegment::Line {
-                            start_mm: [10.0, 0.0],
-                            end_mm: [0.0, 0.0],
-                        },
-                    ],
-                    closed: true,
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(8),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Overlong path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
                         start_mm: [0.0, 0.0],
                         end_mm: [100_001.0, 0.0],
@@ -1391,7 +1380,7 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
                 id: FeatureId(9),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Sub-minimum arc".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::CircularArc {
                             start_mm: [0.001, 0.0],
@@ -1438,10 +1427,18 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
         .plan_assistant_cad_edit_program(&program(3, 1))
         .unwrap_err();
     assert_eq!(invalid_path.code, "canonical.invalid_sweep");
-    let zero_area = app
-        .plan_assistant_cad_edit_program(&program(7, 4))
-        .unwrap_err();
-    assert_eq!(zero_area.code, "canonical.invalid_sweep");
+    // A line loop enclosing no area is refused as a profile, before any sweep.
+    assert_eq!(
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: FeatureId(7),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Zero-area boundary".to_owned(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0]]),
+            }]))
+            .err(),
+        Some(CanonicalError::InvalidProfile)
+    );
     let overlong_path = app
         .plan_assistant_cad_edit_program(&program(3, 8))
         .unwrap_err();
@@ -1463,16 +1460,19 @@ fn cad_edit_append_loft_rejects_unsupported_inputs_without_mutation() {
             let angle = std::f64::consts::TAU * index as f64 / 65.0;
             [10.0 * angle.cos(), 10.0 * angle.sin()]
         })
-        .collect();
+        .collect::<Vec<_>>();
     app.document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateFeature {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Valid spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-8.0, -4.0], [9.0, -3.0], [7.0, 6.0], [-6.0, 5.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -4.0],
+                    [9.0, -3.0],
+                    [7.0, 6.0],
+                    [-6.0, 5.0],
+                ]),
             },
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(2),
@@ -1482,25 +1482,24 @@ fn cad_edit_append_loft_rejects_unsupported_inputs_without_mutation() {
                 id: FeatureId(4),
                 definition_id: DefinitionId(2),
                 name: "Other spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-4.0, -2.0],
+                    [5.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 4.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(5),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Polygon profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(6),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Overlong spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: overlong_spline,
-                },
+                kind: FeatureKind::closed_spline(&overlong_spline),
             },
         ]))
         .unwrap();
@@ -1559,18 +1558,18 @@ fn cad_edit_append_boolean_rejects_invalid_exact_inputs_without_mutation() {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Disjoint profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[200.0, 0.0], [220.0, 0.0], [220.0, 20.0], [200.0, 20.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [200.0, 0.0],
+                    [220.0, 0.0],
+                    [220.0, 20.0],
+                    [200.0, 20.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Disjoint extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(3),
-                    height: Dimension::new("20", 20.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(3), Dimension::new("20", 20.0).unwrap()),
             },
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(2),
@@ -1580,18 +1579,13 @@ fn cad_edit_append_boolean_rejects_invalid_exact_inputs_without_mutation() {
                 id: FeatureId(5),
                 definition_id: DefinitionId(2),
                 name: "Other profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(6),
                 definition_id: DefinitionId(2),
                 name: "Other extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(5),
-                    height: Dimension::new("5", 5.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(5), Dimension::new("5", 5.0).unwrap()),
             },
         ]))
         .unwrap();
@@ -2327,13 +2321,9 @@ fn interaction_projection_refresh_defers_while_the_current_frame_reads_the_cache
 
 #[test]
 fn only_body_producing_features_are_export_candidates() {
-    assert!(!FeatureKind::Profile { points_mm: vec![] }.produces_body());
+    assert!(!FeatureKind::polygon(&[]).produces_body());
     assert!(
-        FeatureKind::Extrusion {
-            profile: FeatureId(1),
-            height: Dimension::new("1", 1.0).unwrap(),
-        }
-        .produces_body()
+        FeatureKind::extrusion(FeatureId(1), Dimension::new("1", 1.0).unwrap()).produces_body()
     );
 }
 
@@ -3178,14 +3168,14 @@ fn assistant_context_exposes_bounded_identified_read_only_agent_state_view() {
     let context = app.assistant_context();
     let state_view = context["state_view"].as_object().unwrap();
     let content = state_view["content"].as_str().unwrap();
-    assert_eq!(state_view["format"], AGENT_STATE_VIEW_V1);
+    assert_eq!(state_view["format"], AGENT_STATE_VIEW);
     assert_eq!(state_view["complete"], true);
     assert_eq!(state_view["byte_length"], content.len());
     assert_eq!(
         state_view["sha256"],
         ketchup_core::graph::sha256_hex(content.as_bytes())
     );
-    assert!(content.starts_with("schema=ketchup.state-view.agent.v1\n"));
+    assert!(content.starts_with(&format!("schema={AGENT_STATE_VIEW}\n")));
     assert!(content.contains(&format!(
         "source.canonical_digest={}",
         app.document.current().canonical_digest()
@@ -3270,7 +3260,7 @@ fn provider_context_remains_bounded_for_extreme_selection_and_history() {
         "revision": 1,
         "canonical_digest": "digest",
         "state_view": {
-            "format": AGENT_STATE_VIEW_V1,
+            "format": AGENT_STATE_VIEW,
             "complete": false,
             "byte_length": long_text.len(),
             "sha256": "digest",
@@ -4177,35 +4167,25 @@ pub(super) fn through_cut_document() -> DocumentStore {
                 id: FeatureId(11),
                 definition_id: DefinitionId(10),
                 name: "Outer profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(12),
                 definition_id: DefinitionId(10),
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(11),
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(11), Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(13),
                 definition_id: DefinitionId(10),
                 name: "Cut profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0]],
-                },
+                kind: FeatureKind::polygon(&[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(14),
                 definition_id: DefinitionId(10),
                 name: "Through cut".to_owned(),
-                kind: FeatureKind::ThroughCut {
-                    target: FeatureId(12),
-                    profile: FeatureId(13),
-                },
+                kind: FeatureKind::through_cut(FeatureId(12), FeatureId(13)),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(10),
@@ -5117,7 +5097,7 @@ fn imported_dxf_profiles_remain_projected_and_pickable_after_persistence() {
     let scene = projection.scene().unwrap();
     assert_eq!(scene.occurrence_count(), 3);
     assert!(snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         exact_circle_geometry(segments, *closed) == Some(([50.0, 5.0], 4.0))
@@ -5342,41 +5322,31 @@ fn production_exact_refresh_uses_graph_for_a_general_boolean_chain() {
                 id: FeatureId(10),
                 definition_id,
                 name: "Base pentagon".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [-12.0, -8.0],
-                        [18.0, -6.0],
-                        [24.0, 9.0],
-                        [3.0, 20.0],
-                        [-17.0, 7.0],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [-12.0, -8.0],
+                    [18.0, -6.0],
+                    [24.0, 9.0],
+                    [3.0, 20.0],
+                    [-17.0, 7.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(11),
                 definition_id,
                 name: "Unequal base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(10),
-                    height: Dimension::from_decimal("13").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(10), Dimension::from_decimal("13").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(20),
                 definition_id,
                 name: "Slanted tool".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-3.0, -15.0], [27.0, 4.0], [5.0, 24.0]],
-                },
+                kind: FeatureKind::polygon(&[[-3.0, -15.0], [27.0, 4.0], [5.0, 24.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(21),
                 definition_id,
                 name: "Unequal tool".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(20),
-                    height: Dimension::from_decimal("19").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(20), Dimension::from_decimal("19").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: producer_feature_id,
@@ -6304,9 +6274,7 @@ fn assistant_profile_points_review_is_typed_observational_and_undoable() {
                 id: profile,
                 definition_id: definition,
                 name: "Profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: original.clone(),
-                },
+                kind: FeatureKind::polygon(&original),
             },
         ]))
         .unwrap();
@@ -6340,14 +6308,14 @@ fn assistant_profile_points_review_is_typed_observational_and_undoable() {
 
     assert!(app.confirm_assistant_proposal());
     assert!(matches!(
-        app.document.current().feature(profile).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm == &requested
+        app.document.current().feature(profile).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm == &requested
     ));
     assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
     assert!(app.undo());
     assert!(matches!(
-        app.document.current().feature(profile).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm == &original
+        app.document.current().feature(profile).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm == &original
     ));
 }
 
@@ -6914,8 +6882,8 @@ fn assistant_create_profile_feature_review_is_typed_observational_and_undoable()
     assert_eq!(created.definition_id(), INITIAL_BOX_DEFINITION);
     assert_eq!(created.name(), "Reviewed profile");
     assert!(matches!(
-        created.kind(),
-        FeatureKind::Profile { points_mm: created_points } if created_points == &points_mm
+        created.kind().polygon_points(),
+        Some(ref created_points) if created_points == &points_mm
     ));
     assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
     assert!(app.undo());
@@ -6940,9 +6908,7 @@ fn assistant_delete_profile_feature_review_is_typed_observational_and_undoable()
             id: feature,
             definition_id: INITIAL_BOX_DEFINITION,
             name: "Reviewed profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: points_mm.clone(),
-            },
+            kind: FeatureKind::polygon(&points_mm),
         }]))
         .unwrap();
     let feature_ids_before = app
@@ -7011,12 +6977,7 @@ fn assistant_delete_profile_feature_review_is_typed_observational_and_undoable()
     let restored = snapshot.feature(feature).unwrap();
     assert_eq!(restored.definition_id(), INITIAL_BOX_DEFINITION);
     assert_eq!(restored.name(), "Reviewed profile");
-    assert_eq!(
-        restored.kind(),
-        &FeatureKind::Profile {
-            points_mm: points_mm.clone(),
-        }
-    );
+    assert_eq!(restored.kind(), &FeatureKind::polygon(&points_mm));
     assert_eq!(
         snapshot
             .definition(INITIAL_BOX_DEFINITION)
@@ -7279,7 +7240,8 @@ fn assistant_create_feature_parameter_binding_is_typed_observational_and_undoabl
     let feature = FeatureId(202);
     let rule = NodeId(203);
     let target =
-        FeatureParameterTarget::new(feature, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(feature, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let derived_from = DerivedIdentity::new(
         rule,
         SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
@@ -7295,18 +7257,13 @@ fn assistant_create_feature_parameter_binding_is_typed_observational_and_undoabl
                 id: profile,
                 definition_id: definition,
                 name: "Bound profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: feature,
                 definition_id: definition,
                 name: "Bound extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateRuleNode {
                 id: rule,
@@ -7335,7 +7292,7 @@ fn assistant_create_feature_parameter_binding_is_typed_observational_and_undoabl
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "height:203:result:left".to_owned();
+    app.assistant_value_input = "extent.distance:203:result:left".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -7385,7 +7342,8 @@ fn assistant_delete_feature_parameter_binding_is_typed_observational_and_undoabl
     let feature = FeatureId(206);
     let rule = NodeId(207);
     let target =
-        FeatureParameterTarget::new(feature, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(feature, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let derived_from = DerivedIdentity::new(
         rule,
         SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
@@ -7401,18 +7359,13 @@ fn assistant_delete_feature_parameter_binding_is_typed_observational_and_undoabl
                 id: profile,
                 definition_id: definition,
                 name: "Bound profile deletion".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: feature,
                 definition_id: definition,
                 name: "Bound extrusion deletion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateRuleNode {
                 id: rule,
@@ -7447,7 +7400,7 @@ fn assistant_delete_feature_parameter_binding_is_typed_observational_and_undoabl
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "height".to_owned();
+    app.assistant_value_input = "extent.distance".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -7497,7 +7450,8 @@ fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
     let feature = FeatureId(210);
     let rule = NodeId(211);
     let target =
-        FeatureParameterTarget::new(feature, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(feature, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let derived_from = DerivedIdentity::new(
         rule,
         SlotPath::new(vec![SlotSegment::new(rule, "result", "height").unwrap()]).unwrap(),
@@ -7513,18 +7467,13 @@ fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
                 id: profile,
                 definition_id: definition,
                 name: "Recomputed profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: feature,
                 definition_id: definition,
                 name: "Recomputed extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateRuleNode {
                 id: rule,
@@ -7559,7 +7508,7 @@ fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "height".to_owned();
+    app.assistant_value_input = "extent.distance".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -7582,14 +7531,14 @@ fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
     assert!(app.confirm_assistant_proposal());
     assert!(matches!(
         app.document.current().feature(feature).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "42" && height.millimetres() == 42.0
     ));
     assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
     assert!(app.undo());
     assert!(matches!(
         app.document.current().feature(feature).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "20" && height.millimetres() == 20.0
     ));
 }
@@ -7613,9 +7562,7 @@ fn assistant_clone_profile_definition_is_typed_observational_and_undoable() {
                 id: source_feature,
                 definition_id: source_definition,
                 name: "Source profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: points_mm.clone(),
-                },
+                kind: FeatureKind::polygon(&points_mm),
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence,
@@ -7679,8 +7626,8 @@ fn assistant_clone_profile_definition_is_typed_observational_and_undoable() {
         new_definition
     );
     assert!(matches!(
-        app.document.current().feature(new_feature).unwrap().kind(),
-        FeatureKind::Profile { points_mm: cloned } if cloned == &points_mm
+        app.document.current().feature(new_feature).unwrap().kind().polygon_points(),
+        Some(ref cloned) if cloned == &points_mm
     ));
     assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
     assert!(app.undo());
@@ -8208,7 +8155,8 @@ fn assistant_create_persistent_dimension_is_typed_observational_and_undoable() {
     let mut app = KetchupApp::new();
     let target = PersistentDimensionId(218);
     let dimension_target =
-        FeatureParameterTarget::new(FeatureId(2), "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(FeatureId(2), "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let presentation = DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
@@ -8219,7 +8167,7 @@ fn assistant_create_persistent_dimension_is_typed_observational_and_undoable() {
     assert!(!app.prepare_assistant_from_inputs());
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = "Reviewed height:2:height:cm:2".to_owned();
+    app.assistant_value_input = "Reviewed height:2:extent.distance:cm:2".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -8482,9 +8430,7 @@ fn push_pull_uses_the_projected_feature_pair_and_preserves_local_profile_origin(
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Unrelated profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: unrelated_points.clone(),
-                },
+                kind: FeatureKind::polygon(&unrelated_points),
             },
         ]))
         .unwrap();
@@ -8521,17 +8467,27 @@ fn push_pull_uses_the_projected_feature_pair_and_preserves_local_profile_origin(
     assert!(app.start_preview());
     assert!(app.confirm_preview());
     let snapshot = app.document.current();
-    let FeatureKind::Profile { points_mm } = snapshot.feature(FeatureId(1)).unwrap().kind() else {
+    let Some(points_mm) = snapshot
+        .feature(FeatureId(1))
+        .unwrap()
+        .kind()
+        .polygon_points()
+    else {
         panic!("linked profile must remain a profile");
     };
     assert_eq!(
         points_mm,
-        &vec![[10.0, 20.0], [160.0, 20.0], [160.0, 80.0], [10.0, 80.0]]
+        vec![[10.0, 20.0], [160.0, 20.0], [160.0, 80.0], [10.0, 80.0]]
     );
-    let FeatureKind::Profile { points_mm } = snapshot.feature(FeatureId(3)).unwrap().kind() else {
+    let Some(points_mm) = snapshot
+        .feature(FeatureId(3))
+        .unwrap()
+        .kind()
+        .polygon_points()
+    else {
         panic!("unrelated feature must remain a profile");
     };
-    assert_eq!(points_mm, &unrelated_points);
+    assert_eq!(points_mm, unrelated_points);
 }
 
 #[test]
@@ -9066,7 +9022,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
                     id: FeatureId(3),
                     definition_id: DefinitionId(2),
                     name: "Slanted containing profile".to_owned(),
-                    kind: FeatureKind::SegmentProfile {
+                    kind: FeatureKind::Profile {
                         segments,
                         closed: true,
                     },
@@ -9075,10 +9031,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
                     id: FeatureId(4),
                     definition_id: DefinitionId(2),
                     name: "Polygon tool extrusion".to_owned(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(3),
-                        height: Dimension::new("20", 20.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(FeatureId(3), Dimension::new("20", 20.0).unwrap()),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: OccurrenceId(2),
@@ -9460,7 +9413,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
                     id: FeatureId(3),
                     definition_id: DefinitionId(2),
                     name: "Circle profile".to_owned(),
-                    kind: FeatureKind::SegmentProfile {
+                    kind: FeatureKind::Profile {
                         segments: vec![
                             ProfileSegment::CircularArc {
                                 start_mm: left,
@@ -9482,10 +9435,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
                     id: FeatureId(4),
                     definition_id: DefinitionId(2),
                     name: "Circle extrusion".to_owned(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(3),
-                        height: Dimension::new("20", 20.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(FeatureId(3), Dimension::new("20", 20.0).unwrap()),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: OccurrenceId(2),
@@ -10598,9 +10548,7 @@ fn revolve_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .unwrap()
         .plan
         .source
-        .profile_kind = FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-    };
+        .profile_kind = FeatureKind::polygon(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
     assert!(!source_tamper.confirm_revolve_preview());
     assert_unchanged(&source_tamper, revision, &digest, undo_steps);
 
@@ -10746,9 +10694,7 @@ fn planar_offset_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .unwrap()
         .plan
         .source
-        .profile_kind = FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-    };
+        .profile_kind = FeatureKind::polygon(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
     assert!(!source_tamper.confirm_planar_offset_preview());
     assert_unchanged(&source_tamper, revision, &digest, undo_steps);
 
@@ -10888,9 +10834,7 @@ fn sweep_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .unwrap()
         .plan
         .source
-        .profile_kind = FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-    };
+        .profile_kind = FeatureKind::polygon(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
     assert!(!source_tamper.confirm_sweep_preview());
     assert_unchanged(&source_tamper, revision, &digest, undo_steps);
 
@@ -11036,9 +10980,7 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .plan
         .source
         .profile_kinds[0]
-        .1 = FeatureKind::SplineProfile {
-        control_points_mm: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-    };
+        .1 = FeatureKind::closed_spline(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
     assert!(!source_tamper.confirm_loft_preview());
     assert_unchanged(&source_tamper, revision, &digest, undo_steps);
 
@@ -11311,9 +11253,7 @@ fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() 
         .unwrap()
         .plan
         .source
-        .target_feature_kind = FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-    };
+        .target_feature_kind = FeatureKind::polygon(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]);
     assert!(!source_tamper.confirm_general_finish_preview());
     assert_unchanged(&source_tamper, revision, &digest, undo_steps);
 
@@ -11408,7 +11348,7 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     assert!(matches!(
         preview.batch.commands(),
         [CanonicalCommand::CreateFeature {
-            kind: FeatureKind::TopologyFaceOffset { .. },
+            kind: FeatureKind::FaceOffset { .. },
             ..
         }]
     ));
@@ -11633,19 +11573,22 @@ fn a_pocket_in_the_document_keeps_an_editable_depth_as_canonical_undo_steps() {
                 id: FeatureId(3),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Pocket profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[20.0, 15.0], [50.0, 15.0], [50.0, 35.0], [20.0, 35.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [20.0, 15.0],
+                    [50.0, 15.0],
+                    [50.0, 35.0],
+                    [20.0, 35.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: INITIAL_BOX_DEFINITION,
                 name: "Pocket".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: FeatureId(2),
-                    profile: FeatureId(3),
-                    depth: Dimension::new("8", 8.0).unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    FeatureId(2),
+                    FeatureId(3),
+                    Dimension::new("8", 8.0).unwrap(),
+                ),
             },
         ]))
         .unwrap();
@@ -11656,14 +11599,14 @@ fn a_pocket_in_the_document_keeps_an_editable_depth_as_canonical_undo_steps() {
     assert_eq!(app.document.visible_undo_steps(), steps + 1);
     assert!(matches!(
         app.document.current().feature(FeatureId(4)).unwrap().kind(),
-        FeatureKind::Pocket { depth, .. } if depth.millimetres() == 12.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { .. }, .. }) if depth.millimetres() == 12.0
     ));
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), pocketed_digest);
     assert!(app.redo());
     assert!(matches!(
         app.document.current().feature(FeatureId(4)).unwrap().kind(),
-        FeatureKind::Pocket { depth, .. } if depth.millimetres() == 12.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { .. }, .. }) if depth.millimetres() == 12.0
     ));
 }
 
@@ -11686,15 +11629,18 @@ fn closed_polyline_path_preserves_points_and_rejects_invalid_input_atomically() 
             .current()
             .feature(created.profile_feature_id)
             .unwrap()
-            .kind(),
-        FeatureKind::Profile { points_mm: stored } if stored == &points_mm
+            .kind().polygon_points(),
+        Some(ref stored) if stored == &points_mm
     ));
 
     let digest = app.canonical_digest();
     let revision = app.document_revision();
-    assert!(!app.create_closed_polyline(vec![[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0],]));
+    // A repeated corner leaves a zero-length side, so the loop is refused unchanged.
+    assert!(!app.create_closed_polyline(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 0.0], [0.0, 10.0],]));
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.document_revision(), revision);
+    // Drawing direction does not matter: a clockwise loop is as valid as the reverse.
+    assert!(app.create_closed_polyline(vec![[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0],]));
 }
 
 #[test]

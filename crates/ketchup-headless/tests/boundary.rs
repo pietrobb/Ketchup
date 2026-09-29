@@ -595,7 +595,7 @@ fn editing_hole_dimensions_preserves_part_identity_and_shared_history() {
     assert!(
         params
             .iter()
-            .any(|p| p["path"] == "depth" && p["value"] == 14.0),
+            .any(|p| p["path"] == "extent.distance" && p["value"] == 14.0),
         "{params:?}"
     );
     assert_eq!(
@@ -778,7 +778,7 @@ fn editing_pocket_depth_preserves_part_and_shared_history() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|p| p["path"] == "depth" && p["value"] == 8.0)),
+            .any(|p| p["path"] == "extent.distance" && p["value"] == 8.0)),
         "{features:?}"
     );
     assert_eq!(responses[6]["result"]["source"]["overrides"], json!({}));

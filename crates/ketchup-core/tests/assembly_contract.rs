@@ -130,7 +130,7 @@ fn seeded_circle_document() -> (DocumentStore, ketchup_core::exact_product::Body
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Circle profile".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::CircularArc {
                             start_mm: [center[0] + radius, center[1]],
@@ -152,10 +152,7 @@ fn seeded_circle_document() -> (DocumentStore, ketchup_core::exact_product::Body
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Cylinder".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: FIRST,
@@ -209,18 +206,13 @@ fn seeded_document() -> (
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: FIRST,
@@ -369,27 +361,21 @@ fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
         normal_b.map(f64::to_bits)
     );
 
-    let state = encode_semantic_state(&committed).complete_v1().to_owned();
-    assert!(state.contains("assembly_mate.20.endpoint_a.attachment=planar_face"));
-    assert!(state.contains(
-        "assembly_mate.20.endpoint_a.origin_f64_bits=3ff4000000000000,8000000000000000,400c000000000000"
-    ));
-    assert!(state.contains(
-        "assembly_mate.20.endpoint_a.normal_f64_bits=0000000000000000,bff0000000000000,0000000000000000"
-    ));
-    assert!(state.contains("assembly_mate.20.endpoint_b.attachment=planar_face"));
-    assert!(state.contains(
-        "assembly_mate.20.endpoint_b.origin_f64_bits=c004000000000000,4010000000000000,4024000000000000"
-    ));
-    assert!(state.contains(
-        "assembly_mate.20.endpoint_b.normal_f64_bits=0000000000000000,3ff0000000000000,0000000000000000"
-    ));
+    let state = encode_semantic_state(&committed).complete().to_owned();
+    for line in [
+        "assembly_mates.20.endpoint_a.attachment.PlanarFace.local_origin_mm=[1.25,-0.0,3.5]",
+        "assembly_mates.20.endpoint_a.attachment.PlanarFace.local_unit_normal=[0.0,-1.0,0.0]",
+        "assembly_mates.20.endpoint_b.attachment.PlanarFace.local_origin_mm=[-2.5,4.0,10.0]",
+        "assembly_mates.20.endpoint_b.attachment.PlanarFace.local_unit_normal=[0.0,1.0,0.0]",
+    ] {
+        assert!(state.contains(line), "missing {line}");
+    }
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
     assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
+        encode_semantic_state(&reopened.snapshot()).complete(),
         state
     );
     assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
@@ -401,10 +387,7 @@ fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
         committed_digest
     );
     assert_eq!(document.current().assembly_mate(MATE), Some(&mate));
-    assert_eq!(
-        encode_semantic_state(&document.current()).complete_v1(),
-        state
-    );
+    assert_eq!(encode_semantic_state(&document.current()).complete(), state);
 }
 
 #[test]
@@ -461,16 +444,14 @@ fn typed_axial_endpoints_are_bit_exact_ignore_labels_transform_origins_and_round
     let committed = document.current();
     let digest = committed.canonical_digest();
     assert_ne!(digest, before);
-    let state = encode_semantic_state(&committed).complete_v1().to_owned();
-    assert!(state.contains("endpoint_a.attachment=axial,kind=cylindrical_face"));
-    assert!(
-        state.contains(
-            "endpoint_a.origin_f64_bits=4000000000000000,8000000000000000,4010000000000000"
-        )
-    );
-    assert!(state.contains(
-        "endpoint_b.direction_f64_bits=0000000000000000,3ff0000000000000,0000000000000000"
-    ));
+    let state = encode_semantic_state(&committed).complete().to_owned();
+    for line in [
+        "endpoint_a.attachment.Axial.kind=\"CylindricalFace\"",
+        "endpoint_a.attachment.Axial.local_origin_mm=[2.0,-0.0,4.0]",
+        "endpoint_b.attachment.Axial.local_unit_direction=[0.0,1.0,0.0]",
+    ] {
+        assert!(state.contains(line), "missing {line}");
+    }
     let solved = solve_rigid_assembly(&committed, AssemblySolverPolicy::default()).unwrap();
     let solved_transform = solved.occurrence(SECOND).unwrap().transform();
     let m = solved_transform.matrix();
@@ -494,7 +475,7 @@ fn typed_axial_endpoints_are_bit_exact_ignore_labels_transform_origins_and_round
     assert_eq!(reopened.snapshot().canonical_digest(), digest);
     assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
+        encode_semantic_state(&reopened.snapshot()).complete(),
         state
     );
     document.undo().unwrap();
@@ -1072,29 +1053,25 @@ fn assembly_contract_is_reviewed_atomic_undoable_and_losslessly_persistent() {
     assert_eq!(pending_dof.remaining_dof(), None);
     assert_eq!(pending_dof.incident_mate_ids(), &[MATE]);
     let state = encode_semantic_state(&committed);
-    assert!(state.complete_v1().contains("occurrence.10.grounded=true"));
-    assert!(
-        state
-            .complete_v1()
-            .contains("occurrence.10.dof=status:grounded,remaining:0,incident_mates:[20]")
-    );
-    assert!(
-        state.complete_v1().contains(
-            "occurrence.11.dof=status:pending_solve,remaining:unknown,incident_mates:[20]"
-        )
-    );
-    assert!(
-        state
-            .complete_v1()
-            .contains("assembly_mate.20.kind=coincident_planar")
-    );
+    for line in [
+        "\ngrounded_occurrences=[10]\n",
+        "analysis.occurrence_dof.10.status=\"Grounded\"",
+        "analysis.occurrence_dof.10.remaining_dof=0",
+        "analysis.occurrence_dof.10.incident_mate_ids=[20]",
+        "analysis.occurrence_dof.11.status=\"PendingSolve\"",
+        "analysis.occurrence_dof.11.remaining_dof=none",
+        "analysis.occurrence_dof.11.incident_mate_ids=[20]",
+        "assembly_mates.20.kind.CoincidentPlanar.",
+    ] {
+        assert!(state.complete().contains(line), "missing {line}");
+    }
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
     assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
-        state.complete_v1()
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        state.complete()
     );
     assert!(reopened.snapshot().occurrence_is_grounded(FIRST));
     assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
@@ -1849,8 +1826,8 @@ fn assembly_recompute_rebinds_current_topology_and_persists_fail_closed_diagnost
     );
     assert!(
         encode_semantic_state(&reopened.snapshot())
-            .complete_v1()
-            .contains("assembly_mate.20.endpoint_a.health=broken")
+            .complete()
+            .contains("assembly_mates.20.endpoint_a.health=\"Broken\"")
     );
 
     let source = document.current();
@@ -1941,9 +1918,7 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
         ]))
         .unwrap();
     let before_rebind = document.current();
-    let before_rebind_state = encode_semantic_state(&before_rebind)
-        .complete_v1()
-        .to_owned();
+    let before_rebind_state = encode_semantic_state(&before_rebind).complete().to_owned();
     let before_rebind_digest = before_rebind.canonical_digest();
     let before_rebind_reference = before_rebind
         .assembly_mate(MATE)
@@ -1968,7 +1943,7 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
         .unwrap();
     let rebound = document.current();
     let rebound_digest = rebound.canonical_digest();
-    let rebound_state = encode_semantic_state(&rebound).complete_v1().to_owned();
+    let rebound_state = encode_semantic_state(&rebound).complete().to_owned();
     let rebound_reference = rebound
         .assembly_mate(MATE)
         .unwrap()
@@ -1990,7 +1965,7 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
     let reopened = persistence::load(&persistence::save(&rebound)).unwrap();
     assert_eq!(reopened.snapshot().canonical_digest(), rebound_digest);
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
+        encode_semantic_state(&reopened.snapshot()).complete(),
         rebound_state
     );
 
@@ -1999,12 +1974,12 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
         before_rebind_digest
     );
     assert_eq!(
-        encode_semantic_state(&document.current()).complete_v1(),
+        encode_semantic_state(&document.current()).complete(),
         before_rebind_state
     );
     assert_eq!(document.redo().unwrap().canonical_digest(), rebound_digest);
     assert_eq!(
-        encode_semantic_state(&document.current()).complete_v1(),
+        encode_semantic_state(&document.current()).complete(),
         rebound_state
     );
 

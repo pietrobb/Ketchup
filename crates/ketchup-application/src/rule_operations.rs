@@ -9,9 +9,9 @@ use crate::diagnostics::{
 use crate::sketch::assistant_sketch_entities;
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, ChamferMode, DefinitionId,
-    Dimension, EdgeFinishKind, FeatureId, FeatureKind, LoftContinuity, LoftSection,
-    ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection, SpatialPathSegment,
-    Transform,
+    Dimension, EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind, LoftContinuity,
+    LoftSection, ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection,
+    SpatialPathSegment, Transform,
 };
 use ketchup_core::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
 use ketchup_program::model::{
@@ -145,7 +145,7 @@ pub(crate) fn replace_base_body(
         ProgramPartBody::Sweep { segments, path } => {
             // Only a plain profile is read in the path's own section frame.
             if let CanonicalCommand::CreateFeature { kind, .. } = &mut commands[sketch] {
-                *kind = FeatureKind::SegmentProfile {
+                *kind = FeatureKind::Profile {
                     segments: segments.iter().map(profile_segment).collect(),
                     closed: true,
                 };
@@ -263,7 +263,7 @@ impl<'a> OperationPlanner<'a> {
     ) -> Result<FeatureId, AssistantRejection> {
         let profile = self.feature(
             format!("{} sketch", cut.name),
-            FeatureKind::SegmentProfile {
+            FeatureKind::Profile {
                 segments: cut.segments.iter().map(profile_segment).collect(),
                 closed: true,
             },
@@ -271,11 +271,7 @@ impl<'a> OperationPlanner<'a> {
         let depth = self.dimension(cut.depth_mm)?;
         self.feature(
             cut.name.clone(),
-            FeatureKind::Pocket {
-                target,
-                profile,
-                depth,
-            },
+            FeatureKind::pocket(target, profile, depth),
         )
     }
 
@@ -285,23 +281,22 @@ impl<'a> OperationPlanner<'a> {
         finish: &ProgramEdgeFillet,
         target: FeatureId,
     ) -> Result<FeatureId, AssistantRejection> {
-        let profile_edges = finish
+        let edges = finish
             .edges
             .iter()
             .map(|[first, second]| {
-                Ok(ProfileEdgeReference {
+                Ok(EdgeRef::Named(ProfileEdgeReference {
                     first: self.face_reference(part, first)?,
                     second: self.face_reference(part, second)?,
-                })
+                }))
             })
             .collect::<Result<Vec<_>, AssistantRejection>>()?;
         let amount = self.dimension(finish.radius_mm)?;
         self.feature(
             finish.name.clone(),
-            FeatureKind::TopologyEdgeFinish {
+            FeatureKind::EdgeFinish {
                 target,
-                edges: Vec::new(),
-                profile_edges,
+                edges,
                 kind: match finish.kind {
                     ProgramEdgeFinishKind::Fillet => EdgeFinishKind::Fillet,
                     ProgramEdgeFinishKind::Chamfer => EdgeFinishKind::Chamfer,
@@ -320,14 +315,13 @@ impl<'a> OperationPlanner<'a> {
         offset: &ProgramFaceOffset,
         target: FeatureId,
     ) -> Result<FeatureId, AssistantRejection> {
-        let profile_face = self.face_reference(part, &offset.face)?;
+        let face = FaceRef::Named(self.face_reference(part, &offset.face)?);
         let distance = self.dimension(offset.distance_mm)?;
         self.feature(
             offset.name.clone(),
-            FeatureKind::TopologyFaceOffset {
+            FeatureKind::FaceOffset {
                 target,
-                face: None,
-                profile_face: Some(profile_face),
+                face,
                 distance,
             },
         )
@@ -352,18 +346,17 @@ impl<'a> OperationPlanner<'a> {
         shell: &ProgramShell,
         target: FeatureId,
     ) -> Result<FeatureId, AssistantRejection> {
-        let profile_faces = shell
+        let removed_faces = shell
             .open
             .iter()
-            .map(|face| self.face_reference(part, face))
+            .map(|face| self.face_reference(part, face).map(FaceRef::Named))
             .collect::<Result<Vec<_>, _>>()?;
         let thickness = self.dimension(shell.thickness_mm)?;
         self.feature(
             shell.name.clone(),
-            FeatureKind::TopologyShell {
+            FeatureKind::Shell {
                 target,
-                removed_faces: Vec::new(),
-                profile_faces,
+                removed_faces,
                 thickness,
                 direction: ShellDirection::Inward,
             },
@@ -503,7 +496,7 @@ impl<'a> OperationPlanner<'a> {
         };
         let profile = self.feature(
             format!("{prefix} tool profile"),
-            FeatureKind::SegmentProfile {
+            FeatureKind::Profile {
                 segments,
                 closed: true,
             },
@@ -540,10 +533,7 @@ impl<'a> OperationPlanner<'a> {
         profile: FeatureId,
         height_mm: f64,
     ) -> Result<FeatureKind, AssistantRejection> {
-        Ok(FeatureKind::Extrusion {
-            profile,
-            height: self.dimension(height_mm)?,
-        })
+        Ok(FeatureKind::extrusion(profile, self.dimension(height_mm)?))
     }
 
     fn feature(

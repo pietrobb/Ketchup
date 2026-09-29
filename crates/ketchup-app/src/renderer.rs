@@ -308,12 +308,7 @@ fn geometry_sources(
         .feature_ids()
         .last()
         .and_then(|id| snapshot.feature(*id))
-        .is_some_and(|feature| {
-            matches!(
-                feature.kind(),
-                FeatureKind::SegmentProfile { closed: false, .. }
-            )
-        })
+        .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Profile { closed: false, .. }))
     {
         return Vec::new();
     }

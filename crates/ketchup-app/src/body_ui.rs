@@ -190,7 +190,10 @@ impl KetchupApp {
                 let feature = snapshot.feature(*id)?;
                 matches!(
                     feature.kind(),
-                    FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+                    FeatureKind::Pad(PadSpec {
+                        operation: PadOperation::NewBody,
+                        ..
+                    })
                 )
                 .then(|| (*id, feature.name().to_owned(), feature.kind().clone()))
             })
@@ -209,7 +212,10 @@ impl KetchupApp {
             };
             if !matches!(
                 feature.kind(),
-                FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+                FeatureKind::Pad(PadSpec {
+                    operation: PadOperation::NewBody,
+                    ..
+                })
             ) || definition
                 .feature_body_ownership(*id)
                 .and_then(|ownership| ownership.output_body_id())

@@ -263,7 +263,9 @@ fn private_oauth_launch_rejects_relative_executables_and_pins_identity() {
             .unwrap_err();
     assert!(relative.contains("absolute"));
 
-    let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
+        .canonicalize()
+        .unwrap();
     let launch = private_assistant_launch_for_executable(&executable).unwrap();
     assert_eq!(launch.executable, executable);
     assert_eq!(

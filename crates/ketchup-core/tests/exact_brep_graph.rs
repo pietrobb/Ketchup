@@ -1,7 +1,8 @@
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
-    Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftContinuity, LoftSection,
-    ProfileSegment, SpatialPathSegment, StableFaceRole, is_valid_spatial_sweep_path,
+    Dimension, DocumentStore, EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind,
+    LoftContinuity, LoftSection, ProfileSegment, SpatialPathSegment, Transform,
+    is_valid_spatial_sweep_path,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
@@ -15,9 +16,10 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::ExactFaceRole;
 use ketchup_core::persistence;
+use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PocketSpec, PrincipalPlane,
-    SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
     WorkplaneSupportHealth,
 };
 use ketchup_core::testing::box_package;
@@ -75,41 +77,31 @@ fn arbitrary_boolean_document() -> DocumentStore {
                 id: BASE_PROFILE,
                 definition_id: DEFINITION,
                 name: "Base pentagon".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [-12.0, -8.0],
-                        [18.0, -6.0],
-                        [24.0, 9.0],
-                        [3.0, 20.0],
-                        [-17.0, 7.0],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [-12.0, -8.0],
+                    [18.0, -6.0],
+                    [24.0, 9.0],
+                    [3.0, 20.0],
+                    [-17.0, 7.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: BASE_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Unequal base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: BASE_PROFILE,
-                    height: dimension(13.0),
-                },
+                kind: FeatureKind::extrusion(BASE_PROFILE, dimension(13.0)),
             },
             CanonicalCommand::CreateFeature {
                 id: TOOL_PROFILE,
                 definition_id: DEFINITION,
                 name: "Slanted tool".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-3.0, -15.0], [27.0, 4.0], [5.0, 24.0]],
-                },
+                kind: FeatureKind::polygon(&[[-3.0, -15.0], [27.0, 4.0], [5.0, 24.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: TOOL_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Unequal tool".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: TOOL_PROFILE,
-                    height: dimension(19.0),
-                },
+                kind: FeatureKind::extrusion(TOOL_PROFILE, dimension(19.0)),
             },
             CanonicalCommand::CreateFeature {
                 id: BOOLEAN,
@@ -142,16 +134,14 @@ fn stepped_profile_revolves_through_the_general_graph() {
                 id: profile,
                 definition_id: definition,
                 name: "Stepped profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [0.0, 0.0],
-                        [30.0, 0.0],
-                        [30.0, 110.0],
-                        [12.0, 130.0],
-                        [12.0, 145.0],
-                        [0.0, 145.0],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [30.0, 0.0],
+                    [30.0, 110.0],
+                    [12.0, 130.0],
+                    [12.0, 145.0],
+                    [0.0, 145.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: revolve,
@@ -216,18 +206,13 @@ fn compiler_preserves_arbitrary_unequal_extrusions_as_a_topological_graph() {
                 id: FeatureId(40),
                 definition_id: DEFINITION,
                 name: "Unrelated branch profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[100.0, 100.0], [110.0, 100.0], [105.0, 109.0]],
-                },
+                kind: FeatureKind::polygon(&[[100.0, 100.0], [110.0, 100.0], [105.0, 109.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(41),
                 definition_id: DEFINITION,
                 name: "Unrelated branch body".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(40),
-                    height: dimension(7.0),
-                },
+                kind: FeatureKind::extrusion(FeatureId(40), dimension(7.0)),
             },
         ]))
         .unwrap();
@@ -251,10 +236,9 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
             id: shell,
             definition_id: DEFINITION,
             name: "Topology shell".into(),
-            kind: FeatureKind::TopologyShell {
+            kind: FeatureKind::Shell {
                 target: BOOLEAN,
-                removed_faces: vec![face.clone()],
-                profile_faces: Vec::new(),
+                removed_faces: vec![FaceRef::from(face.clone())],
                 thickness: dimension(2.5),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },
@@ -267,10 +251,9 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
             id: finish,
             definition_id: DEFINITION,
             name: "Topology chamfer".into(),
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: shell,
-                edges: vec![edge.clone()],
-                profile_edges: Vec::new(),
+                edges: vec![EdgeRef::from(edge.clone())],
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(1.25),
                 fillet_radius_stations: Vec::new(),
@@ -357,10 +340,9 @@ fn topology_face_offset_compiles_and_round_trips_with_signed_distance() {
             id: offset,
             definition_id: DEFINITION,
             name: "Topology face offset".into(),
-            kind: FeatureKind::TopologyFaceOffset {
+            kind: FeatureKind::FaceOffset {
                 target: BOOLEAN,
-                face: Some(face.clone()),
-                profile_face: None,
+                face: FaceRef::from(face.clone()),
                 distance: dimension(-3.5),
             },
         }]))
@@ -478,10 +460,10 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
                 definition_id: pad_definition,
                 name: "Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch,
-                    region,
+                    profile: PadProfile::SketchRegion { sketch, region },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(8.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -545,15 +527,13 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
                 id: sweep_profile,
                 definition_id: sweep_definition,
                 name: "Sweep rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [3.0, -1.0], [3.0, 4.0], [-2.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [3.0, -1.0], [3.0, 4.0], [-2.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: sweep_path,
                 definition_id: sweep_definition,
                 name: "Straight path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![ketchup_core::document::ProfileSegment::Line {
                         start_mm: [0.0, 0.0],
                         end_mm: [15.0, 8.0],
@@ -587,17 +567,23 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
                 id: lower,
                 definition_id: loft_definition,
                 name: "Lower spline".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-8.0, -4.0], [9.0, -3.0], [7.0, 6.0], [-6.0, 5.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -4.0],
+                    [9.0, -3.0],
+                    [7.0, 6.0],
+                    [-6.0, 5.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: upper,
                 definition_id: loft_definition,
                 name: "Upper spline".into(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-4.0, -2.0],
+                    [5.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 4.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: loft,
@@ -691,15 +677,13 @@ fn tangent_line_arc_sweep_uses_v9_and_round_trips() {
                 id: profile,
                 definition_id: definition,
                 name: "Sweep section".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [3.0, -1.0], [3.0, 4.0], [-2.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [3.0, -1.0], [3.0, 4.0], [-2.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,
                 definition_id: definition,
                 name: "Tangent line-arc path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -834,10 +818,9 @@ fn canonical_cycle_is_rejected_without_changing_the_valid_graph() {
     let undo_steps = document.visible_undo_steps();
     let first = FeatureId(50);
     let second = FeatureId(51);
-    let shell = |target| FeatureKind::Shell {
+    let shell = |target| FeatureKind::RigidTransform {
         target,
-        removed_faces: vec![StableFaceRole::new("graph.cycle.face").unwrap()],
-        thickness: dimension(1.0),
+        transform: Transform::identity(),
     };
 
     let error = match document.apply_batch(&CommandBatch::new(vec![
@@ -895,7 +878,7 @@ fn byte_and_segment_resource_limits_fail_without_mutating_the_document() {
         let profile = FeatureId(600 + profile_index as u64 * 2);
         let extrusion = FeatureId(profile.0 + 1);
         let center_x = profile_index as f64 * 30.0;
-        let points_mm = (0..segment_count_per_profile)
+        let points_mm: Vec<[f64; 2]> = (0..segment_count_per_profile)
             .map(|point_index| {
                 let angle =
                     std::f64::consts::TAU * point_index as f64 / segment_count_per_profile as f64;
@@ -906,16 +889,13 @@ fn byte_and_segment_resource_limits_fail_without_mutating_the_document() {
             id: profile,
             definition_id: DEFINITION,
             name: format!("Bounded profile {profile_index}"),
-            kind: FeatureKind::Profile { points_mm },
+            kind: FeatureKind::polygon(&points_mm),
         });
         commands.push(CanonicalCommand::CreateFeature {
             id: extrusion,
             definition_id: DEFINITION,
             name: format!("Bounded extrusion {profile_index}"),
-            kind: FeatureKind::Extrusion {
-                profile,
-                height: dimension(2.0),
-            },
+            kind: FeatureKind::extrusion(profile, dimension(2.0)),
         });
         producers.push(extrusion);
     }
@@ -1032,10 +1012,13 @@ fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
                 definition_id: DEFINITION,
                 name: "Exact target".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: target_sketch_id,
-                    region: target_region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: target_sketch_id,
+                        region: target_region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(10.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -1084,26 +1067,33 @@ fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
                 definition_id: DEFINITION,
                 name: "Oblique bounded Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: pad_sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: pad_sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::Vector([1.0, 0.0, 1.0]),
                     extent: FeatureExtent::Bidirectional {
                         along: FeatureExtentEnd::UpToFace(Box::new(top.clone())),
                         opposite: FeatureExtentEnd::Blind(dimension(3.0)),
                     },
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateFeature {
                 id: pocket,
                 definition_id: DEFINITION,
                 name: "Bounded Through All Pocket".into(),
-                kind: FeatureKind::SketchPocket(PocketSpec {
-                    target,
-                    sketch: pocket_sketch_id,
-                    region,
-                    support: Box::new(top.clone()),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: pocket_sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::OppositeNormal,
                     extent: FeatureExtent::ThroughAll,
+                    operation: PadOperation::Cut {
+                        target,
+                        start: CutStart::Support(Box::new(top.clone())),
+                    },
                 }),
             },
         ]))
@@ -1155,10 +1145,13 @@ fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
                 definition_id: DEFINITION,
                 name: "Off-face Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: pad_sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: pad_sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::Vector([10.0, 0.0, 1.0]),
                     extent: FeatureExtent::UpToFace(Box::new(top.clone())),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -1253,10 +1246,13 @@ fn mixed_line_cubic_region_compiles_to_v4_and_is_deterministic() {
                 definition_id: definition,
                 name: "Compound Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(12.0)),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -1345,7 +1341,7 @@ fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
                 id: profile,
                 definition_id: definition,
                 name: "Line-arc capsule".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -1445,7 +1441,7 @@ fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
                 id: edge_profile,
                 definition_id: edge_definition,
                 name: "Near-envelope profile".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [999_979.0, 0.0],
@@ -1606,15 +1602,13 @@ fn cubic_sweep_selects_v11_round_trips_and_rejects_v10_downgrade() {
                 id: profile,
                 definition_id: definition,
                 name: "Small rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,
                 definition_id: definition,
                 name: "Line-cubic-line C1 path".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [0.0, 0.0],
@@ -1731,9 +1725,7 @@ fn spatial_sweep_v12_graph() -> ExactBRepGraph {
                 id: profile,
                 definition_id: definition,
                 name: "Small rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,

@@ -1,7 +1,8 @@
 //! Program 4 multi-body authoring replayed offscreen through AccessKit.
 
-mod harness;
+use crate::harness;
 
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -116,7 +117,12 @@ fn body_section_previews_selects_activates_shows_hides_creates_and_combines_atom
             .feature(*definition.feature_ids().last().unwrap())
             .unwrap()
             .kind(),
-        FeatureKind::Extrusion { .. }
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(_),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::NewBody,
+            ..
+        })
     ));
     assert_eq!(shell.app().undo_step_count(), initial_undo + 1);
 
@@ -348,7 +354,7 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
             .feature(TOOL_EXTRUSION)
             .unwrap()
             .kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 120.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 120.0
     ));
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(

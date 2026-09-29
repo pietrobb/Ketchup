@@ -3,27 +3,18 @@ use ketchup_core::document::{
     ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind, NodeId, OccurrenceId, OverrideParameterSpec, PortSpec, ProposalContext,
     ProposalPrincipal, RevisionHistoryError, RevisionOrigin, RuleOutput, SlotPath, SlotResolution,
-    SlotSegment, StableFaceRole, Transform,
+    SlotSegment, Transform,
 };
 use ketchup_core::persistence::LegacyFeatureKind;
 use ketchup_core::persistence::{self, LoadDisposition, PersistenceError};
 use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+use ketchup_core::testing::with_document_id;
 
 fn load_error(bytes: &[u8]) -> PersistenceError {
     match persistence::load(bytes) {
         Ok(_) => panic!("invalid document loaded"),
         Err(error) => error,
     }
-}
-
-fn rewrite_envelope_schema(bytes: &mut [u8], schema: u16) {
-    let manifest_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    let payload_offset = 16 + manifest_length;
-    bytes[10..12].copy_from_slice(&schema.to_le_bytes());
-    let payload_length = (bytes.len() - payload_offset) as u64;
-    bytes[16..24].copy_from_slice(&payload_length.to_le_bytes());
-    let checksum = ketchup_core::graph::sha256_bytes(&bytes[payload_offset..]);
-    bytes[24..56].copy_from_slice(&checksum);
 }
 
 fn container_entry_offsets(bytes: &[u8], target: &str) -> (usize, usize, usize) {
@@ -80,22 +71,6 @@ fn history_snapshot_offsets(bytes: &[u8]) -> Vec<(usize, usize)> {
     snapshots
 }
 
-fn rewrite_history_snapshot_schemas(bytes: &mut [u8], schemas: &[u16]) -> Vec<(usize, usize)> {
-    let (history_checksum_offset, history_offset, history_len) =
-        container_entry_offsets(bytes, "history.bin");
-    let snapshots = history_snapshot_offsets(bytes);
-    assert_eq!(snapshots.len(), schemas.len());
-    for ((snapshot_offset, snapshot_len), schema) in snapshots.iter().zip(schemas) {
-        bytes[snapshot_offset + 10..snapshot_offset + 12].copy_from_slice(&schema.to_le_bytes());
-        let checksum = ketchup_core::graph::sha256_bytes(
-            &bytes[*snapshot_offset..snapshot_offset + snapshot_len],
-        );
-        bytes[snapshot_offset - 32..*snapshot_offset].copy_from_slice(&checksum);
-    }
-    rehash_container_entry(bytes, history_checksum_offset, history_offset, history_len);
-    snapshots
-}
-
 fn graph_document() -> DocumentStore {
     let segment = SlotSegment::new(NodeId(2), "items", "a").unwrap();
     let path = SlotPath::new(vec![segment.clone()]).unwrap();
@@ -132,75 +107,19 @@ fn graph_document() -> DocumentStore {
     store
 }
 
-#[derive(Clone, Copy, Debug)]
-enum LegacyAuthority {
-    RoleStringShell,
-}
-
-fn legacy_authority_document(authority: LegacyAuthority) -> DocumentStore {
-    const DEFINITION: DefinitionId = DefinitionId(18);
-    const PROFILE: FeatureId = FeatureId(19);
-    const LEGACY: FeatureId = FeatureId(20);
-    const REVOLVE: FeatureId = FeatureId(21);
-
-    let mut commands = vec![
-        CanonicalCommand::CreateDefinition {
-            id: DEFINITION,
-            name: "Legacy feature".to_owned(),
-        },
-        CanonicalCommand::CreateFeature {
-            id: PROFILE,
-            definition_id: DEFINITION,
-            name: "Profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![
-                    [0.0, 0.0],
-                    [10.0, 0.0],
-                    [10.0, 20.0],
-                    [5.0, 25.0],
-                    [5.0, 30.0],
-                    [0.0, 30.0],
-                ],
-            },
-        },
-    ];
-    match authority {
-        LegacyAuthority::RoleStringShell => {
-            commands.push(CanonicalCommand::CreateFeature {
-                id: REVOLVE,
-                definition_id: DEFINITION,
-                name: "Revolve".to_owned(),
-                kind: FeatureKind::full_revolve(PROFILE),
-            });
-            let kind = match authority {
-                LegacyAuthority::RoleStringShell => FeatureKind::Shell {
-                    target: REVOLVE,
-                    removed_faces: vec![StableFaceRole::new("revolve.mouth").unwrap()],
-                    thickness: Dimension::new("2", 2.0).unwrap(),
-                },
-            };
-            commands.push(CanonicalCommand::CreateFeature {
-                id: LEGACY,
-                definition_id: DEFINITION,
-                name: "Legacy authority".to_owned(),
-                kind,
-            });
-        }
-    }
-
-    let mut store = DocumentStore::new();
-    store
-        .apply_batch(&CommandBatch::new(commands))
-        .unwrap_or_else(|error| panic!("{authority:?}: {error:?}"));
-    store
+/// Saved before the role-string `Shell` feature was removed; its feature 20 names faces by role.
+fn role_string_shell_document_bytes() -> Vec<u8> {
+    std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/persistence/invalid/role-string-shell-schema97.bin"
+    ))
+    .unwrap()
 }
 
 #[test]
 fn default_load_rejects_legacy_named_feature_authority_with_typed_migration_error() {
-    let bytes =
-        persistence::save(&legacy_authority_document(LegacyAuthority::RoleStringShell).current());
     assert_eq!(
-        load_error(&bytes),
+        load_error(&role_string_shell_document_bytes()),
         PersistenceError::LegacyFeatureRequiresMigration {
             feature_id: FeatureId(20),
             kind: LegacyFeatureKind::RoleStringShell,
@@ -212,11 +131,7 @@ fn default_load_rejects_legacy_named_feature_authority_with_typed_migration_erro
 fn migration_required_primary_is_not_replaced_by_a_recovery_document() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("legacy.ketchup");
-    std::fs::write(
-        &path,
-        persistence::save(&legacy_authority_document(LegacyAuthority::RoleStringShell).current()),
-    )
-    .unwrap();
+    std::fs::write(&path, role_string_shell_document_bytes()).unwrap();
     std::fs::write(
         path.with_extension("ketchup.recovery"),
         persistence::save(&graph_document().current()),
@@ -247,18 +162,13 @@ fn classification_dimensions_and_independent_assignments_round_trip_losslessly()
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Panel".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("20", 20.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("20", 20.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
@@ -429,30 +339,50 @@ fn classification_replacement_is_dimension_local_atomic_and_undoable() {
 
 #[test]
 fn schema_46_document_without_cubic_data_loads_losslessly_after_schema_47_bump() {
-    let snapshot = graph_document().current();
+    let schema_46 = include_bytes!("fixtures/persistence/legacy/graph-schema46.bin");
+    let loaded = persistence::load(schema_46).unwrap();
+    let snapshot = with_document_id(&graph_document().current(), loaded.snapshot().document_id());
     let expected_digest = snapshot.canonical_digest();
-    let schema_47 = persistence::save(&snapshot);
-    let mut schema_46 = schema_47.clone();
-    rewrite_envelope_schema(&mut schema_46, 46);
+    let current = persistence::save(&snapshot);
 
-    let loaded = persistence::load(&schema_46).unwrap();
     assert_eq!(loaded.source_schema(), 46);
     assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
     assert!(loaded.migration_losses().is_empty());
     assert_eq!(loaded.snapshot().canonical_digest(), expected_digest);
-    assert_eq!(persistence::save(&loaded.snapshot()), schema_47);
+    assert_eq!(persistence::save(&loaded.snapshot()), current);
 }
 
 #[test]
 fn schema_three_checks_checksum_before_payload_decode_and_rejects_envelopes() {
-    let bytes = persistence::save(&graph_document().current());
-    let mut corrupt = bytes.clone();
+    // A document written by the retired field-by-field codec (schema 97).
+    let legacy = include_bytes!("fixtures/persistence/legacy/graph-schema97.bin").to_vec();
+    let loaded = persistence::load(&legacy).unwrap().snapshot();
+    assert_eq!(
+        loaded.canonical_digest(),
+        with_document_id(&graph_document().current(), loaded.document_id()).canonical_digest()
+    );
+    let mut corrupt = legacy.clone();
     let payload = 16 + u32::from_le_bytes(corrupt[12..16].try_into().unwrap()) as usize;
     corrupt[payload] ^= 0xff;
     assert_eq!(load_error(&corrupt), PersistenceError::ChecksumMismatch);
     assert_eq!(
+        load_error(&legacy[..legacy.len() - 1]),
+        PersistenceError::Legacy(ketchup_core::persistence::LegacyError::InvalidEnvelopeLength)
+    );
+
+    // The current format seals its payload with one checksum after the format number.
+    let bytes = persistence::save(&graph_document().current());
+    let checksum = b"KETCHUPDOC".len() + 2;
+    let mut corrupt = bytes.clone();
+    corrupt[checksum + 32] ^= 0xff;
+    assert_eq!(load_error(&corrupt), PersistenceError::ChecksumMismatch);
+    assert_eq!(
         load_error(&bytes[..bytes.len() - 1]),
-        PersistenceError::InvalidEnvelopeLength
+        PersistenceError::ChecksumMismatch
+    );
+    assert_eq!(
+        load_error(&bytes[..checksum + 31]),
+        PersistenceError::Truncated
     );
     let mut unsupported = bytes;
     unsupported[10..12].copy_from_slice(&99_u16.to_le_bytes());
@@ -761,17 +691,15 @@ fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
         .revision_history()
         .map(ketchup_core::document::Revision::id)
         .collect::<Vec<_>>();
-    let expected_digests = store
-        .revision_history()
-        .map(|revision| revision.snapshot().canonical_digest())
-        .collect::<Vec<_>>();
     let expected_cursor = store.history_cursor();
     let expected_next_revision_id = store.next_revision_id();
 
-    let mut golden =
-        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
-    let schemas = [46, 68, persistence::CURRENT_SCHEMA, 46];
-    let snapshot_offsets = rewrite_history_snapshot_schemas(&mut golden, &schemas);
+    // Written by the retired codec: the same history with snapshots of schemas 46, 68
+    // and 97 mixed in one file.
+    let golden =
+        include_bytes!("fixtures/persistence/legacy/history-schemas-46-68-97-46.bin").to_vec();
+    let schemas = [46, 68, 97, 46];
+    let snapshot_offsets = history_snapshot_offsets(&golden);
     assert_eq!(snapshot_offsets.len(), expected_revision_ids.len());
     for ((snapshot_offset, _), schema) in snapshot_offsets.iter().zip(schemas) {
         assert_eq!(
@@ -786,6 +714,11 @@ fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
 
     let loaded = persistence::load(&golden).unwrap();
     assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
+    let document_id = loaded.snapshot().document_id();
+    let expected_digests = store
+        .revision_history()
+        .map(|revision| with_document_id(revision.snapshot(), document_id).canonical_digest())
+        .collect::<Vec<_>>();
     let container_data = loaded.container_data().clone();
     let reopened = loaded.into_editable().ok().unwrap();
     assert_eq!(reopened.history_cursor(), expected_cursor);
@@ -1477,16 +1410,10 @@ fn schema_52_occurrences_migrate_with_no_color() {
             },
         ]))
         .unwrap();
-    let mut bytes = persistence::save(&store.current());
-    // Schema 52 has precisely the same record except for the new optional-color byte.
-    let name_offset = bytes
-        .windows(name.len())
-        .position(|b| b == name.as_bytes())
-        .unwrap();
-    let color_offset = name_offset + name.len() + 16 * 8 + 1 + 1 + 1;
-    assert_eq!(bytes.remove(color_offset), 0);
-    rewrite_envelope_schema(&mut bytes, 52);
-    let loaded = persistence::load(&bytes).unwrap();
+    // Schema 52 wrote the occurrence record without the optional-color byte.
+    let bytes = include_bytes!("fixtures/persistence/legacy/occurrence-schema52.bin");
+    let loaded = persistence::load(bytes).unwrap();
+    assert_eq!(loaded.source_schema(), 52);
     assert_eq!(
         loaded
             .document()
@@ -1497,7 +1424,7 @@ fn schema_52_occurrences_migrate_with_no_color() {
     );
     assert_eq!(
         loaded.document().canonical_digest(),
-        store.current().canonical_digest()
+        with_document_id(&store.current(), loaded.document().document_id()).canonical_digest()
     );
 }
 
@@ -1548,11 +1475,14 @@ fn sheet_metal_schema_81_remains_readable_and_current_schema_is_byte_stable() {
         FeatureKind::SheetMetal(reopened) if reopened == &spec
     ));
 
-    let mut schema_81 = bytes;
-    rewrite_envelope_schema(&mut schema_81, 81);
-    let loaded_81 = persistence::load(&schema_81).unwrap();
+    let schema_81 = include_bytes!("fixtures/persistence/legacy/sheet-metal-schema81.bin");
+    let loaded_81 = persistence::load(schema_81).unwrap();
+    assert_eq!(loaded_81.source_schema(), 81);
     assert_eq!(loaded_81.disposition(), LoadDisposition::EditableLossless);
-    assert_eq!(loaded_81.snapshot().canonical_digest(), expected_digest);
+    assert_eq!(
+        loaded_81.snapshot().canonical_digest(),
+        with_document_id(&store.current(), loaded_81.snapshot().document_id()).canonical_digest()
+    );
     assert!(matches!(
         loaded_81.snapshot().feature(feature_id).unwrap().kind(),
         FeatureKind::SheetMetal(reopened) if reopened == &spec

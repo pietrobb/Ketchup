@@ -4,7 +4,7 @@
 //! an absent or broken configured runtime is a test failure, never a false pass.
 //! This is trusted host attachment integration, NOT production launcher proof.
 //! Shell is offscreen AccessKit/egui_kittest: no desktop, renderer or image proof.
-mod harness;
+use crate::harness;
 
 use harness::Shell;
 use ketchup_app::{AppCommand, live_bridge::Stamp};
@@ -327,7 +327,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
                         .features()
                         .filter(|feature| matches!(
                             feature.kind(),
-                            FeatureKind::TopologyEdgeFinish { edges, .. } if edges.len() == 1
+                            FeatureKind::EdgeFinish { edges, .. } if edges.len() == 1
                         ))
                         .count(),
                     1,

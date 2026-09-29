@@ -14,9 +14,7 @@ fn definition_and_feature_catalogs_page_and_definition_detail_caps_feature_ids()
             id: FeatureId(id),
             definition_id: DefinitionId(1),
             name: format!("profile-{id}"),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]),
         });
     }
     document.apply_batch(&CommandBatch::new(commands)).unwrap();

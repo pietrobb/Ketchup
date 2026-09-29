@@ -13,6 +13,7 @@ use ketchup_core::sketch::{
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchError, SketchPointKind,
     SketchPointRef, SketchSpec, WorkplaneSpec,
 };
+use ketchup_core::sketch::{PadOperation, PadProfile};
 use std::collections::BTreeSet;
 
 const PART: DefinitionId = DefinitionId(1);
@@ -35,9 +36,7 @@ fn stamp(document: &DocumentStore) -> (u64, String, usize, usize) {
 }
 
 fn profile() -> FeatureKind {
-    FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 4.0], [0.0, 4.0]],
-    }
+    FeatureKind::polygon(&[[0.0, 0.0], [6.0, 0.0], [6.0, 4.0], [0.0, 4.0]])
 }
 
 fn seed(include_union: bool) -> DocumentStore {
@@ -57,10 +56,7 @@ fn seed(include_union: bool) -> DocumentStore {
             id: BASE_EXTRUSION,
             definition_id: PART,
             name: "Base extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: BASE_PROFILE,
-                height: Dimension::from_decimal("5").unwrap(),
-            },
+            kind: FeatureKind::extrusion(BASE_PROFILE, Dimension::from_decimal("5").unwrap()),
         },
         CanonicalCommand::CreateBody {
             definition_id: PART,
@@ -82,10 +78,7 @@ fn seed(include_union: bool) -> DocumentStore {
             id: TOOL_EXTRUSION,
             definition_id: PART,
             name: "Tool extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: TOOL_PROFILE,
-                height: Dimension::from_decimal("2").unwrap(),
-            },
+            kind: FeatureKind::extrusion(TOOL_PROFILE, Dimension::from_decimal("2").unwrap()),
         },
         CanonicalCommand::SetActiveBody {
             definition_id: PART,
@@ -119,10 +112,7 @@ fn seed(include_union: bool) -> DocumentStore {
             id: OTHER_EXTRUSION,
             definition_id: OTHER_DEFINITION,
             name: "Other extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: OTHER_PROFILE,
-                height: Dimension::from_decimal("3").unwrap(),
-            },
+            kind: FeatureKind::extrusion(OTHER_PROFILE, Dimension::from_decimal("3").unwrap()),
         },
     ]);
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -200,8 +190,12 @@ fn independent_preview_commit_undo_redo_and_save_open_are_body_stable() {
         Some(&unrelated_body)
     );
     let reopened_snapshot = reopened.snapshot();
-    let FeatureKind::Extrusion { height, .. } =
-        reopened_snapshot.feature(BASE_EXTRUSION).unwrap().kind()
+    let FeatureKind::Pad(PadSpec {
+        profile: PadProfile::Feature(_),
+        extent: FeatureExtent::Blind(height),
+        operation: PadOperation::NewBody,
+        ..
+    }) = reopened_snapshot.feature(BASE_EXTRUSION).unwrap().kind()
     else {
         panic!("expected persisted extrusion");
     };
@@ -321,7 +315,7 @@ fn cross_body_dependent_preview_and_commit_are_dependency_closed() {
     assert_eq!(document.current().feature(UNION), Some(&union_before));
     assert!(matches!(
         document.current().feature(TOOL_EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 15.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 15.0
     ));
     assert_eq!(document.undo().unwrap().canonical_digest(), before.1);
 }
@@ -383,10 +377,13 @@ fn seed_pad() -> DocumentStore {
                 definition_id: PART,
                 name: "Pad".to_owned(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: PAD_SKETCH,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: PAD_SKETCH,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("4").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -412,7 +409,8 @@ fn invalid_pad_and_sketch_values_and_non_dimension_constraints_are_atomic() {
                 body_id: BodyId(1),
                 edits: vec![ExactParameterEdit {
                     target,
-                    dimension: Dimension::from_decimal("-1").unwrap(),
+                    // A pad's signed distance only picks the side; zero has none.
+                    dimension: Dimension::from_decimal("0").unwrap(),
                 }],
             },
             ProposalPrincipal::ManualClient,

@@ -24,16 +24,16 @@ fn add(document: &mut DocumentStore, id: u64, points: Vec<[f64; 2]>, x: f64) {
                 id: FeatureId(id * 2 - 1),
                 definition_id: DefinitionId(id),
                 name: "Profile".into(),
-                kind: FeatureKind::Profile { points_mm: points },
+                kind: FeatureKind::polygon(&points),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(id * 2),
                 definition_id: DefinitionId(id),
                 name: "Solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(id * 2 - 1),
-                    height: Dimension::new("10", 10.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    FeatureId(id * 2 - 1),
+                    Dimension::new("10", 10.0).unwrap(),
+                ),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(id),
@@ -213,18 +213,13 @@ fn scoped_collision_rejects_all_distant_pairs_across_ten_thousand_occurrences() 
             id: FeatureId(1),
             definition_id: DefinitionId(1),
             name: "Profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: rectangle(),
-            },
+            kind: FeatureKind::polygon(&rectangle()),
         },
         CanonicalCommand::CreateFeature {
             id: FeatureId(2),
             definition_id: DefinitionId(1),
             name: "Solid".into(),
-            kind: FeatureKind::Extrusion {
-                profile: FeatureId(1),
-                height: Dimension::new("10", 10.0).unwrap(),
-            },
+            kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
         },
     ];
     commands.extend((1..=10_000).map(|id| CanonicalCommand::CreateOccurrence {
@@ -265,18 +260,16 @@ fn scoped_collision_caps_unique_graph_preparation() {
                     id: FeatureId(id * 2 - 1),
                     definition_id: DefinitionId(id),
                     name: "Profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: rectangle(),
-                    },
+                    kind: FeatureKind::polygon(&rectangle()),
                 },
                 CanonicalCommand::CreateFeature {
                     id: FeatureId(id * 2),
                     definition_id: DefinitionId(id),
                     name: "Solid".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(id * 2 - 1),
-                        height: Dimension::new("10", 10.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(
+                        FeatureId(id * 2 - 1),
+                        Dimension::new("10", 10.0).unwrap(),
+                    ),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: OccurrenceId(id),

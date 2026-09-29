@@ -2,7 +2,7 @@
 //! checked on the exact solid: volume against the profile area, the pocket
 //! floor where the face and depth put it, and bad requests refused.
 
-mod operations_support;
+use crate::operations_support;
 
 use ketchup_scheduler::ExactWorkerSupervisor;
 use operations_support::*;

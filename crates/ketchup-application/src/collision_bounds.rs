@@ -235,16 +235,13 @@ mod tests {
                     id: FeatureId(1),
                     definition_id: DefinitionId(1),
                     name: "Profile".into(),
-                    kind: FeatureKind::Profile { points_mm: points },
+                    kind: FeatureKind::polygon(&points),
                 },
                 CanonicalCommand::CreateFeature {
                     id: FeatureId(2),
                     definition_id: DefinitionId(1),
                     name: "Solid".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(1),
-                        height: Dimension::new("10", 10.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
                 },
             ]))
             .unwrap();

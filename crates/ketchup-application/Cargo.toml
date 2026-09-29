@@ -3,6 +3,7 @@ name = "ketchup-application"
 description = "GUI-independent canonical CAD application sessions for Ketchup"
 version.workspace = true
 edition.workspace = true
+autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -24,3 +25,7 @@ workspace = true
 
 [dev-dependencies]
 ketchup-core = { path = "../ketchup-core", features = ["testing"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

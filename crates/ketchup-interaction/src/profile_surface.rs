@@ -1,6 +1,7 @@
 //! Canonical profile surfaces shared by viewport rendering and picking.
 use crate::mesh_projection::{CanonicalPlanarProfileMesh, canonical_profile_feature_mesh};
 use ketchup_core::document::{DefinitionId, FeatureKind, Snapshot};
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 
 pub type SurfaceMesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);
@@ -13,7 +14,12 @@ pub fn canonical_definition_surface(
     let feature_id = *definition.feature_ids().last()?;
     let feature = snapshot.feature(feature_id)?;
     match feature.kind() {
-        FeatureKind::Extrusion { profile, height } => {
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(profile),
+            direction,
+            extent: FeatureExtent::Blind(height),
+            operation: PadOperation::NewBody,
+        }) => {
             let (_, positions, triangles) = canonical_profile_feature_mesh(snapshot, *profile)?;
             let normal = match snapshot.feature(*profile)?.kind() {
                 FeatureKind::Sketch(sketch) => {
@@ -28,7 +34,7 @@ pub fn canonical_definition_surface(
             };
             let (positions, triangles) = extrude_profile_surface(
                 (positions, triangles),
-                normal.map(|v| v * height.millimetres()),
+                direction.vector(normal)?.map(|v| v * height.millimetres()),
             )?;
             Some((feature_id, positions, triangles))
         }
@@ -117,7 +123,7 @@ mod tests {
                         id: FeatureId(1),
                         definition_id: DefinitionId(1),
                         name: "Profile".into(),
-                        kind: FeatureKind::SegmentProfile {
+                        kind: FeatureKind::Profile {
                             closed: true,
                             segments: (0..3)
                                 .map(|i| ProfileSegment::Line {
@@ -131,10 +137,10 @@ mod tests {
                         id: FeatureId(2),
                         definition_id: DefinitionId(1),
                         name: "Prism".into(),
-                        kind: FeatureKind::Extrusion {
-                            profile: FeatureId(1),
-                            height: Dimension::new(height.to_string(), height).unwrap(),
-                        },
+                        kind: FeatureKind::extrusion(
+                            FeatureId(1),
+                            Dimension::new(height.to_string(), height).unwrap(),
+                        ),
                     },
                     C::CreateOccurrence {
                         id: OccurrenceId(1),

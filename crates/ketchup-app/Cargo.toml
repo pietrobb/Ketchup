@@ -3,6 +3,7 @@ name = "ketchup-app"
 description = "Narrow localization-ready wgpu desktop shell for Ketchup"
 version.workspace = true
 edition.workspace = true
+autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -42,3 +43,7 @@ unsafe_code = "deny"
 
 [lints.clippy]
 all = "deny"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

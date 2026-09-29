@@ -1,6 +1,6 @@
 //! Program 5 face-driven Rectangle to Smart Push/Pull replayed offscreen.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::{Key, Modifiers, Vec2, accesskit::Role};
 use harness::{Shell, alt};
@@ -17,6 +17,7 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactResultRegistry};
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneSupport};
 use ketchup_interaction::{ElementId, SnapKind, Vec3};
 
@@ -701,6 +702,16 @@ fn undo_and_redo_cancel_an_active_two_segment_line_chain() {
         Vec3::new(25.0, 35.0, 20.0),
     ]
     .map(|point| shell.app().viewport_position(point).unwrap());
+    // The starting part's own base outline is a closed profile too; only new ones count.
+    let closed_profiles = |shell: &Shell| {
+        shell
+            .app()
+            .document_snapshot()
+            .features()
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { closed: true, .. }))
+            .count()
+    };
+    let closed_profiles_before = closed_profiles(&shell);
 
     shell.click_command(AppCommand::Line);
     shell.click_at(points[0]);
@@ -713,7 +724,7 @@ fn undo_and_redo_cancel_an_active_two_segment_line_chain() {
             .app()
             .document_snapshot()
             .features()
-            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1))
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { closed: false, segments } if segments.len() == 1))
             .count(),
         2
     );
@@ -730,7 +741,7 @@ fn undo_and_redo_cancel_an_active_two_segment_line_chain() {
             .app()
             .document_snapshot()
             .features()
-            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1))
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { closed: false, segments } if segments.len() == 1))
             .count(),
         1
     );
@@ -772,14 +783,11 @@ fn undo_and_redo_cancel_an_active_two_segment_line_chain() {
     assert_eq!(
         snapshot
             .features()
-            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1))
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { closed: false, segments } if segments.len() == 1))
             .count(),
         2
     );
-    assert!(!snapshot.features().any(|feature| matches!(
-        feature.kind(),
-        FeatureKind::SegmentProfile { closed: true, .. }
-    )));
+    assert_eq!(closed_profiles(&shell), closed_profiles_before);
 }
 
 #[test]
@@ -875,7 +883,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     let (line_definition_id, line_start, line_end) = snapshot
         .features()
         .filter_map(|feature| {
-            let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            let FeatureKind::Profile { segments, closed } = feature.kind() else {
                 return None;
             };
             if *closed || segments.len() != 1 {
@@ -931,7 +939,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     let lines = snapshot
         .features()
         .filter_map(|feature| {
-            let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            let FeatureKind::Profile { segments, closed } = feature.kind() else {
                 return None;
             };
             if *closed || segments.len() != 1 {
@@ -973,7 +981,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     let (closed_definition_id, closed_segments) = snapshot
         .features()
         .filter_map(|feature| {
-            let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            let FeatureKind::Profile { segments, closed } = feature.kind() else {
                 return None;
             };
             (*closed && segments.len() == 3).then_some((feature.definition_id(), segments))
@@ -988,7 +996,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     assert_eq!(
         snapshot
             .features()
-            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1))
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { closed: false, segments } if segments.len() == 1))
             .count(),
         0
     );
@@ -1038,9 +1046,10 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         shell.app().canonical_digest(),
         shell.app().undo_step_count(),
     );
-    // Beside the part the shape has nothing to cut into.
+    // A bare line outline pulls to either side, like any other polygon profile:
+    // beside the part a negative distance previews a new body below, unapplied.
     shell.app_mut().set_push_pull_distance_input("-20");
-    assert!(!shell.app_mut().start_preview());
+    assert!(shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before_push.0);
     assert_eq!(shell.app().canonical_digest(), before_push.1);
     assert_eq!(shell.app().undo_step_count(), before_push.2);
@@ -1085,7 +1094,12 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
             .iter()
             .any(|feature_id| matches!(
                 pushed_snapshot.feature(*feature_id).unwrap().kind(),
-                FeatureKind::Extrusion { .. }
+                FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(_),
+                    extent: FeatureExtent::Blind(_),
+                    operation: PadOperation::NewBody,
+                    ..
+                })
             ))
     );
     assert!(matches!(
@@ -1165,7 +1179,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     assert_eq!(shell.app().document_revision(), before_side_offset + 1);
     assert!(shell.app().document_snapshot().features().any(|feature| {
         feature.definition_id() == closed_definition_id
-            && matches!(feature.kind(), FeatureKind::TopologyFaceOffset { .. })
+            && matches!(feature.kind(), FeatureKind::FaceOffset { .. })
     }));
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), pushed_digest);
@@ -1190,7 +1204,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     }
     assert!(shell.app().document_snapshot().features().any(|feature| {
         feature.definition_id() == closed_definition_id
-            && matches!(feature.kind(), FeatureKind::TopologyFaceOffset { .. })
+            && matches!(feature.kind(), FeatureKind::FaceOffset { .. })
     }));
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), pushed_digest);
@@ -1242,7 +1256,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         let changed = shell.app().document_snapshot();
         assert!(changed.features().any(|feature| {
             feature.definition_id() == closed_definition_id
-                && matches!(feature.kind(), FeatureKind::TopologyFaceOffset { distance: offset, .. } if (offset.millimetres() - distance).abs() < 1.0e-9)
+                && matches!(feature.kind(), FeatureKind::FaceOffset { distance: offset, .. } if (offset.millimetres() - distance).abs() < 1.0e-9)
         }));
         shell.click_menu_command("menu-edit", AppCommand::Undo);
         assert_eq!(shell.app().canonical_digest(), pushed_digest);

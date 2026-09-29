@@ -2,7 +2,7 @@
 //! ellipse / regular polygon profiles, checked on the exact solids against
 //! the analytic volumes, with the requests that must be refused.
 
-mod operations_support;
+use crate::operations_support;
 
 use ketchup_core::persistence;
 use ketchup_program::run;

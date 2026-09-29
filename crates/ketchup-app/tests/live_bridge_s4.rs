@@ -1,5 +1,5 @@
 //! Real TCP requests processed by the existing offscreen GUI shell, never OS input.
-mod harness;
+use crate::harness;
 use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs, live_bridge::*};
 use ketchup_application::{

@@ -4,7 +4,7 @@
 //! occurrence and definition counts — because that is the thing the workflow is
 //! supposed to change. Painted text is deliberately never asserted on.
 
-mod harness;
+use crate::harness;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ use ketchup_app::{
 };
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
-    EdgeFinishKind, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
+    EdgeFinishKind, EvaluationIdentity, FaceRef, FeatureId, FeatureKind, FeatureParameterBinding,
     FeatureParameterRecomputeScope, FeatureParameterTarget, InstancePath, NodeId, OccurrenceId,
     ParameterValueType, PortSpec, RuleOutput, SlotPath, SlotSegment, TagId, Transform,
 };
@@ -108,18 +108,13 @@ fn write_parametric_fixture(path: &Path) {
                 id: PARAMETRIC_PROFILE,
                 definition_id: DefinitionId(1),
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(11),
                 definition_id: DefinitionId(1),
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PARAMETRIC_PROFILE,
-                    height: dimension("10"),
-                },
+                kind: FeatureKind::extrusion(PARAMETRIC_PROFILE, dimension("10")),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(20),
@@ -8936,8 +8931,8 @@ fn parameter_expression_recomputes_dependents_atomically_and_round_trips_through
             .document_snapshot()
             .feature(PARAMETRIC_PROFILE)
             .unwrap()
-            .kind(),
-        FeatureKind::Profile { points_mm }
+            .kind().polygon_points(),
+        Some(ref points_mm)
             if points_mm == &vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
     ));
     let report = shell
@@ -9034,8 +9029,8 @@ fn parameter_expression_recomputes_dependents_atomically_and_round_trips_through
         EvaluatorNodeKind::Rule { source, .. } if source == "$301 * 2"
     ));
     assert!(matches!(
-        reopened.feature(PARAMETRIC_PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm }
+        reopened.feature(PARAMETRIC_PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm)
             if points_mm == &vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
     ));
     shell
@@ -9557,7 +9552,7 @@ fn circle_through_hole_moves_by_dragging_its_inner_wall() {
     let profile_id = before
         .features()
         .find_map(|feature| match feature.kind() {
-            FeatureKind::SegmentProfile {
+            FeatureKind::Profile {
                 segments,
                 closed: true,
             } if segments.len() == 2
@@ -9606,8 +9601,7 @@ fn circle_through_hole_moves_by_dragging_its_inner_wall() {
         occurrence_transform,
         "moving the hole must not move the host box"
     );
-    let FeatureKind::SegmentProfile { segments, .. } = moved.feature(profile_id).unwrap().kind()
-    else {
+    let FeatureKind::Profile { segments, .. } = moved.feature(profile_id).unwrap().kind() else {
         panic!("the moved circular profile must remain canonical")
     };
     assert!(segments.iter().all(|segment| matches!(
@@ -10467,10 +10461,9 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     let (offset_feature_id, offset_target, offset_face, offset_distance) = snapshot
         .features()
         .find_map(|feature| match feature.kind() {
-            FeatureKind::TopologyFaceOffset {
+            FeatureKind::FaceOffset {
                 target,
-                face: Some(face),
-                profile_face: None,
+                face: FaceRef::Topological(face),
                 distance,
             } => Some((feature.id(), *target, face, distance.millimetres())),
             _ => None,

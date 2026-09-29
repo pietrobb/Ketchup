@@ -56,18 +56,13 @@ fn seed_product_document() -> DocumentStore {
                 id: PRODUCT_PROFILE,
                 definition_id: PRODUCT_DEFINITION,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PRODUCT_EXTRUSION,
                 definition_id: PRODUCT_DEFINITION,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PRODUCT_PROFILE,
-                    height: dimension("600", 600.0),
-                },
+                kind: FeatureKind::extrusion(PRODUCT_PROFILE, dimension("600", 600.0)),
             },
         ]))
         .expect("product seed batch commits");

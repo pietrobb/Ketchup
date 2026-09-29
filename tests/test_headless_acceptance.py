@@ -184,7 +184,7 @@ def test_from_empty_hole_support_and_fresh_process_roundtrip(native_paths, tmp_p
                                    rectangle(40, 40, origin_mm=(100, 60)))
         profile = created_feature(sketch, "Sketch")
         pocket = doc.pocket(definition_id, "Through hole", target, profile, 20)
-        hole = created_feature(pocket, "Pocket")
+        hole = created_feature(pocket, "Pad")
         second = doc.box("Second", 20, 20, 100, translation_mm=[0, 0, 50])
         second_definition, = second["created"]["definition_ids"]
         second_id, = second["created"]["occurrence_ids"]

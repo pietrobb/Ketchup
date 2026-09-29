@@ -194,18 +194,13 @@ fn rectangle_on_generated_planar_face_preserves_exact_support_and_target_body() 
                 id: FeatureId(20),
                 definition_id: DEFINITION,
                 name: "Base rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [8.0, 0.0], [8.0, 6.0], [0.0, 6.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [8.0, 0.0], [8.0, 6.0], [0.0, 6.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(21),
                 definition_id: DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(20),
-                    height: Dimension::from_decimal("4").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(20), Dimension::from_decimal("4").unwrap()),
             },
         ]))
         .unwrap();

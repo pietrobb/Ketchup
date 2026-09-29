@@ -1,6 +1,6 @@
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore,
-    EdgeFinishKind, FeatureId, FeatureKind, Snapshot,
+    EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind, Snapshot,
 };
 use ketchup_core::exact_product::{
     BODY_SUBSHAPE_REF_SCHEMA_V1, BodyResultIdentity, BodySubshapeRef, EXACT_PRODUCT_SCHEMA_V1,
@@ -590,18 +590,13 @@ fn topology_feature_document() -> DocumentStore {
                 id: FeatureId(9),
                 definition_id: DEFINITION,
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: PRODUCER,
                 definition_id: DEFINITION,
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(9),
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(9), Dimension::from_decimal("10").unwrap()),
             },
         ]))
         .unwrap();
@@ -647,10 +642,9 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
             id: FeatureId(11),
             definition_id: DEFINITION,
             name: "Topology shell".into(),
-            kind: FeatureKind::TopologyShell {
+            kind: FeatureKind::Shell {
                 target: PRODUCER,
-                removed_faces: vec![face.clone()],
-                profile_faces: Vec::new(),
+                removed_faces: vec![FaceRef::from(face.clone())],
                 thickness: Dimension::from_decimal("2.5").unwrap(),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },
@@ -676,10 +670,9 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
             id: FeatureId(12),
             definition_id: DEFINITION,
             name: "Topology fillet".into(),
-            kind: FeatureKind::TopologyEdgeFinish {
+            kind: FeatureKind::EdgeFinish {
                 target: FeatureId(11),
-                edges: vec![edge.clone()],
-                profile_edges: Vec::new(),
+                edges: vec![EdgeRef::from(edge.clone())],
                 kind: EdgeFinishKind::Fillet,
                 amount: Dimension::from_decimal("1.25").unwrap(),
                 fillet_radius_stations: Vec::new(),
@@ -696,13 +689,13 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
     assert_eq!(persistence::save(&reopened), bytes);
     assert!(matches!(
         reopened.feature(FeatureId(11)).unwrap().kind(),
-        FeatureKind::TopologyShell { removed_faces, .. }
-            if removed_faces == std::slice::from_ref(&face)
+        FeatureKind::Shell { removed_faces, .. }
+            if removed_faces == &[FaceRef::from(face.clone())]
     ));
     assert!(matches!(
         reopened.feature(FeatureId(12)).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish { edges, kind: EdgeFinishKind::Fillet, .. }
-            if edges == &[edge]
+        FeatureKind::EdgeFinish { edges, kind: EdgeFinishKind::Fillet, .. }
+            if edges == &[EdgeRef::from(edge)]
     ));
 
     let mut rejected = topology_feature_document();
@@ -714,10 +707,9 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                 id: FeatureId(11),
                 definition_id: DEFINITION,
                 name: "Invalid shell".into(),
-                kind: FeatureKind::TopologyShell {
+                kind: FeatureKind::Shell {
                     target: PRODUCER,
-                    removed_faces: vec![wrong_kind],
-                    profile_faces: Vec::new(),
+                    removed_faces: vec![FaceRef::from(wrong_kind)],
                     thickness: Dimension::from_decimal("2.5").unwrap(),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },
@@ -734,7 +726,9 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
     );
 
     let mut cross_document = face;
-    cross_document.document_id = DocumentId(cross_document.document_id.0 + 1);
+    // Document IDs come from one process counter, so `face.document_id + 1` may be
+    // exactly the ID of `rejected`; take one that differs from the edited document.
+    cross_document.document_id = DocumentId(rejected_before.document_id().0 + 1);
     cross_document.lineage_digest = canonical_topological_lineage_digest(&cross_document);
     assert!(
         rejected
@@ -742,10 +736,9 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                 id: FeatureId(11),
                 definition_id: DEFINITION,
                 name: "Cross-document shell".into(),
-                kind: FeatureKind::TopologyShell {
+                kind: FeatureKind::Shell {
                     target: PRODUCER,
-                    removed_faces: vec![cross_document],
-                    profile_faces: Vec::new(),
+                    removed_faces: vec![FaceRef::from(cross_document)],
                     thickness: Dimension::from_decimal("2.5").unwrap(),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },

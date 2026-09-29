@@ -16,6 +16,9 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
+use ketchup_core::sketch::{
+    CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
+};
 use ketchup_core::topology::TopologicalElementKind;
 
 pub(crate) fn plan_feature_kind(
@@ -113,13 +116,32 @@ pub(crate) fn plan_feature_kind(
             target_feature_id,
             profile_feature_id,
             depth_mm,
-        } => FeatureKind::Pocket {
-            target: FeatureId(*target_feature_id),
-            profile: FeatureId(*profile_feature_id),
-            depth: Dimension::new(depth_mm.to_string(), *depth_mm).map_err(|error| {
-                assistant_canonical_rejection(error, operation_name, "feature.depth_mm")
-            })?,
-        },
+        } => {
+            let profile = FeatureId(*profile_feature_id);
+            // A sketch lies on its workplane and is cut from there; a plain
+            // profile is cut down from the target face its normal leaves.
+            let start = if matches!(
+                snapshot.feature(profile).map(|feature| feature.kind()),
+                Some(FeatureKind::Sketch(_))
+            ) {
+                CutStart::ProfilePlane
+            } else {
+                CutStart::TargetFace
+            };
+            FeatureKind::Pad(PadSpec {
+                profile: PadProfile::Feature(profile),
+                direction: FeatureDirection::AlongNormal,
+                extent: FeatureExtent::Blind(
+                    Dimension::new(depth_mm.to_string(), *depth_mm).map_err(|error| {
+                        assistant_canonical_rejection(error, operation_name, "feature.depth_mm")
+                    })?,
+                ),
+                operation: PadOperation::Cut {
+                    target: FeatureId(*target_feature_id),
+                    start,
+                },
+            })
+        }
         AssistantCadBodyFeature::PlanarOffset {
             profile_feature_id,
             distance_mm,
@@ -311,13 +333,12 @@ pub(crate) fn plan_feature_kind(
                     ));
                 }
                 let supported = match source.kind() {
-                    FeatureKind::SplineProfile { control_points_mm } => {
-                        (4..=64).contains(&control_points_mm.len())
-                    }
                     FeatureKind::Sketch(sketch) => sketch
                         .solved_regions()
                         .is_ok_and(|regions| matches!(regions.as_slice(), [_])),
-                    _ => false,
+                    kind => kind
+                        .closed_spline_points()
+                        .is_some_and(|points| (4..=64).contains(&points.len())),
                 };
                 if snapshot.feature_is_suppressed(profile) || !supported {
                     return Err(assistant_planning_rejection(

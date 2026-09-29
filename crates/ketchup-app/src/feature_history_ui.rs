@@ -16,8 +16,9 @@ use ketchup_core::shared_change::{
     project_occurrence_fork_impact, project_shared_change_impact,
 };
 use ketchup_core::sketch::{
-    MAX_SKETCH_CONSTRAINTS, SketchConstraint, SketchConstraintId, SketchConstraintKind,
-    SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity, SketchEntityId, SketchError,
+    MAX_SKETCH_CONSTRAINTS, PadOperation, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity,
+    SketchEntityId, SketchError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -322,36 +323,19 @@ impl KetchupApp {
                     })
                 })
                 .collect(),
-            FeatureKind::Extrusion { height, .. } => vec![ParameterChoice {
-                target: ExactParameterEditTarget::FeatureDimension(feature_id),
-                label: self.catalog.text("feature-history-parameter-extent"),
-                value_mm: height.millimetres(),
-            }],
             FeatureKind::Pad(spec) => spec
                 .extent
                 .blind_distance()
                 .map(|distance| ParameterChoice {
                     target: ExactParameterEditTarget::FeatureDimension(feature_id),
-                    label: self.catalog.text("feature-history-parameter-extent"),
+                    label: self.catalog.text(match spec.operation {
+                        PadOperation::NewBody => "feature-history-parameter-extent",
+                        PadOperation::Cut { .. } => "feature-history-parameter-depth",
+                    }),
                     value_mm: distance.millimetres(),
                 })
                 .into_iter()
                 .collect(),
-            FeatureKind::SketchPocket(spec) => spec
-                .extent
-                .blind_distance()
-                .map(|distance| ParameterChoice {
-                    target: ExactParameterEditTarget::FeatureDimension(feature_id),
-                    label: self.catalog.text("feature-history-parameter-depth"),
-                    value_mm: distance.millimetres(),
-                })
-                .into_iter()
-                .collect(),
-            FeatureKind::Pocket { depth, .. } => vec![ParameterChoice {
-                target: ExactParameterEditTarget::FeatureDimension(feature_id),
-                label: self.catalog.text("feature-history-parameter-depth"),
-                value_mm: depth.millimetres(),
-            }],
             FeatureKind::Sweep { profile, path } => [*profile, *path]
                 .into_iter()
                 .flat_map(generic_choices)
@@ -2729,17 +2713,14 @@ impl KetchupApp {
             let is_profile = snapshot.feature(feature_id).is_some_and(|feature| {
                 matches!(
                     feature.kind(),
-                    FeatureKind::Sketch(_)
-                        | FeatureKind::Profile { .. }
-                        | FeatureKind::SegmentProfile { .. }
-                        | FeatureKind::SplineProfile { .. }
+                    FeatureKind::Sketch(_) | FeatureKind::Profile { .. }
                 )
             });
             let is_cut_profile = is_profile
                 && snapshot.features().any(|feature| match feature.kind() {
-                    FeatureKind::SketchPocket(spec) => spec.sketch == feature_id,
-                    FeatureKind::ThroughCut { profile, .. }
-                    | FeatureKind::Pocket { profile, .. } => *profile == feature_id,
+                    FeatureKind::Pad(spec) if spec.operation.target().is_some() => {
+                        spec.profile.feature_id() == feature_id
+                    }
                     FeatureKind::Boolean {
                         operation: BooleanOperation::Cut,
                         tool,
@@ -2747,7 +2728,7 @@ impl KetchupApp {
                     } => snapshot.feature(*tool).is_some_and(|tool| {
                         matches!(
                             tool.kind(),
-                            FeatureKind::Extrusion { profile, .. } if *profile == feature_id
+                            FeatureKind::Pad(spec) if spec.profile.feature_id() == feature_id
                         )
                     }),
                     _ => false,

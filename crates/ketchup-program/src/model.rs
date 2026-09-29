@@ -504,7 +504,7 @@ pub enum ProgramOperation {
     Cut(ProgramCut),
     Finish(ProgramEdgeFillet),
     FaceOffset(ProgramFaceOffset),
-    Boolean(ProgramBoolean),
+    Boolean(Box<ProgramBoolean>),
     Mirror(ProgramMirror),
     Shell(ProgramShell),
 }
@@ -631,7 +631,7 @@ impl Part {
         self.operations
             .iter()
             .filter_map(|operation| match operation {
-                ProgramOperation::Boolean(boolean) => Some(boolean),
+                ProgramOperation::Boolean(boolean) => Some(&**boolean),
                 _ => None,
             })
     }
@@ -640,7 +640,7 @@ impl Part {
         self.operations
             .iter_mut()
             .filter_map(|operation| match operation {
-                ProgramOperation::Boolean(boolean) => Some(boolean),
+                ProgramOperation::Boolean(boolean) => Some(&mut **boolean),
                 _ => None,
             })
     }
@@ -1242,7 +1242,7 @@ impl Part {
             features.push(feature(
                 cut.name.clone(),
                 ProgramFeatureKind::Cut,
-                vec![length("depth", cut.depth_mm)],
+                vec![length("extent.distance", cut.depth_mm)],
             ));
         }
         for hole in &self.holes {
@@ -1265,7 +1265,7 @@ impl Part {
             features.push(feature(
                 format!("{prefix} pocket"),
                 ProgramFeatureKind::Cut,
-                vec![length("depth", hole.depth_mm)],
+                vec![length("extent.distance", hole.depth_mm)],
             ));
         }
         for pocket in &self.pockets {
@@ -1315,7 +1315,7 @@ impl Part {
             features.push(feature(
                 format!("{prefix} cut"),
                 ProgramFeatureKind::Cut,
-                vec![length("depth", pocket.depth_mm)],
+                vec![length("extent.distance", pocket.depth_mm)],
             ));
         }
         self.features = features;

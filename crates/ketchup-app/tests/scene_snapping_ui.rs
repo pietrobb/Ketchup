@@ -1,15 +1,14 @@
-mod harness;
+use crate::harness;
 
 use eframe::egui::{Key, Vec2};
 use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
-use ketchup_core::document::FeatureKind;
 use ketchup_interaction::{SnapKind, Vec3};
 
 fn last_rectangle(shell: &Shell) -> Vec<Vec3> {
     let snapshot = shell.app().document_snapshot();
     let feature = snapshot.features().last().unwrap();
-    let FeatureKind::Profile { points_mm } = feature.kind() else {
+    let Some(points_mm) = feature.kind().polygon_points() else {
         panic!("rectangle profile")
     };
     let occurrence = snapshot

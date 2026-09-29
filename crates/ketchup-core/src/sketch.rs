@@ -17,23 +17,29 @@ const MAX_CUBIC_FLATTEN_DEPTH: u8 = 16;
 const MAX_CUBIC_FLATTEN_SEGMENTS: usize = 16_384;
 const CUBIC_FLATTEN_TOLERANCE_MM: f64 = 1.0e-6;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct SketchEntityId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct SketchConstraintId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct SketchRegionId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PrincipalPlane {
     Xy,
     Yz,
     Xz,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WorkplaneSupportHealth {
     Resolved,
     Ambiguous,
@@ -41,7 +47,7 @@ pub enum WorkplaneSupportHealth {
     Stale,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WorkplaneSupport {
     /// An authoritative frame with no upstream geometric support.
     Free,
@@ -52,6 +58,7 @@ pub enum WorkplaneSupport {
     },
     PlanarFace {
         reference: Box<BodySubshapeRef>,
+        #[serde(serialize_with = "crate::document::derived")]
         health: WorkplaneSupportHealth,
     },
     ConstructionPlane {
@@ -59,7 +66,7 @@ pub enum WorkplaneSupport {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorkplaneFrame {
     pub origin_mm: [f64; 3],
     pub x_axis: [f64; 3],
@@ -158,10 +165,32 @@ impl WorkplaneFrame {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 pub struct WorkplaneSpec {
     pub support: WorkplaneSupport,
     pub frame: WorkplaneFrame,
+}
+
+/// A workplane on a planar face takes its frame from the face at every evaluation, so
+/// only a workplane without face support is identified by its frame.
+impl serde::Serialize for WorkplaneSpec {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        struct Frame<'a>(&'a WorkplaneSpec);
+        impl serde::Serialize for Frame<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if matches!(self.0.support, WorkplaneSupport::PlanarFace { .. }) {
+                    crate::document::derived(&self.0.frame, serializer)
+                } else {
+                    self.0.frame.serialize(serializer)
+                }
+            }
+        }
+        let mut spec = serializer.serialize_struct("WorkplaneSpec", 2)?;
+        spec.serialize_field("support", &self.support)?;
+        spec.serialize_field("frame", &Frame(self))?;
+        spec.end()
+    }
 }
 
 impl WorkplaneSpec {
@@ -211,7 +240,9 @@ impl WorkplaneSpec {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum SketchPointKind {
     Start,
     End,
@@ -220,19 +251,21 @@ pub enum SketchPointKind {
     Control2,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum SketchOffsetSide {
     Left,
     Right,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct SketchPointRef {
     pub entity: SketchEntityId,
     pub point: SketchPointKind,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SketchEntity {
     Line {
         id: SketchEntityId,
@@ -386,7 +419,7 @@ impl SketchEntity {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SketchConstraintKind {
     Horizontal {
         entity: SketchEntityId,
@@ -464,7 +497,7 @@ pub enum SketchConstraintKind {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SketchConstraint {
     pub id: SketchConstraintId,
     pub kind: SketchConstraintKind,
@@ -652,7 +685,7 @@ enum RegionCurve {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FeatureDirection {
     AlongNormal,
     OppositeNormal,
@@ -690,7 +723,7 @@ impl FeatureDirection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FeatureExtentEnd {
     Blind(Dimension),
     ThroughAll,
@@ -714,7 +747,7 @@ impl FeatureExtentEnd {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FeatureExtent {
     Blind(Dimension),
     ThroughAll,
@@ -729,7 +762,9 @@ pub enum FeatureExtent {
 impl FeatureExtent {
     pub fn validate(&self) -> Result<(), SketchError> {
         match self {
-            Self::Blind(distance) | Self::Symmetric(distance) => validate_extent_distance(distance),
+            // A negative blind distance sweeps against the direction.
+            Self::Blind(distance) => validate_extent_length(distance, distance.millimetres().abs()),
+            Self::Symmetric(distance) => validate_extent_distance(distance),
             Self::ThroughAll => Ok(()),
             Self::UpToFace(reference) => validate_extent_reference(reference),
             Self::Bidirectional { along, opposite } => {
@@ -761,9 +796,13 @@ impl FeatureExtent {
 }
 
 fn validate_extent_distance(distance: &Dimension) -> Result<(), SketchError> {
+    validate_extent_length(distance, distance.millimetres())
+}
+
+fn validate_extent_length(distance: &Dimension, length_mm: f64) -> Result<(), SketchError> {
     Dimension::new(distance.source_token(), distance.millimetres())
         .map_err(|_| SketchError::InvalidDimension)?;
-    if distance.millimetres() <= EPSILON_MM || distance.millimetres() > MAX_ABS_MM {
+    if length_mm <= EPSILON_MM || length_mm > MAX_ABS_MM {
         return Err(SketchError::InvalidDimension);
     }
     Ok(())
@@ -779,31 +818,117 @@ fn validate_extent_reference(reference: &BodySubshapeRef) -> Result<(), SketchEr
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// The closed planar shape a pad sweeps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum PadProfile {
+    /// A profile feature, or a sketch with exactly one solved region.
+    Feature(FeatureId),
+    /// One region of a sketch.
+    SketchRegion {
+        sketch: FeatureId,
+        region: SketchRegionId,
+    },
+}
+
+impl PadProfile {
+    #[must_use]
+    pub const fn feature_id(self) -> FeatureId {
+        match self {
+            Self::Feature(id) | Self::SketchRegion { sketch: id, .. } => id,
+        }
+    }
+}
+
+/// Where a cut measures its extent from.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CutStart {
+    /// The plane of the profile.
+    ProfilePlane,
+    /// The plane of the profile, which lies on this face of the target.
+    Support(Box<BodySubshapeRef>),
+    /// The target face the direction points out of; a blind cut reaches back
+    /// into the target from there.
+    TargetFace,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum PadOperation {
+    NewBody,
+    Cut { target: FeatureId, start: CutStart },
+}
+
+impl PadOperation {
+    #[must_use]
+    pub const fn target(&self) -> Option<FeatureId> {
+        match self {
+            Self::NewBody => None,
+            Self::Cut { target, .. } => Some(*target),
+        }
+    }
+
+    #[must_use]
+    pub fn support(&self) -> Option<&BodySubshapeRef> {
+        match self {
+            Self::Cut {
+                start: CutStart::Support(support),
+                ..
+            } => Some(support),
+            _ => None,
+        }
+    }
+}
+
+/// Every linear sweep of a closed profile: a new body or a cut into a target.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PadSpec {
-    pub sketch: FeatureId,
-    pub region: SketchRegionId,
+    pub profile: PadProfile,
     pub direction: FeatureDirection,
     pub extent: FeatureExtent,
+    pub operation: PadOperation,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct PocketSpec {
-    pub target: FeatureId,
-    pub sketch: FeatureId,
-    pub region: SketchRegionId,
-    pub support: Box<BodySubshapeRef>,
-    pub direction: FeatureDirection,
-    pub extent: FeatureExtent,
+impl PadSpec {
+    /// Face references the extent and the cut start resolve against.
+    #[must_use]
+    pub fn references(&self) -> Vec<&BodySubshapeRef> {
+        let mut references = self.extent.references();
+        references.extend(self.operation.support());
+        references
+    }
+
+    /// The profile and blind distance of a pad swept along the profile normal.
+    #[must_use]
+    pub fn blind_along_normal(&self) -> Option<(FeatureId, &Dimension)> {
+        match (&self.direction, &self.extent) {
+            (FeatureDirection::AlongNormal, FeatureExtent::Blind(distance)) => {
+                Some((self.profile.feature_id(), distance))
+            }
+            _ => None,
+        }
+    }
+
+    /// The same pad with its profile and target features renamed by `map`;
+    /// face references are left for the caller.
+    pub fn with_features<E>(
+        &self,
+        mut map: impl FnMut(FeatureId) -> Result<FeatureId, E>,
+    ) -> Result<Self, E> {
+        let mut mapped = self.clone();
+        mapped.profile = match self.profile {
+            PadProfile::Feature(id) => PadProfile::Feature(map(id)?),
+            PadProfile::SketchRegion { sketch, region } => PadProfile::SketchRegion {
+                sketch: map(sketch)?,
+                region,
+            },
+        };
+        if let PadOperation::Cut { target, .. } = &mut mapped.operation {
+            *target = map(*target)?;
+        }
+        Ok(mapped)
+    }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum PadPocketOperation {
-    Pad(PadSpec),
-    Pocket(PocketSpec),
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SketchSpec {
     pub workplane: FeatureId,
     pub entities: Vec<SketchEntity>,

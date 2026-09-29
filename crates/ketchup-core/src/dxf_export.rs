@@ -101,10 +101,7 @@ pub fn export_visible_profiles_dxf(
                 .strip_prefix(IMPORTED_LAYER_PREFIX)
                 .unwrap_or_else(|| definition.name());
             let (source_profiles, transform) = match feature.kind() {
-                FeatureKind::Profile { points_mm } => {
-                    (vec![polygon_segments(points_mm)?], occurrence.transform)
-                }
-                FeatureKind::SegmentProfile { segments, .. } => {
+                FeatureKind::Profile { segments, .. } => {
                     (vec![segments.clone()], occurrence.transform)
                 }
                 FeatureKind::Sketch(sketch) => {
@@ -171,9 +168,7 @@ pub fn export_visible_profiles_dxf(
         .filter(|feature| {
             !matches!(
                 feature.kind(),
-                FeatureKind::Profile { .. }
-                    | FeatureKind::SegmentProfile { .. }
-                    | FeatureKind::Sketch(_)
+                FeatureKind::Profile { .. } | FeatureKind::Sketch(_)
             )
         })
         .count();
@@ -365,7 +360,9 @@ fn transform_segments(
                     end_degrees: angle_degrees(dxf_end, center),
                 })
             }
-            ProfileSegment::CubicBezier { .. } => Err(DxfProfileExportError::UnsupportedCurve),
+            ProfileSegment::CubicBezier { .. } | ProfileSegment::Spline { .. } => {
+                Err(DxfProfileExportError::UnsupportedCurve)
+            }
         })
         .collect()
 }

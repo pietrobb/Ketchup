@@ -19,22 +19,24 @@ const MAX_PATH_SEGMENTS: usize = 4_096;
 const MAX_DRILL_POINTS: usize = 4_096;
 const GEOMETRY_TOLERANCE_MM: f64 = 1.0e-9;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct CamPlanId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CamUnits {
     Millimetres,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CamToolKind {
     FlatEndMill,
     BallEndMill,
     Drill,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CamWorkOffset {
     G54,
     G55,
@@ -44,13 +46,13 @@ pub enum CamWorkOffset {
     G59,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CamStock {
     pub minimum_mm: [f64; 3],
     pub maximum_mm: [f64; 3],
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CamTool {
     pub number: u32,
     pub kind: CamToolKind,
@@ -64,7 +66,7 @@ pub struct CamTool {
     pub plunge_mm_per_min: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CamSetup {
     pub work_offset: CamWorkOffset,
     pub origin_mm: [f64; 3],
@@ -73,7 +75,7 @@ pub struct CamSetup {
     pub safe_height_mm: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CamCutParameters {
     pub maximum_stepdown_mm: f64,
     pub stepover_ratio: f64,
@@ -81,14 +83,14 @@ pub struct CamCutParameters {
     pub axial_allowance_mm: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CamTarget {
     pub definition_id: DefinitionId,
     pub feature_id: FeatureId,
     pub exact_graph_digest: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CamPlan {
     id: CamPlanId,
     name: String,
@@ -485,6 +487,29 @@ impl std::error::Error for CamError {}
 
 impl CamPlan {
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        id: CamPlanId,
+        name: String,
+        units: CamUnits,
+        target: CamTarget,
+        stock: CamStock,
+        tool: CamTool,
+        setup: CamSetup,
+        cut_parameters: CamCutParameters,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            units,
+            target,
+            stock,
+            tool,
+            setup,
+            cut_parameters,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         snapshot: &Snapshot,
         id: CamPlanId,
@@ -513,29 +538,6 @@ impl CamPlan {
         };
         plan.validate(snapshot)?;
         Ok(plan)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_parts(
-        id: CamPlanId,
-        name: String,
-        units: CamUnits,
-        target: CamTarget,
-        stock: CamStock,
-        tool: CamTool,
-        setup: CamSetup,
-        cut_parameters: CamCutParameters,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            units,
-            target,
-            stock,
-            tool,
-            setup,
-            cut_parameters,
-        }
     }
 
     #[must_use]

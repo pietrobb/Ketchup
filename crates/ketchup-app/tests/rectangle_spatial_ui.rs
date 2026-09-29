@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use eframe::egui::{Key, Vec2, accesskit::Role};
 use harness::Shell;
@@ -46,7 +46,10 @@ fn rectangle_points(shell: &Shell) -> Vec<Vec3> {
                 })
                 .collect()
         }
-        FeatureKind::Profile { points_mm } => {
+        kind @ FeatureKind::Profile { .. } => {
+            let points_mm = kind
+                .polygon_points()
+                .expect("rectangle is a polygon profile");
             let occurrence = snapshot
                 .occurrences()
                 .find(|o| o.definition_id() == feature.definition_id())

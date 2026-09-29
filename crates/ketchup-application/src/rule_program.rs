@@ -4,6 +4,7 @@ use ketchup_core::document::{
     FeatureKind, FeatureParameterTarget, OccurrenceId, ParameterValueType, RuleProgramSource,
     Snapshot, Transform,
 };
+use ketchup_core::sketch::{PadOperation, PadSpec};
 use ketchup_program::model::ProgramOperation;
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
 
@@ -272,10 +273,7 @@ fn incremental_batch(
             .is_some_and(|definition| {
                 definition.feature_ids().iter().all(|id| {
                     snapshot.feature(*id).is_some_and(|feature| {
-                        matches!(
-                            feature.kind(),
-                            FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
-                        )
+                        matches!(feature.kind(), FeatureKind::Profile { .. })
                     })
                 })
             })
@@ -645,36 +643,42 @@ fn program_feature_kind_matches(expected: ProgramFeatureKind, actual: &FeatureKi
         (ProgramFeatureKind::Workplane, FeatureKind::Workplane(_))
             | (
                 ProgramFeatureKind::Sketch,
-                FeatureKind::Sketch(_) | FeatureKind::SegmentProfile { .. }
+                FeatureKind::Sketch(_) | FeatureKind::Profile { .. }
             )
             | (
                 ProgramFeatureKind::Pad,
-                FeatureKind::Pad(_) | FeatureKind::Extrusion { .. }
+                FeatureKind::Pad(PadSpec {
+                    operation: PadOperation::NewBody,
+                    ..
+                })
             )
             | (
                 ProgramFeatureKind::Cut,
-                FeatureKind::SketchPocket(_) | FeatureKind::Pocket { .. }
+                FeatureKind::Pad(PadSpec {
+                    operation: PadOperation::Cut { .. },
+                    ..
+                })
             )
             | (ProgramFeatureKind::Revolve, FeatureKind::Revolve { .. })
             | (ProgramFeatureKind::Sweep, FeatureKind::Sweep { .. })
             | (ProgramFeatureKind::Loft, FeatureKind::Loft { .. })
             | (
                 ProgramFeatureKind::Fillet,
-                FeatureKind::TopologyEdgeFinish {
+                FeatureKind::EdgeFinish {
                     kind: EdgeFinishKind::Fillet,
                     ..
                 }
             )
             | (
                 ProgramFeatureKind::Chamfer,
-                FeatureKind::TopologyEdgeFinish {
+                FeatureKind::EdgeFinish {
                     kind: EdgeFinishKind::Chamfer,
                     ..
                 }
             )
             | (
                 ProgramFeatureKind::FaceOffset,
-                FeatureKind::TopologyFaceOffset { .. }
+                FeatureKind::FaceOffset { .. }
             )
     )
 }

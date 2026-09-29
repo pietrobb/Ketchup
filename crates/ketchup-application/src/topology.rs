@@ -1,6 +1,6 @@
 use ketchup_core::document::{
-    ChamferEdgeSide, ChamferMode, Dimension, EdgeFinishKind, FeatureId, FeatureKind,
-    FilletRadiusStation, ShellDirection, Snapshot,
+    ChamferEdgeSide, ChamferMode, Dimension, EdgeFinishKind, EdgeRef, FaceRef, FeatureId,
+    FeatureKind, FilletRadiusStation, ShellDirection, Snapshot,
 };
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
@@ -33,10 +33,9 @@ pub fn plan_topology_shell_kind(
     if removed_faces.windows(2).any(|pair| pair[0] == pair[1]) {
         return None;
     }
-    Some(FeatureKind::TopologyShell {
+    Some(FeatureKind::Shell {
         target,
-        removed_faces,
-        profile_faces: Vec::new(),
+        removed_faces: removed_faces.into_iter().map(FaceRef::from).collect(),
         thickness,
         direction,
     })
@@ -67,17 +66,15 @@ pub fn plan_topology_finish_kind(
         return None;
     }
     Some(match kind {
-        GeneralFinishKind::Shell => FeatureKind::TopologyShell {
+        GeneralFinishKind::Shell => FeatureKind::Shell {
             target,
-            removed_faces: references,
-            profile_faces: Vec::new(),
+            removed_faces: references.into_iter().map(FaceRef::from).collect(),
             thickness: amount,
             direction: ShellDirection::Inward,
         },
-        GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => FeatureKind::TopologyEdgeFinish {
+        GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => FeatureKind::EdgeFinish {
             target,
-            edges: references,
-            profile_edges: Vec::new(),
+            edges: references.into_iter().map(EdgeRef::from).collect(),
             kind: if kind == GeneralFinishKind::Fillet {
                 EdgeFinishKind::Fillet
             } else {
@@ -99,7 +96,7 @@ pub fn plan_topology_variable_fillet_kind(
 ) -> Option<FeatureKind> {
     let mut feature =
         plan_topology_finish_kind(GeneralFinishKind::Fillet, target, references, start_radius)?;
-    let FeatureKind::TopologyEdgeFinish {
+    let FeatureKind::EdgeFinish {
         fillet_radius_stations,
         ..
     } = &mut feature
@@ -153,12 +150,11 @@ pub fn plan_topology_advanced_chamfer_kind(
     }
     let edges = edge_sides
         .iter()
-        .map(|selection| selection.edge.clone())
+        .map(|selection| EdgeRef::from(selection.edge.clone()))
         .collect();
-    Some(FeatureKind::TopologyEdgeFinish {
+    Some(FeatureKind::EdgeFinish {
         target,
         edges,
-        profile_edges: Vec::new(),
         kind: EdgeFinishKind::Chamfer,
         amount: distance,
         fillet_radius_stations: Vec::new(),

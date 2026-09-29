@@ -15,7 +15,8 @@ use ketchup_core::document::{
     OccurrenceId, Snapshot, Transform,
 };
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, PadSpec, SketchSpec, WorkplaneSpec, WorkplaneSupport,
+    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchSpec, WorkplaneSpec,
+    WorkplaneSupport,
 };
 use ketchup_interaction::Vec3;
 
@@ -422,10 +423,13 @@ pub(crate) fn plan_creation(
                             )
                         })?;
                     FeatureKind::Pad(PadSpec {
-                        sketch: sketch_id,
-                        region: region.id,
+                        profile: PadProfile::SketchRegion {
+                            sketch: sketch_id,
+                            region: region.id,
+                        },
                         direction: FeatureDirection::AlongNormal,
                         extent: FeatureExtent::Blind(height),
+                        operation: PadOperation::NewBody,
                     })
                 }
                 AssistantCadPartFeature::Revolve {

@@ -9,6 +9,7 @@ use ketchup_core::document::{
     Proposal, ProposalContext, ProposalPrepareError, Snapshot,
 };
 use ketchup_core::exact_product::{BodySubshapeRef, ExactFaceRole};
+use ketchup_core::sketch::{PadOperation, PadSpec};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -225,11 +226,20 @@ impl SmartPushPullGesture {
         let feature = snapshot
             .feature(producer_feature_id)
             .ok_or(PushPullGestureError::ProducerNotFound(producer_feature_id))?;
-        let FeatureKind::Extrusion { profile, height } = feature.kind() else {
+        let FeatureKind::Pad(
+            spec @ PadSpec {
+                operation: PadOperation::NewBody,
+                ..
+            },
+        ) = feature.kind()
+        else {
+            return Err(PushPullGestureError::UnsupportedFace);
+        };
+        let Some((profile, height)) = spec.blind_along_normal() else {
             return Err(PushPullGestureError::UnsupportedFace);
         };
         if feature.definition_id() != target.target.definition_id
-            || *profile != target_reference.profile_feature_id
+            || profile != target_reference.profile_feature_id
             || height.millimetres() <= MIN_EXTENT_MM
         {
             return Err(PushPullGestureError::UnsupportedFace);

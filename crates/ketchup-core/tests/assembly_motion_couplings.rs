@@ -209,14 +209,11 @@ fn one_driver_propagates_through_gears_belt_chain_rack_and_screw_and_round_trips
     document.apply_batch(&publication).unwrap();
     let committed = document.current();
     let state = encode_semantic_state(&committed);
-    for kind in [
-        "gear_pair",
-        "belt",
-        "chain",
-        "rack_and_pinion",
-        "lead_screw",
-    ] {
-        assert!(state.complete_v1().contains(&format!("kind:{kind}")));
+    for kind in ["GearPair", "Belt", "Chain", "RackAndPinion", "LeadScrew"] {
+        assert!(
+            state.complete().contains(&format!(".transmission.{kind}.")),
+            "missing {kind}"
+        );
     }
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
@@ -226,8 +223,8 @@ fn one_driver_propagates_through_gears_belt_chain_rack_and_screw_and_round_trips
         committed.canonical_digest()
     );
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
-        state.complete_v1()
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        state.complete()
     );
     assert_eq!(reopened.snapshot().assembly_motion_couplings().count(), 5);
 }

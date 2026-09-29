@@ -3,8 +3,7 @@ use ketchup_core::assembly::{
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProposalPrincipal,
-    StableFaceRole, Transform,
+    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProposalPrincipal, Transform,
 };
 use ketchup_core::drawing::{
     DrawingError, DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind,
@@ -23,6 +22,7 @@ use ketchup_core::shared_change::{
     OccurrenceForkImpactError, OccurrenceForkPropagationError, SharedChangeExportEligibility,
     SharedChangeExportFormat, commit_occurrence_fork_change, project_occurrence_fork_impact,
 };
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
@@ -140,18 +140,13 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
             id: PROFILE,
             definition_id: DEFINITION,
             name: "Profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: EXTRUSION,
             definition_id: DEFINITION,
             name: "Extrusion".into(),
-            kind: FeatureKind::Extrusion {
-                profile: PROFILE,
-                height: Dimension::from_decimal("10").unwrap(),
-            },
+            kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
         },
     ];
     commands.extend(if reverse_occurrences {
@@ -460,7 +455,7 @@ fn fork_impact_is_deterministic_complete_and_non_mutating() {
     );
     assert!(matches!(
         candidate.feature(FeatureId(13)).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 15.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 15.0
     ));
     assert_ne!(first_impact.candidate_digest, first_impact.source_digest);
     assert_eq!(stamp(&first), first_before);
@@ -1485,19 +1480,17 @@ fn dependency_closed_suffix_projection_is_mapped_only_to_the_fork() {
                 id: CUT_PROFILE,
                 definition_id: DEFINITION,
                 name: "Cut profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: POCKET,
                 definition_id: DEFINITION,
                 name: "Pocket".into(),
-                kind: FeatureKind::Pocket {
-                    target: EXTRUSION,
-                    profile: CUT_PROFILE,
-                    depth: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    EXTRUSION,
+                    CUT_PROFILE,
+                    Dimension::from_decimal("2").unwrap(),
+                ),
             },
         ]))
         .unwrap();
@@ -1777,10 +1770,9 @@ fn duplicate_identity_and_cyclic_sources_are_rejected_before_fork_preview() {
     let mut cyclic = DocumentStore::new();
     let cyclic_before = stamp(&cyclic);
     let cyclic_saved = persistence::save(&cyclic.current());
-    let shell = |target| FeatureKind::Shell {
+    let shell = |target| FeatureKind::RigidTransform {
         target,
-        removed_faces: vec![StableFaceRole::new("test.face").unwrap()],
-        thickness: Dimension::from_decimal("1").unwrap(),
+        transform: Transform::identity(),
     };
     let cycle_error = match cyclic.apply_batch(&CommandBatch::new(vec![
         CanonicalCommand::CreateDefinition {

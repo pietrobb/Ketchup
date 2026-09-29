@@ -1072,18 +1072,18 @@ mod incremental_scope_tests {
                     id: FeatureId(1),
                     definition_id: DefinitionId(1),
                     name: "Profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                    },
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [10.0, 0.0],
+                        [10.0, 10.0],
+                        [0.0, 10.0],
+                    ]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: FeatureId(2),
                     definition_id: DefinitionId(1),
                     name: "Solid".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(1),
-                        height: Dimension::new("10", 10.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
                 },
                 CanonicalCommand::CreateDefinition {
                     id: DefinitionId(2),
@@ -1093,18 +1093,13 @@ mod incremental_scope_tests {
                     id: FeatureId(3),
                     definition_id: DefinitionId(2),
                     name: "Profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
-                    },
+                    kind: FeatureKind::polygon(&[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: FeatureId(4),
                     definition_id: DefinitionId(2),
                     name: "Solid".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(3),
-                        height: Dimension::new("5", 5.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(FeatureId(3), Dimension::new("5", 5.0).unwrap()),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: OccurrenceId(1),
@@ -1212,18 +1207,18 @@ mod incremental_scope_tests {
                     id: FeatureId(1),
                     definition_id: DefinitionId(1),
                     name: "Profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                    },
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [10.0, 0.0],
+                        [10.0, 10.0],
+                        [0.0, 10.0],
+                    ]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: FeatureId(2),
                     definition_id: DefinitionId(1),
                     name: "Solid".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(1),
-                        height: Dimension::new("10", 10.0).unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
                 },
                 CanonicalCommand::CreateGroup {
                     id: GroupId(1),

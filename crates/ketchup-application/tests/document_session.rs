@@ -5,6 +5,7 @@ use ketchup_application::{
     model_query::{EditContextRequest, EntityKind, ModelQuery, PageRequest},
     scoped_static_load_report,
 };
+use ketchup_core::sketch::{CutStart, PadOperation, PadProfile, PadSpec};
 use ketchup_core::{
     assistant_sidecar::*,
     document::*,
@@ -1131,7 +1132,7 @@ fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation()
     assert_eq!(session.visible_undo_steps(), undo + 1);
     assert!(matches!(
         filleted.feature(FeatureId(4)).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             target: FeatureId(3),
             kind: EdgeFinishKind::Fillet,
             edges,
@@ -1389,10 +1390,13 @@ fn real_worker_face_supported_pocket_keeps_intermediate_and_roundtrips() {
                 definition_id: definition,
                 name: "Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: base_sketch_id,
-                    region: base_region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: base_sketch_id,
+                        region: base_region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("18").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]),
@@ -1455,13 +1459,17 @@ fn real_worker_face_supported_pocket_keeps_intermediate_and_roundtrips() {
             id: pocket,
             definition_id: definition,
             name: "Pocket".into(),
-            kind: FeatureKind::SketchPocket(PocketSpec {
-                target: pad,
-                sketch: pocket_sketch_id,
-                region: pocket_region,
-                support: Box::new(top),
+            kind: FeatureKind::Pad(PadSpec {
+                profile: PadProfile::SketchRegion {
+                    sketch: pocket_sketch_id,
+                    region: pocket_region,
+                },
                 direction: FeatureDirection::OppositeNormal,
                 extent: FeatureExtent::Blind(Dimension::from_decimal("6").unwrap()),
+                operation: PadOperation::Cut {
+                    target: pad,
+                    start: CutStart::Support(Box::new(top)),
+                },
             }),
         }]),
     )
@@ -1613,9 +1621,12 @@ fn planar_offset_is_evaluated_as_an_exact_surface_body() {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Plate outline".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 20.0], [110.0, 20.0], [110.0, 100.0], [10.0, 100.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [10.0, 20.0],
+                    [110.0, 20.0],
+                    [110.0, 100.0],
+                    [10.0, 100.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),

@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use eframe::egui::{self, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
@@ -26,9 +26,9 @@ use ketchup_core::assistant_sidecar::{
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode,
     ClassificationCategoryId, ClassificationDimensionId, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, GroupId, InstancePath, InstancePathStep,
-    LoftSection, NodeId, OccurrenceId, ProfileSegment, ProposalGoal, ProposalValue,
-    SpatialPathSegment, TagId, Transform,
+    DocumentStore, EdgeFinishKind, EdgeRef, FeatureId, FeatureKind, GroupId, InstancePath,
+    InstancePathStep, LoftSection, NodeId, OccurrenceId, ProfileSegment, ProposalGoal,
+    ProposalValue, SpatialPathSegment, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V17,
@@ -42,6 +42,7 @@ use ketchup_core::sketch::{
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
     SketchSpec, WorkplaneSpec,
 };
+use ketchup_core::sketch::{PadOperation, PadProfile};
 use ketchup_core::state_view::encode_semantic_state;
 use ketchup_core::topology::{TopologicalElementKind, TopologicalReferenceStability};
 use ketchup_core::validation::VALIDATOR_ROLE_DIMENSION_V1;
@@ -170,36 +171,34 @@ fn write_assistant_movable_pocket_fixture(path: &std::path::Path) {
                 id: FeatureId(12),
                 definition_id: DefinitionId(1),
                 name: "Panel outline".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(13),
                 definition_id: DefinitionId(1),
                 name: "10 mm panel".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(12),
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(12), Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(14),
                 definition_id: DefinitionId(1),
                 name: "Fitting pocket profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 10.0], [20.0, 10.0], [20.0, 16.0], [10.0, 16.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [10.0, 10.0],
+                    [20.0, 10.0],
+                    [20.0, 16.0],
+                    [10.0, 16.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(15),
                 definition_id: DefinitionId(1),
                 name: "6 mm fitting pocket".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: FeatureId(13),
-                    profile: FeatureId(14),
-                    depth: Dimension::from_decimal("6").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    FeatureId(13),
+                    FeatureId(14),
+                    Dimension::from_decimal("6").unwrap(),
+                ),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
@@ -228,18 +227,13 @@ fn write_assistant_boolean_fixture(path: &std::path::Path) {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Target profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Target extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateBody {
                 definition_id: DefinitionId(1),
@@ -255,18 +249,18 @@ fn write_assistant_boolean_fixture(path: &std::path::Path) {
                 id: FeatureId(3),
                 definition_id: DefinitionId(1),
                 name: "Tool profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[40.0, 0.0], [120.0, 0.0], [120.0, 60.0], [40.0, 60.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [40.0, 0.0],
+                    [120.0, 0.0],
+                    [120.0, 60.0],
+                    [40.0, 60.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(4),
                 definition_id: DefinitionId(1),
                 name: "Tool extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(3),
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(3), Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
@@ -295,9 +289,12 @@ fn write_assistant_planar_offset_fixture(path: &std::path::Path) {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 20.0], [110.0, 20.0], [110.0, 100.0], [10.0, 100.0]],
-                },
+                kind: FeatureKind::polygon(&[
+                    [10.0, 20.0],
+                    [110.0, 20.0],
+                    [110.0, 100.0],
+                    [10.0, 100.0],
+                ]),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
@@ -326,7 +323,7 @@ fn write_assistant_sweep_fixture(path: &std::path::Path) {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Curved sweep profile".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [-2.0, -3.0],
@@ -403,17 +400,23 @@ fn write_assistant_loft_fixture(path: &std::path::Path) {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Lower spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-8.0, -4.0], [9.0, -3.0], [7.0, 6.0], [-6.0, 5.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -4.0],
+                    [9.0, -3.0],
+                    [7.0, 6.0],
+                    [-6.0, 5.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Upper spline".to_owned(),
-                kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
-                },
+                kind: FeatureKind::closed_spline(&[
+                    [-4.0, -2.0],
+                    [5.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 4.0],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(3),
@@ -494,10 +497,13 @@ fn write_assistant_parameter_fixture(path: &std::path::Path) {
                 definition_id: DefinitionId(1),
                 name: "Pad".to_owned(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: FeatureId(12),
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: FeatureId(12),
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("5").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateOccurrence {
@@ -527,18 +533,13 @@ fn write_assistant_rotation_fixture(path: &std::path::Path) {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Non-box profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [31.0, 4.0], [23.0, 29.0], [2.0, 18.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [31.0, 4.0], [23.0, 29.0], [2.0, 18.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Non-box extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::from_decimal("17").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::from_decimal("17").unwrap()),
             },
             CanonicalCommand::CreateGroup {
                 id: GroupId(2),
@@ -1599,18 +1600,13 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
                 id: FeatureId(1),
                 definition_id: DefinitionId(50),
                 name: "Mechanism profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(50),
                 name: "Mechanism extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::from_decimal("5").unwrap()),
             },
             CanonicalCommand::CreateGroup {
                 id: GroupId(60),
@@ -1954,17 +1950,17 @@ fn scripted_create_part_program_round_trips_state_view_and_one_step_undo_redo() 
 
     let committed_digest = committed.canonical_digest();
     let committed_state = encode_semantic_state(&committed);
-    let committed_complete_view = committed_state.complete_v1();
-    let committed_agent_view = committed_state.agent_v1();
+    let committed_complete_view = committed_state.complete();
+    let committed_agent_view = committed_state.agent();
     assert!(
         committed_complete_view.contains(&format!("source.canonical_digest={committed_digest}"))
     );
-    for expected_kind in ["workplane", "sketch", "pad"] {
-        assert!(committed_complete_view.contains(&format!(".kind={expected_kind}")));
-        assert!(committed_agent_view.contains(&format!("kind:{expected_kind}")));
+    for expected_kind in ["Workplane", "Sketch", "Pad"] {
+        assert!(committed_complete_view.contains(&format!(".kind.{expected_kind}.")));
+        assert!(committed_agent_view.contains(&format!("kind:{{{expected_kind}:")));
     }
-    assert!(!committed_complete_view.contains(".kind=mesh_body"));
-    assert!(!committed_agent_view.contains("kind:mesh_body"));
+    assert!(!committed_complete_view.contains(".kind.MeshBody."));
+    assert!(!committed_agent_view.contains("kind:{MeshBody:"));
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("assistant-editable-prism.ketchup");
@@ -1974,8 +1970,8 @@ fn scripted_create_part_program_round_trips_state_view_and_one_step_undo_redo() 
     let reopened = outcome.snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
     let reopened_state = encode_semantic_state(&reopened);
-    assert_eq!(reopened_state.complete_v1(), committed_complete_view);
-    assert_eq!(reopened_state.agent_v1(), committed_agent_view);
+    assert_eq!(reopened_state.complete(), committed_complete_view);
+    assert_eq!(reopened_state.agent(), committed_agent_view);
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
@@ -1991,7 +1987,7 @@ fn scripted_create_part_program_round_trips_state_view_and_one_step_undo_redo() 
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     assert_eq!(shell.app().redo_step_count(), baseline_redo);
     assert_eq!(
-        encode_semantic_state(&shell.app().document_snapshot()).complete_v1(),
+        encode_semantic_state(&shell.app().document_snapshot()).complete(),
         committed_complete_view
     );
     assert_eq!(transport.remaining_responses(), 0);
@@ -2081,10 +2077,10 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
 
     let committed_digest = committed.canonical_digest();
     let committed_state = encode_semantic_state(&committed);
-    let committed_complete_view = committed_state.complete_v1();
-    let committed_agent_view = committed_state.agent_v1();
-    assert!(committed_complete_view.contains(".kind=revolve"));
-    assert!(committed_agent_view.contains("kind:revolve"));
+    let committed_complete_view = committed_state.complete();
+    let committed_agent_view = committed_state.agent();
+    assert!(committed_complete_view.contains(".kind.Revolve."));
+    assert!(committed_agent_view.contains("kind:{Revolve:"));
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("assistant-editable-revolve.ketchup");
@@ -2094,8 +2090,8 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
     let reopened = outcome.snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
     let reopened_state = encode_semantic_state(&reopened);
-    assert_eq!(reopened_state.complete_v1(), committed_complete_view);
-    assert_eq!(reopened_state.agent_v1(), committed_agent_view);
+    assert_eq!(reopened_state.complete(), committed_complete_view);
+    assert_eq!(reopened_state.agent(), committed_agent_view);
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
@@ -2111,7 +2107,7 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     assert_eq!(shell.app().redo_step_count(), baseline_redo);
     assert_eq!(
-        encode_semantic_state(&shell.app().document_snapshot()).complete_v1(),
+        encode_semantic_state(&shell.app().document_snapshot()).complete(),
         committed_complete_view
     );
     assert_eq!(transport.remaining_responses(), 0);
@@ -2313,11 +2309,7 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
     let committed = shell.app().document_snapshot();
     assert!(matches!(
         committed.feature(FeatureId(5)).unwrap().kind(),
-        FeatureKind::Pocket {
-            target: FeatureId(2),
-            profile: FeatureId(3),
-            depth,
-        } if depth.millimetres() == 8.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(FeatureId(3)), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { target: FeatureId(2), .. }, .. }) if depth.millimetres() == 8.0
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(5)).unwrap();
     assert_eq!(graph.producer_feature_id, 5);
@@ -2737,7 +2729,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
     let committed = shell.app().document_snapshot();
     assert!(matches!(
         committed.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyShell {
+        FeatureKind::Shell {
             target: FeatureId(2),
             removed_faces,
             thickness,
@@ -2771,7 +2763,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert!(matches!(
         reopened.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyShell {
+        FeatureKind::Shell {
             removed_faces,
             direction: ketchup_core::document::ShellDirection::Symmetric,
             ..
@@ -2875,7 +2867,7 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
     let committed = shell.app().document_snapshot();
     assert!(matches!(
         committed.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             target: FeatureId(2),
             edges,
             kind: EdgeFinishKind::Fillet,
@@ -2883,7 +2875,7 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
             fillet_radius_stations,
             ..
         } if edges.len() == 1
-            && edges[0].lineage_digest == reference_id
+            && edges[0].topological().is_some_and(|edge| edge.lineage_digest == reference_id)
             && amount.millimetres() == 2.0
             && fillet_radius_stations.len() == 2
             && fillet_radius_stations[0].position == 0.5
@@ -2916,13 +2908,13 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert!(matches!(
         reopened.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             edges,
             kind: EdgeFinishKind::Fillet,
             fillet_radius_stations,
             ..
         } if edges.len() == 1
-            && edges[0].lineage_digest == reference_id
+            && edges[0].topological().is_some_and(|edge| edge.lineage_digest == reference_id)
             && fillet_radius_stations.len() == 2
             && fillet_radius_stations[0].position == 0.5
             && fillet_radius_stations[0].radius.millimetres() == 3.0
@@ -3031,7 +3023,7 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
     let committed = shell.app().document_snapshot();
     assert!(matches!(
         committed.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             target: FeatureId(2),
             edges,
             kind: EdgeFinishKind::Chamfer,
@@ -3040,7 +3032,7 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
             chamfer_edge_sides,
             ..
         } if edges.len() == 1
-            && edges[0].lineage_digest == reference_id
+            && edges[0].topological().is_some_and(|edge| edge.lineage_digest == reference_id)
             && amount.millimetres() == 2.0
             && second_distance.millimetres() == 3.0
             && chamfer_edge_sides.len() == 1
@@ -3066,11 +3058,11 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert!(matches!(
         reopened.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             edges,
             kind: EdgeFinishKind::Chamfer,
             ..
-        } if edges.len() == 1 && edges[0].lineage_digest == reference_id
+        } if edges.len() == 1 && edges[0].topological().is_some_and(|edge| edge.lineage_digest == reference_id)
     ));
     assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
 
@@ -3248,10 +3240,9 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
                     id: FeatureId(5),
                     definition_id: DefinitionId(1),
                     name: "Chamfer feasibility candidate".to_owned(),
-                    kind: FeatureKind::TopologyEdgeFinish {
+                    kind: FeatureKind::EdgeFinish {
                         target: FeatureId(4),
-                        edges: vec![edge.clone()],
-                        profile_edges: Vec::new(),
+                        edges: vec![EdgeRef::from(edge.clone())],
                         kind: EdgeFinishKind::Chamfer,
                         amount: Dimension::from_decimal("0.2").unwrap(),
                         fillet_radius_stations: Vec::new(),
@@ -3687,7 +3678,9 @@ fn assistant_profile_translation_reviews_confirms_and_undoes() {
         .unwrap()
         .kind()
     {
-        FeatureKind::Profile { points_mm } => points_mm.clone(),
+        kind @ FeatureKind::Profile { .. } if kind.polygon_points().is_some() => {
+            kind.polygon_points().unwrap()
+        }
         other => panic!("expected movable profile, got {other:?}"),
     };
     let before_revision = shell.app().document_revision();

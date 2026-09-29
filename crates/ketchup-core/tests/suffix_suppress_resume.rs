@@ -21,9 +21,7 @@ const TOOL_PROFILE: FeatureId = FeatureId(20);
 const TOOL_EXTRUSION: FeatureId = FeatureId(21);
 
 fn profile(size: f64) -> FeatureKind {
-    FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]],
-    }
+    FeatureKind::polygon(&[[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]])
 }
 
 fn seed_history() -> DocumentStore {
@@ -44,28 +42,23 @@ fn seed_history() -> DocumentStore {
                 id: BASE_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: BASE_PROFILE,
-                    height: Dimension::from_decimal("8").unwrap(),
-                },
+                kind: FeatureKind::extrusion(BASE_PROFILE, Dimension::from_decimal("8").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: CUT_PROFILE,
                 definition_id: DEFINITION,
                 name: "Cut profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[4.0, 4.0], [8.0, 4.0], [8.0, 8.0], [4.0, 8.0]],
-                },
+                kind: FeatureKind::polygon(&[[4.0, 4.0], [8.0, 4.0], [8.0, 8.0], [4.0, 8.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: POCKET,
                 definition_id: DEFINITION,
                 name: "Pocket".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: BASE_EXTRUSION,
-                    profile: CUT_PROFILE,
-                    depth: Dimension::from_decimal("3").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    BASE_EXTRUSION,
+                    CUT_PROFILE,
+                    Dimension::from_decimal("3").unwrap(),
+                ),
             },
             CanonicalCommand::CreateBody {
                 definition_id: DEFINITION,
@@ -87,10 +80,7 @@ fn seed_history() -> DocumentStore {
                 id: TOOL_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Tool extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: TOOL_PROFILE,
-                    height: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::extrusion(TOOL_PROFILE, Dimension::from_decimal("2").unwrap()),
             },
             CanonicalCommand::SetActiveBody {
                 definition_id: DEFINITION,

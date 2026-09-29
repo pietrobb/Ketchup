@@ -2,7 +2,7 @@
 //! Assistant first: which validators exist, what each one checks, a button that
 //! runs them on the current document, and findings that name concrete parts.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::accesskit::Role;
 use harness::Shell;

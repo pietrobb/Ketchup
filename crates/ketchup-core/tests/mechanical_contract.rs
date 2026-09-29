@@ -58,23 +58,21 @@ fn append_box(
             id: profile,
             definition_id,
             name: format!("{name} profile"),
-            kind: FeatureKind::Profile {
-                points_mm: vec![
-                    [0.0, 0.0],
-                    [size_mm[0], 0.0],
-                    [size_mm[0], size_mm[1]],
-                    [0.0, size_mm[1]],
-                ],
-            },
+            kind: FeatureKind::polygon(&[
+                [0.0, 0.0],
+                [size_mm[0], 0.0],
+                [size_mm[0], size_mm[1]],
+                [0.0, size_mm[1]],
+            ]),
         },
         CanonicalCommand::CreateFeature {
             id: extrusion,
             definition_id,
             name: format!("{name} body"),
-            kind: FeatureKind::Extrusion {
+            kind: FeatureKind::extrusion(
                 profile,
-                height: Dimension::from_decimal(size_mm[2].to_string()).unwrap(),
-            },
+                Dimension::from_decimal(size_mm[2].to_string()).unwrap(),
+            ),
         },
         CanonicalCommand::CreateOccurrence {
             id: occurrence_id,
@@ -605,12 +603,12 @@ fn the_contract_survives_save_and_open_and_is_visible_to_the_agent() {
     let state = encode_semantic_state(&reopened_snapshot);
     assert!(
         state
-            .complete_v1()
-            .contains("mechanical_interface.13=schema:")
+            .complete()
+            .contains("mechanical_interfaces.13.schema=")
     );
-    assert!(state.agent_v1().contains("mechanical_condition.22="));
-    assert!(state.agent_v1().contains("role:support"));
-    assert!(state.agent_v1().contains("kind:joint_travel"));
+    assert!(state.agent().contains("mechanical_conditions.22={"));
+    assert!(state.agent().contains("role:\"Support\""));
+    assert!(state.agent().contains("kind:{JointTravel:{"));
 }
 
 #[test]

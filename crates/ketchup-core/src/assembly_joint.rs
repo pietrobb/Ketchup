@@ -16,13 +16,17 @@ const MAX_LINEAR_POSITION_MM: f64 = 1_000_000.0;
 const MAX_ANGULAR_POSITION_DEGREES: f64 = 360_000.0;
 const MIN_AXIS_DIRECTION_LENGTH: f64 = 1.0e-12;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct AssemblyJointId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct AssemblyMotionStudyId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyJointAxis {
     pub(crate) direction_in_parent: [f64; 3],
     pub(crate) pivot_in_parent_mm: [f64; 3],
@@ -75,7 +79,7 @@ impl AssemblyJointAxis {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyJointLimits {
     min: f64,
     max: f64,
@@ -111,7 +115,7 @@ impl AssemblyJointLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AssemblyJointKind {
     Fixed,
     Revolute {
@@ -279,7 +283,7 @@ impl AssemblyJointKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyJoint {
     pub(crate) schema: String,
     pub(crate) id: AssemblyJointId,
@@ -366,7 +370,7 @@ impl AssemblyJoint {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyMotionDriver {
     joint_id: AssemblyJointId,
     position: f64,
@@ -389,7 +393,7 @@ impl AssemblyMotionDriver {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyMotionStudy {
     pub(crate) schema: String,
     pub(crate) id: AssemblyMotionStudyId,

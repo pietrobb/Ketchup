@@ -14,10 +14,12 @@ pub const MAX_IMPORT_DIAGNOSTICS: usize = 1_024;
 pub const MAX_IMPORT_OUTPUTS: usize = 1_024;
 const MAX_IMPORT_TEXT_BYTES: usize = 1_024;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct ImportId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ImportFormat {
     Stl,
     Dxf,
@@ -27,7 +29,9 @@ pub enum ImportFormat {
     Glb,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum ImportLengthUnit {
     Millimetre,
     Centimetre,
@@ -49,13 +53,13 @@ impl ImportLengthUnit {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ImportUnitAuthority {
     FileDeclared,
     UserDeclared,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImportUnitDecision {
     source_unit: ImportLengthUnit,
     authority: ImportUnitAuthority,
@@ -86,13 +90,15 @@ impl ImportUnitDecision {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum ImportDiagnosticSeverity {
     Info,
     Warning,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct ImportDiagnostic {
     severity: ImportDiagnosticSeverity,
     code: String,
@@ -145,7 +151,9 @@ impl ImportDiagnostic {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum ImportOutputRef {
     Definition(DefinitionId),
     Feature(FeatureId),
@@ -153,7 +161,7 @@ pub enum ImportOutputRef {
     Group(GroupId),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImportReceipt {
     schema: String,
     id: ImportId,

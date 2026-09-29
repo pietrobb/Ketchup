@@ -14,6 +14,7 @@ use ketchup_core::joinery::{
     DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair, StandardDowel,
 };
 use ketchup_core::persistence;
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::sketch::{
     SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
@@ -40,18 +41,16 @@ fn panel_commands(
             id: FeatureId(profile_id),
             definition_id: DefinitionId(definition_id),
             name: format!("{name} profile"),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [600.0, 0.0], [600.0, 400.0], [0.0, 400.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [600.0, 0.0], [600.0, 400.0], [0.0, 400.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: FeatureId(extrusion_id),
             definition_id: DefinitionId(definition_id),
             name: format!("{name} extrusion"),
-            kind: FeatureKind::Extrusion {
-                profile: FeatureId(profile_id),
-                height: Dimension::new("19", 19.0).unwrap(),
-            },
+            kind: FeatureKind::extrusion(
+                FeatureId(profile_id),
+                Dimension::new("19", 19.0).unwrap(),
+            ),
         },
         CanonicalCommand::CreateOccurrence {
             id: OccurrenceId(occurrence_id),
@@ -111,7 +110,7 @@ fn adoption_part(
             target: Some(
                 FeatureParameterTarget::new(
                     FeatureId(extrusion_id),
-                    "height",
+                    "extent.distance",
                     ParameterValueType::Length,
                 )
                 .unwrap(),
@@ -137,7 +136,7 @@ fn adoption_part(
             (
                 key(&format!("{part_key}/solid")),
                 FeatureId(extrusion_id),
-                RecognizedRecipeFeatureKind::Extrusion,
+                RecognizedRecipeFeatureKind::Pad,
             ),
         ],
     }
@@ -201,10 +200,13 @@ fn rectangular_sketch_pad_dimensions_preserve_anchors_and_entity_identity() {
                             definition_id: DefinitionId(1),
                             name: "Solid".into(),
                             kind: FeatureKind::Pad(PadSpec {
-                                sketch: FeatureId(2),
-                                region,
+                                profile: PadProfile::SketchRegion {
+                                    sketch: FeatureId(2),
+                                    region,
+                                },
                                 direction: FeatureDirection::AlongNormal,
                                 extent: FeatureExtent::Blind(Dimension::new("6", 6.0).unwrap()),
+                                operation: PadOperation::NewBody,
                             }),
                         },
                         CanonicalCommand::CreateOccurrence {
@@ -440,7 +442,12 @@ fn populated_document() -> ketchup_core::document::DocumentStore {
 
 fn adopt_recipe(snapshot: &ketchup_core::document::Snapshot) -> AssemblyRecipe {
     let height = |id| match snapshot.feature(FeatureId(id)).unwrap().kind() {
-        FeatureKind::Extrusion { height, .. } => height.millimetres(),
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(_),
+            extent: FeatureExtent::Blind(height),
+            operation: PadOperation::NewBody,
+            ..
+        }) => height.millimetres(),
         _ => panic!("recipe panel extrusion is missing"),
     };
     AssemblyRecipe::adopt(
@@ -521,10 +528,7 @@ fn recipe_round_trip_preserves_keys_geometry_appearance_joinery_and_history() {
     assert_eq!(snapshot.dowel_joint(DowelJointId(7)), Some(&dowel_joint()));
     assert_eq!(
         snapshot.feature(FeatureId(2)).unwrap().kind(),
-        &FeatureKind::Extrusion {
-            profile: FeatureId(1),
-            height: Dimension::new("19", 19.0).unwrap(),
-        }
+        &FeatureKind::extrusion(FeatureId(1), Dimension::new("19", 19.0).unwrap())
     );
 
     assert_eq!(reopened.visible_undo_steps(), 1);
@@ -588,10 +592,7 @@ fn manual_owned_feature_change_fails_closed_but_atomic_recipe_update_succeeds() 
     assert_eq!(document.visible_undo_steps(), 1);
     assert_eq!(
         document.current().feature(FeatureId(2)).unwrap().kind(),
-        &FeatureKind::Extrusion {
-            profile: FeatureId(1),
-            height: Dimension::new("20", 20.0).unwrap(),
-        }
+        &FeatureKind::extrusion(FeatureId(1), Dimension::new("20", 20.0).unwrap())
     );
     document.undo().unwrap();
     assert_eq!(document.current().canonical_digest(), before);
@@ -705,8 +706,12 @@ fn make_unique_remaps_only_selected_recipe_part_and_does_not_bless_stale_ownersh
     );
     assert_eq!(
         document.current().feature_parameter_value(
-            &FeatureParameterTarget::new(FeatureId(6), "height", ParameterValueType::Length)
-                .unwrap()
+            &FeatureParameterTarget::new(
+                FeatureId(6),
+                "extent.distance",
+                ParameterValueType::Length
+            )
+            .unwrap()
         ),
         Some(20.0)
     );
@@ -812,7 +817,7 @@ fn adoption_rejects_unknown_version_and_unrecognized_or_partial_feature_sets() {
         19.0,
         RecipeEditScope::Occurrence(InstancePath::root(OccurrenceId(1))),
     );
-    wrong_kind.features[1].2 = RecognizedRecipeFeatureKind::Pocket;
+    wrong_kind.features[1].2 = RecognizedRecipeFeatureKind::Sketch;
     assert_eq!(
         AssemblyRecipe::adopt(
             &snapshot,
@@ -838,7 +843,8 @@ fn adoption_rejects_unknown_version_and_unrecognized_or_partial_feature_sets() {
         .get_mut(&key("height"))
         .unwrap()
         .target = Some(
-        FeatureParameterTarget::new(FeatureId(4), "height", ParameterValueType::Length).unwrap(),
+        FeatureParameterTarget::new(FeatureId(4), "extent.distance", ParameterValueType::Length)
+            .unwrap(),
     );
     assert!(matches!(
         AssemblyRecipe::adopt(
@@ -979,8 +985,12 @@ fn semantic_compiler_is_a_true_no_op_and_round_trips_a_maximum_anchored_dimensio
     assert_eq!(document.visible_undo_steps(), 1);
     assert_eq!(
         document.current().feature_parameter_value(
-            &FeatureParameterTarget::new(FeatureId(2), "height", ParameterValueType::Length)
-                .unwrap()
+            &FeatureParameterTarget::new(
+                FeatureId(2),
+                "extent.distance",
+                ParameterValueType::Length
+            )
+            .unwrap()
         ),
         Some(29.0)
     );
@@ -1235,10 +1245,12 @@ fn independent_semantic_edits_commute_and_repeat_without_geometry_or_identity_dr
                     38.5 - top_height / 2.0,
                 ),
             ] {
-                let FeatureKind::Extrusion {
-                    height: actual_height,
+                let FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(_),
+                    extent: FeatureExtent::Blind(actual_height),
+                    operation: PadOperation::NewBody,
                     ..
-                } = after.feature(FeatureId(extrusion)).unwrap().kind()
+                }) = after.feature(FeatureId(extrusion)).unwrap().kind()
                 else {
                     panic!("panel extrusion was replaced")
                 };
@@ -1258,14 +1270,17 @@ fn independent_semantic_edits_commute_and_repeat_without_geometry_or_identity_dr
                         0.0, 0.0, 1.0
                     ]
                 );
-                let FeatureKind::Profile { points_mm } =
-                    after.feature(FeatureId(extrusion - 1)).unwrap().kind()
+                let Some(points_mm) = after
+                    .feature(FeatureId(extrusion - 1))
+                    .unwrap()
+                    .kind()
+                    .polygon_points()
                 else {
                     panic!("panel profile was replaced")
                 };
                 assert_eq!(
                     points_mm,
-                    &vec![[0.0, 0.0], [600.0, 0.0], [600.0, 400.0], [0.0, 400.0]]
+                    vec![[0.0, 0.0], [600.0, 0.0], [600.0, 400.0], [0.0, 400.0]]
                 );
                 let mut bounds_min = [f64::INFINITY; 3];
                 let mut bounds_max = [f64::NEG_INFINITY; 3];
@@ -1352,8 +1367,12 @@ fn extend_until_contact_handles_nested_rotation_and_matches_a_clean_compile() {
     assert_eq!(incremental.visible_undo_steps(), 1);
     assert_eq!(
         incremental.current().feature_parameter_value(
-            &FeatureParameterTarget::new(FeatureId(2), "height", ParameterValueType::Length)
-                .unwrap()
+            &FeatureParameterTarget::new(
+                FeatureId(2),
+                "extent.distance",
+                ParameterValueType::Length
+            )
+            .unwrap()
         ),
         Some(29.0)
     );
@@ -1556,11 +1575,11 @@ fn physical_hole_pocket(
         id: FeatureId(id),
         definition_id: DefinitionId(definition_id),
         name: name.to_owned(),
-        kind: FeatureKind::Pocket {
-            target: FeatureId(target_id),
-            profile: FeatureId(profile_id),
-            depth: Dimension::new("16", 16.0).unwrap(),
-        },
+        kind: FeatureKind::pocket(
+            FeatureId(target_id),
+            FeatureId(profile_id),
+            Dimension::new("16", 16.0).unwrap(),
+        ),
     }
 }
 
@@ -1658,7 +1677,7 @@ fn dependent_joinery_document_with_physical_holes(
             (
                 key("rear/hole_pocket"),
                 FeatureId(7),
-                RecognizedRecipeFeatureKind::Pocket,
+                RecognizedRecipeFeatureKind::Pad,
             ),
         ]);
         top.features.extend([
@@ -1675,7 +1694,7 @@ fn dependent_joinery_document_with_physical_holes(
             (
                 key("top/hole_pocket"),
                 FeatureId(10),
-                RecognizedRecipeFeatureKind::Pocket,
+                RecognizedRecipeFeatureKind::Pad,
             ),
         ]);
     }

@@ -4,7 +4,7 @@
 //! only the operating system file dialogs are answered from a script. Outcomes
 //! are read from document state and from the disk, never from painted text.
 
-mod harness;
+use crate::harness;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
@@ -564,18 +564,13 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
                 id: profile,
                 definition_id: definition,
                 name: "20x10 profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: solid,
                 definition_id: definition,
                 name: "20x10x5 target".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::new("5", 5.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::new("5", 5.0).unwrap()),
             },
         ]))
         .unwrap();
@@ -703,7 +698,7 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
                 id: profile,
                 definition_id: definition,
                 name: "Circular section".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::CircularArc {
                             start_mm: [10.0, 0.0],
@@ -725,10 +720,7 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
                 id: solid,
                 definition_id: definition,
                 name: "Cylinder".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::new("20", 20.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::new("20", 20.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence,
@@ -834,18 +826,13 @@ fn local_pdm_root_child_and_verified_open_run_through_offscreen_accesskit() {
                 id: profile,
                 definition_id: definition,
                 name: "80x40 profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: solid,
                 definition_id: definition,
                 name: "80x40x12 bracket".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::new("12", 12.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::new("12", 12.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence,
@@ -958,9 +945,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
                 id: FeatureId(80),
                 definition_id: DefinitionId(80),
                 name: "Shared square profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(81),
@@ -3195,6 +3180,13 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
     let before_box_count = shell.app().active_box_count();
+    // The starting part's own base outline is a profile too; only imported ones count.
+    let profiles_before = shell
+        .app()
+        .document_snapshot()
+        .features()
+        .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
+        .count();
 
     shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
@@ -3340,12 +3332,12 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     assert_eq!(
         loaded_snapshot
             .features()
-            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
             .count(),
-        24
+        profiles_before + 24
     );
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3357,7 +3349,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && segments[3].end_mm() == [200.0, 0.0]
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         !*closed
@@ -3376,7 +3368,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         !*closed
@@ -3389,7 +3381,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3400,7 +3392,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && segments[2].end_mm() == [80.0, 0.0]
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3411,7 +3403,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && segments[3].end_mm() == [60.0, -10.0]
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3423,7 +3415,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && segments[3].end_mm() == [90.0, 0.0]
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3446,7 +3438,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         matches!(
@@ -3468,7 +3460,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
         )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3478,7 +3470,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && segments[3].end_mm() == [40.0, 0.0]
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3489,7 +3481,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && segments[2].end_mm() == [60.0, 0.0]
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3500,7 +3492,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && segments[2].end_mm() == [60.0, 10.0]
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         matches!(
@@ -3522,7 +3514,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
         )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         !*closed
@@ -3541,7 +3533,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3570,7 +3562,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -3597,7 +3589,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             )
     }));
     assert!(loaded_snapshot.features().any(|feature| {
-        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+        let FeatureKind::Profile { segments, closed } = feature.kind() else {
             return false;
         };
         *closed
@@ -4171,19 +4163,17 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     let assistant_context = shell.app().assistant_context();
     assert_eq!(assistant_context["state_view"]["complete"], true);
     let assistant_state = assistant_context["state_view"]["content"].as_str().unwrap();
-    assert_eq!(assistant_state.matches("source_format:step").count(), 2);
+    assert_eq!(assistant_state.matches("ImportedExactBody:{").count(), 2);
+    assert!(assistant_state.contains("format:\"Step\""));
     assert!(assistant_state.contains("source_part_index:0"));
     assert!(assistant_state.contains("source_part_index:1"));
-    assert_eq!(
+    assert!(
         assistant_state
-            .matches("source_parametric_history:unavailable")
-            .count(),
-        2
+            .contains("code:\"step_parametric_reconstruction_unavailable\",subject:none,count:2")
     );
     assert_eq!(
         assistant_state,
-        ketchup_core::state_view::encode_semantic_state(&shell.app().document_snapshot())
-            .agent_v1()
+        ketchup_core::state_view::encode_semantic_state(&shell.app().document_snapshot()).agent()
     );
 
     let before_assistant = canonical_state(&shell);

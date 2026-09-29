@@ -15,7 +15,7 @@ pub(crate) fn prism(points: &[[f64; 2]], transform: Transform) -> KetchupApp {
                 id: FeatureId(1),
                 definition_id: TEST_PRISM_DEFINITION,
                 name: "Line loop".into(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     closed: true,
                     segments: (0..points.len())
                         .map(|i| ProfileSegment::Line {
@@ -29,10 +29,7 @@ pub(crate) fn prism(points: &[[f64; 2]], transform: Transform) -> KetchupApp {
                 id: FeatureId(2),
                 definition_id: TEST_PRISM_DEFINITION,
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("12", 12.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("12", 12.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),

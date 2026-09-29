@@ -274,17 +274,12 @@ fn prepare_body_parameter_edit_with_validation(
         }
         let command = match edit.target {
             ExactParameterEditTarget::FeatureDimension(id)
-                if matches!(
-                    feature.kind(),
-                    FeatureKind::Extrusion { .. }
-                        | FeatureKind::Pad(_)
-                        | FeatureKind::SketchPocket(_)
-                        | FeatureKind::Pocket { .. }
-                ) || matches!(
-                    feature.kind(),
-                    FeatureKind::Workplane(spec)
-                        if matches!(&spec.support, WorkplaneSupport::Offset { .. })
-                ) =>
+                if matches!(feature.kind(), FeatureKind::Pad(_))
+                    || matches!(
+                        feature.kind(),
+                        FeatureKind::Workplane(spec)
+                            if matches!(&spec.support, WorkplaneSupport::Offset { .. })
+                    ) =>
             {
                 CanonicalCommand::SetFeatureDimension {
                     id,
@@ -407,10 +402,7 @@ pub fn prepare_body_profile_translation(
     }
     if !matches!(
         feature.kind(),
-        FeatureKind::Sketch(_)
-            | FeatureKind::Profile { .. }
-            | FeatureKind::SegmentProfile { .. }
-            | FeatureKind::SplineProfile { .. }
+        FeatureKind::Sketch(_) | FeatureKind::Profile { .. }
     ) {
         return Err(BodyParameterEditError::UnsupportedTarget(
             ExactParameterEditTarget::FeatureDimension(request.profile_id),
@@ -438,25 +430,23 @@ pub fn prepare_body_profile_translation(
         snapshot
             .feature(*feature_id)
             .is_some_and(|feature| match feature.kind() {
-                FeatureKind::SketchPocket(spec) => spec.sketch == request.profile_id,
-                FeatureKind::ThroughCut { profile, .. } | FeatureKind::Pocket { profile, .. } => {
-                    *profile == request.profile_id
+                FeatureKind::Pad(spec) if spec.operation.target().is_some() => {
+                    spec.profile.feature_id() == request.profile_id
                 }
                 FeatureKind::Boolean {
                     operation: BooleanOperation::Cut,
                     tool,
                     ..
                 } => snapshot.feature(*tool).is_some_and(|tool| {
-                    let extrusion = match tool.kind() {
+                    let pad = match tool.kind() {
                         FeatureKind::RigidTransform { target, .. } => snapshot.feature(*target),
-                        FeatureKind::Extrusion { .. } => Some(tool),
-                        _ => None,
+                        _ => Some(tool),
                     };
-                    extrusion.is_some_and(|extrusion| {
+                    pad.is_some_and(|pad| {
                         matches!(
-                            extrusion.kind(),
-                            FeatureKind::Extrusion { profile, .. }
-                                if *profile == request.profile_id
+                            pad.kind(),
+                            FeatureKind::Pad(spec)
+                                if spec.profile.feature_id() == request.profile_id
                         )
                     })
                 }),

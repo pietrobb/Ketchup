@@ -290,7 +290,7 @@ struct ParsedEntities {
     layers: BTreeSet<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum UndirectedSegmentKey {
     Line([i64; 2], [i64; 2]),
     CircularArc {
@@ -305,6 +305,8 @@ enum UndirectedSegmentKey {
         control_2: [i64; 2],
         end: [i64; 2],
     },
+    /// The spline points, in the direction that starts at the smaller point.
+    Spline(Vec<[i64; 2]>),
 }
 
 /// Inspect a bounded ASCII DXF without mutating a document.
@@ -436,7 +438,7 @@ pub fn plan_dxf_import(
             id: feature_id,
             definition_id,
             name: format!("DXF profile · {}", profile.layer),
-            kind: FeatureKind::SegmentProfile {
+            kind: FeatureKind::Profile {
                 segments: profile.segments.clone(),
                 closed: profile.closed,
             },
@@ -1999,7 +2001,7 @@ fn parse_hatch_edge_path(
                     point_key(*center_mm),
                     if reversed { !*clockwise } else { *clockwise },
                 ),
-                ProfileSegment::CubicBezier { .. } => {
+                ProfileSegment::CubicBezier { .. } | ProfileSegment::Spline { .. } => {
                     return Err(DxfImportError::AmbiguousGeometry);
                 }
             };
@@ -3061,6 +3063,12 @@ fn transform_segment(
             control_1_mm: transform(*control_1_mm)?,
             control_2_mm: transform(*control_2_mm)?,
             end_mm: transform(*end_mm)?,
+        }),
+        ProfileSegment::Spline { points_mm } => Ok(ProfileSegment::Spline {
+            points_mm: points_mm
+                .iter()
+                .map(|point| transform(*point))
+                .collect::<Result<_, _>>()?,
         }),
     }
 }
@@ -4270,6 +4278,16 @@ fn undirected_segment_key(segment: &ProfileSegment) -> UndirectedSegmentKey {
                 }
             }
         }
+        ProfileSegment::Spline { points_mm } => {
+            let mut points = points_mm
+                .iter()
+                .map(|point| duplicate_point_key(*point))
+                .collect::<Vec<_>>();
+            if start > end {
+                points.reverse();
+            }
+            UndirectedSegmentKey::Spline(points)
+        }
     }
 }
 
@@ -4341,6 +4359,9 @@ fn reverse_segment(segment: &ProfileSegment) -> ProfileSegment {
             control_1_mm: *control_2_mm,
             control_2_mm: *control_1_mm,
             end_mm: *start_mm,
+        },
+        ProfileSegment::Spline { points_mm } => ProfileSegment::Spline {
+            points_mm: points_mm.iter().rev().copied().collect(),
         },
     }
 }

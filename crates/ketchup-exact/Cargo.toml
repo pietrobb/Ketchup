@@ -3,6 +3,7 @@ name = "ketchup-exact"
 description = "Exception-safe exact geometry facade for Ketchup"
 version.workspace = true
 edition.workspace = true
+autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -15,3 +16,7 @@ cxx-build = "=1.0.198"
 
 [lints.clippy]
 all = "deny"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

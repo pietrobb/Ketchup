@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use eframe::egui::Key;
 use harness::Shell;
@@ -9,9 +9,9 @@ use ketchup_interaction::{Axis, Vec3};
 fn last_line(shell: &Shell) -> [Vec3; 2] {
     let snapshot = shell.app().document_snapshot();
     let feature = snapshot.features().filter(|feature| matches!(
-        feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1
+        feature.kind(), FeatureKind::Profile { closed: false, segments } if segments.len() == 1
     )).last().expect("the UI must create an open line");
-    let FeatureKind::SegmentProfile { segments, .. } = feature.kind() else {
+    let FeatureKind::Profile { segments, .. } = feature.kind() else {
         unreachable!()
     };
     let ProfileSegment::Line { start_mm, end_mm } = segments[0] else {

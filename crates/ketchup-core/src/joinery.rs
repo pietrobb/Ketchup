@@ -1,15 +1,17 @@
 use crate::document::{FeatureId, FeatureKind, InstancePath, Snapshot, Transform};
-use crate::sketch::SketchEntity;
+use crate::sketch::{PadOperation, PadProfile, PadSpec, SketchEntity};
 use std::fmt;
 
 pub const DOWEL_JOINERY_PROJECTION_V1: &str = "ketchup.dowel-joinery-projection.v1";
 const GEOMETRY_TOLERANCE: f64 = 1.0e-8;
 const MAX_DOWELS_PER_JOINT: u32 = 128;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct DowelJointId(pub u64);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DowelJointFace {
     pub instance_path: InstancePath,
     pub face_origin_local_mm: [f64; 3],
@@ -18,7 +20,7 @@ pub struct DowelJointFace {
     pub bounds_max_local_mm: [f64; 3],
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DowelJointContract {
     pub id: DowelJointId,
     pub name: String,
@@ -33,7 +35,7 @@ pub struct DowelJointContract {
     pub physical_hole_pairs: Option<Vec<DowelPhysicalHolePair>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DowelPhysicalHolePair {
     pub first_pocket_feature_id: FeatureId,
     pub second_pocket_feature_id: FeatureId,
@@ -71,7 +73,7 @@ impl StandardDowel {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DowelSpec {
     pub diameter_mm: f64,
     pub length_mm: f64,
@@ -596,7 +598,18 @@ fn observe_physical_hole(
         return Err(DowelJointError::InvalidPhysicalHoleBinding);
     }
     let (profile_feature_id, depth_mm) = match pocket.kind() {
-        FeatureKind::Pocket { profile, depth, .. } => (*profile, depth.millimetres()),
+        FeatureKind::Pad(
+            pad @ PadSpec {
+                profile: PadProfile::Feature(_),
+                operation: PadOperation::Cut { .. },
+                ..
+            },
+        ) => {
+            let (profile, depth) = pad
+                .blind_along_normal()
+                .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+            (profile, depth.millimetres())
+        }
         _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
     };
     let profile = snapshot

@@ -1,6 +1,6 @@
 //! Opt-in live proof: production OAuth binary must actually call validator tools.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::accesskit::Role;
 use harness::Shell;

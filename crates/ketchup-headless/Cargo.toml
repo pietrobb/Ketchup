@@ -3,6 +3,7 @@ name = "ketchup-headless"
 description = "GUI-free JSON-lines CAD document session CLI"
 version.workspace = true
 edition.workspace = true
+autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -19,3 +20,7 @@ tempfile = "3.10"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

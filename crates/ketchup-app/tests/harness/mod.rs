@@ -26,6 +26,8 @@ use ketchup_core::assistant_sidecar::{
 use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_scheduler::assistant::AssistantCancellation;
 
+use crate::integration_support::{FileTurn, file_turn};
+
 use eframe::egui::{self, Key, Modifiers, Pos2, Rect, Vec2, accesskit::Role};
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{
@@ -195,6 +197,8 @@ pub struct Shell {
     /// The clock the shell sees. Driven explicitly so that two clicks pair up
     /// into a double click only where a test asks for one.
     clock: f64,
+    /// Declared last so it is released only after the harness and its workers.
+    _turn: FileTurn,
 }
 
 /// Long enough that egui reads the next click as a new one, not as the second
@@ -260,6 +264,7 @@ impl Shell {
     }
 
     fn build_at_size(mut app: KetchupApp, size: Vec2) -> Self {
+        let turn = file_turn();
         // The product hides the manual CAD panels; most shell tests drive them.
         app.set_manual_cad_panels_visible(true);
         let mut harness = Harness::builder()
@@ -281,6 +286,7 @@ impl Shell {
             harness,
             open_menu: None,
             clock: 0.0,
+            _turn: turn,
         };
         shell.gap();
         shell

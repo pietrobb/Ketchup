@@ -12,7 +12,8 @@ use ketchup_core::sketch::{
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
     SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
-use ketchup_core::testing::box_package;
+use ketchup_core::sketch::{PadOperation, PadProfile};
+use ketchup_core::testing::{box_package, cbor_entry, rewrite_saved_snapshot};
 use ketchup_core::{persistence, state_view::encode_semantic_state};
 use std::sync::Arc;
 
@@ -30,14 +31,6 @@ fn stamp(document: &DocumentStore) -> (u64, String, usize, usize) {
     )
 }
 
-fn rewrite_payload(bytes: &mut [u8], rewrite: impl FnOnce(&mut [u8])) {
-    let manifest_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    let payload_offset = 16 + manifest_length;
-    rewrite(&mut bytes[payload_offset..]);
-    let checksum = ketchup_core::graph::sha256_bytes(&bytes[payload_offset..]);
-    bytes[24..56].copy_from_slice(&checksum);
-}
-
 fn seed() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
@@ -50,18 +43,13 @@ fn seed() -> DocumentStore {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("5").unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OCCURRENCE,
@@ -136,18 +124,13 @@ fn body_contract_is_reviewed_atomic_persistent_and_clone_stable() {
                 id: FeatureId(12),
                 definition_id: DEFINITION,
                 name: "Second profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(13),
                 definition_id: DEFINITION,
                 name: "Second extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(12),
-                    height: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(12), Dimension::from_decimal("2").unwrap()),
             },
         ]))
         .unwrap();
@@ -254,12 +237,12 @@ fn body_contract_is_reviewed_atomic_persistent_and_clone_stable() {
     );
     assert_eq!(persistence::save(&reopened.snapshot()), saved_bytes);
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
-        encode_semantic_state(&saved).complete_v1()
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        encode_semantic_state(&saved).complete()
     );
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).agent_v1(),
-        encode_semantic_state(&saved).agent_v1()
+        encode_semantic_state(&reopened.snapshot()).agent(),
+        encode_semantic_state(&saved).agent()
     );
     assert_eq!(
         reopened
@@ -302,12 +285,12 @@ fn body_contract_is_reviewed_atomic_persistent_and_clone_stable() {
     );
 
     let views = encode_semantic_state(&unique);
-    assert!(views.complete_v1().contains("active_body=2"));
-    assert!(views.complete_v1().contains("output_body=2"));
+    assert!(views.complete().contains(".active_body_id=2\n"));
+    assert!(views.complete().contains(".output_body_id=2\n"));
     assert!(
         views
-            .agent_v1()
-            .contains("body_ownership=inputs:[],output:2")
+            .agent()
+            .contains("{input_body_ids:[],output_body_id:2}")
     );
     assert_eq!(document.undo().unwrap().canonical_digest(), before_unique.1);
     assert_eq!(document.visible_redo_steps(), 1);
@@ -386,18 +369,13 @@ fn invalid_body_mutations_preserve_revision_digest_and_history() {
                 id: FeatureId(12),
                 definition_id: DEFINITION,
                 name: "Second profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(13),
                 definition_id: DEFINITION,
                 name: "Second extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(12),
-                    height: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(12), Dimension::from_decimal("2").unwrap()),
             },
             CanonicalCommand::SetActiveBody {
                 definition_id: DEFINITION,
@@ -454,32 +432,16 @@ fn invalid_body_mutations_preserve_revision_digest_and_history() {
 fn malformed_persisted_ownership_and_duplicate_ids_fail_closed() {
     let document = seed();
     let before = stamp(&document);
-    let snapshot = document.current();
-    let ownership = snapshot
-        .definition(DEFINITION)
-        .unwrap()
-        .feature_body_ownership(EXTRUSION)
-        .unwrap();
-    let mut encoded_ownership = EXTRUSION.0.to_le_bytes().to_vec();
-    encoded_ownership.extend_from_slice(&(ownership.input_body_ids().len() as u32).to_le_bytes());
-    for input in ownership.input_body_ids() {
-        encoded_ownership.extend_from_slice(&input.0.to_le_bytes());
-    }
-    encoded_ownership.push(u8::from(ownership.output_body_id().is_some()));
-    if let Some(output) = ownership.output_body_id() {
-        encoded_ownership.extend_from_slice(&output.0.to_le_bytes());
+    let saved = persistence::save(&document.current());
+    fn ownership(snapshot: &mut ciborium::Value) -> &mut ciborium::Value {
+        let product = cbor_entry(snapshot, "product");
+        let definition = cbor_entry(cbor_entry(product, "definitions"), DEFINITION.0);
+        cbor_entry(definition, "feature_body_ownership")
     }
 
-    let mut missing_body = persistence::save(&document.current());
-    rewrite_payload(&mut missing_body, |payload| {
-        let matches = payload
-            .windows(encoded_ownership.len())
-            .enumerate()
-            .filter_map(|(offset, bytes)| (bytes == encoded_ownership).then_some(offset))
-            .collect::<Vec<_>>();
-        assert_eq!(matches.len(), 1);
-        let output_body = matches[0] + encoded_ownership.len() - 8;
-        payload[output_body..output_body + 8].copy_from_slice(&BodyId(99).0.to_le_bytes());
+    let missing_body = rewrite_saved_snapshot(&saved, |snapshot| {
+        let extrusion = cbor_entry(ownership(snapshot), EXTRUSION.0);
+        *cbor_entry(extrusion, "output_body_id") = ciborium::Value::from(99_u64);
     });
     assert!(matches!(
         persistence::load(&missing_body),
@@ -489,19 +451,13 @@ fn malformed_persisted_ownership_and_duplicate_ids_fail_closed() {
     ));
     assert_eq!(stamp(&document), before);
 
-    let mut duplicate_ownership = persistence::save(&document.current());
-    rewrite_payload(&mut duplicate_ownership, |payload| {
-        let matches = payload
-            .windows(encoded_ownership.len())
-            .enumerate()
-            .filter_map(|(offset, bytes)| (bytes == encoded_ownership).then_some(offset))
-            .collect::<Vec<_>>();
-        assert_eq!(matches.len(), 1);
-        let feature_id = matches[0];
-        payload[feature_id..feature_id + 8].copy_from_slice(&PROFILE.0.to_le_bytes());
+    let profile_owns_body = rewrite_saved_snapshot(&saved, |snapshot| {
+        let owners = ownership(snapshot);
+        let extrusion = cbor_entry(owners, EXTRUSION.0).clone();
+        *cbor_entry(owners, PROFILE.0) = extrusion;
     });
     assert!(matches!(
-        persistence::load(&duplicate_ownership),
+        persistence::load(&profile_owns_body),
         Err(persistence::PersistenceError::InvalidCanonicalData(
             CanonicalError::InvalidBodyOwnership(PROFILE)
         ))
@@ -547,12 +503,12 @@ fn body_order_is_deterministic_across_equivalent_batches() {
         persistence::save(&second.current())
     );
     assert_eq!(
-        encode_semantic_state(&first.current()).complete_v1(),
-        encode_semantic_state(&second.current()).complete_v1()
+        encode_semantic_state(&first.current()).complete(),
+        encode_semantic_state(&second.current()).complete()
     );
     assert_eq!(
-        encode_semantic_state(&first.current()).agent_v1(),
-        encode_semantic_state(&second.current()).agent_v1()
+        encode_semantic_state(&first.current()).agent(),
+        encode_semantic_state(&second.current()).agent()
     );
 }
 
@@ -641,10 +597,13 @@ fn ambiguous_and_lost_references_reject_ownership_without_history_changes() {
                 definition_id: DEFINITION,
                 name: "Referenced tool pad".to_owned(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: tool_sketch_id,
-                    region: tool_region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: tool_sketch_id,
+                        region: tool_region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("2").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::SetActiveBody {
@@ -770,9 +729,7 @@ fn reviewed_multibody_authoring_is_one_undo_and_preserves_stable_lineage() {
             id: FeatureId(12),
             definition_id: DEFINITION,
             name: "Second profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [30.0, 0.0], [30.0, 10.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [30.0, 0.0], [30.0, 10.0], [0.0, 10.0]]),
         }]))
         .unwrap();
     document.commit_proposal(&second_profile).unwrap();
@@ -787,10 +744,10 @@ fn reviewed_multibody_authoring_is_one_undo_and_preserves_stable_lineage() {
                 body_name: "Tool body".to_owned(),
                 feature_id: FeatureId(13),
                 feature_name: "Tool extrusion".to_owned(),
-                feature_kind: FeatureKind::Extrusion {
-                    profile: FeatureId(12),
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                feature_kind: FeatureKind::extrusion(
+                    FeatureId(12),
+                    Dimension::from_decimal("5").unwrap(),
+                ),
             },
             ProposalContext::canonical_preview(),
         )

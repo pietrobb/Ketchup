@@ -1,8 +1,9 @@
 use crate::document::{
-    BodyKind, BooleanOperation, ChamferMode, DefinitionId, EdgeFinishKind, FeatureDependencyGraph,
-    FeatureId, FeatureKind, LoftContinuity, LoftSection, ProfileFaceReference, ProfileSegment,
-    ShellDirection, Snapshot, SpatialPathSegment, SurfaceBodySpec, Transform, WeldmentJointPolicy,
-    WeldmentJointPrimary, solved_sketch_sweep_path,
+    BodyKind, BooleanOperation, ChamferMode, DefinitionId, EdgeFinishKind, EdgeRef, FaceRef,
+    FeatureDependencyGraph, FeatureId, FeatureKind, LoftContinuity, LoftSection,
+    ProfileFaceReference, ProfileSegment, ShellDirection, Snapshot, SpatialPathSegment,
+    SurfaceBodySpec, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
+    solved_sketch_sweep_path,
 };
 use crate::exact_product::{
     EXACT_MIN_LENGTH_MM, ExactCircleProfile, ExactPlanarOffsetRegion,
@@ -11,8 +12,9 @@ use crate::exact_product::{
 };
 use crate::sheet_metal::SheetMetalEdge;
 use crate::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, SketchRegionId, SolvedSketchRegion,
-    SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
+    CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile,
+    SketchRegionId, SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
+    WorkplaneFrame,
 };
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use serde::{Deserialize, Serialize};
@@ -1515,12 +1517,12 @@ impl<'a> GraphCompiler<'a> {
             self.visiting.insert(id);
             pending.push((id, true));
             match feature.kind() {
-                FeatureKind::SketchPocket(spec) => pending.push((spec.target, false)),
-                FeatureKind::ThroughCut { target, .. }
-                | FeatureKind::Pocket { target, .. }
-                | FeatureKind::TopologyShell { target, .. }
-                | FeatureKind::TopologyEdgeFinish { target, .. }
-                | FeatureKind::TopologyFaceOffset { target, .. }
+                FeatureKind::Pad(spec) => {
+                    pending.extend(spec.operation.target().map(|target| (target, false)))
+                }
+                FeatureKind::Shell { target, .. }
+                | FeatureKind::EdgeFinish { target, .. }
+                | FeatureKind::FaceOffset { target, .. }
                 | FeatureKind::SurfaceExtend { target, .. }
                 | FeatureKind::SurfaceThicken { target, .. }
                 | FeatureKind::RigidTransform { target, .. } => pending.push((*target, false)),
@@ -1567,121 +1569,74 @@ impl<'a> GraphCompiler<'a> {
             return Err(ExactBRepGraphError::SuppressedFeature(feature_id));
         }
         let operation = match feature.kind() {
-            FeatureKind::Extrusion { profile, height } => {
-                let profile = self.compile_profile(*profile, None, identity_frame())?;
-                let interval = linear_interval([0.0, 0.0, 1.0], 0.0, height.millimetres())?;
-                ExactBRepOperation::Extrude {
-                    profile,
-                    distance_bits: positive_distance(interval.length_mm())?,
-                    interval,
-                }
-            }
             FeatureKind::Pad(spec) => {
-                let (profile, origin_mm, direction) =
-                    self.compile_sketch_profile(spec.sketch, spec.region, spec.direction)?;
-                let interval = self.resolve_extent(origin_mm, direction, &spec.extent, None)?;
-                ExactBRepOperation::Extrude {
-                    profile,
-                    distance_bits: positive_distance(interval.length_mm())?,
-                    interval,
-                }
-            }
-            FeatureKind::SketchPocket(spec) => {
                 if !matches!(spec.extent, FeatureExtent::Blind(_))
+                    && let Some(support) = spec.operation.support()
                     && self
                         .snapshot
-                        .exact_reference_by_lineage(&spec.support.lineage_digest)
-                        != Some(spec.support.as_ref())
+                        .exact_reference_by_lineage(&support.lineage_digest)
+                        != Some(support)
                 {
                     return Err(ExactBRepGraphError::UnresolvedExtent);
                 }
-                let target = self.body_id(spec.target)?;
-                let target_bounds = self.node_bounds[target.0 as usize];
                 let (profile, origin_mm, direction) =
-                    self.compile_sketch_profile(spec.sketch, spec.region, spec.direction)?;
-                let interval =
-                    self.resolve_extent(origin_mm, direction, &spec.extent, target_bounds)?;
-                ExactBRepOperation::ProfileCut {
-                    target,
-                    profile,
-                    depth_bits: Some(positive_distance(interval.length_mm())?),
-                    interval,
-                    support_lineage_digest: Some(spec.support.lineage_digest.clone()),
-                    tool_name: None,
-                }
-            }
-            FeatureKind::ThroughCut { target, profile } => {
-                let target = self.body_id(*target)?;
-                let target_bounds = self.node_bounds[target.0 as usize]
-                    .ok_or(ExactBRepGraphError::UnresolvedExtent)?;
-                ExactBRepOperation::ProfileCut {
-                    target,
-                    profile: self.compile_profile(*profile, None, identity_frame())?,
-                    depth_bits: None,
-                    interval: through_all_interval(
-                        [0.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0],
-                        target_bounds,
-                    )?,
-                    support_lineage_digest: None,
-                    tool_name: None,
-                }
-            }
-            FeatureKind::Pocket {
-                target,
-                profile,
-                depth,
-            } => {
-                let target = self.body_id(*target)?;
-                let target_bounds = self.node_bounds[target.0 as usize]
-                    .ok_or(ExactBRepGraphError::UnresolvedExtent)?;
-                let (profile, interval) = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch
-                            .solved_regions()
-                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        let (profile, _, direction) = self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?;
-                        (
-                            profile,
-                            linear_interval(direction, 0.0, depth.millimetres())?,
-                        )
-                    }
-                    // A plain profile lies in the XY plane; its pocket is cut down
-                    // from the top of the target and must stop inside it.
-                    _ => {
-                        let top_mm = target_bounds[1][2];
+                    self.compile_pad_profile(spec.profile, spec.direction)?;
+                match &spec.operation {
+                    PadOperation::NewBody => {
                         let interval =
-                            linear_interval([0.0, 0.0, 1.0], top_mm - depth.millimetres(), top_mm)?;
-                        validate_blind_interval(
-                            [0.0, 0.0, 0.0],
+                            self.resolve_extent(origin_mm, direction, &spec.extent, None)?;
+                        ExactBRepOperation::Extrude {
+                            profile,
+                            distance_bits: positive_distance(interval.length_mm())?,
                             interval,
-                            interval.start_mm(),
-                            target_bounds,
-                        )?;
-                        (
-                            self.compile_profile(*profile, None, identity_frame())?,
-                            interval,
-                        )
+                        }
                     }
-                };
-                ExactBRepOperation::ProfileCut {
-                    target,
-                    profile,
-                    depth_bits: Some(positive_distance(depth.millimetres())?),
-                    interval,
-                    support_lineage_digest: None,
-                    tool_name: Some(feature.name().to_owned()),
+                    PadOperation::Cut { target, start } => {
+                        let target = self.body_id(*target)?;
+                        let target_bounds = self.node_bounds[target.0 as usize];
+                        let interval = match (start, &spec.extent) {
+                            // Measured back into the target from the face the
+                            // direction points out of; the floor must stay inside.
+                            (CutStart::TargetFace, FeatureExtent::Blind(depth)) => {
+                                let target_bounds =
+                                    target_bounds.ok_or(ExactBRepGraphError::UnresolvedExtent)?;
+                                let [_, top_mm] =
+                                    projected_bounds(origin_mm, direction, target_bounds)?;
+                                let interval = linear_interval(
+                                    direction,
+                                    top_mm - depth.millimetres(),
+                                    top_mm,
+                                )?;
+                                validate_blind_interval(
+                                    origin_mm,
+                                    interval,
+                                    interval.start_mm(),
+                                    target_bounds,
+                                )?;
+                                interval
+                            }
+                            (CutStart::TargetFace, _) => {
+                                return Err(ExactBRepGraphError::InvalidParameter);
+                            }
+                            (CutStart::ProfilePlane | CutStart::Support(_), extent) => {
+                                self.resolve_extent(origin_mm, direction, extent, target_bounds)?
+                            }
+                        };
+                        ExactBRepOperation::ProfileCut {
+                            target,
+                            profile,
+                            // A through cut is sized against the evaluated target.
+                            depth_bits: (spec.extent != FeatureExtent::ThroughAll)
+                                .then(|| positive_distance(interval.length_mm()))
+                                .transpose()?,
+                            interval,
+                            support_lineage_digest: spec
+                                .operation
+                                .support()
+                                .map(|support| support.lineage_digest.clone()),
+                            tool_name: Some(feature.name().to_owned()),
+                        }
+                    }
                 }
             }
             FeatureKind::Boolean {
@@ -1694,31 +1649,38 @@ impl<'a> GraphCompiler<'a> {
                 tool: self.body_id(*tool)?,
                 tool_name: Some(feature.name().to_owned()),
             },
-            FeatureKind::TopologyShell {
+            FeatureKind::Shell {
                 target,
                 removed_faces,
-                profile_faces,
                 thickness,
                 direction,
-            } => ExactBRepOperation::Shell {
-                target: self.body_id(*target)?,
-                removed_faces: if removed_faces.is_empty() {
-                    Vec::new()
-                } else {
-                    topology_selectors(removed_faces, TopologicalElementKind::Face, *target)?
-                },
-                thickness_bits: positive_distance(thickness.millimetres())?,
-                direction: (*direction).into(),
-                profile_faces: profile_faces
+            } => {
+                let recorded = removed_faces
                     .iter()
+                    .filter_map(FaceRef::topological)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let profile_faces = removed_faces
+                    .iter()
+                    .filter_map(FaceRef::named)
                     .map(exact_profile_face_reference)
-                    .collect(),
-                name: (!profile_faces.is_empty()).then(|| feature.name().to_owned()),
-            },
-            FeatureKind::TopologyEdgeFinish {
+                    .collect::<Vec<_>>();
+                ExactBRepOperation::Shell {
+                    target: self.body_id(*target)?,
+                    removed_faces: if recorded.is_empty() {
+                        Vec::new()
+                    } else {
+                        topology_selectors(&recorded, TopologicalElementKind::Face, *target)?
+                    },
+                    thickness_bits: positive_distance(thickness.millimetres())?,
+                    direction: (*direction).into(),
+                    name: (!profile_faces.is_empty()).then(|| feature.name().to_owned()),
+                    profile_faces,
+                }
+            }
+            FeatureKind::EdgeFinish {
                 target,
                 edges,
-                profile_edges,
                 kind,
                 amount,
                 fillet_radius_stations,
@@ -1726,13 +1688,15 @@ impl<'a> GraphCompiler<'a> {
                 chamfer_edge_sides,
             } => ExactBRepOperation::EdgeFinish {
                 target: self.body_id(*target)?,
-                edges: if profile_edges.is_empty() {
-                    topology_selectors(edges, TopologicalElementKind::Edge, *target)?
-                } else {
-                    Vec::new()
+                edges: match EdgeRef::all_topological(edges) {
+                    Some(recorded) => {
+                        topology_selectors(&recorded, TopologicalElementKind::Edge, *target)?
+                    }
+                    None => Vec::new(),
                 },
-                profile_edges: profile_edges
+                profile_edges: edges
                     .iter()
+                    .filter_map(EdgeRef::named)
                     .map(|edge| ExactBRepProfileEdgeReference {
                         first: exact_profile_face_reference(&edge.first),
                         second: exact_profile_face_reference(&edge.second),
@@ -1789,15 +1753,14 @@ impl<'a> GraphCompiler<'a> {
                     })
                     .collect::<Result<Vec<_>, ExactBRepGraphError>>()?,
             },
-            FeatureKind::TopologyFaceOffset {
+            FeatureKind::FaceOffset {
                 target,
                 face,
-                profile_face,
                 distance,
             } => ExactBRepOperation::FaceOffset {
                 target: self.body_id(*target)?,
                 face: face
-                    .as_ref()
+                    .topological()
                     .map(|face| {
                         topology_selectors(
                             std::slice::from_ref(face),
@@ -1808,7 +1771,7 @@ impl<'a> GraphCompiler<'a> {
                         .ok_or(ExactBRepGraphError::InvalidTopologySelector)
                     })
                     .transpose()?,
-                profile_face: profile_face.as_ref().map(exact_profile_face_reference),
+                profile_face: face.named().map(exact_profile_face_reference),
                 distance_bits: signed_distance(distance.millimetres())?,
             },
             FeatureKind::Revolve {
@@ -2211,6 +2174,43 @@ impl<'a> GraphCompiler<'a> {
             .collect()
     }
 
+    /// The profile a pad sweeps, the origin of its plane and the sweep direction. A plain
+    /// profile lies in the XY plane; a sketch named without a region must have one.
+    fn compile_pad_profile(
+        &mut self,
+        profile: PadProfile,
+        direction: FeatureDirection,
+    ) -> Result<(ExactBRepProfileId, [f64; 3], [f64; 3]), ExactBRepGraphError> {
+        let feature_id = profile.feature_id();
+        let region_id = match profile {
+            PadProfile::SketchRegion { region, .. } => Some(region),
+            PadProfile::Feature(_) => match self.snapshot.feature(feature_id).map(|f| f.kind()) {
+                Some(FeatureKind::Sketch(sketch)) => {
+                    let regions = sketch
+                        .solved_regions()
+                        .map_err(|_| ExactBRepGraphError::UnsupportedProfile(feature_id))?;
+                    let [region] = regions.as_slice() else {
+                        return Err(ExactBRepGraphError::UnsupportedProfile(feature_id));
+                    };
+                    Some(region.id)
+                }
+                _ => None,
+            },
+        };
+        if let Some(region_id) = region_id {
+            return self.compile_sketch_profile(feature_id, region_id, direction);
+        }
+        let plane = WorkplaneFrame::principal(crate::sketch::PrincipalPlane::Xy);
+        let direction = direction
+            .vector(plane.normal)
+            .ok_or(ExactBRepGraphError::InvalidParameter)?;
+        Ok((
+            self.compile_profile(feature_id, None, frame_bits(plane, direction))?,
+            plane.origin_mm,
+            direction,
+        ))
+    }
+
     fn compile_sketch_profile(
         &mut self,
         sketch_id: FeatureId,
@@ -2276,35 +2276,38 @@ impl<'a> GraphCompiler<'a> {
         let segments = segments
             .into_iter()
             .map(|segment| match segment {
-                ProfileSegment::Line { start_mm, end_mm } => SpatialPathSegment::Line {
+                ProfileSegment::Spline { .. } => {
+                    Err(ExactBRepGraphError::UnsupportedProfile(sketch_id))
+                }
+                ProfileSegment::Line { start_mm, end_mm } => Ok(SpatialPathSegment::Line {
                     start_mm: to_world(start_mm),
                     end_mm: to_world(end_mm),
-                },
+                }),
                 ProfileSegment::CircularArc {
                     start_mm,
                     end_mm,
                     center_mm,
                     clockwise,
-                } => SpatialPathSegment::CircularArc {
+                } => Ok(SpatialPathSegment::CircularArc {
                     start_mm: to_world(start_mm),
                     end_mm: to_world(end_mm),
                     center_mm: to_world(center_mm),
                     normal: workplane.frame.normal,
                     clockwise,
-                },
+                }),
                 ProfileSegment::CubicBezier {
                     start_mm,
                     control_1_mm,
                     control_2_mm,
                     end_mm,
-                } => SpatialPathSegment::CubicBezier {
+                } => Ok(SpatialPathSegment::CubicBezier {
                     start_mm: to_world(start_mm),
                     control_1_mm: to_world(control_1_mm),
                     control_2_mm: to_world(control_2_mm),
                     end_mm: to_world(end_mm),
-                },
+                }),
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         spatial_path(sketch_id, &segments)
     }
 
@@ -2317,7 +2320,8 @@ impl<'a> GraphCompiler<'a> {
     ) -> Result<ExactBRepLinearInterval, ExactBRepGraphError> {
         match extent {
             FeatureExtent::Blind(distance) => {
-                linear_interval(direction, 0.0, distance.millimetres())
+                let distance = distance.millimetres();
+                linear_interval(direction, distance.min(0.0), distance.max(0.0))
             }
             FeatureExtent::ThroughAll => through_all_interval(
                 origin_mm,
@@ -2429,23 +2433,30 @@ impl<'a> GraphCompiler<'a> {
             return Err(ExactBRepGraphError::SuppressedFeature(feature_id));
         }
         let (geometry, segment_entity_ids) = match (feature.kind(), region_id) {
-            (FeatureKind::Profile { points_mm }, None) => {
-                (polygon_geometry(points_mm)?, Vec::new())
+            (FeatureKind::Profile { segments, closed }, None) => {
+                // The exact kernel builds a spline only as a whole closed curve.
+                if segments.len() > 1
+                    && segments
+                        .iter()
+                        .any(|segment| matches!(segment, ProfileSegment::Spline { .. }))
+                {
+                    return Err(ExactBRepGraphError::UnsupportedProfile(feature_id));
+                }
+                let geometry = boundary_geometry(segments, *closed)?;
+                // A spline is one unnamed curve; boundary segments are named by position.
+                let segment_count = match geometry {
+                    ExactBRepPlanarGeometry::Spline { .. } => 0,
+                    _ => segments.len(),
+                };
+                (
+                    geometry,
+                    (1..=segment_count)
+                        .map(|index| {
+                            u64::try_from(index).map_err(|_| ExactBRepGraphError::ResourceLimit)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
             }
-            (FeatureKind::SegmentProfile { segments, closed }, None) => (
-                boundary_geometry(segments, *closed)?,
-                (1..=segments.len())
-                    .map(|index| {
-                        u64::try_from(index).map_err(|_| ExactBRepGraphError::ResourceLimit)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
-            (FeatureKind::SplineProfile { control_points_mm }, None) => (
-                ExactBRepPlanarGeometry::Spline {
-                    control_point_bits: point_bits(control_points_mm)?,
-                },
-                Vec::new(),
-            ),
             (FeatureKind::Sketch(sketch), Some(region_id)) => {
                 let region = sketch
                     .solved_regions()
@@ -2879,6 +2890,16 @@ fn boundary_geometry(
     if segments.is_empty() {
         return Err(ExactBRepGraphError::InvalidParameter);
     }
+    // A spline closing on itself is smooth through its closing point: a periodic curve
+    // through its distinct points.
+    if let [ProfileSegment::Spline { points_mm }] = segments
+        && closed
+        && let Some((_, points)) = points_mm.split_last()
+    {
+        return Ok(ExactBRepPlanarGeometry::Spline {
+            control_point_bits: point_bits(points)?,
+        });
+    }
     if let [
         ProfileSegment::CircularArc {
             start_mm: first_start,
@@ -2935,6 +2956,7 @@ fn boundary_geometry(
                 control_2_mm,
                 end_mm,
             } => cubic_bezier_segment(*start_mm, *control_1_mm, *control_2_mm, *end_mm),
+            ProfileSegment::Spline { .. } => Err(ExactBRepGraphError::InvalidParameter),
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ExactBRepPlanarGeometry::Boundary { closed, segments })
@@ -4208,8 +4230,7 @@ fn sweep_profile_geometry(
     profile: &FeatureKind,
 ) -> Result<ExactBRepPlanarGeometry, ExactBRepGraphError> {
     match profile {
-        FeatureKind::Profile { points_mm } => polygon_geometry(points_mm),
-        FeatureKind::SegmentProfile {
+        FeatureKind::Profile {
             segments,
             closed: true,
         } => boundary_geometry(segments, true),

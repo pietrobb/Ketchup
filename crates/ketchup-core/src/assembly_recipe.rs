@@ -5,7 +5,10 @@ use crate::document::{
 use crate::joinery::{
     DowelHole, DowelJointContract, DowelJointFace, DowelJointId, project_dowel_joint_contract,
 };
-use crate::sketch::{FeatureExtent, SketchEntity, WorkplaneFrame, WorkplaneSupport};
+use crate::sketch::{
+    FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchEntity, WorkplaneFrame,
+    WorkplaneSupport,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -14,7 +17,9 @@ const MAX_RECIPE_ENTRIES: usize = 16_384;
 const MAX_RECIPE_KEY_BYTES: usize = 128;
 const MAX_FACE_ROLE_BYTES: usize = 128;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct RecipeKey(String);
 
 impl RecipeKey {
@@ -42,33 +47,33 @@ impl RecipeKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RecipePartMobility {
     Fixed,
     Movable,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RecipeEditScope {
     Occurrence(InstancePath),
     SharedDefinition(DefinitionId),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RecipeParameterUnit {
     Millimetres,
     Degrees,
     Scalar,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecipeParameter {
     pub value: f64,
     pub unit: RecipeParameterUnit,
     pub target: Option<FeatureParameterTarget>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecipePart {
     pub key: RecipeKey,
     pub instance_path: InstancePath,
@@ -79,19 +84,19 @@ pub struct RecipePart {
     pub parameters: BTreeMap<RecipeKey, RecipeParameter>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecipeFaceRef {
     pub part: RecipeKey,
     pub role: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RecipeRelationKind {
     Contact,
     Coincident,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecipeRelation {
     pub key: RecipeKey,
     pub kind: RecipeRelationKind,
@@ -99,7 +104,7 @@ pub struct RecipeRelation {
     pub second: RecipeFaceRef,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecipeJoinery {
     pub key: RecipeKey,
     pub first_part: RecipeKey,
@@ -107,15 +112,12 @@ pub struct RecipeJoinery {
     pub dowel_joint_id: DowelJointId,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RecognizedRecipeFeatureKind {
     Profile,
-    Extrusion,
     Pad,
-    Pocket,
     Workplane,
     Sketch,
-    SketchPocket,
 }
 
 impl RecognizedRecipeFeatureKind {
@@ -124,18 +126,14 @@ impl RecognizedRecipeFeatureKind {
         matches!(
             (self, kind),
             (Self::Profile, FeatureKind::Profile { .. })
-                | (Self::Profile, FeatureKind::SegmentProfile { .. })
-                | (Self::Extrusion, FeatureKind::Extrusion { .. })
                 | (Self::Pad, FeatureKind::Pad(_))
-                | (Self::Pocket, FeatureKind::Pocket { .. })
                 | (Self::Workplane, FeatureKind::Workplane(_))
                 | (Self::Sketch, FeatureKind::Sketch(_))
-                | (Self::SketchPocket, FeatureKind::SketchPocket(_))
         )
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecipeOwnedFeature {
     pub key: RecipeKey,
     pub part: RecipeKey,
@@ -154,7 +152,7 @@ pub struct RecipePartAdoption {
     pub features: Vec<(RecipeKey, FeatureId, RecognizedRecipeFeatureKind)>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyRecipe {
     pub(crate) schema: String,
     pub(crate) key: RecipeKey,
@@ -920,11 +918,16 @@ fn collect_physical_hole_updates(
     let pocket = snapshot
         .feature(pocket_feature_id)
         .ok_or_else(unsupported)?;
-    let FeatureKind::Pocket { profile, .. } = pocket.kind() else {
+    let FeatureKind::Pad(PadSpec {
+        profile: PadProfile::Feature(profile),
+        operation: PadOperation::Cut { .. },
+        ..
+    }) = pocket.kind()
+    else {
         return Err(unsupported());
     };
     if pocket.definition_id() != part.definition_id
-        || !owns(pocket_feature_id, RecognizedRecipeFeatureKind::Pocket)
+        || !owns(pocket_feature_id, RecognizedRecipeFeatureKind::Pad)
     {
         return Err(unsupported());
     }
@@ -1162,12 +1165,20 @@ fn solve_extend_until_contact(
     Ok(value)
 }
 
+/// The rectangle a profile or sketch feature draws, with the frame it is drawn in.
 fn supported_rectangle_sketch(
     snapshot: &Snapshot,
     sketch_id: FeatureId,
 ) -> Option<([[f64; 2]; 2], WorkplaneFrame)> {
-    let FeatureKind::Sketch(spec) = snapshot.feature(sketch_id)?.kind() else {
-        return None;
+    let spec = match snapshot.feature(sketch_id)?.kind() {
+        kind @ FeatureKind::Profile { .. } => {
+            return Some((
+                rectangle_bounds(&kind.polygon_points()?)?,
+                WorkplaneFrame::principal(PrincipalPlane::Xy),
+            ));
+        }
+        FeatureKind::Sketch(spec) => spec,
+        _ => return None,
     };
     let bounds = spec.rectangle_bounds()?;
     let FeatureKind::Workplane(workplane) = snapshot.feature(spec.workplane)?.kind() else {
@@ -1196,33 +1207,28 @@ fn supported_part_bounds(
     let mut result = None;
     for feature_id in &owned {
         let bounds = match snapshot.feature(*feature_id)?.kind() {
-            FeatureKind::Extrusion { profile, height } => {
-                if !owned.contains(profile) || height.millimetres() <= 0.0 {
+            FeatureKind::Pad(
+                spec @ PadSpec {
+                    operation: PadOperation::NewBody,
+                    ..
+                },
+            ) => {
+                let profile_id = spec.profile.feature_id();
+                if !owned.contains(&profile_id) {
                     return None;
                 }
-                let FeatureKind::Profile { points_mm } = snapshot.feature(*profile)?.kind() else {
-                    return None;
-                };
-                let [minimum, maximum] = rectangle_bounds(points_mm)?;
-                SupportedPartBounds {
-                    minimum: [minimum[0], minimum[1], 0.0],
-                    maximum: [maximum[0], maximum[1], height.millimetres()],
+                let ([minimum, maximum], frame) = supported_rectangle_sketch(snapshot, profile_id)?;
+                if let FeatureKind::Sketch(sketch) = snapshot.feature(profile_id)?.kind() {
+                    let first_region = sketch.solved_regions().ok()?.as_slice().first()?.id;
+                    if !owned.contains(&sketch.workplane)
+                        || matches!(spec.profile, PadProfile::SketchRegion { region, .. } if region != first_region)
+                    {
+                        return None;
+                    }
                 }
-            }
-            FeatureKind::Pad(spec) => {
-                if !owned.contains(&spec.sketch) {
-                    return None;
-                }
-                let ([minimum, maximum], frame) =
-                    supported_rectangle_sketch(snapshot, spec.sketch)?;
-                let FeatureKind::Sketch(sketch) = snapshot.feature(spec.sketch)?.kind() else {
-                    return None;
-                };
-                if !owned.contains(&sketch.workplane)
-                    || sketch.solved_regions().ok()?.as_slice().first()?.id != spec.region
-                    || [frame.x_axis, frame.y_axis, frame.normal]
-                        .into_iter()
-                        .any(|axis| axis_index(axis.map(f64::abs)).is_none())
+                if [frame.x_axis, frame.y_axis, frame.normal]
+                    .into_iter()
+                    .any(|axis| axis_index(axis.map(f64::abs)).is_none())
                 {
                     return None;
                 }
@@ -1427,7 +1433,6 @@ fn supported_parameter_axis(
     match (feature.kind(), target.path.as_str()) {
         (FeatureKind::Profile { .. }, "bounds.width") => Some([1.0, 0.0, 0.0]),
         (FeatureKind::Profile { .. }, "bounds.height") => Some([0.0, 1.0, 0.0]),
-        (FeatureKind::Extrusion { .. }, "height") => Some([0.0, 0.0, 1.0]),
         (FeatureKind::Sketch(_), "bounds.width" | "bounds.height") => {
             let (_, frame) = supported_rectangle_sketch(snapshot, target.feature_id)?;
             Some(if target.path.as_str() == "bounds.width" {
@@ -1437,9 +1442,10 @@ fn supported_parameter_axis(
             })
         }
         (FeatureKind::Pad(spec), "extent.distance")
-            if matches!(spec.extent, FeatureExtent::Blind(_)) =>
+            if matches!(spec.extent, FeatureExtent::Blind(_))
+                && spec.operation == PadOperation::NewBody =>
         {
-            let (_, frame) = supported_rectangle_sketch(snapshot, spec.sketch)?;
+            let (_, frame) = supported_rectangle_sketch(snapshot, spec.profile.feature_id())?;
             let direction = spec.direction.vector(frame.normal)?;
             ((dot(direction, frame.normal).abs() - 1.0).abs() <= 1.0e-8).then_some(direction)
         }

@@ -104,17 +104,7 @@ fn drawn_loop(snapshot: &Snapshot, definition_id: DefinitionId) -> Option<Vec<Pr
         return None;
     };
     match snapshot.feature(*feature_id)?.kind() {
-        FeatureKind::Profile { points_mm } if points_mm.len() >= 3 => Some(
-            (0..points_mm.len())
-                .map(|index| ProfileSegment::Line {
-                    start_mm: points_mm[index],
-                    end_mm: points_mm[(index + 1) % points_mm.len()],
-                })
-                .collect(),
-        ),
-        FeatureKind::SegmentProfile { segments, closed }
-            if is_closed_profile(segments, *closed) =>
-        {
+        FeatureKind::Profile { segments, closed } if is_closed_profile(segments, *closed) => {
             Some(segments.clone())
         }
         _ => None,
@@ -170,6 +160,11 @@ fn loop_bounds(segments: &[ProfileSegment]) -> ([f64; 2], [f64; 2]) {
                 end_mm,
             } => {
                 for p in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                    include(*p, 0.0);
+                }
+            }
+            ProfileSegment::Spline { points_mm } => {
+                for p in points_mm {
                     include(*p, 0.0);
                 }
             }
@@ -280,7 +275,7 @@ impl KetchupApp {
                     end: to_world(*end_mm),
                     arc: Some((to_world(*center_mm), *clockwise)),
                 },
-                ProfileSegment::CubicBezier { .. } => {
+                ProfileSegment::CubicBezier { .. } | ProfileSegment::Spline { .. } => {
                     return Some(Err(
                         "a drawn curve cannot be pushed into a program part yet; draw it with lines and arcs"
                             .to_owned(),
@@ -531,10 +526,9 @@ impl KetchupApp {
         // Pushing into a part mills it. Pulled out of a plain part the shape
         // stays a part of its own (the other Push/Pull paths make it), as
         // furniture parts are separate boards, not bosses on each other.
-        let (host, to_host, facing, target) = hosts
+        let (host, to_host, facing, target) = *hosts
             .iter()
-            .find(|(_, _, facing, _)| distance_mm * facing < 0.0)?
-            .clone();
+            .find(|(_, _, facing, _)| distance_mm * facing < 0.0)?;
         let amount_mm = distance_mm.abs();
         // The tool covers [start, start + length] along the face's outward
         // normal: into the part and a millimetre out of it.
@@ -589,7 +583,7 @@ impl KetchupApp {
             feature(
                 profile,
                 tool_name.clone(),
-                FeatureKind::SegmentProfile {
+                FeatureKind::Profile {
                     segments: segments.to_vec(),
                     closed: true,
                 },
@@ -597,7 +591,7 @@ impl KetchupApp {
             feature(
                 prism,
                 tool_name.clone(),
-                FeatureKind::Extrusion { profile, height },
+                FeatureKind::extrusion(profile, height),
             ),
             feature(
                 placed,

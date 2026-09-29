@@ -55,9 +55,7 @@ fn document_with_profile_and_members(
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Shared square section".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: profile_points,
-                },
+                kind: FeatureKind::polygon(&profile_points),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
@@ -163,6 +161,7 @@ fn evaluated_fabrication(
 
 #[test]
 fn butt_and_miter_joints_are_exact_associative_and_lossless() {
+    let _turn = crate::integration_support::file_turn();
     let mut worker =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
 
@@ -244,6 +243,7 @@ fn butt_and_miter_joints_are_exact_associative_and_lossless() {
 
 #[test]
 fn joint_without_an_exact_body_intersection_is_rejected_fail_closed() {
+    let _turn = crate::integration_support::file_turn();
     let mut document = document_with_profile_and_members(
         vec![[10.0, 10.0], [14.0, 10.0], [14.0, 14.0], [10.0, 14.0]],
         vec![line([-100.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
@@ -270,6 +270,7 @@ fn joint_without_an_exact_body_intersection_is_rejected_fail_closed() {
 
 #[test]
 fn invalid_joint_geometry_is_rejected_without_a_revision() {
+    let _turn = crate::integration_support::file_turn();
     let cases = [
         document_with_members(
             vec![line([-100.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
@@ -308,6 +309,7 @@ fn invalid_joint_geometry_is_rejected_without_a_revision() {
 
 #[test]
 fn weldment_cut_list_is_exact_associative_stable_and_fail_closed() {
+    let _turn = crate::integration_support::file_turn();
     const OCCURRENCE: OccurrenceId = OccurrenceId(10);
     const ROLE_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(20);
     const ROLE_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(21);
@@ -544,6 +546,7 @@ fn weldment_cut_list_is_exact_associative_stable_and_fail_closed() {
 
 #[test]
 fn multisegment_weldment_has_exact_geometry_but_no_ambiguous_cut_list() {
+    let _turn = crate::integration_support::file_turn();
     const OCCURRENCE: OccurrenceId = OccurrenceId(10);
     const ROLE_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(20);
     const ROLE_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(21);
@@ -559,9 +562,7 @@ fn multisegment_weldment_has_exact_geometry_but_no_ambiguous_cut_list() {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),

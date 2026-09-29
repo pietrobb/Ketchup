@@ -59,18 +59,13 @@ fn seeded_document() -> DocumentStore {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("30").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("30").unwrap()),
             },
         ]))
         .unwrap();
@@ -2870,18 +2865,13 @@ fn stale_failed_ambiguous_lost_and_stale_confirmation_leave_state_unchanged() {
                 id: FeatureId(4),
                 definition_id: DEFINITION,
                 name: "Second profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(5),
                 definition_id: DEFINITION,
                 name: "Second extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(4),
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(4), Dimension::from_decimal("10").unwrap()),
             },
         ]))
         .unwrap();

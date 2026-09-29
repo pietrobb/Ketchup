@@ -398,21 +398,24 @@ fn iges_xde_import_preserves_flat_root_names_colors_and_reports_exact_losses() {
     assert!(diagnostic_codes.contains(&"iges_shared_definitions_unavailable_roots_duplicated"));
     assert!(diagnostic_codes.contains(&"iges_local_transforms_baked_into_exact_geometry"));
     let semantic = ketchup_core::state_view::encode_semantic_state(&committed);
+    assert!(
+        semantic
+            .complete()
+            .contains("import_receipts.1.format=\"Iges\"")
+    );
     assert_eq!(
         semantic
-            .complete_v1()
-            .matches(".source_format=iges")
+            .complete()
+            .matches(".kind.ImportedExactBody.import_id=1\n")
             .count(),
         2
     );
-    assert!(semantic.complete_v1().contains(".source_part_index=0"));
-    assert!(semantic.complete_v1().contains(".source_part_index=1"));
-    assert_eq!(
+    assert!(semantic.complete().contains(".source_part_index=0"));
+    assert!(semantic.complete().contains(".source_part_index=1"));
+    assert!(
         semantic
-            .agent_v1()
-            .matches("source_parametric_history:unavailable")
-            .count(),
-        2
+            .agent()
+            .contains("code:\"iges_parametric_reconstruction_unavailable\",subject:none,count:2")
     );
 
     let mut invalid = evidence.clone();

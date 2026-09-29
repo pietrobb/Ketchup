@@ -27,18 +27,13 @@ fn released_document() -> DocumentStore {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Bracket profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Bracket body".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::new("12", 12.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("12", 12.0).unwrap()),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),

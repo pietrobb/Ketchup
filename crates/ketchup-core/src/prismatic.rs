@@ -5,7 +5,7 @@ pub const PRISMATIC_TOLERANCE_V1: &str = "ketchup.prismatic-tolerance.v1";
 const MAX_COORDINATE_MM: f64 = 1.0e12;
 const ORTHONORMAL_EPSILON: f64 = 1.0e-10;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TolerancePolicy {
     epsilon_mm: f64,
 }
@@ -35,7 +35,7 @@ impl Default for TolerancePolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Aabb {
     min: [f64; 3],
     max: [f64; 3],
@@ -444,10 +444,12 @@ pub fn collide_axis_aligned_prisms(
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct JointId(pub u64);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CanonicalJoint {
     id: JointId,
     participant_a: DerivedIdentity,

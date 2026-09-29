@@ -21,18 +21,13 @@ fn transform_chain(node_count: usize) -> DocumentStore {
             id: FeatureId(1),
             definition_id: DEFINITION,
             name: "Profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: FeatureId(2),
             definition_id: DEFINITION,
             name: "Extrusion".into(),
-            kind: FeatureKind::Extrusion {
-                profile: FeatureId(1),
-                height: Dimension::new("5", 5.0).unwrap(),
-            },
+            kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("5", 5.0).unwrap()),
         },
     ];
     for index in 1..node_count {
@@ -92,7 +87,14 @@ fn deep_graph_compilation_is_bounded_and_accepts_the_node_limit() {
         MAX_EXACT_BREP_GRAPH_NODES * 4,
     ] {
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "deep_graph_compilation_child", "--nocapture"])
+            .args([
+                "--exact",
+                &crate::integration_support::test_name(
+                    module_path!(),
+                    "deep_graph_compilation_child",
+                ),
+                "--nocapture",
+            ])
             .env(CHILD_NODE_COUNT, count.to_string())
             .env("RUST_MIN_STACK", "2097152")
             .stdin(Stdio::null())
@@ -155,6 +157,6 @@ fn shared_dependencies_preserve_depth_first_order_and_fingerprint() {
     );
     assert_eq!(
         graph.graph_digest,
-        "ed55e926bb6d176ee030faecea5d409b078845ae5a497c6b649998ae5df65555"
+        "0e5fc52d54fbd84244455321dfeee8ed287965a1fcc4c7af1557b03f0fb67e00"
     );
 }

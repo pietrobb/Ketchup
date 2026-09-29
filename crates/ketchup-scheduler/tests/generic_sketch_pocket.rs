@@ -23,6 +23,7 @@ fn assert_bounds(actual: [[f64; 3]; 2], expected: [[f64; 3]; 2]) {
 
 #[test]
 fn worker_cuts_circle_mixed_curve_and_compound_sketch_regions() {
+    let _turn = crate::integration_support::file_turn();
     let mut worker =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
     let cases = [
@@ -56,6 +57,7 @@ fn worker_cuts_circle_mixed_curve_and_compound_sketch_regions() {
 
 #[test]
 fn worker_cuts_real_generic_sketch_through_hole_in_principal_and_offset_frames() {
+    let _turn = crate::integration_support::file_turn();
     let mut worker =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
     for (plane, offset, bounds) in [

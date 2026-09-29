@@ -22,9 +22,7 @@ fn fixture(count: u64, long_names: bool) -> DocumentStore {
             id: FeatureId(1),
             definition_id: DefinitionId(1),
             name: "Triangle profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]),
         },
     ];
     commands.extend((1..=count).map(|id| CanonicalCommand::CreateOccurrence {
@@ -123,18 +121,13 @@ fn spatial_fixture() -> DocumentStore {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Rectangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(2),

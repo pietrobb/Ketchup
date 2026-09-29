@@ -1,6 +1,6 @@
 //! Program 6 body-aware feature history replayed offscreen through AccessKit.
 
-mod harness;
+use crate::harness;
 
 use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
@@ -20,6 +20,7 @@ use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
+use ketchup_core::sketch::{PadOperation, PadProfile};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -126,35 +127,31 @@ fn write_component_replacement_fixture(path: &Path) {
                 id: REPLACEMENT_SOURCE_PROFILE,
                 definition_id: REPLACEMENT_SOURCE,
                 name: "Source profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]],
-                },
+                kind: FeatureKind::polygon(&[[10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: REPLACEMENT_SOURCE_EXTRUSION,
                 definition_id: REPLACEMENT_SOURCE,
                 name: "Source extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: REPLACEMENT_SOURCE_PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    REPLACEMENT_SOURCE_PROFILE,
+                    Dimension::from_decimal("10").unwrap(),
+                ),
             },
             CanonicalCommand::CreateFeature {
                 id: REPLACEMENT_TARGET_PROFILE,
                 definition_id: REPLACEMENT_TARGET,
                 name: "Target profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]],
-                },
+                kind: FeatureKind::polygon(&[[10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: REPLACEMENT_TARGET_EXTRUSION,
                 definition_id: REPLACEMENT_TARGET,
                 name: "Target extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: REPLACEMENT_TARGET_PROFILE,
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    REPLACEMENT_TARGET_PROFILE,
+                    Dimension::from_decimal("10").unwrap(),
+                ),
             },
             CanonicalCommand::CreateOccurrence {
                 id: REPLACEMENT_SELECTED,
@@ -264,24 +261,19 @@ fn write_movable_fitting_pocket_fixture(path: &Path) {
                 id: FeatureId(12),
                 definition_id: DEFINITION,
                 name: "Panel outline".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(13),
                 definition_id: DEFINITION,
                 name: "10 mm panel".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(12),
-                    height: Dimension::from_decimal("10").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(12), Dimension::from_decimal("10").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: FITTING_PROFILE,
                 definition_id: DEFINITION,
                 name: "Rounded fitting slot".to_owned(),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: vec![
                         ProfileSegment::Line {
                             start_mm: [10.0, 10.0],
@@ -311,11 +303,11 @@ fn write_movable_fitting_pocket_fixture(path: &Path) {
                 id: FITTING_POCKET,
                 definition_id: DEFINITION,
                 name: "6 mm fitting pocket".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: FeatureId(13),
-                    profile: FITTING_PROFILE,
-                    depth: Dimension::from_decimal("6").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    FeatureId(13),
+                    FITTING_PROFILE,
+                    Dimension::from_decimal("6").unwrap(),
+                ),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
@@ -397,10 +389,13 @@ fn write_sketch_construction_fixture(path: &Path, constraint_editing: bool) {
                 definition_id: CONSTRUCTION_DEFINITION,
                 name: "Pad".to_owned(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: CONSTRUCTION_SKETCH,
-                    region: pad_region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: CONSTRUCTION_SKETCH,
+                        region: pad_region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("10").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateOccurrence {
@@ -795,7 +790,13 @@ fn serial_history_panel_edits_cancels_suppresses_resumes_and_undoes_atomically()
     assert_eq!(shell.app().document_revision(), initial.0 + 1);
     assert_eq!(shell.app().undo_step_count(), initial.2 + 1);
     let snapshot = shell.app().document_snapshot();
-    let FeatureKind::Extrusion { height, .. } = snapshot.feature(EXTRUSION).unwrap().kind() else {
+    let FeatureKind::Pad(PadSpec {
+        profile: PadProfile::Feature(_),
+        extent: FeatureExtent::Blind(height),
+        operation: PadOperation::NewBody,
+        ..
+    }) = snapshot.feature(EXTRUSION).unwrap().kind()
+    else {
         panic!("expected editable Extrusion")
     };
     assert_eq!(
@@ -814,7 +815,7 @@ fn serial_history_panel_edits_cancels_suppresses_resumes_and_undoes_atomically()
             .feature(EXTRUSION)
             .unwrap()
             .kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 20.0
     ));
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), edited_digest);
@@ -920,8 +921,7 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.2 + 1);
     let moved = shell.app().document_snapshot();
-    let FeatureKind::SegmentProfile { segments, closed } =
-        moved.feature(FITTING_PROFILE).unwrap().kind()
+    let FeatureKind::Profile { segments, closed } = moved.feature(FITTING_PROFILE).unwrap().kind()
     else {
         panic!("expected moved rounded fitting slot")
     };
@@ -933,7 +933,7 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
     ));
     assert!(matches!(
         moved.feature(FITTING_POCKET).unwrap().kind(),
-        FeatureKind::Pocket { profile, depth, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(profile), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { .. }, .. })
             if *profile == FITTING_PROFILE && depth.millimetres() == 6.0
     ));
     let moved_digest = shell.app().canonical_digest();
@@ -960,7 +960,7 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
     assert_eq!(shell.app().undo_step_count(), before_depth.2 + 1);
     assert!(matches!(
         shell.app().document_snapshot().feature(FITTING_POCKET).unwrap().kind(),
-        FeatureKind::Pocket { depth, .. } if depth.millimetres() == 8.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { .. }, .. }) if depth.millimetres() == 8.0
     ));
     let depth_digest = shell.app().canonical_digest();
 
@@ -975,7 +975,7 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
     assert_eq!(shell.app().canonical_digest(), depth_digest);
     assert!(matches!(
         shell.app().document_snapshot().feature(FITTING_POCKET).unwrap().kind(),
-        FeatureKind::Pocket { depth, .. } if depth.millimetres() == 8.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(depth), operation: PadOperation::Cut { .. }, .. }) if depth.millimetres() == 8.0
     ));
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), moved_digest);
@@ -1096,8 +1096,7 @@ fn move_tool_repositions_exact_pocket_floor_instead_of_the_panel_occurrence() {
     );
     assert_eq!(shell.app().undo_step_count(), before.2 + 1);
     let moved = shell.app().document_snapshot();
-    let FeatureKind::SegmentProfile { segments, .. } =
-        moved.feature(FITTING_PROFILE).unwrap().kind()
+    let FeatureKind::Profile { segments, .. } = moved.feature(FITTING_PROFILE).unwrap().kind()
     else {
         panic!("expected moved rounded fitting slot")
     };
@@ -1362,11 +1361,11 @@ fn make_unique_choice_previews_selected_fork_and_commits_one_undo_step() {
     );
     assert!(matches!(
         shell.app().document_snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 20.0
     ));
     assert!(matches!(
         shell.app().document_snapshot().feature(FeatureId(4)).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 35.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 35.0
     ));
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
@@ -1695,9 +1694,7 @@ fn write_general_revolve_history_fixture(path: &Path) {
                 id: FeatureId(502),
                 definition_id: DefinitionId(501),
                 name: "Revolve profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(503),

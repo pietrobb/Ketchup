@@ -3,6 +3,7 @@ use ketchup_core::document::{
     ProposalCommitError, ProposalPrincipal,
 };
 use ketchup_core::extension::{PluginCapability, PluginGatewayError, PluginGrant, PluginLimits};
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_scheduler::plugin::{PluginHostError, run_plugin_process};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -34,18 +35,13 @@ fn seed() -> DocumentStore {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: dimension("20", 20.0),
-                },
+                kind: FeatureKind::extrusion(PROFILE, dimension("20", 20.0)),
             },
         ]))
         .unwrap();
@@ -88,7 +84,7 @@ fn host_max_store() -> DocumentStore {
         ]))
         .unwrap();
     let baseline_bytes = ketchup_core::state_view::encode_semantic_state(&baseline.current())
-        .agent_v1()
+        .agent()
         .len();
     let target_bytes = PluginLimits::HOST_MAX.max_query_bytes;
     assert!(baseline_bytes < target_bytes);
@@ -103,7 +99,7 @@ fn host_max_store() -> DocumentStore {
         .unwrap();
     assert_eq!(
         ketchup_core::state_view::encode_semantic_state(&store.current())
-            .agent_v1()
+            .agent()
             .len(),
         target_bytes
     );
@@ -130,6 +126,7 @@ fn run_example(
 
 #[test]
 fn m7b_python_plugin_queries_bounded_state_and_returns_one_review_only_proposal() {
+    let _turn = crate::integration_support::file_turn();
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     let undo_before = store.visible_undo_steps();
@@ -148,7 +145,13 @@ fn m7b_python_plugin_queries_bounded_state_and_returns_one_review_only_proposal(
     store.commit_verified_proposal(&proposal).unwrap();
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     let snapshot = store.current();
-    let FeatureKind::Extrusion { height, .. } = snapshot.feature(EXTRUSION).unwrap().kind() else {
+    let FeatureKind::Pad(PadSpec {
+        profile: PadProfile::Feature(_),
+        extent: FeatureExtent::Blind(height),
+        operation: PadOperation::NewBody,
+        ..
+    }) = snapshot.feature(EXTRUSION).unwrap().kind()
+    else {
         panic!("fixture extrusion changed kind");
     };
     assert_eq!(height.millimetres(), 35.0);
@@ -156,6 +159,7 @@ fn m7b_python_plugin_queries_bounded_state_and_returns_one_review_only_proposal(
 
 #[test]
 fn m7b_host_max_query_state_fits_the_declared_response_line() {
+    let _turn = crate::integration_support::file_turn();
     let store = host_max_store();
     let script = "import sys\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.host-max\\t1.0.0\\t7001\\tquery.agent-state.v1\\t2\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nstate = sys.stdin.readline()\nassert state.startswith('STATE\\t65536\\t')\nprint('DONE', flush=True)\nsys.stdin.readline()";
 
@@ -175,6 +179,7 @@ fn m7b_host_max_query_state_fits_the_declared_response_line() {
 
 #[test]
 fn m7b_host_max_response_honors_timeout_when_plugin_stops_reading() {
+    let _turn = crate::integration_support::file_turn();
     let store = host_max_store();
     let directory = tempfile::tempdir().unwrap();
     let stopped_reading = directory.path().join("stopped-reading");
@@ -208,6 +213,7 @@ fn m7b_host_max_response_honors_timeout_when_plugin_stops_reading() {
 
 #[test]
 fn m7b_flooding_plugin_is_backpressured_while_host_response_is_blocked() {
+    let _turn = crate::integration_support::file_turn();
     let marker = std::env::temp_dir().join(format!(
         "ketchup-plugin-backpressure-{}.marker",
         std::process::id()
@@ -240,6 +246,7 @@ fn m7b_flooding_plugin_is_backpressured_while_host_response_is_blocked() {
 
 #[test]
 fn m7b_unrepresentable_timeout_is_rejected_without_panicking() {
+    let _turn = crate::integration_support::file_turn();
     let result = std::panic::catch_unwind(|| {
         run_plugin_process(
             python(),
@@ -262,6 +269,7 @@ fn m7b_unrepresentable_timeout_is_rejected_without_panicking() {
 
 #[test]
 fn m7b_host_max_response_honors_cancellation_when_plugin_stops_reading() {
+    let _turn = crate::integration_support::file_turn();
     let store = host_max_store();
     let directory = tempfile::tempdir().unwrap();
     let stopped_reading = directory.path().join("stopped-reading");
@@ -303,6 +311,7 @@ fn m7b_host_max_response_honors_cancellation_when_plugin_stops_reading() {
 
 #[test]
 fn m7b_host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
+    let _turn = crate::integration_support::file_turn();
     let store = seed();
     let query_only = PluginGrant::new(
         PRINCIPAL,
@@ -341,6 +350,7 @@ fn m7b_host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
 
 #[test]
 fn m7b_plugin_process_does_not_inherit_parent_environment() {
+    let _turn = crate::integration_support::file_turn();
     let store = seed();
     let script = "import os,sys\npackage = 'org.ketchup.ambient-leak' if os.environ.get('PATH') else 'org.ketchup.isolated'\nprint(f'HELLO\\tketchup.plugin.v1\\t{package}\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
 
@@ -359,6 +369,7 @@ fn m7b_plugin_process_does_not_inherit_parent_environment() {
 
 #[test]
 fn m7b_process_rejects_direct_mutation_vocabulary_and_oversized_input() {
+    let _turn = crate::integration_support::file_turn();
     let store = seed();
     let hello = "HELLO\\tketchup.plugin.v1\\torg.ketchup.dimension-pilot\\t1.0.0\\t7001\\tquery.agent-state.v1,intent.set-feature-dimension.v1\\t4\\t32768\\t1\\t64\\t1";
     let direct_mutation = format!(
@@ -388,6 +399,7 @@ fn m7b_process_rejects_direct_mutation_vocabulary_and_oversized_input() {
 
 #[test]
 fn m7b_pre_cancelled_run_does_not_attempt_to_spawn_the_plugin() {
+    let _turn = crate::integration_support::file_turn();
     let store = seed();
     let cancelled = AtomicBool::new(true);
     let temp = tempfile::tempdir().unwrap();
@@ -407,6 +419,7 @@ fn m7b_pre_cancelled_run_does_not_attempt_to_spawn_the_plugin() {
 
 #[test]
 fn m7b_process_timeout_and_cancellation_kill_the_untrusted_client() {
+    let _turn = crate::integration_support::file_turn();
     let store = seed();
     let sleeper = "import time; time.sleep(5)";
     let result = run_plugin_process(
@@ -451,6 +464,7 @@ fn release_descendant(sentinel: &std::path::Path) {
 #[cfg(windows)]
 #[test]
 fn m7b_timeout_terminates_plugin_descendants() {
+    let _turn = crate::integration_support::file_turn();
     let store = seed();
     let directory = tempfile::tempdir().unwrap();
     let sentinel = directory.path().join("escaped-descendant.txt");
@@ -484,6 +498,7 @@ fn m7b_timeout_terminates_plugin_descendants() {
 #[cfg(windows)]
 #[test]
 fn m7b_completed_runs_terminate_plugin_descendants_on_success_and_failure() {
+    let _turn = crate::integration_support::file_turn();
     for exit_code in [0, 7] {
         let store = seed();
         let directory = tempfile::tempdir().unwrap();
@@ -523,6 +538,7 @@ fn m7b_completed_runs_terminate_plugin_descendants_on_success_and_failure() {
 
 #[test]
 fn m7b_plugin_proposal_remains_revision_bound_and_non_replayable() {
+    let _turn = crate::integration_support::file_turn();
     let mut store = seed();
     let run = run_example(&store, pilot_grant(PluginLimits::M7B_PILOT)).unwrap();
     let proposal = run.proposal.unwrap();

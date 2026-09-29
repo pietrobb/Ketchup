@@ -2,6 +2,7 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, OccurrenceId, Transform,
 };
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
     Axis, ElementId, InteractionError, InteractionScene, LocaleCatalog, PreviewError,
@@ -32,24 +33,21 @@ fn projected_scene(
                 id: definition.profile_id,
                 definition_id: definition.id,
                 name: format!("Profile {}", definition.profile_id.0),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [0.0, 0.0],
-                        [definition.size_mm.x, 0.0],
-                        [definition.size_mm.x, definition.size_mm.y],
-                        [0.0, definition.size_mm.y],
-                    ],
-                },
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [definition.size_mm.x, 0.0],
+                    [definition.size_mm.x, definition.size_mm.y],
+                    [0.0, definition.size_mm.y],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: definition.extrusion_id,
                 definition_id: definition.id,
                 name: format!("Extrusion {}", definition.extrusion_id.0),
-                kind: FeatureKind::Extrusion {
-                    profile: definition.profile_id,
-                    height: Dimension::new(definition.size_mm.z.to_string(), definition.size_mm.z)
-                        .unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    definition.profile_id,
+                    Dimension::new(definition.size_mm.z.to_string(), definition.size_mm.z).unwrap(),
+                ),
             },
         ]);
     }
@@ -83,18 +81,13 @@ fn source_document() -> DocumentStore {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Profile-1".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Extrude-1".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::from_decimal("20").unwrap()),
             },
         ]))
         .unwrap();
@@ -359,7 +352,7 @@ fn smart_push_pull_preview_and_commit_share_one_canonical_digest() {
     assert_eq!(committed.revision.batch_digest(), preview_digest);
     assert!(matches!(
         store.current().feature(FeatureId(2)).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.source_token() == "35"
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.source_token() == "35"
     ));
 }
 

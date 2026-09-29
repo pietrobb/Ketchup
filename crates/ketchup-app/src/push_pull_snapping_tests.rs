@@ -139,7 +139,7 @@ fn push_pull_snaps_oblique_scaled_face_using_world_normal() {
         planar_push_pull::tests::wait_preview(&mut app);
         assert!(app.confirm_push_pull_preview());
         let snapshot = app.document.current();
-        let FeatureKind::TopologyFaceOffset {
+        let FeatureKind::FaceOffset {
             distance: stored, ..
         } = snapshot.features().last().unwrap().kind()
         else {

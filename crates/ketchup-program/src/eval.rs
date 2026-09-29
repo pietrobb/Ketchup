@@ -877,11 +877,11 @@ fn apply_boolean<'v>(
         check_part_name(&name)?;
         add_operation(
             part,
-            ProgramOperation::Boolean(ProgramBoolean {
+            ProgramOperation::Boolean(Box::new(ProgramBoolean {
                 name,
                 kind,
                 tool: tool_part,
-            }),
+            })),
         )?;
         Ok(part_value(part, heap))
     })

@@ -28,18 +28,13 @@ fn seed() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
                 id: PROFILE_ONE,
                 definition_id: DEFINITION,
                 name: "First rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION_ONE,
                 definition_id: DEFINITION,
                 name: "First extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE_ONE,
-                    height: Dimension::from_decimal("5").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE_ONE, Dimension::from_decimal("5").unwrap()),
             },
             CanonicalCommand::CreateBody {
                 definition_id: DEFINITION,
@@ -55,18 +50,13 @@ fn seed() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
                 id: PROFILE_TWO,
                 definition_id: DEFINITION,
                 name: "Second rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [8.0, 0.0], [8.0, 4.0], [0.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [8.0, 0.0], [8.0, 4.0], [0.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION_TWO,
                 definition_id: DEFINITION,
                 name: "Second extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE_TWO,
-                    height: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE_TWO, Dimension::from_decimal("2").unwrap()),
             },
         ]))
         .unwrap();
@@ -267,8 +257,8 @@ fn hidden_unresolved_cross_context_and_body_mismatch_targets_fail_closed() {
     );
     assert_eq!(stamp(&store), before);
     let after_state = encode_semantic_state(&store.current());
-    assert_eq!(after_state.complete_v1(), before_state.complete_v1());
-    assert_eq!(after_state.agent_v1(), before_state.agent_v1());
+    assert_eq!(after_state.complete(), before_state.complete());
+    assert_eq!(after_state.agent(), before_state.agent());
     assert_eq!(persistence::save(&store.current()), before_bytes);
 }
 
@@ -346,8 +336,8 @@ fn transient_intent_is_state_view_and_save_open_observational_and_cancel_safe() 
 
     assert_eq!(stamp(&store), before, "dropping the intent is cancel");
     let after_state = encode_semantic_state(&store.current());
-    assert_eq!(after_state.complete_v1(), before_state.complete_v1());
-    assert_eq!(after_state.agent_v1(), before_state.agent_v1());
+    assert_eq!(after_state.complete(), before_state.complete());
+    assert_eq!(after_state.agent(), before_state.agent());
     assert_eq!(persistence::save(&store.current()), before_bytes);
 
     let reopened = persistence::load(&before_bytes).unwrap();
@@ -358,8 +348,8 @@ fn transient_intent_is_state_view_and_save_open_observational_and_cancel_safe() 
     );
     assert_eq!(persistence::save(&reopened_snapshot), before_bytes);
     let reopened_state = encode_semantic_state(&reopened_snapshot);
-    assert_eq!(reopened_state.complete_v1(), before_state.complete_v1());
-    assert_eq!(reopened_state.agent_v1(), before_state.agent_v1());
+    assert_eq!(reopened_state.complete(), before_state.complete());
+    assert_eq!(reopened_state.agent(), before_state.agent());
     let reopened_intent = TransientFaceIntent::new(
         &reopened_snapshot,
         DEFINITION,
@@ -414,7 +404,7 @@ fn canonically_hidden_body_is_rejected_without_additional_mutation() {
     );
     assert_eq!(stamp(&store), before);
     let after_state = encode_semantic_state(&store.current());
-    assert_eq!(after_state.complete_v1(), before_state.complete_v1());
-    assert_eq!(after_state.agent_v1(), before_state.agent_v1());
+    assert_eq!(after_state.complete(), before_state.complete());
+    assert_eq!(after_state.agent(), before_state.agent());
     assert_eq!(persistence::save(&store.current()), before_bytes);
 }

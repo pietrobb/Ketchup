@@ -1133,7 +1133,7 @@ pub fn propose_intent(
                 id: target,
                 definition_id: definition,
                 name,
-                kind: FeatureKind::Profile { points_mm },
+                kind: FeatureKind::polygon(&points_mm),
             },
         ),
         WorkflowIntent::DeleteProfileFeature { target } => {

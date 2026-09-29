@@ -1,3 +1,4 @@
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::time::{Duration, Instant};
 
 use ketchup_application::evaluation::exact_worker_candidates;
@@ -201,11 +202,15 @@ fn verified_box_conversion_is_atomic_undoable_and_persistent() {
         converted.feature(MESH).unwrap().kind(),
         FeatureKind::Profile { .. }
     ));
-    assert!(
-        converted
-            .features()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Extrusion { .. }))
-    );
+    assert!(converted.features().any(|feature| matches!(
+        feature.kind(),
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(_),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::NewBody,
+            ..
+        })
+    )));
     assert!(
         converted
             .features()

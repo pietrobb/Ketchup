@@ -32,6 +32,7 @@ fn assert_close(actual: f64, expected: f64) {
 
 #[test]
 fn first_class_weldment_member_is_exact_parametric_and_lossless() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(1);
     let profile = FeatureId(1);
     let path = FeatureId(2);
@@ -47,9 +48,7 @@ fn first_class_weldment_member_is_exact_parametric_and_lossless() {
                 id: profile,
                 definition_id: definition,
                 name: "Parametric rectangular section".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
-                },
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: path,

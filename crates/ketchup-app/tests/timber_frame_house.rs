@@ -7,7 +7,7 @@
 //!
 //! The second test pins the two generality limits this scenario hit, so that a
 //! later change which lifts them fails loudly instead of silently.
-mod harness;
+use crate::harness;
 
 use eframe::egui::{self, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
@@ -41,6 +41,7 @@ use ketchup_core::fabrication::{
 };
 use ketchup_core::persistence::{self, ContainerData};
 use ketchup_core::prismatic::TolerancePolicy;
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
     ValidationState,
@@ -2070,13 +2071,21 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
         .find(|id| {
             matches!(
                 committed.feature(*id).unwrap().kind(),
-                FeatureKind::Pocket { .. }
+                FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::Feature(_),
+                    extent: FeatureExtent::Blind(_),
+                    operation: PadOperation::Cut { .. },
+                    ..
+                })
             )
         })
         .expect("the wall must retain its generic Sketch-driven pocket");
-    let FeatureKind::Pocket {
-        target, profile, ..
-    } = committed.feature(pocket_id).unwrap().kind()
+    let FeatureKind::Pad(PadSpec {
+        profile: PadProfile::Feature(profile),
+        extent: FeatureExtent::Blind(_),
+        operation: PadOperation::Cut { target, .. },
+        ..
+    }) = committed.feature(pocket_id).unwrap().kind()
     else {
         unreachable!("the pocket kind was just matched")
     };
@@ -2105,7 +2114,15 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
     let reopened_pocket = reopened
         .feature(pocket_id)
         .expect("the pocket identity must survive Save/Open");
-    assert!(matches!(reopened_pocket.kind(), FeatureKind::Pocket { .. }));
+    assert!(matches!(
+        reopened_pocket.kind(),
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(_),
+            extent: FeatureExtent::Blind(_),
+            operation: PadOperation::Cut { .. },
+            ..
+        })
+    ));
     let graph = ExactBRepGraph::from_snapshot(&reopened, sheathing, pocket_id)
         .expect("the reopened wall opening must remain an exact editable chain");
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
@@ -2417,7 +2434,7 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
         .id();
     assert!(matches!(
         committed.feature(fillet_id).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             target,
             edges,
             kind: EdgeFinishKind::Fillet,
@@ -2425,7 +2442,7 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
             ..
         } if *target == body_id
             && edges.len() == 1
-            && edges[0].lineage_digest == edge_reference
+            && edges[0].topological().is_some_and(|edge| edge.lineage_digest == edge_reference)
             && amount.millimetres() == 2.0
     ));
     let fillet_graph = ExactBRepGraph::from_snapshot(&committed, definition_id, fillet_id)

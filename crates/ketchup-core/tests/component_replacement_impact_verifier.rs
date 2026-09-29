@@ -4,8 +4,7 @@ use ketchup_core::assembly::{
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureId, FeatureKind, OccurrenceId, ProposalPrincipal, StableFaceRole,
-    Transform,
+    DocumentStore, FeatureId, FeatureKind, OccurrenceId, ProposalPrincipal, Transform,
 };
 use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind, project_orthographic_drawing,
@@ -106,35 +105,28 @@ fn seed() -> DocumentStore {
                 id: SOURCE_PROFILE,
                 definition_id: SOURCE,
                 name: "Source profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [8.0, 0.0], [8.0, 6.0], [0.0, 6.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [8.0, 0.0], [8.0, 6.0], [0.0, 6.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: SOURCE_EXTRUSION,
                 definition_id: SOURCE,
                 name: "Source extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: SOURCE_PROFILE,
-                    height: Dimension::from_decimal("7").unwrap(),
-                },
+                kind: FeatureKind::extrusion(SOURCE_PROFILE, Dimension::from_decimal("7").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: TARGET_PROFILE,
                 definition_id: TARGET,
                 name: "Target profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [12.0, 0.0], [12.0, 9.0], [0.0, 9.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [12.0, 0.0], [12.0, 9.0], [0.0, 9.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: TARGET_EXTRUSION,
                 definition_id: TARGET,
                 name: "Target extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: TARGET_PROFILE,
-                    height: Dimension::from_decimal("11").unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    TARGET_PROFILE,
+                    Dimension::from_decimal("11").unwrap(),
+                ),
             },
             CanonicalCommand::CreateOccurrence {
                 id: TARGET_OCCURRENCE,
@@ -405,9 +397,7 @@ fn ambiguity_topology_identity_and_unsupported_inputs_have_explicit_diagnostics(
             id: FeatureId(422),
             definition_id: TARGET,
             name: "Unmatched target feature".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]),
         }]))
         .unwrap();
     let topology_results = registry(&topology_mismatch.current(), false);
@@ -1103,10 +1093,9 @@ fn stale_failed_lost_and_cyclic_inputs_preserve_canonical_history_and_exact_outp
     const SECOND_SHELL: FeatureId = FeatureId(702);
     let mut cyclic_document = DocumentStore::new();
     let cyclic_before = store_stamp(&cyclic_document);
-    let shell = |target| FeatureKind::Shell {
+    let shell = |target| FeatureKind::RigidTransform {
         target,
-        removed_faces: vec![StableFaceRole::new("replacement.cycle").unwrap()],
-        thickness: Dimension::from_decimal("1").unwrap(),
+        transform: Transform::identity(),
     };
     let cycle_error = match cyclic_document.apply_batch(&CommandBatch::new(vec![
         CanonicalCommand::CreateDefinition {

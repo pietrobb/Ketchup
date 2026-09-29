@@ -2,7 +2,7 @@
 //! on the exact solids: the pieces add up to the whole, a join holds both
 //! volumes, and impossible requests are refused with the reason.
 
-mod operations_support;
+use crate::operations_support;
 
 use ketchup_program::{run, validate};
 use operations_support::*;

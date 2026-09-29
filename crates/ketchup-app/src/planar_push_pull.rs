@@ -369,29 +369,11 @@ impl KetchupApp {
     }
 
     pub(super) fn preview_requires_face_offset_evaluation(&self) -> bool {
-        self.preview_box.as_ref().is_some_and(|preview| {
-            preview.plan.source.topological_reference.is_some()
-                || (preview
-                    .plan
-                    .source
-                    .target_box
-                    .extrusion_feature_id
-                    .is_none()
-                    && self
-                        .push_pull_planning_snapshot()
-                        .feature(preview.plan.source.target_box.profile_feature_id)
-                        .is_some_and(|feature| {
-                            matches!(
-                                feature.kind(),
-                                FeatureKind::SegmentProfile {
-                                    closed: true,
-                                    segments,
-                                } if segments.iter().all(|segment| {
-                                    matches!(segment, ProfileSegment::Line { .. })
-                                })
-                            )
-                        }))
-        })
+        // A bare polygon profile previews as its own prism, so only a picked face
+        // of an evaluated body waits for the exact offset.
+        self.preview_box
+            .as_ref()
+            .is_some_and(|preview| preview.plan.source.topological_reference.is_some())
     }
 
     pub(super) fn begin_face_offset_evaluation(&mut self) {

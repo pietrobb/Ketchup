@@ -1,4 +1,4 @@
-mod harness;
+use crate::harness;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -96,18 +96,13 @@ fn fixture() -> (tempfile::TempDir, Shell) {
                 id: FeatureId(1),
                 definition_id: DefinitionId(1),
                 name: "Profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
                 name: "Body".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(1),
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(FeatureId(1), Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateGroup {
                 id: GroupId(10),

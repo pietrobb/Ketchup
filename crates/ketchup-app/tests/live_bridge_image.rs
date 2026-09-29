@@ -322,7 +322,10 @@ fn queue_command(h: &mut Harness<'_, KetchupApp>, command: AppCommand) {
 }
 #[test]
 fn unsupported_image_protocol_is_rejected_before_callback_scheduling() {
-    let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let _gpu = (
+        crate::integration_support::file_turn(),
+        GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
+    );
     let mut h = harness();
     let rx = request_version_mode(&h, IMAGE_PROTOCOL_VERSION - 1, CaptureMode::Offscreen);
     let response = wait_response(&mut h, rx);
@@ -336,7 +339,10 @@ fn unsupported_image_protocol_is_rejected_before_callback_scheduling() {
 
 #[test]
 fn isolated_pixels_are_bounded_stamped_private_and_view_dependent() {
-    let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let _gpu = (
+        crate::integration_support::file_turn(),
+        GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
+    );
     let mut h = harness();
     let initial = h.state().live_bridge_stamp();
     let baseline = capture(&mut h);
@@ -386,7 +392,10 @@ fn isolated_pixels_are_bounded_stamped_private_and_view_dependent() {
 #[test]
 fn screenshots_are_ignored_and_unserviced_gpu_callback_times_out() {
     for service_gpu in [false, true] {
-        let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+        let _gpu = (
+            crate::integration_support::file_turn(),
+            GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
+        );
         let mut h = harness();
         let rx = request(&h);
         let pass = wait_callback(&mut h);
@@ -430,7 +439,10 @@ fn pending_gpu_capture_rejects_precise_hidden_and_stale_states() {
         ("hidden", "hidden_viewport"),
         ("document", "stale_document"),
     ] {
-        let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+        let _gpu = (
+            crate::integration_support::file_turn(),
+            GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
+        );
         let mut h = harness();
         let initial = h.state().live_bridge_stamp();
         let rx = request_mode(
@@ -477,7 +489,10 @@ fn pending_gpu_capture_rejects_precise_hidden_and_stale_states() {
 }
 #[test]
 fn offscreen_capture_works_while_the_gui_canvas_is_not_visible() {
-    let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let _gpu = (
+        crate::integration_support::file_turn(),
+        GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
+    );
     let mut h = harness();
     h.state_mut()
         .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
@@ -504,7 +519,10 @@ fn offscreen_capture_works_while_the_gui_canvas_is_not_visible() {
 }
 #[test]
 fn disconnected_capture_is_revoked_before_reconnect() {
-    let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let _gpu = (
+        crate::integration_support::file_turn(),
+        GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
+    );
     let mut h = harness();
     let stamp = h.state().live_bridge_stamp();
     let mut old = send_request(&h);
@@ -553,7 +571,10 @@ fn isolated_frame_reaches_registered_python_image_tool_and_new_png() {
             .as_nanos()
     ));
     assert!(destination.is_absolute() && !destination.exists());
-    let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let _gpu = (
+        crate::integration_support::file_turn(),
+        GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
+    );
     let mut h = harness();
     // Independent raw TCP response on the SAME stable CAD state, before the
     // persistent Python session attaches. Never substitute synthetic source pixels.

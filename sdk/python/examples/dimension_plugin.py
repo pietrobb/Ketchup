@@ -24,8 +24,8 @@ def main() -> None:
     )
     client.start()
     state = client.query_agent_state()
-    if "ketchup.state-view.agent.v1" not in state:
-        raise RuntimeError("host did not return Agent StateView v1")
+    if "ketchup.state-view.agent.v2" not in state:
+        raise RuntimeError("host did not return Agent StateView v2")
     receipt = client.set_feature_dimension(target, value)
     if receipt.commands != 1 or receipt.writes != 1:
         raise RuntimeError("host Proposal exceeded the pilot write envelope")

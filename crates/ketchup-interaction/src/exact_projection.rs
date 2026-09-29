@@ -651,35 +651,33 @@ mod tests {
                     id: FeatureId(1),
                     definition_id: DEFINITION,
                     name: "Outer profile".to_owned(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                    },
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [10.0, 0.0],
+                        [10.0, 10.0],
+                        [0.0, 10.0],
+                    ]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: EXTRUSION,
                     definition_id: DEFINITION,
                     name: "Extrusion".to_owned(),
-                    kind: FeatureKind::Extrusion {
-                        profile: FeatureId(1),
-                        height: Dimension::from_decimal("10").unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(
+                        FeatureId(1),
+                        Dimension::from_decimal("10").unwrap(),
+                    ),
                 },
                 CanonicalCommand::CreateFeature {
                     id: FeatureId(3),
                     definition_id: DEFINITION,
                     name: "Cut profile".to_owned(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0]],
-                    },
+                    kind: FeatureKind::polygon(&[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0]]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: CUT,
                     definition_id: DEFINITION,
                     name: "Through cut".to_owned(),
-                    kind: FeatureKind::ThroughCut {
-                        target: EXTRUSION,
-                        profile: FeatureId(3),
-                    },
+                    kind: FeatureKind::through_cut(EXTRUSION, FeatureId(3)),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: OCCURRENCE,

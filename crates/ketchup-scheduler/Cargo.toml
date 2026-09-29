@@ -3,6 +3,7 @@ name = "ketchup-scheduler"
 description = "Revision-safe evaluation scheduling and exact-worker isolation for Ketchup"
 version.workspace = true
 edition.workspace = true
+autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -27,3 +28,7 @@ ed25519-dalek = "2.2.0"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

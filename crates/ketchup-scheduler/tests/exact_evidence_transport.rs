@@ -6,13 +6,14 @@ use ketchup_scheduler::ExactWorkerSupervisor;
 
 #[test]
 fn fresh_worker_preserves_complete_64_gon_topology_and_fingerprint() {
+    let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(1);
     let profile = FeatureId(1);
     let extrusion = FeatureId(2);
     let sides = 64;
     let radius = 10.0;
     let height = 5.0;
-    let points_mm = (0..sides)
+    let points_mm: Vec<[f64; 2]> = (0..sides)
         .map(|index| {
             let angle = std::f64::consts::TAU * f64::from(index) / f64::from(sides);
             [radius * angle.cos(), radius * angle.sin()]
@@ -29,16 +30,13 @@ fn fresh_worker_preserves_complete_64_gon_topology_and_fingerprint() {
                 id: profile,
                 definition_id: definition,
                 name: "Polygon".into(),
-                kind: FeatureKind::Profile { points_mm },
+                kind: FeatureKind::polygon(&points_mm),
             },
             CanonicalCommand::CreateFeature {
                 id: extrusion,
                 definition_id: definition,
                 name: "Extrusion".into(),
-                kind: FeatureKind::Extrusion {
-                    profile,
-                    height: Dimension::new("5", height).unwrap(),
-                },
+                kind: FeatureKind::extrusion(profile, Dimension::new("5", height).unwrap()),
             },
         ]))
         .unwrap();

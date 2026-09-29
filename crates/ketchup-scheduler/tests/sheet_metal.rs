@@ -24,6 +24,7 @@ fn target(
 
 #[test]
 fn canonical_sheet_metal_bend_is_exact_and_invalid_edits_are_atomic() {
+    let _turn = crate::integration_support::file_turn();
     let definition_id = DefinitionId(1);
     let feature_id = FeatureId(1);
     let spec = SheetMetalSpec {
@@ -144,6 +145,7 @@ fn canonical_sheet_metal_bend_is_exact_and_invalid_edits_are_atomic() {
 
 #[test]
 fn every_boundary_edge_and_bend_direction_produces_one_exact_solid() {
+    let _turn = crate::integration_support::file_turn();
     let mut worker =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
     for edge in [

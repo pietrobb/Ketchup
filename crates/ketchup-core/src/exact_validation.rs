@@ -10,6 +10,7 @@ use crate::exact_brep_graph::{
 use crate::exact_product::{ExactBodyPackage, ExactResultKey, ExactResultRegistry};
 use crate::graph::sha256_hex;
 use crate::prismatic::{Aabb, TolerancePolicy};
+use crate::sketch::{PadOperation, PadSpec};
 use crate::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     HostNeutralValidator, PermittedErrorDirection, PolicyRequirement, PolicySeverity, ReadScope,
@@ -211,21 +212,30 @@ impl GeneralBodyParticipant {
                         )
                     }
                     [profile_id, extrusion_id] => {
-                        let FeatureKind::Profile { points_mm } = snapshot
+                        let Some(points_mm) = snapshot
                             .feature(*profile_id)
                             .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
                             .kind()
+                            .polygon_points()
                         else {
                             return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
                         };
-                        let FeatureKind::Extrusion { profile, height } = snapshot
+                        let FeatureKind::Pad(
+                            pad @ PadSpec {
+                                operation: PadOperation::NewBody,
+                                ..
+                            },
+                        ) = snapshot
                             .feature(*extrusion_id)
                             .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
                             .kind()
                         else {
                             return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
                         };
-                        if profile != profile_id || height.millimetres() <= 0.0 {
+                        let Some((profile, height)) = pad.blind_along_normal() else {
+                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                        };
+                        if profile != *profile_id || height.millimetres() <= 0.0 {
                             return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
                         }
                         let vertices = points_mm
@@ -237,7 +247,7 @@ impl GeneralBodyParticipant {
                                 ]
                             })
                             .collect::<Vec<_>>();
-                        let exact_box = is_axis_aligned_rectangle_profile(points_mm)
+                        let exact_box = is_axis_aligned_rectangle_profile(&points_mm)
                             && is_translation_only(transform);
                         (
                             GeneralBodySource::CanonicalExtrusion {
@@ -245,7 +255,7 @@ impl GeneralBodyParticipant {
                                 profile_id: *profile_id,
                                 extrusion_id: *extrusion_id,
                                 geometry_digest: canonical_extrusion_geometry_digest(
-                                    points_mm,
+                                    &points_mm,
                                     height.millimetres(),
                                 ),
                             },

@@ -2,7 +2,7 @@
 //! window shows: volumes against closed-form values, faces named after cuts
 //! and booleans, and operations applied in the order they are written.
 
-mod operations_support;
+use crate::operations_support;
 
 use std::f64::consts::PI;
 

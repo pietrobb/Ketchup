@@ -20,8 +20,8 @@ use ketchup_core::mesh_recognition::{
     recognize_mesh_body_cancellable,
 };
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, PadSpec, SketchEntity, SketchEntityId, SketchSpec,
-    WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 
@@ -650,14 +650,12 @@ fn candidate_feature_chain(
         MeshRecognitionCandidate::Box(value) => {
             let [width, depth, height] = value.dimensions_mm;
             (
-                FeatureKind::Profile {
-                    points_mm: vec![
-                        [-width * 0.5, -depth * 0.5],
-                        [width * 0.5, -depth * 0.5],
-                        [width * 0.5, depth * 0.5],
-                        [-width * 0.5, depth * 0.5],
-                    ],
-                },
+                FeatureKind::polygon(&[
+                    [-width * 0.5, -depth * 0.5],
+                    [width * 0.5, -depth * 0.5],
+                    [width * 0.5, depth * 0.5],
+                    [-width * 0.5, depth * 0.5],
+                ]),
                 height,
                 subtract_3d(value.center_mm, scale_3d(value.axes[2], height * 0.5)),
                 value.axes[0],
@@ -666,9 +664,7 @@ fn candidate_feature_chain(
             )
         }
         MeshRecognitionCandidate::LinearExtrusion(value) => (
-            FeatureKind::Profile {
-                points_mm: value.profile_mm.clone(),
-            },
+            FeatureKind::polygon(&value.profile_mm),
             value.height_mm,
             value.base_origin_mm,
             value.profile_basis[0],
@@ -708,11 +704,11 @@ fn candidate_feature_chain(
             id: extrusion_id,
             definition_id,
             name: "Recognized extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: profile_id,
-                height: Dimension::new(format!("{height_mm:.17}"), height_mm)
+            kind: FeatureKind::extrusion(
+                profile_id,
+                Dimension::new(format!("{height_mm:.17}"), height_mm)
                     .map_err(|_| MeshConversionError::InvalidCandidate)?,
-            },
+            ),
         },
     ];
     let producer_feature_id = if transform == Transform::identity() {
@@ -795,13 +791,16 @@ fn cylinder_feature_chain(
                 definition_id,
                 name: "Recognized cylinder".to_owned(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: sketch_id,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(
                         Dimension::new(format!("{:.17}", cylinder.height_mm), cylinder.height_mm)
                             .map_err(|_| MeshConversionError::InvalidCandidate)?,
                     ),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ],
@@ -810,16 +809,17 @@ fn cylinder_feature_chain(
 }
 
 fn reflect_profile_y(profile: &mut FeatureKind) {
-    if let FeatureKind::Profile { points_mm } = profile {
-        for point in points_mm.iter_mut() {
+    if let Some(mut points_mm) = profile.polygon_points() {
+        for point in &mut points_mm {
             point[1] = -point[1];
         }
         points_mm.reverse();
+        *profile = FeatureKind::polygon(&points_mm);
     }
 }
 
 fn ensure_counter_clockwise_profile(profile: &mut FeatureKind) {
-    let FeatureKind::Profile { points_mm } = profile else {
+    let Some(mut points_mm) = profile.polygon_points() else {
         return;
     };
     let twice_area = points_mm
@@ -830,6 +830,7 @@ fn ensure_counter_clockwise_profile(profile: &mut FeatureKind) {
         .sum::<f64>();
     if twice_area < 0.0 {
         points_mm.reverse();
+        *profile = FeatureKind::polygon(&points_mm);
     }
 }
 

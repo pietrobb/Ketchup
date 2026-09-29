@@ -12,6 +12,7 @@ use ketchup_core::document::{
     MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
 use ketchup_core::exact_product::ExactResultRegistry;
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
@@ -142,18 +143,16 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                 id: FeatureId(id * 2 - 1),
                 definition_id: DefinitionId(id),
                 name: format!("{name} profile"),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(id * 2),
                 definition_id: DefinitionId(id),
                 name: format!("{name} solid"),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(id * 2 - 1),
-                    height: Dimension::new("18", 18.0).unwrap(),
-                },
+                kind: FeatureKind::extrusion(
+                    FeatureId(id * 2 - 1),
+                    Dimension::new("18", 18.0).unwrap(),
+                ),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(id),
@@ -218,7 +217,12 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                 .map(|feature| {
                     let kind = match feature.kind() {
                         FeatureKind::Profile { .. } => RecognizedRecipeFeatureKind::Profile,
-                        FeatureKind::Extrusion { .. } => {
+                        FeatureKind::Pad(PadSpec {
+                            profile: PadProfile::Feature(_),
+                            extent: FeatureExtent::Blind(_),
+                            operation: PadOperation::NewBody,
+                            ..
+                        }) => {
                             parameters.insert(
                                 key("height"),
                                 RecipeParameter {
@@ -227,18 +231,23 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                                     target: Some(
                                         FeatureParameterTarget::new(
                                             feature.id(),
-                                            "height",
+                                            "extent.distance",
                                             ParameterValueType::Length,
                                         )
                                         .unwrap(),
                                     ),
                                 },
                             );
-                            RecognizedRecipeFeatureKind::Extrusion
+                            RecognizedRecipeFeatureKind::Pad
                         }
                         FeatureKind::Workplane(_) => RecognizedRecipeFeatureKind::Workplane,
                         FeatureKind::Sketch(_) => RecognizedRecipeFeatureKind::Sketch,
-                        FeatureKind::Pocket { .. } => RecognizedRecipeFeatureKind::Pocket,
+                        FeatureKind::Pad(PadSpec {
+                            profile: PadProfile::Feature(_),
+                            extent: FeatureExtent::Blind(_),
+                            operation: PadOperation::Cut { .. },
+                            ..
+                        }) => RecognizedRecipeFeatureKind::Pad,
                         other => panic!("unexpected panel feature: {other:?}"),
                     };
                     (

@@ -378,7 +378,6 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
 fn part_frame(app: &KetchupApp, name: &str) -> ([f64; 3], [[f64; 3]; 3]) {
     let program = app.document.current_rule_program().unwrap().clone();
     let model = ketchup_application::plan_rule_program(&app.document, &program)
-        .ok()
         .expect("the program plans")
         .evaluated
         .model;

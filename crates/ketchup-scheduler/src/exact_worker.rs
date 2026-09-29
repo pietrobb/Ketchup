@@ -1505,12 +1505,17 @@ fn evaluate_exact_brep_graph(
                 ..
             } => {
                 let target_output = &outputs[target.0 as usize];
+                let profile = &graph.profiles[profile.0 as usize];
                 let interval = if depth_bits.is_none() {
-                    exact_brep_through_all_interval(graph, &target_output.body, *interval)?
+                    exact_brep_through_all_interval(
+                        graph,
+                        &target_output.body,
+                        std::array::from_fn(|axis| f64::from_bits(profile.frame_bits[axis])),
+                        *interval,
+                    )?
                 } else {
                     *interval
                 };
-                let profile = &graph.profiles[profile.0 as usize];
                 if let (Some(tool_name), Some(target_names)) =
                     (tool_name, face_names[target.0 as usize].as_ref())
                     && needs_names[node_index]
@@ -2023,6 +2028,7 @@ fn evaluate_exact_brep_graph(
 fn exact_brep_through_all_interval(
     graph: &ExactBRepGraph,
     target: &ketchup_exact::ExactBody,
+    origin_mm: [f64; 3],
     template: ExactBRepLinearInterval,
 ) -> Result<ExactBRepLinearInterval, ketchup_exact::GeometryError> {
     let direction = template.direction();
@@ -2032,7 +2038,9 @@ fn exact_brep_through_all_interval(
     for x in [bounds.min.x, bounds.max.x] {
         for y in [bounds.min.y, bounds.max.y] {
             for z in [bounds.min.z, bounds.max.z] {
-                let projection = x * direction[0] + y * direction[1] + z * direction[2];
+                let projection = (x - origin_mm[0]) * direction[0]
+                    + (y - origin_mm[1]) * direction[1]
+                    + (z - origin_mm[2]) * direction[2];
                 minimum = minimum.min(projection);
                 maximum = maximum.max(projection);
             }

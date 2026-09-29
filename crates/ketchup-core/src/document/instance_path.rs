@@ -1,6 +1,8 @@
 use super::{LocalGroupId, LocalOccurrenceId, OccurrenceId};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct InstancePath {
     root: OccurrenceId,
     pub(super) steps: Vec<InstancePathStep>,
@@ -43,7 +45,9 @@ impl InstancePath {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum InstancePathStep {
     Group(LocalGroupId),
     Occurrence(LocalOccurrenceId),

@@ -151,6 +151,7 @@ fn arguments(script: &Path, mode: &str) -> Vec<OsString> {
 
 #[test]
 fn assistant_process_completes_bounded_handshake_chat_and_shutdown() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "chat");
     let mut client = AssistantProcessClient::spawn(
@@ -172,6 +173,7 @@ fn assistant_process_completes_bounded_handshake_chat_and_shutdown() {
 
 #[test]
 fn assistant_process_terminates_when_shutdown_is_refused() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "shutdown-error");
     let mut client = AssistantProcessClient::spawn(
@@ -194,6 +196,7 @@ fn assistant_process_terminates_when_shutdown_is_refused() {
 
 #[test]
 fn assistant_process_isolated_launch_uses_explicit_cwd_and_minimal_environment() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let working_directory = temp.path().canonicalize().unwrap();
     let script = write_mock(&temp, "isolated").canonicalize().unwrap();
@@ -249,6 +252,7 @@ fn assistant_process_isolated_launch_uses_explicit_cwd_and_minimal_environment()
 
 #[test]
 fn isolated_launch_keeps_environment_files_until_client_drop() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let working_directory = temp.path().canonicalize().unwrap();
     let script = write_mock(&temp, "isolated").canonicalize().unwrap();
@@ -289,6 +293,7 @@ fn isolated_launch_keeps_environment_files_until_client_drop() {
 
 #[test]
 fn assistant_process_transports_only_bounded_cad_edit_programs() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "cad-edit");
     let mut client = AssistantProcessClient::spawn(
@@ -327,6 +332,7 @@ fn assistant_process_transports_only_bounded_cad_edit_programs() {
 
 #[test]
 fn assistant_process_returns_bounded_exact_api_diagnostics_when_requested() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "diagnostics");
     let mut handshake = public_handshake();
@@ -360,6 +366,7 @@ fn assistant_process_returns_bounded_exact_api_diagnostics_when_requested() {
 
 #[test]
 fn assistant_process_rejects_mismatched_ready_and_kills_the_child() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "bad-ready");
     let error = AssistantProcessClient::spawn(
@@ -375,6 +382,7 @@ fn assistant_process_rejects_mismatched_ready_and_kills_the_child() {
 
 #[test]
 fn assistant_process_surfaces_remote_and_malformed_responses_fail_closed() {
+    let _turn = crate::integration_support::file_turn();
     for (mode, expected) in [("remote-error", "remote"), ("malformed", "protocol")] {
         let temp = TempDir::new().unwrap();
         let script = write_mock(&temp, mode);
@@ -398,6 +406,7 @@ fn assistant_process_surfaces_remote_and_malformed_responses_fail_closed() {
 
 #[test]
 fn assistant_process_rejects_unrepresentable_timeout_before_spawn() {
+    let _turn = crate::integration_support::file_turn();
     let error = AssistantProcessClient::spawn(
         PathBuf::from("assistant-must-not-be-spawned"),
         &[],
@@ -411,6 +420,7 @@ fn assistant_process_rejects_unrepresentable_timeout_before_spawn() {
 
 #[test]
 fn assistant_process_times_out_and_terminates_during_handshake() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "timeout");
     let error = AssistantProcessClient::spawn(
@@ -426,6 +436,7 @@ fn assistant_process_times_out_and_terminates_during_handshake() {
 #[cfg(windows)]
 #[test]
 fn assistant_process_timeout_terminates_sidecar_descendants() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "descendant-timeout");
     let sentinel = temp.path().join("escaped-descendant.txt");
@@ -453,6 +464,7 @@ fn assistant_process_timeout_terminates_sidecar_descendants() {
 #[cfg(windows)]
 #[test]
 fn assistant_process_shutdown_terminates_sidecar_descendants() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "descendant-chat");
     let sentinel = temp.path().join("escaped-after-shutdown.txt");
@@ -483,6 +495,7 @@ fn assistant_process_shutdown_terminates_sidecar_descendants() {
 
 #[test]
 fn assistant_process_times_out_when_the_sidecar_stops_reading_requests() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "no-read");
     let mut client = AssistantProcessClient::spawn(
@@ -501,6 +514,7 @@ fn assistant_process_times_out_when_the_sidecar_stops_reading_requests() {
 
 #[test]
 fn assistant_process_rejects_exit_and_invalid_local_handshake() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "exit");
     let error = AssistantProcessClient::spawn(
@@ -526,6 +540,7 @@ fn assistant_process_rejects_exit_and_invalid_local_handshake() {
 
 #[test]
 fn assistant_process_cancel_is_observed_before_spawned_io_can_complete() {
+    let _turn = crate::integration_support::file_turn();
     let temp = TempDir::new().unwrap();
     let script = write_mock(&temp, "chat-timeout");
     let cancellation = ketchup_scheduler::assistant::AssistantCancellation::default();
@@ -550,6 +565,7 @@ fn assistant_process_cancel_is_observed_before_spawned_io_can_complete() {
 
 #[test]
 fn assistant_module_never_links_document_store_or_command_mutation() {
+    let _turn = crate::integration_support::file_turn();
     let source =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/assistant.rs")).unwrap();
     for forbidden in [

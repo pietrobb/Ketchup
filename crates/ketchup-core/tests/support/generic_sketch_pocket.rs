@@ -1,6 +1,7 @@
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
 };
+use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchEntity, SketchEntityId,
     SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
@@ -96,11 +97,15 @@ pub fn feature(id: FeatureId, kind: FeatureKind) -> CanonicalCommand {
 pub fn pocket(profile: FeatureId, depth: f64) -> CanonicalCommand {
     feature(
         POCKET,
-        FeatureKind::Pocket {
-            target: PAD,
-            profile,
-            depth: dimension(depth),
-        },
+        FeatureKind::Pad(PadSpec {
+            profile: PadProfile::Feature(profile),
+            direction: FeatureDirection::AlongNormal,
+            extent: FeatureExtent::Blind(dimension(depth)),
+            operation: PadOperation::Cut {
+                target: PAD,
+                start: CutStart::ProfilePlane,
+            },
+        }),
     )
 }
 
@@ -132,10 +137,13 @@ pub fn base_document(plane: PrincipalPlane, offset: f64) -> DocumentStore {
             feature(
                 PAD,
                 FeatureKind::Pad(PadSpec {
-                    sketch: BASE_SKETCH,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: BASE_SKETCH,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(dimension(20.0)),
+                    operation: PadOperation::NewBody,
                 }),
             ),
         ]))

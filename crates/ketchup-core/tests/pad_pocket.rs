@@ -1,7 +1,7 @@
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    EdgeFinishKind, FeatureEvaluationState, FeatureId, FeatureKind, OccurrenceId,
-    ProposalCommitError, ProposalContext, StableFaceRole, Transform,
+    EdgeFinishKind, EdgeRef, FaceRef, FeatureEvaluationState, FeatureId, FeatureKind, OccurrenceId,
+    ProposalCommitError, ProposalContext, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
@@ -9,11 +9,12 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::{ExactFaceRole, ExactResultRegistry, producer_exact_graph};
 use ketchup_core::persistence;
+use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec,
-    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
-    SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec,
-    WorkplaneSupport, WorkplaneSupportHealth,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchConstraint,
+    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind,
+    SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
 };
 use ketchup_core::state_view::encode_semantic_state;
 use ketchup_core::testing::box_package;
@@ -173,19 +174,22 @@ fn pad_document() -> DocumentStore {
 
 const SKETCH_OFFSET_WORKPLANE: FeatureId = WORKPLANE;
 
-fn pad_operation(document: &DocumentStore) -> PadPocketOperation {
+fn pad_operation(document: &DocumentStore) -> PadSpec {
     let snapshot = document.current();
     let sketch = match snapshot.feature(SKETCH).unwrap().kind() {
         FeatureKind::Sketch(sketch) => sketch,
         _ => unreachable!(),
     };
     let region = sketch.solved_regions().unwrap()[0].id;
-    PadPocketOperation::Pad(PadSpec {
-        sketch: SKETCH,
-        region,
+    PadSpec {
+        profile: PadProfile::SketchRegion {
+            sketch: SKETCH,
+            region,
+        },
         direction: FeatureDirection::AlongNormal,
         extent: FeatureExtent::Blind(Dimension::from_decimal("25").unwrap()),
-    })
+        operation: PadOperation::NewBody,
+    }
 }
 
 #[test]
@@ -216,10 +220,13 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_graph() {
                 definition_id: DEFINITION,
                 name: "Line-arc Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: SKETCH,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: SKETCH,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("12").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -332,13 +339,17 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_graph() {
             id: POCKET,
             definition_id: DEFINITION,
             name: "Mixed-base Pocket".into(),
-            kind: FeatureKind::SketchPocket(PocketSpec {
-                target: PAD,
-                sketch: POCKET_SKETCH,
-                region: pocket_region,
-                support: Box::new(top),
+            kind: FeatureKind::Pad(PadSpec {
+                profile: PadProfile::SketchRegion {
+                    sketch: POCKET_SKETCH,
+                    region: pocket_region,
+                },
                 direction: FeatureDirection::OppositeNormal,
                 extent: FeatureExtent::Blind(Dimension::from_decimal("4").unwrap()),
+                operation: PadOperation::Cut {
+                    target: PAD,
+                    start: CutStart::Support(Box::new(top)),
+                },
             }),
         }]))
         .unwrap();
@@ -376,7 +387,7 @@ fn explicit_workplane_pad_has_shared_proposal_preview_persistence_and_stale_refu
     let operation = pad_operation(&document);
 
     let manual = document
-        .plan_pad_pocket(
+        .plan_pad(
             PAD,
             DEFINITION,
             "Pad",
@@ -385,7 +396,7 @@ fn explicit_workplane_pad_has_shared_proposal_preview_persistence_and_stale_refu
         )
         .unwrap();
     let assistant = document
-        .plan_pad_pocket(
+        .plan_pad(
             PAD,
             DEFINITION,
             "Pad",
@@ -430,7 +441,7 @@ fn explicit_workplane_pad_has_shared_proposal_preview_persistence_and_stale_refu
     let FeatureKind::Pad(spec) = committed.feature(PAD).unwrap().kind() else {
         panic!("expected canonical Pad");
     };
-    assert_eq!(spec.sketch, SKETCH);
+    assert_eq!(spec.profile.feature_id(), SKETCH);
     let committed_digest = committed.canonical_digest();
     let bytes = persistence::save(&committed);
     let reopened = persistence::load(&bytes).unwrap();
@@ -444,7 +455,7 @@ fn explicit_workplane_pad_has_shared_proposal_preview_persistence_and_stale_refu
 
     let mut stale_document = pad_document();
     let stale = stale_document
-        .plan_pad_pocket(
+        .plan_pad(
             PAD,
             DEFINITION,
             "Pad",
@@ -513,10 +524,13 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 definition_id: DEFINITION,
                 name: "Base Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: BASE_SKETCH,
-                    region: base_region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: BASE_SKETCH,
+                        region: base_region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("18").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -580,16 +594,20 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
         ]))
         .unwrap();
     let region = sketch.solved_regions().unwrap()[0].id;
-    let operation = PadPocketOperation::Pocket(PocketSpec {
-        target: BASE_PAD,
-        sketch: POCKET_SKETCH,
-        region,
-        support: Box::new(top.clone()),
+    let operation = PadSpec {
+        profile: PadProfile::SketchRegion {
+            sketch: POCKET_SKETCH,
+            region,
+        },
         direction: FeatureDirection::OppositeNormal,
         extent: FeatureExtent::Blind(Dimension::from_decimal("6").unwrap()),
-    });
+        operation: PadOperation::Cut {
+            target: BASE_PAD,
+            start: CutStart::Support(Box::new(top.clone())),
+        },
+    };
     let proposal = document
-        .plan_pad_pocket(
+        .plan_pad(
             POCKET,
             DEFINITION,
             "Pocket",
@@ -598,7 +616,7 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
         )
         .unwrap();
     let assistant = document
-        .plan_pad_pocket(
+        .plan_pad(
             POCKET,
             DEFINITION,
             "Pocket",
@@ -637,11 +655,11 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
     );
     document.commit_verified_proposal(&proposal).unwrap();
     let committed = document.current();
-    let FeatureKind::SketchPocket(spec) = committed.feature(POCKET).unwrap().kind() else {
+    let FeatureKind::Pad(spec) = committed.feature(POCKET).unwrap().kind() else {
         panic!("expected canonical sketch Pocket");
     };
-    assert_eq!(spec.target, BASE_PAD);
-    assert_eq!(spec.support.as_ref(), &top);
+    assert_eq!(spec.operation.target(), Some(BASE_PAD));
+    assert_eq!(spec.operation.support().unwrap(), &top);
     assert_eq!(spec.extent.blind_distance().unwrap().millimetres(), 6.0);
     let pocket_graph = producer_exact_graph(&committed, DEFINITION, POCKET).unwrap();
     assert_eq!(pocket_graph.producer_feature_id, POCKET.0);
@@ -702,10 +720,9 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 id: SHELL,
                 definition_id: DEFINITION,
                 name: "Topology shell".into(),
-                kind: FeatureKind::TopologyShell {
+                kind: FeatureKind::Shell {
                     target: POCKET,
-                    removed_faces: vec![shell_face.clone()],
-                    profile_faces: Vec::new(),
+                    removed_faces: vec![FaceRef::from(shell_face.clone())],
                     thickness: Dimension::from_decimal("2").unwrap(),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },
@@ -714,10 +731,9 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 id: FINISH,
                 definition_id: DEFINITION,
                 name: "Topology fillet".into(),
-                kind: FeatureKind::TopologyEdgeFinish {
+                kind: FeatureKind::EdgeFinish {
                     target: SHELL,
-                    edges: vec![finish_edge.clone()],
-                    profile_edges: Vec::new(),
+                    edges: vec![EdgeRef::from(finish_edge.clone())],
                     kind: EdgeFinishKind::Fillet,
                     amount: Dimension::from_decimal("1").unwrap(),
                     fillet_radius_stations: Vec::new(),
@@ -729,10 +745,9 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 id: OFFSET,
                 definition_id: DEFINITION,
                 name: "Topology face offset".into(),
-                kind: FeatureKind::TopologyFaceOffset {
+                kind: FeatureKind::FaceOffset {
                     target: FINISH,
-                    face: Some(offset_face.clone()),
-                    profile_face: None,
+                    face: FaceRef::from(offset_face.clone()),
                     distance: Dimension::from_decimal("0.5").unwrap(),
                 },
             },
@@ -821,17 +836,27 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
     assert!(unique_support.has_valid_lineage());
     assert_ne!(unique_support.lineage_digest, top.lineage_digest);
 
-    let FeatureKind::SketchPocket(unique_pocket_spec) =
-        unique.feature(unique_pocket).unwrap().kind()
-    else {
+    let FeatureKind::Pad(unique_pocket_spec) = unique.feature(unique_pocket).unwrap().kind() else {
         panic!("expected remapped sketch pocket");
     };
-    assert_eq!(unique_pocket_spec.target, unique_pad);
-    assert_eq!(unique_pocket_spec.sketch, unique_pocket_sketch);
-    assert_eq!(unique_pocket_spec.support.as_ref(), unique_support.as_ref());
-    assert!(unique_pocket_spec.support.has_valid_lineage());
+    assert_eq!(unique_pocket_spec.operation.target(), Some(unique_pad));
+    assert_eq!(
+        unique_pocket_spec.profile.feature_id(),
+        unique_pocket_sketch
+    );
+    assert_eq!(
+        unique_pocket_spec.operation.support().unwrap(),
+        unique_support.as_ref()
+    );
+    assert!(
+        unique_pocket_spec
+            .operation
+            .support()
+            .unwrap()
+            .has_valid_lineage()
+    );
 
-    let FeatureKind::TopologyShell {
+    let FeatureKind::Shell {
         target,
         removed_faces,
         ..
@@ -840,25 +865,27 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
         panic!("expected remapped topology shell");
     };
     assert_eq!(*target, unique_pocket);
-    assert_eq!(removed_faces[0].definition_id, unique_definition);
-    assert_eq!(removed_faces[0].source_feature_id, unique_pocket);
-    assert_eq!(removed_faces[0].producer_feature_id, unique_pocket);
-    assert!(removed_faces[0].has_valid_lineage());
+    let removed_face = removed_faces[0].topological().unwrap();
+    assert_eq!(removed_face.definition_id, unique_definition);
+    assert_eq!(removed_face.source_feature_id, unique_pocket);
+    assert_eq!(removed_face.producer_feature_id, unique_pocket);
+    assert!(removed_face.has_valid_lineage());
 
-    let FeatureKind::TopologyEdgeFinish { target, edges, .. } =
+    let FeatureKind::EdgeFinish { target, edges, .. } =
         unique.feature(unique_finish).unwrap().kind()
     else {
         panic!("expected remapped topology edge finish");
     };
     assert_eq!(*target, unique_shell);
-    assert_eq!(edges[0].definition_id, unique_definition);
-    assert_eq!(edges[0].source_feature_id, unique_shell);
-    assert_eq!(edges[0].producer_feature_id, unique_shell);
-    assert!(edges[0].has_valid_lineage());
+    let edge = edges[0].topological().unwrap();
+    assert_eq!(edge.definition_id, unique_definition);
+    assert_eq!(edge.source_feature_id, unique_shell);
+    assert_eq!(edge.producer_feature_id, unique_shell);
+    assert!(edge.has_valid_lineage());
 
-    let FeatureKind::TopologyFaceOffset {
+    let FeatureKind::FaceOffset {
         target,
-        face: Some(face),
+        face: FaceRef::Topological(face),
         ..
     } = unique.feature(unique_offset).unwrap().kind()
     else {
@@ -962,10 +989,13 @@ fn offset_workplane_dimension_recomputes_pad_frame_in_one_undoable_step() {
                 definition_id: DEFINITION,
                 name: "Offset Pad".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: OFFSET_SKETCH,
-                    region,
+                    profile: PadProfile::SketchRegion {
+                        sketch: OFFSET_SKETCH,
+                        region,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("10").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -1050,10 +1080,13 @@ fn branched_feature_dag_recomputes_only_the_dirty_closure_and_keeps_unrelated_ex
                 definition_id: DEFINITION,
                 name: "Pad A".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: SKETCH_A,
-                    region: region_a,
+                    profile: PadProfile::SketchRegion {
+                        sketch: SKETCH_A,
+                        region: region_a,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("10").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
             CanonicalCommand::CreateFeature {
@@ -1073,10 +1106,13 @@ fn branched_feature_dag_recomputes_only_the_dirty_closure_and_keeps_unrelated_ex
                 definition_id: DEFINITION,
                 name: "Pad B".into(),
                 kind: FeatureKind::Pad(PadSpec {
-                    sketch: SKETCH_B,
-                    region: region_b,
+                    profile: PadProfile::SketchRegion {
+                        sketch: SKETCH_B,
+                        region: region_b,
+                    },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(Dimension::from_decimal("12").unwrap()),
+                    operation: PadOperation::NewBody,
                 }),
             },
         ]))
@@ -1169,10 +1205,9 @@ fn feature_dependency_cycle_is_rejected_atomically() {
     let revisions = document.revision_count();
     let undo = document.visible_undo_steps();
     let redo = document.visible_redo_steps();
-    let shell = |target| FeatureKind::Shell {
+    let shell = |target| FeatureKind::RigidTransform {
         target,
-        removed_faces: vec![StableFaceRole::new("test.face").unwrap()],
-        thickness: Dimension::from_decimal("1").unwrap(),
+        transform: Transform::identity(),
     };
 
     let error = match document.apply_batch(&CommandBatch::new(vec![
@@ -1207,7 +1242,7 @@ fn feature_dependency_cycle_is_rejected_atomically() {
 fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_graph_resolution() {
     let mut document = pad_document();
     let proposal = document
-        .plan_pad_pocket(
+        .plan_pad(
             PAD,
             DEFINITION,
             "Pad",
@@ -1245,10 +1280,13 @@ fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_
     let mut extent_digests = BTreeSet::new();
     for extent in extents {
         let expected = FeatureKind::Pad(PadSpec {
-            sketch: SKETCH,
-            region,
+            profile: PadProfile::SketchRegion {
+                sketch: SKETCH,
+                region,
+            },
             direction: FeatureDirection::Vector([1.0, 2.0, 3.0]),
             extent,
+            operation: PadOperation::NewBody,
         });
         let mut candidate = persistence::load(&baseline_bytes)
             .unwrap()
@@ -1282,29 +1320,32 @@ fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_
 
     let generalized_pad = FeatureId(13);
     let generalized_spec = PadSpec {
-        sketch: SKETCH,
-        region,
+        profile: PadProfile::SketchRegion {
+            sketch: SKETCH,
+            region,
+        },
         direction: FeatureDirection::Vector([1.0, 2.0, 3.0]),
         extent: FeatureExtent::Bidirectional {
             along: FeatureExtentEnd::Blind(Dimension::from_decimal("8").unwrap()),
             opposite: FeatureExtentEnd::UpToFace(Box::new(top)),
         },
+        operation: PadOperation::NewBody,
     };
     let manual = document
-        .plan_pad_pocket(
+        .plan_pad(
             generalized_pad,
             DEFINITION,
             "Generalized Pad",
-            PadPocketOperation::Pad(generalized_spec.clone()),
+            generalized_spec.clone(),
             ProposalContext::canonical_preview(),
         )
         .unwrap();
     let assistant = document
-        .plan_pad_pocket(
+        .plan_pad(
             generalized_pad,
             DEFINITION,
             "Generalized Pad",
-            PadPocketOperation::Pad(generalized_spec.clone()),
+            generalized_spec.clone(),
             ProposalContext::local_assistant_model(),
         )
         .unwrap();
@@ -1365,10 +1406,10 @@ fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_
         reopened.snapshot().feature(generalized_pad).unwrap().kind(),
         &FeatureKind::Pad(generalized_spec)
     );
-    let state = encode_semantic_state(&reopened.snapshot()).complete_v1();
-    assert!(state.contains("feature.13.extent.mode=bidirectional"));
-    assert!(state.contains("feature.13.extent.along.mode=blind"));
-    assert!(state.contains("feature.13.extent.opposite.mode=up_to_face"));
+    let state = encode_semantic_state(&reopened.snapshot()).complete();
+    let extent = "features.13.kind.Pad.extent.Bidirectional";
+    assert!(state.contains(&format!("{extent}.along.Blind.millimetres=")));
+    assert!(state.contains(&format!("{extent}.opposite.UpToFace.")));
 
     assert_eq!(document.undo().unwrap().canonical_digest(), blind_digest);
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
@@ -1383,10 +1424,13 @@ fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_
                     definition_id: DEFINITION,
                     name: "Invalid Pad".into(),
                     kind: FeatureKind::Pad(PadSpec {
-                        sketch: SKETCH,
-                        region,
+                        profile: PadProfile::SketchRegion {
+                            sketch: SKETCH,
+                            region
+                        },
                         direction: FeatureDirection::Vector([0.0, 0.0, 0.0]),
                         extent: FeatureExtent::ThroughAll,
+                        operation: PadOperation::NewBody,
                     }),
                 },
             ]))

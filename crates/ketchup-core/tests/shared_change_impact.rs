@@ -4,8 +4,7 @@ use ketchup_core::assembly::{
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CollectionId, CommandBatch,
     DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, FeatureParameterTarget,
-    GroupId, OccurrenceId, ParameterValueType, ProposalCommitError, ProposalPrincipal,
-    StableFaceRole, Transform,
+    GroupId, OccurrenceId, ParameterValueType, ProposalCommitError, ProposalPrincipal, Transform,
 };
 use ketchup_core::drawing::{
     DrawingMargins, DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale,
@@ -191,18 +190,13 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
             id: PROFILE,
             definition_id: DEFINITION,
             name: "Profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: EXTRUSION,
             definition_id: DEFINITION,
             name: "Extrusion".into(),
-            kind: FeatureKind::Extrusion {
-                profile: PROFILE,
-                height: Dimension::from_decimal("10").unwrap(),
-            },
+            kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
         },
     ];
     commands.extend(occurrences);
@@ -929,18 +923,13 @@ fn cross_body_boolean_tool_edit_recomputes_terminal_exact_body_and_drawing_atomi
                     id: PROFILE,
                     definition_id: DEFINITION,
                     name: "Base profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]],
-                    },
+                    kind: FeatureKind::polygon(&[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: EXTRUSION,
                     definition_id: DEFINITION,
                     name: "Base extrusion".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: PROFILE,
-                        height: Dimension::from_decimal("5").unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("5").unwrap()),
                 },
                 CanonicalCommand::CreateBody {
                     definition_id: DEFINITION,
@@ -956,18 +945,16 @@ fn cross_body_boolean_tool_edit_recomputes_terminal_exact_body_and_drawing_atomi
                     id: TOOL_PROFILE,
                     definition_id: DEFINITION,
                     name: "Tool profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[6.0, 0.0], [12.0, 0.0], [12.0, 8.0], [6.0, 8.0]],
-                    },
+                    kind: FeatureKind::polygon(&[[6.0, 0.0], [12.0, 0.0], [12.0, 8.0], [6.0, 8.0]]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: TOOL_EXTRUSION,
                     definition_id: DEFINITION,
                     name: "Tool extrusion".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: TOOL_PROFILE,
-                        height: Dimension::from_decimal("5").unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(
+                        TOOL_PROFILE,
+                        Dimension::from_decimal("5").unwrap(),
+                    ),
                 },
                 CanonicalCommand::SetActiveBody {
                     definition_id: DEFINITION,
@@ -1578,19 +1565,17 @@ fn suffix_suppress_resume_and_invalid_dependency_inputs_are_bounded() {
                 id: CUT_PROFILE,
                 definition_id: DEFINITION,
                 name: "Cut profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]],
-                },
+                kind: FeatureKind::polygon(&[[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: POCKET,
                 definition_id: DEFINITION,
                 name: "Pocket".into(),
-                kind: FeatureKind::Pocket {
-                    target: EXTRUSION,
-                    profile: CUT_PROFILE,
-                    depth: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    EXTRUSION,
+                    CUT_PROFILE,
+                    Dimension::from_decimal("2").unwrap(),
+                ),
             },
         ]))
         .unwrap();
@@ -1695,10 +1680,9 @@ fn suffix_suppress_resume_and_invalid_dependency_inputs_are_bounded() {
     const SECOND_SHELL: FeatureId = FeatureId(301);
     let mut cyclic = DocumentStore::new();
     let cyclic_before = stamp(&cyclic);
-    let shell = |target| FeatureKind::Shell {
+    let shell = |target| FeatureKind::RigidTransform {
         target,
-        removed_faces: vec![StableFaceRole::new("test.face").unwrap()],
-        thickness: Dimension::from_decimal("1").unwrap(),
+        transform: Transform::identity(),
     };
     let cycle_error = match cyclic.apply_batch(&CommandBatch::new(vec![
         CanonicalCommand::CreateDefinition {

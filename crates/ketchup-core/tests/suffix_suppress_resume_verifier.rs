@@ -24,9 +24,7 @@ const TOOL_PROFILE: FeatureId = FeatureId(20);
 const TOOL_EXTRUSION: FeatureId = FeatureId(21);
 
 fn profile(min: f64, max: f64) -> FeatureKind {
-    FeatureKind::Profile {
-        points_mm: vec![[min, min], [max, min], [max, max], [min, max]],
-    }
+    FeatureKind::polygon(&[[min, min], [max, min], [max, max], [min, max]])
 }
 
 fn seed_history() -> DocumentStore {
@@ -47,10 +45,7 @@ fn seed_history() -> DocumentStore {
                 id: BASE_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Base extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: BASE_PROFILE,
-                    height: Dimension::from_decimal("8").unwrap(),
-                },
+                kind: FeatureKind::extrusion(BASE_PROFILE, Dimension::from_decimal("8").unwrap()),
             },
             CanonicalCommand::CreateFeature {
                 id: CUT_PROFILE,
@@ -62,11 +57,11 @@ fn seed_history() -> DocumentStore {
                 id: POCKET,
                 definition_id: DEFINITION,
                 name: "Pocket".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: BASE_EXTRUSION,
-                    profile: CUT_PROFILE,
-                    depth: Dimension::from_decimal("3").unwrap(),
-                },
+                kind: FeatureKind::pocket(
+                    BASE_EXTRUSION,
+                    CUT_PROFILE,
+                    Dimension::from_decimal("3").unwrap(),
+                ),
             },
             CanonicalCommand::CreateBody {
                 definition_id: DEFINITION,
@@ -88,10 +83,7 @@ fn seed_history() -> DocumentStore {
                 id: TOOL_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Tool extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: TOOL_PROFILE,
-                    height: Dimension::from_decimal("2").unwrap(),
-                },
+                kind: FeatureKind::extrusion(TOOL_PROFILE, Dimension::from_decimal("2").unwrap()),
             },
             CanonicalCommand::SetActiveBody {
                 definition_id: DEFINITION,

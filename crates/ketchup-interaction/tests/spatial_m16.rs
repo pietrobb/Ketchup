@@ -34,18 +34,13 @@ fn box_document() -> DocumentStore {
             id: PROFILE,
             definition_id: DEFINITION,
             name: "Profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: BODY,
             definition_id: DEFINITION,
             name: "Extrusion".to_owned(),
-            kind: FeatureKind::Extrusion {
-                profile: PROFILE,
-                height: Dimension::from_decimal("10").unwrap(),
-            },
+            kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
         },
     ];
     commands.extend(

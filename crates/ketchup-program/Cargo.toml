@@ -3,6 +3,7 @@ name = "ketchup-program"
 description = "Rule programs (Starlark) that generate, validate and list Ketchup parts"
 version.workspace = true
 edition.workspace = true
+autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -20,3 +21,7 @@ allocative = "=0.3.4"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

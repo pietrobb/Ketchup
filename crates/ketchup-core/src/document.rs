@@ -55,10 +55,10 @@ use crate::mechanical_coupling::{
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sheet_metal::{SheetMetalError, SheetMetalSpec};
 use crate::sketch::{
-    FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
-    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError,
-    SketchOffsetSide, SketchPointKind, SketchSpec, SolvedSketchRegionProfile, WorkplaneFrame,
-    WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile, PadSpec,
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
+    SketchError, SketchOffsetSide, SketchPointKind, SketchSpec, SolvedSketchRegionProfile,
+    WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -81,7 +81,19 @@ pub const MAX_SOLID_TOOL_RESULT_FEATURES: usize =
 
 macro_rules! typed_id {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(
+            Clone,
+            Copy,
+            Debug,
+            PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
+            Hash,
+            serde::Serialize,
+            serde::Deserialize,
+        )]
+        #[serde(transparent)]
         pub struct $name(pub u64);
     };
 }
@@ -100,30 +112,36 @@ typed_id!(NodeId);
 typed_id!(LocalOccurrenceId);
 typed_id!(LocalGroupId);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct LocalOccurrenceKey {
     pub definition_id: DefinitionId,
     pub local_id: LocalOccurrenceId,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct LocalGroupKey {
     pub definition_id: DefinitionId,
     pub local_id: LocalGroupId,
 }
 
+pub(crate) mod digest_v3;
 mod instance_path;
 mod stable_digest;
+pub(crate) use stable_digest::{derived, identity_form};
 
 pub use instance_path::{InstancePath, InstancePathStep};
 use stable_digest::{StableDigest, digest_feature, digest_snapshot};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnitSystem {
     Millimetres,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Transform {
     matrix: [f64; 16],
 }
@@ -223,26 +241,26 @@ impl Default for Transform {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum EdgeFinishKind {
     Fillet,
     Chamfer,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ChamferMode {
     Symmetric,
     TwoDistance { second_distance: Dimension },
     DistanceAngle { angle_degrees: f64 },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChamferEdgeSide {
     pub edge: TopologicalElementRef,
     pub side_face: TopologicalElementRef,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProfileFaceReference {
     Start,
     End,
@@ -250,34 +268,118 @@ pub enum ProfileFaceReference {
     NamedResult(String),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProfileEdgeReference {
     pub first: ProfileFaceReference,
     pub second: ProfileFaceReference,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// A face picked by a feature: a recorded topological element of the target
+/// body, or a face named by the profile that produced it.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum FaceRef {
+    Topological(Box<TopologicalElementRef>),
+    Named(ProfileFaceReference),
+}
+
+/// An edge picked by a feature, referenced the same two ways as [`FaceRef`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum EdgeRef {
+    Topological(Box<TopologicalElementRef>),
+    Named(ProfileEdgeReference),
+}
+
+impl From<TopologicalElementRef> for FaceRef {
+    fn from(reference: TopologicalElementRef) -> Self {
+        Self::Topological(Box::new(reference))
+    }
+}
+
+impl From<TopologicalElementRef> for EdgeRef {
+    fn from(reference: TopologicalElementRef) -> Self {
+        Self::Topological(Box::new(reference))
+    }
+}
+
+impl ProfileFaceReference {
+    /// A segment face names its sketch entity and source; a named result is
+    /// non-empty.
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::Start | Self::End => true,
+            Self::Segment {
+                entity_id,
+                source_name,
+            } => *entity_id != 0 && !source_name.is_empty(),
+            Self::NamedResult(name) => !name.is_empty(),
+        }
+    }
+}
+
+impl FaceRef {
+    /// The recorded references of `faces`, or `None` when any face is named.
+    pub fn all_topological(faces: &[Self]) -> Option<Vec<TopologicalElementRef>> {
+        faces
+            .iter()
+            .map(|face| face.topological().cloned())
+            .collect()
+    }
+
+    /// The named references of `faces`, or `None` when any face is recorded.
+    pub fn all_named(faces: &[Self]) -> Option<Vec<ProfileFaceReference>> {
+        faces.iter().map(|face| face.named().cloned()).collect()
+    }
+
+    pub fn topological(&self) -> Option<&TopologicalElementRef> {
+        match self {
+            Self::Topological(reference) => Some(reference.as_ref()),
+            Self::Named(_) => None,
+        }
+    }
+
+    pub fn named(&self) -> Option<&ProfileFaceReference> {
+        match self {
+            Self::Named(reference) => Some(reference),
+            Self::Topological(_) => None,
+        }
+    }
+}
+
+impl EdgeRef {
+    /// The recorded references of `edges`, or `None` when any edge is named.
+    pub fn all_topological(edges: &[Self]) -> Option<Vec<TopologicalElementRef>> {
+        edges
+            .iter()
+            .map(|edge| edge.topological().cloned())
+            .collect()
+    }
+
+    /// The named references of `edges`, or `None` when any edge is recorded.
+    pub fn all_named(edges: &[Self]) -> Option<Vec<ProfileEdgeReference>> {
+        edges.iter().map(|edge| edge.named().cloned()).collect()
+    }
+
+    pub fn topological(&self) -> Option<&TopologicalElementRef> {
+        match self {
+            Self::Topological(reference) => Some(reference.as_ref()),
+            Self::Named(_) => None,
+        }
+    }
+
+    pub fn named(&self) -> Option<&ProfileEdgeReference> {
+        match self {
+            Self::Named(reference) => Some(reference),
+            Self::Topological(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ShellDirection {
     #[default]
     Inward,
     Outward,
     Symmetric,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct StableFaceRole(String);
-
-impl StableFaceRole {
-    pub fn new(role: impl Into<String>) -> Result<Self, CanonicalError> {
-        let role = role.into();
-        validate_stable_subshape_role(&role)?;
-        Ok(Self(role))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -298,7 +400,9 @@ impl StableEdgeRole {
 
 pub const MAX_PARAMETER_PATH_BYTES: usize = 256;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct ParameterPath(String);
 
 impl ParameterPath {
@@ -346,7 +450,9 @@ impl fmt::Display for ParameterPathError {
 
 impl std::error::Error for ParameterPathError {}
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum ParameterValueType {
     Length,
     Angle,
@@ -381,7 +487,7 @@ impl ParameterDescriptor {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct FeatureParameterTarget {
     pub feature_id: FeatureId,
     pub path: ParameterPath,
@@ -402,7 +508,7 @@ impl FeatureParameterTarget {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FeatureParameterBinding {
     pub target: FeatureParameterTarget,
     pub derived_from: DerivedIdentity,
@@ -449,7 +555,7 @@ impl EvaluatorParameterEdit {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum FeatureParameterRecomputeScope {
     All,
     AffectedBy(BTreeSet<NodeId>),
@@ -462,7 +568,7 @@ impl FeatureParameterRecomputeScope {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FeatureParameterProvenance {
     pub identity: EvaluationIdentity,
     pub input_digest: String,
@@ -495,7 +601,7 @@ pub struct FeatureParameterFreshnessAudit {
     pub freshness: FeatureParameterFreshness,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BooleanOperation {
     Cut,
     Union,
@@ -508,12 +614,12 @@ pub const IMPORTED_EXACT_BODY_SCHEMA_V1: &str = "ketchup.imported-exact-body.v1"
 pub const IMPORTED_EXACT_BODY_SCHEMA_V2: &str = "ketchup.imported-exact-body.v2";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V3: &str = "ketchup.imported-exact-body.v3";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExactReferenceConversionConsequence {
     Lost,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExactToMeshConversion {
     pub source_document_id: DocumentId,
     pub source_revision: u64,
@@ -531,7 +637,7 @@ pub struct ExactToMeshConversion {
     pub exact_reference_consequence: ExactReferenceConversionConsequence,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MeshAuthority {
     Authored { provenance: String },
     ExactConversion(ExactToMeshConversion),
@@ -540,7 +646,7 @@ pub enum MeshAuthority {
     ImportedGlb { import_id: ImportId },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImportedExactBodySpec {
     pub schema: String,
     pub import_id: ImportId,
@@ -558,7 +664,7 @@ pub struct ImportedExactBodySpec {
     pub tolerance: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MeshBodySpec {
     pub schema: String,
     pub vertices_mm: Vec<[f64; 3]>,
@@ -591,7 +697,7 @@ impl MeshBodySpec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProfileSegment {
     Line {
         start_mm: [f64; 2],
@@ -609,29 +715,125 @@ pub enum ProfileSegment {
         control_2_mm: [f64; 2],
         end_mm: [f64; 2],
     },
+    /// A smooth curve through `points_mm`, from the first point to the last. A spline
+    /// that ends where it starts is smooth through that point too.
+    Spline { points_mm: Vec<[f64; 2]> },
 }
+
+/// Stands for the end of a spline without points; it equals no point, so the
+/// profile holding it is invalid.
+const MISSING_POINT: [f64; 2] = [f64::NAN; 2];
 
 impl ProfileSegment {
     #[must_use]
-    pub const fn start_mm(&self) -> [f64; 2] {
+    pub fn start_mm(&self) -> [f64; 2] {
         match self {
             Self::Line { start_mm, .. }
             | Self::CircularArc { start_mm, .. }
             | Self::CubicBezier { start_mm, .. } => *start_mm,
+            Self::Spline { points_mm } => points_mm.first().copied().unwrap_or(MISSING_POINT),
         }
     }
 
     #[must_use]
-    pub const fn end_mm(&self) -> [f64; 2] {
+    pub fn end_mm(&self) -> [f64; 2] {
         match self {
             Self::Line { end_mm, .. }
             | Self::CircularArc { end_mm, .. }
             | Self::CubicBezier { end_mm, .. } => *end_mm,
+            Self::Spline { points_mm } => points_mm.last().copied().unwrap_or(MISSING_POINT),
+        }
+    }
+
+    fn start_mut(&mut self) -> Option<&mut [f64; 2]> {
+        match self {
+            Self::Line { start_mm, .. }
+            | Self::CircularArc { start_mm, .. }
+            | Self::CubicBezier { start_mm, .. } => Some(start_mm),
+            Self::Spline { points_mm } => points_mm.first_mut(),
+        }
+    }
+
+    fn end_mut(&mut self) -> Option<&mut [f64; 2]> {
+        match self {
+            Self::Line { end_mm, .. }
+            | Self::CircularArc { end_mm, .. }
+            | Self::CubicBezier { end_mm, .. } => Some(end_mm),
+            Self::Spline { points_mm } => points_mm.last_mut(),
+        }
+    }
+
+    /// Every point that places the segment, in order.
+    #[must_use]
+    pub fn defining_points_mm(&self) -> Vec<[f64; 2]> {
+        match self {
+            Self::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
+            Self::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => vec![*start_mm, *end_mm, *center_mm],
+            Self::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
+            Self::Spline { points_mm } => points_mm.clone(),
+        }
+    }
+
+    fn defining_points_mut(&mut self) -> Vec<&mut [f64; 2]> {
+        match self {
+            Self::Line { start_mm, end_mm } => vec![start_mm, end_mm],
+            Self::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => vec![start_mm, end_mm, center_mm],
+            Self::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => vec![start_mm, control_1_mm, control_2_mm, end_mm],
+            Self::Spline { points_mm } => points_mm.iter_mut().collect(),
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// The closing lines of a polygon through `points_mm`.
+#[must_use]
+pub fn polygon_segments(points_mm: &[[f64; 2]]) -> Vec<ProfileSegment> {
+    points_mm
+        .iter()
+        .zip(points_mm.iter().cycle().skip(1))
+        .map(|(start, end)| ProfileSegment::Line {
+            start_mm: *start,
+            end_mm: *end,
+        })
+        .collect()
+}
+
+/// The corners of a closed chain of straight lines, or `None` when a segment is curved
+/// or the chain is not connected end to start.
+#[must_use]
+pub fn polygon_points(segments: &[ProfileSegment]) -> Option<Vec<[f64; 2]>> {
+    segments
+        .iter()
+        .zip(segments.iter().cycle().skip(1))
+        .map(|(segment, next)| match segment {
+            ProfileSegment::Line { start_mm, end_mm } if *end_mm == next.start_mm() => {
+                Some(*start_mm)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SpatialPathSegment {
     Line {
         start_mm: [f64; 3],
@@ -672,26 +874,26 @@ impl SpatialPathSegment {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LoftContinuity {
     Position,
     Tangent,
     Curvature,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LoftSection {
     pub profile: FeatureId,
     pub elevation_mm: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FilletRadiusStation {
     pub position: f64,
     pub radius: Dimension,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SurfaceBodySpec {
     Planar {
         profile: FeatureId,
@@ -703,32 +905,32 @@ pub enum SurfaceBodySpec {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BodyKind {
     Solid,
     Surface,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WeldmentMemberSpec {
     pub profile: FeatureId,
     pub path: FeatureId,
     pub orientation_degrees: f64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WeldmentJointPolicy {
     Butt,
     Miter,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WeldmentJointPrimary {
     First,
     Second,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WeldmentJointSpec {
     pub first_member: FeatureId,
     pub second_member: FeatureId,
@@ -736,14 +938,11 @@ pub struct WeldmentJointSpec {
     pub primary: WeldmentJointPrimary,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FeatureKind {
     Workplane(WorkplaneSpec),
     Sketch(SketchSpec),
     Profile {
-        points_mm: Vec<[f64; 2]>,
-    },
-    SegmentProfile {
         segments: Vec<ProfileSegment>,
         closed: bool,
     },
@@ -762,15 +961,7 @@ pub enum FeatureKind {
         normal: [f64; 3],
         x_direction: [f64; 3],
     },
-    SplineProfile {
-        control_points_mm: Vec<[f64; 2]>,
-    },
-    Extrusion {
-        profile: FeatureId,
-        height: Dimension,
-    },
     Pad(PadSpec),
-    SketchPocket(PocketSpec),
     Revolve {
         profile: FeatureId,
         axis_start_mm: [f64; 2],
@@ -779,41 +970,24 @@ pub enum FeatureKind {
     },
     Shell {
         target: FeatureId,
-        removed_faces: Vec<StableFaceRole>,
-        thickness: Dimension,
-    },
-    TopologyShell {
-        target: FeatureId,
-        removed_faces: Vec<TopologicalElementRef>,
-        /// Program-named faces to open, instead of `removed_faces`.
-        profile_faces: Vec<ProfileFaceReference>,
+        /// Faces left open; none makes a closed hollow body.
+        removed_faces: Vec<FaceRef>,
         thickness: Dimension,
         direction: ShellDirection,
     },
-    TopologyEdgeFinish {
+    EdgeFinish {
         target: FeatureId,
-        edges: Vec<TopologicalElementRef>,
-        profile_edges: Vec<ProfileEdgeReference>,
+        edges: Vec<EdgeRef>,
         kind: EdgeFinishKind,
         amount: Dimension,
         fillet_radius_stations: Vec<FilletRadiusStation>,
         chamfer_mode: ChamferMode,
         chamfer_edge_sides: Vec<ChamferEdgeSide>,
     },
-    TopologyFaceOffset {
+    FaceOffset {
         target: FeatureId,
-        face: Option<TopologicalElementRef>,
-        profile_face: Option<ProfileFaceReference>,
+        face: FaceRef,
         distance: Dimension,
-    },
-    ThroughCut {
-        target: FeatureId,
-        profile: FeatureId,
-    },
-    Pocket {
-        target: FeatureId,
-        profile: FeatureId,
-        depth: Dimension,
     },
     Boolean {
         operation: BooleanOperation,
@@ -864,6 +1038,131 @@ pub enum FeatureKind {
 }
 
 impl FeatureKind {
+    /// The target body and the recorded faces or edges a feature picks on it;
+    /// `None` for features that pick no topology.
+    pub fn topological_picks(&self) -> Option<(FeatureId, Vec<&TopologicalElementRef>)> {
+        match self {
+            Self::Shell {
+                target,
+                removed_faces,
+                ..
+            } => Some((
+                *target,
+                removed_faces
+                    .iter()
+                    .filter_map(FaceRef::topological)
+                    .collect(),
+            )),
+            Self::EdgeFinish { target, edges, .. } => Some((
+                *target,
+                edges.iter().filter_map(EdgeRef::topological).collect(),
+            )),
+            Self::FaceOffset { target, face, .. } => {
+                Some((*target, face.topological().into_iter().collect()))
+            }
+            _ => None,
+        }
+    }
+
+    /// A closed profile of straight lines through `points_mm` in order.
+    #[must_use]
+    pub fn polygon(points_mm: &[[f64; 2]]) -> Self {
+        Self::Profile {
+            segments: polygon_segments(points_mm),
+            closed: true,
+        }
+    }
+
+    /// The corners of a closed profile made only of straight lines, in boundary order.
+    #[must_use]
+    pub fn polygon_points(&self) -> Option<Vec<[f64; 2]>> {
+        match self {
+            Self::Profile {
+                segments,
+                closed: true,
+            } => polygon_points(segments),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a rectangle with sides along the axes, starting at its minimum
+    /// corner and running counter-clockwise: the profile whose prism is its own box.
+    #[must_use]
+    pub fn is_axis_aligned_rectangle(&self) -> bool {
+        self.polygon_points()
+            .is_some_and(|points| is_axis_aligned_rectangle(&points))
+    }
+
+    /// A closed profile that is one smooth curve through `points_mm` and back to the
+    /// first point.
+    #[must_use]
+    pub fn closed_spline(points_mm: &[[f64; 2]]) -> Self {
+        Self::Profile {
+            segments: vec![ProfileSegment::Spline {
+                points_mm: points_mm.iter().chain(points_mm.first()).copied().collect(),
+            }],
+            closed: true,
+        }
+    }
+
+    /// The points of a closed profile that is one spline, without the repeated closing
+    /// point.
+    #[must_use]
+    pub fn closed_spline_points(&self) -> Option<&[[f64; 2]]> {
+        match self {
+            Self::Profile {
+                segments,
+                closed: true,
+            } => match segments.as_slice() {
+                [ProfileSegment::Spline { points_mm }] => {
+                    points_mm.split_last().map(|(_, rest)| rest)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A new body swept `height` along the normal of a profile feature.
+    #[must_use]
+    pub fn extrusion(profile: FeatureId, height: Dimension) -> Self {
+        Self::Pad(PadSpec {
+            profile: PadProfile::Feature(profile),
+            direction: FeatureDirection::AlongNormal,
+            extent: FeatureExtent::Blind(height),
+            operation: PadOperation::NewBody,
+        })
+    }
+
+    /// A blind cut `depth` into `target`, opened on the target face the
+    /// profile normal points out of.
+    #[must_use]
+    pub fn pocket(target: FeatureId, profile: FeatureId, depth: Dimension) -> Self {
+        Self::Pad(PadSpec {
+            profile: PadProfile::Feature(profile),
+            direction: FeatureDirection::AlongNormal,
+            extent: FeatureExtent::Blind(depth),
+            operation: PadOperation::Cut {
+                target,
+                start: CutStart::TargetFace,
+            },
+        })
+    }
+
+    /// A cut through the whole `target` along the profile normal.
+    #[must_use]
+    pub fn through_cut(target: FeatureId, profile: FeatureId) -> Self {
+        Self::Pad(PadSpec {
+            profile: PadProfile::Feature(profile),
+            direction: FeatureDirection::AlongNormal,
+            extent: FeatureExtent::ThroughAll,
+            operation: PadOperation::Cut {
+                target,
+                start: CutStart::ProfilePlane,
+            },
+        })
+    }
+
     #[must_use]
     pub fn parameter_descriptors(&self) -> Vec<ParameterDescriptor> {
         let mut descriptors = Vec::new();
@@ -993,8 +1292,11 @@ impl FeatureKind {
                     }
                 }
             }
-            Self::Profile { points_mm } => {
-                if is_axis_aligned_rectangle(points_mm) {
+            Self::Profile { segments, closed } => {
+                if self
+                    .polygon_points()
+                    .is_some_and(|points| is_axis_aligned_rectangle(&points))
+                {
                     push_parameter_descriptor(
                         &mut descriptors,
                         "bounds.width",
@@ -1006,19 +1308,19 @@ impl FeatureKind {
                         ParameterValueType::Length,
                     );
                 }
-                for (index, _) in points_mm.iter().enumerate() {
-                    for axis in ["x", "y"] {
-                        push_parameter_descriptor(
-                            &mut descriptors,
-                            format!("points.{index}.{axis}"),
-                            ParameterValueType::Length,
-                        );
-                    }
-                }
-            }
-            Self::SegmentProfile { segments, .. } => {
                 for (index, segment) in segments.iter().enumerate() {
-                    for point in ["start", "end"] {
+                    // A vertex shared with the next segment is that segment's start.
+                    let next = segments.get(index + 1).or(closed
+                        .then(|| &segments[0])
+                        .filter(|_| index + 1 == segments.len()));
+                    let end_is_shared =
+                        next.is_some_and(|next| next.start_mm() == segment.end_mm());
+                    let ends = if end_is_shared {
+                        &["start"][..]
+                    } else {
+                        &["start", "end"][..]
+                    };
+                    for point in ends {
                         for axis in ["x", "y"] {
                             push_parameter_descriptor(
                                 &mut descriptors,
@@ -1027,35 +1329,27 @@ impl FeatureKind {
                             );
                         }
                     }
-                    if matches!(segment, ProfileSegment::CircularArc { .. }) {
+                    let inner_points = match segment {
+                        ProfileSegment::CircularArc { .. } => vec!["center".to_owned()],
+                        ProfileSegment::Spline { points_mm } => (1..points_mm.len().max(1) - 1)
+                            .map(|point| format!("points.{point}"))
+                            .collect(),
+                        ProfileSegment::Line { .. } | ProfileSegment::CubicBezier { .. } => {
+                            Vec::new()
+                        }
+                    };
+                    for point in inner_points {
                         for axis in ["x", "y"] {
                             push_parameter_descriptor(
                                 &mut descriptors,
-                                format!("segments.{index}.center.{axis}"),
+                                format!("segments.{index}.{point}.{axis}"),
                                 ParameterValueType::Length,
                             );
                         }
                     }
                 }
             }
-            Self::SplineProfile { control_points_mm } => {
-                for (index, _) in control_points_mm.iter().enumerate() {
-                    for axis in ["x", "y"] {
-                        push_parameter_descriptor(
-                            &mut descriptors,
-                            format!("control_points.{index}.{axis}"),
-                            ParameterValueType::Length,
-                        );
-                    }
-                }
-            }
-            Self::Extrusion { .. } => {
-                push_parameter_descriptor(&mut descriptors, "height", ParameterValueType::Length)
-            }
             Self::Pad(spec) => describe_feature_extent(&mut descriptors, "extent", &spec.extent),
-            Self::SketchPocket(spec) => {
-                describe_feature_extent(&mut descriptors, "extent", &spec.extent);
-            }
             Self::Revolve { .. } => {
                 for point in ["axis_start", "axis_end"] {
                     for axis in ["x", "y"] {
@@ -1068,10 +1362,10 @@ impl FeatureKind {
                 }
                 push_parameter_descriptor(&mut descriptors, "angle", ParameterValueType::Angle);
             }
-            Self::Shell { .. } | Self::TopologyShell { .. } | Self::SurfaceThicken { .. } => {
+            Self::Shell { .. } | Self::SurfaceThicken { .. } => {
                 push_parameter_descriptor(&mut descriptors, "thickness", ParameterValueType::Length)
             }
-            Self::TopologyEdgeFinish {
+            Self::EdgeFinish {
                 fillet_radius_stations,
                 chamfer_mode,
                 ..
@@ -1098,13 +1392,8 @@ impl FeatureKind {
                     );
                 }
             }
-            Self::TopologyFaceOffset { .. }
-            | Self::PlanarOffset { .. }
-            | Self::SurfaceExtend { .. } => {
+            Self::FaceOffset { .. } | Self::PlanarOffset { .. } | Self::SurfaceExtend { .. } => {
                 push_parameter_descriptor(&mut descriptors, "distance", ParameterValueType::Length);
-            }
-            Self::Pocket { .. } => {
-                push_parameter_descriptor(&mut descriptors, "depth", ParameterValueType::Length)
             }
             Self::SurfaceKnit { .. } => {
                 push_parameter_descriptor(&mut descriptors, "tolerance", ParameterValueType::Length)
@@ -1155,8 +1444,7 @@ impl FeatureKind {
                     );
                 }
             }
-            Self::ThroughCut { .. }
-            | Self::Boolean { .. }
+            Self::Boolean { .. }
             | Self::Sweep { .. }
             | Self::SpatialPath { .. }
             | Self::ConstructionPoint { .. }
@@ -1203,29 +1491,26 @@ impl FeatureKind {
                 )
                 .collect(),
             Self::Profile { .. }
-            | Self::SegmentProfile { .. }
             | Self::SheetMetal(_)
             | Self::SpatialPath { .. }
             | Self::ConstructionPoint { .. }
             | Self::ConstructionAxis { .. }
             | Self::ConstructionPlane { .. }
-            | Self::SplineProfile { .. }
             | Self::ImportedExactBody(_)
             | Self::MeshBody(_) => BTreeSet::new(),
             Self::RigidTransform { target, .. } => [*target].into_iter().collect(),
-            Self::Extrusion { profile, .. }
-            | Self::Revolve { profile, .. }
-            | Self::PlanarOffset { profile, .. } => [*profile].into_iter().collect(),
-            Self::Pad(spec) => [spec.sketch].into_iter().collect(),
-            Self::SketchPocket(spec) => [spec.target, spec.sketch].into_iter().collect(),
+            Self::Revolve { profile, .. } | Self::PlanarOffset { profile, .. } => {
+                [*profile].into_iter().collect()
+            }
+            Self::Pad(spec) => spec
+                .operation
+                .target()
+                .into_iter()
+                .chain([spec.profile.feature_id()])
+                .collect(),
             Self::Shell { target, .. }
-            | Self::TopologyShell { target, .. }
-            | Self::TopologyEdgeFinish { target, .. }
-            | Self::TopologyFaceOffset { target, .. } => [*target].into_iter().collect(),
-            Self::ThroughCut { target, profile }
-            | Self::Pocket {
-                target, profile, ..
-            } => [*target, *profile].into_iter().collect(),
+            | Self::EdgeFinish { target, .. }
+            | Self::FaceOffset { target, .. } => [*target].into_iter().collect(),
             Self::Boolean { target, tool, .. } => [*target, *tool].into_iter().collect(),
             Self::Sweep { profile, path } => [*profile, *path].into_iter().collect(),
             Self::WeldmentMember(spec) => [spec.profile, spec.path].into_iter().collect(),
@@ -1257,10 +1542,7 @@ impl FeatureKind {
     pub fn authoritative_dependencies(&self) -> BTreeSet<FeatureId> {
         let mut dependencies = self.dependencies();
         let references = match self {
-            Self::Pad(spec) => spec.extent.references(),
-            Self::SketchPocket(spec) => std::iter::once(spec.support.as_ref())
-                .chain(spec.extent.references())
-                .collect(),
+            Self::Pad(spec) => spec.references(),
             _ => Vec::new(),
         };
         for reference in references {
@@ -1283,16 +1565,11 @@ impl FeatureKind {
                 BodyKind::Surface
             }),
             Self::SurfaceThicken { .. } => Some(BodyKind::Solid),
-            Self::Extrusion { .. }
-            | Self::Pad(_)
-            | Self::SketchPocket(_)
+            Self::Pad(_)
             | Self::Revolve { .. }
             | Self::Shell { .. }
-            | Self::TopologyShell { .. }
-            | Self::TopologyEdgeFinish { .. }
-            | Self::TopologyFaceOffset { .. }
-            | Self::ThroughCut { .. }
-            | Self::Pocket { .. }
+            | Self::EdgeFinish { .. }
+            | Self::FaceOffset { .. }
             | Self::Boolean { .. }
             | Self::Sweep { .. }
             | Self::WeldmentMember(_)
@@ -1368,7 +1645,7 @@ fn describe_feature_extent_end(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Body {
     pub(crate) id: BodyId,
     pub(crate) name: String,
@@ -1398,7 +1675,7 @@ impl Body {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FeatureBodyOwnership {
     input_body_ids: Vec<BodyId>,
     output_body_id: Option<BodyId>,
@@ -1429,7 +1706,7 @@ impl FeatureBodyOwnership {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Feature {
     pub(crate) id: FeatureId,
     pub(crate) definition_id: DefinitionId,
@@ -1613,7 +1890,7 @@ impl Feature {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Definition {
     pub(crate) id: DefinitionId,
     pub(crate) name: String,
@@ -1695,7 +1972,7 @@ fn new_definition(id: DefinitionId, name: String) -> Definition {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Tag {
     pub(crate) id: TagId,
     pub(crate) name: String,
@@ -1719,7 +1996,7 @@ impl Tag {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClassificationCategory {
     pub(crate) id: ClassificationCategoryId,
     pub(crate) name: String,
@@ -1737,7 +2014,7 @@ impl ClassificationCategory {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClassificationDimension {
     pub(crate) id: ClassificationDimensionId,
     pub(crate) name: String,
@@ -1765,7 +2042,7 @@ impl ClassificationDimension {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Collection {
     pub(crate) id: CollectionId,
     pub(crate) name: String,
@@ -1788,7 +2065,7 @@ impl Collection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Occurrence {
     pub(crate) id: OccurrenceId,
     pub(crate) definition_id: DefinitionId,
@@ -1843,7 +2120,7 @@ impl Occurrence {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Group {
     pub(crate) id: GroupId,
     pub(crate) name: String,
@@ -1873,7 +2150,7 @@ impl Group {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalOccurrence {
     pub(crate) key: LocalOccurrenceKey,
     pub(crate) definition_id: DefinitionId,
@@ -1928,7 +2205,7 @@ impl LocalOccurrence {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalGroup {
     pub(crate) key: LocalGroupKey,
     pub(crate) name: String,
@@ -1958,7 +2235,7 @@ impl LocalGroup {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProductModel {
     pub(crate) document_id: DocumentId,
     pub(crate) units: UnitSystem,
@@ -1974,6 +2251,7 @@ pub(crate) struct ProductModel {
     pub(crate) cam_plans: BTreeMap<CamPlanId, Arc<CamPlan>>,
     pub(crate) dowel_joints: BTreeMap<DowelJointId, Arc<DowelJointContract>>,
     pub(crate) assembly_recipe: Option<Arc<AssemblyRecipe>>,
+    #[serde(serialize_with = "derived")]
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
@@ -2001,7 +2279,9 @@ pub(crate) struct ProductModel {
     pub(crate) local_groups: BTreeMap<LocalGroupKey, Arc<LocalGroup>>,
     pub(crate) production_codes: BTreeMap<InstancePath, String>,
     pub(crate) instance_transform_overrides: BTreeMap<InstancePath, Transform>,
+    #[serde(skip)]
     pub(crate) canonical_digest: DigestCache,
+    #[serde(skip)]
     pub(crate) exact_graphs: ExactGraphCache,
 }
 
@@ -2237,7 +2517,7 @@ impl SceneOccurrence {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Dimension {
     source_token: String,
     millimetres: f64,
@@ -2277,10 +2557,12 @@ impl Dimension {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct PersistentDimensionId(pub u64);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PersistentDimensionTarget {
     FeatureParameter(FeatureParameterTarget),
     DerivedOutput(DerivedIdentity),
@@ -2294,7 +2576,7 @@ pub enum PersistentDimensionTarget {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DimensionDisplayUnit {
     Millimetres,
     Centimetres,
@@ -2321,7 +2603,7 @@ impl DimensionDisplayUnit {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DimensionPresentation {
     pub unit: DimensionDisplayUnit,
     pub decimal_places: u8,
@@ -2339,7 +2621,7 @@ impl DimensionPresentation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PersistentDimension {
     pub id: PersistentDimensionId,
     pub name: String,
@@ -2397,7 +2679,7 @@ pub struct PersistentDimensionProjection {
     pub display_text: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub enum CanonicalCommand {
     /// Assign a document-unique, machine-neutral code to one physical instance.
     SetProductionCode {
@@ -2779,7 +3061,7 @@ pub enum CanonicalCommand {
     ApplySolidTool(SolidToolPlan),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct CloneDefinitionPlan {
     occurrence_id: OccurrenceId,
     source_definition_id: DefinitionId,
@@ -2806,7 +3088,7 @@ impl CloneDefinitionPlan {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct ConvertGroupPlan {
     group_id: GroupId,
     new_definition_id: DefinitionId,
@@ -2830,7 +3112,7 @@ impl ConvertGroupPlan {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct SolidToolPlan {
     pub operation: BooleanOperation,
     pub target_occurrence_id: OccurrenceId,
@@ -2873,7 +3155,7 @@ pub struct MultiBodyBooleanPlan {
     pub tool_policy: ToolBodyPolicy,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub enum AuthoritativeDependency {
     EvaluatorNode(NodeId),
     Override(u64),
@@ -3375,10 +3657,7 @@ impl CommandBatch {
     pub fn digest(&self) -> String {
         let mut digest = StableDigest::new();
         digest.bytes(self.schema.as_bytes());
-        digest.u64(self.commands.len() as u64);
-        for command in &self.commands {
-            digest.command(command);
-        }
+        digest.value(&self.commands);
         digest.finish()
     }
 }
@@ -6382,19 +6661,10 @@ impl DocumentStore {
                         .get(id)
                         .ok_or(CanonicalError::FeatureNotFound(*id))?;
                     let kind = match feature.kind {
-                        FeatureKind::Extrusion { profile, .. } => FeatureKind::Extrusion {
-                            profile,
-                            height: dimension.clone(),
-                        },
                         FeatureKind::Pad(ref spec) => {
                             let mut updated = spec.clone();
-                            updated.extent = crate::sketch::FeatureExtent::Blind(dimension.clone());
+                            updated.extent = FeatureExtent::Blind(dimension.clone());
                             FeatureKind::Pad(updated)
-                        }
-                        FeatureKind::SketchPocket(ref spec) => {
-                            let mut updated = spec.clone();
-                            updated.extent = crate::sketch::FeatureExtent::Blind(dimension.clone());
-                            FeatureKind::SketchPocket(updated)
                         }
                         FeatureKind::Workplane(WorkplaneSpec {
                             support: WorkplaneSupport::Offset { base, .. },
@@ -6421,22 +6691,11 @@ impl DocumentStore {
                         FeatureKind::Shell {
                             target,
                             ref removed_faces,
+                            direction,
                             ..
                         } => FeatureKind::Shell {
                             target,
                             removed_faces: removed_faces.clone(),
-                            thickness: dimension.clone(),
-                        },
-                        FeatureKind::TopologyShell {
-                            target,
-                            ref removed_faces,
-                            ref profile_faces,
-                            direction,
-                            ..
-                        } => FeatureKind::TopologyShell {
-                            target,
-                            removed_faces: removed_faces.clone(),
-                            profile_faces: profile_faces.clone(),
                             thickness: dimension.clone(),
                             direction,
                         },
@@ -6447,31 +6706,22 @@ impl DocumentStore {
                             thickness: dimension.clone(),
                             direction,
                         },
-                        FeatureKind::TopologyEdgeFinish {
+                        FeatureKind::EdgeFinish {
                             target,
                             ref edges,
-                            ref profile_edges,
                             kind,
                             ref fillet_radius_stations,
                             ref chamfer_mode,
                             ref chamfer_edge_sides,
                             ..
-                        } => FeatureKind::TopologyEdgeFinish {
+                        } => FeatureKind::EdgeFinish {
                             target,
                             edges: edges.clone(),
-                            profile_edges: profile_edges.clone(),
                             kind,
                             amount: dimension.clone(),
                             fillet_radius_stations: fillet_radius_stations.clone(),
                             chamfer_mode: chamfer_mode.clone(),
                             chamfer_edge_sides: chamfer_edge_sides.clone(),
-                        },
-                        FeatureKind::Pocket {
-                            target, profile, ..
-                        } => FeatureKind::Pocket {
-                            target,
-                            profile,
-                            depth: dimension.clone(),
                         },
                         FeatureKind::PlanarOffset { profile, .. } => FeatureKind::PlanarOffset {
                             profile,
@@ -6832,42 +7082,11 @@ impl DocumentStore {
                     };
                     let mut kind = feature.kind.clone();
                     match &mut kind {
-                        FeatureKind::Profile { points_mm } => {
-                            points_mm.iter_mut().for_each(translate);
-                        }
-                        FeatureKind::SegmentProfile { segments, .. } => {
-                            for segment in segments {
-                                match segment {
-                                    ProfileSegment::Line { start_mm, end_mm } => {
-                                        translate(start_mm);
-                                        translate(end_mm);
-                                    }
-                                    ProfileSegment::CircularArc {
-                                        start_mm,
-                                        end_mm,
-                                        center_mm,
-                                        ..
-                                    } => {
-                                        translate(start_mm);
-                                        translate(end_mm);
-                                        translate(center_mm);
-                                    }
-                                    ProfileSegment::CubicBezier {
-                                        start_mm,
-                                        control_1_mm,
-                                        control_2_mm,
-                                        end_mm,
-                                    } => {
-                                        translate(start_mm);
-                                        translate(control_1_mm);
-                                        translate(control_2_mm);
-                                        translate(end_mm);
-                                    }
-                                }
-                            }
-                        }
-                        FeatureKind::SplineProfile { control_points_mm } => {
-                            control_points_mm.iter_mut().for_each(translate);
+                        FeatureKind::Profile { segments, .. } => {
+                            segments
+                                .iter_mut()
+                                .flat_map(ProfileSegment::defining_points_mut)
+                                .for_each(translate);
                         }
                         FeatureKind::Sketch(spec) => {
                             if spec
@@ -6934,14 +7153,13 @@ impl DocumentStore {
                     );
                 }
                 CanonicalCommand::SetProfilePoints { id, points_mm } => {
-                    validate_feature_kind(&FeatureKind::Profile {
-                        points_mm: points_mm.clone(),
-                    })?;
+                    let kind = FeatureKind::polygon(points_mm);
+                    validate_feature_kind(&kind)?;
                     let feature = product
                         .features
                         .get(id)
                         .ok_or(CanonicalError::FeatureNotFound(*id))?;
-                    if !matches!(feature.kind, FeatureKind::Profile { .. }) {
+                    if feature.kind.polygon_points().is_none() {
                         return Err(CanonicalError::FeatureIsNotProfile(*id));
                     }
                     product.features.insert(
@@ -6950,9 +7168,7 @@ impl DocumentStore {
                             id: *id,
                             definition_id: feature.definition_id,
                             name: feature.name.clone(),
-                            kind: FeatureKind::Profile {
-                                points_mm: points_mm.clone(),
-                            },
+                            kind,
                         }),
                     );
                 }
@@ -7551,10 +7767,7 @@ impl DocumentStore {
                     support: WorkplaneSupport::PlanarFace { reference, .. },
                     ..
                 }) => vec![reference.as_ref()],
-                FeatureKind::Pad(spec) => spec.extent.references(),
-                FeatureKind::SketchPocket(spec) => std::iter::once(spec.support.as_ref())
-                    .chain(spec.extent.references())
-                    .collect(),
+                FeatureKind::Pad(spec) => spec.references(),
                 _ => Vec::new(),
             };
             for reference in references {
@@ -8095,24 +8308,20 @@ impl DocumentStore {
         Ok(preview)
     }
 
-    pub fn plan_pad_pocket(
+    pub fn plan_pad(
         &self,
         id: FeatureId,
         definition_id: DefinitionId,
         name: impl Into<String>,
-        operation: PadPocketOperation,
+        spec: PadSpec,
         context: ProposalContext,
     ) -> Result<Proposal, ProposalPrepareError> {
-        let kind = match operation {
-            PadPocketOperation::Pad(spec) => FeatureKind::Pad(spec),
-            PadPocketOperation::Pocket(spec) => FeatureKind::SketchPocket(spec),
-        };
         self.prepare_proposal_with_context(
             CommandBatch::new(vec![CanonicalCommand::CreateFeature {
                 id,
                 definition_id,
                 name: name.into(),
-                kind,
+                kind: FeatureKind::Pad(spec),
             }]),
             context,
         )
@@ -8125,7 +8334,10 @@ impl DocumentStore {
     ) -> Result<Proposal, ProposalPrepareError> {
         if !matches!(
             plan.feature_kind,
-            FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+            FeatureKind::Pad(PadSpec {
+                operation: PadOperation::NewBody,
+                ..
+            })
         ) {
             return Err(CanonicalError::InvalidBodyAuthoringPlan.into());
         }
@@ -8200,7 +8412,10 @@ impl DocumentStore {
             if feature.definition_id() != plan.definition_id
                 || !matches!(
                     feature.kind(),
-                    FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+                    FeatureKind::Pad(PadSpec {
+                        operation: PadOperation::NewBody,
+                        ..
+                    })
                 )
                 || definition
                     .feature_body_ownership(feature_id)
@@ -9426,7 +9641,6 @@ pub enum CanonicalError {
     InvalidSweep,
     InvalidWeldmentMember,
     InvalidWeldmentJoint,
-    InvalidSplineProfile,
     InvalidLoft,
     InvalidSheetMetal(SheetMetalError),
     ReservedNodeId,
@@ -9574,7 +9788,6 @@ impl CanonicalError {
             Self::InvalidSweep => "canonical.invalid_sweep",
             Self::InvalidWeldmentMember => "canonical.invalid_weldment_member",
             Self::InvalidWeldmentJoint => "canonical.invalid_weldment_joint",
-            Self::InvalidSplineProfile => "canonical.invalid_spline_profile",
             Self::InvalidLoft => "canonical.invalid_loft",
             Self::InvalidSheetMetal(_) => "canonical.invalid_sheet_metal",
             Self::ReservedNodeId => "canonical.reserved_node_id",
@@ -9771,9 +9984,6 @@ impl fmt::Display for CanonicalError {
             Self::InvalidWeldmentJoint => formatter.write_str(
                 "weldment joint requires two distinct straight members meeting at one manufacturable nonparallel endpoint",
             ),
-            Self::InvalidSplineProfile => {
-                formatter.write_str("spline profile requires bounded canonical control points")
-            }
             Self::InvalidLoft => {
                 formatter.write_str("loft requires ordered bounded closed-profile sections")
             }
@@ -10340,30 +10550,20 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
             _ => None,
         },
         FeatureKind::Sketch(spec) => sketch_parameter_value(spec, &parts),
-        FeatureKind::Profile { points_mm } => match parts.as_slice() {
-            ["bounds", "width"] if is_axis_aligned_rectangle(points_mm) => {
-                Some(points_mm[1][0] - points_mm[0][0])
+        FeatureKind::Profile { segments, .. } => match parts.as_slice() {
+            ["bounds", dimension] => {
+                let points = kind
+                    .polygon_points()
+                    .filter(|points| is_axis_aligned_rectangle(points))?;
+                match *dimension {
+                    "width" => Some(points[1][0] - points[0][0]),
+                    "height" => Some(points[3][1] - points[0][1]),
+                    _ => None,
+                }
             }
-            ["bounds", "height"] if is_axis_aligned_rectangle(points_mm) => {
-                Some(points_mm[3][1] - points_mm[0][1])
-            }
-            ["points", index, axis] => {
-                point_coordinate(*points_mm.get(index.parse::<usize>().ok()?)?, axis)
-            }
-            _ => None,
+            _ => segment_parameter_value(segments, &parts),
         },
-        FeatureKind::SegmentProfile { segments, .. } => segment_parameter_value(segments, &parts),
-        FeatureKind::SplineProfile { control_points_mm } => match parts.as_slice() {
-            ["control_points", index, axis] => {
-                point_coordinate(*control_points_mm.get(index.parse::<usize>().ok()?)?, axis)
-            }
-            _ => None,
-        },
-        FeatureKind::Extrusion { height, .. } if path == "height" => Some(height.millimetres()),
         FeatureKind::Pad(spec) => {
-            extent_parameter_value(&spec.extent, path.strip_prefix("extent.")?)
-        }
-        FeatureKind::SketchPocket(spec) => {
             extent_parameter_value(&spec.extent, path.strip_prefix("extent.")?)
         }
         FeatureKind::Revolve {
@@ -10377,14 +10577,12 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
             ["angle"] => Some(*angle_degrees),
             _ => None,
         },
-        FeatureKind::Shell { thickness, .. }
-        | FeatureKind::TopologyShell { thickness, .. }
-        | FeatureKind::SurfaceThicken { thickness, .. }
+        FeatureKind::Shell { thickness, .. } | FeatureKind::SurfaceThicken { thickness, .. }
             if path == "thickness" =>
         {
             Some(thickness.millimetres())
         }
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             amount,
             fillet_radius_stations,
             chamfer_mode,
@@ -10407,13 +10605,11 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
             ),
             _ => None,
         },
-        FeatureKind::TopologyFaceOffset { distance, .. }
-        | FeatureKind::PlanarOffset { distance, .. }
+        FeatureKind::FaceOffset { distance, .. } | FeatureKind::PlanarOffset { distance, .. }
             if path == "distance" =>
         {
             Some(distance.millimetres())
         }
-        FeatureKind::Pocket { depth, .. } if path == "depth" => Some(depth.millimetres()),
         FeatureKind::WeldmentMember(spec) if path == "orientation" => {
             Some(spec.orientation_degrees)
         }
@@ -10535,23 +10731,49 @@ fn sketch_parameter_value(spec: &SketchSpec, parts: &[&str]) -> Option<f64> {
 }
 
 fn segment_parameter_value(segments: &[ProfileSegment], parts: &[&str]) -> Option<f64> {
-    let ["segments", index, point, axis] = parts else {
-        return None;
+    let (index, point, axis) = match parts {
+        ["segments", index, point, axis] => (index, SegmentPoint::parse(point, None)?, axis),
+        ["segments", index, "points", point, axis] => (
+            index,
+            SegmentPoint::parse("points", Some(point.parse().ok()?))?,
+            axis,
+        ),
+        _ => return None,
     };
     let segment = segments.get(index.parse::<usize>().ok()?)?;
-    match (segment, *point) {
-        (
-            ProfileSegment::Line { start_mm, .. } | ProfileSegment::CircularArc { start_mm, .. },
-            "start",
-        ) => point_coordinate(*start_mm, axis),
-        (
-            ProfileSegment::Line { end_mm, .. } | ProfileSegment::CircularArc { end_mm, .. },
-            "end",
-        ) => point_coordinate(*end_mm, axis),
-        (ProfileSegment::CircularArc { center_mm, .. }, "center") => {
-            point_coordinate(*center_mm, axis)
+    let coordinate = match (segment, point) {
+        (_, SegmentPoint::Start) => segment.start_mm(),
+        (_, SegmentPoint::End) => segment.end_mm(),
+        (ProfileSegment::CircularArc { center_mm, .. }, SegmentPoint::Center) => *center_mm,
+        (ProfileSegment::Spline { points_mm }, SegmentPoint::Inner(point))
+            if point > 0 && point + 1 < points_mm.len() =>
+        {
+            points_mm[point]
         }
-        _ => None,
+        _ => return None,
+    };
+    point_coordinate(coordinate, axis)
+}
+
+/// A point of a profile segment named by a parameter path.
+#[derive(Clone, Copy)]
+enum SegmentPoint {
+    Start,
+    End,
+    Center,
+    /// A spline point between its ends (`points.N`).
+    Inner(usize),
+}
+
+impl SegmentPoint {
+    fn parse(name: &str, index: Option<usize>) -> Option<Self> {
+        match (name, index) {
+            ("start", None) => Some(Self::Start),
+            ("end", None) => Some(Self::End),
+            ("center", None) => Some(Self::Center),
+            ("points", Some(index)) => Some(Self::Inner(index)),
+            _ => None,
+        }
     }
 }
 
@@ -10741,33 +10963,16 @@ fn set_feature_kind_parameter(
             _ => false,
         },
         FeatureKind::Sketch(spec) => set_sketch_parameter(spec, &parts, dimension),
-        FeatureKind::Profile { points_mm } => match parts.as_slice() {
+        FeatureKind::Profile { segments, closed } => match parts.as_slice() {
             ["bounds", "width"] | ["bounds", "height"] => {
-                *points_mm = resize_axis_aligned_rectangle(points_mm, target, value)?;
+                let points = kind.polygon_points().unwrap_or_default();
+                *kind =
+                    FeatureKind::polygon(&resize_axis_aligned_rectangle(&points, target, value)?);
                 true
             }
-            ["points", index, axis] => points_mm
-                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
-                .is_some_and(|point| set_point_coordinate(point, axis, value)),
-            _ => false,
+            _ => set_segment_parameter(segments, *closed, &parts, value),
         },
-        FeatureKind::SegmentProfile { segments, .. } => {
-            set_segment_parameter(segments, &parts, value)
-        }
-        FeatureKind::SplineProfile { control_points_mm } => match parts.as_slice() {
-            ["control_points", index, axis] => control_points_mm
-                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
-                .is_some_and(|point| set_point_coordinate(point, axis, value)),
-            _ => false,
-        },
-        FeatureKind::Extrusion { height, .. } if path == "height" => {
-            *height = dimension.clone();
-            true
-        }
         FeatureKind::Pad(spec) => path
-            .strip_prefix("extent.")
-            .is_some_and(|path| set_extent_parameter(&mut spec.extent, path, dimension)),
-        FeatureKind::SketchPocket(spec) => path
             .strip_prefix("extent.")
             .is_some_and(|path| set_extent_parameter(&mut spec.extent, path, dimension)),
         FeatureKind::Revolve {
@@ -10784,15 +10989,13 @@ fn set_feature_kind_parameter(
             }
             _ => false,
         },
-        FeatureKind::Shell { thickness, .. }
-        | FeatureKind::TopologyShell { thickness, .. }
-        | FeatureKind::SurfaceThicken { thickness, .. }
+        FeatureKind::Shell { thickness, .. } | FeatureKind::SurfaceThicken { thickness, .. }
             if path == "thickness" =>
         {
             *thickness = dimension.clone();
             true
         }
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             amount,
             fillet_radius_stations,
             chamfer_mode,
@@ -10826,8 +11029,7 @@ fn set_feature_kind_parameter(
                 }),
             _ => false,
         },
-        FeatureKind::TopologyFaceOffset { distance, .. }
-        | FeatureKind::PlanarOffset { distance, .. }
+        FeatureKind::FaceOffset { distance, .. } | FeatureKind::PlanarOffset { distance, .. }
             if path == "distance" =>
         {
             *distance = dimension.clone();
@@ -10835,10 +11037,6 @@ fn set_feature_kind_parameter(
         }
         FeatureKind::SurfaceKnit { tolerance, .. } if path == "tolerance" => {
             *tolerance = dimension.clone();
-            true
-        }
-        FeatureKind::Pocket { depth, .. } if path == "depth" => {
-            *depth = dimension.clone();
             true
         }
         FeatureKind::WeldmentMember(spec) if path == "orientation" => {
@@ -11021,29 +11219,72 @@ fn set_sketch_parameter(spec: &mut SketchSpec, parts: &[&str], dimension: &Dimen
     }
 }
 
-fn set_segment_parameter(segments: &mut [ProfileSegment], parts: &[&str], value: f64) -> bool {
-    let ["segments", index, point, axis] = parts else {
+/// Sets one coordinate of a segment point. A segment end shared with the neighbouring
+/// segment is one vertex: both segments move with it.
+fn set_segment_parameter(
+    segments: &mut [ProfileSegment],
+    closed: bool,
+    parts: &[&str],
+    value: f64,
+) -> bool {
+    let parsed = match parts {
+        ["segments", index, point, axis] => {
+            SegmentPoint::parse(point, None).map(|p| (index, p, axis))
+        }
+        ["segments", index, "points", point, axis] => point
+            .parse()
+            .ok()
+            .and_then(|point| SegmentPoint::parse("points", Some(point)))
+            .map(|p| (index, p, axis)),
+        _ => None,
+    };
+    let Some((index, point, axis)) = parsed else {
         return false;
     };
     let Ok(index) = index.parse::<usize>() else {
         return false;
     };
-    let Some(segment) = segments.get_mut(index) else {
+    if index >= segments.len() {
         return false;
+    }
+    let count = segments.len();
+    let previous = (index > 0 || closed).then(|| (index + count - 1) % count);
+    let next = (index + 1 < count || closed).then(|| (index + 1) % count);
+    let set = |point: Option<&mut [f64; 2]>| {
+        point.is_some_and(|point| set_point_coordinate(point, axis, value))
     };
-    match (segment, *point) {
-        (
-            ProfileSegment::Line { start_mm, .. } | ProfileSegment::CircularArc { start_mm, .. },
-            "start",
-        ) => set_point_coordinate(start_mm, axis, value),
-        (
-            ProfileSegment::Line { end_mm, .. } | ProfileSegment::CircularArc { end_mm, .. },
-            "end",
-        ) => set_point_coordinate(end_mm, axis, value),
-        (ProfileSegment::CircularArc { center_mm, .. }, "center") => {
-            set_point_coordinate(center_mm, axis, value)
+    match point {
+        SegmentPoint::Start => {
+            let shared = previous
+                .filter(|previous| segments[*previous].end_mm() == segments[index].start_mm());
+            if !set(segments[index].start_mut()) {
+                return false;
+            }
+            if let Some(previous) = shared {
+                set(segments[previous].end_mut());
+            }
+            true
         }
-        _ => false,
+        SegmentPoint::End => {
+            let shared = next.filter(|next| segments[*next].start_mm() == segments[index].end_mm());
+            if !set(segments[index].end_mut()) {
+                return false;
+            }
+            if let Some(next) = shared {
+                set(segments[next].start_mut());
+            }
+            true
+        }
+        SegmentPoint::Center => match &mut segments[index] {
+            ProfileSegment::CircularArc { center_mm, .. } => set(Some(center_mm)),
+            _ => false,
+        },
+        SegmentPoint::Inner(point) => match &mut segments[index] {
+            ProfileSegment::Spline { points_mm } if point > 0 && point + 1 < points_mm.len() => {
+                set(points_mm.get_mut(point))
+            }
+            _ => false,
+        },
     }
 }
 
@@ -11131,30 +11372,23 @@ fn validate_topological_feature_context(
     definition_id: DefinitionId,
     kind: &FeatureKind,
 ) -> Result<(), CanonicalError> {
-    let (target, references, chamfer_edge_sides) = match kind {
-        FeatureKind::TopologyShell {
-            target,
-            removed_faces,
-            ..
-        } => (*target, removed_faces.as_slice(), None),
-        FeatureKind::TopologyEdgeFinish {
-            target,
-            edges,
-            chamfer_edge_sides,
-            ..
-        } => (
-            *target,
-            edges.as_slice(),
-            Some(chamfer_edge_sides.as_slice()),
-        ),
-        _ => return Ok(()),
+    let Some((target, references)) = kind.topological_picks() else {
+        return Ok(());
+    };
+    let chamfer_edge_sides = match kind {
+        FeatureKind::EdgeFinish {
+            chamfer_edge_sides, ..
+        } => Some(chamfer_edge_sides.as_slice()),
+        _ => None,
     };
     let invalid_context = |reference: &TopologicalElementRef| {
         reference.document_id != document_id
             || reference.definition_id != definition_id
             || reference.producer_feature_id != target
     };
-    if references.iter().any(invalid_context)
+    if references
+        .iter()
+        .any(|reference| invalid_context(reference))
         || chamfer_edge_sides.is_some_and(|selections| {
             selections.iter().any(|selection| {
                 invalid_context(&selection.edge) || invalid_context(&selection.side_face)
@@ -11171,7 +11405,7 @@ fn validate_topological_target(
     definition: &Definition,
     feature_id: FeatureId,
     target_id: FeatureId,
-    references: &[TopologicalElementRef],
+    references: &[&TopologicalElementRef],
 ) -> Result<(), CanonicalError> {
     let target = product
         .features
@@ -11213,17 +11447,12 @@ fn validate_topological_target(
 fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
     matches!(
         kind,
-        FeatureKind::Extrusion { .. }
-            | FeatureKind::Pad(_)
-            | FeatureKind::SketchPocket(_)
+        FeatureKind::Pad(_)
             | FeatureKind::Revolve { .. }
             | FeatureKind::Shell { .. }
-            | FeatureKind::TopologyShell { .. }
-            | FeatureKind::TopologyEdgeFinish { .. }
-            | FeatureKind::TopologyFaceOffset { .. }
+            | FeatureKind::EdgeFinish { .. }
+            | FeatureKind::FaceOffset { .. }
             | FeatureKind::SurfaceThicken { .. }
-            | FeatureKind::ThroughCut { .. }
-            | FeatureKind::Pocket { .. }
             | FeatureKind::Boolean { .. }
             | FeatureKind::Sweep { .. }
             | FeatureKind::WeldmentMember(_)
@@ -11236,20 +11465,138 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
     )
 }
 
+/// The profile, sketch, target and support a pad names exist in its
+/// definition and fit together.
+fn pad_inputs_are_valid(
+    product: &ProductModel,
+    definition_id: DefinitionId,
+    spec: &PadSpec,
+) -> Result<bool, CanonicalError> {
+    let local = |id: FeatureId| {
+        product
+            .features
+            .get(&id)
+            .ok_or(CanonicalError::FeatureNotFound(id))
+            .map(|feature| (feature.definition_id == definition_id).then_some(feature))
+    };
+    let (sketch_workplane, profile_valid) = match spec.profile {
+        PadProfile::Feature(id) => {
+            let Some(profile) = local(id)? else {
+                return Ok(false);
+            };
+            match &profile.kind {
+                FeatureKind::Profile { closed: true, .. } => (None, true),
+                FeatureKind::Sketch(sketch) => (
+                    Some(sketch.workplane),
+                    sketch
+                        .solved_regions()
+                        .is_ok_and(|regions| regions.len() == 1),
+                ),
+                _ => (None, false),
+            }
+        }
+        PadProfile::SketchRegion { sketch, region } => {
+            let Some(sketch) = local(sketch)? else {
+                return Ok(false);
+            };
+            let FeatureKind::Sketch(sketch) = &sketch.kind else {
+                return Ok(false);
+            };
+            let region_exists = sketch
+                .solved_regions()
+                .map_err(CanonicalError::from)?
+                .iter()
+                .any(|solved| solved.id == region);
+            (Some(sketch.workplane), region_exists)
+        }
+    };
+    let workplane = match sketch_workplane {
+        Some(id) => match local(id)?.map(|feature| &feature.kind) {
+            Some(FeatureKind::Workplane(workplane)) => Some(workplane),
+            _ => return Ok(false),
+        },
+        None => None,
+    };
+    if !profile_valid {
+        return Ok(false);
+    }
+    let PadOperation::Cut { target, start } = &spec.operation else {
+        return Ok(true);
+    };
+    let Some(target_feature) = local(*target)? else {
+        return Ok(false);
+    };
+    if !feature_kind_is_solid(&target_feature.kind) {
+        return Ok(false);
+    }
+    Ok(match start {
+        CutStart::ProfilePlane => true,
+        CutStart::Support(support) => {
+            support.producer_feature_id == *target
+                && matches!(
+                    workplane,
+                    Some(WorkplaneSpec {
+                        support: WorkplaneSupport::PlanarFace { reference, health },
+                        ..
+                    }) if reference.lineage_digest == support.lineage_digest
+                        && (*health != WorkplaneSupportHealth::Resolved
+                            || reference.as_ref() == support.as_ref())
+                )
+        }
+        // A blind cut must stay inside the target. Against a blind new body
+        // that is checked here; any other target's extent is only known to
+        // the exact graph compiler.
+        CutStart::TargetFace => match (&spec.extent, &target_feature.kind) {
+            (
+                FeatureExtent::Blind(depth),
+                FeatureKind::Pad(PadSpec {
+                    extent: FeatureExtent::Blind(height),
+                    operation: PadOperation::NewBody,
+                    ..
+                }),
+            ) => depth.millimetres() < height.millimetres(),
+            (extent, _) => matches!(extent, FeatureExtent::Blind(_)),
+        },
+    })
+}
+
 fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> {
     match kind {
-        FeatureKind::SketchPocket(spec) => Some(spec.target),
+        FeatureKind::Pad(spec) => spec.operation.target(),
         FeatureKind::Shell { target, .. }
-        | FeatureKind::TopologyShell { target, .. }
-        | FeatureKind::TopologyEdgeFinish { target, .. }
-        | FeatureKind::TopologyFaceOffset { target, .. }
+        | FeatureKind::EdgeFinish { target, .. }
+        | FeatureKind::FaceOffset { target, .. }
         | FeatureKind::SurfaceThicken { target, .. }
-        | FeatureKind::ThroughCut { target, .. }
-        | FeatureKind::Pocket { target, .. }
         | FeatureKind::Boolean { target, .. }
         | FeatureKind::RigidTransform { target, .. } => Some(*target),
         _ => None,
     }
+}
+
+pub(crate) fn migrate_legacy_body_contract(
+    product: &mut ProductModel,
+) -> Result<(), CanonicalError> {
+    let definition_ids = product.definitions.keys().cloned().collect::<Vec<_>>();
+    for definition_id in definition_ids {
+        let mut definition = product.definitions[&definition_id].as_ref().clone();
+        definition.bodies = BTreeMap::from([(DEFAULT_BODY_ID, default_body())]);
+        definition.active_body_id = DEFAULT_BODY_ID;
+        definition.feature_body_ownership.clear();
+        for feature_id in definition.feature_ids.clone() {
+            let feature = product
+                .features
+                .get(&feature_id)
+                .ok_or(CanonicalError::FeatureNotFound(feature_id))?;
+            let ownership = inferred_feature_body_ownership(product, &definition, &feature.kind)?;
+            definition
+                .feature_body_ownership
+                .insert(feature_id, ownership);
+        }
+        product
+            .definitions
+            .insert(definition_id, Arc::new(definition));
+    }
+    Ok(())
 }
 
 fn inferred_feature_body_ownership(
@@ -11507,32 +11854,6 @@ fn validate_body_dependency_graph(definition: &Definition) -> Result<(), Canonic
     Ok(())
 }
 
-pub(crate) fn migrate_legacy_body_contract(
-    product: &mut ProductModel,
-) -> Result<(), CanonicalError> {
-    let definition_ids = product.definitions.keys().cloned().collect::<Vec<_>>();
-    for definition_id in definition_ids {
-        let mut definition = product.definitions[&definition_id].as_ref().clone();
-        definition.bodies = BTreeMap::from([(DEFAULT_BODY_ID, default_body())]);
-        definition.active_body_id = DEFAULT_BODY_ID;
-        definition.feature_body_ownership.clear();
-        for feature_id in definition.feature_ids.clone() {
-            let feature = product
-                .features
-                .get(&feature_id)
-                .ok_or(CanonicalError::FeatureNotFound(feature_id))?;
-            let ownership = inferred_feature_body_ownership(product, &definition, &feature.kind)?;
-            definition
-                .feature_body_ownership
-                .insert(feature_id, ownership);
-        }
-        product
-            .definitions
-            .insert(definition_id, Arc::new(definition));
-    }
-    Ok(())
-}
-
 fn sketch_workplane_frame(
     product: &ProductModel,
     sketch_feature_id: FeatureId,
@@ -11726,8 +12047,10 @@ fn validate_sketch_constraint_edit_dependents(
         .features
         .values()
         .filter_map(|feature| match &feature.kind {
-            FeatureKind::Pad(spec) if spec.sketch == sketch_id => Some(spec.region),
-            FeatureKind::SketchPocket(spec) if spec.sketch == sketch_id => Some(spec.region),
+            FeatureKind::Pad(PadSpec {
+                profile: PadProfile::SketchRegion { sketch, region },
+                ..
+            }) if *sketch == sketch_id => Some(*region),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
@@ -11804,14 +12127,16 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             canonical.validate_local().map_err(CanonicalError::from)
         }
         FeatureKind::Sketch(spec) => spec.solve().map(|_| ()).map_err(CanonicalError::from),
-        FeatureKind::Profile { points_mm } => {
-            if !is_valid_profile(points_mm) {
-                return Err(CanonicalError::InvalidProfile);
-            }
-            Ok(())
-        }
-        FeatureKind::SegmentProfile { segments, closed } => {
-            if !is_valid_segment_profile(segments, *closed) {
+        FeatureKind::Profile { segments, closed } => {
+            // A closed chain of lines is a polygon, and a closed spline runs around the
+            // polygon of its points: that polygon must be simple and enclose an area.
+            if !is_valid_segment_profile(segments, *closed)
+                || kind
+                    .polygon_points()
+                    .as_deref()
+                    .or(kind.closed_spline_points())
+                    .is_some_and(|points| !is_valid_profile(points))
+            {
                 return Err(CanonicalError::InvalidProfile);
             }
             Ok(())
@@ -11874,25 +12199,25 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
-        FeatureKind::SplineProfile { control_points_mm } => {
-            if !is_valid_profile(control_points_mm) || control_points_mm.len() < 4 {
-                return Err(CanonicalError::InvalidSplineProfile);
-            }
-            Ok(())
-        }
-        FeatureKind::Extrusion { height, .. } => {
-            Dimension::new(height.source_token.clone(), height.millimetres).map(|_| ())
-        }
         FeatureKind::Pad(spec) => {
             spec.direction.validate().map_err(CanonicalError::from)?;
-            spec.extent.validate().map_err(CanonicalError::from)
-        }
-        FeatureKind::SketchPocket(spec) => {
-            spec.direction.validate().map_err(CanonicalError::from)?;
             spec.extent.validate().map_err(CanonicalError::from)?;
-            if spec.support.expected_type != "planar_face"
-                || spec.support.expected_cardinality != 1
-                || !spec.support.has_valid_lineage()
+            // A cut measured back from the target face reaches into the target.
+            if let (
+                PadOperation::Cut {
+                    start: CutStart::TargetFace,
+                    ..
+                },
+                FeatureExtent::Blind(depth),
+            ) = (&spec.operation, &spec.extent)
+                && depth.millimetres <= 0.0
+            {
+                return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            if let Some(support) = spec.operation.support()
+                && (support.expected_type != "planar_face"
+                    || support.expected_cardinality != 1
+                    || !support.has_valid_lineage())
             {
                 return Err(CanonicalError::Sketch(
                     SketchError::InvalidPlanarFaceSupport,
@@ -11900,30 +12225,8 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
-        FeatureKind::Pocket { depth, .. } => {
-            Dimension::new(depth.source_token.clone(), depth.millimetres).map(|_| ())?;
-            if depth.millimetres <= 0.0 {
-                return Err(CanonicalError::DimensionOutsideEnvelope);
-            }
-            Ok(())
-        }
         FeatureKind::Shell {
             removed_faces,
-            thickness,
-            ..
-        } => {
-            Dimension::new(thickness.source_token.clone(), thickness.millimetres).map(|_| ())?;
-            if thickness.millimetres <= 0.0 {
-                return Err(CanonicalError::DimensionOutsideEnvelope);
-            }
-            if !roles_are_strictly_sorted(removed_faces) {
-                return Err(CanonicalError::SubshapeRolesNotCanonical);
-            }
-            Ok(())
-        }
-        FeatureKind::TopologyShell {
-            removed_faces,
-            profile_faces,
             thickness,
             direction,
             ..
@@ -11932,30 +12235,29 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             if thickness.millimetres <= 0.0 {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
-            if !profile_faces.is_empty() {
-                // Named openings: an inward shell of program faces only.
-                if !removed_faces.is_empty()
-                    || *direction != ShellDirection::Inward
-                    || profile_faces.len() > 64
-                    || profile_faces.iter().any(|face| {
-                        matches!(face, ProfileFaceReference::Segment { entity_id: 0, .. })
-                            || matches!(face, ProfileFaceReference::Segment { source_name, .. } if source_name.is_empty())
-                            || matches!(face, ProfileFaceReference::NamedResult(name) if name.is_empty())
-                    })
-                {
-                    return Err(CanonicalError::InvalidTopologicalFeatureReference);
-                }
+            // No removed faces is a closed shell.
+            if removed_faces.is_empty() {
                 return Ok(());
             }
-            if removed_faces.is_empty() {
-                Ok(())
-            } else {
-                validate_topological_feature_references(removed_faces, TopologicalElementKind::Face)
+            if let Some(recorded) = FaceRef::all_topological(removed_faces) {
+                return validate_topological_feature_references(
+                    &recorded,
+                    TopologicalElementKind::Face,
+                );
             }
+            // Named openings: an inward shell of program faces only.
+            let named = FaceRef::all_named(removed_faces)
+                .ok_or(CanonicalError::InvalidTopologicalFeatureReference)?;
+            if *direction != ShellDirection::Inward
+                || named.len() > 64
+                || !named.iter().all(ProfileFaceReference::is_valid)
+            {
+                return Err(CanonicalError::InvalidTopologicalFeatureReference);
+            }
+            Ok(())
         }
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             edges,
-            profile_edges,
             kind,
             amount,
             fillet_radius_stations,
@@ -12012,7 +12314,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                         .iter()
                         .zip(edges)
                         .any(|(selection, edge)| {
-                            selection.edge != *edge
+                            edge.topological() != Some(&selection.edge)
                                 || selection.side_face.kind != TopologicalElementKind::Face
                                 || !selection.side_face.has_valid_lineage()
                         }))
@@ -12048,63 +12350,42 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                     previous = station.position;
                 }
             }
-            if edges.is_empty() == profile_edges.is_empty() {
+            if edges.is_empty() {
                 return Err(CanonicalError::InvalidTopologicalFeatureReference);
             }
-            if !profile_edges.is_empty() {
-                if !fillet_radius_stations.is_empty()
-                    || !matches!(chamfer_mode, ChamferMode::Symmetric)
-                    || !chamfer_edge_sides.is_empty()
-                    || profile_edges.iter().any(|edge| {
-                        edge.first == edge.second
-                            || [edge.first.clone(), edge.second.clone()]
-                                .iter()
-                                .any(|face| {
-                                    matches!(
-                                        face,
-                                        ProfileFaceReference::Segment { entity_id: 0, .. }
-                                    ) || matches!(
-                                        face,
-                                        ProfileFaceReference::Segment { source_name, .. }
-                                            if source_name.is_empty()
-                                    ) || matches!(
-                                        face,
-                                        ProfileFaceReference::NamedResult(name) if name.is_empty()
-                                    )
-                                })
-                    })
-                {
-                    return Err(CanonicalError::InvalidTopologicalFeatureReference);
-                }
-                return Ok(());
+            if let Some(recorded) = EdgeRef::all_topological(edges) {
+                return validate_topological_feature_references(
+                    &recorded,
+                    TopologicalElementKind::Edge,
+                );
             }
-            validate_topological_feature_references(edges, TopologicalElementKind::Edge)
-        }
-        FeatureKind::TopologyFaceOffset {
-            face,
-            profile_face,
-            distance,
-            ..
-        } => {
-            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
-            if distance.millimetres.abs() <= PROFILE_EPSILON_MM {
-                return Err(CanonicalError::DimensionOutsideEnvelope);
-            }
-            if face.is_some() == profile_face.is_some()
-                || profile_face.as_ref().is_some_and(|face| {
-                    matches!(face, ProfileFaceReference::Segment { entity_id: 0, .. })
-                        || matches!(face, ProfileFaceReference::Segment { source_name, .. } if source_name.is_empty())
-                        || matches!(face, ProfileFaceReference::NamedResult(name) if name.is_empty())
+            // Named edges: an evenly sized finish between two program faces.
+            let named = EdgeRef::all_named(edges)
+                .ok_or(CanonicalError::InvalidTopologicalFeatureReference)?;
+            if !fillet_radius_stations.is_empty()
+                || !matches!(chamfer_mode, ChamferMode::Symmetric)
+                || !chamfer_edge_sides.is_empty()
+                || named.iter().any(|edge| {
+                    edge.first == edge.second || !edge.first.is_valid() || !edge.second.is_valid()
                 })
             {
                 return Err(CanonicalError::InvalidTopologicalFeatureReference);
             }
-            face.as_ref().map_or(Ok(()), |face| {
-                validate_topological_feature_references(
-                    std::slice::from_ref(face),
+            Ok(())
+        }
+        FeatureKind::FaceOffset { face, distance, .. } => {
+            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
+            if distance.millimetres.abs() <= PROFILE_EPSILON_MM {
+                return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            match face {
+                FaceRef::Topological(face) => validate_topological_feature_references(
+                    std::slice::from_ref(face.as_ref()),
                     TopologicalElementKind::Face,
-                )
-            })
+                ),
+                FaceRef::Named(face) if face.is_valid() => Ok(()),
+                FaceRef::Named(_) => Err(CanonicalError::InvalidTopologicalFeatureReference),
+            }
         }
         FeatureKind::ImportedExactBody(spec) => validate_imported_exact_body(spec),
         FeatureKind::RigidTransform { transform, .. } => {
@@ -12237,7 +12518,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
-        FeatureKind::ThroughCut { .. } | FeatureKind::Boolean { .. } => Ok(()),
+        FeatureKind::Boolean { .. } => Ok(()),
     }
 }
 
@@ -12525,14 +12806,14 @@ fn resize_axis_aligned_rectangle(
             ));
         }
     }
-    validate_feature_kind(&FeatureKind::Profile {
-        points_mm: resized.clone(),
-    })?;
+    validate_feature_kind(&FeatureKind::polygon(&resized))?;
     Ok(resized)
 }
 
 fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2], [f64; 2])> {
     match segment {
+        // The exact kernel sweeps along lines, arcs and Bezier curves only.
+        ProfileSegment::Spline { .. } => None,
         ProfileSegment::Line { start_mm, end_mm } => {
             let direction = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
             let length = direction[0].hypot(direction[1]);
@@ -12647,6 +12928,7 @@ fn sweep_path_segment_bounds(segment: &ProfileSegment) -> [[f64; 2]; 2] {
             control_2_mm,
             end_mm,
         } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
+        ProfileSegment::Spline { points_mm } => points_mm.clone(),
     };
     [0, 1].map(|bound| {
         [0, 1].map(|axis| {
@@ -12707,6 +12989,7 @@ fn sweep_path_join_is_separated(
         } => [*start_mm, *control_1_mm, *control_2_mm]
             .into_iter()
             .all(|point| projection(point) < -PROFILE_EPSILON_MM),
+        ProfileSegment::Spline { .. } => false,
     };
     let right_is_ahead = match right {
         ProfileSegment::Line { end_mm, .. } => projection(*end_mm) > PROFILE_EPSILON_MM,
@@ -12720,6 +13003,7 @@ fn sweep_path_join_is_separated(
         } => [*control_1_mm, *control_2_mm, *end_mm]
             .into_iter()
             .all(|point| projection(point) > PROFILE_EPSILON_MM),
+        ProfileSegment::Spline { .. } => false,
     };
     left_is_behind && right_is_ahead
 }
@@ -12801,20 +13085,11 @@ pub struct ValidatedSweepProfile<'a>(ValidatedSweepProfileKind<'a>);
 
 #[derive(Clone, Copy, Debug)]
 enum ValidatedSweepProfileKind<'a> {
-    Polygon(&'a [[f64; 2]]),
     LineArcBoundary(&'a [ProfileSegment]),
     Sketch(&'a SketchSpec),
 }
 
 impl<'a> ValidatedSweepProfile<'a> {
-    #[must_use]
-    pub fn polygon(self) -> Option<&'a [[f64; 2]]> {
-        match self.0 {
-            ValidatedSweepProfileKind::Polygon(points) => Some(points),
-            _ => None,
-        }
-    }
-
     #[must_use]
     pub fn line_arc_boundary(self) -> Option<&'a [ProfileSegment]> {
         match self.0 {
@@ -12834,13 +13109,12 @@ impl<'a> ValidatedSweepProfile<'a> {
     #[must_use]
     pub fn from_feature_kind(kind: &'a FeatureKind) -> Option<Self> {
         match kind {
-            FeatureKind::Profile { points_mm } if sweep_profile_is_valid(kind) => {
-                Some(Self(ValidatedSweepProfileKind::Polygon(points_mm)))
-            }
-            FeatureKind::SegmentProfile {
+            FeatureKind::Profile {
                 segments,
                 closed: true,
-            } if accepts_sweep_segment_profile(segments, true) => {
+            } if accepts_sweep_segment_profile(segments, true)
+                || (kind.polygon_points().is_some() && sweep_profile_is_valid(kind)) =>
+            {
                 Some(Self(ValidatedSweepProfileKind::LineArcBoundary(segments)))
             }
             FeatureKind::Sketch(sketch) if valid_sketch_sweep_profile(sketch) => {
@@ -12889,7 +13163,7 @@ impl<'a> ValidatedSweepPath<'a> {
     #[must_use]
     pub fn from_feature_kind(kind: &'a FeatureKind) -> Option<Self> {
         match kind {
-            FeatureKind::SegmentProfile {
+            FeatureKind::Profile {
                 segments,
                 closed: false,
             } if is_valid_sweep_path(segments) => {
@@ -13358,19 +13632,29 @@ fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
             .into_iter()
             .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM)
     };
+    let distinct = |left: [f64; 2], right: [f64; 2]| {
+        (left[0] - right[0]).hypot(left[1] - right[1]) > PROFILE_EPSILON_MM
+    };
     for segment in segments {
+        let points = segment.defining_points_mm();
+        if points.len() > MAX_PROFILE_POINTS || !points.iter().copied().all(valid_point) {
+            return false;
+        }
         let start = segment.start_mm();
         let end = segment.end_mm();
-        if !valid_point(start)
-            || !valid_point(end)
-            || (start[0] - end[0]).hypot(start[1] - end[1]) <= PROFILE_EPSILON_MM
-        {
+        let spans = match segment {
+            // A spline is cubic: it passes through at least four distinct points, each
+            // distinct from the one before. Closing on itself, it repeats the first.
+            ProfileSegment::Spline { points_mm } => {
+                points_mm.windows(2).all(|pair| distinct(pair[0], pair[1]))
+                    && points_mm.len() >= if distinct(start, end) { 4 } else { 5 }
+            }
+            _ => distinct(start, end),
+        };
+        if !spans {
             return false;
         }
         if let ProfileSegment::CircularArc { center_mm, .. } = segment {
-            if !valid_point(*center_mm) {
-                return false;
-            }
             let start_radius = (start[0] - center_mm[0]).hypot(start[1] - center_mm[1]);
             let end_radius = (end[0] - center_mm[0]).hypot(end[1] - center_mm[1]);
             let radius_tolerance = PROFILE_EPSILON_MM * start_radius.max(end_radius).max(1.0);
@@ -13380,15 +13664,6 @@ fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
                 return false;
             }
         }
-        if let ProfileSegment::CubicBezier {
-            control_1_mm,
-            control_2_mm,
-            ..
-        } = segment
-            && (!valid_point(*control_1_mm) || !valid_point(*control_2_mm))
-        {
-            return false;
-        }
     }
     if segments
         .windows(2)
@@ -13396,16 +13671,9 @@ fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
     {
         return false;
     }
-    if closed {
-        if segments.len() < 2 {
-            return false;
-        }
-        let end = segments.last().expect("non-empty profile").end_mm();
-        let start = segments[0].start_mm();
-        end == start
-    } else {
-        true
-    }
+    // Only a chain that returns to its start encloses a region; a single line, arc or
+    // curve cannot, since its ends are distinct.
+    !closed || segments.last().expect("non-empty profile").end_mm() == segments[0].start_mm()
 }
 
 fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
@@ -13431,7 +13699,8 @@ fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
         .take(points_mm.len())
         .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
         .sum();
-    if twice_area <= PROFILE_EPSILON_MM {
+    // Either direction encloses the same region; drawn and imported loops use both.
+    if twice_area.abs() <= PROFILE_EPSILON_MM {
         return false;
     }
     for left_index in 0..points_mm.len() {
@@ -13524,6 +13793,37 @@ fn remap_feature_extent(
         FeatureExtent::Blind(_) | FeatureExtent::ThroughAll | FeatureExtent::Symmetric(_) => {}
     }
     Ok(())
+}
+
+/// Named faces are relative to their target and carry over unchanged.
+fn remap_face_ref(
+    face: &FaceRef,
+    new_definition_id: DefinitionId,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<FaceRef, CanonicalError> {
+    Ok(match face {
+        FaceRef::Topological(reference) => FaceRef::from(remap_topological_reference(
+            reference,
+            new_definition_id,
+            mapping,
+        )?),
+        FaceRef::Named(_) => face.clone(),
+    })
+}
+
+fn remap_edge_ref(
+    edge: &EdgeRef,
+    new_definition_id: DefinitionId,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<EdgeRef, CanonicalError> {
+    Ok(match edge {
+        EdgeRef::Topological(reference) => EdgeRef::from(remap_topological_reference(
+            reference,
+            new_definition_id,
+            mapping,
+        )?),
+        EdgeRef::Named(_) => edge.clone(),
+    })
 }
 
 fn remap_topological_reference(
@@ -13660,10 +13960,7 @@ fn clone_definition_and_repoint(
                     .ok_or(CanonicalError::InvalidFeatureMap)?;
                 FeatureKind::Sketch(cloned)
             }
-            FeatureKind::Profile { points_mm } => FeatureKind::Profile {
-                points_mm: points_mm.clone(),
-            },
-            FeatureKind::SegmentProfile { segments, closed } => FeatureKind::SegmentProfile {
+            FeatureKind::Profile { segments, closed } => FeatureKind::Profile {
                 segments: segments.clone(),
                 closed: *closed,
             },
@@ -13689,38 +13986,23 @@ fn clone_definition_and_repoint(
                 normal: *normal,
                 x_direction: *x_direction,
             },
-            FeatureKind::SplineProfile { control_points_mm } => FeatureKind::SplineProfile {
-                control_points_mm: control_points_mm.clone(),
-            },
-            FeatureKind::Extrusion { profile, height } => FeatureKind::Extrusion {
-                profile: *mapping
-                    .get(profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                height: height.clone(),
-            },
             FeatureKind::Pad(spec) => {
-                let mut cloned = spec.clone();
-                cloned.sketch = *mapping
-                    .get(&spec.sketch)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                let mut cloned = spec.with_features(|id| {
+                    mapping
+                        .get(&id)
+                        .copied()
+                        .ok_or(CanonicalError::InvalidFeatureMap)
+                })?;
+                if let PadOperation::Cut {
+                    start: CutStart::Support(support),
+                    ..
+                } = &mut cloned.operation
+                {
+                    **support =
+                        remap_body_subshape_reference(support, new_definition_id, &mapping)?;
+                }
                 remap_feature_extent(&mut cloned.extent, new_definition_id, &mapping)?;
                 FeatureKind::Pad(cloned)
-            }
-            FeatureKind::SketchPocket(spec) => {
-                let mut cloned = spec.clone();
-                cloned.target = *mapping
-                    .get(&spec.target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?;
-                cloned.sketch = *mapping
-                    .get(&spec.sketch)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?;
-                cloned.support = Box::new(remap_body_subshape_reference(
-                    &spec.support,
-                    new_definition_id,
-                    &mapping,
-                )?);
-                remap_feature_extent(&mut cloned.extent, new_definition_id, &mapping)?;
-                FeatureKind::SketchPocket(cloned)
             }
             FeatureKind::Revolve {
                 profile,
@@ -13739,53 +14021,34 @@ fn clone_definition_and_repoint(
                 target,
                 removed_faces,
                 thickness,
-            } => FeatureKind::Shell {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                removed_faces: removed_faces.clone(),
-                thickness: thickness.clone(),
-            },
-            FeatureKind::TopologyShell {
-                target,
-                removed_faces,
-                profile_faces,
-                thickness,
                 direction,
-            } => FeatureKind::TopologyShell {
+            } => FeatureKind::Shell {
                 target: *mapping
                     .get(target)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 removed_faces: removed_faces
                     .iter()
-                    .map(|reference| {
-                        remap_topological_reference(reference, new_definition_id, &mapping)
-                    })
+                    .map(|face| remap_face_ref(face, new_definition_id, &mapping))
                     .collect::<Result<Vec<_>, _>>()?,
-                profile_faces: profile_faces.clone(),
                 thickness: thickness.clone(),
                 direction: *direction,
             },
-            FeatureKind::TopologyEdgeFinish {
+            FeatureKind::EdgeFinish {
                 target,
                 edges,
-                profile_edges,
                 kind,
                 amount,
                 fillet_radius_stations,
                 chamfer_mode,
                 chamfer_edge_sides,
-            } => FeatureKind::TopologyEdgeFinish {
+            } => FeatureKind::EdgeFinish {
                 target: *mapping
                     .get(target)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 edges: edges
                     .iter()
-                    .map(|reference| {
-                        remap_topological_reference(reference, new_definition_id, &mapping)
-                    })
+                    .map(|edge| remap_edge_ref(edge, new_definition_id, &mapping))
                     .collect::<Result<Vec<_>, _>>()?,
-                profile_edges: profile_edges.clone(),
                 kind: *kind,
                 amount: amount.clone(),
                 fillet_radius_stations: fillet_radius_stations.clone(),
@@ -13808,42 +14071,16 @@ fn clone_definition_and_repoint(
                     })
                     .collect::<Result<Vec<_>, CanonicalError>>()?,
             },
-            FeatureKind::TopologyFaceOffset {
+            FeatureKind::FaceOffset {
                 target,
                 face,
-                profile_face,
                 distance,
-            } => FeatureKind::TopologyFaceOffset {
+            } => FeatureKind::FaceOffset {
                 target: *mapping
                     .get(target)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
-                face: face
-                    .as_ref()
-                    .map(|face| remap_topological_reference(face, new_definition_id, &mapping))
-                    .transpose()?,
-                profile_face: profile_face.clone(),
+                face: remap_face_ref(face, new_definition_id, &mapping)?,
                 distance: distance.clone(),
-            },
-            FeatureKind::ThroughCut { target, profile } => FeatureKind::ThroughCut {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                profile: *mapping
-                    .get(profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-            },
-            FeatureKind::Pocket {
-                target,
-                profile,
-                depth,
-            } => FeatureKind::Pocket {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                profile: *mapping
-                    .get(profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                depth: depth.clone(),
             },
             FeatureKind::Boolean {
                 operation,
@@ -14186,20 +14423,37 @@ fn clone_definition_and_repoint(
     Ok(())
 }
 
-fn five_feature_solid_tool_path(target: &FeatureKind, tool: &FeatureKind) -> bool {
-    matches!(
-        (target, tool),
-        (
-            FeatureKind::ImportedExactBody(_),
-            FeatureKind::ImportedExactBody(_)
-        ) | (
-            FeatureKind::ImportedExactBody(_),
-            FeatureKind::Extrusion { .. }
-        ) | (
-            FeatureKind::Extrusion { .. },
-            FeatureKind::ImportedExactBody(_)
-        )
-    )
+fn five_feature_solid_tool_path(
+    product: &ProductModel,
+    target: &FeatureKind,
+    tool: &FeatureKind,
+) -> bool {
+    match (target, tool) {
+        (FeatureKind::ImportedExactBody(_), FeatureKind::ImportedExactBody(_)) => true,
+        (FeatureKind::ImportedExactBody(_), pad) | (pad, FeatureKind::ImportedExactBody(_)) => {
+            is_profile_feature_new_body(product, pad)
+        }
+        _ => false,
+    }
+}
+
+/// A new-body pad of a standalone profile feature, with no face references:
+/// the pad and its profile are a self-contained pair of features.
+fn is_profile_feature_new_body(product: &ProductModel, kind: &FeatureKind) -> bool {
+    let FeatureKind::Pad(PadSpec {
+        profile: PadProfile::Feature(profile),
+        operation: PadOperation::NewBody,
+        extent,
+        ..
+    }) = kind
+    else {
+        return false;
+    };
+    extent.references().is_empty()
+        && product
+            .features
+            .get(profile)
+            .is_some_and(|profile| matches!(profile.kind, FeatureKind::Profile { .. }))
 }
 
 fn exact_solid_tool_dependency_closure_for_snapshot(
@@ -14283,7 +14537,7 @@ fn solid_tool_result_feature_count(
         .features
         .get(&tool_feature_id)
         .ok_or(CanonicalError::FeatureNotFound(tool_feature_id))?;
-    if five_feature_solid_tool_path(&target.kind, &tool.kind) {
+    if five_feature_solid_tool_path(product, &target.kind, &tool.kind) {
         return Ok(5);
     }
     let target_count = exact_solid_tool_dependency_closure(product, target_feature_id)?.len();
@@ -14326,10 +14580,7 @@ fn remap_exact_solid_tool_feature_kind(
             cloned.workplane = mapped(&spec.workplane)?;
             Ok(FeatureKind::Sketch(cloned))
         }
-        FeatureKind::Profile { points_mm } => Ok(FeatureKind::Profile {
-            points_mm: points_mm.clone(),
-        }),
-        FeatureKind::SegmentProfile { segments, closed } => Ok(FeatureKind::SegmentProfile {
+        FeatureKind::Profile { segments, closed } => Ok(FeatureKind::Profile {
             segments: segments.clone(),
             closed: *closed,
         }),
@@ -14355,13 +14606,10 @@ fn remap_exact_solid_tool_feature_kind(
             normal: *normal,
             x_direction: *x_direction,
         }),
-        FeatureKind::SplineProfile { control_points_mm } => Ok(FeatureKind::SplineProfile {
-            control_points_mm: control_points_mm.clone(),
-        }),
-        FeatureKind::Extrusion { profile, height } => Ok(FeatureKind::Extrusion {
-            profile: mapped(profile)?,
-            height: height.clone(),
-        }),
+        // Face references would still point into the source definition.
+        FeatureKind::Pad(spec) if spec.references().is_empty() => {
+            Ok(FeatureKind::Pad(spec.with_features(|id| mapped(&id))?))
+        }
         FeatureKind::Revolve {
             profile,
             axis_start_mm,
@@ -14372,19 +14620,6 @@ fn remap_exact_solid_tool_feature_kind(
             axis_start_mm: *axis_start_mm,
             axis_end_mm: *axis_end_mm,
             angle_degrees: *angle_degrees,
-        }),
-        FeatureKind::ThroughCut { target, profile } => Ok(FeatureKind::ThroughCut {
-            target: mapped(target)?,
-            profile: mapped(profile)?,
-        }),
-        FeatureKind::Pocket {
-            target,
-            profile,
-            depth,
-        } => Ok(FeatureKind::Pocket {
-            target: mapped(target)?,
-            profile: mapped(profile)?,
-            depth: depth.clone(),
         }),
         FeatureKind::Boolean {
             operation,
@@ -14739,16 +14974,7 @@ fn apply_solid_tool(
             tool_spec.clone(),
         );
     }
-    if matches!(
-        (&target_feature.kind, &tool_feature.kind),
-        (
-            FeatureKind::ImportedExactBody(_),
-            FeatureKind::Extrusion { .. }
-        ) | (
-            FeatureKind::Extrusion { .. },
-            FeatureKind::ImportedExactBody(_)
-        )
-    ) {
+    if five_feature_solid_tool_path(product, &target_feature.kind, &tool_feature.kind) {
         return apply_mixed_exact_solid_tool(
             product,
             plan,
@@ -14798,18 +15024,16 @@ fn apply_mixed_exact_solid_tool(
     let (first, second, third, transformed_tool, result) =
         (*first, *second, *third, *transformed_tool, *result);
     let (mut features, target_body, tool_body, binding_mappings) = match (target_kind, tool_kind) {
-        (
-            FeatureKind::ImportedExactBody(target_spec),
-            FeatureKind::Extrusion { profile, height },
-        ) => {
+        (FeatureKind::ImportedExactBody(target_spec), FeatureKind::Pad(tool_pad)) => {
+            let PadProfile::Feature(profile) = tool_pad.profile else {
+                return Err(CanonicalError::InvalidSolidToolPlan);
+            };
             let source_profile = product
                 .features
                 .get(&profile)
                 .ok_or(CanonicalError::FeatureNotFound(profile))?;
             let profile_kind = match source_profile.kind() {
-                FeatureKind::Profile { .. }
-                | FeatureKind::SegmentProfile { .. }
-                | FeatureKind::SplineProfile { .. } => source_profile.kind().clone(),
+                FeatureKind::Profile { .. } => source_profile.kind().clone(),
                 _ => return Err(CanonicalError::InvalidSolidToolPlan),
             };
             (
@@ -14830,10 +15054,10 @@ fn apply_mixed_exact_solid_tool(
                         id: third,
                         definition_id: plan.result_definition_id,
                         name: tool_name,
-                        kind: FeatureKind::Extrusion {
-                            profile: second,
-                            height,
-                        },
+                        kind: FeatureKind::Pad(PadSpec {
+                            profile: PadProfile::Feature(second),
+                            ..tool_pad
+                        }),
                     },
                 ],
                 first,
@@ -14841,15 +15065,16 @@ fn apply_mixed_exact_solid_tool(
                 vec![(profile, second), (plan.tool_feature_id, third)],
             )
         }
-        (FeatureKind::Extrusion { profile, height }, FeatureKind::ImportedExactBody(tool_spec)) => {
+        (FeatureKind::Pad(target_pad), FeatureKind::ImportedExactBody(tool_spec)) => {
+            let PadProfile::Feature(profile) = target_pad.profile else {
+                return Err(CanonicalError::InvalidSolidToolPlan);
+            };
             let source_profile = product
                 .features
                 .get(&profile)
                 .ok_or(CanonicalError::FeatureNotFound(profile))?;
             let profile_kind = match source_profile.kind() {
-                FeatureKind::Profile { .. }
-                | FeatureKind::SegmentProfile { .. }
-                | FeatureKind::SplineProfile { .. } => source_profile.kind().clone(),
+                FeatureKind::Profile { .. } => source_profile.kind().clone(),
                 _ => return Err(CanonicalError::InvalidSolidToolPlan),
             };
             (
@@ -14864,10 +15089,10 @@ fn apply_mixed_exact_solid_tool(
                         id: second,
                         definition_id: plan.result_definition_id,
                         name: target_name,
-                        kind: FeatureKind::Extrusion {
-                            profile: first,
-                            height,
-                        },
+                        kind: FeatureKind::Pad(PadSpec {
+                            profile: PadProfile::Feature(first),
+                            ..target_pad
+                        }),
                     },
                     Feature {
                         id: third,
@@ -15582,8 +15807,11 @@ fn rebind_planar_face_reference(
         .features
         .values()
         .filter_map(|feature| match &feature.kind {
-            FeatureKind::SketchPocket(spec)
-                if spec.support.lineage_digest == reference.lineage_digest =>
+            FeatureKind::Pad(spec)
+                if spec
+                    .operation
+                    .support()
+                    .is_some_and(|support| support.lineage_digest == reference.lineage_digest) =>
             {
                 Some(feature.id)
             }
@@ -15591,16 +15819,18 @@ fn rebind_planar_face_reference(
         })
         .collect::<Vec<_>>();
     for id in dependent_pockets {
-        let feature = Arc::clone(product.features.get(&id).expect("collected Pocket exists"));
-        let FeatureKind::SketchPocket(spec) = &feature.kind else {
-            unreachable!("collected feature is a Pocket");
+        let feature = Arc::clone(product.features.get(&id).expect("collected pad exists"));
+        let FeatureKind::Pad(spec) = &feature.kind else {
+            unreachable!("collected feature is a pad");
         };
         let mut updated = spec.clone();
-        updated.support = Box::new(reference.clone());
+        if let PadOperation::Cut { start, .. } = &mut updated.operation {
+            *start = CutStart::Support(Box::new(reference.clone()));
+        }
         product.features.insert(
             id,
             Arc::new(Feature {
-                kind: FeatureKind::SketchPocket(updated),
+                kind: FeatureKind::Pad(updated),
                 ..feature.as_ref().clone()
             }),
         );
@@ -16504,84 +16734,8 @@ fn validate_product_with_drawing_sources(
             return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
         }
         match feature.kind.clone() {
-            FeatureKind::Extrusion { profile, .. } => {
-                let profile = product
-                    .features
-                    .get(&profile)
-                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                if profile.definition_id != feature.definition_id
-                    || !matches!(
-                        profile.kind,
-                        FeatureKind::Profile { .. }
-                            | FeatureKind::SegmentProfile { closed: true, .. }
-                    )
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
             FeatureKind::Pad(spec) => {
-                let sketch = product
-                    .features
-                    .get(&spec.sketch)
-                    .ok_or(CanonicalError::FeatureNotFound(spec.sketch))?;
-                let FeatureKind::Sketch(sketch_spec) = &sketch.kind else {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                };
-                let workplane = product
-                    .features
-                    .get(&sketch_spec.workplane)
-                    .ok_or(CanonicalError::FeatureNotFound(sketch_spec.workplane))?;
-                let region_exists = sketch_spec
-                    .solved_regions()
-                    .map_err(CanonicalError::from)?
-                    .iter()
-                    .any(|region| region.id == spec.region);
-                if sketch.definition_id != feature.definition_id
-                    || workplane.definition_id != feature.definition_id
-                    || !matches!(workplane.kind, FeatureKind::Workplane(_))
-                    || !region_exists
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
-            FeatureKind::SketchPocket(spec) => {
-                let target = product
-                    .features
-                    .get(&spec.target)
-                    .ok_or(CanonicalError::FeatureNotFound(spec.target))?;
-                let sketch = product
-                    .features
-                    .get(&spec.sketch)
-                    .ok_or(CanonicalError::FeatureNotFound(spec.sketch))?;
-                let FeatureKind::Sketch(sketch_spec) = &sketch.kind else {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                };
-                let workplane = product
-                    .features
-                    .get(&sketch_spec.workplane)
-                    .ok_or(CanonicalError::FeatureNotFound(sketch_spec.workplane))?;
-                let support_matches = matches!(
-                    &workplane.kind,
-                    FeatureKind::Workplane(WorkplaneSpec {
-                        support: WorkplaneSupport::PlanarFace { reference, health },
-                        ..
-                    }) if reference.lineage_digest == spec.support.lineage_digest
-                        && (*health != WorkplaneSupportHealth::Resolved
-                            || reference.as_ref() == spec.support.as_ref())
-                );
-                let region_exists = sketch_spec
-                    .solved_regions()
-                    .map_err(CanonicalError::from)?
-                    .iter()
-                    .any(|region| region.id == spec.region);
-                if target.definition_id != feature.definition_id
-                    || sketch.definition_id != feature.definition_id
-                    || workplane.definition_id != feature.definition_id
-                    || !matches!(target.kind, FeatureKind::Pad(_))
-                    || spec.support.producer_feature_id != spec.target
-                    || !support_matches
-                    || !region_exists
-                {
+                if !pad_inputs_are_valid(product, feature.definition_id, &spec)? {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
@@ -16591,8 +16745,7 @@ fn validate_product_with_drawing_sources(
                     .get(&profile)
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
                 let supported_profile = match &profile_feature.kind {
-                    FeatureKind::Profile { .. }
-                    | FeatureKind::SegmentProfile { closed: true, .. } => true,
+                    FeatureKind::Profile { closed: true, .. } => true,
                     FeatureKind::Sketch(sketch) => sketch
                         .solved_regions()
                         .is_ok_and(|regions| regions.len() == 1),
@@ -16602,132 +16755,19 @@ fn validate_product_with_drawing_sources(
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::Shell { target, .. } => {
-                let target_feature = product
-                    .features
-                    .get(&target)
-                    .ok_or(CanonicalError::FeatureNotFound(target))?;
-                if target == feature.id
-                    || target_feature.definition_id != feature.definition_id
-                    || !feature_kind_is_solid(&target_feature.kind)
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
-            FeatureKind::TopologyShell {
-                target,
-                removed_faces,
-                ..
-            } => {
+            FeatureKind::Shell { .. }
+            | FeatureKind::EdgeFinish { .. }
+            | FeatureKind::FaceOffset { .. } => {
                 validate_topological_feature_context(
                     product.document_id,
                     feature.definition_id,
                     &feature.kind,
                 )?;
-                validate_topological_target(
-                    product,
-                    definition,
-                    feature.id,
-                    target,
-                    &removed_faces,
-                )?;
-            }
-            FeatureKind::TopologyEdgeFinish { target, edges, .. } => {
-                validate_topological_feature_context(
-                    product.document_id,
-                    feature.definition_id,
-                    &feature.kind,
-                )?;
-                validate_topological_target(product, definition, feature.id, target, &edges)?;
-            }
-            FeatureKind::TopologyFaceOffset { target, face, .. } => {
-                if let Some(face) = face {
-                    validate_topological_feature_context(
-                        product.document_id,
-                        feature.definition_id,
-                        &feature.kind,
-                    )?;
-                    validate_topological_target(
-                        product,
-                        definition,
-                        feature.id,
-                        target,
-                        std::slice::from_ref(&face),
-                    )?;
-                }
-            }
-            FeatureKind::ThroughCut { target, profile } => {
-                let target = product
-                    .features
-                    .get(&target)
-                    .ok_or(CanonicalError::FeatureNotFound(target))?;
-                let profile = product
-                    .features
-                    .get(&profile)
-                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                if target.definition_id != feature.definition_id
-                    || profile.definition_id != feature.definition_id
-                    || !matches!(
-                        target.kind,
-                        FeatureKind::Extrusion { .. }
-                            | FeatureKind::TopologyFaceOffset { .. }
-                            | FeatureKind::Revolve { .. }
-                            | FeatureKind::Loft { .. }
-                            | FeatureKind::ImportedExactBody(_)
-                    )
-                    || !matches!(
-                        profile.kind,
-                        FeatureKind::Profile { .. }
-                            | FeatureKind::SegmentProfile { closed: true, .. }
-                    )
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
-            FeatureKind::Pocket {
-                target,
-                profile,
-                depth,
-            } => {
-                let target = product
-                    .features
-                    .get(&target)
-                    .ok_or(CanonicalError::FeatureNotFound(target))?;
-                let profile = product
-                    .features
-                    .get(&profile)
-                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                let valid_depth = match &profile.kind {
-                    FeatureKind::Sketch(sketch) => {
-                        feature_kind_is_solid(&target.kind)
-                            && sketch
-                                .solved_regions()
-                                .is_ok_and(|regions| regions.len() == 1)
-                    }
-                    // A plain-profile pocket must stay blind. Against an
-                    // extrusion that is checked here; a chained target's
-                    // extent is only known to the exact graph compiler.
-                    FeatureKind::Profile { .. }
-                    | FeatureKind::SegmentProfile { closed: true, .. } => match &target.kind {
-                        FeatureKind::Extrusion { height, .. } => {
-                            depth.millimetres() < height.millimetres()
-                        }
-                        kind => feature_kind_is_solid(kind),
-                    },
-                    _ => false,
-                };
-                if target.definition_id != feature.definition_id
-                    || profile.definition_id != feature.definition_id
-                    || !valid_depth
-                    || !matches!(
-                        profile.kind,
-                        FeatureKind::Profile { .. }
-                            | FeatureKind::Sketch(_)
-                            | FeatureKind::SegmentProfile { closed: true, .. }
-                    )
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
+                let (target, references) = feature
+                    .kind
+                    .topological_picks()
+                    .expect("topology features pick a target");
+                validate_topological_target(product, definition, feature.id, target, &references)?;
             }
             FeatureKind::PlanarOffset { profile, distance } => {
                 let source = product
@@ -16745,8 +16785,12 @@ fn validate_product_with_drawing_sources(
                     .position(|candidate| *candidate == profile)
                     .is_some_and(|position| position < feature_position);
                 let distance = distance.millimetres();
-                let valid_bounds = match &source.kind {
-                    FeatureKind::Profile { points_mm } if is_axis_aligned_rectangle(points_mm) => {
+                let rectangle = source
+                    .kind
+                    .polygon_points()
+                    .filter(|points| is_axis_aligned_rectangle(points));
+                let valid_bounds = match (&source.kind, rectangle) {
+                    (_, Some(points_mm)) => {
                         let output_bounds = [
                             points_mm[0][0] - distance,
                             points_mm[0][1] - distance,
@@ -16758,7 +16802,7 @@ fn validate_product_with_drawing_sources(
                         }) && output_bounds[2] - output_bounds[0] >= EXACT_MIN_LENGTH_MM
                             && output_bounds[3] - output_bounds[1] >= EXACT_MIN_LENGTH_MM
                     }
-                    FeatureKind::SegmentProfile { segments, closed } => {
+                    (FeatureKind::Profile { segments, closed }, None) => {
                         distance.abs() <= MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
                             && exact_planar_offset_profile(segments, *closed).is_some_and(
                                 |profile| {
@@ -16789,7 +16833,7 @@ fn validate_product_with_drawing_sources(
                                 },
                             )
                     }
-                    FeatureKind::Sketch(spec) => {
+                    (FeatureKind::Sketch(spec), None) => {
                         spec.solved_regions().ok().is_some_and(|regions| {
                             let [region] = regions.as_slice() else {
                                 return false;
@@ -16991,10 +17035,7 @@ fn validate_product_with_drawing_sources(
                     .is_some_and(|position| position < feature_position);
                 let valid_profile = matches!(
                     &source.kind,
-                    FeatureKind::Profile { points_mm } if points_mm.len() >= 3
-                ) || matches!(
-                    &source.kind,
-                    FeatureKind::SegmentProfile {
+                    FeatureKind::Profile {
                         segments,
                         closed: true,
                     } if segments.len() >= 2
@@ -17101,13 +17142,12 @@ fn validate_product_with_drawing_sources(
                         .position(|candidate| *candidate == section.profile)
                         .is_some_and(|position| position < feature_position);
                     let valid_profile = match &profile.kind {
-                        FeatureKind::SplineProfile { control_points_mm } => {
-                            control_points_mm.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
-                        }
                         FeatureKind::Sketch(sketch) => sketch
                             .solved_regions()
                             .is_ok_and(|regions| regions.len() == 1),
-                        _ => false,
+                        kind => kind.closed_spline_points().is_some_and(|points| {
+                            points.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
+                        }),
                     };
                     if profile.definition_id != feature.definition_id
                         || !valid_profile
@@ -17370,13 +17410,11 @@ fn validate_product_with_drawing_sources(
                 }
             }
             FeatureKind::Profile { .. }
-            | FeatureKind::SegmentProfile { .. }
             | FeatureKind::SheetMetal(_)
             | FeatureKind::SpatialPath { .. }
             | FeatureKind::ConstructionPoint { .. }
             | FeatureKind::ConstructionAxis { .. }
-            | FeatureKind::ConstructionPlane { .. }
-            | FeatureKind::SplineProfile { .. } => {}
+            | FeatureKind::ConstructionPlane { .. } => {}
         }
     }
     for (target, binding) in &product.feature_parameter_bindings {
@@ -17940,13 +17978,13 @@ fn proposal_value(
                         return feature_parameter_dimension(&snapshot.product, parameter)
                             .map_or(ProposalValue::Missing, ProposalValue::Dimension);
                     }
-                    match feature.kind() {
-                        FeatureKind::Profile { points_mm }
+                    match (feature.kind(), feature.kind().polygon_points()) {
+                        (_, Some(points_mm))
                             if matches!(goal, ProposalGoal::SetProfilePoints(_)) =>
                         {
-                            ProposalValue::ProfilePoints(points_mm.clone())
+                            ProposalValue::ProfilePoints(points_mm)
                         }
-                        FeatureKind::Profile { points_mm }
+                        (_, Some(points_mm))
                             if matches!(
                                 goal,
                                 ProposalGoal::CreateProfileFeature(_)
@@ -17957,15 +17995,16 @@ fn proposal_value(
                             ProposalValue::ProfileFeatureState {
                                 definition: feature.definition_id(),
                                 name: feature.name().to_owned(),
-                                points_mm: points_mm.clone(),
+                                points_mm,
                             }
                         }
-                        FeatureKind::Extrusion { height, .. } => {
-                            ProposalValue::Dimension(height.clone())
-                        }
-                        FeatureKind::Shell { thickness, .. } => {
-                            ProposalValue::Dimension(thickness.clone())
-                        }
+                        (
+                            FeatureKind::Pad(PadSpec {
+                                extent: FeatureExtent::Blind(height),
+                                ..
+                            }),
+                            _,
+                        ) => ProposalValue::Dimension(height.clone()),
                         _ => ProposalValue::Digest(dependency_digest(
                             snapshot,
                             &BTreeSet::from([target]),
@@ -18579,23 +18618,18 @@ fn authoritative_dependencies(
                         }
                     }
                     FeatureKind::Pad(spec) => {
-                        add_feature_dependency_closure(snapshot, spec.sketch, &mut dependencies);
+                        if let Some(target) = spec.operation.target() {
+                            add_feature_dependency_closure(snapshot, target, &mut dependencies);
+                        }
+                        add_feature_dependency_closure(
+                            snapshot,
+                            spec.profile.feature_id(),
+                            &mut dependencies,
+                        );
                     }
-                    FeatureKind::SketchPocket(spec) => {
-                        add_feature_dependency_closure(snapshot, spec.target, &mut dependencies);
-                        add_feature_dependency_closure(snapshot, spec.sketch, &mut dependencies);
-                    }
-                    FeatureKind::Extrusion { profile, .. }
-                    | FeatureKind::Revolve { profile, .. }
+                    FeatureKind::Revolve { profile, .. }
                     | FeatureKind::PlanarOffset { profile, .. }
                     | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
-                        add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
-                    }
-                    FeatureKind::ThroughCut { target, profile }
-                    | FeatureKind::Pocket {
-                        target, profile, ..
-                    } => {
-                        add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                     }
                     FeatureKind::Sweep { profile, path } => {
@@ -18637,9 +18671,8 @@ fn authoritative_dependencies(
                         add_feature_dependency_closure(snapshot, *tool, &mut dependencies);
                     }
                     FeatureKind::Shell { target, .. }
-                    | FeatureKind::TopologyShell { target, .. }
-                    | FeatureKind::TopologyEdgeFinish { target, .. }
-                    | FeatureKind::TopologyFaceOffset { target, .. }
+                    | FeatureKind::EdgeFinish { target, .. }
+                    | FeatureKind::FaceOffset { target, .. }
                     | FeatureKind::SurfaceExtend { target, .. }
                     | FeatureKind::SurfaceThicken { target, .. }
                     | FeatureKind::RigidTransform { target, .. } => {
@@ -18651,13 +18684,11 @@ fn authoritative_dependencies(
                         }
                     }
                     FeatureKind::Profile { .. }
-                    | FeatureKind::SegmentProfile { .. }
                     | FeatureKind::SheetMetal(_)
                     | FeatureKind::SpatialPath { .. }
                     | FeatureKind::ConstructionPoint { .. }
                     | FeatureKind::ConstructionAxis { .. }
                     | FeatureKind::ConstructionPlane { .. }
-                    | FeatureKind::SplineProfile { .. }
                     | FeatureKind::ImportedExactBody(_)
                     | FeatureKind::MeshBody(_) => {}
                 }
@@ -19467,23 +19498,14 @@ fn add_feature_dependency_closure(
                 add_feature_dependency_closure(snapshot, spec.workplane, dependencies);
             }
             FeatureKind::Pad(spec) => {
-                add_feature_dependency_closure(snapshot, spec.sketch, dependencies);
+                if let Some(target) = spec.operation.target() {
+                    add_feature_dependency_closure(snapshot, target, dependencies);
+                }
+                add_feature_dependency_closure(snapshot, spec.profile.feature_id(), dependencies);
             }
-            FeatureKind::SketchPocket(spec) => {
-                add_feature_dependency_closure(snapshot, spec.target, dependencies);
-                add_feature_dependency_closure(snapshot, spec.sketch, dependencies);
-            }
-            FeatureKind::Extrusion { profile, .. }
-            | FeatureKind::Revolve { profile, .. }
+            FeatureKind::Revolve { profile, .. }
             | FeatureKind::PlanarOffset { profile, .. }
             | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
-                add_feature_dependency_closure(snapshot, *profile, dependencies);
-            }
-            FeatureKind::ThroughCut { target, profile }
-            | FeatureKind::Pocket {
-                target, profile, ..
-            } => {
-                add_feature_dependency_closure(snapshot, *target, dependencies);
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
             }
             FeatureKind::Sweep { profile, path } => {
@@ -19517,9 +19539,8 @@ fn add_feature_dependency_closure(
                 add_feature_dependency_closure(snapshot, *tool, dependencies);
             }
             FeatureKind::Shell { target, .. }
-            | FeatureKind::TopologyShell { target, .. }
-            | FeatureKind::TopologyEdgeFinish { target, .. }
-            | FeatureKind::TopologyFaceOffset { target, .. }
+            | FeatureKind::EdgeFinish { target, .. }
+            | FeatureKind::FaceOffset { target, .. }
             | FeatureKind::SurfaceExtend { target, .. }
             | FeatureKind::SurfaceThicken { target, .. }
             | FeatureKind::RigidTransform { target, .. } => {
@@ -19531,13 +19552,11 @@ fn add_feature_dependency_closure(
                 }
             }
             FeatureKind::Profile { .. }
-            | FeatureKind::SegmentProfile { .. }
             | FeatureKind::SheetMetal(_)
             | FeatureKind::SpatialPath { .. }
             | FeatureKind::ConstructionPoint { .. }
             | FeatureKind::ConstructionAxis { .. }
             | FeatureKind::ConstructionPlane { .. }
-            | FeatureKind::SplineProfile { .. }
             | FeatureKind::ImportedExactBody(_)
             | FeatureKind::MeshBody(_) => {}
         }
@@ -19562,10 +19581,10 @@ fn dependency_digest(
     dependencies: &BTreeSet<AuthoritativeDependency>,
 ) -> String {
     let mut digest = StableDigest::new();
-    digest.bytes(b"ketchup.authoritative-dependencies.v1");
-    digest.u64(dependencies.len() as u64);
+    digest.bytes(b"ketchup.authoritative-dependencies.v2");
+    digest.value(&dependencies.len());
     for dependency in dependencies {
-        digest.authoritative_dependency(snapshot.product(), dependency.clone());
+        digest.authoritative_dependency(snapshot.product(), dependency);
     }
     digest.finish()
 }
@@ -19679,31 +19698,27 @@ mod parameter_contract_tests {
                 frame: WorkplaneFrame::principal(PrincipalPlane::Xy),
             }),
             sketch,
+            FeatureKind::polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]]),
             FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
-            },
-            FeatureKind::SegmentProfile {
                 segments: vec![ProfileSegment::Line {
                     start_mm: [0.0, 0.0],
                     end_mm: [4.0, 2.0],
                 }],
                 closed: false,
             },
-            FeatureKind::SplineProfile {
-                control_points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
-            },
-            FeatureKind::Extrusion {
-                profile: FeatureId(1),
-                height: dimension(12.0),
-            },
+            FeatureKind::closed_spline(&[[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]]),
+            FeatureKind::extrusion(FeatureId(1), dimension(12.0)),
             FeatureKind::Pad(PadSpec {
-                sketch: FeatureId(1),
-                region: SketchRegionId(1),
+                profile: PadProfile::SketchRegion {
+                    sketch: FeatureId(1),
+                    region: SketchRegionId(1),
+                },
                 direction: FeatureDirection::AlongNormal,
                 extent: FeatureExtent::Bidirectional {
                     along: FeatureExtentEnd::Blind(dimension(6.0)),
                     opposite: FeatureExtentEnd::Blind(dimension(3.0)),
                 },
+                operation: PadOperation::NewBody,
             }),
             FeatureKind::Revolve {
                 profile: FeatureId(1),
@@ -19711,11 +19726,7 @@ mod parameter_contract_tests {
                 axis_end_mm: [0.0, 1.0],
                 angle_degrees: 180.0,
             },
-            FeatureKind::Pocket {
-                target: FeatureId(2),
-                profile: FeatureId(1),
-                depth: dimension(5.0),
-            },
+            FeatureKind::pocket(FeatureId(2), FeatureId(1), dimension(5.0)),
             FeatureKind::PlanarOffset {
                 profile: FeatureId(1),
                 distance: dimension(2.0),

@@ -171,8 +171,9 @@ def main() -> int:
         "ketchup-app",
         "--no-default-features",
         "--test",
-        "live_bridge_python",
+        "integration",
         "--",
+        "live_bridge_python::",
         "--ignored",
         "--nocapture",
     ])

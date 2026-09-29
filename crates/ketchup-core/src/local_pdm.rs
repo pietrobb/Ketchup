@@ -508,7 +508,7 @@ pub fn open_release(
     let container_data = loaded.container_data().clone();
     if snapshot.document_id().0 != manifest.document.document_id
         || snapshot.revision_id() != manifest.document.revision
-        || snapshot.canonical_digest() != manifest.document.canonical_digest
+        || loaded.audit().source_canonical_digest != manifest.document.canonical_digest
         || manifest.document.units != "millimetres"
     {
         return Err(LocalPdmError::DocumentIdentityMismatch);

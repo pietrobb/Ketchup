@@ -4,6 +4,7 @@ use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId,
     ProfileSegment, SceneOccurrence, SceneQueryBudgetExceeded, Snapshot, Transform,
 };
+use ketchup_core::sketch::{PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -275,14 +276,26 @@ pub fn definition_requires_evaluated_geometry(
         snapshot.feature(*feature_id).is_none_or(|feature| {
             !matches!(
                 feature.kind(),
-                FeatureKind::Workplane(_)
-                    | FeatureKind::Sketch(_)
-                    | FeatureKind::Profile { .. }
-                    | FeatureKind::SegmentProfile { .. }
-                    | FeatureKind::Extrusion { .. }
-            )
+                FeatureKind::Workplane(_) | FeatureKind::Sketch(_) | FeatureKind::Profile { .. }
+            ) && profile_extrusion(feature.kind()).is_none()
         })
     })
+}
+
+/// The profile and height of a new body swept along the normal of a profile feature.
+fn profile_extrusion(kind: &FeatureKind) -> Option<(FeatureId, f64)> {
+    let FeatureKind::Pad(
+        spec @ PadSpec {
+            profile: PadProfile::Feature(_),
+            operation: PadOperation::NewBody,
+            ..
+        },
+    ) = kind
+    else {
+        return None;
+    };
+    spec.blind_along_normal()
+        .map(|(profile, height)| (profile, height.millimetres()))
 }
 
 fn canonical_box(
@@ -302,22 +315,18 @@ fn canonical_box(
             return (None, None, None);
         };
         match feature.kind() {
-            FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. } => {
+            FeatureKind::Profile { .. } => {
                 profile.get_or_insert(*feature_id);
             }
-            FeatureKind::Extrusion {
-                profile: source,
-                height,
-            } => {
-                if extrusion
-                    .replace((*feature_id, *source, height.millimetres()))
-                    .is_some()
-                {
+            FeatureKind::Workplane(_) | FeatureKind::Sketch(_) => {}
+            kind => {
+                let Some((source, height)) = profile_extrusion(kind) else {
+                    return (None, None, None);
+                };
+                if extrusion.replace((*feature_id, source, height)).is_some() {
                     return (None, None, None);
                 }
             }
-            FeatureKind::Workplane(_) | FeatureKind::Sketch(_) => {}
-            _ => return (None, None, None),
         }
     }
     let (profile_id, extrusion_id, height) = match extrusion {
@@ -337,8 +346,7 @@ fn canonical_box(
         return (None, None, None);
     }
     let bounds = match profile.kind() {
-        FeatureKind::Profile { points_mm } => profile_bounds(points_mm),
-        FeatureKind::SegmentProfile { segments, .. } => segment_profile_bounds(segments),
+        FeatureKind::Profile { segments, .. } => segment_profile_bounds(segments),
         _ => return (None, None, None),
     };
     let Some((min_x, min_y, width, depth)) = bounds else {
@@ -408,6 +416,8 @@ fn segment_profile_bounds(segments: &[ProfileSegment]) -> Option<(f64, f64, f64,
             } => {
                 points.extend([*start_mm, *control_1_mm, *control_2_mm, *end_mm]);
             }
+            // A spline may bulge past its points; only the exact kernel bounds it.
+            ProfileSegment::Spline { .. } => return None,
         }
     }
     if let Some(bounds) = profile_bounds(&points) {

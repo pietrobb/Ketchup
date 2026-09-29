@@ -6,10 +6,12 @@ const MAX_TOOTH_COUNT: u32 = 1_000_000;
 const MAX_PITCH_DIMENSION_MM: f64 = 1_000_000.0;
 const MAX_REFERENCE_POSITION: f64 = 1_000_000.0;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct AssemblyMotionCouplingId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AssemblyMotionDirection {
     Same,
     Opposite,
@@ -25,13 +27,13 @@ impl AssemblyMotionDirection {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GearMeshKind {
     External,
     Internal,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ScrewHandedness {
     Right,
     Left,
@@ -43,7 +45,7 @@ pub enum CoupledJointKind {
     Prismatic,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AssemblyTransmissionKind {
     GearPair {
         input_teeth: u32,
@@ -168,7 +170,7 @@ impl AssemblyTransmissionKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AssemblyMotionCoupling {
     pub(crate) schema: String,
     pub(crate) id: AssemblyMotionCouplingId,

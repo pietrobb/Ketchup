@@ -94,7 +94,7 @@ SYSTEM_PROMPT = (
     "parts, use linear_arrays with occurrence_ids, instances (total count including the originals), "
     "and step_mm [x, y, z]; never rebuild the repeated bodies. Interpret N-times stacking as N total "
     "layers including the originals unless the user explicitly asks for N new copies. The "
-    "state_view.content is the canonical agent_v1 StateView only when state_view.complete is true; "
+    "state_view.content is the canonical agent StateView only when state_view.complete is true; "
     "otherwise it is a bounded preview identified by state_view.sha256. The occurrences list is "
     "authoritative only when occurrences_complete is true. If it is false, do not infer a "
     "whole-scene or whole-assembly edit from the truncated list; use list_occurrences with its "

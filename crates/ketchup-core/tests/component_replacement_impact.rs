@@ -119,35 +119,25 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
             id: SOURCE_PROFILE,
             definition_id: SOURCE,
             name: "Source profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: SOURCE_EXTRUSION,
             definition_id: SOURCE,
             name: "Source extrusion".into(),
-            kind: FeatureKind::Extrusion {
-                profile: SOURCE_PROFILE,
-                height: Dimension::from_decimal("10").unwrap(),
-            },
+            kind: FeatureKind::extrusion(SOURCE_PROFILE, Dimension::from_decimal("10").unwrap()),
         },
         CanonicalCommand::CreateFeature {
             id: TARGET_PROFILE,
             definition_id: TARGET,
             name: "Target profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [14.0, 0.0], [14.0, 8.0], [0.0, 8.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [14.0, 0.0], [14.0, 8.0], [0.0, 8.0]]),
         },
         CanonicalCommand::CreateFeature {
             id: TARGET_EXTRUSION,
             definition_id: TARGET,
             name: "Target extrusion".into(),
-            kind: FeatureKind::Extrusion {
-                profile: TARGET_PROFILE,
-                height: Dimension::from_decimal("18").unwrap(),
-            },
+            kind: FeatureKind::extrusion(TARGET_PROFILE, Dimension::from_decimal("18").unwrap()),
         },
     ];
     commands.extend(if reverse_occurrences {
@@ -591,9 +581,7 @@ fn replacement_impact_fails_closed_for_hidden_failed_lost_and_incompatible_input
             id: FeatureId(22),
             definition_id: TARGET,
             name: "Unmatched target feature".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]),
         }]))
         .unwrap();
     let incompatible_results = registry(&incompatible.current());

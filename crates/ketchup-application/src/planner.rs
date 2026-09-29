@@ -48,7 +48,9 @@ use ketchup_core::joinery::{
     DowelHole, DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair,
     StandardDowel, project_dowel_joint_contract,
 };
-use ketchup_core::sketch::{SketchConstraintId, SketchEntity, WorkplaneSupport};
+use ketchup_core::sketch::{
+    PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
+};
 use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::Vec3;
 use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
@@ -778,15 +780,27 @@ fn squared_distance(left: [f64; 3], right: [f64; 3]) -> f64 {
         .sum()
 }
 
+/// A pad that cuts a profile feature into a target.
+fn cut_pad(kind: &FeatureKind) -> Option<&PadSpec> {
+    match kind {
+        FeatureKind::Pad(
+            spec @ PadSpec {
+                profile: PadProfile::Feature(_),
+                operation: PadOperation::Cut { .. },
+                ..
+            },
+        ) => Some(spec),
+        _ => None,
+    }
+}
+
 fn circular_pocket_axis(
     snapshot: &Snapshot,
     feature_id: FeatureId,
 ) -> Option<([f64; 3], [f64; 3], f64)> {
     let feature = snapshot.feature(feature_id)?;
-    let (profile_id, depth_mm) = match feature.kind() {
-        FeatureKind::Pocket { profile, depth, .. } => (*profile, depth.millimetres()),
-        _ => return None,
-    };
+    let (profile_id, depth) = cut_pad(feature.kind())?.blind_along_normal()?;
+    let depth_mm = depth.millimetres();
     let sketch = match snapshot.feature(profile_id)?.kind() {
         FeatureKind::Sketch(sketch) => sketch,
         _ => return None,
@@ -1020,9 +1034,9 @@ fn delete_owned_physical_dowel_joint(
     for pocket_id in &pocket_ids {
         let (profile_id, definition_id) = snapshot
             .feature(*pocket_id)
-            .and_then(|feature| match feature.kind() {
-                FeatureKind::Pocket { profile, .. } => Some((*profile, feature.definition_id())),
-                _ => None,
+            .and_then(|feature| {
+                cut_pad(feature.kind())
+                    .map(|spec| (spec.profile.feature_id(), feature.definition_id()))
             })
             .ok_or_else(|| {
                 assistant_planning_rejection(
@@ -1688,7 +1702,7 @@ fn plan_assistant_helix_thread_creation(
                 id: profile_feature_id,
                 definition_id,
                 name: format!("{name} profile"),
-                kind: FeatureKind::SegmentProfile {
+                kind: FeatureKind::Profile {
                     segments: profile_segments,
                     closed: true,
                 },
@@ -3262,10 +3276,12 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         operation_name,
                         Some(pocket_id),
                     )?;
-                    let profile_id = match current.feature(pocket_id).map(|feature| feature.kind())
+                    let profile_id = match current
+                        .feature(pocket_id)
+                        .and_then(|feature| cut_pad(feature.kind()))
                     {
-                        Some(FeatureKind::Pocket { profile, .. }) => *profile,
-                        _ => {
+                        Some(spec) => spec.profile.feature_id(),
+                        None => {
                             return Err(assistant_planning_rejection(
                                 "planning.physical_dowel_pair_invalid",
                                 operation_name,

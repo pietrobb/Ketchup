@@ -177,14 +177,21 @@ fn canonical_joint_kinds_commit_undo_redo_and_persist_losslessly() {
 
     // Semantic state rows expose schema, topology, and kind for every joint.
     let state = encode_semantic_state(&committed);
-    let complete = state.complete_v1();
+    let complete = state.complete();
     assert!(complete.contains(&format!(
-        "assembly_joint.20=schema:{ASSEMBLY_JOINT_SCHEMA_V1:?},parent:10,child:11,kind:fixed"
+        "assembly_joints.20.schema={ASSEMBLY_JOINT_SCHEMA_V1:?}"
     )));
-    assert!(complete.contains("assembly_joint.21=schema:"));
-    assert!(complete.contains("kind:revolute"));
-    assert!(complete.contains("assembly_joint.22=schema:"));
-    assert!(complete.contains("kind:prismatic"));
+    for line in [
+        "assembly_joints.20.parent_instance_path.root=10",
+        "assembly_joints.20.child_instance_path.root=11",
+        "assembly_joints.20.kind=\"Fixed\"",
+        "assembly_joints.21.schema=",
+        "assembly_joints.21.kind.Revolute.",
+        "assembly_joints.22.schema=",
+        "assembly_joints.22.kind.Prismatic.",
+    ] {
+        assert!(complete.contains(line), "missing {line}");
+    }
 
     // Save/load through the persistence API preserves the canonical digest,
     // the semantic state, and the joint payloads bit-for-bit.
@@ -192,7 +199,7 @@ fn canonical_joint_kinds_commit_undo_redo_and_persist_losslessly() {
     assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
+        encode_semantic_state(&reopened.snapshot()).complete(),
         complete
     );
     assert_eq!(
@@ -629,8 +636,8 @@ fn motion_studies_are_validated_and_protect_driven_joints_from_deletion() {
     );
     assert!(
         encode_semantic_state(&document.current())
-            .complete_v1()
-            .contains("assembly_motion_study.40=schema:")
+            .complete()
+            .contains("assembly_motion_studies.40.schema=")
     );
 
     let before_duplicate = store_stamp(&document);
@@ -1216,8 +1223,8 @@ fn integration_round_trip_dependencies_stale_replay_and_undo_redo_are_atomic() {
         saved.assembly_joint(REVOLUTE_JOINT)
     );
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
-        encode_semantic_state(&saved).complete_v1()
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        encode_semantic_state(&saved).complete()
     );
 
     for (command, expected) in [
@@ -2214,7 +2221,7 @@ fn motion_study_preview_commit_semantic_state_and_save_open_are_atomic() {
         .unwrap();
     let source = document.current();
     let source_digest = source.canonical_digest();
-    let source_semantic_state = encode_semantic_state(&source).complete_v1().to_owned();
+    let source_semantic_state = encode_semantic_state(&source).complete().to_owned();
 
     let solution = solve_assembly_motion_study(&source, STUDY).unwrap();
     assert_eq!(
@@ -2306,16 +2313,16 @@ fn motion_study_preview_commit_semantic_state_and_save_open_are_atomic() {
                 .transform(),
         );
     }
-    let committed_semantic_state = encode_semantic_state(&committed).complete_v1().to_owned();
+    let committed_semantic_state = encode_semantic_state(&committed).complete().to_owned();
     assert_ne!(committed_semantic_state, source_semantic_state);
-    assert!(committed_semantic_state.contains("assembly_motion_study.40="));
-    assert!(committed_semantic_state.contains("assembly_joint.21="));
-    assert!(committed_semantic_state.contains("assembly_joint.22="));
+    assert!(committed_semantic_state.contains("assembly_motion_studies.40."));
+    assert!(committed_semantic_state.contains("assembly_joints.21."));
+    assert!(committed_semantic_state.contains("assembly_joints.22."));
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
-        encode_semantic_state(&reopened.snapshot()).complete_v1(),
+        encode_semantic_state(&reopened.snapshot()).complete(),
         committed_semantic_state
     );
     assert_eq!(
@@ -2943,9 +2950,8 @@ fn helical_joint_solves_samples_publishes_and_persists_losslessly() {
     ));
     assert_eq!(store_stamp(&document), committed);
 
-    let semantic_state = encode_semantic_state(&document.current()).complete_v1();
-    assert!(semantic_state.contains("kind:helical"));
-    assert!(semantic_state.contains("lead_mm_per_revolution_f64_bits:"));
+    let semantic_state = encode_semantic_state(&document.current()).complete();
+    assert!(semantic_state.contains(".kind.Helical.lead_mm_per_revolution="));
     let bytes = persistence::save(&document.current());
     let mut mislabeled_legacy = bytes.clone();
     mislabeled_legacy[10..12].copy_from_slice(&63_u16.to_le_bytes());

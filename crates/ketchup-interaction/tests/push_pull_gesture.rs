@@ -6,6 +6,7 @@ use ketchup_core::exact_product::{
     BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactProductError, ExactResultRegistry,
 };
 use ketchup_core::persistence;
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
 use ketchup_core::testing::box_package;
 use ketchup_interaction::face_intent::{
@@ -66,18 +67,13 @@ fn source_document() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: Dimension::from_decimal("20").unwrap(),
-                },
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("20").unwrap()),
             },
             CanonicalCommand::CreateBody {
                 definition_id: DEFINITION,
@@ -93,18 +89,13 @@ fn source_document() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
                 id: OTHER_PROFILE,
                 definition_id: DEFINITION,
                 name: "Other rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 5.0], [0.0, 5.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [6.0, 0.0], [6.0, 5.0], [0.0, 5.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: OTHER_EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Other extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: OTHER_PROFILE,
-                    height: Dimension::from_decimal("12").unwrap(),
-                },
+                kind: FeatureKind::extrusion(OTHER_PROFILE, Dimension::from_decimal("12").unwrap()),
             },
             CanonicalCommand::SetActiveBody {
                 definition_id: DEFINITION,
@@ -286,7 +277,7 @@ fn p_binds_hover_before_selection_and_commits_pointer_or_exact_preview_as_one_un
     );
     assert!(matches!(
         document.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 10.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 10.0
     ));
 
     assert!(matches!(
@@ -341,13 +332,13 @@ fn p_binds_hover_before_selection_and_commits_pointer_or_exact_preview_as_one_un
     );
     assert!(matches!(
         reopened.feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 10.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 10.0
     ));
 
     assert!(document.undo().is_some());
     assert!(matches!(
         document.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 20.0
     ));
     assert!(document.redo().is_some());
     assert_eq!(document.current().canonical_digest(), committed_digest);

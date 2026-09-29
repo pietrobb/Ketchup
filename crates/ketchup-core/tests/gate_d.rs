@@ -14,6 +14,7 @@ use ketchup_core::intent::{
     propose_intent,
 };
 use ketchup_core::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceId,
@@ -92,18 +93,13 @@ fn seed() -> DocumentStore {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Rectangle".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: EXTRUSION,
                 definition_id: DEFINITION,
                 name: "Extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: dimension("20", 20.0),
-                },
+                kind: FeatureKind::extrusion(PROFILE, dimension("20", 20.0)),
             },
             CanonicalCommand::CreateTag {
                 id: TAG,
@@ -527,14 +523,14 @@ fn gate_d_profile_points_are_observational_typed_and_undoable() {
 
     store.commit_verified_proposal(&proposal).unwrap();
     assert!(matches!(
-        store.current().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm == &requested
+        store.current().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm == &requested
     ));
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     store.undo().unwrap();
     assert!(matches!(
-        store.current().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm }
+        store.current().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm)
             if points_mm == &vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
     ));
 }
@@ -603,8 +599,8 @@ fn gate_d_profile_points_reject_denied_invalid_wrong_kind_missing_and_stale() {
     ));
     assert_eq!(store.current().canonical_digest(), changed_digest);
     assert!(matches!(
-        store.current().feature(PROFILE).unwrap().kind(),
-        FeatureKind::Profile { points_mm } if points_mm == &concurrent
+        store.current().feature(PROFILE).unwrap().kind().polygon_points(),
+        Some(ref points_mm) if points_mm == &concurrent
     ));
 }
 
@@ -631,7 +627,13 @@ fn gate_d_feature_intent_uses_the_same_safe_path_and_is_not_replayable() {
         Err(ProposalCommitError::Stale(_))
     ));
     let snapshot = store.current();
-    let FeatureKind::Extrusion { height, .. } = snapshot.feature(EXTRUSION).unwrap().kind() else {
+    let FeatureKind::Pad(PadSpec {
+        profile: PadProfile::Feature(_),
+        extent: FeatureExtent::Blind(height),
+        operation: PadOperation::NewBody,
+        ..
+    }) = snapshot.feature(EXTRUSION).unwrap().kind()
+    else {
         panic!("fixture extrusion changed kind");
     };
     assert_eq!(height.millimetres(), 35.0);
@@ -3654,8 +3656,8 @@ fn gate_d_create_profile_feature_is_typed_observational_and_undoable() {
     assert_eq!(created.definition_id(), SECOND_DEFINITION);
     assert_eq!(created.name(), "Reviewed profile");
     assert!(matches!(
-        created.kind(),
-        FeatureKind::Profile { points_mm: created_points } if created_points == &points_mm
+        created.kind().polygon_points(),
+        Some(ref created_points) if created_points == &points_mm
     ));
     assert_eq!(
         snapshot
@@ -3759,9 +3761,7 @@ fn gate_d_create_profile_feature_rejects_denied_invalid_existing_dependency_and_
             id: FeatureId(25),
             definition_id: SECOND_DEFINITION,
             name: "Concurrent sibling".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: valid_points.clone(),
-            },
+            kind: FeatureKind::polygon(&valid_points),
         }]))
         .unwrap();
     let dependency_digest = dependency_store.current().canonical_digest();
@@ -3790,9 +3790,7 @@ fn gate_d_create_profile_feature_rejects_denied_invalid_existing_dependency_and_
             id: target,
             definition_id: SECOND_DEFINITION,
             name: "Concurrent profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: valid_points,
-            },
+            kind: FeatureKind::polygon(&valid_points),
         }]))
         .unwrap();
     let changed_digest = store.current().canonical_digest();
@@ -3960,9 +3958,7 @@ fn gate_d_delete_profile_feature_is_typed_observational_and_undoable() {
             id: target,
             definition_id: SECOND_DEFINITION,
             name: "Reviewed profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: points_mm.clone(),
-            },
+            kind: FeatureKind::polygon(&points_mm),
         }]))
         .unwrap();
     let revision_before = store.current().revision_id();
@@ -4035,12 +4031,7 @@ fn gate_d_delete_profile_feature_is_typed_observational_and_undoable() {
     let restored = snapshot.feature(target).unwrap();
     assert_eq!(restored.definition_id(), SECOND_DEFINITION);
     assert_eq!(restored.name(), "Reviewed profile");
-    assert_eq!(
-        restored.kind(),
-        &FeatureKind::Profile {
-            points_mm: points_mm.clone(),
-        }
-    );
+    assert_eq!(restored.kind(), &FeatureKind::polygon(&points_mm));
     assert_eq!(
         snapshot
             .definition(SECOND_DEFINITION)
@@ -4104,9 +4095,7 @@ fn gate_d_delete_profile_feature_rejects_denied_missing_used_and_stale_definitio
             id: target,
             definition_id: SECOND_DEFINITION,
             name: "Reviewed profile".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [12.0, 0.0], [12.0, 8.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [12.0, 0.0], [12.0, 8.0]]),
         }]))
         .unwrap();
     let proposal = propose_intent(
@@ -4119,9 +4108,7 @@ fn gate_d_delete_profile_feature_rejects_denied_missing_used_and_stale_definitio
             id: FeatureId(25),
             definition_id: SECOND_DEFINITION,
             name: "Concurrent sibling".to_owned(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 4.0]],
-            },
+            kind: FeatureKind::polygon(&[[0.0, 0.0], [6.0, 0.0], [6.0, 4.0]]),
         }]))
         .unwrap();
     let changed_digest = stale_store.current().canonical_digest();
@@ -4833,7 +4820,8 @@ fn gate_d_delete_rule_override_rejects_denied_missing_and_stale_override() {
 fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let derived_from = ketchup_core::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
@@ -4913,7 +4901,8 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
 fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_stale() {
     let mut store = seed();
     let target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let intent = || WorkflowIntent::CreateFeatureParameterBinding {
         target: target.clone(),
         rule: RULE_OUTPUTS,
@@ -4953,7 +4942,7 @@ fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_s
         WorkflowIntent::CreateFeatureParameterBinding {
             target: FeatureParameterTarget::new(
                 FeatureId(999),
-                "height",
+                "extent.distance",
                 ParameterValueType::Length,
             )
             .unwrap(),
@@ -5021,7 +5010,8 @@ fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_s
 fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let derived_from = ketchup_core::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
@@ -5101,7 +5091,8 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
 fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
     let mut store = seed();
     let target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let derived_from = ketchup_core::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
@@ -5228,7 +5219,8 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
 fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
@@ -5287,14 +5279,14 @@ fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
     store.commit_verified_proposal(&proposal).unwrap();
     assert!(matches!(
         store.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "1200" && height.millimetres() == 1200.0
     ));
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     store.undo().unwrap();
     assert!(matches!(
         store.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. })
             if height.source_token() == "20" && height.millimetres() == 20.0
     ));
 }
@@ -5303,7 +5295,8 @@ fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
 fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale() {
     let mut store = seed();
     let target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let intent = || WorkflowIntent::RecomputeFeatureParameter {
         target: target.clone(),
     };
@@ -5361,23 +5354,23 @@ fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale(
     assert_eq!(store.current().canonical_digest(), changed_digest);
     assert!(matches!(
         store.current().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.millimetres() == 20.0
     ));
 
     let second_extrusion = FeatureId(30);
-    let second_target =
-        FeatureParameterTarget::new(second_extrusion, "height", ParameterValueType::Length)
-            .unwrap();
+    let second_target = FeatureParameterTarget::new(
+        second_extrusion,
+        "extent.distance",
+        ParameterValueType::Length,
+    )
+    .unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateFeature {
                 id: second_extrusion,
                 definition_id: DEFINITION,
                 name: "Second extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: dimension("20", 20.0),
-                },
+                kind: FeatureKind::extrusion(PROFILE, dimension("20", 20.0)),
             },
             CanonicalCommand::UpsertFeatureParameterBinding(binding(second_target)),
         ]))
@@ -5731,9 +5724,7 @@ fn gate_d_clone_profile_definition_is_typed_observational_and_undoable() {
                 id: source_feature,
                 definition_id: SECOND_DEFINITION,
                 name: "Source profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: points_mm.clone(),
-                },
+                kind: FeatureKind::polygon(&points_mm),
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence,
@@ -5866,8 +5857,8 @@ fn gate_d_clone_profile_definition_is_typed_observational_and_undoable() {
         &[new_feature]
     );
     assert!(matches!(
-        store.current().feature(new_feature).unwrap().kind(),
-        FeatureKind::Profile { points_mm: cloned } if cloned == &points_mm
+        store.current().feature(new_feature).unwrap().kind().polygon_points(),
+        Some(ref cloned) if cloned == &points_mm
     ));
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     store.undo().unwrap();
@@ -5893,9 +5884,7 @@ fn gate_d_clone_profile_definition_rejects_denied_unsupported_stale_and_claimed(
                     id: FeatureId(90),
                     definition_id: SECOND_DEFINITION,
                     name: "Source profile".to_owned(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [12.0, 0.0], [12.0, 8.0], [0.0, 8.0]],
-                    },
+                    kind: FeatureKind::polygon(&[[0.0, 0.0], [12.0, 0.0], [12.0, 8.0], [0.0, 8.0]]),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: OccurrenceId(91),
@@ -7287,7 +7276,8 @@ fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = PersistentDimensionId(90);
     let dimension_target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let presentation = DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -7363,7 +7353,8 @@ fn gate_d_create_persistent_dimension_rejects_denied_reuse_and_stale_claim() {
     let mut store = seed();
     let target = PersistentDimensionId(91);
     let dimension_target =
-        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
+            .unwrap();
     let presentation = DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 1).unwrap();
     let intent = || WorkflowIntent::CreatePersistentDimension {
         target,
@@ -7390,7 +7381,12 @@ fn gate_d_create_persistent_dimension_rejects_denied_reuse_and_stale_claim() {
     );
     let digest_before = store.current().canonical_digest();
     for invalid_target in [
-        FeatureParameterTarget::new(FeatureId(999), "height", ParameterValueType::Length).unwrap(),
+        FeatureParameterTarget::new(
+            FeatureId(999),
+            "extent.distance",
+            ParameterValueType::Length,
+        )
+        .unwrap(),
         FeatureParameterTarget::new(EXTRUSION, "thickness", ParameterValueType::Length).unwrap(),
     ] {
         assert!(

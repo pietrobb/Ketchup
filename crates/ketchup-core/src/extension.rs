@@ -263,7 +263,7 @@ impl PluginGateway {
 
         match request {
             PluginRequest::QueryAgentState => {
-                let state = encode_semantic_state(&store.current()).agent_v1();
+                let state = encode_semantic_state(&store.current()).agent();
                 let effective_max_bytes = self
                     .manifest
                     .limits

@@ -123,17 +123,14 @@ fn generic_boolean_consumes_a_sketch_pocket_result() {
         .apply_batch(&CommandBatch::new(vec![
             feature(
                 TOOL_PROFILE,
-                FeatureKind::Profile {
-                    points_mm: vec![[100.0, 40.0], [200.0, 40.0], [200.0, 100.0], [100.0, 100.0]],
-                },
+                FeatureKind::polygon(&[
+                    [100.0, 40.0],
+                    [200.0, 40.0],
+                    [200.0, 100.0],
+                    [100.0, 100.0],
+                ]),
             ),
-            feature(
-                TOOL,
-                FeatureKind::Extrusion {
-                    profile: TOOL_PROFILE,
-                    height: dimension(20.0),
-                },
-            ),
+            feature(TOOL, FeatureKind::extrusion(TOOL_PROFILE, dimension(20.0))),
             feature(
                 BOOLEAN,
                 FeatureKind::Boolean {
@@ -271,7 +268,7 @@ fn plain_profile_pockets_cut_down_from_the_target_top() {
     for segments in [false, true] {
         let points = vec![[40.0, 40.0], [80.0, 40.0], [80.0, 80.0], [40.0, 80.0]];
         let cut_kind = if segments {
-            FeatureKind::SegmentProfile {
+            FeatureKind::Profile {
                 segments: (0..4)
                     .map(|i| ProfileSegment::Line {
                         start_mm: points[i],
@@ -281,7 +278,7 @@ fn plain_profile_pockets_cut_down_from_the_target_top() {
                 closed: true,
             }
         } else {
-            FeatureKind::Profile { points_mm: points }
+            FeatureKind::polygon(&points)
         };
         let mut document = DocumentStore::new();
         document
@@ -292,19 +289,14 @@ fn plain_profile_pockets_cut_down_from_the_target_top() {
                 },
                 feature(
                     BASE_SKETCH,
-                    FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]],
-                    },
+                    FeatureKind::polygon(&[[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]]),
                 ),
-                feature(
-                    PAD,
-                    FeatureKind::Extrusion {
-                        profile: BASE_SKETCH,
-                        height: dimension(20.0),
-                    },
-                ),
+                feature(PAD, FeatureKind::extrusion(BASE_SKETCH, dimension(20.0))),
                 feature(CUT_SKETCH, cut_kind),
-                pocket(CUT_SKETCH, 10.0),
+                feature(
+                    POCKET,
+                    FeatureKind::pocket(PAD, CUT_SKETCH, dimension(10.0)),
+                ),
             ]))
             .unwrap();
         let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, POCKET).unwrap();

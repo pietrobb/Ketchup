@@ -1,5 +1,6 @@
 use ketchup_core::document::*;
 use ketchup_core::persistence;
+use ketchup_core::testing::{cbor_entry, rewrite_saved_snapshot};
 
 fn occurrence(id: u64) -> CanonicalCommand {
     CanonicalCommand::CreateOccurrence {
@@ -23,18 +24,13 @@ fn fixture() -> DocumentStore {
             id: FeatureId(10),
             definition_id: DefinitionId(1),
             name: "Profile".into(),
-            kind: FeatureKind::Profile {
-                points_mm: vec![[0., 0.], [50., 0.], [50., 30.], [0., 30.]],
-            },
+            kind: FeatureKind::polygon(&[[0., 0.], [50., 0.], [50., 30.], [0., 30.]]),
         },
         CanonicalCommand::CreateFeature {
             id: FeatureId(11),
             definition_id: DefinitionId(1),
             name: "Solid".into(),
-            kind: FeatureKind::Extrusion {
-                profile: FeatureId(10),
-                height: Dimension::from_decimal("10").unwrap(),
-            },
+            kind: FeatureKind::extrusion(FeatureId(10), Dimension::from_decimal("10").unwrap()),
         },
         occurrence(20),
         occurrence(21),
@@ -166,16 +162,17 @@ fn persisted_duplicate_and_invalid_codes_are_rejected_even_with_valid_checksum()
     ]))
     .unwrap();
     let original = persistence::save(&doc.current());
-    for replacement in [b"FIRST0000001".as_slice(), b"lower0000002".as_slice()] {
-        let mut bytes = original.clone();
-        let offset = bytes
-            .windows(12)
-            .position(|window| window == b"OTHER0000002")
-            .unwrap();
-        bytes[offset..offset + 12].copy_from_slice(replacement);
-        let manifest_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        let checksum = ketchup_core::graph::sha256_bytes(&bytes[16 + manifest_length..]);
-        bytes[24..56].copy_from_slice(&checksum);
+    for replacement in ["FIRST0000001", "lower0000002"] {
+        let bytes = rewrite_saved_snapshot(&original, |saved| {
+            let codes = cbor_entry(cbor_entry(saved, "product"), "production_codes")
+                .as_map_mut()
+                .expect("a CBOR map");
+            let (_, code) = codes
+                .iter_mut()
+                .find(|(_, code)| code.as_text() == Some("OTHER0000002"))
+                .expect("the second code is stored");
+            *code = replacement.into();
+        });
         assert!(persistence::load(&bytes).is_err());
     }
 }

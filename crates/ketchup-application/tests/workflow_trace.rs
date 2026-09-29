@@ -12,6 +12,7 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, OccurrenceId, Transform,
 };
+use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::{graph::sha256_hex, persistence};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -162,8 +163,9 @@ fn nightstand_inputs_are_immutable_and_the_interrupted_result_is_not_an_oracle()
             "{}",
             expected.path
         );
+        // The manifest records the digest the fixture's writer stored.
         assert_eq!(
-            snapshot.canonical_digest(),
+            loaded.audit().source_canonical_digest,
             expected.canonical_digest,
             "{}",
             expected.path
@@ -228,7 +230,7 @@ fn v9_rear_panel_adoption_preserves_the_existing_model_and_round_trips() {
         (
             "rear/lower-dowel-1/pocket",
             129,
-            RecognizedRecipeFeatureKind::Pocket,
+            RecognizedRecipeFeatureKind::Pad,
         ),
         (
             "rear/lower-dowel-2/workplane",
@@ -243,7 +245,7 @@ fn v9_rear_panel_adoption_preserves_the_existing_model_and_round_trips() {
         (
             "rear/lower-dowel-2/pocket",
             132,
-            RecognizedRecipeFeatureKind::Pocket,
+            RecognizedRecipeFeatureKind::Pad,
         ),
         (
             "rear/lower-dowel-3/workplane",
@@ -258,7 +260,7 @@ fn v9_rear_panel_adoption_preserves_the_existing_model_and_round_trips() {
         (
             "rear/lower-dowel-3/pocket",
             135,
-            RecognizedRecipeFeatureKind::Pocket,
+            RecognizedRecipeFeatureKind::Pad,
         ),
     ];
     let before_fingerprints = feature_specs
@@ -396,7 +398,6 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
                     FeatureKind::Workplane(_) => RecognizedRecipeFeatureKind::Workplane,
                     FeatureKind::Sketch(_) => RecognizedRecipeFeatureKind::Sketch,
                     FeatureKind::Pad(_) => RecognizedRecipeFeatureKind::Pad,
-                    FeatureKind::Pocket { .. } => RecognizedRecipeFeatureKind::Pocket,
                     other => panic!("unexpected rear feature {other:?}"),
                 };
                 (
@@ -905,7 +906,6 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                                 FeatureKind::Workplane(_) => RecognizedRecipeFeatureKind::Workplane,
                                 FeatureKind::Sketch(_) => RecognizedRecipeFeatureKind::Sketch,
                                 FeatureKind::Pad(_) => RecognizedRecipeFeatureKind::Pad,
-                                FeatureKind::Pocket { .. } => RecognizedRecipeFeatureKind::Pocket,
                                 other => panic!("unexpected source feature {other:?}"),
                             };
                             (key(&format!("side/feature-{}", id.0)), *id, kind)
@@ -1336,18 +1336,21 @@ fn deterministic_large_panel_fixture() -> DocumentStore {
                     id: profile_id,
                     definition_id,
                     name: "panel-profile".into(),
-                    kind: FeatureKind::Profile {
-                        points_mm: vec![[0.0, 0.0], [width, 0.0], [width, height], [0.0, height]],
-                    },
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [width, 0.0],
+                        [width, height],
+                        [0.0, height],
+                    ]),
                 },
                 CanonicalCommand::CreateFeature {
                     id: body_id,
                     definition_id,
                     name: "panel-body".into(),
-                    kind: FeatureKind::Extrusion {
-                        profile: profile_id,
-                        height: Dimension::from_decimal("18").unwrap(),
-                    },
+                    kind: FeatureKind::extrusion(
+                        profile_id,
+                        Dimension::from_decimal("18").unwrap(),
+                    ),
                 },
                 CanonicalCommand::CreateOccurrence {
                     id: occurrence_id,
@@ -1478,7 +1481,12 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
             ] {
                 assert!(matches!(
                     after.feature(feature_id).unwrap().kind(),
-                    FeatureKind::Pocket { .. }
+                    FeatureKind::Pad(PadSpec {
+                        profile: PadProfile::Feature(_),
+                        extent: FeatureExtent::Blind(_),
+                        operation: PadOperation::Cut { .. },
+                        ..
+                    })
                 ));
                 assert!(before.feature(feature_id).is_none());
             }

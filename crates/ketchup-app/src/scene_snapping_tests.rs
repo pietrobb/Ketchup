@@ -169,10 +169,7 @@ fn curve_tessellation_never_becomes_endpoint_or_midpoint_and_center_survives_ext
             id: FeatureId(100),
             definition_id: profile.definition_id(),
             name: "Extrude".into(),
-            kind: FeatureKind::Extrusion {
-                profile: profile.id(),
-                height: Dimension::new("15", 15.0).unwrap(),
-            },
+            kind: FeatureKind::extrusion(profile.id(), Dimension::new("15", 15.0).unwrap()),
         }]))
         .unwrap();
     let rect = viewport();
@@ -211,10 +208,7 @@ fn suppressed_extrusion_does_not_offer_phantom_snap_points() {
             id: FeatureId(100),
             definition_id,
             name: "Extrusion to suppress".into(),
-            kind: FeatureKind::Extrusion {
-                profile: profile.id(),
-                height: Dimension::new("150", 150.0).unwrap(),
-            },
+            kind: FeatureKind::extrusion(profile.id(), Dimension::new("150", 150.0).unwrap()),
         }]))
         .unwrap();
     let rect = viewport();

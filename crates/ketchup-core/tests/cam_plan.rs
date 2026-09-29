@@ -32,18 +32,13 @@ fn solid_document() -> DocumentStore {
                 id: PROFILE,
                 definition_id: DEFINITION,
                 name: "Stock-facing profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [50.0, 0.0], [50.0, 30.0], [0.0, 30.0]],
-                },
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [50.0, 0.0], [50.0, 30.0], [0.0, 30.0]]),
             },
             CanonicalCommand::CreateFeature {
                 id: SOLID,
                 definition_id: DEFINITION,
                 name: "Target solid".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: PROFILE,
-                    height: dimension(10.0),
-                },
+                kind: FeatureKind::extrusion(PROFILE, dimension(10.0)),
             },
         ]))
         .unwrap();

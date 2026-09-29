@@ -9,7 +9,9 @@ pub const MAX_SHEET_METAL_LENGTH_MM: f64 = 100_000.0;
 pub const MIN_SHEET_METAL_BEND_ANGLE_DEGREES: f64 = 0.1;
 pub const MAX_SHEET_METAL_BEND_ANGLE_DEGREES: f64 = 179.9;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum SheetMetalEdge {
     MinX,
     MaxX,
@@ -17,7 +19,7 @@ pub enum SheetMetalEdge {
     MaxY,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SheetMetalFlange {
     pub edge: SheetMetalEdge,
     pub length: Dimension,
@@ -25,7 +27,7 @@ pub struct SheetMetalFlange {
     pub inner_radius: Dimension,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SheetMetalSpec {
     pub width: Dimension,
     pub depth: Dimension,

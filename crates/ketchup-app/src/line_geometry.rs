@@ -84,7 +84,7 @@ mod tests {
                     return None;
                 }
                 match feature.kind() {
-                    FeatureKind::SegmentProfile { segments, .. } => Some(segments),
+                    FeatureKind::Profile { segments, .. } => Some(segments),
                     _ => None,
                 }
             })

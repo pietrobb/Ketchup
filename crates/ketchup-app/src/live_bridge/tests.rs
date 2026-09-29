@@ -1125,7 +1125,7 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
                 (
                     RecipeKey::new("owned-box/extrusion").unwrap(),
                     FeatureId(2),
-                    RecognizedRecipeFeatureKind::Extrusion,
+                    RecognizedRecipeFeatureKind::Pad,
                 ),
             ],
         }],
@@ -1693,7 +1693,7 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
         .unwrap();
     assert!(matches!(
         app.document.current().feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyEdgeFinish {
+        FeatureKind::EdgeFinish {
             target: FeatureId(2),
             kind: EdgeFinishKind::Fillet,
             edges,

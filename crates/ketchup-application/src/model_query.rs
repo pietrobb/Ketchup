@@ -2075,75 +2075,28 @@ fn row(snapshot: &Snapshot, kind: EntityKind, id: u64) -> Option<Value> {
         }
     })
 }
+/// The fields of a construction feature as the document stores them, plus its geometry type.
 fn construction_geometry(kind: &FeatureKind) -> Value {
-    match kind {
-        FeatureKind::ConstructionPoint { position_mm } => json!({
-            "type": "point",
-            "position_mm": position_mm,
-            "coordinate_space": "definition_mm"
-        }),
-        FeatureKind::ConstructionAxis {
-            origin_mm,
-            direction,
-        } => json!({
-            "type": "axis",
-            "origin_mm": origin_mm,
-            "direction": direction,
-            "coordinate_space": "definition_mm"
-        }),
-        FeatureKind::ConstructionPlane {
-            origin_mm,
-            normal,
-            x_direction,
-        } => json!({
-            "type": "plane",
-            "origin_mm": origin_mm,
-            "normal": normal,
-            "x_direction": x_direction,
-            "coordinate_space": "definition_mm"
-        }),
-        _ => Value::Null,
-    }
+    let geometry_type = match kind {
+        FeatureKind::ConstructionPoint { .. } => "point",
+        FeatureKind::ConstructionAxis { .. } => "axis",
+        FeatureKind::ConstructionPlane { .. } => "plane",
+        _ => return Value::Null,
+    };
+    let Ok(Value::Object(tagged)) = serde_json::to_value(kind) else {
+        return Value::Null;
+    };
+    let Some((_, Value::Object(mut fields))) = tagged.into_iter().next() else {
+        return Value::Null;
+    };
+    fields.insert("type".to_owned(), json!(geometry_type));
+    fields.insert("coordinate_space".to_owned(), json!("definition_mm"));
+    Value::Object(fields)
 }
 
 fn feature_kind(kind: &FeatureKind) -> &'static str {
-    // Exhaustive matching never allocates or formats potentially huge payloads.
-    match kind {
-        FeatureKind::Workplane(_) => "Workplane",
-        FeatureKind::Sketch(_) => "Sketch",
-        FeatureKind::Profile { .. } => "Profile",
-        FeatureKind::SegmentProfile { .. } => "SegmentProfile",
-        FeatureKind::SpatialPath { .. } => "SpatialPath",
-        FeatureKind::ConstructionPoint { .. } => "ConstructionPoint",
-        FeatureKind::ConstructionAxis { .. } => "ConstructionAxis",
-        FeatureKind::ConstructionPlane { .. } => "ConstructionPlane",
-        FeatureKind::SplineProfile { .. } => "SplineProfile",
-        FeatureKind::Extrusion { .. } => "Extrusion",
-        FeatureKind::Pad(_) => "Pad",
-        FeatureKind::SketchPocket(_) => "SketchPocket",
-        FeatureKind::Revolve { .. } => "Revolve",
-        FeatureKind::Shell { .. } => "Shell",
-        FeatureKind::TopologyShell { .. } => "TopologyShell",
-        FeatureKind::TopologyEdgeFinish { .. } => "TopologyEdgeFinish",
-        FeatureKind::TopologyFaceOffset { .. } => "TopologyFaceOffset",
-        FeatureKind::ThroughCut { .. } => "ThroughCut",
-        FeatureKind::Pocket { .. } => "Pocket",
-        FeatureKind::Boolean { .. } => "Boolean",
-        FeatureKind::PlanarOffset { .. } => "PlanarOffset",
-        FeatureKind::Sweep { .. } => "Sweep",
-        FeatureKind::WeldmentMember(_) => "WeldmentMember",
-        FeatureKind::WeldmentJoint(_) => "WeldmentJoint",
-        FeatureKind::SurfaceBody(_) => "SurfaceBody",
-        FeatureKind::SurfaceTrim { .. } => "SurfaceTrim",
-        FeatureKind::SurfaceExtend { .. } => "SurfaceExtend",
-        FeatureKind::SurfaceKnit { .. } => "SurfaceKnit",
-        FeatureKind::SurfaceThicken { .. } => "SurfaceThicken",
-        FeatureKind::Loft { .. } => "Loft",
-        FeatureKind::SheetMetal(_) => "SheetMetal",
-        FeatureKind::ImportedExactBody(_) => "ImportedExactBody",
-        FeatureKind::RigidTransform { .. } => "RigidTransform",
-        FeatureKind::MeshBody(_) => "MeshBody",
-    }
+    // Only the variant tag is read, so a huge payload is never formatted.
+    ketchup_core::state_view::variant_name(kind).expect("a feature kind is an enum")
 }
 
 #[cfg(test)]
@@ -2154,5 +2107,26 @@ mod tests {
     fn oversized_instance_item_fails_instead_of_issuing_a_non_progressing_cursor() {
         let item = json!({"instance_path":"x".repeat(PAGE_ITEM_BYTES)});
         assert_eq!(instance_item_size(&item), Err(QueryError::OutputTooLarge));
+    }
+
+    #[test]
+    fn construction_geometry_lists_every_stored_field_of_the_feature() {
+        let plane = FeatureKind::ConstructionPlane {
+            origin_mm: [1.0, 2.0, 3.0],
+            normal: [0.0, 0.0, 1.0],
+            x_direction: [1.0, 0.0, 0.0],
+        };
+        assert_eq!(
+            construction_geometry(&plane),
+            json!({"type":"plane","origin_mm":[1.0,2.0,3.0],"normal":[0.0,0.0,1.0],
+                "x_direction":[1.0,0.0,0.0],"coordinate_space":"definition_mm"})
+        );
+        let point = FeatureKind::ConstructionPoint {
+            position_mm: [4.0, 5.0, 6.0],
+        };
+        assert_eq!(
+            construction_geometry(&point),
+            json!({"type":"point","position_mm":[4.0,5.0,6.0],"coordinate_space":"definition_mm"})
+        );
     }
 }
