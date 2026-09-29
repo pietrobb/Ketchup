@@ -13,6 +13,7 @@ default = []
 private-oauth = ["ketchup-core/private-oauth"]
 
 [dependencies]
+ciborium = "0.2"
 ketchup-core = { path = "../ketchup-core" }
 ketchup-exact = { path = "../ketchup-exact" }
 ketchup-interaction = { path = "../ketchup-interaction" }

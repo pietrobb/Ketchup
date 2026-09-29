@@ -48,10 +48,8 @@ try {
     }
 
     $worker = Join-Path $packageDir "ketchup-exact-worker.exe"
-    $response = ("PING" | & $worker).Trim()
-    if ($LASTEXITCODE -ne 0 -or $response -ne "PONG") {
-        throw "The co-located packaged exact worker failed its process-boundary PING."
-    }
+    . (Join-Path $PSScriptRoot "exact-worker-handshake.ps1")
+    Assert-ExactWorkerHandshake $worker "The co-located packaged exact worker"
 
     [void](New-Item $foreignWorkingDir -ItemType Directory)
     $package = Get-Content (Join-Path $packageDir "package-manifest.json") -Raw | ConvertFrom-Json

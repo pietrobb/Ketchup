@@ -1,4 +1,6 @@
 use super::*;
+use crate::protocol::{ExportReceipt, WorkerReply, WorkerRequest};
+use std::io::BufRead as _;
 
 // A real disposable child exercises termination without depending on native geometry.
 #[test]
@@ -77,7 +79,7 @@ fn request_timeout_terminates_exact_worker_descendants() {
     std::thread::sleep(Duration::from_millis(300));
 
     assert!(matches!(
-        worker.request_with_timeout("work", &NEVER_CANCELLED, Duration::from_millis(80)),
+        worker.request_with_timeout(&WorkerRequest::Hello, &NEVER_CANCELLED, Duration::from_millis(80)),
         Err(WorkerError::RequestTimedOut(timeout)) if timeout == Duration::from_millis(80)
     ));
     responder.join().unwrap();
@@ -132,16 +134,16 @@ fn oversized_step_xde_worker_output_is_rejected_before_hashing() {
     output.as_file().set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
     let source_sha256 = "b".repeat(64);
     let result_fingerprint = "fnv1a64:0123456789abcdef";
-    let receipt = format!(
-        "OK_M21_STEP_XDE_EXPORT_V1 {source_sha256} {result_fingerprint} {}",
-        "a".repeat(64)
-    );
+    let receipt = WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: result_fingerprint.to_owned(),
+        sha256: Some("a".repeat(64)),
+    });
     let responder = std::thread::spawn(move || {
-        for response in ["CAPS M21_STEP_XDE_V1".to_owned(), receipt] {
-            let request = writes.recv().unwrap();
-            request.acknowledgment.send(Ok(())).unwrap();
-            responses.send(WorkerResponse::Line(response)).unwrap();
-        }
+        let request = writes.recv().unwrap();
+        request.acknowledgment.send(Ok(())).unwrap();
+        responses
+            .send(WorkerResponse::Reply(Box::new(receipt)))
+            .unwrap();
     });
 
     assert!(matches!(
@@ -166,13 +168,16 @@ fn converted_iges_returns_bounded_snapshot_not_later_path_contents() {
     let output = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(output.path(), b"verified IGES").unwrap();
     let source_sha256 = "b".repeat(64);
-    let receipt = format!("OK_M21_IGES_EXPORT_V1 {source_sha256} fnv1a64:0123456789abcdef");
+    let receipt = WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),
+        sha256: None,
+    });
     let responder = std::thread::spawn(move || {
-        for response in ["CAPS M21_IGES_V1".to_owned(), receipt] {
-            let request = writes.recv().unwrap();
-            request.acknowledgment.send(Ok(())).unwrap();
-            responses.send(WorkerResponse::Line(response)).unwrap();
-        }
+        let request = writes.recv().unwrap();
+        request.acknowledgment.send(Ok(())).unwrap();
+        responses
+            .send(WorkerResponse::Reply(Box::new(receipt)))
+            .unwrap();
     });
 
     let verified = worker
@@ -195,13 +200,16 @@ fn oversized_converted_iges_is_rejected_before_returning_bytes() {
     let output = tempfile::NamedTempFile::new().unwrap();
     output.as_file().set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
     let source_sha256 = "b".repeat(64);
-    let receipt = format!("OK_M21_IGES_EXPORT_V1 {source_sha256} fnv1a64:0123456789abcdef");
+    let receipt = WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),
+        sha256: None,
+    });
     let responder = std::thread::spawn(move || {
-        for response in ["CAPS M21_IGES_V1".to_owned(), receipt] {
-            let request = writes.recv().unwrap();
-            request.acknowledgment.send(Ok(())).unwrap();
-            responses.send(WorkerResponse::Line(response)).unwrap();
-        }
+        let request = writes.recv().unwrap();
+        request.acknowledgment.send(Ok(())).unwrap();
+        responses
+            .send(WorkerResponse::Reply(Box::new(receipt)))
+            .unwrap();
     });
 
     assert!(matches!(
@@ -228,42 +236,46 @@ fn graph_request_budget_accepts_response_beyond_simple_default() {
         request.acknowledgment.send(Ok(())).unwrap();
         std::thread::sleep(DEFAULT_WORKER_REQUEST_TIMEOUT + Duration::from_millis(200));
         responses
-            .send(WorkerResponse::Line("done".to_owned()))
+            .send(WorkerResponse::Reply(Box::new(WorkerReply::Done)))
             .unwrap();
     });
     let started = Instant::now();
     assert_eq!(
         worker
             .request_with_timeout(
-                "graph workload",
+                &WorkerRequest::Hello,
                 &NEVER_CANCELLED,
                 EXACT_BREP_GRAPH_REQUEST_TIMEOUT
             )
             .unwrap(),
-        "done"
+        WorkerReply::Done
     );
     assert!(started.elapsed() > DEFAULT_WORKER_REQUEST_TIMEOUT);
     responder.join().unwrap();
 }
 
 #[test]
-fn default_requests_do_not_infer_timeout_from_command_prefix() {
-    for command in ["PING", "CAPS EXACT_BREP_GRAPH_V12", "EVAL_BREP_GRAPH_V12"] {
-        let (mut worker, writes, _responses) = controlled_worker();
-        let responder = std::thread::spawn(move || {
-            writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
-        });
-        let started = Instant::now();
-        let error = worker.request(command).unwrap_err();
-        assert!(
-            matches!(error, WorkerError::RequestTimedOut(timeout) if timeout == DEFAULT_WORKER_REQUEST_TIMEOUT)
-        );
-        assert_eq!(error.to_string(), "worker request timed out after 5000 ms");
-        assert!(started.elapsed() >= DEFAULT_WORKER_REQUEST_TIMEOUT);
-        assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(worker.child.inner_mut().wait().is_ok());
-        responder.join().unwrap();
-    }
+fn simple_calls_time_out_at_the_default_budget() {
+    let (mut worker, writes, _responses) = controlled_worker();
+    let responder = std::thread::spawn(move || {
+        writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
+    });
+    let started = Instant::now();
+    let error = worker
+        .call(
+            &WorkerRequest::Hello,
+            &NEVER_CANCELLED,
+            DEFAULT_WORKER_REQUEST_TIMEOUT,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, WorkerError::RequestTimedOut(timeout) if timeout == DEFAULT_WORKER_REQUEST_TIMEOUT)
+    );
+    assert_eq!(error.to_string(), "worker request timed out after 5000 ms");
+    assert!(started.elapsed() >= DEFAULT_WORKER_REQUEST_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(worker.child.inner_mut().wait().is_ok());
+    responder.join().unwrap();
 }
 
 #[test]
@@ -282,7 +294,7 @@ fn explicit_timeout_bounds_both_write_and_response_waits() {
             });
             let started = Instant::now();
             let error = worker
-                .request_with_timeout("work", &NEVER_CANCELLED, timeout)
+                .request_with_timeout(&WorkerRequest::Hello, &NEVER_CANCELLED, timeout)
                 .unwrap_err();
             assert!(matches!(error, WorkerError::RequestTimedOut(actual) if actual == timeout));
             assert_eq!(error.to_string(), "worker request timed out after 80 ms");
@@ -301,10 +313,10 @@ fn write_and_response_share_one_timeout_budget() {
         std::thread::sleep(Duration::from_millis(300));
         let _ = request.acknowledgment.send(Ok(()));
         std::thread::sleep(Duration::from_millis(300));
-        let _ = responses.send(WorkerResponse::Line("too late".to_owned()));
+        let _ = responses.send(WorkerResponse::Reply(Box::new(WorkerReply::Done)));
     });
     assert!(matches!(
-        worker.request_with_timeout("work", &NEVER_CANCELLED, timeout),
+        worker.request_with_timeout(&WorkerRequest::Hello, &NEVER_CANCELLED, timeout),
         Err(WorkerError::RequestTimedOut(actual)) if actual == timeout
     ));
     assert!(worker.child.inner_mut().wait().is_ok());
@@ -331,7 +343,11 @@ fn graph_budget_cancellation_interrupts_write_and_response_waits() {
                 started
             });
             assert!(matches!(
-                worker.request_with_timeout("work", &cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT),
+                worker.request_with_timeout(
+                    &WorkerRequest::Hello,
+                    &cancelled,
+                    EXACT_BREP_GRAPH_REQUEST_TIMEOUT
+                ),
                 Err(WorkerError::Cancelled)
             ));
             let finished = Instant::now();
@@ -366,9 +382,99 @@ fn cleanup_after_exit_polling_does_not_wait_for_consumed_job_notifications() {
 fn precancelled_graph_request_is_not_written_even_with_zero_budget() {
     let (mut worker, writes, _responses) = controlled_worker();
     assert!(matches!(
-        worker.request_with_timeout("work", &AtomicBool::new(true), Duration::ZERO),
+        worker.request_with_timeout(
+            &WorkerRequest::Hello,
+            &AtomicBool::new(true),
+            Duration::ZERO
+        ),
         Err(WorkerError::Cancelled)
     ));
     assert!(matches!(writes.try_recv(), Err(mpsc::TryRecvError::Empty)));
     assert!(worker.child.inner_mut().wait().is_ok());
+}
+
+fn answer(
+    writes: Receiver<WorkerWriteRequest>,
+    responses: Sender<WorkerResponse>,
+    reply: WorkerReply,
+) {
+    std::thread::spawn(move || {
+        let request = writes.recv().unwrap();
+        request.acknowledgment.send(Ok(())).unwrap();
+        let _ = responses.send(WorkerResponse::Reply(Box::new(reply)));
+    });
+}
+
+#[test]
+fn handshake_refuses_a_worker_from_another_build() {
+    let (mut worker, writes, responses) = controlled_worker();
+    answer(
+        writes,
+        responses,
+        WorkerReply::Hello {
+            protocol: "0".repeat(64),
+        },
+    );
+    assert!(matches!(
+        worker.ping(),
+        Err(WorkerError::Protocol(message)) if message.contains("differs from scheduler protocol")
+    ));
+    assert!(worker.terminated);
+}
+
+#[test]
+fn reply_of_the_wrong_kind_retires_the_worker() {
+    let (mut worker, writes, responses) = controlled_worker();
+    answer(writes, responses, WorkerReply::Done);
+    assert!(matches!(
+        worker.ping(),
+        Err(WorkerError::Protocol(message)) if message.starts_with("unexpected worker reply Done")
+    ));
+    assert!(worker.terminated);
+}
+
+#[test]
+fn geometry_refusal_keeps_the_worker_and_other_failures_retire_it() {
+    let (mut worker, writes, responses) = controlled_worker();
+    answer(
+        writes,
+        responses,
+        WorkerReply::Failure(protocol::WorkerFailure {
+            code: "invalid_profile".to_owned(),
+            detail: Some(protocol::FailureDetail {
+                diagnostic: "open loop".to_owned(),
+                operation: "extrude".to_owned(),
+                input_digest: "a".repeat(64),
+                backend: "occt".to_owned(),
+            }),
+        }),
+    );
+    assert_eq!(
+        worker.call(
+            &WorkerRequest::PairBegin,
+            &NEVER_CANCELLED,
+            DEFAULT_WORKER_REQUEST_TIMEOUT
+        ),
+        Err(WorkerError::Geometry(format!(
+            "invalid_profile; operation=extrude; diagnostic=open loop; input_digest={}; backend=occt",
+            "a".repeat(64)
+        )))
+    );
+    assert!(!worker.terminated);
+
+    let (mut worker, writes, responses) = controlled_worker();
+    answer(
+        writes,
+        responses,
+        WorkerReply::Failure(protocol::WorkerFailure::invalid_request()),
+    );
+    assert!(matches!(
+        worker.call(
+            &WorkerRequest::PairBegin,
+            &NEVER_CANCELLED,
+            DEFAULT_WORKER_REQUEST_TIMEOUT
+        ),
+        Err(WorkerError::Protocol(message)) if message.ends_with("invalid_request")
+    ));
+    assert!(worker.terminated);
 }

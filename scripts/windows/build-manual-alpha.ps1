@@ -397,10 +397,8 @@ try {
         }
     }
 
-    $workerResponse = ("PING" | & (Join-Path $installedDir "ketchup-exact-worker.exe")).Trim()
-    if ($LASTEXITCODE -ne 0 -or $workerResponse -cne "PONG") {
-        throw "Installed exact worker failed its headless PING."
-    }
+    . (Join-Path $PSScriptRoot "exact-worker-handshake.ps1")
+    Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-exact-worker.exe") "Installed exact worker"
 
     $persistenceSmokePath = Join-Path $tempRoot "manual-alpha-persistence-smoke.ketchup"
     $manualAlphaVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-manual-alpha $persistenceSmokePath).Trim()
@@ -430,6 +428,6 @@ $checksums = @(
 Write-Utf8 (Join-Path $OutputDir "SHA256SUMS.txt") (($checksums -join "`r`n") + "`r`n")
 
 $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" }
-Write-Host "PASS: Manual Alpha ${signingResult}portable archive, exact payload hashes, worker PING, headless build identity, and uninstall smoke test."
+Write-Host "PASS: Manual Alpha ${signingResult}portable archive, exact payload hashes, worker handshake, headless build identity, and uninstall smoke test."
 Write-Host "Installer: $setupPath"
 Write-Host "Portable:  $zipPath"

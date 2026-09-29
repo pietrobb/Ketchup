@@ -1,5 +1,6 @@
 //! Read-only, batch-scoped exact collision queries. No result is canonical state.
 use super::*;
+use crate::protocol::{GraphInput, PairMeasure, PairQuery, WorkerReply, WorkerRequest};
 pub use ketchup_exact::{ExactPairQueryResult, ExactPairRelation};
 
 pub const MAX_EXACT_PAIR_GRAPHS: usize = 512;
@@ -104,9 +105,9 @@ impl ExactWorkerSupervisor {
             }
             let sources = staged.prepare_graph(graph, imported_source_blobs, cancelled)?;
             let slot = prepared.len();
-            unique.insert(graph.graph_digest.clone(), (slot, bytes.clone()));
+            unique.insert(graph.graph_digest.clone(), (slot, bytes));
             indices.insert(index, slot);
-            prepared.push((graph, bytes, sources));
+            prepared.push((graph, sources));
         }
         check_pair_cancelled(cancelled)?;
         // Recover only at the batch boundary. A failed batch is never replayed.
@@ -122,64 +123,52 @@ impl ExactWorkerSupervisor {
                 Self::spawn_verified_client(&self.executable, &self.executable_sha256, cancelled)?;
         }
         let result = (|| {
-            self.client.verify_capability("EXACT_PAIR_V2", cancelled)?;
-            pair_ack(
-                &self
-                    .client
-                    .request_with_cancellation("PAIR_BEGIN_V1", cancelled)?,
-                "OK_PAIR_BEGIN_V1",
+            self.client.call_done(
+                &WorkerRequest::PairBegin,
+                cancelled,
+                DEFAULT_WORKER_REQUEST_TIMEOUT,
             )?;
-            for (slot, (graph, bytes, sources)) in prepared.iter().enumerate() {
-                self.client
-                    .verify_exact_brep_graph_capability(graph, cancelled)?;
-                let mut request =
-                    format!("PAIR_LOAD_V1 {} {}", graph.graph_digest, hex_encode(bytes));
-                let paths = sources
-                    .iter()
-                    .map(|hash| (hash.as_str(), staged.files[hash].1.path()))
-                    .collect::<Vec<_>>();
-                append_exact_brep_graph_sources(&mut request, &paths);
-                let response = self.client.request_with_timeout(
-                    &request,
+            for (slot, (graph, sources)) in prepared.iter().enumerate() {
+                let input = GraphInput {
+                    graph: (*graph).clone(),
+                    sources: sources
+                        .iter()
+                        .map(|hash| worker_client::source_file(hash, staged.files[hash].1.path()))
+                        .collect(),
+                };
+                match self.client.call(
+                    &WorkerRequest::PairLoad(input),
                     cancelled,
                     EXACT_BREP_GRAPH_REQUEST_TIMEOUT,
-                )?;
-                pair_ack(
-                    &response,
-                    &format!("OK_PAIR_LOAD_V1 {slot} {}", graph.graph_digest),
-                )?;
+                )? {
+                    WorkerReply::PairLoaded { slot: loaded } if loaded == slot => {}
+                    reply => return Err(worker_client::unexpected_reply(&reply)),
+                }
             }
             let mut results = Vec::with_capacity(candidates.len());
             for candidate in candidates {
-                let mut request = format!(
-                    "PAIR_QUERY_V2 {} {} {:016x}",
-                    indices[&candidate.left_graph],
-                    indices[&candidate.right_graph],
-                    contact_tolerance_mm.to_bits()
-                );
-                for value in candidate
-                    .left_transform
-                    .iter()
-                    .chain(&candidate.right_transform)
-                {
-                    write!(request, " {:016x}", value.to_bits()).expect("write String");
-                }
-                let response = self.client.request_with_timeout(
-                    &request,
+                let query = PairQuery {
+                    left: indices[&candidate.left_graph],
+                    right: indices[&candidate.right_graph],
+                    tolerance_mm: contact_tolerance_mm,
+                    left_transform: candidate.left_transform,
+                    right_transform: candidate.right_transform,
+                };
+                match self.client.call(
+                    &WorkerRequest::PairQuery(query),
                     cancelled,
                     EXACT_BREP_GRAPH_REQUEST_TIMEOUT,
-                )?;
-                results.push(parse_pair_result(
-                    &response,
-                    &sha256_hex(request.as_bytes()),
-                    contact_tolerance_mm,
-                )?);
+                )? {
+                    WorkerReply::Pair(measure) => {
+                        results.push(pair_result(measure, contact_tolerance_mm)?);
+                    }
+                    reply => return Err(worker_client::unexpected_reply(&reply)),
+                }
             }
-            pair_ack(
-                &self
-                    .client
-                    .request_with_cancellation("PAIR_END_V1", cancelled)?,
-                "OK_PAIR_END_V1",
+            self.client.call_done(
+                &WorkerRequest::PairEnd,
+                cancelled,
+                DEFAULT_WORKER_REQUEST_TIMEOUT,
             )?;
             Ok(results)
         })();
@@ -304,44 +293,17 @@ fn valid_pair_transform(matrix: &[f64; 16]) -> bool {
     matrix.iter().all(|v| v.is_finite()) && matrix[12..] == [0.0, 0.0, 0.0, 1.0]
 }
 
-fn pair_ack(response: &str, expected: &str) -> Result<(), WorkerError> {
-    let fields = response.split_whitespace().collect::<Vec<_>>();
-    if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
-        return Err(parse_error_response(response, &fields));
-    }
-    if response != expected {
-        return Err(WorkerError::Protocol(response.to_owned()));
-    }
-    Ok(())
-}
-
-fn parse_pair_result(
-    response: &str,
-    digest: &str,
-    tolerance: f64,
-) -> Result<ExactPairQueryResult, WorkerError> {
-    let fields = response.split_whitespace().collect::<Vec<_>>();
-    if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
-        return Err(parse_error_response(response, &fields));
-    }
-    let invalid = || WorkerError::Protocol(response.to_owned());
-    if fields.len() != 5 || fields[0] != "OK_PAIR_QUERY_V2" || fields[1] != digest {
-        return Err(invalid());
-    }
-    let decode = |value: &str| -> Result<f64, WorkerError> {
-        if value.len() != 16 {
-            return Err(invalid());
-        }
-        let value = f64::from_bits(u64::from_str_radix(value, 16).map_err(|_| invalid())?);
-        if !value.is_finite() || value < 0.0 {
-            return Err(invalid());
-        }
-        Ok(value)
-    };
-    let common_volume_mm3 = decode(fields[2])?;
-    let common_contact_area_mm2 = decode(fields[3])?;
-    let distance_mm = decode(fields[4])?;
-    if (common_volume_mm3 > 0.0 && (common_contact_area_mm2 > 0.0 || distance_mm != 0.0))
+fn pair_result(measure: PairMeasure, tolerance: f64) -> Result<ExactPairQueryResult, WorkerError> {
+    let invalid = || WorkerError::Protocol(format!("invalid exact pair evidence {measure:?}"));
+    let PairMeasure {
+        common_volume_mm3,
+        common_contact_area_mm2,
+        distance_mm,
+    } = measure;
+    if [common_volume_mm3, common_contact_area_mm2, distance_mm]
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+        || (common_volume_mm3 > 0.0 && (common_contact_area_mm2 > 0.0 || distance_mm != 0.0))
         || (common_contact_area_mm2 > 0.0 && distance_mm != 0.0)
     {
         return Err(invalid());
@@ -455,20 +417,25 @@ mod tests {
     }
 
     #[test]
-    fn pair_protocol_never_converts_errors_or_invalid_evidence_to_separated() {
-        for response in [
-            "ERR invalid_result",
-            "OK_PAIR_QUERY_V2 wrong 0000000000000000 0000000000000000",
-            "OK_PAIR_QUERY_V2 id 7ff8000000000000 0000000000000000",
-            "OK_PAIR_QUERY_V2 id 3ff0000000000000 3ff0000000000000",
-            "OK_PAIR_QUERY_V2 id 3ff0000000000000 3ff0000000000000 0000000000000000",
-            "OK_PAIR_QUERY_V2 id 0000000000000000 3ff0000000000000 3ff0000000000000",
-            "OK_PAIR_QUERY_V2 id 0000000000000000 bff0000000000000",
+    fn pair_protocol_never_converts_invalid_evidence_to_separated() {
+        let measure = |common_volume_mm3, common_contact_area_mm2, distance_mm| PairMeasure {
+            common_volume_mm3,
+            common_contact_area_mm2,
+            distance_mm,
+        };
+        for invalid in [
+            measure(f64::NAN, 0.0, 0.0),
+            measure(1.0, 1.0, 0.0),
+            measure(1.0, 0.0, 1.0),
+            measure(0.0, 1.0, 1.0),
+            measure(0.0, -1.0, 0.0),
+            measure(0.0, 0.0, f64::INFINITY),
         ] {
-            assert!(
-                parse_pair_result(response, "id", 1e-7).is_err(),
-                "{response}"
-            );
+            assert!(pair_result(invalid, 1e-7).is_err(), "{invalid:?}");
         }
+        assert_eq!(
+            pair_result(measure(0.0, 0.0, 2.0), 1e-7).unwrap().relation,
+            ExactPairRelation::Separated
+        );
     }
 }

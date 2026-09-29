@@ -1,29 +1,28 @@
 #![forbid(unsafe_code)]
 
+use crate::protocol::{
+    ExportReceipt, FailureDetail, Frame, GraphInput, MAX_REPLY_FRAME_BYTES,
+    MAX_REQUEST_FRAME_BYTES, MeshReceipt, SourceFile, VolumeMeshReceipt, WorkerFailure,
+    WorkerImportPart, WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
+};
 use crate::{
     CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireRequest,
     EXACT_VOLUME_MESH_WIRE_SCHEMA_V1, ExactVolumeMeshWireOptions,
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
     StepAssemblyManifest, StepXdeWorkerEvidence, StepXdeWorkerNode, StepXdeWorkerPart,
-    WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence,
+    WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence, WorkerExactBRepGraphResult,
     WorkerExactVolumeBoundaryTriangle, WorkerExactVolumeMesh,
 };
 use ketchup_core::cam::CAM_SIMULATION_SCHEMA_V1;
 use ketchup_core::document::Transform;
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
-    EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
-    EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, EXACT_BREP_GRAPH_SCHEMA_V14,
-    EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V16, EXACT_BREP_GRAPH_SCHEMA_V17,
-    EXACT_BREP_GRAPH_SCHEMA_V18, EXACT_BREP_GRAPH_SCHEMA_V19, EXACT_BREP_GRAPH_SCHEMA_V20,
-    EXACT_BREP_GRAPH_SCHEMA_V21, EXACT_BREP_GRAPH_SCHEMA_V22, EXACT_BREP_GRAPH_SCHEMA_V23,
     ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection, ExactBRepOperation,
     ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
     ExactBRepProfileFaceReference, ExactBRepSheetMetalEdge, ExactBRepSheetMetalFlange,
     ExactBRepShellDirection, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
     ExactBRepTopologyKind, ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy,
-    ExactBRepWeldmentJointPrimary, MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_GRAPH_BYTES,
+    ExactBRepWeldmentJointPrimary, MAX_EXACT_BREP_COORDINATE_MM,
     exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
@@ -44,459 +43,150 @@ use ketchup_exact::{
     StepXdeExportNode, StepXdeExportPart,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const MAX_WORKER_REQUEST_LINE_BYTES: usize = MAX_EXACT_BREP_GRAPH_BYTES * 2 + 64 * 1024;
+type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
 #[path = "bin/pair_query/mod.rs"]
 mod pair_query;
 
 pub fn run_stdio() {
     let backend = ExactBackend::new();
-    let stdin = io::stdin();
-    let mut stdin = stdin.lock();
+    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
     let mut pairs = pair_query::PairQuerySession::default();
-    while let Ok(Some(line)) = read_bounded_request_line(&mut stdin) {
-        let response = pairs
-            .handle(&backend, &line)
-            .or_else(|| handle_request(&backend, &line));
-        if let Some(response) = response
-            && crate::response_transport::write_worker_response(&mut stdout, &response)
-                .and_then(|()| stdout.flush())
-                .is_err()
-        {
+    loop {
+        let reply = match read_frame::<WorkerRequest>(&mut stdin, MAX_REQUEST_FRAME_BYTES) {
+            Frame::Message(request) => handle_request(&backend, &mut pairs, request),
+            // A complete frame that does not decode leaves the stream in sync.
+            Frame::Malformed(_) => Err(WorkerFailure::invalid_request()),
+            Frame::Closed | Frame::TooLarge | Frame::Transport(_) => break,
+        };
+        let reply = reply.unwrap_or_else(WorkerReply::Failure);
+        let written = match write_frame(&mut stdout, &reply, MAX_REPLY_FRAME_BYTES) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => write_frame(
+                &mut stdout,
+                &WorkerReply::Failure(WorkerFailure::code("resource_limit")),
+                MAX_REPLY_FRAME_BYTES,
+            ),
+            written => written,
+        };
+        if written.is_err() {
             break;
         }
     }
 }
 
-fn read_bounded_request_line(reader: &mut impl BufRead) -> io::Result<Option<String>> {
-    let mut line = String::new();
-    let bytes_read = reader
-        .take((MAX_WORKER_REQUEST_LINE_BYTES + 1) as u64)
-        .read_line(&mut line)?;
-    if bytes_read == 0 {
-        return Ok(None);
-    }
-    if bytes_read > MAX_WORKER_REQUEST_LINE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "worker request line exceeds the bounded protocol envelope",
-        ));
-    }
-    Ok(Some(line))
-}
-
-fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
-    let mut fields = request.split_whitespace();
-    match (fields.next(), fields.next(), fields.next()) {
-        (Some("PING"), None, None) => Some("PONG".to_owned()),
-        (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
-            Some("CAPS M21_STEP_MODEL_V1".to_owned())
-        }
-        (Some("CAPS"), Some("M21_STEP_XDE_V1"), None) => Some("CAPS M21_STEP_XDE_V1".to_owned()),
-        (Some("CAPS"), Some("M21_IGES_V1"), None) => Some("CAPS M21_IGES_V1".to_owned()),
-        (Some("CAPS"), Some("CAM_SIMULATION_V1"), None) => {
-            Some("CAPS CAM_SIMULATION_V1".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V6"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V6".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V7"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V7".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V8"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V8".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V9"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V9".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V10"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V10".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V11"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V11".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V12"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V12".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V13"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V13".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V14"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V14".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V15"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V15".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V16"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V16".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V17"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V17".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V18"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V18".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V19"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V19".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V20"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V20".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V21"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V21".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V22"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V22".to_owned())
-        }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V23"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V23".to_owned())
-        }
-        (Some("SIMULATE_CAM_V1"), Some(graph_digest), Some(encoded_graph)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(if remaining.len() == 1 {
-                cam_simulation_response(backend, graph_digest, encoded_graph, remaining[0])
-            } else {
-                "ERR invalid_request".to_owned()
-            })
-        }
-        (
-            Some(
-                operation @ ("VOLUME_MESH_BREP_GRAPH_V6"
-                | "VOLUME_MESH_BREP_GRAPH_V7"
-                | "VOLUME_MESH_BREP_GRAPH_V8"
-                | "VOLUME_MESH_BREP_GRAPH_V9"
-                | "VOLUME_MESH_BREP_GRAPH_V10"
-                | "VOLUME_MESH_BREP_GRAPH_V11"
-                | "VOLUME_MESH_BREP_GRAPH_V12"
-                | "VOLUME_MESH_BREP_GRAPH_V13"
-                | "VOLUME_MESH_BREP_GRAPH_V14"
-                | "VOLUME_MESH_BREP_GRAPH_V15"
-                | "VOLUME_MESH_BREP_GRAPH_V16"
-                | "VOLUME_MESH_BREP_GRAPH_V17"
-                | "VOLUME_MESH_BREP_GRAPH_V18"
-                | "VOLUME_MESH_BREP_GRAPH_V19"
-                | "VOLUME_MESH_BREP_GRAPH_V20"
-                | "VOLUME_MESH_BREP_GRAPH_V21"
-                | "VOLUME_MESH_BREP_GRAPH_V22"
-                | "VOLUME_MESH_BREP_GRAPH_V23"),
-            ),
-            Some(graph_digest),
-            Some(encoded_graph),
-        ) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(exact_brep_graph_volume_mesh_response(
-                backend,
-                operation,
-                graph_digest,
-                encoded_graph,
-                &remaining,
-            ))
-        }
-        (
-            Some(
-                operation @ ("TESSELLATE_BREP_GRAPH_V6"
-                | "TESSELLATE_BREP_GRAPH_V7"
-                | "TESSELLATE_BREP_GRAPH_V8"
-                | "TESSELLATE_BREP_GRAPH_V9"
-                | "TESSELLATE_BREP_GRAPH_V10"
-                | "TESSELLATE_BREP_GRAPH_V11"
-                | "TESSELLATE_BREP_GRAPH_V12"
-                | "TESSELLATE_BREP_GRAPH_V13"
-                | "TESSELLATE_BREP_GRAPH_V14"
-                | "TESSELLATE_BREP_GRAPH_V15"
-                | "TESSELLATE_BREP_GRAPH_V16"
-                | "TESSELLATE_BREP_GRAPH_V17"
-                | "TESSELLATE_BREP_GRAPH_V18"
-                | "TESSELLATE_BREP_GRAPH_V19"
-                | "TESSELLATE_BREP_GRAPH_V20"
-                | "TESSELLATE_BREP_GRAPH_V21"
-                | "TESSELLATE_BREP_GRAPH_V22"
-                | "TESSELLATE_BREP_GRAPH_V23"),
-            ),
-            Some(graph_digest),
-            Some(encoded_graph),
-        ) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(exact_brep_graph_mesh_response(
-                backend,
-                operation,
-                graph_digest,
-                encoded_graph,
-                &remaining,
-            ))
-        }
-        (
-            Some(
-                operation @ ("EXPORT_BREP_GRAPH_STEP_V2"
-                | "EXPORT_BREP_GRAPH_STEP_V3"
-                | "EXPORT_BREP_GRAPH_STEP_V4"),
-            ),
-            Some(graph_digest),
-            Some(encoded_graph),
-        ) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(exact_brep_graph_step_response(
-                backend,
-                operation,
-                graph_digest,
-                encoded_graph,
-                &remaining,
-            ))
-        }
-        (
-            Some(
-                operation @ ("EVAL_BREP_GRAPH_V6"
-                | "EVAL_BREP_GRAPH_V7"
-                | "EVAL_BREP_GRAPH_V8"
-                | "EVAL_BREP_GRAPH_V9"
-                | "EVAL_BREP_GRAPH_V10"
-                | "EVAL_BREP_GRAPH_V11"
-                | "EVAL_BREP_GRAPH_V12"
-                | "EVAL_BREP_GRAPH_V13"
-                | "EVAL_BREP_GRAPH_V14"
-                | "EVAL_BREP_GRAPH_V15"
-                | "EVAL_BREP_GRAPH_V16"
-                | "EVAL_BREP_GRAPH_V17"
-                | "EVAL_BREP_GRAPH_V18"
-                | "EVAL_BREP_GRAPH_V19"
-                | "EVAL_BREP_GRAPH_V20"
-                | "EVAL_BREP_GRAPH_V21"
-                | "EVAL_BREP_GRAPH_V22"
-                | "EVAL_BREP_GRAPH_V23"),
-            ),
-            Some(graph_digest),
-            Some(encoded_graph),
-        ) => {
-            let remaining = fields.collect::<Vec<_>>();
-            let Some(graph) = decode_exact_brep_graph(operation, graph_digest, encoded_graph)
-            else {
-                return Some("ERR invalid_request".to_owned());
-            };
-            Some(exact_brep_graph_response(backend, &graph, &remaining))
-        }
-        (Some("INSPECT_STEP_XDE_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
-            m21_step_xde_inspection_response(backend, source_sha256, source_path),
+fn handle_request(
+    backend: &ExactBackend,
+    pairs: &mut pair_query::PairQuerySession,
+    request: WorkerRequest,
+) -> WorkerResult {
+    match request {
+        WorkerRequest::Hello => Ok(WorkerReply::Hello {
+            protocol: protocol_identity().to_owned(),
+        }),
+        WorkerRequest::EvaluateGraph(input) => exact_brep_graph_response(backend, &input),
+        WorkerRequest::TessellateGraph {
+            input,
+            result_fingerprint,
+            output,
+        } => exact_brep_graph_mesh_response(backend, &input, &result_fingerprint, &output),
+        WorkerRequest::VolumeMeshGraph {
+            input,
+            result_fingerprint,
+            options,
+            output,
+        } => exact_brep_graph_volume_mesh_response(
+            backend,
+            &input,
+            &result_fingerprint,
+            options,
+            &output,
         ),
-        (Some("INSPECT_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
-            m21_step_part_inspection_response(backend, source_sha256, source_path, None),
+        WorkerRequest::ExportGraphStep {
+            input,
+            result_fingerprint,
+            output,
+        } => exact_brep_graph_step_response(backend, &input, &result_fingerprint, &output),
+        WorkerRequest::SimulateCam { graph, request } => {
+            cam_simulation_response(backend, &graph, &request)
+        }
+        WorkerRequest::InspectStepXde(source) => m21_step_xde_inspection_response(backend, &source),
+        WorkerRequest::InspectStepPart { source, part_index } => {
+            m21_step_part_inspection_response(backend, &source, part_index)
+        }
+        WorkerRequest::TessellateStepPart {
+            source,
+            part_index,
+            output,
+        } => m21_step_part_mesh_response(backend, &source, part_index, &output),
+        WorkerRequest::ExportStepXdePart {
+            source,
+            part_index,
+            result_fingerprint,
+            output,
+        } => m21_step_xde_part_export_response(
+            backend,
+            &source,
+            part_index,
+            &result_fingerprint,
+            &output,
         ),
-        (Some("INSPECT_STEP_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            let part_index = remaining
-                .first()
-                .and_then(|value| value.parse::<u32>().ok());
-            Some(if remaining.len() == 1 && part_index.is_some() {
-                m21_step_part_inspection_response(backend, source_sha256, source_path, part_index)
-            } else {
-                "ERR invalid_request".to_owned()
-            })
+        WorkerRequest::ConvertStepXdeToIges { source, output } => {
+            m21_step_xde_to_iges_response(backend, &source, &output)
         }
-        (Some("EXPORT_STEP_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m21_step_xde_part_export_response(
-                backend,
-                source_sha256,
-                source_path,
-                &remaining,
-            ))
+        WorkerRequest::InspectIgesXde(source) => m21_iges_xde_inspection_response(backend, &source),
+        WorkerRequest::InspectIgesPart { source, part_index } => {
+            m21_iges_part_inspection_response(backend, &source, part_index)
         }
-        (Some("TESSELLATE_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m21_step_part_mesh_response(
-                backend,
-                source_sha256,
-                source_path,
-                &remaining,
-                None,
-            ))
-        }
-        (Some("TESSELLATE_STEP_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            let part_index = remaining
-                .first()
-                .and_then(|value| value.parse::<u32>().ok());
-            Some(if remaining.len() == 2 && part_index.is_some() {
-                m21_step_part_mesh_response(
-                    backend,
-                    source_sha256,
-                    source_path,
-                    &remaining[1..],
-                    part_index,
-                )
-            } else {
-                "ERR invalid_request".to_owned()
-            })
-        }
-        (Some("INSPECT_IGES_XDE_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
-            m21_iges_xde_inspection_response(backend, source_sha256, source_path),
-        ),
-        (Some("INSPECT_IGES_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
-            m21_iges_part_inspection_response(backend, source_sha256, source_path, None),
-        ),
-        (Some("INSPECT_IGES_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            let part_index = remaining
-                .first()
-                .and_then(|value| value.parse::<u32>().ok());
-            Some(if remaining.len() == 1 && part_index.is_some() {
-                m21_iges_part_inspection_response(backend, source_sha256, source_path, part_index)
-            } else {
-                "ERR invalid_request".to_owned()
-            })
-        }
-        (Some("TESSELLATE_IGES_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m21_iges_part_mesh_response(
-                backend,
-                source_sha256,
-                source_path,
-                &remaining,
-                None,
-            ))
-        }
-        (Some("TESSELLATE_IGES_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            let part_index = remaining
-                .first()
-                .and_then(|value| value.parse::<u32>().ok());
-            Some(if remaining.len() == 2 && part_index.is_some() {
-                m21_iges_part_mesh_response(
-                    backend,
-                    source_sha256,
-                    source_path,
-                    &remaining[1..],
-                    part_index,
-                )
-            } else {
-                "ERR invalid_request".to_owned()
-            })
-        }
-        (Some("CONVERT_STEP_TO_IGES_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m21_step_to_iges_response(
-                backend,
-                source_sha256,
-                source_path,
-                &remaining,
-            ))
-        }
-        (Some("CONVERT_STEP_XDE_TO_IGES_M21_V1"), Some(source_sha256), Some(source_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m21_step_xde_to_iges_response(
-                backend,
-                source_sha256,
-                source_path,
-                &remaining,
-            ))
-        }
-        (Some("ASSEMBLE_STEP_M21_V1"), Some(assembly_digest), Some(output_path)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m21_step_assembly_response(
-                backend,
-                assembly_digest,
-                output_path,
-                &remaining,
-            ))
-        }
-        (Some("EXCEPTION"), None, None) => match backend.exception_probe() {
-            Ok(_) => Some("ERR unexpected_success".to_owned()),
-            Err(error) => Some(format!("ERR {}", error.code.as_str())),
+        WorkerRequest::TessellateIgesPart {
+            source,
+            part_index,
+            output,
+        } => m21_iges_part_mesh_response(backend, &source, part_index, &output),
+        WorkerRequest::AssembleStep {
+            manifest,
+            sources,
+            output,
+        } => m21_step_assembly_response(backend, &manifest, &sources, &output),
+        WorkerRequest::PairBegin => pairs.begin(),
+        WorkerRequest::PairLoad(input) => pairs.load(backend, &input),
+        WorkerRequest::PairQuery(query) => pairs.query(backend, &query),
+        WorkerRequest::PairEnd => pairs.end(),
+        WorkerRequest::Exception => match backend.exception_probe() {
+            Ok(_) => Err(WorkerFailure::code("unexpected_success")),
+            Err(error) => Err(WorkerFailure::code(error.code.as_str())),
         },
-        (Some("SLEEP"), Some(milliseconds), None) => {
-            let Ok(milliseconds) = milliseconds.parse::<u64>() else {
-                return Some("ERR invalid_parameter".to_owned());
-            };
+        WorkerRequest::Sleep { milliseconds } => {
             std::thread::sleep(Duration::from_millis(milliseconds));
-            Some("DONE".to_owned())
+            Ok(WorkerReply::Done)
         }
-        (Some("CRASH"), None, None) => std::process::abort(),
-        _ => Some("ERR invalid_request".to_owned()),
+        WorkerRequest::Crash => std::process::abort(),
     }
 }
 
 const MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES: u32 = 200_000;
 
-fn exact_brep_graph_schema_matches_operation(operation: &str, schema: &str) -> bool {
-    let graph_version = operation
-        .strip_prefix("EVAL_BREP_GRAPH_V")
-        .or_else(|| operation.strip_prefix("TESSELLATE_BREP_GRAPH_V"))
-        .or_else(|| operation.strip_prefix("VOLUME_MESH_BREP_GRAPH_V"));
-    if let Some(graph_version) = graph_version {
-        return match graph_version {
-            "6" => schema == EXACT_BREP_GRAPH_SCHEMA_V6,
-            "7" => schema == EXACT_BREP_GRAPH_SCHEMA_V7,
-            "8" => schema == EXACT_BREP_GRAPH_SCHEMA_V8,
-            "9" => schema == EXACT_BREP_GRAPH_SCHEMA_V9,
-            "10" => schema == EXACT_BREP_GRAPH_SCHEMA_V10,
-            "11" => schema == EXACT_BREP_GRAPH_SCHEMA_V11,
-            "12" => schema == EXACT_BREP_GRAPH_SCHEMA_V12,
-            "13" => schema == EXACT_BREP_GRAPH_SCHEMA_V13,
-            "14" => schema == EXACT_BREP_GRAPH_SCHEMA_V14,
-            "15" => schema == EXACT_BREP_GRAPH_SCHEMA_V15,
-            "16" => schema == EXACT_BREP_GRAPH_SCHEMA_V16,
-            "17" => schema == EXACT_BREP_GRAPH_SCHEMA_V17,
-            "18" => schema == EXACT_BREP_GRAPH_SCHEMA_V18,
-            "19" => schema == EXACT_BREP_GRAPH_SCHEMA_V19,
-            "20" => schema == EXACT_BREP_GRAPH_SCHEMA_V20,
-            "21" => schema == EXACT_BREP_GRAPH_SCHEMA_V21,
-            "22" => schema == EXACT_BREP_GRAPH_SCHEMA_V22,
-            "23" => schema == EXACT_BREP_GRAPH_SCHEMA_V23,
-            _ => false,
-        };
-    }
-    match operation {
-        "EXPORT_BREP_GRAPH_STEP_V2" => matches!(
-            schema,
-            EXACT_BREP_GRAPH_SCHEMA_V6
-                | EXACT_BREP_GRAPH_SCHEMA_V7
-                | EXACT_BREP_GRAPH_SCHEMA_V8
-                | EXACT_BREP_GRAPH_SCHEMA_V9
-                | EXACT_BREP_GRAPH_SCHEMA_V10
-                | EXACT_BREP_GRAPH_SCHEMA_V11
-        ),
-        "EXPORT_BREP_GRAPH_STEP_V3" => schema == EXACT_BREP_GRAPH_SCHEMA_V12,
-        "EXPORT_BREP_GRAPH_STEP_V4" => matches!(
-            schema,
-            EXACT_BREP_GRAPH_SCHEMA_V13
-                | EXACT_BREP_GRAPH_SCHEMA_V14
-                | EXACT_BREP_GRAPH_SCHEMA_V15
-                | EXACT_BREP_GRAPH_SCHEMA_V16
-                | EXACT_BREP_GRAPH_SCHEMA_V17
-                | EXACT_BREP_GRAPH_SCHEMA_V18
-                | EXACT_BREP_GRAPH_SCHEMA_V19
-                | EXACT_BREP_GRAPH_SCHEMA_V20
-                | EXACT_BREP_GRAPH_SCHEMA_V21
-                | EXACT_BREP_GRAPH_SCHEMA_V22
-                | EXACT_BREP_GRAPH_SCHEMA_V23
-        ),
-        _ => false,
-    }
+/// The typed graph arrives decoded, so its structure and digest are re-proven here.
+fn validated_graph(graph: &ExactBRepGraph) -> Result<(), WorkerFailure> {
+    graph
+        .validate()
+        .map_err(|_| WorkerFailure::invalid_request())
 }
 
-fn decode_exact_brep_graph(
-    operation: &str,
-    graph_digest: &str,
-    encoded_graph: &str,
-) -> Option<ExactBRepGraph> {
-    if !is_canonical_digest(graph_digest) {
-        return None;
-    }
-    let bytes = decode_hex_bytes(encoded_graph)?;
-    let graph = ExactBRepGraph::from_bytes(&bytes).ok()?;
-    (exact_brep_graph_schema_matches_operation(operation, &graph.schema)
-        && graph.graph_digest == graph_digest)
-        .then_some(graph)
+fn utf8_path(path: &Path) -> Result<&str, WorkerFailure> {
+    path.to_str()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(WorkerFailure::invalid_request)
 }
 
 fn verified_exact_brep_graph_sources(
     graph: &ExactBRepGraph,
-    fields: &[&str],
-) -> Result<Vec<(String, tempfile::NamedTempFile)>, String> {
+    supplied: &[SourceFile],
+) -> Result<Vec<(String, tempfile::NamedTempFile)>, WorkerFailure> {
     let mut expected = BTreeMap::<String, u64>::new();
     let mut source_order = Vec::new();
     for node in &graph.nodes {
@@ -514,270 +204,216 @@ fn verified_exact_brep_graph_sources(
             .collect::<String>();
         if let Some(previous_len) = expected.get(&source_sha256) {
             if previous_len != source_byte_len {
-                return Err("ERR invalid_request".to_owned());
+                return Err(WorkerFailure::invalid_request());
             }
         } else {
             expected.insert(source_sha256.clone(), *source_byte_len);
             source_order.push(source_sha256);
         }
     }
-    if source_order.len() > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES {
-        return Err("ERR invalid_request".to_owned());
-    }
-    let source_fields = match fields {
-        [] => &[][..],
-        [source_sha256, source_path] if is_canonical_digest(source_sha256) => &fields[..2],
-        [count, remaining @ ..] => {
-            let Ok(count) = count.parse::<usize>() else {
-                return Err("ERR invalid_request".to_owned());
-            };
-            if count > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
-                || remaining.len() != count.saturating_mul(2)
-            {
-                return Err("ERR invalid_request".to_owned());
-            }
-            remaining
-        }
-    };
-    if source_fields.len() / 2 != source_order.len() {
-        return Err("ERR invalid_request".to_owned());
+    if source_order.len() > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
+        || supplied.len() != source_order.len()
+    {
+        return Err(WorkerFailure::invalid_request());
     }
     let mut total_bytes = 0_u64;
     let mut sources = Vec::with_capacity(source_order.len());
-    for (expected_sha256, fields) in source_order.iter().zip(source_fields.chunks_exact(2)) {
-        if fields[0] != expected_sha256 || !is_canonical_digest(fields[0]) {
-            return Err("ERR invalid_request".to_owned());
+    for (expected_sha256, source) in source_order.iter().zip(supplied) {
+        if source.sha256 != *expected_sha256 {
+            return Err(WorkerFailure::invalid_request());
         }
-        let Some(source_path) = decode_hex_utf8(fields[1]) else {
-            return Err("ERR invalid_request".to_owned());
-        };
         let expected_byte_len = expected[expected_sha256];
         total_bytes = total_bytes
             .checked_add(expected_byte_len)
-            .ok_or_else(|| "ERR invalid_request".to_owned())?;
+            .ok_or_else(WorkerFailure::invalid_request)?;
         if expected_byte_len > MAX_STEP_SOURCE_BYTES
             || total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
         {
-            return Err("ERR invalid_request".to_owned());
+            return Err(WorkerFailure::invalid_request());
         }
-        let source =
-            verified_step_copy(&source_path, expected_sha256, "evaluate_exact_brep_graph")?;
-        if source
+        let copy = verified_step_copy(source, "evaluate_exact_brep_graph")?;
+        if copy
             .as_file()
             .metadata()
-            .map_err(|error| {
-                transport_error_response("evaluate_exact_brep_graph", &error.to_string())
-            })?
+            .map_err(|error| backend_failure("evaluate_exact_brep_graph", &error.to_string()))?
             .len()
             != expected_byte_len
         {
-            return Err(transport_error_response(
+            return Err(backend_failure(
                 "evaluate_exact_brep_graph",
                 "STEP source byte length does not match the exact graph identity",
             ));
         }
-        sources.push((expected_sha256.clone(), source));
+        sources.push((expected_sha256.clone(), copy));
     }
     Ok(sources)
 }
 
+/// Validates the graph, stages its sources and evaluates it through the output cache.
+fn evaluated_graph_input(
+    backend: &ExactBackend,
+    input: &GraphInput,
+) -> Result<std::rc::Rc<ExactOpOutput>, WorkerFailure> {
+    validated_graph(&input.graph)?;
+    let sources = verified_exact_brep_graph_sources(&input.graph, &input.sources)?;
+    evaluate_exact_brep_graph_cached(backend, &input.graph, &sources)
+        .map_err(|error| geometry_failure(&error))
+}
+
 fn exact_brep_graph_mesh_response(
     backend: &ExactBackend,
-    operation: &str,
-    graph_digest: &str,
-    encoded_graph: &str,
-    fields: &[&str],
-) -> String {
-    if fields.len() < 2 || !is_result_fingerprint(fields[0]) {
-        return "ERR invalid_request".to_owned();
-    }
-    let Some(graph) = decode_exact_brep_graph(operation, graph_digest, encoded_graph) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Some(output_path) = decode_hex_utf8(fields[1]) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let sources = match verified_exact_brep_graph_sources(&graph, &fields[2..]) {
-        Ok(sources) => sources,
-        Err(response) => return response,
-    };
+    input: &GraphInput,
+    result_fingerprint: &str,
+    output_path: &Path,
+) -> WorkerResult {
     // The client asks for topology evidence first; reuse that evaluation
     // instead of rebuilding the whole feature chain a second time.
-    let output = match evaluate_exact_brep_graph_cached(backend, &graph, &sources) {
-        Ok(output) if output.body.result_fingerprint == fields[0] => output,
-        Ok(_) => return "ERR invalid_result".to_owned(),
-        Err(error) => return geometry_error_response(&error),
-    };
+    let output = evaluated_graph_input(backend, input)?;
+    if output.body.result_fingerprint != result_fingerprint {
+        return Err(WorkerFailure::code("invalid_result"));
+    }
     let bounds = output.body.topology.bounds_mm;
     let diagonal = ((bounds.max.x - bounds.min.x).powi(2)
         + (bounds.max.y - bounds.min.y).powi(2)
         + (bounds.max.z - bounds.min.z).powi(2))
     .sqrt();
     if !diagonal.is_finite() || diagonal <= 0.0 {
-        return "ERR invalid_shape".to_owned();
+        return Err(WorkerFailure::code("invalid_shape"));
     }
     let deflection = (diagonal * 1.0e-3).max(1.0e-3);
-    let mesh = match backend.tessellate_body(
-        &output.body,
-        deflection,
-        STEP_MESH_ANGULAR_DEFLECTION,
-        MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES,
-    ) {
-        Ok(mesh) => StepImportMesh {
-            vertices_mm: mesh.vertices_mm,
-            triangles: mesh
-                .triangles
-                .into_iter()
-                .map(|triangle| StepMeshTriangle {
-                    vertex_indices: triangle.vertex_indices,
-                    face_ordinal: triangle.face_ordinal,
-                })
-                .collect(),
-        },
-        Err(error) => return geometry_error_response(&error),
+    let mesh = backend
+        .tessellate_body(
+            &output.body,
+            deflection,
+            STEP_MESH_ANGULAR_DEFLECTION,
+            MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES,
+        )
+        .map_err(|error| geometry_failure(&error))?;
+    write_display_mesh(
+        mesh,
+        output_path,
+        &output.body.result_fingerprint,
+        "tessellate_exact_brep_graph",
+    )
+}
+
+/// Writes a display mesh to the caller's file and describes it by count and digest.
+fn write_display_mesh(
+    mesh: ketchup_exact::ExactTessellation,
+    output_path: &Path,
+    result_fingerprint: &str,
+    operation: &str,
+) -> WorkerResult {
+    let mesh = StepImportMesh {
+        vertices_mm: mesh.vertices_mm,
+        triangles: mesh
+            .triangles
+            .into_iter()
+            .map(|triangle| StepMeshTriangle {
+                vertex_indices: triangle.vertex_indices,
+                face_ordinal: triangle.face_ordinal,
+            })
+            .collect(),
     };
     let encoded = mesh.encode();
-    if let Err(error) = std::fs::write(&output_path, &encoded) {
-        return transport_error_response("tessellate_exact_brep_graph", &error.to_string());
-    }
-    format!(
-        "OK_BREP_GRAPH_MESH_V1 {graph_digest} {} {} {} {} {:016x}",
-        output.body.result_fingerprint,
-        mesh.vertices_mm.len(),
-        mesh.triangles.len(),
-        sha256_hex(&encoded),
-        deflection.to_bits(),
-    )
+    std::fs::write(output_path, &encoded)
+        .map_err(|error| backend_failure(operation, &error.to_string()))?;
+    Ok(WorkerReply::Mesh(MeshReceipt {
+        result_fingerprint: result_fingerprint.to_owned(),
+        vertex_count: mesh.vertices_mm.len() as u32,
+        triangle_count: mesh.triangles.len() as u32,
+        sha256: sha256_hex(&encoded),
+    }))
 }
 
 fn exact_brep_graph_volume_mesh_response(
     backend: &ExactBackend,
-    operation: &str,
-    graph_digest: &str,
-    encoded_graph: &str,
-    fields: &[&str],
-) -> String {
-    if fields.len() < 3 || !is_result_fingerprint(fields[0]) {
-        return "ERR invalid_request".to_owned();
+    input: &GraphInput,
+    result_fingerprint: &str,
+    options: ExactVolumeMeshWireOptions,
+    output_path: &Path,
+) -> WorkerResult {
+    validated_graph(&input.graph)?;
+    let graph = &input.graph;
+    let sources = verified_exact_brep_graph_sources(graph, &input.sources)?;
+    let output =
+        evaluate_exact_brep_graph(backend, graph, &sources).map_err(|e| geometry_failure(&e))?;
+    if output.body.result_fingerprint != result_fingerprint {
+        return Err(WorkerFailure::code("invalid_result"));
     }
-    let Some(graph) = decode_exact_brep_graph(operation, graph_digest, encoded_graph) else {
-        return "ERR invalid_request".to_owned();
+    let mesh = backend
+        .volume_mesh_body(
+            &output.body,
+            ExactVolumeMeshOptions {
+                surface_deflection_mm: options.surface_deflection_mm,
+                angular_deflection_rad: options.angular_deflection_rad,
+                max_tetrahedra: options.max_tetrahedra,
+                max_relative_volume_error: options.max_relative_volume_error,
+                min_tetrahedron_quality: options.min_tetrahedron_quality,
+            },
+        )
+        .map_err(|error| geometry_failure(&error))?;
+    let mesh = WorkerExactVolumeMesh {
+        schema: EXACT_VOLUME_MESH_WIRE_SCHEMA_V1.to_owned(),
+        graph_digest: graph.graph_digest.clone(),
+        source_result_fingerprint: mesh.source_result_fingerprint,
+        request_digest: mesh.request_digest,
+        mesh_fingerprint: mesh.mesh_fingerprint,
+        vertices_mm: mesh.vertices_mm,
+        tetrahedra: mesh
+            .tetrahedra
+            .into_iter()
+            .map(|tetrahedron| tetrahedron.vertex_indices)
+            .collect(),
+        boundary_triangles: mesh
+            .boundary_triangles
+            .into_iter()
+            .map(|triangle| WorkerExactVolumeBoundaryTriangle {
+                vertex_indices: triangle.vertex_indices,
+                face_ordinal: triangle.face_ordinal,
+            })
+            .collect(),
+        exact_volume_mm3: mesh.exact_volume_mm3,
+        tetrahedral_volume_mm3: mesh.tetrahedral_volume_mm3,
+        relative_volume_error: mesh.relative_volume_error,
+        minimum_signed_volume_mm3: mesh.minimum_signed_volume_mm3,
+        minimum_quality: mesh.minimum_quality,
+        maximum_edge_ratio: mesh.maximum_edge_ratio,
     };
-    let Some(output_path) = decode_hex_utf8(fields[1]) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Some(options_json) = decode_hex_utf8(fields[2]) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Ok(options) = serde_json::from_str::<ExactVolumeMeshWireOptions>(&options_json) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let sources = match verified_exact_brep_graph_sources(&graph, &fields[3..]) {
-        Ok(sources) => sources,
-        Err(response) => return response,
-    };
-    let output = match evaluate_exact_brep_graph(backend, &graph, &sources) {
-        Ok(output) if output.body.result_fingerprint == fields[0] => output,
-        Ok(_) => return "ERR invalid_result".to_owned(),
-        Err(error) => return geometry_error_response(&error),
-    };
-    let mesh = match backend.volume_mesh_body(
-        &output.body,
-        ExactVolumeMeshOptions {
-            surface_deflection_mm: options.surface_deflection_mm,
-            angular_deflection_rad: options.angular_deflection_rad,
-            max_tetrahedra: options.max_tetrahedra,
-            max_relative_volume_error: options.max_relative_volume_error,
-            min_tetrahedron_quality: options.min_tetrahedron_quality,
-        },
-    ) {
-        Ok(mesh) => WorkerExactVolumeMesh {
-            schema: EXACT_VOLUME_MESH_WIRE_SCHEMA_V1.to_owned(),
-            graph_digest: graph.graph_digest.clone(),
-            source_result_fingerprint: mesh.source_result_fingerprint,
-            request_digest: mesh.request_digest,
-            mesh_fingerprint: mesh.mesh_fingerprint,
-            vertices_mm: mesh.vertices_mm,
-            tetrahedra: mesh
-                .tetrahedra
-                .into_iter()
-                .map(|tetrahedron| tetrahedron.vertex_indices)
-                .collect(),
-            boundary_triangles: mesh
-                .boundary_triangles
-                .into_iter()
-                .map(|triangle| WorkerExactVolumeBoundaryTriangle {
-                    vertex_indices: triangle.vertex_indices,
-                    face_ordinal: triangle.face_ordinal,
-                })
-                .collect(),
-            exact_volume_mm3: mesh.exact_volume_mm3,
-            tetrahedral_volume_mm3: mesh.tetrahedral_volume_mm3,
-            relative_volume_error: mesh.relative_volume_error,
-            minimum_signed_volume_mm3: mesh.minimum_signed_volume_mm3,
-            minimum_quality: mesh.minimum_quality,
-            maximum_edge_ratio: mesh.maximum_edge_ratio,
-        },
-        Err(error) => return geometry_error_response(&error),
-    };
-    let encoded = match serde_json::to_vec(&mesh) {
-        Ok(encoded) => encoded,
-        Err(error) => {
-            return transport_error_response("volume_mesh_exact_brep_graph", &error.to_string());
-        }
-    };
-    if let Err(error) = std::fs::write(&output_path, &encoded) {
-        return transport_error_response("volume_mesh_exact_brep_graph", &error.to_string());
-    }
-    format!(
-        "OK_BREP_GRAPH_VOLUME_MESH_V1 {graph_digest} {} {} {} {} {} {}",
-        output.body.result_fingerprint,
-        mesh.vertices_mm.len(),
-        mesh.tetrahedra.len(),
-        mesh.boundary_triangles.len(),
-        sha256_hex(&encoded),
-        mesh.mesh_fingerprint,
-    )
+    let encoded = serde_json::to_vec(&mesh)
+        .map_err(|error| backend_failure("volume_mesh_exact_brep_graph", &error.to_string()))?;
+    std::fs::write(output_path, &encoded)
+        .map_err(|error| backend_failure("volume_mesh_exact_brep_graph", &error.to_string()))?;
+    Ok(WorkerReply::VolumeMesh(VolumeMeshReceipt {
+        result_fingerprint: output.body.result_fingerprint.clone(),
+        vertex_count: mesh.vertices_mm.len() as u32,
+        tetrahedron_count: mesh.tetrahedra.len() as u32,
+        boundary_triangle_count: mesh.boundary_triangles.len() as u32,
+        sha256: sha256_hex(&encoded),
+        mesh_fingerprint: mesh.mesh_fingerprint,
+    }))
 }
 
 fn exact_brep_graph_step_response(
     backend: &ExactBackend,
-    operation: &str,
-    graph_digest: &str,
-    encoded_graph: &str,
-    fields: &[&str],
-) -> String {
-    if fields.len() < 2 || !is_result_fingerprint(fields[0]) {
-        return "ERR invalid_request".to_owned();
+    input: &GraphInput,
+    result_fingerprint: &str,
+    output_path: &Path,
+) -> WorkerResult {
+    validated_graph(&input.graph)?;
+    let sources = verified_exact_brep_graph_sources(&input.graph, &input.sources)?;
+    let output = evaluate_exact_brep_graph(backend, &input.graph, &sources)
+        .map_err(|error| geometry_failure(&error))?;
+    if output.body.result_fingerprint != result_fingerprint {
+        return Err(WorkerFailure::code("invalid_result"));
     }
-    let Some(graph) = decode_exact_brep_graph(operation, graph_digest, encoded_graph) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Some(output_path) = decode_hex_utf8(fields[1]) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let sources = match verified_exact_brep_graph_sources(&graph, &fields[2..]) {
-        Ok(sources) => sources,
-        Err(response) => return response,
-    };
-    let output = match evaluate_exact_brep_graph(backend, &graph, &sources) {
-        Ok(output) if output.body.result_fingerprint == fields[0] => output,
-        Ok(_) => return "ERR invalid_result".to_owned(),
-        Err(error) => return geometry_error_response(&error),
-    };
-    let response_protocol = match operation {
-        "EXPORT_BREP_GRAPH_STEP_V2" => "OK_BREP_GRAPH_STEP_V2",
-        "EXPORT_BREP_GRAPH_STEP_V3" => "OK_BREP_GRAPH_STEP_V3",
-        "EXPORT_BREP_GRAPH_STEP_V4" => "OK_BREP_GRAPH_STEP_V4",
-        _ => return "ERR invalid_request".to_owned(),
-    };
-    match backend.export_step(&output.body, &output_path) {
-        Ok(()) => format!(
-            "{response_protocol} {graph_digest} {}",
-            output.body.result_fingerprint
-        ),
-        Err(error) => geometry_error_response(&error),
-    }
+    backend
+        .export_step(&output.body, utf8_path(output_path)?)
+        .map_err(|error| geometry_failure(&error))?;
+    Ok(WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: output.body.result_fingerprint.clone(),
+        sha256: None,
+    }))
 }
 
 fn exact_brep_graph_face_evidence(output: &ExactOpOutput) -> Vec<WorkerExactBRepGraphFaceEvidence> {
@@ -861,19 +497,9 @@ fn exact_brep_graph_edge_evidence(output: &ExactOpOutput) -> Vec<WorkerExactBRep
         .collect()
 }
 
-fn exact_brep_graph_response(
-    backend: &ExactBackend,
-    graph: &ExactBRepGraph,
-    source_fields: &[&str],
-) -> String {
-    let sources = match verified_exact_brep_graph_sources(graph, source_fields) {
-        Ok(sources) => sources,
-        Err(response) => return response,
-    };
-    let output = match evaluate_exact_brep_graph_cached(backend, graph, &sources) {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
+fn exact_brep_graph_response(backend: &ExactBackend, input: &GraphInput) -> WorkerResult {
+    let output = evaluated_graph_input(backend, input)?;
+    let graph = &input.graph;
     let topology = &output.body.topology;
     let area_mm2 = if graph.terminal_is_surface() {
         let area = topology.faces.iter().map(|face| face.area_mm2).sum::<f64>();
@@ -882,96 +508,41 @@ fn exact_brep_graph_response(
             || !area.is_finite()
             || area <= 0.0
         {
-            return "ERR invalid_shape".to_owned();
+            return Err(WorkerFailure::code("invalid_shape"));
         }
         area
     } else {
         0.0
     };
-    let (protocol, topology_evidence) = if matches!(
-        graph.schema.as_str(),
-        EXACT_BREP_GRAPH_SCHEMA_V8
-            | EXACT_BREP_GRAPH_SCHEMA_V9
-            | EXACT_BREP_GRAPH_SCHEMA_V10
-            | EXACT_BREP_GRAPH_SCHEMA_V11
-            | EXACT_BREP_GRAPH_SCHEMA_V12
-            | EXACT_BREP_GRAPH_SCHEMA_V13
-            | EXACT_BREP_GRAPH_SCHEMA_V14
-            | EXACT_BREP_GRAPH_SCHEMA_V15
-            | EXACT_BREP_GRAPH_SCHEMA_V16
-            | EXACT_BREP_GRAPH_SCHEMA_V17
-            | EXACT_BREP_GRAPH_SCHEMA_V18
-            | EXACT_BREP_GRAPH_SCHEMA_V19
-            | EXACT_BREP_GRAPH_SCHEMA_V20
-            | EXACT_BREP_GRAPH_SCHEMA_V21
-            | EXACT_BREP_GRAPH_SCHEMA_V22
-            | EXACT_BREP_GRAPH_SCHEMA_V23
-    ) {
-        (
-            match graph.schema.as_str() {
-                EXACT_BREP_GRAPH_SCHEMA_V23 => "OK_BREP_GRAPH_V23",
-                EXACT_BREP_GRAPH_SCHEMA_V22 => "OK_BREP_GRAPH_V22",
-                EXACT_BREP_GRAPH_SCHEMA_V21 => "OK_BREP_GRAPH_V21",
-                EXACT_BREP_GRAPH_SCHEMA_V20 => "OK_BREP_GRAPH_V20",
-                EXACT_BREP_GRAPH_SCHEMA_V19 => "OK_BREP_GRAPH_V19",
-                EXACT_BREP_GRAPH_SCHEMA_V18 => "OK_BREP_GRAPH_V18",
-                EXACT_BREP_GRAPH_SCHEMA_V17 => "OK_BREP_GRAPH_V17",
-                EXACT_BREP_GRAPH_SCHEMA_V16 => "OK_BREP_GRAPH_V16",
-                EXACT_BREP_GRAPH_SCHEMA_V15 => "OK_BREP_GRAPH_V15",
-                EXACT_BREP_GRAPH_SCHEMA_V14 => "OK_BREP_GRAPH_V14",
-                EXACT_BREP_GRAPH_SCHEMA_V13 => "OK_BREP_GRAPH_V13",
-                EXACT_BREP_GRAPH_SCHEMA_V12 => "OK_BREP_GRAPH_V12",
-                EXACT_BREP_GRAPH_SCHEMA_V11 => "OK_BREP_GRAPH_V11",
-                EXACT_BREP_GRAPH_SCHEMA_V10 => "OK_BREP_GRAPH_V10",
-                EXACT_BREP_GRAPH_SCHEMA_V9 => "OK_BREP_GRAPH_V9",
-                _ => "OK_BREP_GRAPH_V8",
-            },
-            format!(
-                "{} {} {} {} {} {}",
-                topology.vertex_count,
-                topology.edge_count,
-                topology.wire_count,
-                topology.face_count,
-                topology.shell_count,
-                topology.solid_count,
-            ),
-        )
-    } else {
-        (
-            "OK_BREP_GRAPH_V6",
-            format!(
-                "{} {} {} {} {}",
-                topology.vertex_count,
-                topology.edge_count,
-                topology.face_count,
-                topology.shell_count,
-                topology.solid_count,
-            ),
-        )
-    };
-    let faces = serde_json::to_vec(&exact_brep_graph_face_evidence(&output))
-        .expect("graph face evidence is serializable");
-    let edges = serde_json::to_vec(&exact_brep_graph_edge_evidence(&output))
-        .expect("graph edge evidence is serializable");
-    let detailed_evidence = format!(" {} {}", encode_hex(&faces), encode_hex(&edges));
-    format!(
-        "{protocol} {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {topology_evidence} {} {}{detailed_evidence}",
-        graph.canonical_input_digest,
-        graph.graph_digest,
-        graph.producer_feature_id,
-        output.body.result_fingerprint,
-        output.input_digest,
-        topology.volume_mm3.to_bits(),
-        area_mm2.to_bits(),
-        topology.bounds_mm.min.x.to_bits(),
-        topology.bounds_mm.min.y.to_bits(),
-        topology.bounds_mm.min.z.to_bits(),
-        topology.bounds_mm.max.x.to_bits(),
-        topology.bounds_mm.max.y.to_bits(),
-        topology.bounds_mm.max.z.to_bits(),
-        encode_hex(output.backend_fingerprint.as_bytes()),
-        encode_hex(output.tolerance_report.profile.as_bytes()),
-    )
+    Ok(WorkerReply::Graph(WorkerExactBRepGraphResult {
+        canonical_input_digest: graph.canonical_input_digest.clone(),
+        graph_digest: graph.graph_digest.clone(),
+        producer_feature_id: graph.producer_feature_id,
+        result_fingerprint: output.body.result_fingerprint.clone(),
+        exact_input_digest: output.input_digest.clone(),
+        volume_mm3: topology.volume_mm3,
+        area_mm2,
+        bounds_mm: [
+            topology.bounds_mm.min.x,
+            topology.bounds_mm.min.y,
+            topology.bounds_mm.min.z,
+            topology.bounds_mm.max.x,
+            topology.bounds_mm.max.y,
+            topology.bounds_mm.max.z,
+        ],
+        topology_counts: [
+            topology.vertex_count,
+            topology.edge_count,
+            topology.face_count,
+            topology.shell_count,
+            topology.solid_count,
+        ],
+        wire_count: Some(topology.wire_count),
+        backend: output.backend_fingerprint.to_owned(),
+        tolerance: output.tolerance_report.profile.to_owned(),
+        faces: exact_brep_graph_face_evidence(&output),
+        edges: exact_brep_graph_edge_evidence(&output),
+    }))
 }
 
 fn exact_brep_sheet_metal(
@@ -1123,22 +694,10 @@ fn exact_brep_sheet_metal(
 
 fn cam_simulation_response(
     backend: &ExactBackend,
-    graph_digest: &str,
-    encoded_graph: &str,
-    encoded_request: &str,
-) -> String {
-    let Some(graph_bytes) = decode_hex_bytes(encoded_graph) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Ok(graph) = ExactBRepGraph::from_bytes(&graph_bytes) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Some(request_bytes) = decode_hex_bytes(encoded_request) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Ok(request) = serde_json::from_slice::<CamSimulationWireRequest>(&request_bytes) else {
-        return "ERR invalid_request".to_owned();
-    };
+    graph: &ExactBRepGraph,
+    request: &CamSimulationWireRequest,
+) -> WorkerResult {
+    validated_graph(graph)?;
     let bounded_values = request
         .stock_bounds_mm
         .iter()
@@ -1159,8 +718,7 @@ fn cam_simulation_response(
         .len()
         .checked_mul(request.fixtures.len().saturating_mul(2).saturating_add(2))
         .is_some_and(|checks| checks <= 16_384);
-    if graph.graph_digest != graph_digest
-        || request.schema != CAM_SIMULATION_SCHEMA_V1
+    if request.schema != CAM_SIMULATION_SCHEMA_V1
         || request.target_exact_graph_digest != graph.graph_digest
         || !is_canonical_digest(&request.plan_digest)
         || !is_canonical_digest(&request.toolpath_digest)
@@ -1203,19 +761,11 @@ fn cam_simulation_response(
             .len()
             != request.fixtures.len()
     {
-        return "ERR invalid_request".to_owned();
+        return Err(WorkerFailure::invalid_request());
     }
-    let evidence = match simulate_cam_geometry(backend, &graph, &request) {
-        Ok(evidence) => evidence,
-        Err(error) => return geometry_error_response(&error),
-    };
-    match serde_json::to_vec(&evidence) {
-        Ok(encoded) => format!(
-            "OK_CAM_SIMULATION_V1 {graph_digest} {}",
-            encode_hex(&encoded)
-        ),
-        Err(_) => "ERR invalid_result".to_owned(),
-    }
+    simulate_cam_geometry(backend, graph, request)
+        .map(WorkerReply::Cam)
+        .map_err(|error| geometry_failure(&error))
 }
 
 fn cam_axial_sweep(
@@ -3439,174 +2989,144 @@ fn step_import_result_fingerprint(
     format!("fnv1a64:{hash:016x}")
 }
 
-fn verified_step_copy(
-    source_path: &str,
-    source_sha256: &str,
+/// Copies a declared source into a private file after proving its SHA-256.
+fn verified_copy(
+    source: &SourceFile,
+    label: &str,
     operation: &'static str,
-) -> Result<tempfile::NamedTempFile, String> {
-    let source_path = std::path::Path::new(source_path);
-    let mut source = std::fs::File::open(source_path)
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+) -> Result<tempfile::NamedTempFile, WorkerFailure> {
+    let failure = |diagnostic: &str| backend_failure(operation, diagnostic);
+    let mut file =
+        std::fs::File::open(&source.path).map_err(|error| failure(&error.to_string()))?;
     let mut source_bytes = Vec::new();
-    std::io::Read::by_ref(&mut source)
+    std::io::Read::by_ref(&mut file)
         .take(MAX_STEP_SOURCE_BYTES + 1)
         .read_to_end(&mut source_bytes)
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+        .map_err(|error| failure(&error.to_string()))?;
     if source_bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
-        return Err(transport_error_response(
-            operation,
-            "STEP source exceeds the bounded 32 MiB envelope",
-        ));
+        return Err(failure(&format!(
+            "{label} source exceeds the bounded 32 MiB envelope"
+        )));
     }
-    if sha256_hex(&source_bytes) != source_sha256 {
-        return Err(transport_error_response(
-            operation,
-            "STEP part bytes do not match the declared SHA-256",
-        ));
+    if !is_canonical_digest(&source.sha256) || sha256_hex(&source_bytes) != source.sha256 {
+        return Err(failure(&format!(
+            "{label} source bytes do not match the declared SHA-256"
+        )));
     }
+    let extension = label.to_ascii_lowercase();
     let mut copy = tempfile::Builder::new()
-        .prefix("ketchup-verified-step-")
-        .suffix(".step")
+        .prefix(&format!("ketchup-verified-{extension}-"))
+        .suffix(&format!(".{extension}"))
         .tempfile()
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+        .map_err(|error| failure(&error.to_string()))?;
     copy.write_all(&source_bytes)
         .and_then(|()| copy.flush())
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+        .map_err(|error| failure(&error.to_string()))?;
     Ok(copy)
+}
+
+fn verified_step_copy(
+    source: &SourceFile,
+    operation: &'static str,
+) -> Result<tempfile::NamedTempFile, WorkerFailure> {
+    verified_copy(source, "STEP", operation)
 }
 
 fn verified_iges_copy(
-    source_path: &str,
-    source_sha256: &str,
+    source: &SourceFile,
     operation: &'static str,
-) -> Result<tempfile::NamedTempFile, String> {
-    let source_path = std::path::Path::new(source_path);
-    let mut source = std::fs::File::open(source_path)
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
-    let mut source_bytes = Vec::new();
-    std::io::Read::by_ref(&mut source)
-        .take(MAX_STEP_SOURCE_BYTES + 1)
-        .read_to_end(&mut source_bytes)
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
-    if source_bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
-        return Err(transport_error_response(
-            operation,
-            "IGES source exceeds the bounded 32 MiB envelope",
-        ));
-    }
-    if sha256_hex(&source_bytes) != source_sha256 {
-        return Err(transport_error_response(
-            operation,
-            "IGES bytes do not match the declared SHA-256",
-        ));
-    }
-    let mut copy = tempfile::Builder::new()
-        .prefix("ketchup-verified-iges-")
-        .suffix(".iges")
-        .tempfile()
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
-    copy.write_all(&source_bytes)
-        .and_then(|()| copy.flush())
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
-    Ok(copy)
+) -> Result<tempfile::NamedTempFile, WorkerFailure> {
+    verified_copy(source, "IGES", operation)
 }
 
-fn m21_iges_xde_inspection_response(
-    backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
-) -> String {
-    if !is_canonical_digest(source_sha256) {
-        return "ERR invalid_request".to_owned();
+fn temp_path(file: &tempfile::NamedTempFile) -> String {
+    file.path().to_string_lossy().into_owned()
+}
+
+fn body_kind(output: &ExactOpOutput) -> &'static str {
+    if output.body.topology.solid_count == 0 {
+        "surface"
+    } else {
+        "solid"
     }
-    let Some(source_path) = decode_hex_utf8(source_path) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_iges_copy(&source_path, source_sha256, "inspect_iges_xde") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let source_byte_len = match source.as_file().metadata() {
-        Ok(metadata) => metadata.len(),
-        Err(error) => return transport_error_response("inspect_iges_xde", &error.to_string()),
-    };
-    let source_path = source.path().to_string_lossy();
-    let Some(raw_unit) = backend.iges_length_unit_name(&source_path) else {
-        return transport_error_response(
-            "inspect_iges_xde",
-            "IGES source has missing or ambiguous representation length units",
-        );
-    };
-    let source_unit = match raw_unit.as_str() {
-        "mm" | "millimetre" | "millimeter" => "millimetre",
-        "cm" | "centimetre" | "centimeter" => "centimetre",
-        "m" | "metre" | "meter" => "metre",
-        "in" | "inch" => "inch",
-        "ft" | "foot" => "foot",
-        _ => {
-            return transport_error_response(
-                "inspect_iges_xde",
-                "IGES source declares an unsupported length unit",
-            );
-        }
-    };
-    let manifest = match backend.iges_xde_manifest(&source_path) {
-        Ok(manifest) => manifest,
-        Err(error) => return transport_error_response("inspect_iges_xde", &error.to_string()),
-    };
+}
+
+fn face_area_mm2(output: &ExactOpOutput) -> f64 {
+    output
+        .body
+        .topology
+        .faces
+        .iter()
+        .map(|face| face.area_mm2)
+        .sum()
+}
+
+fn topology_counts(output: &ExactOpOutput) -> [u32; 5] {
+    let topology = &output.body.topology;
+    [
+        topology.vertex_count,
+        topology.edge_count,
+        topology.face_count,
+        topology.shell_count,
+        topology.solid_count,
+    ]
+}
+
+fn bounds_mm(output: &ExactOpOutput) -> [[f64; 3]; 2] {
+    let bounds = output.body.topology.bounds_mm;
+    [
+        [bounds.min.x, bounds.min.y, bounds.min.z],
+        [bounds.max.x, bounds.max.y, bounds.max.z],
+    ]
+}
+
+fn import_part_reply(
+    source_sha256: &str,
+    output: &ExactOpOutput,
+    source_unit: &str,
+) -> WorkerReply {
+    WorkerReply::ImportPart(WorkerImportPart {
+        result_fingerprint: step_import_result_fingerprint(source_sha256, output),
+        body_kind: body_kind(output).to_owned(),
+        topology_counts: topology_counts(output),
+        area_mm2: face_area_mm2(output),
+        volume_mm3: output.body.topology.volume_mm3,
+        bounds_mm: bounds_mm(output),
+        source_unit: source_unit.to_owned(),
+        backend: output.backend_fingerprint.to_owned(),
+        tolerance: output.tolerance_report.profile.to_owned(),
+    })
+}
+
+/// Inspects every XDE part of a verified source and returns the whole manifest.
+fn xde_evidence_reply(
+    source: &SourceFile,
+    source_byte_len: u64,
+    source_unit: &str,
+    manifest: ketchup_exact::StepXdeManifest,
+    import_part: impl Fn(u32) -> Result<ExactOpOutput, ketchup_exact::GeometryError>,
+) -> WorkerResult {
     let mut parts = Vec::with_capacity(manifest.parts.len());
     for part in manifest.parts {
-        let output = match backend.import_iges_xde_part(&source_path, part.index) {
-            Ok(output) => output,
-            Err(error) => return geometry_error_response(&error),
-        };
-        let topology = &output.body.topology;
+        let output = import_part(part.index).map_err(|error| geometry_failure(&error))?;
         parts.push(StepXdeWorkerPart {
             index: part.index,
             name: part.name,
             name_from_source: part.name_from_source,
             color: part.color,
-            result_fingerprint: step_import_result_fingerprint(source_sha256, &output),
-            body_kind: if topology.solid_count == 0 {
-                "surface"
-            } else {
-                "solid"
-            }
-            .to_owned(),
-            solid_count: topology.solid_count,
-            topology_counts: [
-                topology.vertex_count,
-                topology.edge_count,
-                topology.face_count,
-                topology.shell_count,
-                topology.solid_count,
-            ],
-            area_mm2: output
-                .body
-                .topology
-                .faces
-                .iter()
-                .map(|face| face.area_mm2)
-                .sum(),
-            volume_mm3: topology.volume_mm3,
-            bounds_mm: [
-                [
-                    topology.bounds_mm.min.x,
-                    topology.bounds_mm.min.y,
-                    topology.bounds_mm.min.z,
-                ],
-                [
-                    topology.bounds_mm.max.x,
-                    topology.bounds_mm.max.y,
-                    topology.bounds_mm.max.z,
-                ],
-            ],
+            result_fingerprint: step_import_result_fingerprint(&source.sha256, &output),
+            body_kind: body_kind(&output).to_owned(),
+            solid_count: output.body.topology.solid_count,
+            topology_counts: topology_counts(&output),
+            area_mm2: face_area_mm2(&output),
+            volume_mm3: output.body.topology.volume_mm3,
+            bounds_mm: bounds_mm(&output),
             backend: output.backend_fingerprint.to_owned(),
             tolerance: output.tolerance_report.profile.to_owned(),
         });
     }
-    let evidence = StepXdeWorkerEvidence {
-        source_sha256: source_sha256.to_owned(),
+    Ok(WorkerReply::Xde(StepXdeWorkerEvidence {
+        source_sha256: source.sha256.clone(),
         source_byte_len,
         source_unit: source_unit.to_owned(),
         parts,
@@ -3623,246 +3143,156 @@ fn m21_iges_xde_inspection_response(
                 transform: node.transform,
             })
             .collect(),
+    }))
+}
+
+fn iges_source_unit(
+    backend: &ExactBackend,
+    source_path: &str,
+    operation: &'static str,
+) -> Result<&'static str, WorkerFailure> {
+    let Some(raw_unit) = backend.iges_length_unit_name(source_path) else {
+        return Err(backend_failure(
+            operation,
+            "IGES source has missing or ambiguous representation length units",
+        ));
     };
-    let encoded = match serde_json::to_vec(&evidence) {
-        Ok(encoded) => encoded,
-        Err(error) => return transport_error_response("inspect_iges_xde", &error.to_string()),
-    };
-    format!(
-        "OK_M21_IGES_XDE_V2 {source_sha256} {} {}",
-        sha256_hex(&encoded),
-        encode_hex(&encoded),
-    )
+    match raw_unit.as_str() {
+        "mm" | "millimetre" | "millimeter" => Ok("millimetre"),
+        "cm" | "centimetre" | "centimeter" => Ok("centimetre"),
+        "m" | "metre" | "meter" => Ok("metre"),
+        "in" | "inch" => Ok("inch"),
+        "ft" | "foot" => Ok("foot"),
+        _ => Err(backend_failure(
+            operation,
+            "IGES source declares an unsupported length unit",
+        )),
+    }
+}
+
+fn step_source_unit(
+    backend: &ExactBackend,
+    source_path: &str,
+    operation: &'static str,
+) -> Result<String, WorkerFailure> {
+    backend.step_length_unit_name(source_path).ok_or_else(|| {
+        backend_failure(
+            operation,
+            "STEP source has missing or ambiguous representation length units",
+        )
+    })
+}
+
+fn m21_iges_xde_inspection_response(backend: &ExactBackend, source: &SourceFile) -> WorkerResult {
+    let copy = verified_iges_copy(source, "inspect_iges_xde")?;
+    let source_byte_len = copy
+        .as_file()
+        .metadata()
+        .map_err(|error| backend_failure("inspect_iges_xde", &error.to_string()))?
+        .len();
+    let source_path = temp_path(&copy);
+    let source_unit = iges_source_unit(backend, &source_path, "inspect_iges_xde")?;
+    let manifest = backend
+        .iges_xde_manifest(&source_path)
+        .map_err(|error| backend_failure("inspect_iges_xde", &error.to_string()))?;
+    xde_evidence_reply(source, source_byte_len, source_unit, manifest, |index| {
+        backend.import_iges_xde_part(&source_path, index)
+    })
 }
 
 fn m21_iges_part_inspection_response(
     backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
+    source: &SourceFile,
     part_index: Option<u32>,
-) -> String {
-    if !is_canonical_digest(source_sha256) {
-        return "ERR invalid_request".to_owned();
-    }
-    let Some(source_path) = decode_hex_utf8(source_path) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_iges_copy(&source_path, source_sha256, "inspect_iges_part") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let source_path = source.path().to_string_lossy();
-    let Some(raw_unit) = backend.iges_length_unit_name(&source_path) else {
-        return transport_error_response(
-            "inspect_iges_part",
-            "IGES source has missing or ambiguous representation length units",
-        );
-    };
-    let source_unit = match raw_unit.as_str() {
-        "mm" | "millimetre" | "millimeter" => "millimetre",
-        "cm" | "centimetre" | "centimeter" => "centimetre",
-        "m" | "metre" | "meter" => "metre",
-        "in" | "inch" => "inch",
-        "ft" | "foot" => "foot",
-        _ => {
-            return transport_error_response(
-                "inspect_iges_part",
-                "IGES source declares an unsupported length unit",
-            );
-        }
-    };
-    let imported = match part_index {
+) -> WorkerResult {
+    let copy = verified_iges_copy(source, "inspect_iges_part")?;
+    let source_path = temp_path(&copy);
+    let source_unit = iges_source_unit(backend, &source_path, "inspect_iges_part")?;
+    let output = match part_index {
         Some(index) => backend.import_iges_xde_part(&source_path, index),
         None => backend.import_iges(&source_path),
-    };
-    match imported {
-        Ok(output) => {
-            let topology = &output.body.topology;
-            let response_schema = if part_index.is_some() {
-                "OK_M21_IGES_XDE_PART_V2"
-            } else {
-                "OK_M21_IGES_PART_V2"
-            };
-            let body_kind = if topology.solid_count == 0 {
-                "surface"
-            } else {
-                "solid"
-            };
-            let area_mm2 = output
-                .body
-                .topology
-                .faces
-                .iter()
-                .map(|face| face.area_mm2)
-                .sum::<f64>();
-            format!(
-                "{response_schema} {source_sha256} {} {body_kind} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
-                step_import_result_fingerprint(source_sha256, &output),
-                topology.solid_count,
-                area_mm2.to_bits(),
-                topology.volume_mm3.to_bits(),
-                topology.bounds_mm.min.x.to_bits(),
-                topology.bounds_mm.min.y.to_bits(),
-                topology.bounds_mm.min.z.to_bits(),
-                topology.bounds_mm.max.x.to_bits(),
-                topology.bounds_mm.max.y.to_bits(),
-                topology.bounds_mm.max.z.to_bits(),
-                topology.vertex_count,
-                topology.edge_count,
-                topology.face_count,
-                topology.shell_count,
-                encode_hex(source_unit.as_bytes()),
-                encode_hex(output.backend_fingerprint.as_bytes()),
-                encode_hex(output.tolerance_report.profile.as_bytes()),
-            )
-        }
-        Err(error) => geometry_error_response(&error),
     }
+    .map_err(|error| geometry_failure(&error))?;
+    Ok(import_part_reply(&source.sha256, &output, source_unit))
 }
 
-fn m21_iges_part_mesh_response(
+/// Tessellates an imported body; the receipt repeats its result fingerprint so the
+/// caller can only bind a mesh to the exact body it already committed to.
+fn imported_mesh_response(
     backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
-    fields: &[&str],
-    part_index: Option<u32>,
-) -> String {
-    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
-        return "ERR invalid_request".to_owned();
-    }
-    let (Some(source_path), Some(output_path)) =
-        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
-    else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_iges_copy(&source_path, source_sha256, "tessellate_iges_part") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let output = match part_index {
-        Some(index) => backend.import_iges_xde_part(&source.path().to_string_lossy(), index),
-        None => backend.import_iges(&source.path().to_string_lossy()),
-    };
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
+    source: &SourceFile,
+    output: ExactOpOutput,
+    output_path: &Path,
+    label: &str,
+    operation: &'static str,
+) -> WorkerResult {
     let bounds = output.body.topology.bounds_mm;
     let diagonal = ((bounds.max.x - bounds.min.x).powi(2)
         + (bounds.max.y - bounds.min.y).powi(2)
         + (bounds.max.z - bounds.min.z).powi(2))
     .sqrt();
     if !diagonal.is_finite() || diagonal <= 0.0 {
-        return transport_error_response(
-            "tessellate_iges_part",
-            "IGES part has no measurable extent to tessellate",
-        );
+        return Err(backend_failure(
+            operation,
+            &format!("{label} part has no measurable extent to tessellate"),
+        ));
     }
     let deflection = (diagonal * 1.0e-3).max(1.0e-3);
-    let mesh = match backend.tessellate_body(
-        &output.body,
-        deflection,
-        STEP_MESH_ANGULAR_DEFLECTION,
-        MAX_STEP_MESH_TRIANGLES,
-    ) {
-        Ok(mesh) => mesh,
-        Err(error) => return geometry_error_response(&error),
-    };
-    let mesh = StepImportMesh {
-        vertices_mm: mesh.vertices_mm,
-        triangles: mesh
-            .triangles
-            .into_iter()
-            .map(|triangle| StepMeshTriangle {
-                vertex_indices: triangle.vertex_indices,
-                face_ordinal: triangle.face_ordinal,
-            })
-            .collect(),
-    };
-    let encoded = mesh.encode();
-    if let Err(error) = std::fs::write(&output_path, &encoded) {
-        return transport_error_response("tessellate_iges_part", &error.to_string());
-    }
-    let response_schema = if part_index.is_some() {
-        "OK_M21_IGES_XDE_MESH_V1"
-    } else {
-        "OK_M21_IGES_MESH_V1"
-    };
-    format!(
-        "{response_schema} {source_sha256} {} {} {} {} {:016x}",
-        step_import_result_fingerprint(source_sha256, &output),
-        mesh.vertices_mm.len(),
-        mesh.triangles.len(),
-        sha256_hex(&encoded),
-        deflection.to_bits(),
+    let mesh = backend
+        .tessellate_body(
+            &output.body,
+            deflection,
+            STEP_MESH_ANGULAR_DEFLECTION,
+            MAX_STEP_MESH_TRIANGLES,
+        )
+        .map_err(|error| geometry_failure(&error))?;
+    write_display_mesh(
+        mesh,
+        output_path,
+        &step_import_result_fingerprint(&source.sha256, &output),
+        operation,
     )
 }
 
-fn m21_step_to_iges_response(
+fn m21_iges_part_mesh_response(
     backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
-    fields: &[&str],
-) -> String {
-    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
-        return "ERR invalid_request".to_owned();
+    source: &SourceFile,
+    part_index: Option<u32>,
+    output_path: &Path,
+) -> WorkerResult {
+    let copy = verified_iges_copy(source, "tessellate_iges_part")?;
+    let source_path = temp_path(&copy);
+    let output = match part_index {
+        Some(index) => backend.import_iges_xde_part(&source_path, index),
+        None => backend.import_iges(&source_path),
     }
-    let (Some(source_path), Some(output_path)) =
-        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
-    else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_step_copy(&source_path, source_sha256, "convert_step_to_iges") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let imported = match backend.import_step(&source.path().to_string_lossy()) {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
-    match backend.export_iges(&imported.body, &output_path) {
-        Ok(()) => format!(
-            "OK_M21_IGES_EXPORT_V1 {source_sha256} {}",
-            step_import_result_fingerprint(source_sha256, &imported)
-        ),
-        Err(error) => geometry_error_response(&error),
-    }
+    .map_err(|error| geometry_failure(&error))?;
+    imported_mesh_response(
+        backend,
+        source,
+        output,
+        output_path,
+        "IGES",
+        "tessellate_iges_part",
+    )
 }
 
 fn m21_step_xde_to_iges_response(
     backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
-    fields: &[&str],
-) -> String {
-    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
-        return "ERR invalid_request".to_owned();
-    }
-    let (Some(source_path), Some(output_path)) =
-        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
-    else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_step_copy(&source_path, source_sha256, "convert_step_xde_to_iges") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let source_path = source.path().to_string_lossy();
-    let manifest = match backend.step_xde_manifest(&source_path) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            return transport_error_response("convert_step_xde_to_iges", &error.to_string());
-        }
-    };
-    let directory = match tempfile::Builder::new()
+    source: &SourceFile,
+    output_path: &Path,
+) -> WorkerResult {
+    const OPERATION: &str = "convert_step_xde_to_iges";
+    let output_path = utf8_path(output_path)?;
+    let copy = verified_step_copy(source, OPERATION)?;
+    let source_path = temp_path(&copy);
+    let manifest = backend
+        .step_xde_manifest(&source_path)
+        .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
+    let directory = tempfile::Builder::new()
         .prefix("ketchup-iges-flat-roots-")
         .tempdir()
-    {
-        Ok(directory) => directory,
-        Err(error) => {
-            return transport_error_response("convert_step_xde_to_iges", &error.to_string());
-        }
-    };
+        .map_err(|error| backend_failure(OPERATION, &error.to_string()))?;
     let mut world_transforms: Vec<Transform> = Vec::with_capacity(manifest.nodes.len());
     let mut inherited_colors: Vec<Option<[u8; 3]>> = Vec::with_capacity(manifest.nodes.len());
     let mut parts = Vec::new();
@@ -3873,19 +3303,19 @@ fn m21_step_xde_to_iges_response(
                 .parent_id
                 .is_some_and(|parent| parent as usize >= index)
         {
-            return transport_error_response(
-                "convert_step_xde_to_iges",
+            return Err(backend_failure(
+                OPERATION,
                 "STEP XDE hierarchy is not canonical parent-before order",
-            );
+            ));
         }
         let Some(local) = Transform::from_matrix(node.transform)
             .ok()
             .filter(|transform| transform.rigid_inverse().is_some())
         else {
-            return transport_error_response(
-                "convert_step_xde_to_iges",
+            return Err(backend_failure(
+                OPERATION,
                 "STEP XDE hierarchy contains a non-rigid transform",
-            );
+            ));
         };
         let world = node.parent_id.map_or(local, |parent| {
             world_transforms[parent as usize].compose(local)
@@ -3900,19 +3330,18 @@ fn m21_step_xde_to_iges_response(
             continue;
         };
         let Some(source_part) = manifest.parts.get(source_part_index as usize) else {
-            return transport_error_response(
-                "convert_step_xde_to_iges",
+            return Err(backend_failure(
+                OPERATION,
                 "STEP XDE occurrence references a missing part",
-            );
+            ));
         };
-        let imported = match backend.import_step_xde_part(&source_path, source_part_index) {
-            Ok(imported) => imported,
-            Err(error) => return geometry_error_response(&error),
-        };
+        let imported = backend
+            .import_step_xde_part(&source_path, source_part_index)
+            .map_err(|error| geometry_failure(&error))?;
         let part_path = directory.path().join(format!("root-{}.step", nodes.len()));
-        if let Err(error) = backend.export_step(&imported.body, &part_path.to_string_lossy()) {
-            return geometry_error_response(&error);
-        }
+        backend
+            .export_step(&imported.body, &part_path.to_string_lossy())
+            .map_err(|error| geometry_failure(&error))?;
         let part_index = parts.len() as u32;
         parts.push(StepXdeExportPart {
             path: part_path.to_string_lossy().into_owned(),
@@ -3927,20 +3356,17 @@ fn m21_step_xde_to_iges_response(
         });
     }
     if nodes.is_empty() || nodes.len() > 1_024 {
-        return transport_error_response(
-            "convert_step_xde_to_iges",
+        return Err(backend_failure(
+            OPERATION,
             "STEP XDE source has no bounded leaf occurrences",
-        );
+        ));
     }
-    if let Err(error) = backend.export_iges_xde_assembly(&parts, &nodes, &output_path) {
-        return geometry_error_response(&error);
-    }
-    let reread = match backend.iges_xde_manifest(&output_path) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            return transport_error_response("reread_iges_xde_output", &error.to_string());
-        }
-    };
+    backend
+        .export_iges_xde_assembly(&parts, &nodes, output_path)
+        .map_err(|error| geometry_failure(&error))?;
+    let reread = backend
+        .iges_xde_manifest(output_path)
+        .map_err(|error| backend_failure("reread_iges_xde_output", &error.to_string()))?;
     if reread.parts.len() != parts.len()
         || reread.nodes.len() != nodes.len()
         || reread.nodes.iter().any(|node| node.parent_id.is_some())
@@ -3948,212 +3374,61 @@ fn m21_step_xde_to_iges_response(
             actual.name != expected.name || actual.color != expected.color
         })
     {
-        return transport_error_response(
+        return Err(backend_failure(
             "reread_iges_xde_output",
             "IGES output lost a flat root, name, or color",
-        );
+        ));
     }
-    let first = match backend.import_iges_xde_part(&output_path, 0) {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
-    format!(
-        "OK_M21_IGES_EXPORT_V1 {source_sha256} {}",
-        step_import_result_fingerprint(source_sha256, &first)
-    )
+    let first = backend
+        .import_iges_xde_part(output_path, 0)
+        .map_err(|error| geometry_failure(&error))?;
+    Ok(WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: step_import_result_fingerprint(&source.sha256, &first),
+        sha256: None,
+    }))
 }
 
-fn m21_step_xde_inspection_response(
-    backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
-) -> String {
-    if !is_canonical_digest(source_sha256) {
-        return "ERR invalid_request".to_owned();
-    }
-    let Some(source_path) = decode_hex_utf8(source_path) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_step_copy(&source_path, source_sha256, "inspect_step_xde") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let source_byte_len = match source.as_file().metadata() {
-        Ok(metadata) => metadata.len(),
-        Err(error) => return transport_error_response("inspect_step_xde", &error.to_string()),
-    };
-    let source_path = source.path().to_string_lossy();
-    let Some(source_unit) = backend.step_length_unit_name(&source_path) else {
-        return transport_error_response(
-            "inspect_step_xde",
-            "STEP source has missing or ambiguous representation length units",
-        );
-    };
-    let manifest = match backend.step_xde_manifest(&source_path) {
-        Ok(manifest) => manifest,
-        Err(error) => return transport_error_response("inspect_step_xde", &error.to_string()),
-    };
-    let mut parts = Vec::with_capacity(manifest.parts.len());
-    for part in manifest.parts {
-        let output = match backend.import_step_xde_part(&source_path, part.index) {
-            Ok(output) => output,
-            Err(error) => return geometry_error_response(&error),
-        };
-        let topology = &output.body.topology;
-        parts.push(StepXdeWorkerPart {
-            index: part.index,
-            name: part.name,
-            name_from_source: part.name_from_source,
-            color: part.color,
-            result_fingerprint: step_import_result_fingerprint(source_sha256, &output),
-            body_kind: if topology.solid_count == 0 {
-                "surface"
-            } else {
-                "solid"
-            }
-            .to_owned(),
-            solid_count: topology.solid_count,
-            topology_counts: [
-                topology.vertex_count,
-                topology.edge_count,
-                topology.face_count,
-                topology.shell_count,
-                topology.solid_count,
-            ],
-            area_mm2: output
-                .body
-                .topology
-                .faces
-                .iter()
-                .map(|face| face.area_mm2)
-                .sum(),
-            volume_mm3: topology.volume_mm3,
-            bounds_mm: [
-                [
-                    topology.bounds_mm.min.x,
-                    topology.bounds_mm.min.y,
-                    topology.bounds_mm.min.z,
-                ],
-                [
-                    topology.bounds_mm.max.x,
-                    topology.bounds_mm.max.y,
-                    topology.bounds_mm.max.z,
-                ],
-            ],
-            backend: output.backend_fingerprint.to_owned(),
-            tolerance: output.tolerance_report.profile.to_owned(),
-        });
-    }
-    let evidence = StepXdeWorkerEvidence {
-        source_sha256: source_sha256.to_owned(),
-        source_byte_len,
-        source_unit,
-        parts,
-        nodes: manifest
-            .nodes
-            .into_iter()
-            .map(|node| StepXdeWorkerNode {
-                id: node.id,
-                parent_id: node.parent_id,
-                part_index: node.part_index,
-                name: node.name,
-                name_from_source: node.name_from_source,
-                color: node.color,
-                transform: node.transform,
-            })
-            .collect(),
-    };
-    let encoded = match serde_json::to_vec(&evidence) {
-        Ok(encoded) => encoded,
-        Err(error) => return transport_error_response("inspect_step_xde", &error.to_string()),
-    };
-    format!(
-        "OK_M21_STEP_XDE_V2 {source_sha256} {} {}",
-        sha256_hex(&encoded),
-        encode_hex(&encoded),
-    )
+fn m21_step_xde_inspection_response(backend: &ExactBackend, source: &SourceFile) -> WorkerResult {
+    let copy = verified_step_copy(source, "inspect_step_xde")?;
+    let source_byte_len = copy
+        .as_file()
+        .metadata()
+        .map_err(|error| backend_failure("inspect_step_xde", &error.to_string()))?
+        .len();
+    let source_path = temp_path(&copy);
+    let source_unit = step_source_unit(backend, &source_path, "inspect_step_xde")?;
+    let manifest = backend
+        .step_xde_manifest(&source_path)
+        .map_err(|error| backend_failure("inspect_step_xde", &error.to_string()))?;
+    xde_evidence_reply(source, source_byte_len, &source_unit, manifest, |index| {
+        backend.import_step_xde_part(&source_path, index)
+    })
 }
 
 fn m21_step_part_inspection_response(
     backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
+    source: &SourceFile,
     part_index: Option<u32>,
-) -> String {
-    if !is_canonical_digest(source_sha256) {
-        return "ERR invalid_request".to_owned();
-    }
-    let Some(source_path) = decode_hex_utf8(source_path) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_step_copy(&source_path, source_sha256, "inspect_step_part") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let source_path = source.path().to_string_lossy();
-    let Some(source_unit) = backend.step_length_unit_name(&source_path) else {
-        return transport_error_response(
-            "inspect_step_part",
-            "STEP source has missing or ambiguous representation length units",
-        );
-    };
-    let imported = match part_index {
+) -> WorkerResult {
+    let copy = verified_step_copy(source, "inspect_step_part")?;
+    let source_path = temp_path(&copy);
+    let source_unit = step_source_unit(backend, &source_path, "inspect_step_part")?;
+    let output = match part_index {
         Some(index) => backend.import_step_xde_part(&source_path, index),
         None => backend.import_step(&source_path),
-    };
-    match imported {
-        Ok(output) => {
-            let topology = &output.body.topology;
-            let response_schema = if part_index.is_some() {
-                "OK_M21_STEP_XDE_PART_V2"
-            } else {
-                "OK_M21_STEP_PART_V4"
-            };
-            let body_kind = if topology.solid_count == 0 {
-                "surface"
-            } else {
-                "solid"
-            };
-            let area_mm2 = output
-                .body
-                .topology
-                .faces
-                .iter()
-                .map(|face| face.area_mm2)
-                .sum::<f64>();
-            format!(
-                "{response_schema} {source_sha256} {} {body_kind} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
-                step_import_result_fingerprint(source_sha256, &output),
-                topology.solid_count,
-                area_mm2.to_bits(),
-                topology.volume_mm3.to_bits(),
-                topology.bounds_mm.min.x.to_bits(),
-                topology.bounds_mm.min.y.to_bits(),
-                topology.bounds_mm.min.z.to_bits(),
-                topology.bounds_mm.max.x.to_bits(),
-                topology.bounds_mm.max.y.to_bits(),
-                topology.bounds_mm.max.z.to_bits(),
-                topology.vertex_count,
-                topology.edge_count,
-                topology.face_count,
-                topology.shell_count,
-                encode_hex(source_unit.as_bytes()),
-                encode_hex(output.backend_fingerprint.as_bytes()),
-                encode_hex(output.tolerance_report.profile.as_bytes()),
-            )
-        }
-        Err(error) => geometry_error_response(&error),
     }
+    .map_err(|error| geometry_failure(&error))?;
+    Ok(import_part_reply(&source.sha256, &output, &source_unit))
 }
 
-fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, String> {
+fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, WorkerFailure> {
     let file = std::fs::File::open(path)
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+        .map_err(|error| backend_failure(operation, &error.to_string()))?;
     let metadata = file
         .metadata()
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+        .map_err(|error| backend_failure(operation, &error.to_string()))?;
     if !metadata.is_file() || metadata.len() > MAX_STEP_SOURCE_BYTES {
-        return Err(transport_error_response(
+        return Err(backend_failure(
             operation,
             "STEP output is not a bounded regular file",
         ));
@@ -4162,9 +3437,9 @@ fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, String> {
     (&file)
         .take(MAX_STEP_SOURCE_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+        .map_err(|error| backend_failure(operation, &error.to_string()))?;
     if bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
-        return Err(transport_error_response(
+        return Err(backend_failure(
             operation,
             "STEP output exceeds the bounded 32 MiB envelope",
         ));
@@ -4174,164 +3449,59 @@ fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, String> {
 
 fn m21_step_xde_part_export_response(
     backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
-    fields: &[&str],
-) -> String {
-    if !is_canonical_digest(source_sha256) || fields.len() != 3 {
-        return "ERR invalid_request".to_owned();
+    source: &SourceFile,
+    part_index: u32,
+    result_fingerprint: &str,
+    output_path: &Path,
+) -> WorkerResult {
+    let output_path = utf8_path(output_path)?;
+    let copy = verified_step_copy(source, "export_step_xde_part")?;
+    let output = backend
+        .import_step_xde_part(&temp_path(&copy), part_index)
+        .map_err(|error| geometry_failure(&error))?;
+    if step_import_result_fingerprint(&source.sha256, &output) != result_fingerprint {
+        return Err(WorkerFailure::code("invalid_shape"));
     }
-    let (Some(source_path), Ok(part_index), result_fingerprint, Some(output_path)) = (
-        decode_hex_utf8(source_path),
-        fields[0].parse::<u32>(),
-        fields[1],
-        decode_hex_utf8(fields[2]),
-    ) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_step_copy(&source_path, source_sha256, "export_step_xde_part") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
-    let output = match backend.import_step_xde_part(&source.path().to_string_lossy(), part_index) {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
-    if step_import_result_fingerprint(source_sha256, &output) != result_fingerprint {
-        return "ERR invalid_shape".to_owned();
-    }
-    if let Err(error) = backend.export_step(&output.body, &output_path) {
-        return geometry_error_response(&error);
-    }
-    let exported = match read_step_output(&output_path, "export_step_xde_part") {
-        Ok(exported) => exported,
-        Err(response) => return response,
-    };
-    format!(
-        "OK_M21_STEP_XDE_EXPORT_V1 {source_sha256} {result_fingerprint} {}",
-        sha256_hex(&exported)
-    )
+    backend
+        .export_step(&output.body, output_path)
+        .map_err(|error| geometry_failure(&error))?;
+    let exported = read_step_output(output_path, "export_step_xde_part")?;
+    Ok(WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: result_fingerprint.to_owned(),
+        sha256: Some(sha256_hex(&exported)),
+    }))
 }
 
-/// Tessellate an already-inspected STEP part into a bounded display mesh.
-///
-/// The mesh is written to the caller's path and identified by its own digest;
-/// the response repeats the result fingerprint so the caller can only bind a
-/// mesh to the exact body it already committed to.
 fn m21_step_part_mesh_response(
     backend: &ExactBackend,
-    source_sha256: &str,
-    source_path: &str,
-    fields: &[&str],
+    source: &SourceFile,
     part_index: Option<u32>,
-) -> String {
-    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
-        return "ERR invalid_request".to_owned();
-    }
-    let (Some(source_path), Some(output_path)) =
-        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
-    else {
-        return "ERR invalid_request".to_owned();
-    };
-    let source = match verified_step_copy(&source_path, source_sha256, "tessellate_step_part") {
-        Ok(source) => source,
-        Err(response) => return response,
-    };
+    output_path: &Path,
+) -> WorkerResult {
+    let copy = verified_step_copy(source, "tessellate_step_part")?;
+    let source_path = temp_path(&copy);
     let output = match part_index {
-        Some(index) => backend.import_step_xde_part(&source.path().to_string_lossy(), index),
-        None => backend.import_step(&source.path().to_string_lossy()),
-    };
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
-    let bounds = output.body.topology.bounds_mm;
-    let diagonal = ((bounds.max.x - bounds.min.x).powi(2)
-        + (bounds.max.y - bounds.min.y).powi(2)
-        + (bounds.max.z - bounds.min.z).powi(2))
-    .sqrt();
-    if !diagonal.is_finite() || diagonal <= 0.0 {
-        return transport_error_response(
-            "tessellate_step_part",
-            "STEP part has no measurable extent to tessellate",
-        );
+        Some(index) => backend.import_step_xde_part(&source_path, index),
+        None => backend.import_step(&source_path),
     }
-    let deflection = (diagonal * 1.0e-3).max(1.0e-3);
-    let mesh = match backend.tessellate_body(
-        &output.body,
-        deflection,
-        STEP_MESH_ANGULAR_DEFLECTION,
-        MAX_STEP_MESH_TRIANGLES,
-    ) {
-        Ok(mesh) => mesh,
-        Err(error) => return geometry_error_response(&error),
-    };
-    let mesh = StepImportMesh {
-        vertices_mm: mesh.vertices_mm,
-        triangles: mesh
-            .triangles
-            .into_iter()
-            .map(|triangle| StepMeshTriangle {
-                vertex_indices: triangle.vertex_indices,
-                face_ordinal: triangle.face_ordinal,
-            })
-            .collect(),
-    };
-    let encoded = mesh.encode();
-    if let Err(error) = std::fs::write(&output_path, &encoded) {
-        return transport_error_response("tessellate_step_part", &error.to_string());
-    }
-    let response_schema = if part_index.is_some() {
-        "OK_M21_STEP_XDE_MESH_V1"
-    } else {
-        "OK_M21_STEP_MESH_V1"
-    };
-    format!(
-        "{response_schema} {source_sha256} {} {} {} {} {:016x}",
-        step_import_result_fingerprint(source_sha256, &output),
-        mesh.vertices_mm.len(),
-        mesh.triangles.len(),
-        sha256_hex(&encoded),
-        deflection.to_bits(),
+    .map_err(|error| geometry_failure(&error))?;
+    imported_mesh_response(
+        backend,
+        source,
+        output,
+        output_path,
+        "STEP",
+        "tessellate_step_part",
     )
 }
 
 fn m21_step_assembly_response(
     backend: &ExactBackend,
-    assembly_digest: &str,
-    output_path: &str,
-    fields: &[&str],
-) -> String {
-    if !is_canonical_digest(assembly_digest) || fields.len() < 2 {
-        return transport_error_response(
-            "verify_step_manifest",
-            "STEP XDE assembly request digest or field count is malformed",
-        );
-    }
-    let Some(output_path) = decode_hex_utf8(output_path) else {
-        return transport_error_response(
-            "verify_step_manifest",
-            "STEP XDE assembly output path is not valid encoded UTF-8",
-        );
-    };
-    let Some(encoded_manifest) = decode_hex_bytes(fields[0]) else {
-        return transport_error_response(
-            "verify_step_manifest",
-            "STEP XDE assembly manifest is not valid hexadecimal data",
-        );
-    };
-    if sha256_hex(&encoded_manifest) != assembly_digest {
-        return transport_error_response(
-            "verify_step_manifest",
-            "STEP assembly manifest digest mismatch",
-        );
-    }
-    let Ok(manifest) = serde_json::from_slice::<StepAssemblyManifest>(&encoded_manifest) else {
-        return transport_error_response(
-            "verify_step_manifest",
-            "STEP XDE assembly manifest JSON does not match the versioned schema",
-        );
-    };
+    manifest: &StepAssemblyManifest,
+    sources: &[PathBuf],
+    output_path: &Path,
+) -> WorkerResult {
+    let output_path = utf8_path(output_path)?;
     if manifest.schema != "ketchup.step-xde-assembly.v2"
         || !is_snapshot_digest(&manifest.source_digest)
         || manifest.parts.is_empty()
@@ -4339,27 +3509,21 @@ fn m21_step_assembly_response(
         || manifest.nodes.is_empty()
         || manifest.nodes.len() > 1_024
     {
-        return transport_error_response(
+        return Err(backend_failure(
             "verify_step_manifest",
             "STEP XDE assembly manifest schema, digest, parts, or nodes are invalid",
-        );
+        ));
     }
-    let Some(count) = fields.get(1).and_then(|value| value.parse::<usize>().ok()) else {
-        return transport_error_response(
-            "verify_step_manifest",
-            "STEP XDE assembly source count is malformed",
-        );
-    };
-    if count != manifest.parts.len() || fields.len() != 2 + count {
-        return transport_error_response(
+    if sources.len() != manifest.parts.len() {
+        return Err(backend_failure(
             "verify_step_manifest",
             "STEP XDE assembly source count differs from the manifest",
-        );
+        ));
     }
 
-    let mut verified_sources = Vec::with_capacity(count);
-    let mut export_parts = Vec::with_capacity(count);
-    for (manifest_part, source_field) in manifest.parts.iter().zip(&fields[2..]) {
+    let mut verified_sources = Vec::with_capacity(sources.len());
+    let mut export_parts = Vec::with_capacity(sources.len());
+    for (manifest_part, source_path) in manifest.parts.iter().zip(sources) {
         if manifest_part.document_id != manifest.document_id
             || manifest_part.source_revision != manifest.source_revision
             || manifest_part.source_digest != manifest.source_digest
@@ -4372,42 +3536,34 @@ fn m21_step_assembly_response(
             || !is_result_fingerprint(&manifest_part.imported_result_fingerprint)
             || !is_canonical_digest(&manifest_part.source_sha256)
         {
-            return transport_error_response(
+            return Err(backend_failure(
                 "verify_step_part",
                 "STEP part manifest identity, name, fingerprint, or SHA-256 is malformed",
-            );
+            ));
         }
-        let Some(source_path) = decode_hex_utf8(source_field) else {
-            return transport_error_response(
-                "verify_step_part",
-                "STEP XDE part source path is not valid encoded UTF-8",
-            );
-        };
-        let source = match verified_step_copy(
-            &source_path,
-            &manifest_part.source_sha256,
+        let copy = verified_step_copy(
+            &SourceFile {
+                sha256: manifest_part.source_sha256.clone(),
+                path: source_path.clone(),
+            },
             "verify_step_part",
-        ) {
-            Ok(source) => source,
-            Err(response) => return response,
-        };
-        let imported = match backend.import_step(&source.path().to_string_lossy()) {
-            Ok(output) => output,
-            Err(error) => return geometry_error_response(&error),
-        };
+        )?;
+        let imported = backend
+            .import_step(&temp_path(&copy))
+            .map_err(|error| geometry_failure(&error))?;
         if step_import_result_fingerprint(&manifest_part.source_sha256, &imported)
             != manifest_part.imported_result_fingerprint
         {
-            return transport_error_response(
+            return Err(backend_failure(
                 "verify_step_part",
                 "STEP part reimport identity differs from the inspected manifest identity",
-            );
+            ));
         }
         export_parts.push(StepXdeExportPart {
-            path: source.path().to_string_lossy().into_owned(),
+            path: temp_path(&copy),
             name: manifest_part.name.clone(),
         });
-        verified_sources.push(source);
+        verified_sources.push(copy);
     }
 
     let mut export_nodes = Vec::with_capacity(manifest.nodes.len());
@@ -4426,10 +3582,10 @@ fn m21_step_assembly_response(
                 .parent_id
                 .is_some_and(|parent| manifest.nodes[parent as usize].part_index.is_some())
         {
-            return transport_error_response(
+            return Err(backend_failure(
                 "verify_step_hierarchy",
                 "STEP XDE assembly hierarchy is malformed",
-            );
+            ));
         }
         export_nodes.push(StepXdeExportNode {
             parent_id: node.parent_id,
@@ -4439,16 +3595,12 @@ fn m21_step_assembly_response(
             transform: node.transform_bits.map(f64::from_bits),
         });
     }
-    if let Err(error) = backend.export_step_xde_assembly(&export_parts, &export_nodes, &output_path)
-    {
-        return geometry_error_response(&error);
-    }
-    let reread_xde = match backend.step_xde_manifest(&output_path) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            return transport_error_response("reread_step_xde_output", &error.to_string());
-        }
-    };
+    backend
+        .export_step_xde_assembly(&export_parts, &export_nodes, output_path)
+        .map_err(|error| geometry_failure(&error))?;
+    let reread_xde = backend
+        .step_xde_manifest(output_path)
+        .map_err(|error| backend_failure("reread_step_xde_output", &error.to_string()))?;
     if reread_xde.parts.len() != manifest.parts.len()
         || reread_xde
             .nodes
@@ -4461,74 +3613,45 @@ fn m21_step_assembly_response(
                 .filter(|node| node.part_index.is_some())
                 .count()
     {
-        return transport_error_response(
+        return Err(backend_failure(
             "reread_step_xde_output",
             "STEP XDE output lost a part definition or occurrence",
-        );
+        ));
     }
-    let step_bytes = match read_step_output(&output_path, "read_step_output") {
-        Ok(bytes) => bytes,
-        Err(response) => return response,
-    };
-    let step_sha256 = sha256_hex(&step_bytes);
-    let reread = match backend.import_step(&output_path) {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
-    format!(
-        "OK_M21_STEP_MODEL_V1 {assembly_digest} {} {step_sha256}",
-        reread.body.result_fingerprint
-    )
+    let step_bytes = read_step_output(output_path, "read_step_output")?;
+    let reread = backend
+        .import_step(output_path)
+        .map_err(|error| geometry_failure(&error))?;
+    Ok(WorkerReply::Exported(ExportReceipt {
+        result_fingerprint: reread.body.result_fingerprint.clone(),
+        sha256: Some(sha256_hex(&step_bytes)),
+    }))
 }
 
-fn geometry_error_response(error: &ketchup_exact::GeometryError) -> String {
-    format!(
-        "ERR_DETAIL {} {} {} {} {}",
-        error.code.as_str(),
-        encode_hex(error.diagnostic.as_bytes()),
-        encode_hex(error.operation.as_bytes()),
-        error.input_digest,
-        encode_hex(error.backend_fingerprint.as_bytes()),
-    )
-}
-
-fn transport_error_response(operation: &str, diagnostic: &str) -> String {
-    format!(
-        "ERR_DETAIL backend_exception {} {} {} {}",
-        encode_hex(diagnostic.as_bytes()),
-        encode_hex(operation.as_bytes()),
-        sha256_hex(diagnostic.as_bytes()),
-        encode_hex(ketchup_exact::backend_fingerprint().as_bytes()),
-    )
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+fn geometry_failure(error: &ketchup_exact::GeometryError) -> WorkerFailure {
+    WorkerFailure {
+        code: error.code.as_str().to_owned(),
+        detail: Some(FailureDetail {
+            diagnostic: error.diagnostic.clone(),
+            operation: error.operation.to_owned(),
+            input_digest: error.input_digest.clone(),
+            backend: error.backend_fingerprint.to_owned(),
+        }),
     }
-    encoded
 }
 
-fn decode_hex_bytes(value: &str) -> Option<Vec<u8>> {
-    if value.is_empty() || !value.len().is_multiple_of(2) {
-        return None;
+fn backend_failure(operation: &str, diagnostic: &str) -> WorkerFailure {
+    WorkerFailure {
+        code: ketchup_exact::GeometryErrorCode::BackendException
+            .as_str()
+            .to_owned(),
+        detail: Some(FailureDetail {
+            diagnostic: diagnostic.to_owned(),
+            operation: operation.to_owned(),
+            input_digest: sha256_hex(diagnostic.as_bytes()),
+            backend: ketchup_exact::backend_fingerprint().to_owned(),
+        }),
     }
-    value
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
-            let pair = std::str::from_utf8(pair).ok()?;
-            u8::from_str_radix(pair, 16).ok()
-        })
-        .collect()
-}
-
-fn decode_hex_utf8(value: &str) -> Option<String> {
-    let bytes = decode_hex_bytes(value)?;
-    String::from_utf8(bytes)
-        .ok()
-        .filter(|path| !path.is_empty() && !path.contains('\r') && !path.contains('\n'))
 }
 
 fn is_snapshot_digest(value: &str) -> bool {
@@ -4553,21 +3676,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_request_line_reader_rejects_oversized_input() {
-        let input = vec![b'x'; MAX_WORKER_REQUEST_LINE_BYTES + 1];
-        let error = read_bounded_request_line(&mut io::Cursor::new(input)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    }
-
-    #[test]
     fn step_output_reader_rejects_oversized_file_before_hashing() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("oversized.step");
         let file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
 
-        let response = read_step_output(path.to_str().unwrap(), "test_step_output").unwrap_err();
-        assert!(response.starts_with("ERR_DETAIL backend_exception "));
+        let failure = read_step_output(path.to_str().unwrap(), "test_step_output").unwrap_err();
+        assert_eq!(failure.code, "backend_exception");
     }
 
     #[test]
@@ -4576,117 +3692,57 @@ mod tests {
         let source_directory = workspace.path().join("read-only-media");
         std::fs::create_dir(&source_directory).unwrap();
 
-        for (name, payload, verify) in [
-            (
-                "part.step",
-                b"STEP source".as_slice(),
-                verified_step_copy
-                    as fn(&str, &str, &'static str) -> Result<tempfile::NamedTempFile, String>,
-            ),
-            (
-                "part.iges",
-                b"IGES source".as_slice(),
-                verified_iges_copy as fn(&str, &str, &'static str) -> Result<_, _>,
-            ),
+        for (name, payload, label) in [
+            ("part.step", b"STEP source".as_slice(), "STEP"),
+            ("part.iges", b"IGES source".as_slice(), "IGES"),
         ] {
-            let source = source_directory.join(name);
-            std::fs::write(&source, payload).unwrap();
-            let staged = verify(
-                source.to_str().unwrap(),
-                &sha256_hex(payload),
-                "test_import",
-            )
-            .unwrap();
-            assert_ne!(staged.path().parent(), source.parent());
+            let path = source_directory.join(name);
+            std::fs::write(&path, payload).unwrap();
+            let source = SourceFile {
+                sha256: sha256_hex(payload),
+                path: path.clone(),
+            };
+            let staged = verified_copy(&source, label, "test_import").unwrap();
+            assert_ne!(staged.path().parent(), path.parent());
             assert_eq!(std::fs::read(staged.path()).unwrap(), payload);
+            let forged = SourceFile {
+                sha256: "0".repeat(64),
+                path,
+            };
+            assert!(verified_copy(&forged, label, "test_import").is_err());
         }
     }
 
     #[test]
-    fn exact_brep_graph_commands_require_matching_schema() {
+    fn typed_requests_handshake_and_refuse_forged_graph_digests() {
         let backend = ExactBackend::new();
+        let mut pairs = pair_query::PairQuerySession::default();
         assert_eq!(
-            handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V9").as_deref(),
-            Some("CAPS EXACT_BREP_GRAPH_V9")
+            handle_request(&backend, &mut pairs, WorkerRequest::Hello),
+            Ok(WorkerReply::Hello {
+                protocol: protocol_identity().to_owned()
+            })
         );
+        // A graph whose digest no longer matches its content is refused before evaluation.
+        let mut graph: ExactBRepGraph = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/v9_top_side_contact/left.graph"
+        ))
+        .unwrap();
+        graph.validate().unwrap();
+        let schema = graph.schema.clone();
+        graph.graph_digest = "0".repeat(64);
         assert_eq!(
-            handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V10").as_deref(),
-            Some("CAPS EXACT_BREP_GRAPH_V10")
+            handle_request(
+                &backend,
+                &mut pairs,
+                WorkerRequest::EvaluateGraph(GraphInput {
+                    graph,
+                    sources: Vec::new(),
+                }),
+            ),
+            Err(WorkerFailure::invalid_request()),
+            "{schema}"
         );
-        assert_eq!(
-            handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V11").as_deref(),
-            Some("CAPS EXACT_BREP_GRAPH_V11")
-        );
-        assert_eq!(
-            handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V12").as_deref(),
-            Some("CAPS EXACT_BREP_GRAPH_V12")
-        );
-        assert_eq!(
-            handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V13").as_deref(),
-            Some("CAPS EXACT_BREP_GRAPH_V13")
-        );
-        for (operation, schema) in [
-            ("EVAL_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
-            ("TESSELLATE_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
-            ("EVAL_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V7),
-            ("TESSELLATE_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V7),
-            ("EVAL_BREP_GRAPH_V8", EXACT_BREP_GRAPH_SCHEMA_V8),
-            ("TESSELLATE_BREP_GRAPH_V8", EXACT_BREP_GRAPH_SCHEMA_V8),
-            ("EVAL_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V9),
-            ("TESSELLATE_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V9),
-            ("EVAL_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V10),
-            ("TESSELLATE_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V10),
-            ("EVAL_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V11),
-            ("TESSELLATE_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V11),
-            ("EVAL_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("TESSELLATE_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("EVAL_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V13),
-            ("TESSELLATE_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V13),
-            ("EXPORT_BREP_GRAPH_STEP_V3", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("EXPORT_BREP_GRAPH_STEP_V4", EXACT_BREP_GRAPH_SCHEMA_V13),
-            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V6),
-            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V7),
-            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V8),
-            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V9),
-            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V10),
-            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V11),
-        ] {
-            assert!(exact_brep_graph_schema_matches_operation(operation, schema));
-        }
-        for (operation, schema) in [
-            ("EVAL_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V7),
-            ("TESSELLATE_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V7),
-            ("EVAL_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V6),
-            ("TESSELLATE_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V6),
-            ("EVAL_BREP_GRAPH_V8", EXACT_BREP_GRAPH_SCHEMA_V9),
-            ("TESSELLATE_BREP_GRAPH_V8", EXACT_BREP_GRAPH_SCHEMA_V9),
-            ("EVAL_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V8),
-            ("TESSELLATE_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V8),
-            ("EVAL_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V10),
-            ("TESSELLATE_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V10),
-            ("EVAL_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V9),
-            ("TESSELLATE_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V9),
-            ("EVAL_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V11),
-            ("TESSELLATE_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V11),
-            ("EVAL_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V10),
-            ("TESSELLATE_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V10),
-            ("EVAL_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("TESSELLATE_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("EVAL_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V11),
-            ("TESSELLATE_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V11),
-            ("EVAL_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V13),
-            ("TESSELLATE_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V13),
-            ("EVAL_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("TESSELLATE_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V12),
-            ("EXPORT_BREP_GRAPH_STEP_V3", EXACT_BREP_GRAPH_SCHEMA_V11),
-            ("EXPORT_BREP_GRAPH_STEP_V3", EXACT_BREP_GRAPH_SCHEMA_V13),
-            ("EXPORT_BREP_GRAPH_STEP_V4", EXACT_BREP_GRAPH_SCHEMA_V12),
-        ] {
-            assert!(!exact_brep_graph_schema_matches_operation(
-                operation, schema
-            ));
-        }
     }
 
     #[test]

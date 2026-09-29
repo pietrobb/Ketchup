@@ -152,33 +152,46 @@ pub fn run_plugin_process(
 
 fn parse_manifest(line: &str) -> Result<PluginManifest, PluginHostError> {
     let fields = line.split('\t').collect::<Vec<_>>();
-    if fields.len() != 11 || fields[0] != "HELLO" {
+    let [
+        "HELLO",
+        protocol,
+        plugin_id,
+        name,
+        principal_id,
+        capabilities,
+        max_requests,
+        max_query_bytes,
+        max_commands,
+        max_read_dependencies,
+        max_write_targets,
+    ] = fields.as_slice()
+    else {
         return Err(PluginHostError::MalformedProtocol(
             "expected 11-field HELLO".to_owned(),
         ));
+    };
+    if *protocol != PLUGIN_PROTOCOL_V1 {
+        return Err(PluginHostError::ProtocolMismatch((*protocol).to_owned()));
     }
-    if fields[1] != PLUGIN_PROTOCOL_V1 {
-        return Err(PluginHostError::ProtocolMismatch(fields[1].to_owned()));
-    }
-    let principal_id = parse_u64(fields[4], "principal id")?;
-    let capabilities = if fields[5].is_empty() {
+    let principal_id = parse_u64(principal_id, "principal id")?;
+    let capabilities = if capabilities.is_empty() {
         Vec::new()
     } else {
-        fields[5]
+        capabilities
             .split(',')
             .map(parse_capability)
             .collect::<Result<Vec<_>, _>>()?
     };
     let limits = PluginLimits {
-        max_requests: parse_usize(fields[6], "max requests")?,
-        max_query_bytes: parse_usize(fields[7], "max query bytes")?,
+        max_requests: parse_usize(max_requests, "max requests")?,
+        max_query_bytes: parse_usize(max_query_bytes, "max query bytes")?,
         proposal_budget: ProposalBudget {
-            max_commands: parse_usize(fields[8], "max commands")?,
-            max_read_dependencies: parse_usize(fields[9], "max reads")?,
-            max_write_targets: parse_usize(fields[10], "max writes")?,
+            max_commands: parse_usize(max_commands, "max commands")?,
+            max_read_dependencies: parse_usize(max_read_dependencies, "max reads")?,
+            max_write_targets: parse_usize(max_write_targets, "max writes")?,
         },
     };
-    PluginManifest::new(fields[2], fields[3], principal_id, capabilities, limits)
+    PluginManifest::new(*plugin_id, *name, principal_id, capabilities, limits)
         .map_err(PluginHostError::Gateway)
 }
 

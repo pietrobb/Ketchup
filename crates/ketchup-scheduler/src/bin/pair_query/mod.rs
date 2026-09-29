@@ -2,6 +2,7 @@
 //! are memoized by graph digests, placements and tolerance.
 use super::*;
 use crate::pair_query::{EXACT_PAIR_IDENTITY, MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
+use crate::protocol::{PairMeasure, PairQuery};
 
 type TransformKey = (usize, [u64; 16]);
 /// Graph digests, both placements and tolerance fully determine a pair result.
@@ -10,7 +11,7 @@ const MAX_CACHED_PAIR_RESULTS: usize = 100_000;
 
 thread_local! {
     // Results are pure functions of their key, so they survive batch boundaries.
-    static PAIR_RESULT_CACHE: std::cell::RefCell<BTreeMap<PairResultKey, [u64; 3]>> =
+    static PAIR_RESULT_CACHE: std::cell::RefCell<BTreeMap<PairResultKey, PairMeasure>> =
         std::cell::RefCell::default();
 }
 
@@ -23,22 +24,55 @@ pub(super) struct PairQuerySession {
 }
 
 impl PairQuerySession {
-    pub(super) fn handle(&mut self, backend: &ExactBackend, request: &str) -> Option<String> {
-        let fields = request.split_whitespace().collect::<Vec<_>>();
-        if fields.as_slice() == ["CAPS", "EXACT_PAIR_V2"] {
-            return Some("CAPS EXACT_PAIR_V2".to_owned());
+    pub(super) fn begin(&mut self) -> WorkerResult {
+        *self = Self {
+            active: true,
+            ..Self::default()
+        };
+        Ok(WorkerReply::Done)
+    }
+
+    pub(super) fn end(&mut self) -> WorkerResult {
+        let was_active = self.active;
+        *self = Self::default();
+        if was_active {
+            Ok(WorkerReply::Done)
+        } else {
+            Err(WorkerFailure::invalid_request())
         }
-        if !fields
-            .first()
-            .is_some_and(|field| field.starts_with("PAIR_"))
-        {
-            return None;
-        }
-        let response = self.execute(backend, request.trim(), &fields);
-        if response.starts_with("ERR") {
+    }
+
+    pub(super) fn load(&mut self, backend: &ExactBackend, input: &GraphInput) -> WorkerResult {
+        let result = self.try_load(backend, input);
+        self.reset_on_failure(result)
+    }
+
+    pub(super) fn query(&mut self, backend: &ExactBackend, query: &PairQuery) -> WorkerResult {
+        let result = self.try_query(backend, query);
+        self.reset_on_failure(result)
+    }
+
+    /// A failed batch is never resumed: the client restarts from `PairBegin`.
+    fn reset_on_failure(&mut self, result: WorkerResult) -> WorkerResult {
+        if result.is_err() {
             *self = Self::default();
         }
-        Some(response)
+        result
+    }
+
+    fn try_load(&mut self, backend: &ExactBackend, input: &GraphInput) -> WorkerResult {
+        let digest = &input.graph.graph_digest;
+        if !self.active
+            || self.queries != 0
+            || self.bodies.len() >= MAX_EXACT_PAIR_GRAPHS
+            || self.bodies.iter().any(|(existing, _)| existing == digest)
+        {
+            return Err(WorkerFailure::invalid_request());
+        }
+        let output = evaluated_graph_input(backend, input)?;
+        let slot = self.bodies.len();
+        self.bodies.push((digest.clone(), output));
+        Ok(WorkerReply::PairLoaded { slot })
     }
 
     fn prepare_transform(
@@ -46,12 +80,12 @@ impl PairQuerySession {
         backend: &ExactBackend,
         slot: usize,
         matrix: [f64; 16],
-    ) -> Result<Option<TransformKey>, String> {
+    ) -> Result<Option<TransformKey>, WorkerFailure> {
         let Some((_, body)) = self.bodies.get(slot) else {
-            return Err("ERR invalid_request".to_owned());
+            return Err(WorkerFailure::invalid_request());
         };
         if matrix.iter().any(|value| !value.is_finite()) || matrix[12..] != [0.0, 0.0, 0.0, 1.0] {
-            return Err("ERR invalid_request".to_owned());
+            return Err(WorkerFailure::invalid_request());
         }
         if matrix == EXACT_PAIR_IDENTITY {
             return Ok(None);
@@ -59,11 +93,11 @@ impl PairQuerySession {
         let key = (slot, matrix.map(f64::to_bits));
         if !self.transformed.contains_key(&key) {
             if self.transformed.len() >= MAX_EXACT_PAIR_CANDIDATES * 2 {
-                return Err("ERR invalid_request".to_owned());
+                return Err(WorkerFailure::invalid_request());
             }
             let output = backend
                 .transform_body(&body.body, &matrix)
-                .map_err(|error| geometry_error_response(&error))?;
+                .map_err(|error| geometry_failure(&error))?;
             self.transformed.insert(key, output.body);
         }
         Ok(Some(key))
@@ -73,133 +107,57 @@ impl PairQuerySession {
         key.map_or_else(|| &self.bodies[slot].1.body, |key| &self.transformed[&key])
     }
 
-    fn execute(&mut self, backend: &ExactBackend, request: &str, fields: &[&str]) -> String {
-        match fields {
-            ["PAIR_BEGIN_V1"] => {
-                *self = Self {
-                    active: true,
-                    ..Self::default()
-                };
-                "OK_PAIR_BEGIN_V1".to_owned()
-            }
-            ["PAIR_END_V1"] if self.active => {
-                *self = Self::default();
-                "OK_PAIR_END_V1".to_owned()
-            }
-            ["PAIR_LOAD_V1", digest, encoded, sources @ ..] if self.active && self.queries == 0 => {
-                if self.bodies.len() >= MAX_EXACT_PAIR_GRAPHS
-                    || self.bodies.iter().any(|(existing, _)| existing == digest)
-                {
-                    return "ERR invalid_request".to_owned();
-                }
-                let Some(bytes) = decode_hex_bytes(encoded) else {
-                    return "ERR invalid_request".to_owned();
-                };
-                let Ok(graph) = ExactBRepGraph::from_bytes(&bytes) else {
-                    return "ERR invalid_request".to_owned();
-                };
-                if graph.graph_digest != *digest {
-                    return "ERR invalid_request".to_owned();
-                }
-                let sources = match verified_exact_brep_graph_sources(&graph, sources) {
-                    Ok(sources) => sources,
-                    Err(response) => return response,
-                };
-                let output = match evaluate_exact_brep_graph_cached(backend, &graph, &sources) {
-                    Ok(output) => output,
-                    Err(error) => return geometry_error_response(&error),
-                };
-                let slot = self.bodies.len();
-                self.bodies.push((graph.graph_digest, output));
-                format!("OK_PAIR_LOAD_V1 {slot} {digest}")
-            }
-            ["PAIR_QUERY_V2", left, right, tolerance, matrices @ ..]
-                if self.active
-                    && matrices.len() == 32
-                    && self.queries < MAX_EXACT_PAIR_CANDIDATES =>
-            {
-                let (Ok(left), Ok(right)) = (left.parse::<usize>(), right.parse::<usize>()) else {
-                    return "ERR invalid_request".to_owned();
-                };
-                let decode = |s: &str| {
-                    u64::from_str_radix(s, 16)
-                        .ok()
-                        .filter(|_| s.len() == 16)
-                        .map(f64::from_bits)
-                        .filter(|v| v.is_finite())
-                };
-                let Some(tolerance) = decode(tolerance).filter(|v| *v >= 0.0) else {
-                    return "ERR invalid_request".to_owned();
-                };
-                let Some(values) = matrices
-                    .iter()
-                    .map(|s| decode(s))
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    return "ERR invalid_request".to_owned();
-                };
-                let (Some((left_digest, _)), Some((right_digest, _))) =
-                    (self.bodies.get(left), self.bodies.get(right))
-                else {
-                    return "ERR invalid_request".to_owned();
-                };
-                let left_matrix: [f64; 16] = values[..16].try_into().expect("matrix length");
-                let right_matrix: [f64; 16] = values[16..].try_into().expect("matrix length");
-                let cache_key = (
-                    left_digest.clone(),
-                    right_digest.clone(),
-                    left_matrix.map(f64::to_bits),
-                    right_matrix.map(f64::to_bits),
-                    tolerance.to_bits(),
-                );
-                let cached =
-                    PAIR_RESULT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied());
-                let bits = match cached {
-                    Some(bits) => bits,
-                    None => {
-                        let left_key = match self.prepare_transform(backend, left, left_matrix) {
-                            Ok(key) => key,
-                            Err(error) => return error,
-                        };
-                        let right_key = match self.prepare_transform(backend, right, right_matrix) {
-                            Ok(key) => key,
-                            Err(error) => return error,
-                        };
-                        match backend.query_body_pair(
-                            self.body(left, left_key),
-                            self.body(right, right_key),
-                            tolerance,
-                        ) {
-                            Ok(result) => {
-                                let bits = [
-                                    result.common_volume_mm3.to_bits(),
-                                    result.common_contact_area_mm2.to_bits(),
-                                    result.distance_mm.to_bits(),
-                                ];
-                                PAIR_RESULT_CACHE.with(|cache| {
-                                    let mut cache = cache.borrow_mut();
-                                    if cache.len() >= MAX_CACHED_PAIR_RESULTS {
-                                        cache.clear();
-                                    }
-                                    cache.insert(cache_key, bits);
-                                });
-                                bits
-                            }
-                            Err(error) => return geometry_error_response(&error),
-                        }
-                    }
-                };
-                self.queries += 1;
-                format!(
-                    "OK_PAIR_QUERY_V2 {} {:016x} {:016x} {:016x}",
-                    sha256_hex(request.as_bytes()),
-                    bits[0],
-                    bits[1],
-                    bits[2]
-                )
-            }
-            _ => "ERR invalid_request".to_owned(),
+    fn try_query(&mut self, backend: &ExactBackend, query: &PairQuery) -> WorkerResult {
+        if !self.active
+            || self.queries >= MAX_EXACT_PAIR_CANDIDATES
+            || !query.tolerance_mm.is_finite()
+            || query.tolerance_mm < 0.0
+        {
+            return Err(WorkerFailure::invalid_request());
         }
+        let (Some((left_digest, _)), Some((right_digest, _))) =
+            (self.bodies.get(query.left), self.bodies.get(query.right))
+        else {
+            return Err(WorkerFailure::invalid_request());
+        };
+        let cache_key = (
+            left_digest.clone(),
+            right_digest.clone(),
+            query.left_transform.map(f64::to_bits),
+            query.right_transform.map(f64::to_bits),
+            query.tolerance_mm.to_bits(),
+        );
+        let cached = PAIR_RESULT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied());
+        let measure = match cached {
+            Some(measure) => measure,
+            None => {
+                let left_key = self.prepare_transform(backend, query.left, query.left_transform)?;
+                let right_key =
+                    self.prepare_transform(backend, query.right, query.right_transform)?;
+                let result = backend
+                    .query_body_pair(
+                        self.body(query.left, left_key),
+                        self.body(query.right, right_key),
+                        query.tolerance_mm,
+                    )
+                    .map_err(|error| geometry_failure(&error))?;
+                let measure = PairMeasure {
+                    common_volume_mm3: result.common_volume_mm3,
+                    common_contact_area_mm2: result.common_contact_area_mm2,
+                    distance_mm: result.distance_mm,
+                };
+                PAIR_RESULT_CACHE.with(|cache| {
+                    let mut cache = cache.borrow_mut();
+                    if cache.len() >= MAX_CACHED_PAIR_RESULTS {
+                        cache.clear();
+                    }
+                    cache.insert(cache_key, measure);
+                });
+                measure
+            }
+        };
+        self.queries += 1;
+        Ok(WorkerReply::Pair(measure))
     }
 }
 
@@ -246,25 +204,22 @@ mod tests {
     fn query_session_rejects_missing_bodies_and_clears_failed_batch() {
         let backend = ExactBackend::new();
         let mut session = PairQuerySession::default();
+        assert_eq!(session.begin(), Ok(WorkerReply::Done));
+        let query = PairQuery {
+            left: 0,
+            right: 1,
+            tolerance_mm: 0.0,
+            left_transform: EXACT_PAIR_IDENTITY,
+            right_transform: EXACT_PAIR_IDENTITY,
+        };
         assert_eq!(
-            session.handle(&backend, "PAIR_BEGIN_V1").unwrap(),
-            "OK_PAIR_BEGIN_V1"
-        );
-        assert!(
-            session
-                .handle(&backend, "PAIR_LOAD_V1 bad bad")
-                .unwrap()
-                .starts_with("ERR")
+            session.query(&backend, &query),
+            Err(WorkerFailure::invalid_request())
         );
         assert!(!session.active);
         assert!(session.bodies.is_empty());
         assert!(session.transformed.is_empty());
-        assert!(
-            session
-                .handle(&backend, "PAIR_END_V1")
-                .unwrap()
-                .starts_with("ERR")
-        );
+        assert_eq!(session.end(), Err(WorkerFailure::invalid_request()));
     }
 
     #[test]
@@ -307,10 +262,7 @@ mod tests {
         );
         matrix[0] = 0.0;
         assert!(session.prepare_transform(&backend, 0, matrix).is_err());
-        assert_eq!(
-            session.handle(&backend, "PAIR_END_V1").unwrap(),
-            "OK_PAIR_END_V1"
-        );
+        assert_eq!(session.end(), Ok(WorkerReply::Done));
         assert!(session.transformed.is_empty());
         assert!(session.bodies.is_empty());
     }

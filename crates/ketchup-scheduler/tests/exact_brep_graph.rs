@@ -4609,31 +4609,37 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
         *distance_bits = (-20.0_f64).to_bits();
         assert_eq!(collapsed.validate(), Err(ExactBRepGraphError::InvalidGraph));
         if distance_mm == 3.0 {
-            use std::io::{BufRead as _, Write as _};
+            use ketchup_scheduler::protocol::{
+                Frame, GraphInput, MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, WorkerFailure,
+                WorkerReply, WorkerRequest, read_frame, write_frame,
+            };
 
-            let encoded = serde_json::to_vec(&collapsed)
-                .unwrap()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
+            // Bypass the client's own validation: the worker must refuse the graph itself.
             let mut worker = std::process::Command::new(env!("CARGO_BIN_EXE_ketchup-exact-worker"))
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .spawn()
                 .unwrap();
             let mut stdin = worker.stdin.take().unwrap();
-            writeln!(
-                stdin,
-                "EVAL_BREP_GRAPH_V6 {} {}",
-                collapsed.graph_digest, encoded
+            write_frame(
+                &mut stdin,
+                &WorkerRequest::EvaluateGraph(GraphInput {
+                    graph: collapsed.clone(),
+                    sources: Vec::new(),
+                }),
+                MAX_REQUEST_FRAME_BYTES,
             )
             .unwrap();
             drop(stdin);
-            let mut response = String::new();
-            std::io::BufReader::new(worker.stdout.take().unwrap())
-                .read_line(&mut response)
-                .unwrap();
-            assert_eq!(response.trim(), "ERR invalid_request");
+            let reply = read_frame::<WorkerReply>(
+                &mut worker.stdout.take().unwrap(),
+                MAX_REPLY_FRAME_BYTES,
+            );
+            assert!(matches!(
+                reply,
+                Frame::Message(WorkerReply::Failure(failure))
+                    if failure == WorkerFailure::invalid_request()
+            ));
             assert!(worker.wait().unwrap().success());
         }
     }

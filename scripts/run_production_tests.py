@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,29 @@ def run(
             print(result.stderr, file=sys.stderr)
         raise RunnerError(f"Command failed with exit code {result.returncode}: {command[0]}")
     return result
+
+
+def worker_handshake(worker: Path) -> str:
+    """Send the typed `Hello` frame (u32 LE length + CBOR) and return the protocol identity."""
+    hello = b"\x65Hello"
+    print("+", worker, "<Hello frame>", flush=True)
+    result = subprocess.run(
+        [str(worker)],
+        cwd=ROOT,
+        input=struct.pack("<I", len(hello)) + hello,
+        capture_output=True,
+        check=False,
+    )
+    reply = result.stdout
+    if result.returncode != 0 or len(reply) < 4:
+        raise RunnerError(f"Exact worker handshake failed with exit code {result.returncode}")
+    (length,) = struct.unpack("<I", reply[:4])
+    body = reply[4:]
+    # {"Hello": {"protocol": <64-character text>}}
+    prefix = b"\xa1\x65Hello\xa1\x68protocol\x78\x40"
+    if length != len(body) or not body.startswith(prefix) or len(body) != len(prefix) + 64:
+        raise RunnerError(f"Exact worker handshake returned {body!r}")
+    return body[len(prefix):].decode("ascii")
 
 
 def cargo_target_directory(cargo: str) -> Path:
@@ -134,9 +158,7 @@ def main() -> int:
     headless_path, worker_path = native_paths(target_directory)
     headless = require_component(headless_path, "ketchup-headless executable")
     worker = require_component(worker_path, "ketchup-exact-worker executable")
-    pong = run([str(worker)], input_text="PING\n").stdout.strip()
-    if pong != "PONG":
-        raise RunnerError(f"Exact worker handshake returned {pong!r}, expected 'PONG'")
+    worker_handshake(worker)
     suffix = ".exe" if os.name == "nt" else ""
     manual_alpha = require_component(
         target_directory / "release" / f"ketchup-app{suffix}",
