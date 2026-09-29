@@ -267,7 +267,25 @@ fn incremental_batch(
 ) -> Result<Option<CommandBatch>, RuleProgramApplyError> {
     let snapshot = document.current();
     // A manually added part is not described by the program; do not guess its fate.
-    if snapshot.occurrences().count() != old.parts.len() {
+    // A shape only drawn (a profile without a solid) is left as it is.
+    let drawing_only = |definition_id| {
+        snapshot.definition(definition_id).is_some_and(|definition| {
+            definition.feature_ids().iter().all(|id| {
+                snapshot.feature(*id).is_some_and(|feature| {
+                    matches!(
+                        feature.kind(),
+                        FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
+                    )
+                })
+            })
+        })
+    };
+    if snapshot
+        .occurrences()
+        .filter(|occurrence| !drawing_only(occurrence.definition_id()))
+        .count()
+        != old.parts.len()
+    {
         return Ok(None);
     }
     let mut removals = Vec::new();

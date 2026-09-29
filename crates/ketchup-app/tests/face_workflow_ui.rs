@@ -19,7 +19,6 @@ use ketchup_core::exact_brep_graph::{
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactResultRegistry};
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneSupport};
 use ketchup_interaction::{ElementId, SnapKind, Vec3};
-use std::collections::BTreeMap;
 
 fn open_face_workflow(shell: &mut Shell) {
     shell.click_command(AppCommand::Rectangle);
@@ -104,6 +103,106 @@ fn terminal_profile_operation(
         f64::from_bits(*length_bits),
         graph.profiles[profile.0 as usize].geometry.clone(),
     )
+}
+
+/// Previews the Push/Pull of the selected drawn shape by `distance`, checks
+/// that cancelling leaves the document as it was, then commits it with Enter as
+/// one Undo step that uses the shape up. Returns the changed part's definition.
+fn commit_drawn_shape_push_pull(shell: &mut Shell, distance: &str) -> DefinitionId {
+    let digest = shell.app().canonical_digest();
+    let revision = shell.app().document_revision();
+    let steps = shell.app().undo_step_count();
+    let occurrences = shell.app().document_snapshot().occurrences().count();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    shell.click_command(AppCommand::PushPull);
+    shell.app_mut().set_push_pull_distance_input(distance);
+    // The shape is placed on the part's exact faces, so wait for them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !(shell.app_mut().start_preview() && shell.app().has_drawn_shape_preview()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{}",
+            shell.app().action_digest()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        shell.step();
+        shell.settle();
+    }
+    for commit in [false, true] {
+        if commit {
+            assert!(shell.app_mut().start_preview());
+        }
+        assert!(
+            shell.app().has_drawn_shape_preview(),
+            "{}",
+            shell.app().action_digest()
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        if commit {
+            shell.press_key(Key::Enter);
+        } else {
+            shell.app_mut().cancel_preview();
+        }
+    }
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), steps + 1);
+    let snapshot = shell.app().document_snapshot();
+    assert_eq!(
+        snapshot.occurrences().count(),
+        occurrences - 1,
+        "the drawn shape is used up"
+    );
+    snapshot
+        .occurrence(OccurrenceId(1))
+        .unwrap()
+        .definition_id()
+}
+
+/// The Boolean that ends `definition_id`'s features, with the length and
+/// profile of the prism it cuts or joins. A pocket's prism also reaches 1 mm
+/// out of the face, so it is 1 mm longer than the pocket is deep.
+fn drawn_shape_tool(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+) -> (ExactBRepBooleanOperation, f64, ExactBRepPlanarGeometry) {
+    let producer = *snapshot
+        .definition(definition_id)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(snapshot, definition_id, producer).unwrap();
+    let ExactBRepOperation::Boolean {
+        operation, tool, ..
+    } = &graph.nodes.last().unwrap().operation
+    else {
+        panic!("the part must end in the drawn shape's Boolean")
+    };
+    let ExactBRepOperation::RigidTransform { target, .. } = &graph.nodes[tool.0 as usize].operation
+    else {
+        panic!("the tool is placed on the face")
+    };
+    let ExactBRepOperation::Extrude {
+        profile,
+        distance_bits,
+        ..
+    } = &graph.nodes[target.0 as usize].operation
+    else {
+        panic!("the tool is the drawn shape's prism")
+    };
+    (
+        *operation,
+        f64::from_bits(*distance_bits),
+        graph.profiles[profile.0 as usize].geometry.clone(),
+    )
+}
+
+fn exact_worker_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
 fn arc_count(segments: &[ExactBRepPlanarSegment]) -> usize {
@@ -735,11 +834,11 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     let mut shell = Shell::with_dialogs(dialogs);
     let start = shell
         .app()
-        .viewport_position(Vec3::new(25.0, 20.0, 20.0))
+        .viewport_position(Vec3::new(125.0, 20.0, 20.0))
         .unwrap();
     let direction = shell
         .app()
-        .viewport_position(Vec3::new(45.0, 30.0, 20.0))
+        .viewport_position(Vec3::new(145.0, 30.0, 20.0))
         .unwrap();
     let before = (
         shell.app().document_revision(),
@@ -939,10 +1038,9 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         shell.app().canonical_digest(),
         shell.app().undo_step_count(),
     );
+    // Beside the part the shape has nothing to cut into.
     shell.app_mut().set_push_pull_distance_input("-20");
-    assert!(shell.app_mut().start_preview());
-    shell.settle();
-    assert!(shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before_push.0);
     assert_eq!(shell.app().canonical_digest(), before_push.1);
     assert_eq!(shell.app().undo_step_count(), before_push.2);
@@ -1191,57 +1289,8 @@ fn rectangular_line_profile_negative_push_pull_creates_exact_through_cut_atomica
     shell.click_at(points[3]);
     shell.click_at(points[0]);
     let profile_digest = shell.app().canonical_digest();
-    let before = (
-        shell.app().document_revision(),
-        shell.app().undo_step_count(),
-    );
 
-    shell.click_command(AppCommand::PushPull);
-    shell.app_mut().set_push_pull_distance_input("-20");
-    assert!(shell.app_mut().start_preview());
-    shell.settle();
-    assert!(shell.app().has_smart_push_pull_chooser());
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-
-    let box_name = shell.catalog().format(
-        "model-default-box",
-        &BTreeMap::from([("number", "1".to_owned())]),
-    );
-    let occurrence = shell.catalog().format(
-        "model-default-occurrence",
-        &BTreeMap::from([("name", box_name)]),
-    );
-    let target_label = shell.catalog().format(
-        "choice-smart-push-pull-cut-target",
-        &BTreeMap::from([
-            ("feature", shell.catalog().text("model-default-extrusion")),
-            ("feature_id", "2".to_owned()),
-            ("occurrence", occurrence),
-            ("occurrence_id", "1".to_owned()),
-        ]),
-    );
-    assert!(shell.has_role_and_label(Role::RadioButton, &target_label));
-    shell.click_role_and_label(Role::RadioButton, &target_label);
-    shell.click_role_and_label(
-        Role::Button,
-        &shell.catalog().text("choice-smart-push-pull-continue"),
-    );
-    assert!(
-        shell.app().has_occurrence_operation_preview(),
-        "digest={}",
-        shell.app().action_digest()
-    );
-    assert_eq!(
-        shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-    );
-    assert_eq!(shell.app().document_revision(), before.0);
-    shell.press_key(Key::Enter);
-
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
-    assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-20");
     let snapshot = shell.app().document_snapshot();
     let producer = *snapshot
         .definition(result_definition)
@@ -1314,58 +1363,8 @@ fn triangular_line_profile_negative_push_pull_creates_exact_through_cut_atomical
     shell.click_at(points[2]);
     shell.click_at(points[0]);
     let profile_digest = shell.app().canonical_digest();
-    let before = (
-        shell.app().document_revision(),
-        shell.app().undo_step_count(),
-    );
 
-    let choose_target = |shell: &mut Shell| {
-        assert!(shell.app_mut().start_preview());
-        shell.settle();
-        assert!(shell.app().has_smart_push_pull_chooser());
-        let box_name = shell.catalog().format(
-            "model-default-box",
-            &BTreeMap::from([("number", "1".to_owned())]),
-        );
-        let occurrence = shell.catalog().format(
-            "model-default-occurrence",
-            &BTreeMap::from([("name", box_name)]),
-        );
-        let target_label = shell.catalog().format(
-            "choice-smart-push-pull-cut-target",
-            &BTreeMap::from([
-                ("feature", shell.catalog().text("model-default-extrusion")),
-                ("feature_id", "2".to_owned()),
-                ("occurrence", occurrence),
-                ("occurrence_id", "1".to_owned()),
-            ]),
-        );
-        shell.click_role_and_label(Role::RadioButton, &target_label);
-        shell.click_role_and_label(
-            Role::Button,
-            &shell.catalog().text("choice-smart-push-pull-continue"),
-        );
-        assert!(shell.app().has_occurrence_operation_preview());
-        assert_eq!(
-            shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-        );
-    };
-
-    shell.click_command(AppCommand::PushPull);
-    shell.app_mut().set_push_pull_distance_input("-20");
-    choose_target(&mut shell);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    shell.press_key(Key::Escape);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-
-    choose_target(&mut shell);
-    shell.press_key(Key::Enter);
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
-    assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-20");
     let snapshot = shell.app().document_snapshot();
     let producer = *snapshot
         .definition(result_definition)
@@ -1435,58 +1434,8 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_through_cut_atomica
     shell.click_at(shell.app().viewport_position(bulge).unwrap());
     assert_eq!(shell.app().arc_profile_count(), 1);
     let profile_digest = shell.app().canonical_digest();
-    let before = (
-        shell.app().document_revision(),
-        shell.app().undo_step_count(),
-    );
 
-    let choose_target = |shell: &mut Shell| {
-        assert!(shell.app_mut().start_preview());
-        shell.settle();
-        assert!(shell.app().has_smart_push_pull_chooser());
-        let box_name = shell.catalog().format(
-            "model-default-box",
-            &BTreeMap::from([("number", "1".to_owned())]),
-        );
-        let occurrence = shell.catalog().format(
-            "model-default-occurrence",
-            &BTreeMap::from([("name", box_name)]),
-        );
-        let target_label = shell.catalog().format(
-            "choice-smart-push-pull-cut-target",
-            &BTreeMap::from([
-                ("feature", shell.catalog().text("model-default-extrusion")),
-                ("feature_id", "2".to_owned()),
-                ("occurrence", occurrence),
-                ("occurrence_id", "1".to_owned()),
-            ]),
-        );
-        shell.click_role_and_label(Role::RadioButton, &target_label);
-        shell.click_role_and_label(
-            Role::Button,
-            &shell.catalog().text("choice-smart-push-pull-continue"),
-        );
-        assert!(shell.app().has_occurrence_operation_preview());
-        assert_eq!(
-            shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-        );
-    };
-
-    shell.click_command(AppCommand::PushPull);
-    shell.app_mut().set_push_pull_distance_input("-20");
-    choose_target(&mut shell);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    shell.press_key(Key::Escape);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-
-    choose_target(&mut shell);
-    shell.press_key(Key::Enter);
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
-    assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-20");
     let snapshot = shell.app().document_snapshot();
     let producer = *snapshot
         .definition(result_definition)
@@ -1624,67 +1573,11 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_depth_limited_pocke
     shell.click_at(shell.app().viewport_position(bulge).unwrap());
     assert_eq!(shell.app().arc_profile_count(), 1);
     let profile_digest = shell.app().canonical_digest();
-    let before = (
-        shell.app().document_revision(),
-        shell.app().undo_step_count(),
-    );
 
-    shell.click_command(AppCommand::PushPull);
-    shell.app_mut().set_push_pull_distance_input("-25");
-    assert!(!shell.app_mut().start_preview());
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    assert_eq!(shell.app().undo_step_count(), before.1);
-
-    shell.app_mut().set_push_pull_distance_input("-8");
-    let choose_target = |shell: &mut Shell| {
-        assert!(shell.app_mut().start_preview());
-        shell.settle();
-        assert!(shell.app().has_smart_push_pull_chooser());
-        let box_name = shell.catalog().format(
-            "model-default-box",
-            &BTreeMap::from([("number", "1".to_owned())]),
-        );
-        let occurrence = shell.catalog().format(
-            "model-default-occurrence",
-            &BTreeMap::from([("name", box_name)]),
-        );
-        let target_label = shell.catalog().format(
-            "choice-smart-push-pull-cut-target",
-            &BTreeMap::from([
-                ("feature", shell.catalog().text("model-default-extrusion")),
-                ("feature_id", "2".to_owned()),
-                ("occurrence", occurrence),
-                ("occurrence_id", "1".to_owned()),
-            ]),
-        );
-        shell.click_role_and_label(Role::RadioButton, &target_label);
-        shell.click_role_and_label(
-            Role::Button,
-            &shell.catalog().text("choice-smart-push-pull-continue"),
-        );
-        assert!(shell.app().has_occurrence_operation_preview());
-        assert_eq!(
-            shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-        );
-    };
-
-    choose_target(&mut shell);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    shell.press_key(Key::Escape);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-
-    choose_target(&mut shell);
-    shell.press_key(Key::Enter);
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
-    assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-8");
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (ExactBRepBooleanOperation::Cut, 9.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
             if segments.len() == 2 && arc_count(&segments) == 1
     ));
     let pocket_digest = shell.app().canonical_digest();
@@ -1698,8 +1591,8 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_depth_limited_pocke
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (ExactBRepBooleanOperation::Cut, 9.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
             if segments.len() == 2 && arc_count(&segments) == 1
     ));
 }
@@ -1741,67 +1634,11 @@ fn line_arc_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomic
             .create_closed_segment_profile(Vec3::new(30.0, 20.0, 20.0), segments)
     );
     let profile_digest = shell.app().canonical_digest();
-    let before = (
-        shell.app().document_revision(),
-        shell.app().undo_step_count(),
-    );
 
-    shell.click_command(AppCommand::PushPull);
-    shell.app_mut().set_push_pull_distance_input("-25");
-    assert!(!shell.app_mut().start_preview());
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    assert_eq!(shell.app().undo_step_count(), before.1);
-
-    shell.app_mut().set_push_pull_distance_input("-8");
-    let choose_target = |shell: &mut Shell| {
-        assert!(shell.app_mut().start_preview());
-        shell.settle();
-        assert!(shell.app().has_smart_push_pull_chooser());
-        let box_name = shell.catalog().format(
-            "model-default-box",
-            &BTreeMap::from([("number", "1".to_owned())]),
-        );
-        let occurrence = shell.catalog().format(
-            "model-default-occurrence",
-            &BTreeMap::from([("name", box_name)]),
-        );
-        let target_label = shell.catalog().format(
-            "choice-smart-push-pull-cut-target",
-            &BTreeMap::from([
-                ("feature", shell.catalog().text("model-default-extrusion")),
-                ("feature_id", "2".to_owned()),
-                ("occurrence", occurrence),
-                ("occurrence_id", "1".to_owned()),
-            ]),
-        );
-        shell.click_role_and_label(Role::RadioButton, &target_label);
-        shell.click_role_and_label(
-            Role::Button,
-            &shell.catalog().text("choice-smart-push-pull-continue"),
-        );
-        assert!(shell.app().has_occurrence_operation_preview());
-        assert_eq!(
-            shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-        );
-    };
-
-    choose_target(&mut shell);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    shell.press_key(Key::Escape);
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-
-    choose_target(&mut shell);
-    shell.press_key(Key::Enter);
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
-    assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-8");
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (ExactBRepBooleanOperation::Cut, 9.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
             if segments.len() == 4 && arc_count(&segments) == 2
     ));
     let pocket_digest = shell.app().canonical_digest();
@@ -1815,8 +1652,8 @@ fn line_arc_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomic
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (ExactBRepBooleanOperation::Cut, 9.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
             if segments.len() == 4 && arc_count(&segments) == 2
     ));
 }
@@ -1845,67 +1682,11 @@ fn slanted_line_profile_negative_push_pull_creates_exact_depth_limited_pocket_at
     shell.click_at(points[3]);
     shell.click_at(points[0]);
     let profile_digest = shell.app().canonical_digest();
-    let before = (
-        shell.app().document_revision(),
-        shell.app().undo_step_count(),
-    );
 
-    shell.click_command(AppCommand::PushPull);
-    shell.app_mut().set_push_pull_distance_input("-25");
-    assert!(!shell.app_mut().start_preview());
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    assert_eq!(shell.app().undo_step_count(), before.1);
-
-    shell.app_mut().set_push_pull_distance_input("-8");
-    assert!(shell.app_mut().start_preview());
-    shell.settle();
-    assert!(shell.app().has_smart_push_pull_chooser());
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-
-    let box_name = shell.catalog().format(
-        "model-default-box",
-        &BTreeMap::from([("number", "1".to_owned())]),
-    );
-    let occurrence = shell.catalog().format(
-        "model-default-occurrence",
-        &BTreeMap::from([("name", box_name)]),
-    );
-    let target_label = shell.catalog().format(
-        "choice-smart-push-pull-cut-target",
-        &BTreeMap::from([
-            ("feature", shell.catalog().text("model-default-extrusion")),
-            ("feature_id", "2".to_owned()),
-            ("occurrence", occurrence),
-            ("occurrence_id", "1".to_owned()),
-        ]),
-    );
-    assert!(shell.has_role_and_label(Role::RadioButton, &target_label));
-    shell.click_role_and_label(Role::RadioButton, &target_label);
-    shell.click_role_and_label(
-        Role::Button,
-        &shell.catalog().text("choice-smart-push-pull-continue"),
-    );
-    assert!(
-        shell.app().has_occurrence_operation_preview(),
-        "digest={}",
-        shell.app().action_digest()
-    );
-    assert_eq!(
-        shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-    );
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    shell.press_key(Key::Enter);
-
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
-    assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-8");
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (ExactBRepBooleanOperation::Cut, 9.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
             if segments.len() == 4 && arc_count(&segments) == 0
     ));
     let pocket_digest = shell.app().canonical_digest();
@@ -1919,8 +1700,8 @@ fn slanted_line_profile_negative_push_pull_creates_exact_depth_limited_pocket_at
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (ExactBRepBooleanOperation::Cut, 9.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
             if segments.len() == 4 && arc_count(&segments) == 0
     ));
 }
@@ -1945,67 +1726,15 @@ fn circular_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomic
             .unwrap(),
     );
     let profile_digest = shell.app().canonical_digest();
-    let before = (
-        shell.app().document_revision(),
-        shell.app().undo_step_count(),
-    );
 
-    shell.click_command(AppCommand::PushPull);
-    shell.app_mut().set_push_pull_distance_input("-25");
-    assert!(!shell.app_mut().start_preview());
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    assert_eq!(shell.app().undo_step_count(), before.1);
-
-    shell.app_mut().set_push_pull_distance_input("-8");
-    assert!(shell.app_mut().start_preview());
-    shell.settle();
-    assert!(shell.app().has_smart_push_pull_chooser());
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-
-    let box_name = shell.catalog().format(
-        "model-default-box",
-        &BTreeMap::from([("number", "1".to_owned())]),
-    );
-    let occurrence = shell.catalog().format(
-        "model-default-occurrence",
-        &BTreeMap::from([("name", box_name)]),
-    );
-    let target_label = shell.catalog().format(
-        "choice-smart-push-pull-cut-target",
-        &BTreeMap::from([
-            ("feature", shell.catalog().text("model-default-extrusion")),
-            ("feature_id", "2".to_owned()),
-            ("occurrence", occurrence),
-            ("occurrence_id", "1".to_owned()),
-        ]),
-    );
-    assert!(shell.has_role_and_label(Role::RadioButton, &target_label));
-    shell.click_role_and_label(Role::RadioButton, &target_label);
-    shell.click_role_and_label(
-        Role::Button,
-        &shell.catalog().text("choice-smart-push-pull-continue"),
-    );
-    assert!(
-        shell.app().has_occurrence_operation_preview(),
-        "digest={}",
-        shell.app().action_digest()
-    );
-    assert_eq!(
-        shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-    );
-    assert_eq!(shell.app().document_revision(), before.0);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    shell.press_key(Key::Enter);
-
-    assert_eq!(shell.app().document_revision(), before.0 + 1);
-    assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let result_definition = commit_drawn_shape_push_pull(&mut shell, "-8");
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Circle { .. })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (
+            ExactBRepBooleanOperation::Cut,
+            9.0,
+            ExactBRepPlanarGeometry::Circle { .. }
+        )
     ));
     let pocket_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
@@ -2018,8 +1747,12 @@ fn circular_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomic
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
     assert!(matches!(
-        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
-        (8.0, ExactBRepPlanarGeometry::Circle { .. })
+        drawn_shape_tool(&shell.app().document_snapshot(), result_definition),
+        (
+            ExactBRepBooleanOperation::Cut,
+            9.0,
+            ExactBRepPlanarGeometry::Circle { .. }
+        )
     ));
 }
 

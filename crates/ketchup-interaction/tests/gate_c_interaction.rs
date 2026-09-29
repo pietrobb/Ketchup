@@ -482,7 +482,6 @@ fn every_narrow_ui_string_is_resolved_from_the_english_resource() {
         "status-preview",
         "status-exact-pending",
         "action-smart-push-pull-height",
-        "choice-smart-push-pull-source",
         "error-preview-stale",
     ] {
         assert!(catalog.contains(key), "missing locale key {key}");

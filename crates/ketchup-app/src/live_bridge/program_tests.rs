@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_core::document::ProfileSegment;
 use ketchup_core::topology::TopologicalElementKind;
 
 const TABLE: &str = include_str!("../../../../examples/programs/table.star");
@@ -275,7 +276,8 @@ fn face_count(app: &KetchupApp, name: &str) -> usize {
 
 #[test]
 fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
-    const BLOCK: &str = "block = box(\"block\", (100, 60, 40))\nrotate(block, axis = (0, 0, 1), angle = 30)\n";
+    const BLOCK: &str =
+        "block = box(\"block\", (100, 60, 40))\nrotate(block, axis = (0, 0, 1), angle = 30)\n";
     let (mut app, mut bridge) = setup();
     bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
     evaluate_exact(&mut app);
@@ -303,7 +305,11 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
         ordinal,
     };
     let undo_steps = app.undo_step_count();
-    assert!(app.prepare_assistant_general_finish(locator, ketchup_application::topology::GeneralFinishKind::Fillet, 5.0));
+    assert!(app.prepare_assistant_general_finish(
+        locator,
+        ketchup_application::topology::GeneralFinishKind::Fillet,
+        5.0
+    ));
     assert!(app.confirm_assistant_general_finish(), "{}", app.digest);
 
     // The program still owns the part and now says what was done by hand.
@@ -365,5 +371,234 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
     assert_eq!(
         collides["report"]["relations"][0]["status"], "collision",
         "{collides}"
+    );
+}
+
+/// World origin and axes of the program part `name`.
+fn part_frame(app: &KetchupApp, name: &str) -> ([f64; 3], [[f64; 3]; 3]) {
+    let program = app.document.current_rule_program().unwrap().clone();
+    let model = ketchup_application::plan_rule_program(&app.document, &program)
+        .ok()
+        .expect("the program plans")
+        .evaluated
+        .model;
+    let part = model.parts.iter().find(|part| part.name == name).unwrap();
+    (
+        part.at_mm,
+        [0, 1, 2].map(|axis| ketchup_program::frame::axis(&part.rotation, axis)),
+    )
+}
+
+fn local_to_world(origin: [f64; 3], axes: &[[f64; 3]; 3], local: [f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|i| origin[i] + (0..3).map(|axis| axes[axis][i] * local[axis]).sum::<f64>())
+}
+
+/// Draws a closed shape in the plane through `origin` spanned by `x` and `y`
+/// and leaves it selected, as the drawing tools do.
+fn draw(
+    app: &mut KetchupApp,
+    origin: [f64; 3],
+    x: [f64; 3],
+    y: [f64; 3],
+    segments: Vec<ProfileSegment>,
+) -> SelectionId {
+    let n = ketchup_program::frame::cross(x, y);
+    let transform = Transform::from_matrix([
+        x[0], y[0], n[0], origin[0], x[1], y[1], n[1], origin[1], x[2], y[2], n[2], origin[2], 0.0,
+        0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    assert!(app.create_segment_profile_at(
+        transform,
+        segments,
+        true,
+        "model-default-box",
+        "model-default-profile"
+    ));
+    app.selection.primary.clone().unwrap()
+}
+
+fn lines(points: &[[f64; 2]]) -> Vec<ProfileSegment> {
+    (0..points.len())
+        .map(|index| ProfileSegment::Line {
+            start_mm: points[index],
+            end_mm: points[(index + 1) % points.len()],
+        })
+        .collect()
+}
+
+/// Push/Pull of the selected drawn shape by `distance`, confirmed with Enter.
+fn push_pull_drawn(app: &mut KetchupApp, distance: &str) -> bool {
+    app.set_push_pull_distance_input(distance);
+    assert!(app.start_preview(), "{}", app.digest);
+    assert!(app.has_drawn_shape_preview(), "{}", app.digest);
+    app.confirm_preview()
+}
+
+fn exact_volume(app: &KetchupApp, name: &str) -> f64 {
+    let snapshot = app.document.current();
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == name)
+        .unwrap();
+    let package = app
+        .topology_results
+        .get_render(&snapshot, occurrence.definition_id())
+        .unwrap();
+    let ketchup_core::exact_product::ExactBodyPackage::Graph(graph) = package.as_ref() else {
+        panic!("{name}: an exact graph is required")
+    };
+    assert_eq!(graph.topology_counts[3..], [1, 1], "{name}");
+    graph.volume_mm3
+}
+
+fn assert_volume(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < 1.0e-3 * expected.abs().max(1.0),
+        "{actual} != {expected}"
+    );
+}
+
+const BLOCK_VOLUME: f64 = 100.0 * 60.0 * 40.0;
+
+#[test]
+fn a_shape_drawn_on_a_side_of_a_rotated_program_part_is_pushed_in_as_a_pocket() {
+    const BLOCK: &str =
+        "block = box(\"block\", (100, 60, 40))\nrotate(block, axis = (0, 0, 1), angle = 30)\n";
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
+    let (origin, axes) = part_frame(&app, "block");
+    // On the y- face (u along x, v along z), drawn looking out of it.
+    draw(
+        &mut app,
+        local_to_world(origin, &axes, [0.0; 3]),
+        axes[0],
+        axes[2],
+        lines(&[[20.0, 10.0], [50.0, 10.0], [50.0, 30.0], [20.0, 30.0]]),
+    );
+    let drawn = names(&app);
+    assert_eq!(drawn.len(), 2);
+    let undo_steps = app.undo_step_count();
+
+    assert!(push_pull_drawn(&mut app, "-8"), "{}", app.digest);
+    let program = app.document.current_rule_program().unwrap().source.clone();
+    assert_eq!(
+        &program[BLOCK.len()..],
+        "pocket_shape(\"block\", \"y-\", [[20, 10], [50, 10], [50, 30], [20, 30]], 8, name=\"pocket 1\")\n"
+    );
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+    // The drawn shape is used up and the part keeps its identity.
+    assert_eq!(
+        names(&app),
+        BTreeMap::from([("block".to_owned(), drawn["block"])])
+    );
+    evaluate_exact(&mut app);
+    assert_volume(
+        exact_volume(&app, "block"),
+        BLOCK_VOLUME - 30.0 * 20.0 * 8.0,
+    );
+
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
+    assert_eq!(names(&app), drawn);
+}
+
+#[test]
+fn a_shape_drawn_facing_into_a_part_keeps_its_arc_and_pulls_out_a_boss() {
+    const BLOCK: &str = "block = box(\"block\", (100, 60, 40))\n";
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
+    // On the x+ face (u = y, v = z) with the drawing's normal pointing into
+    // the part: drawn (a, b) is (u, v) = (a, 40 - b), so the loop is mirrored.
+    // A quarter disc: the arc must stay the short way round in (u, v).
+    draw(
+        &mut app,
+        [100.0, 0.0, 40.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        vec![
+            ProfileSegment::Line {
+                start_mm: [30.0, 20.0],
+                end_mm: [40.0, 20.0],
+            },
+            ProfileSegment::CircularArc {
+                start_mm: [40.0, 20.0],
+                end_mm: [30.0, 10.0],
+                center_mm: [30.0, 20.0],
+                clockwise: true,
+            },
+            ProfileSegment::Line {
+                start_mm: [30.0, 10.0],
+                end_mm: [30.0, 20.0],
+            },
+        ],
+    );
+    // Against the drawing's normal is out of the part.
+    assert!(push_pull_drawn(&mut app, "-10"), "{}", app.digest);
+    let program = app.document.current_rule_program().unwrap().source.clone();
+    assert_eq!(
+        &program[BLOCK.len()..],
+        "boss(\"block\", \"x+\", [[\"edge1\", [30, 20], [40, 20]], [\"edge2\", [40, 20], [30, 30], {\"center\": (30, 20), \"clockwise\": False}], [\"edge3\", [30, 30], [30, 20]]], 10, name=\"boss 1\")\n"
+    );
+    assert_eq!(names(&app).len(), 1);
+    evaluate_exact(&mut app);
+    assert_volume(
+        exact_volume(&app, "block"),
+        BLOCK_VOLUME + std::f64::consts::PI * 100.0 / 4.0 * 10.0,
+    );
+}
+
+#[test]
+fn only_shapes_lying_on_a_part_face_become_program_edits_and_may_run_off_it() {
+    const BLOCK: &str = "block = box(\"block\", (100, 60, 40))\n";
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
+    let square = lines(&[[10.0, 10.0], [30.0, 10.0], [30.0, 30.0], [10.0, 30.0]]);
+
+    // Floating above the part, tilted against its top, or next to it on the
+    // top's plane: none of these is on a face, so Push/Pull stays as it was.
+    let tilt = 0.5f64.sqrt();
+    for (origin, y) in [
+        ([0.0, 0.0, 100.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, 40.0], [0.0, tilt, tilt]),
+        ([150.0, 0.0, 40.0], [0.0, 1.0, 0.0]),
+    ] {
+        let shape = draw(&mut app, origin, [1.0, 0.0, 0.0], y, square.clone());
+        assert!(
+            app.drawn_shape_edit(&shape, -5.0).is_none(),
+            "{origin:?} {y:?}"
+        );
+    }
+    let program = app.document.current_rule_program().unwrap().source.clone();
+    assert_eq!(program, BLOCK);
+
+    // A preview is not confirmed once the distance changed under it.
+    let shape = draw(
+        &mut app,
+        [0.0, 0.0, 40.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        lines(&[[80.0, 20.0], [130.0, 20.0], [130.0, 40.0], [80.0, 40.0]]),
+    );
+    app.set_push_pull_distance_input("-5");
+    assert!(app.start_preview(), "{}", app.digest);
+    app.set_push_pull_distance_input("-6");
+    assert!(!app.confirm_preview());
+    assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
+
+    // Running off the end of the top face mills only what lies on the part.
+    assert_eq!(app.selection.primary.as_ref(), Some(&shape));
+    assert!(push_pull_drawn(&mut app, "-5"), "{}", app.digest);
+    let program = app.document.current_rule_program().unwrap().source.clone();
+    assert_eq!(
+        &program[BLOCK.len()..],
+        "pocket_shape(\"block\", \"z+\", [[80, 20], [130, 20], [130, 40], [80, 40]], 5, name=\"pocket 1\")\n"
+    );
+    evaluate_exact(&mut app);
+    assert_volume(
+        exact_volume(&app, "block"),
+        BLOCK_VOLUME - 20.0 * 20.0 * 5.0,
     );
 }

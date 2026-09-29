@@ -51,8 +51,38 @@ impl KetchupApp {
         ),
         RuleProgramApplyError,
     > {
+        self.apply_program_source_with(source, replace, Vec::new())
+    }
+
+    /// `apply_program_source` of a program that owns the document, with
+    /// `also` (edits outside the program, e.g. removing a used-up drawn shape)
+    /// in the same Undo step.
+    pub(crate) fn apply_program_source_with(
+        &mut self,
+        source: RuleProgramSource,
+        replace: bool,
+        also: Vec<CanonicalCommand>,
+    ) -> Result<
+        (
+            ProgramEdit,
+            ketchup_program::Report,
+            ketchup_program::ProgramModel,
+        ),
+        RuleProgramApplyError,
+    > {
         let plan = ketchup_application::plan_rule_program(&self.document, &source)?;
-        let (edit, batch) = match plan.change {
+        let change = match plan.change {
+            RuleProgramChange::Unchanged | RuleProgramChange::SourceOnly if !also.is_empty() => {
+                RuleProgramChange::Incremental(CommandBatch::new(Vec::new()))
+            }
+            RuleProgramChange::Incremental(_) | RuleProgramChange::Replacement
+                if !also.is_empty() && self.document.current_rule_program().is_none() =>
+            {
+                return Err(RuleProgramApplyError::IncrementalUnsupported);
+            }
+            change => change,
+        };
+        let (edit, batch) = match change {
             RuleProgramChange::Unchanged => {
                 return Ok((ProgramEdit::Unchanged, plan.report, plan.evaluated.model));
             }
@@ -70,7 +100,11 @@ impl KetchupApp {
                 self.finish_program_edit();
                 return Ok((ProgramEdit::SourceOnly, plan.report, plan.evaluated.model));
             }
-            RuleProgramChange::Incremental(batch) => (ProgramEdit::Incremental, batch),
+            RuleProgramChange::Incremental(batch) => {
+                let mut commands = batch.commands().to_vec();
+                commands.extend(also);
+                (ProgramEdit::Incremental, CommandBatch::new(commands))
+            }
             RuleProgramChange::Replacement => {
                 if self.document.current().definitions().next().is_some() {
                     if !replace {

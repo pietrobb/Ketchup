@@ -9351,7 +9351,7 @@ fn push_pull_without_a_selected_face_never_targets_the_initial_box() {
     assert_eq!(shell.app().canonical_digest(), digest);
     assert_eq!(shell.app().document_height_mm(), 20.0);
     assert!(!shell.app().can_undo());
-    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_drawn_shape_preview());
     assert_eq!(
         shell.app().action_digest(),
         shell.catalog().text("error-push-pull-selection-required")
@@ -9359,11 +9359,13 @@ fn push_pull_without_a_selected_face_never_targets_the_initial_box() {
 }
 
 #[test]
-fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit() {
+fn localized_typed_push_pull_of_a_drawn_circle_mills_the_part_in_one_step() {
     let mut shell = Shell::with_catalog(LocaleCatalog::slovak());
-    shell.click_at(shell.top_face_centre(1));
-    assert!(shell.app_mut().copy_selected(Vec3::new(1.0, 0.0, 0.0)));
-    shell.settle();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_exact_bodies(&mut shell, 1);
     let hole_center = Vec3::new(35.0, 25.0, 20.0);
     shell.click_command(AppCommand::Circle);
     shell.click_at(shell.app().viewport_position(hole_center).unwrap());
@@ -9373,51 +9375,46 @@ fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit(
             .viewport_position(hole_center + Vec3::new(10.0, 0.0, 0.0))
             .unwrap(),
     );
+    assert_eq!(shell.app().active_box_count(), 2);
     let revision = shell.app().document_revision();
     let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::PushPull);
-    shell.type_text("-20");
+    shell.type_text("-8");
     shell.press_key(Key::Enter);
 
-    let box_name = shell.catalog().format(
-        "model-default-box",
-        &BTreeMap::from([("number", "1".to_owned())]),
-    );
-    let occurrence = shell.catalog().format(
-        "model-default-occurrence",
-        &BTreeMap::from([("name", box_name)]),
-    );
-    let target_label = shell.catalog().format(
-        "choice-smart-push-pull-cut-target",
-        &BTreeMap::from([
-            ("feature", shell.catalog().text("model-default-extrusion")),
-            ("feature_id", "2".to_owned()),
-            ("occurrence", occurrence),
-            ("occurrence_id", "1".to_owned()),
-        ]),
-    );
-    let cancel_label = shell.catalog().text("choice-smart-push-pull-cancel");
+    let snapshot = shell.app().document_snapshot();
+    let definition = snapshot
+        .definition(
+            snapshot
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .definition_id(),
+        )
+        .unwrap();
     assert!(
-        shell.app().has_smart_push_pull_chooser(),
-        "status={}, input={}, selection={:?}, profiles={}",
-        shell.app().action_digest(),
-        shell.app().value_input(),
-        shell.app().selected_reference(),
-        shell.app().circle_profile_count()
+        matches!(
+            snapshot
+                .feature(*definition.feature_ids().last().unwrap())
+                .unwrap()
+                .kind(),
+            FeatureKind::Boolean {
+                operation: ketchup_core::document::BooleanOperation::Cut,
+                ..
+            }
+        ),
+        "{}",
+        shell.app().action_digest()
     );
-    assert!(shell.has_role_and_label(
-        Role::RadioButton,
-        &shell.catalog().text("choice-smart-push-pull-new-feature")
-    ));
-    assert!(shell.has_role_and_label(Role::RadioButton, &target_label));
-    assert!(shell.has_role_and_label(Role::Button, &cancel_label));
-    assert_eq!(shell.app().document_revision(), revision);
-    assert_eq!(shell.app().canonical_digest(), digest);
-
-    shell.click_role_and_label(Role::Button, &cancel_label);
-    assert!(!shell.app().has_smart_push_pull_chooser());
-    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    assert_eq!(
+        shell.app().active_box_count(),
+        1,
+        "the drawn circle is used up"
+    );
+    shell.key(Key::Z, ctrl());
     assert_eq!(shell.app().canonical_digest(), digest);
 }
 
@@ -9489,6 +9486,11 @@ fn circle_push_pull_drag_renders_a_curved_solid_preview_and_commits_once() {
 #[test]
 fn circle_push_pull_negative_correction_directly_creates_a_hole_through_accesskit() {
     let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_exact_bodies(&mut shell, 1);
     let center = Vec3::new(35.0, 25.0, 20.0);
     shell.click_command(AppCommand::Circle);
     shell.click_at(shell.app().viewport_position(center).unwrap());
@@ -9511,9 +9513,14 @@ fn circle_push_pull_negative_correction_directly_creates_a_hole_through_accesski
     shell.type_text("-20");
     shell.press_key(Key::Enter);
 
-    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_drawn_shape_preview());
     assert!(!shell.app().has_occurrence_operation_preview());
-    assert_eq!(shell.app().document_revision(), original_revision + 1);
+    assert_eq!(
+        shell.app().document_revision(),
+        original_revision + 1,
+        "{}",
+        shell.app().action_digest()
+    );
     assert_ne!(shell.app().canonical_digest(), original_digest);
     assert_eq!(shell.app().active_box_count(), 1);
 
@@ -9530,6 +9537,7 @@ fn circle_through_hole_moves_by_dragging_its_inner_wall() {
         .app_mut()
         .connect_exact_worker(exact_worker_path())
         .unwrap();
+    wait_for_exact_bodies(&mut shell, 1);
     let center = Vec3::new(35.0, 25.0, 20.0);
     shell.click_command(AppCommand::Circle);
     shell.click_at(shell.app().viewport_position(center).unwrap());
@@ -9621,6 +9629,11 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
         .queue_open(&path)
         .always_discard();
     let mut shell = Shell::with_dialogs(dialogs);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_exact_bodies(&mut shell, 1);
 
     let cylinder_center = Vec3::new(75.0, 25.0, 20.0);
     shell.click_command(AppCommand::Circle);
@@ -9696,70 +9709,25 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     let hole_profile_revision = shell.app().document_revision();
     assert_eq!(shell.app().active_box_count(), 3);
 
-    let cut_target_label = shell.catalog().format(
-        "choice-smart-push-pull-cut-target",
-        &BTreeMap::from([
-            ("feature", "Extrusion".to_owned()),
-            ("feature_id", "2".to_owned()),
-            ("occurrence", "Box-1 #1".to_owned()),
-            ("occurrence_id", "1".to_owned()),
-        ]),
-    );
-    let continue_label = shell.catalog().text("choice-smart-push-pull-continue");
     shell.click_command(AppCommand::PushPull);
     shell.app_mut().set_push_pull_distance_input("-20");
-    assert!(shell.app_mut().start_preview());
     shell.settle();
     assert!(
-        shell.app().has_smart_push_pull_chooser(),
-        "status={}, input={}, selection={:?}, profiles={}",
-        shell.app().action_digest(),
-        shell.app().value_input(),
-        shell.app().selected_reference(),
-        shell.app().circle_profile_count()
+        shell.app_mut().start_preview(),
+        "{}",
+        shell.app().action_digest()
     );
-    assert!(shell.has_role_and_label(
-        Role::RadioButton,
-        &shell.catalog().text("choice-smart-push-pull-new-feature")
-    ));
-    assert!(shell.has_role_and_label(Role::RadioButton, &cut_target_label));
-    assert_eq!(shell.app().document_revision(), hole_profile_revision);
-    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
-    shell.click_role_and_label(Role::Button, &continue_label);
-    assert!(!shell.app().has_smart_push_pull_chooser());
-    assert!(!shell.app().has_occurrence_operation_preview());
-    assert!(shell.app().preview_action_digest().is_some());
-    assert_eq!(shell.app().document_revision(), hole_profile_revision);
-    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
-    shell.press_key(Key::Enter);
-    let independent_feature_digest = shell.app().canonical_digest();
-    assert_eq!(shell.app().document_revision(), hole_profile_revision + 1);
-    assert_ne!(independent_feature_digest, hole_profile_digest);
-    shell.key(Key::Z, ctrl());
-    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
-    shell.key(Key::Y, ctrl());
-    assert_eq!(shell.app().canonical_digest(), independent_feature_digest);
-    shell.key(Key::Z, ctrl());
-    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
-
-    shell.app_mut().set_push_pull_distance_input("-20");
-    assert!(shell.app_mut().start_preview());
-    shell.settle();
-    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
-    shell.click_role_and_label(Role::Button, &continue_label);
-    assert!(shell.app().has_occurrence_operation_preview());
-    assert_eq!(
-        shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-    );
+    assert!(shell.app().has_drawn_shape_preview());
     assert_eq!(shell.app().document_revision(), hole_profile_revision);
     assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
     shell.app_mut().cancel_preview();
+    assert!(!shell.app().has_drawn_shape_preview());
+    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
 
     shell.click_command(AppCommand::PushPull);
     shell.type_text("-20");
     shell.press_key(Key::Enter);
-    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_drawn_shape_preview());
     assert!(!shell.app().has_occurrence_operation_preview());
     let hole_digest = shell.app().canonical_digest();
     assert!(shell.app().document_revision() > hole_profile_revision);
@@ -9823,7 +9791,7 @@ fn circular_profile_cuts_a_cylindrical_host_as_pocket_and_through_cut() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("-20");
     shell.press_key(Key::Enter);
-    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_drawn_shape_preview());
     assert!(!shell.app().has_occurrence_operation_preview());
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().document_revision(), profile_revision + 1);
@@ -9873,7 +9841,7 @@ fn circular_profile_cuts_a_cylindrical_host_as_pocket_and_through_cut() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("-30");
     shell.press_key(Key::Enter);
-    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_drawn_shape_preview());
     assert!(!shell.app().has_occurrence_operation_preview());
     assert_eq!(shell.app().document_revision(), profile_revision + 2);
     assert_eq!(shell.app().undo_step_count(), profile_undo_steps + 1);
@@ -13474,68 +13442,6 @@ fn multi_selected_occurrences_scale_about_one_shared_pivot_in_one_undo_step() {
     assert_eq!(shell.app().canonical_digest(), before_digest);
     shell.key(Key::Y, ctrl());
     assert_eq!(shell.app().canonical_digest(), scaled_digest);
-}
-
-#[test]
-fn cut_through_commits_one_canonical_undo_step_from_the_headless_shell() {
-    let mut shell = Shell::new();
-    shell.click_at(shell.top_face_centre(1));
-    let before_revision = shell.app().document_revision();
-    let before_digest = shell.app().canonical_digest();
-
-    shell.click_menu_command("menu-model", AppCommand::CutThrough);
-    let start = shell
-        .app()
-        .viewport_position(Vec3::new(20.0, 15.0, 20.0))
-        .unwrap();
-    let end = shell
-        .app()
-        .viewport_position(Vec3::new(50.0, 35.0, 20.0))
-        .unwrap();
-    shell.click_at(start);
-    shell.click_at(end);
-
-    let cut_digest = shell.app().canonical_digest();
-    assert_eq!(shell.app().document_revision(), before_revision + 1);
-    assert_ne!(cut_digest, before_digest);
-    shell.key(Key::Z, ctrl());
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.key(Key::Y, ctrl());
-    assert_eq!(shell.app().canonical_digest(), cut_digest);
-}
-
-#[test]
-fn pocket_previews_exact_depth_and_commits_from_the_headless_shell() {
-    let mut shell = Shell::new();
-    shell.click_at(shell.top_face_centre(1));
-    let before_revision = shell.app().document_revision();
-    let before_digest = shell.app().canonical_digest();
-
-    shell.click_menu_command("menu-model", AppCommand::Pocket);
-    let start = shell
-        .app()
-        .viewport_position(Vec3::new(20.0, 15.0, 20.0))
-        .unwrap();
-    let end = shell
-        .app()
-        .viewport_position(Vec3::new(50.0, 35.0, 20.0))
-        .unwrap();
-    shell.click_at(start);
-    shell.click_at(end);
-
-    assert_eq!(shell.app().document_revision(), before_revision);
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.key(Key::A, ctrl());
-    shell.type_text("8");
-    shell.press_key(Key::Enter);
-
-    let pocket_digest = shell.app().canonical_digest();
-    assert_eq!(shell.app().document_revision(), before_revision + 1);
-    assert_ne!(pocket_digest, before_digest);
-    shell.key(Key::Z, ctrl());
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.key(Key::Y, ctrl());
-    assert_eq!(shell.app().canonical_digest(), pocket_digest);
 }
 
 #[test]
