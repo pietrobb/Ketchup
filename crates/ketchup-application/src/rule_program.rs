@@ -94,9 +94,7 @@ pub fn rewrite_rule_program_push_pull(
                 Some(*distance_mm)
             }
             // A board is padded along its third size component.
-            (ketchup_program::model::ProgramPartBody::Panel, "end" | "z+") => {
-                Some(part.size_mm[2])
-            }
+            (ketchup_program::model::ProgramPartBody::Panel, "end" | "z+") => Some(part.size_mm[2]),
             _ => None,
         }
     };
@@ -269,16 +267,18 @@ fn incremental_batch(
     // A manually added part is not described by the program; do not guess its fate.
     // A shape only drawn (a profile without a solid) is left as it is.
     let drawing_only = |definition_id| {
-        snapshot.definition(definition_id).is_some_and(|definition| {
-            definition.feature_ids().iter().all(|id| {
-                snapshot.feature(*id).is_some_and(|feature| {
-                    matches!(
-                        feature.kind(),
-                        FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
-                    )
+        snapshot
+            .definition(definition_id)
+            .is_some_and(|definition| {
+                definition.feature_ids().iter().all(|id| {
+                    snapshot.feature(*id).is_some_and(|feature| {
+                        matches!(
+                            feature.kind(),
+                            FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
+                        )
+                    })
                 })
             })
-        })
     };
     if snapshot
         .occurrences()
@@ -555,6 +555,8 @@ fn program_feature_references_match(
             left.name == right.name && left.face == right.face
         }
         (ProgramOperation::Boolean(left), ProgramOperation::Boolean(right)) => left == right,
+        (ProgramOperation::Mirror(left), ProgramOperation::Mirror(right)) => left == right,
+        (ProgramOperation::Shell(left), ProgramOperation::Shell(right)) => left == right,
         _ => false,
     };
     body_matches

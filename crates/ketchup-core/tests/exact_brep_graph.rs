@@ -254,6 +254,7 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
             kind: FeatureKind::TopologyShell {
                 target: BOOLEAN,
                 removed_faces: vec![face.clone()],
+                profile_faces: Vec::new(),
                 thickness: dimension(2.5),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },
@@ -287,6 +288,7 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
         removed_faces,
         thickness_bits,
         direction: ketchup_core::exact_brep_graph::ExactBRepShellDirection::Inward,
+        ..
     } = &graph.nodes[3].operation
     else {
         panic!("fourth node must be a topology shell");

@@ -785,6 +785,8 @@ pub enum FeatureKind {
     TopologyShell {
         target: FeatureId,
         removed_faces: Vec<TopologicalElementRef>,
+        /// Program-named faces to open, instead of `removed_faces`.
+        profile_faces: Vec<ProfileFaceReference>,
         thickness: Dimension,
         direction: ShellDirection,
     },
@@ -6428,11 +6430,13 @@ impl DocumentStore {
                         FeatureKind::TopologyShell {
                             target,
                             ref removed_faces,
+                            ref profile_faces,
                             direction,
                             ..
                         } => FeatureKind::TopologyShell {
                             target,
                             removed_faces: removed_faces.clone(),
+                            profile_faces: profile_faces.clone(),
                             thickness: dimension.clone(),
                             direction,
                         },
@@ -11919,12 +11923,29 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
         }
         FeatureKind::TopologyShell {
             removed_faces,
+            profile_faces,
             thickness,
+            direction,
             ..
         } => {
             Dimension::new(thickness.source_token.clone(), thickness.millimetres).map(|_| ())?;
             if thickness.millimetres <= 0.0 {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            if !profile_faces.is_empty() {
+                // Named openings: an inward shell of program faces only.
+                if !removed_faces.is_empty()
+                    || *direction != ShellDirection::Inward
+                    || profile_faces.len() > 64
+                    || profile_faces.iter().any(|face| {
+                        matches!(face, ProfileFaceReference::Segment { entity_id: 0, .. })
+                            || matches!(face, ProfileFaceReference::Segment { source_name, .. } if source_name.is_empty())
+                            || matches!(face, ProfileFaceReference::NamedResult(name) if name.is_empty())
+                    })
+                {
+                    return Err(CanonicalError::InvalidTopologicalFeatureReference);
+                }
+                return Ok(());
             }
             if removed_faces.is_empty() {
                 Ok(())
@@ -13728,6 +13749,7 @@ fn clone_definition_and_repoint(
             FeatureKind::TopologyShell {
                 target,
                 removed_faces,
+                profile_faces,
                 thickness,
                 direction,
             } => FeatureKind::TopologyShell {
@@ -13740,6 +13762,7 @@ fn clone_definition_and_repoint(
                         remap_topological_reference(reference, new_definition_id, &mapping)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
+                profile_faces: profile_faces.clone(),
                 thickness: thickness.clone(),
                 direction: *direction,
             },

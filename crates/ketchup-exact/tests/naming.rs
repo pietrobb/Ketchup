@@ -301,8 +301,7 @@ fn fillet_after_a_cut_and_an_intersect_rounds_the_named_edges() {
         .unwrap();
     let corner = radius * radius * (1.0 - std::f64::consts::FRAC_PI_4);
     assert!(
-        (rounded.output.body.topology.volume_mm3
-            - (100.0 * 60.0 * 40.0 - removed - corner * 40.0))
+        (rounded.output.body.topology.volume_mm3 - (100.0 * 60.0 * 40.0 - removed - corner * 40.0))
             .abs()
             < 1.0e-3,
         "{}",
@@ -322,7 +321,10 @@ fn fillet_after_a_cut_and_an_intersect_rounds_the_named_edges() {
     let kept = backend
         .named_boolean(&block, &half, "half", NamedBoolean::Intersect)
         .unwrap();
-    assert!(close(kept.output.body.topology.volume_mm3, 50.0 * 60.0 * 40.0));
+    assert!(close(
+        kept.output.body.topology.volume_mm3,
+        50.0 * 60.0 * 40.0
+    ));
     assert!(near(face(&kept, "half.cut_wall").centroid_mm.x, 50.0));
     assert!(close(face(&kept, "left").centroid_mm.x, 0.0));
     kept.edge("half.cut_wall", "front").unwrap();

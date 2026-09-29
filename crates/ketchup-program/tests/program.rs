@@ -987,7 +987,10 @@ for name, faces in [("front-left", ["x-", "y-"]), ("front-right", ["x+", "y-"]),
 #[test]
 fn split_halves_only_touch_but_trims_that_overlap_still_collide() {
     let block = "a = box(\"a\", [100, 60, 40])\n";
-    for plane in ["point=[30, 0, 0], normal=[1, 0, 0]", "point=[50, 30, 20], normal=[1, 1, 1]"] {
+    for plane in [
+        "point=[30, 0, 0], normal=[1, 0, 0]",
+        "point=[50, 30, 20], normal=[1, 1, 1]",
+    ] {
         let halves = kinds(&format!("{block}split(a, {plane})"));
         assert!(halves.is_empty(), "{plane}: {halves:?}");
     }

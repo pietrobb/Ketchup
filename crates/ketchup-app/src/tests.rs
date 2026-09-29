@@ -884,6 +884,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
                 removed_faces,
                 thickness,
                 direction: ketchup_core::document::ShellDirection::Inward,
+                ..
             },
             ..
         }] if removed_faces.len() == 2

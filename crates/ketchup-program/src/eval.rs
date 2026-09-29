@@ -13,8 +13,8 @@ use crate::frame::{self, Mat3};
 use crate::model::{
     Face, Hole, Joint, Param, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
     ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramLoftSection,
-    ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment, ProgramProfileSegment,
-    profile_bounds,
+    ProgramMirror, ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment,
+    ProgramProfileSegment, ProgramShell, profile_bounds,
 };
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
@@ -231,7 +231,12 @@ fn profile_segments<'v>(
                 }
                 let start_mm = numbers::<2>(*start, heap, what)?;
                 let end_mm = numbers::<2>(*end, heap, what)?;
+                let bezier = arc
+                    .and_then(|curve| bezier_controls(curve, heap).transpose())
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!("{what} segment {name:?}: {error}"))?;
                 let arc = arc
+                    .filter(|_| bezier.is_none())
                     .map(|arc| profile_arc(arc, start_mm, end_mm, heap))
                     .transpose()
                     .map_err(|error| anyhow::anyhow!("{what} segment {name:?}: {error}"))?;
@@ -240,6 +245,7 @@ fn profile_segments<'v>(
                     start_mm,
                     end_mm,
                     arc,
+                    bezier,
                 })
             })
             .collect();
@@ -257,6 +263,29 @@ fn profile_segments<'v>(
             )
         })
         .collect())
+}
+
+/// The two inner control points of a cubic Bezier segment given as
+/// `{"controls": [(x1, y1), (x2, y2)]}`; `None` for any other dict.
+fn bezier_controls<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Option<[[f64; 2]; 2]>> {
+    let Some(dict) = DictRef::from_value(value) else {
+        return Ok(None);
+    };
+    let Some(controls) = dict.get_str("controls") else {
+        return Ok(None);
+    };
+    if dict.len() != 1 {
+        anyhow::bail!("a curve is {{\"controls\": [(x1, y1), (x2, y2)]}} with no other keys");
+    }
+    let points = controls
+        .iterate(heap)
+        .map_err(|_| anyhow::anyhow!("curve controls must be two points"))?
+        .map(|point| numbers::<2>(point, heap, "curve control"))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let [first, second] = points.as_slice() else {
+        anyhow::bail!("curve controls must be two points, got {}", points.len());
+    };
+    Ok(Some([*first, *second]))
 }
 
 /// The arc of a named segment from a dict: `{"center": (x, y),
@@ -969,10 +998,32 @@ fn rotated_contact(a: &Part, b: &Part) -> Option<Contact> {
     })
 }
 
+/// A mirror is a part's last step: its faces keep their names on the other
+/// side, so later steps would address them in the wrong place.
+fn reject_mirrored(part: &Part, step: &str) -> anyhow::Result<()> {
+    if let Some(mirror) = part
+        .operations
+        .iter()
+        .find(|operation| matches!(operation, ProgramOperation::Mirror(_)))
+    {
+        anyhow::bail!(
+            "{step:?} on {:?} comes after its mirror {:?}; shape the part first and mirror it last",
+            part.name,
+            mirror.name()
+        );
+    }
+    Ok(())
+}
+
 /// Appends one operation to a part, keeping operation names unique.
 fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result<()> {
+    reject_mirrored(part, operation.name())?;
     let name = operation.name();
-    if part.operations.iter().any(|existing| existing.name() == name) {
+    if part
+        .operations
+        .iter()
+        .any(|existing| existing.name() == name)
+    {
         anyhow::bail!(
             "feature name {name:?} is already used on {:?}; pass a unique name=",
             part.name
@@ -1393,6 +1444,112 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
+    /// Reflects the part's solid, as shaped so far, across its own middle
+    /// plane across local `axis` ("x", "y" or "z"); its bounds stay. Faces keep
+    /// the names of the faces they mirror. It is the part's last shaping step.
+    fn mirror<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named, default = "x")] axis: &str,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let axis_index = match axis {
+            "x" => 0,
+            "y" => 1,
+            "z" => 2,
+            _ => anyhow::bail!(
+                "mirror({part_name:?}): axis must be \"x\", \"y\" or \"z\", got {axis:?}"
+            ),
+        };
+        let name = text(name, "name")?.unwrap_or_else(|| format!("{part_name} mirror {axis}"));
+        let state = state(eval)?;
+        record_source(eval, &state, &[&part_name]);
+        with_part(&state, &part_name, |part| {
+            if !(part.holes.is_empty() && part.pockets.is_empty()) {
+                anyhow::bail!(
+                    "mirror({part_name:?}): the part has holes or pockets; mirror it first and drill the mirrored part"
+                );
+            }
+            let (min, max) = part.local_bounds();
+            add_operation(
+                part,
+                ProgramOperation::Mirror(ProgramMirror {
+                    name,
+                    axis: axis_index,
+                    center_mm: (min[axis_index] + max[axis_index]) / 2.0,
+                }),
+            )?;
+            Ok(part_value(part, heap))
+        })
+    }
+
+    /// Hollows the part to walls `thickness` mm thick, measured inwards, open
+    /// at the faces `open` (at least one). The inner wall following face F is
+    /// "<name>.F".
+    fn shell<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] thickness: Value<'v>,
+        #[starlark(require = named)] open: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let thickness_mm = number(thickness, "thickness")?;
+        let open = items(open, heap, "open")?
+            .into_iter()
+            .map(|face| {
+                face.unpack_str().map(str::to_owned).ok_or_else(|| {
+                    anyhow::anyhow!("shell({part_name:?}): open must be a list of face names")
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let name = text(name, "name")?.unwrap_or_else(|| format!("{part_name} shell"));
+        if name.trim().is_empty() || name.contains(['#', ',', '(', ')', '.', ':']) {
+            anyhow::bail!(
+                "shell({part_name:?}): name {name:?} must be non-empty without # , ( ) . or :, it prefixes the inner walls"
+            );
+        }
+        let state = state(eval)?;
+        record_source(eval, &state, &[&part_name]);
+        with_part(&state, &part_name, |part| {
+            reject_swept(part, "shell")?;
+            if open.is_empty() {
+                anyhow::bail!(
+                    "shell({part_name:?}): open at least one face, e.g. open=[\"z+\"]; a closed hollow is not supported"
+                );
+            }
+            let (min, max) = part.local_bounds();
+            let thinnest = (0..3)
+                .map(|axis| max[axis] - min[axis])
+                .fold(f64::INFINITY, f64::min);
+            if thickness_mm <= TOLERANCE_MM || 2.0 * thickness_mm >= thinnest {
+                anyhow::bail!(
+                    "shell({part_name:?}): thickness must be positive and under half the part's thinnest size {thinnest} mm, got {thickness_mm}"
+                );
+            }
+            let mut unique = BTreeSet::new();
+            for face in &open {
+                part.exact_face_label(face)
+                    .map_err(|error| anyhow::anyhow!("shell on {part_name:?}: {error}"))?;
+                if !unique.insert(face.as_str()) {
+                    anyhow::bail!("shell({part_name:?}): face {face:?} is listed twice");
+                }
+            }
+            add_operation(
+                part,
+                ProgramOperation::Shell(ProgramShell {
+                    name,
+                    thickness_mm,
+                    open,
+                }),
+            )?;
+            Ok(part_value(part, heap))
+        })
+    }
+
     /// Rotates a part by `angle` degrees (right hand) about the world direction
     /// `axis` through `pivot` (default: the part's origin `at`). Rotations compose.
     fn rotate<'v>(
@@ -1601,7 +1758,14 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 (None, None) => anyhow::bail!("copy(): unknown part {source:?}"),
             }
         };
-        let copy = insert_part(&state, Part { name: name.to_owned(), ..copy }, tool)?;
+        let copy = insert_part(
+            &state,
+            Part {
+                name: name.to_owned(),
+                ..copy
+            },
+            tool,
+        )?;
         {
             let mut sources = state.part_sources.borrow_mut();
             let lines = sources.get(&source).cloned().unwrap_or_default();
@@ -1642,7 +1806,11 @@ fn builtins(builder: &mut GlobalsBuilder) {
         }
         let result = apply_boolean(part, other, name, ProgramBooleanKind::Union, eval)?;
         let state = state(eval)?;
-        state.model.borrow_mut().parts.retain(|part| part.name != joined);
+        state
+            .model
+            .borrow_mut()
+            .parts
+            .retain(|part| part.name != joined);
         let mut sources = state.part_sources.borrow_mut();
         if let Some(lines) = sources.remove(&joined) {
             sources.entry(target).or_default().extend(lines);
@@ -1691,6 +1859,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                     "hole in {name:?}: give exactly one of at=(u, v) or world=(x, y, z)"
                 ),
             };
+            reject_mirrored(part, "hole")?;
             let id = id.unwrap_or_else(|| format!("h{}", part.holes.len() + 1));
             if part.holes.iter().any(|hole| hole.id == id) {
                 anyhow::bail!("hole id {id:?} is used twice on part {name:?}");
@@ -1732,6 +1901,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         record_source(eval, &state, &[&name]);
         with_part(&state, &name, |part| {
+            reject_mirrored(part, "pocket")?;
             let id = id.unwrap_or_else(|| format!("p{}", part.pockets.len() + 1));
             if part.pockets.iter().any(|pocket| pocket.id == id) {
                 anyhow::bail!("pocket id {id:?} is used twice on part {name:?}");

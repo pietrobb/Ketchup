@@ -52,6 +52,15 @@ pub fn profile_entities(segments: &[ProgramProfileSegment]) -> Vec<AssistantSket
         .enumerate()
         .map(|(index, segment)| {
             let id = u64::try_from(index + 1).expect("bounded program profile");
+            if let Some([control_1_mm, control_2_mm]) = segment.bezier {
+                return AssistantSketchEntity::CubicBezier {
+                    id,
+                    start_mm: segment.start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm: segment.end_mm,
+                };
+            }
             match segment.arc {
                 None => AssistantSketchEntity::Line {
                     id,

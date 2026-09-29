@@ -4,7 +4,9 @@
 use crate::eval::{TOLERANCE_MM, contact};
 use crate::exact::ExactShapes;
 use crate::frame::{self, Obb};
-use crate::model::{Part, ProgramBooleanKind, ProgramModel, ProgramPartBody};
+use crate::model::{
+    Part, ProgramBooleanKind, ProgramModel, ProgramPartBody, ProgramProfileSegment,
+};
 use serde::Serialize;
 
 /// Issue kind for a box overlap that only the exact solids can decide.
@@ -137,11 +139,17 @@ fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
                 && boolean.tool.booleans().next().is_none()
         })
         .filter_map(|boolean| {
-            let mut crossing = boolean.tool.obb().planes().into_iter().filter(|(normal, offset)| {
-                corners
-                    .iter()
-                    .any(|corner| frame::dot(*normal, *corner) > offset + TOLERANCE_MM)
-            });
+            let mut crossing =
+                boolean
+                    .tool
+                    .obb()
+                    .planes()
+                    .into_iter()
+                    .filter(|(normal, offset)| {
+                        corners
+                            .iter()
+                            .any(|corner| frame::dot(*normal, *corner) > offset + TOLERANCE_MM)
+                    });
             match (crossing.next(), crossing.next()) {
                 (Some((normal, offset)), None) => Some((normal.map(|value| -value), -offset)),
                 _ => None,
@@ -153,18 +161,28 @@ fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
 /// Whether trims leave `a` and `b` no common volume, as the two halves of a
 /// split: their boxes and kept half-spaces share at most a face.
 fn trims_separate(a: &Part, b: &Part) -> bool {
-    let trims: Vec<_> = kept_half_spaces(a).into_iter().chain(kept_half_spaces(b)).collect();
+    let trims: Vec<_> = kept_half_spaces(a)
+        .into_iter()
+        .chain(kept_half_spaces(b))
+        .collect();
     if trims.is_empty() {
         return false;
     }
-    let planes: Vec<_> = a.obb().planes().into_iter().chain(b.obb().planes()).chain(trims).collect();
+    let planes: Vec<_> = a
+        .obb()
+        .planes()
+        .into_iter()
+        .chain(b.obb().planes())
+        .chain(trims)
+        .collect();
     let vertices = frame::polytope_vertices(&planes, TOLERANCE_MM);
     vertices.is_empty()
         || planes.iter().any(|(normal, _)| {
             let along = vertices.iter().map(|vertex| frame::dot(*normal, *vertex));
-            let (low, high) = along.fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
-                (low.min(value), high.max(value))
-            });
+            let (low, high) = along
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
+                    (low.min(value), high.max(value))
+                });
             high - low <= TOLERANCE_MM
         })
 }
@@ -177,7 +195,7 @@ pub(crate) fn is_box(part: &Part) -> bool {
         && match &part.body {
             ProgramPartBody::Panel => true,
             ProgramPartBody::Extrusion { segments, .. }
-                if segments.iter().all(|segment| segment.arc.is_none()) =>
+                if segments.iter().all(ProgramProfileSegment::is_line) =>
             {
                 let (min, max) = part.local_bounds();
                 let (width, depth) = (max[0] - min[0], max[1] - min[1]);
@@ -209,9 +227,7 @@ fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
     });
     match (reaching.next(), reaching.next()) {
         (None, _) => false,
-        (Some(boolean), None) => {
-            !is_box(&boolean.tool) || boolean.tool.booleans().next().is_some()
-        }
+        (Some(boolean), None) => !is_box(&boolean.tool) || boolean.tool.booleans().next().is_some(),
         (Some(_), Some(_)) => true,
     }
 }

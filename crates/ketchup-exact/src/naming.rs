@@ -418,6 +418,62 @@ impl ExactBackend {
         )?;
         name_faces(output, OPERATION, |label| Some(label.to_owned()))
     }
+
+    /// Hollows a named body to walls `thickness_mm` thick inside it, opened
+    /// at the `open` faces. Outer walls keep their names, the rim of an
+    /// opening keeps the opened face's name, and the inner wall following a
+    /// face is `prefix.<face>`.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown face, an invalid prefix, or walls that
+    /// do not fit.
+    pub fn named_shell_output(
+        &self,
+        output: &ExactOpOutput,
+        names: &[String],
+        open: &[&str],
+        thickness_mm: f64,
+        prefix: &str,
+    ) -> Result<NamedBody, NamingError> {
+        const OPERATION: &str = "named_shell";
+        if !valid_name(prefix) {
+            return Err(NamingError::InvalidName(prefix.to_owned()));
+        }
+        let input = format!("{OPERATION}:{names:?}:{open:?}:{thickness_mm}:{prefix}");
+        validate_length(thickness_mm, "thickness_mm", OPERATION, &input)?;
+        let mut ordinals = open
+            .iter()
+            .map(|face| {
+                names
+                    .iter()
+                    .position(|candidate| candidate == face)
+                    .map(ordinal)
+                    .ok_or_else(|| NamingError::UnknownFace {
+                        name: (*face).to_owned(),
+                        available: {
+                            let mut available = names.to_vec();
+                            available.sort();
+                            available
+                        },
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ordinals.sort_unstable();
+        ordinals.dedup();
+        let output = collect_output(
+            ffi::named_shell_native(
+                output_native(output, OPERATION)?,
+                names,
+                &ordinals,
+                thickness_mm,
+                prefix,
+            ),
+            OPERATION,
+            &input,
+            HistoryConfidence::Complete,
+        )?;
+        name_faces(output, OPERATION, |label| Some(label.to_owned()))
+    }
 }
 
 fn output_native<'a>(

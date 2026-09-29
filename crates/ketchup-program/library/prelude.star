@@ -251,7 +251,13 @@ def distribute(parts, a, b, face = None):
 # named segments with every corner rounded by a tangent arc "corner<i+1>"
 # (radius: one number or one per corner, 0 = sharp), e.g.
 # extrude("top", profile=round_corners([[0,0],[800,0],[800,500],[0,500]], 40),
-# distance=18). Arcs are exact in the solid; extrude() pads it along
+# distance=18). polygon(sides, radius, center=(0, 0), angle=0) is a regular
+# polygon's corner points on a circle of `radius` (faces "segment1", ...);
+# ellipse(rx, ry, center=(0, 0), angle=0, name="side") is an ellipse as four
+# named quarter curves "side1" ... "side4" (cubic Bezier, within 0.03 % of
+# the true ellipse). A named segment whose fourth item is {"controls":
+# [(x1, y1), (x2, y2)]} is such a cubic curve from start to end.
+# Arcs are exact in the solid; extrude() pads it along
 # local +z; revolve() turns it around `axis` = [[x0, y0], [x1, y1]] in that
 # plane. Faces of a profile part: each segment's name, the caps "start"
 # and "end" (extrude: z = 0 and z = distance; revolve: only when angle < 360),
@@ -357,6 +363,44 @@ def round_corners(points, radius, names = None):
                              {"center": cuts[j]["center"], "clockwise": cuts[j]["clockwise"]}])
     return segments
 
+def _turn(point, center, angle):
+    """`point` (x, y) turned by `angle` degrees about the origin, then moved to `center`."""
+    c, s = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+    return (center[0] + c * point[0] - s * point[1], center[1] + s * point[0] + c * point[1])
+
+def polygon(sides, radius, center = (0, 0), angle = 0):
+    """Corner points of a regular polygon with `sides` corners on a circle of
+    `radius` around `center`, the first corner `angle` degrees from local +x.
+    Its faces are "segment1" (first to second corner) ... "segment<sides>"."""
+    if type(sides) != "int" or sides < 3:
+        fail("polygon(): sides must be a whole number of at least 3, got %r" % sides)
+    if radius <= 0:
+        fail("polygon(): radius must be positive, got %s" % radius)
+    step = 360.0 / sides
+    return [_turn((radius * math.cos(math.radians(step * i)), radius * math.sin(math.radians(step * i))),
+                  center, angle) for i in range(sides)]
+
+# 4/3 (sqrt(2) - 1): quarter-ellipse cubics through the axis ends.
+_KAPPA = 0.5522847498307936
+
+def ellipse(rx, ry, center = (0, 0), angle = 0, name = "side"):
+    """Named segments of an ellipse with half-axes `rx` (along local x turned
+    by `angle` degrees) and `ry` around `center`: four quarter curves
+    "<name>1" ... "<name>4" counter-clockwise from the +x end."""
+    if rx <= 0 or ry <= 0:
+        fail("ellipse(): rx and ry must be positive, got %s and %s" % (rx, ry))
+    ends = [(rx, 0), (0, ry), (-rx, 0), (0, -ry)]
+    tangents = [(0, ry), (-rx, 0), (0, -ry), (rx, 0)]
+    segments = []
+    for i in range(4):
+        j = (i + 1) % 4
+        start, end = ends[i], ends[j]
+        first = (start[0] + _KAPPA * tangents[i][0], start[1] + _KAPPA * tangents[i][1])
+        second = (end[0] - _KAPPA * tangents[j][0], end[1] - _KAPPA * tangents[j][1])
+        segments.append(["%s%d" % (name, i + 1), _turn(start, center, angle), _turn(end, center, angle),
+                         {"controls": [_turn(first, center, angle), _turn(second, center, angle)]}])
+    return segments
+
 #@topic machining: Holes, pockets, grooves, rebates, trims and booleans
 #
 # Positions (u, v) are in the face's own coordinates (see basics).
@@ -371,10 +415,24 @@ def round_corners(points, radius, names = None):
 #   groove(part, face, along, width, depth, offset, margin=)
 #   rabbet(part, face, edge, width, depth)
 #   hole_row(part, face, start, step, count, diameter, depth, direction=)
+#   countersunk_hole(part, face, at, diameter, depth, head, angle=90, name=)
+#     -> part: a hole (u, v) = at with a cone of `head` diameter at the face
+#     narrowing at the included `angle` down to `diameter`, for flat-head screws
+#   circular_pattern(part, count, axis=(0, 0, 1), center=(0, 0, 0), angle=360,
+#     names=None)  -> the count - 1 new copies of part turned about the axis
+#     through `center`: evenly round a full turn, or spread over `angle`
+#     (first and last included), named "<part> 2", "<part> 3", ... or names
 #   trim(part, point, normal, name=)  cut off at a plane
 #   split(part, point, normal, name=)  -> the new part: cut in two at a plane,
 #     both halves stay (part against normal, the new part along it)
 #   copy(part, name)  -> a new identical part
+#   shell(part, thickness=, open=[faces], name=)  -> part: hollowed to walls
+#     `thickness` thick inside it, open at the listed faces (at least one);
+#     the inner wall along face F is "<name>.F"
+#   mirror(part, axis="x", name=)  -> part: its solid reflected across its
+#     own middle plane across local axis; the last step, no holes or pockets
+#   mirrored(part, name, point, normal)  -> a new part: the mirror image of
+#     part across the world plane through `point` with `normal`
 #   subtract(part, tool, name=)  -> part: part minus tool
 #   intersect(part, tool, name=)  -> part: only what part and tool share
 #   union(part, other, name=)  -> part: other joined in as one solid (they
@@ -431,6 +489,83 @@ def hole_row(part, face, start, step, count, diameter, depth, direction = "u"):
         else:
             at = (start[0], start[1] + step * i)
         hole(part, face, at = at, diameter = diameter, depth = depth)
+
+def countersunk_hole(part, face, at, diameter, depth, head, angle = 90, name = None):
+    """Drills a `diameter` hole `depth` mm deep into `face` at face
+    coordinates `at`, its mouth widened by a cone `head` mm across at the face
+    whose sides meet at the included `angle` degrees. Returns `part`."""
+    info = part_info(part)
+    r, big = diameter / 2.0, head / 2.0
+    if r <= 0 or depth <= 0:
+        fail("countersunk_hole(%s): diameter and depth must be positive" % info.name)
+    if big <= r:
+        fail("countersunk_hole(%s): head %s must be wider than the hole %s" % (info.name, head, diameter))
+    if angle <= 0 or angle >= 180:
+        fail("countersunk_hole(%s): angle must lie between 0 and 180 degrees, got %s" % (info.name, angle))
+    sink = (big - r) / math.tan(math.radians(angle / 2.0))
+    if sink >= depth:
+        fail("countersunk_hole(%s): the %s mm cone is deeper than the %s mm hole" % (info.name, _mm(sink), depth))
+    if name == None:
+        # Tool names become face-name prefixes: no "." "(" or ",".
+        name = "countersink %s %s" % (face, " ".join([("%s" % round_to(v, 0.001)).replace(".", "_") for v in at]))
+    # Profile (radius, height above the face); the part lies below height 0.
+    profile = [(0, -depth), (r, -depth), (r, -sink), (big, 0), (big, 1), (0, 1)]
+    tool = revolve("%s/%s" % (info.name, name), profile = profile, axis = [[0, 0], [0, 1]], tool = True)
+    n_axis, u_axis, v_axis = face_axes(face)
+    axes = (info.x, info.y, info.z)
+    local = [info.local_min[0], info.local_min[1], info.local_min[2]]
+    if face[1] == "+":
+        local[n_axis] = info.local_max[n_axis]
+    local[u_axis] += at[0]
+    local[v_axis] += at[1]
+    origin = info.at
+    for axis in range(3):
+        origin = vec_add(origin, vec_scale(axes[axis], local[axis]))
+    normal = face_normal(part, face)
+    # The revolve's axis is its local y: z x x must be the outward normal.
+    across = axes[u_axis]
+    x = (normal[1] * across[2] - normal[2] * across[1],
+         normal[2] * across[0] - normal[0] * across[2],
+         normal[0] * across[1] - normal[1] * across[0])
+    place(tool, origin = origin, z = across, x = x)
+    return subtract(part, tool, name = name)
+
+def circular_pattern(part, count, axis = (0, 0, 1), center = (0, 0, 0), angle = 360, names = None):
+    """`count` - 1 copies of `part` turned about the world `axis` through
+    `center`: evenly spaced round a full turn when `angle` is 360, else
+    spread from 0 to `angle` degrees. Returns the new copies."""
+    info = part_info(part)
+    if type(count) != "int" or count < 2:
+        fail("circular_pattern(%s): count must be a whole number of at least 2, got %r" % (info.name, count))
+    if names != None and len(names) != count - 1:
+        fail("circular_pattern(%s): give %d names, one per copy" % (info.name, count - 1))
+    if angle == 0 or abs(angle) > 360:
+        fail("circular_pattern(%s): angle must be within (0, 360] degrees, got %s" % (info.name, angle))
+    step = angle / float(count) if abs(angle) == 360 else angle / (count - 1.0)
+    copies = []
+    for i in range(1, count):
+        other = copy(part, names[i - 1] if names != None else "%s %d" % (info.name, i + 1))
+        copies.append(rotate(other, axis = axis, angle = step * i, pivot = center))
+    return copies
+
+def mirrored(part, name, point, normal):
+    """A new part `name`: the mirror image of `part` across the world plane
+    through `point` with direction `normal`."""
+    info = part_info(part)
+    length = vec_length(normal)
+    if length <= 0:
+        fail("mirrored(%s): normal must be a non-zero direction" % info.name)
+    n = vec_scale(normal, 1.0 / length)
+    reflect = lambda v: vec_sub(v, vec_scale(n, 2 * _dot(v, n)))
+    k = _own_axis(info, n)[0]
+    axes = [reflect(getattr(info, "xyz"[j])) for j in range(3)]
+    flipped = axes[k]
+    axes[k] = vec_scale(flipped, -1)
+    middle = (info.local_min[k] + info.local_max[k]) / 2.0
+    origin = vec_add(vec_add(reflect(vec_sub(info.at, point)), point), vec_scale(flipped, 2 * middle))
+    other = copy(part, name)
+    mirror(other, axis = "xyz"[k])
+    return place(other, origin = origin, z = axes[2], x = axes[0])
 
 def trim(part, point, normal, name = None):
     """Cuts `part` off at the plane through world `point`, removing everything

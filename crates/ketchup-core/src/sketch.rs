@@ -3169,27 +3169,58 @@ fn adjacent_curves_overlap(previous: RegionCurve, next: RegionCurve) -> bool {
 
 fn validate_profile_topology(profile: &SolvedSketchRegionProfile) -> Result<(), SketchError> {
     let curves = profile_curves(profile)?;
-    if curves.len() < 2 {
+    let count = curves.len();
+    if count < 2 {
         return Err(SketchError::OpenRegion);
     }
-    for left in 0..curves.len() {
-        for right in left + 1..curves.len() {
-            let adjacent = right == left + 1 || (left == 0 && right + 1 == curves.len());
-            if adjacent {
-                let (previous, next) = if right == left + 1 {
-                    (curves[left], curves[right])
-                } else {
-                    (curves[right], curves[left])
-                };
-                if adjacent_curves_overlap(previous, next) {
-                    return Err(SketchError::InvalidRegionIdentity);
-                }
-            } else if curves_intersect(curves[left], curves[right]) {
+    for index in 0..count {
+        if (count > 2 || index == 0)
+            && adjacent_curves_overlap(curves[index], curves[(index + 1) % count])
+        {
+            return Err(SketchError::InvalidRegionIdentity);
+        }
+    }
+    // A flattened curve has thousands of pieces: only pieces whose boxes
+    // overlap can cross, so sweep them sorted by their left edge.
+    let bounds: Vec<_> = curves
+        .iter()
+        .map(|curve| region_curve_bounds(*curve))
+        .collect();
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by(|a, b| bounds[*a][0][0].total_cmp(&bounds[*b][0][0]));
+    for (position, &left) in order.iter().enumerate() {
+        for &right in &order[position + 1..] {
+            if bounds[right][0][0] > bounds[left][1][0] + EPSILON_MM {
+                break;
+            }
+            let adjacent = left.abs_diff(right) == 1 || left.abs_diff(right) == count - 1;
+            if !adjacent
+                && bounds[right][0][1] <= bounds[left][1][1] + EPSILON_MM
+                && bounds[left][0][1] <= bounds[right][1][1] + EPSILON_MM
+                && curves_intersect(curves[left], curves[right])
+            {
                 return Err(SketchError::InvalidRegionIdentity);
             }
         }
     }
     Ok(())
+}
+
+/// A box around a region curve (a whole circle's for an arc).
+fn region_curve_bounds(curve: RegionCurve) -> [[f64; 2]; 2] {
+    match curve {
+        RegionCurve::Line { start, end } => [
+            [start[0].min(end[0]), start[1].min(end[1])],
+            [start[0].max(end[0]), start[1].max(end[1])],
+        ],
+        RegionCurve::Arc { start, center, .. } => {
+            let radius = distance2(start, center);
+            [
+                [center[0] - radius, center[1] - radius],
+                [center[0] + radius, center[1] + radius],
+            ]
+        }
+    }
 }
 
 fn stable_region_id(entity_ids: &[SketchEntityId]) -> SketchRegionId {

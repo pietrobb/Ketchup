@@ -901,6 +901,25 @@ impl StableDigest {
         self.bytes(reference.lineage_digest.as_bytes());
     }
 
+    fn profile_face(&mut self, face: &ProfileFaceReference) {
+        match face {
+            ProfileFaceReference::Start => self.byte(1),
+            ProfileFaceReference::End => self.byte(2),
+            ProfileFaceReference::Segment {
+                entity_id,
+                source_name,
+            } => {
+                self.byte(3);
+                self.u64(*entity_id);
+                self.bytes(source_name.as_bytes());
+            }
+            ProfileFaceReference::NamedResult(name) => {
+                self.byte(4);
+                self.bytes(name.as_bytes());
+            }
+        }
+    }
+
     fn topological_reference(&mut self, reference: &TopologicalElementRef) {
         self.bytes(
             &reference
@@ -1498,6 +1517,7 @@ impl StableDigest {
             FeatureKind::TopologyShell {
                 target,
                 removed_faces,
+                profile_faces,
                 thickness,
                 direction,
             } => {
@@ -1514,6 +1534,13 @@ impl StableDigest {
                     ShellDirection::Outward => 2,
                     ShellDirection::Symmetric => 3,
                 });
+                // Absent for shells opened by topology, so their digests stay.
+                if !profile_faces.is_empty() {
+                    self.u64(profile_faces.len() as u64);
+                    for face in profile_faces {
+                        self.profile_face(face);
+                    }
+                }
             }
             FeatureKind::TopologyEdgeFinish {
                 target,
@@ -1595,22 +1622,7 @@ impl StableDigest {
                     self.topological_reference(face);
                 } else if let Some(face) = profile_face {
                     self.byte(2);
-                    match face {
-                        ProfileFaceReference::Start => self.byte(1),
-                        ProfileFaceReference::End => self.byte(2),
-                        ProfileFaceReference::Segment {
-                            entity_id,
-                            source_name,
-                        } => {
-                            self.byte(3);
-                            self.u64(*entity_id);
-                            self.bytes(source_name.as_bytes());
-                        }
-                        ProfileFaceReference::NamedResult(name) => {
-                            self.byte(4);
-                            self.bytes(name.as_bytes());
-                        }
-                    }
+                    self.profile_face(face);
                 }
                 self.bytes(distance.source_token.as_bytes());
                 self.u64(distance.millimetres.to_bits());

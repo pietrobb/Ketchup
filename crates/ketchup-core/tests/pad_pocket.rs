@@ -705,6 +705,7 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 kind: FeatureKind::TopologyShell {
                     target: POCKET,
                     removed_faces: vec![shell_face.clone()],
+                    profile_faces: Vec::new(),
                     thickness: Dimension::from_decimal("2").unwrap(),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },

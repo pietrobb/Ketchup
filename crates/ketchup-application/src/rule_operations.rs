@@ -10,17 +10,26 @@ use crate::sketch::assistant_sketch_entities;
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, ChamferMode, DefinitionId,
     Dimension, EdgeFinishKind, FeatureId, FeatureKind, LoftContinuity, LoftSection,
-    ProfileEdgeReference, ProfileFaceReference, ProfileSegment, SpatialPathSegment, Transform,
+    ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection, SpatialPathSegment,
+    Transform,
 };
 use ketchup_core::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
 use ketchup_program::model::{
     Part, ProgramBoolean, ProgramBooleanKind, ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind,
-    ProgramFaceOffset, ProgramLoftSection, ProgramOperation, ProgramPartBody, ProgramPathSegment,
-    ProgramProfileSegment,
+    ProgramFaceOffset, ProgramLoftSection, ProgramMirror, ProgramOperation, ProgramPartBody,
+    ProgramPathSegment, ProgramProfileSegment, ProgramShell,
 };
 
 /// The canonical segment of one program profile segment.
 pub(crate) fn profile_segment(segment: &ProgramProfileSegment) -> ProfileSegment {
+    if let Some([control_1_mm, control_2_mm]) = segment.bezier {
+        return ProfileSegment::CubicBezier {
+            start_mm: segment.start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm: segment.end_mm,
+        };
+    }
     match segment.arc {
         None => ProfileSegment::Line {
             start_mm: segment.start_mm,
@@ -197,7 +206,11 @@ impl<'a> OperationPlanner<'a> {
 
     /// Applies `part`'s operations in program order to its body solid
     /// `target`; returns the final solid.
-    pub fn apply(&mut self, part: &Part, target: FeatureId) -> Result<FeatureId, AssistantRejection> {
+    pub fn apply(
+        &mut self,
+        part: &Part,
+        target: FeatureId,
+    ) -> Result<FeatureId, AssistantRejection> {
         self.apply_in(part, target, PART_BODY)
     }
 
@@ -213,6 +226,8 @@ impl<'a> OperationPlanner<'a> {
                 ProgramOperation::Finish(finish) => self.finish(part, finish, target)?,
                 ProgramOperation::FaceOffset(offset) => self.face_offset(part, offset, target)?,
                 ProgramOperation::Boolean(boolean) => self.boolean(part, boolean, target, body)?,
+                ProgramOperation::Mirror(mirror) => self.mirror(mirror, target)?,
+                ProgramOperation::Shell(shell) => self.shell(part, shell, target)?,
             };
         }
         Ok(target)
@@ -231,13 +246,21 @@ impl<'a> OperationPlanner<'a> {
         if whole {
             return self.apply_in(tool, target, body);
         }
-        for boolean in tool.booleans() {
-            target = self.boolean(tool, boolean, target, body)?;
+        for operation in &tool.operations {
+            target = match operation {
+                ProgramOperation::Boolean(boolean) => self.boolean(tool, boolean, target, body)?,
+                ProgramOperation::Mirror(mirror) => self.mirror(mirror, target)?,
+                _ => target,
+            };
         }
         Ok(target)
     }
 
-    fn cut(&mut self, cut: &ProgramCut, target: FeatureId) -> Result<FeatureId, AssistantRejection> {
+    fn cut(
+        &mut self,
+        cut: &ProgramCut,
+        target: FeatureId,
+    ) -> Result<FeatureId, AssistantRejection> {
         let profile = self.feature(
             format!("{} sketch", cut.name),
             FeatureKind::SegmentProfile {
@@ -306,6 +329,43 @@ impl<'a> OperationPlanner<'a> {
                 face: None,
                 profile_face: Some(profile_face),
                 distance,
+            },
+        )
+    }
+
+    fn mirror(
+        &mut self,
+        mirror: &ProgramMirror,
+        target: FeatureId,
+    ) -> Result<FeatureId, AssistantRejection> {
+        let transform =
+            Transform::from_matrix(mirror.matrix()).map_err(|error| self.rejection(error))?;
+        self.feature(
+            mirror.name.clone(),
+            FeatureKind::RigidTransform { target, transform },
+        )
+    }
+
+    fn shell(
+        &mut self,
+        part: &Part,
+        shell: &ProgramShell,
+        target: FeatureId,
+    ) -> Result<FeatureId, AssistantRejection> {
+        let profile_faces = shell
+            .open
+            .iter()
+            .map(|face| self.face_reference(part, face))
+            .collect::<Result<Vec<_>, _>>()?;
+        let thickness = self.dimension(shell.thickness_mm)?;
+        self.feature(
+            shell.name.clone(),
+            FeatureKind::TopologyShell {
+                target,
+                removed_faces: Vec::new(),
+                profile_faces,
+                thickness,
+                direction: ShellDirection::Inward,
             },
         )
     }

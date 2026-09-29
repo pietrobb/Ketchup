@@ -1238,6 +1238,7 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
             kind: FeatureKind::TopologyShell {
                 target: FACE_OFFSET,
                 removed_faces: vec![shell_face],
+                profile_faces: Vec::new(),
                 thickness: Dimension::from_decimal("1").unwrap(),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },
@@ -1466,7 +1467,7 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
     document.commit_proposal(&preview.proposal).unwrap();
     assert_eq!(document.visible_undo_steps(), before.2 + 1);
     let edited_digest = document.current().canonical_digest();
-    assert_eq!(persistence::CURRENT_SCHEMA, 96);
+    assert_eq!(persistence::CURRENT_SCHEMA, 97);
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), edited_digest);

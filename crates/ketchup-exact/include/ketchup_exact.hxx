@@ -172,6 +172,9 @@ std::unique_ptr<NativeOperationResult> named_boolean_native(
 std::unique_ptr<NativeOperationResult> named_offset_face_native(
     const NativeOperationResult& body, rust::Slice<const rust::String> labels,
     std::uint32_t face_ordinal, double distance) noexcept;
+std::unique_ptr<NativeOperationResult> named_shell_native(
+    const NativeOperationResult& body, rust::Slice<const rust::String> labels,
+    rust::Slice<const std::uint32_t> open_ordinals, double thickness, rust::Str prefix) noexcept;
 rust::String export_step_native(
     const NativeOperationResult& body, rust::Str path) noexcept;
 rust::String export_iges_native(

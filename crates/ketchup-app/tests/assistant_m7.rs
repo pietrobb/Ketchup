@@ -2742,6 +2742,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
             removed_faces,
             thickness,
             direction: ketchup_core::document::ShellDirection::Symmetric,
+            ..
         } if removed_faces.is_empty() && thickness.millimetres() == 2.0
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();

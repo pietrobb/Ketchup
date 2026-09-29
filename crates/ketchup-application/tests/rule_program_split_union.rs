@@ -23,8 +23,7 @@ fn issues(program: &str) -> Vec<String> {
 #[test]
 fn a_split_keeps_both_halves_and_they_add_up_to_the_part() {
     let mut worker = worker();
-    let program =
-        format!("{BLOCK}split(block, point=[30, 0, 0], normal=[1, 0, 0], name=\"end\")");
+    let program = format!("{BLOCK}split(block, point=[30, 0, 0], normal=[1, 0, 0], name=\"end\")");
     assert_eq!(part_names(&program), ["block", "end"]);
     assert_volume(volume(&mut worker, &program, "block"), 30.0 * B * C);
     assert_volume(volume(&mut worker, &program, "end"), 70.0 * B * C);
@@ -51,7 +50,10 @@ fn an_oblique_plane_splits_a_rotated_part_without_losing_material() {
     let first = volume(&mut worker, &program, "block");
     let second = volume(&mut worker, &program, "block 2");
     assert_volume(first + second, A * B * C);
-    assert!(first > 0.2 * A * B * C && second > 0.2 * A * B * C, "{first} {second}");
+    assert!(
+        first > 0.2 * A * B * C && second > 0.2 * A * B * C,
+        "{first} {second}"
+    );
     // A slanted cut through a box leaves seven faces on each side at most.
     for part in ["block", "block 2"] {
         let faces = face_count(&mut worker, &program, part);
@@ -88,9 +90,8 @@ fn overlapping_parts_join_into_one_solid_with_all_their_shaping() {
 #[test]
 fn touching_parts_join_and_their_flush_walls_become_one() {
     let mut worker = worker();
-    let program = format!(
-        "{BLOCK}cap = box(\"cap\", [100, 60, 10], at=[0, 0, 40])\nunion(block, cap)"
-    );
+    let program =
+        format!("{BLOCK}cap = box(\"cap\", [100, 60, 10], at=[0, 0, 40])\nunion(block, cap)");
     assert_eq!(part_names(&program), ["block"]);
     assert_volume(volume(&mut worker, &program, "block"), A * B * (C + 10.0));
     assert_eq!(face_count(&mut worker, &program, "block"), 6);

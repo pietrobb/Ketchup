@@ -217,8 +217,9 @@ impl Pocket {
     }
 }
 
-/// One named edge of a closed profile: a straight line, or a circular arc
-/// around `arc.center_mm` from `start_mm` to `end_mm`.
+/// One named edge of a closed profile: a straight line, a circular arc
+/// around `arc.center_mm` from `start_mm` to `end_mm`, or a cubic Bezier
+/// curve with the two inner control points `bezier`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ProgramProfileSegment {
     pub name: String,
@@ -226,6 +227,8 @@ pub struct ProgramProfileSegment {
     pub end_mm: [f64; 2],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arc: Option<ProgramArc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bezier: Option<[[f64; 2]; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -244,8 +247,14 @@ fn segment_label(segments: &[ProgramProfileSegment], index: usize) -> String {
         && first.start_mm == second.end_mm
         && first.end_mm == second.start_mm
     {
-        let start = [first.start_mm[0] - a.center_mm[0], first.start_mm[1] - a.center_mm[1]];
-        let end = [first.end_mm[0] - a.center_mm[0], first.end_mm[1] - a.center_mm[1]];
+        let start = [
+            first.start_mm[0] - a.center_mm[0],
+            first.start_mm[1] - a.center_mm[1],
+        ];
+        let end = [
+            first.end_mm[0] - a.center_mm[0],
+            first.end_mm[1] - a.center_mm[1],
+        ];
         let radius = start[0].hypot(start[1]);
         if (start[0] + end[0]).hypot(start[1] + end[1]) <= 1.0e-9 * radius.max(1.0) {
             return "face".to_owned();
@@ -262,7 +271,27 @@ impl ProgramProfileSegment {
             start_mm,
             end_mm,
             arc: None,
+            bezier: None,
         }
+    }
+
+    #[must_use]
+    pub fn is_line(&self) -> bool {
+        self.arc.is_none() && self.bezier.is_none()
+    }
+
+    /// The point at `t` in 0..=1 of a Bezier segment (or of the chord).
+    #[must_use]
+    pub fn bezier_point(&self, t: f64) -> [f64; 2] {
+        let [c1, c2] = self.bezier.unwrap_or([self.start_mm, self.end_mm]);
+        let s = 1.0 - t;
+        let weights = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+        std::array::from_fn(|axis| {
+            weights[0] * self.start_mm[axis]
+                + weights[1] * c1[axis]
+                + weights[2] * c2[axis]
+                + weights[3] * self.end_mm[axis]
+        })
     }
 
     /// The largest `direction · p` over the segment's points.
@@ -270,6 +299,31 @@ impl ProgramProfileSegment {
     pub fn support(&self, direction: [f64; 2]) -> f64 {
         let dot = |p: [f64; 2]| p[0] * direction[0] + p[1] * direction[1];
         let ends = dot(self.start_mm).max(dot(self.end_mm));
+        if let Some([c1, c2]) = self.bezier {
+            // d/dt of the cubic's projection is a t^2 + b t + c; its roots
+            // in (0, 1) are the only other candidates.
+            let (p0, p1, p2, p3) = (dot(self.start_mm), dot(c1), dot(c2), dot(self.end_mm));
+            let a = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
+            let b = 2.0 * (p0 - 2.0 * p1 + p2);
+            let c = p1 - p0;
+            let mut roots = Vec::new();
+            if a.abs() <= 1e-12 {
+                if b.abs() > 1e-12 {
+                    roots.push(-c / b);
+                }
+            } else {
+                let discriminant = b * b - 4.0 * a * c;
+                if discriminant >= 0.0 {
+                    let root = discriminant.sqrt();
+                    roots.extend([(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)]);
+                }
+            }
+            return roots
+                .into_iter()
+                .filter(|t| (0.0..=1.0).contains(t))
+                .map(|t| dot(self.bezier_point(t)))
+                .fold(ends, f64::max);
+        }
         let Some(arc) = self.arc else {
             return ends;
         };
@@ -334,7 +388,7 @@ fn moved_side(
     let side = &segments[index];
     let direction = minus(side.end_mm, side.start_mm);
     let length = direction[0].hypot(direction[1]);
-    if side.arc.is_some() || length <= f64::EPSILON {
+    if !side.is_line() || length <= f64::EPSILON {
         return None;
     }
     let normal = [direction[1] / length, -direction[0] / length];
@@ -347,8 +401,7 @@ fn moved_side(
     let meet = |neighbour: &ProgramProfileSegment, vertex: [f64; 2]| {
         let along = minus(neighbour.end_mm, neighbour.start_mm);
         let denominator = cross(along, direction);
-        if neighbour.arc.is_some() || denominator.abs() <= 1e-9 * length * along[0].hypot(along[1])
-        {
+        if !neighbour.is_line() || denominator.abs() <= 1e-9 * length * along[0].hypot(along[1]) {
             return None;
         }
         let t = cross(minus(moved_start, vertex), direction) / denominator;
@@ -411,6 +464,38 @@ pub struct ProgramFaceOffset {
     pub distance_mm: f64,
 }
 
+/// The solid reflected in its own frame across the plane where coordinate
+/// `axis` equals `center_mm`. Every face keeps the name of the face it mirrors.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramMirror {
+    pub name: String,
+    pub axis: usize,
+    pub center_mm: f64,
+}
+
+impl ProgramMirror {
+    /// Row-major 4 x 4 matrix of the reflection in the part's frame.
+    #[must_use]
+    pub fn matrix(&self) -> [f64; 16] {
+        let mut matrix = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        matrix[self.axis * 5] = -1.0;
+        matrix[self.axis * 4 + 3] = 2.0 * self.center_mm;
+        matrix
+    }
+}
+
+/// The solid hollowed to walls `thickness_mm` thick, measured inwards; the
+/// `open` faces are removed so the hollow opens there (none: a closed void).
+/// The inner walls are "<name>.<face they follow>".
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramShell {
+    pub name: String,
+    pub thickness_mm: f64,
+    pub open: Vec<String>,
+}
+
 /// One shaping step on a part's solid. A part applies its operations in the
 /// order the program wrote them, each to the result of the one before.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -420,6 +505,8 @@ pub enum ProgramOperation {
     Finish(ProgramEdgeFillet),
     FaceOffset(ProgramFaceOffset),
     Boolean(ProgramBoolean),
+    Mirror(ProgramMirror),
+    Shell(ProgramShell),
 }
 
 impl ProgramOperation {
@@ -430,6 +517,8 @@ impl ProgramOperation {
             Self::Finish(finish) => &finish.name,
             Self::FaceOffset(offset) => &offset.name,
             Self::Boolean(boolean) => &boolean.name,
+            Self::Mirror(mirror) => &mirror.name,
+            Self::Shell(shell) => &shell.name,
         }
     }
 }
@@ -512,31 +601,39 @@ pub struct Part {
 
 impl Part {
     pub fn cuts(&self) -> impl Iterator<Item = &ProgramCut> {
-        self.operations.iter().filter_map(|operation| match operation {
-            ProgramOperation::Cut(cut) => Some(cut),
-            _ => None,
-        })
+        self.operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ProgramOperation::Cut(cut) => Some(cut),
+                _ => None,
+            })
     }
 
     pub fn finishes(&self) -> impl Iterator<Item = &ProgramEdgeFillet> {
-        self.operations.iter().filter_map(|operation| match operation {
-            ProgramOperation::Finish(finish) => Some(finish),
-            _ => None,
-        })
+        self.operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ProgramOperation::Finish(finish) => Some(finish),
+                _ => None,
+            })
     }
 
     pub fn face_offsets(&self) -> impl Iterator<Item = &ProgramFaceOffset> {
-        self.operations.iter().filter_map(|operation| match operation {
-            ProgramOperation::FaceOffset(offset) => Some(offset),
-            _ => None,
-        })
+        self.operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ProgramOperation::FaceOffset(offset) => Some(offset),
+                _ => None,
+            })
     }
 
     pub fn booleans(&self) -> impl Iterator<Item = &ProgramBoolean> {
-        self.operations.iter().filter_map(|operation| match operation {
-            ProgramOperation::Boolean(boolean) => Some(boolean),
-            _ => None,
-        })
+        self.operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ProgramOperation::Boolean(boolean) => Some(boolean),
+                _ => None,
+            })
     }
 
     pub fn booleans_mut(&mut self) -> impl Iterator<Item = &mut ProgramBoolean> {
@@ -554,14 +651,16 @@ impl Part {
     #[must_use]
     pub fn body_face_names(&self) -> Vec<String> {
         match &self.body {
-            ProgramPartBody::Panel => Face::ALL.iter().map(|face| face.name().to_owned()).collect(),
-            ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
-                ["start", "end"]
-                    .into_iter()
-                    .map(str::to_owned)
-                    .chain(segments.iter().map(|segment| segment.name.clone()))
-                    .collect()
-            }
+            ProgramPartBody::Panel => Face::ALL
+                .iter()
+                .map(|face| face.name().to_owned())
+                .collect(),
+            ProgramPartBody::Extrusion { segments, .. }
+            | ProgramPartBody::Revolve { segments, .. } => ["start", "end"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(segments.iter().map(|segment| segment.name.clone()))
+                .collect(),
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => Vec::new(),
         }
     }
@@ -624,8 +723,13 @@ impl Part {
                         "face {name:?}: tool of {operation:?}: {error}"
                     ))?
                 )),
+                Some(ProgramOperation::Shell(_)) => Ok(format!(
+                    "{operation}.{}",
+                    self.exact_face_label(face)
+                        .map_err(|error| format!("inner wall {name:?}: {error}"))?
+                )),
                 _ => Err(format!(
-                    "face {name:?}: {operation:?} is not a cut or boolean on {:?}; faces an operation leaves are <operation name>.<tool face>",
+                    "face {name:?}: {operation:?} is not a cut, boolean or shell on {:?}; faces an operation leaves are <operation name>.<tool face>",
                     self.name
                 )),
             };
@@ -661,7 +765,8 @@ impl Part {
                     Face::XMin => "segment_4".to_owned(),
                 })
             }
-            ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
+            ProgramPartBody::Extrusion { segments, .. }
+            | ProgramPartBody::Revolve { segments, .. } => {
                 if name == "start" || name == "end" {
                     return Ok(name.to_owned());
                 }
@@ -692,7 +797,11 @@ impl Part {
             let (tool_min, tool_max) = tool.local_bounds();
             for corner in 0..8 {
                 let local: [f64; 3] = std::array::from_fn(|axis| {
-                    if corner >> axis & 1 == 0 { tool_min[axis] } else { tool_max[axis] }
+                    if corner >> axis & 1 == 0 {
+                        tool_min[axis]
+                    } else {
+                        tool_max[axis]
+                    }
                 });
                 let point = self.to_local(tool.to_world(local));
                 for axis in 0..3 {
@@ -988,9 +1097,14 @@ impl Part {
             let mut parameters = Vec::new();
             for (index, segment) in segments.iter().enumerate() {
                 let center = segment.arc.map(|arc| ("center", arc.center_mm));
+                let controls = segment
+                    .bezier
+                    .into_iter()
+                    .flat_map(|[c1, c2]| [("control_1", c1), ("control_2", c2)]);
                 for (point, coordinates) in [("start", segment.start_mm), ("end", segment.end_mm)]
                     .into_iter()
                     .chain(center)
+                    .chain(controls)
                 {
                     parameters.push(length(
                         &format!("entities.{}.{point}.x", index + 1),
@@ -1098,8 +1212,11 @@ impl Part {
                     ));
                     continue;
                 }
-                // A changed boolean rebuilds the part; it has no parameters here.
-                ProgramOperation::Boolean(_) => continue,
+                // A changed boolean, mirror or shell rebuilds the part; they
+                // have no parameters here.
+                ProgramOperation::Boolean(_)
+                | ProgramOperation::Mirror(_)
+                | ProgramOperation::Shell(_) => continue,
             };
             features.push(feature(
                 format!("{} sketch", cut.name),

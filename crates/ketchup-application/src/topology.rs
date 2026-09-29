@@ -36,6 +36,7 @@ pub fn plan_topology_shell_kind(
     Some(FeatureKind::TopologyShell {
         target,
         removed_faces,
+        profile_faces: Vec::new(),
         thickness,
         direction,
     })
@@ -69,6 +70,7 @@ pub fn plan_topology_finish_kind(
         GeneralFinishKind::Shell => FeatureKind::TopologyShell {
             target,
             removed_faces: references,
+            profile_faces: Vec::new(),
             thickness: amount,
             direction: ShellDirection::Inward,
         },

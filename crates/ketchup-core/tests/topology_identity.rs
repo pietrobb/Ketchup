@@ -650,6 +650,7 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
             kind: FeatureKind::TopologyShell {
                 target: PRODUCER,
                 removed_faces: vec![face.clone()],
+                profile_faces: Vec::new(),
                 thickness: Dimension::from_decimal("2.5").unwrap(),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },
@@ -716,6 +717,7 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                 kind: FeatureKind::TopologyShell {
                     target: PRODUCER,
                     removed_faces: vec![wrong_kind],
+                    profile_faces: Vec::new(),
                     thickness: Dimension::from_decimal("2.5").unwrap(),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },
@@ -743,6 +745,7 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                 kind: FeatureKind::TopologyShell {
                     target: PRODUCER,
                     removed_faces: vec![cross_document],
+                    profile_faces: Vec::new(),
                     thickness: Dimension::from_decimal("2.5").unwrap(),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },

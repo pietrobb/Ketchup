@@ -1734,25 +1734,53 @@ fn evaluate_exact_brep_graph(
                 removed_faces,
                 thickness_bits,
                 direction,
+                profile_faces,
+                name,
             } => {
                 let target_output = &outputs[target.0 as usize];
-                let ordinals = exact_brep_topology_ordinals(
-                    graph,
-                    *target,
-                    target_output,
-                    removed_faces,
-                    ExactBRepTopologyKind::Face,
-                )?;
-                backend.shell_body_with_direction(
-                    &target_output.body,
-                    &ordinals,
-                    f64::from_bits(*thickness_bits),
-                    match direction {
-                        ExactBRepShellDirection::Inward => NativeShellDirection::Inward,
-                        ExactBRepShellDirection::Outward => NativeShellDirection::Outward,
-                        ExactBRepShellDirection::Symmetric => NativeShellDirection::Symmetric,
-                    },
-                )?
+                if let (false, Some(prefix)) = (profile_faces.is_empty(), name) {
+                    let names = face_names[target.0 as usize].as_ref().ok_or_else(|| {
+                        exact_brep_graph_error(
+                            graph,
+                            "named shell target has no program face names",
+                        )
+                    })?;
+                    let open = profile_faces
+                        .iter()
+                        .map(exact_brep_profile_face_name)
+                        .collect::<Vec<_>>();
+                    let open = open.iter().map(String::as_str).collect::<Vec<_>>();
+                    let named = backend
+                        .named_shell_output(
+                            target_output,
+                            names,
+                            &open,
+                            f64::from_bits(*thickness_bits),
+                            prefix,
+                        )
+                        .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+                    let (output, names) = named.into_output_and_names();
+                    produced_face_names = Some(names);
+                    output
+                } else {
+                    let ordinals = exact_brep_topology_ordinals(
+                        graph,
+                        *target,
+                        target_output,
+                        removed_faces,
+                        ExactBRepTopologyKind::Face,
+                    )?;
+                    backend.shell_body_with_direction(
+                        &target_output.body,
+                        &ordinals,
+                        f64::from_bits(*thickness_bits),
+                        match direction {
+                            ExactBRepShellDirection::Inward => NativeShellDirection::Inward,
+                            ExactBRepShellDirection::Outward => NativeShellDirection::Outward,
+                            ExactBRepShellDirection::Symmetric => NativeShellDirection::Symmetric,
+                        },
+                    )?
+                }
             }
             ExactBRepOperation::FaceOffset {
                 target,
@@ -3053,6 +3081,11 @@ fn exact_brep_nodes_needing_names(graph: &ExactBRepGraph) -> Vec<bool> {
                 profile_edges,
                 ..
             } => (target, !profile_edges.is_empty()),
+            ExactBRepOperation::Shell {
+                target,
+                profile_faces,
+                ..
+            } => (target, !profile_faces.is_empty()),
             ExactBRepOperation::ProfileCut { target, .. }
             | ExactBRepOperation::RigidTransform { target, .. } => (target, false),
             ExactBRepOperation::Boolean { target, tool, .. } => {

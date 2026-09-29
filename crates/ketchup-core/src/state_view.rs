@@ -1480,10 +1480,19 @@ pub fn encode_semantic_state_with_results(
             crate::document::FeatureKind::TopologyShell {
                 target,
                 removed_faces,
+                profile_faces,
                 thickness,
                 direction,
             } => {
                 writeln!(complete, "feature.{}.kind=topology_shell", feature.id().0).unwrap();
+                for (index, face) in profile_faces.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.open_face.{index}.program_name={face:?}",
+                        feature.id().0
+                    )
+                    .unwrap();
+                }
                 writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
                 writeln!(
                     complete,

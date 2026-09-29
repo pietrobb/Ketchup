@@ -51,7 +51,9 @@ fn box_edges_round_and_bevel_by_named_faces() {
     let (a, b, c) = (A - 2.0 * r, B - 2.0 * r, C - 2.0 * r);
     assert_volume(
         volume(&mut worker, &all, "block"),
-        a * b * c + 2.0 * r * (a * b + a * c + b * c) + PI * r * r * (a + b + c)
+        a * b * c
+            + 2.0 * r * (a * b + a * c + b * c)
+            + PI * r * r * (a + b + c)
             + 4.0 / 3.0 * PI * r.powi(3),
     );
     // 6 shrunk walls, 12 edge rounds and 8 corner balls.
@@ -149,8 +151,14 @@ fn commuting_operations_agree_and_later_ones_see_earlier_results() {
     let pull_trim = volume(&mut worker, &format!("{BLOCK}{pull}{trim}"), "block");
     assert_volume(trim_pull, (A + 15.0) * B * 30.0);
     assert_volume(pull_trim, trim_pull);
-    assert_eq!(face_count(&mut worker, &format!("{BLOCK}{trim}{pull}"), "block"), 6);
-    assert_eq!(face_count(&mut worker, &format!("{BLOCK}{pull}{trim}"), "block"), 6);
+    assert_eq!(
+        face_count(&mut worker, &format!("{BLOCK}{trim}{pull}"), "block"),
+        6
+    );
+    assert_eq!(
+        face_count(&mut worker, &format!("{BLOCK}{pull}{trim}"), "block"),
+        6
+    );
 
     // Rounding a vertical edge and pulling the top commute too.
     let round = "fillet(block, edges=[[\"x+\", \"y+\"]], radius=5)\n";
@@ -207,10 +215,7 @@ fn commuting_operations_agree_and_later_ones_see_earlier_results() {
 fn box_push_pull_and_cut_now_shape_the_part() {
     let mut worker = worker();
     let pulled = format!("{BLOCK}push_pull(block, face=\"x+\", distance=15, name=\"longer\")");
-    assert_volume(
-        volume(&mut worker, &pulled, "block"),
-        (A + 15.0) * B * C,
-    );
+    assert_volume(volume(&mut worker, &pulled, "block"), (A + 15.0) * B * C);
     let slot = format!(
         "{BLOCK}cut(block, profile=[[\"a\", [40, -1], [60, -1]], [\"b\", [60, -1], [60, 61]], [\"c\", [60, 61], [40, 61]], [\"d\", [40, 61], [40, -1]]], depth=10, name=\"slot\")\nfillet(block, edges=[[\"slot.b\", \"z+#2\"]], radius=2)"
     );
@@ -223,7 +228,9 @@ fn box_push_pull_and_cut_now_shape_the_part() {
 #[test]
 fn a_wrong_face_or_too_large_radius_is_explained() {
     let mut worker = worker();
-    let error = apply_error(&format!("{BLOCK}fillet(block, edges=[[\"x+\", \"top\"]], radius=5)"));
+    let error = apply_error(&format!(
+        "{BLOCK}fillet(block, edges=[[\"x+\", \"top\"]], radius=5)"
+    ));
     assert!(error.contains("face \"top\" does not exist"), "{error}");
     assert!(error.contains("x-, x+, y-, y+, z-, z+"), "{error}");
 

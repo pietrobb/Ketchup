@@ -21,6 +21,7 @@
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepClass_FaceClassifier.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRep_Builder.hxx>
@@ -6482,6 +6483,105 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
     }
     BRepAlgoAPI_Cut operation(body.impl().shape, prism.Shape());
     return collect(operation);
+  });
+}
+
+namespace {
+
+// A point strictly inside `face`: its UV centre when that lies on the face
+// (not in a hole of it), else the first grid point that does.
+bool interior_point(const TopoDS_Face& face, gp_Pnt& point) {
+  Standard_Real u_min = 0.0, u_max = 0.0, v_min = 0.0, v_max = 0.0;
+  BRepTools::UVBounds(face, u_min, u_max, v_min, v_max);
+  const BRepAdaptor_Surface surface(face);
+  constexpr int GRID = 9;
+  for (int step = 0; step <= GRID * GRID; ++step) {
+    double u_fraction = 0.5, v_fraction = 0.5;
+    if (step > 0) {
+      u_fraction = ((step - 1) % GRID + 0.5) / GRID;
+      v_fraction = ((step - 1) / GRID + 0.5) / GRID;
+    }
+    const gp_Pnt2d uv(u_min + (u_max - u_min) * u_fraction, v_min + (v_max - v_min) * v_fraction);
+    BRepClass_FaceClassifier classifier(face, uv, Precision::Confusion());
+    if (classifier.State() == TopAbs_IN) {
+      point = surface.Value(uv.X(), uv.Y());
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+std::unique_ptr<NativeOperationResult> named_shell_native(
+    const NativeOperationResult& body,
+    rust::Slice<const rust::String> labels,
+    rust::Slice<const std::uint32_t> open_ordinals,
+    double thickness,
+    rust::Str prefix) noexcept {
+  return guarded([&]() -> std::unique_ptr<NativeOperationResult> {
+    if (!body.valid() || !labels_match(body.impl().shape, labels) || open_ordinals.empty()
+        || open_ordinals.size() > 64
+        || !std::isfinite(thickness) || thickness <= 0.0 || prefix.empty()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named shell payload is malformed");
+    }
+    const TopoDS_Shape& source = body.impl().shape;
+    NCollection_List<TopoDS_Shape> closing;
+    for (const std::uint32_t ordinal : open_ordinals) {
+      const TopoDS_Face face = face_at_ordinal(source, ordinal);
+      if (face.IsNull()) {
+        return error_result(STATUS_INVALID_PARAMETER, "Named shell open face is absent");
+      }
+      closing.Append(face);
+    }
+    std::ostringstream too_thick;
+    too_thick << "walls " << thickness
+              << " mm thick do not fit inside the part (shell did not complete); "
+                 "use thinner walls or open other faces";
+    BRepOffsetAPI_MakeThickSolid operation;
+    operation.MakeThickSolidByJoin(
+        source, closing, -thickness, 1.0e-6, BRepOffset_Skin, false, false,
+        GeomAbs_Intersection, true);
+    if (!operation.IsDone() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, too_thick.str());
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (!BRepCheck_Analyzer(result).IsValid() || count_subshapes(result, TopAbs_SOLID) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, too_thick.str());
+    }
+    // A face lying on a source face keeps its name (outer walls, and the rim
+    // left where an open face was); one running the wall thickness inside a
+    // source face is that face's inner wall, "<prefix>.<name>".
+    TopTools_IndexedMapOfShape source_faces;
+    TopExp::MapShapes(source, TopAbs_FACE, source_faces);
+    TopTools_IndexedMapOfShape result_faces;
+    TopExp::MapShapes(result, TopAbs_FACE, result_faces);
+    const double tolerance = 1.0e-5 * std::max(1.0, thickness);
+    const std::string inner_prefix = std::string(prefix) + ".";
+    std::vector<HistoryRecord> history;
+    for (Standard_Integer index = 1; index <= result_faces.Extent(); ++index) {
+      const TopoDS_Face face = TopoDS::Face(result_faces(index));
+      gp_Pnt point;
+      if (!interior_point(face, point)) continue;
+      const TopoDS_Vertex vertex = BRepBuilderAPI_MakeVertex(point).Vertex();
+      double nearest = std::numeric_limits<double>::infinity();
+      Standard_Integer owner = 0;
+      for (Standard_Integer candidate = 1; candidate <= source_faces.Extent(); ++candidate) {
+        BRepExtrema_DistShapeShape distance(vertex, source_faces(candidate));
+        if (distance.IsDone() && distance.Value() < nearest) {
+          nearest = distance.Value();
+          owner = candidate;
+        }
+      }
+      if (owner == 0) continue;
+      const std::string label(labels[static_cast<std::size_t>(owner - 1)]);
+      if (nearest <= tolerance) {
+        record_name(history, label, result, face);
+      } else if (std::abs(nearest - thickness) <= tolerance) {
+        record_name(history, inner_prefix + label, result, face);
+      }
+    }
+    return success_result(result, std::move(history));
   });
 }
 

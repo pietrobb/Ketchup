@@ -419,6 +419,12 @@ pub enum ExactBRepOperation {
         thickness_bits: u64,
         #[serde(default)]
         direction: ExactBRepShellDirection,
+        /// Program-named faces to open, instead of `removed_faces`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        profile_faces: Vec<ExactBRepProfileFaceReference>,
+        /// Prefix naming the inner walls (`name.face`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     EdgeFinish {
         target: ExactBRepNodeId,
@@ -1691,6 +1697,7 @@ impl<'a> GraphCompiler<'a> {
             FeatureKind::TopologyShell {
                 target,
                 removed_faces,
+                profile_faces,
                 thickness,
                 direction,
             } => ExactBRepOperation::Shell {
@@ -1702,6 +1709,11 @@ impl<'a> GraphCompiler<'a> {
                 },
                 thickness_bits: positive_distance(thickness.millimetres())?,
                 direction: (*direction).into(),
+                profile_faces: profile_faces
+                    .iter()
+                    .map(exact_profile_face_reference)
+                    .collect(),
+                name: (!profile_faces.is_empty()).then(|| feature.name().to_owned()),
             },
             FeatureKind::TopologyEdgeFinish {
                 target,
@@ -5162,6 +5174,31 @@ fn valid_operation(
                 && [matrix[3], matrix[7], matrix[11]]
                     .into_iter()
                     .all(|value| value.abs() <= MAX_ABS_MM)
+        }
+        ExactBRepOperation::Shell {
+            target,
+            removed_faces,
+            thickness_bits,
+            direction,
+            profile_faces,
+            name,
+        } if !profile_faces.is_empty() => {
+            positive(*thickness_bits)
+                && removed_faces.is_empty()
+                && *direction == ExactBRepShellDirection::Inward
+                && profile_faces.len() <= MAX_EXACT_BREP_TOPOLOGY_SELECTORS
+                && profile_faces.iter().all(|face| match face {
+                    ExactBRepProfileFaceReference::Start | ExactBRepProfileFaceReference::End => {
+                        true
+                    }
+                    ExactBRepProfileFaceReference::Segment {
+                        entity_id,
+                        source_name,
+                    } => *entity_id != 0 && !source_name.is_empty(),
+                    ExactBRepProfileFaceReference::NamedResult { name } => !name.is_empty(),
+                })
+                && name.as_ref().is_some_and(|name| !name.is_empty())
+                && prior_nodes.get(target.0 as usize).is_some()
         }
         ExactBRepOperation::Shell {
             target,

@@ -179,7 +179,8 @@ const ASSEMBLY_RECIPE_SCHEMA: u16 = 93;
 const DOWEL_PAIR_OFFSET_SCHEMA: u16 = 94;
 const PROFILE_EDGE_REFERENCE_SCHEMA: u16 = 95;
 const PROFILE_FACE_REFERENCE_SCHEMA: u16 = 96;
-pub const CURRENT_SCHEMA: u16 = PROFILE_FACE_REFERENCE_SCHEMA;
+const PROFILE_SHELL_FACE_SCHEMA: u16 = 97;
+pub const CURRENT_SCHEMA: u16 = PROFILE_SHELL_FACE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -289,6 +290,7 @@ struct ProductSchemaCapabilities {
     dowel_pair_offsets: bool,
     profile_edge_references: bool,
     profile_face_references: bool,
+    profile_shell_faces: bool,
     assembly_recipe: bool,
 }
 
@@ -384,6 +386,7 @@ impl ProductSchemaCapabilities {
         dowel_pair_offsets: false,
         profile_edge_references: false,
         profile_face_references: false,
+        profile_shell_faces: false,
         assembly_recipe: false,
     };
 
@@ -479,6 +482,7 @@ impl ProductSchemaCapabilities {
             dowel_pair_offsets: schema >= DOWEL_PAIR_OFFSET_SCHEMA,
             profile_edge_references: schema >= PROFILE_EDGE_REFERENCE_SCHEMA,
             profile_face_references: schema >= PROFILE_FACE_REFERENCE_SCHEMA,
+            profile_shell_faces: schema >= PROFILE_SHELL_FACE_SCHEMA,
             assembly_recipe: schema >= ASSEMBLY_RECIPE_SCHEMA,
         }
     }
@@ -2521,6 +2525,7 @@ fn write_features(
             FeatureKind::TopologyShell {
                 target,
                 removed_faces,
+                profile_faces,
                 thickness,
                 direction,
             } => {
@@ -2541,6 +2546,12 @@ fn write_features(
                             ShellDirection::Symmetric => 3,
                         },
                     );
+                }
+                if capabilities.profile_shell_faces {
+                    push_u32(bytes, profile_faces.len() as u32);
+                    for face in profile_faces {
+                        write_profile_face_reference(bytes, face);
+                    }
                 }
             }
             FeatureKind::TopologyEdgeFinish {
@@ -4433,6 +4444,7 @@ fn load_document(
             | PRODUCTION_CODE_SCHEMA
             | DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA
             | ASSEMBLY_RECIPE_SCHEMA
+            | PROFILE_FACE_REFERENCE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -6950,9 +6962,16 @@ fn read_product(
                 } else {
                     ShellDirection::Inward
                 };
+                let mut profile_faces = Vec::new();
+                if capabilities.profile_shell_faces {
+                    for _ in 0..reader.count_with_limit(64)? {
+                        profile_faces.push(read_profile_face_reference(reader)?);
+                    }
+                }
                 FeatureKind::TopologyShell {
                     target,
                     removed_faces,
+                    profile_faces,
                     thickness,
                     direction,
                 }

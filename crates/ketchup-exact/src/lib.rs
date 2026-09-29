@@ -366,6 +366,13 @@ mod ffi {
             face_ordinal: u32,
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn named_shell_native(
+            body: &NativeOperationResult,
+            labels: &[String],
+            open_ordinals: &[u32],
+            thickness: f64,
+            prefix: &str,
+        ) -> UniquePtr<NativeOperationResult>;
         fn export_step_native(body: &NativeOperationResult, path: &str) -> String;
         fn export_iges_native(body: &NativeOperationResult, path: &str) -> String;
         fn tessellate_body_native(

@@ -5507,6 +5507,7 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
                 } else {
                     Vec::new()
                 },
+                profile_faces: Vec::new(),
                 thickness: dimension(1.5),
                 direction: *direction,
             },
@@ -5581,6 +5582,7 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
                 kind: FeatureKind::TopologyShell {
                     target: base,
                     removed_faces: Vec::new(),
+                    profile_faces: Vec::new(),
                     thickness: dimension(0.0),
                     direction: ketchup_core::document::ShellDirection::Outward,
                 },
@@ -6102,6 +6104,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 kind: FeatureKind::TopologyShell {
                     target: base,
                     removed_faces: faces.clone(),
+                    profile_faces: Vec::new(),
                     thickness: dimension(1.5),
                     direction: ketchup_core::document::ShellDirection::Inward,
                 },
@@ -6211,6 +6214,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             kind: FeatureKind::TopologyShell {
                 target: base,
                 removed_faces: reversed_faces,
+                profile_faces: Vec::new(),
                 thickness: dimension(1.5),
                 direction: ketchup_core::document::ShellDirection::Inward,
             },

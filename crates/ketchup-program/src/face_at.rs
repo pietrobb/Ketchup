@@ -92,6 +92,17 @@ fn distance(segment: &ProgramProfileSegment, p: [f64; 2]) -> f64 {
     let [a, b] = [segment.start_mm, segment.end_mm];
     let length = |v: [f64; 2]| v[0].hypot(v[1]);
     let minus = |u: [f64; 2], v: [f64; 2]| [u[0] - v[0], u[1] - v[1]];
+    if segment.bezier.is_some() {
+        const SAMPLES: u32 = 256;
+        return (0..=SAMPLES)
+            .map(|index| {
+                length(minus(
+                    p,
+                    segment.bezier_point(f64::from(index) / f64::from(SAMPLES)),
+                ))
+            })
+            .fold(f64::INFINITY, f64::min);
+    }
     let Some(arc) = segment.arc else {
         let d = minus(b, a);
         let squared = d[0] * d[0] + d[1] * d[1];
