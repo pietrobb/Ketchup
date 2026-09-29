@@ -109,6 +109,7 @@ pub fn rewrite_rule_program_push_pull(
                 .get(&parameter.name)
                 .copied()
                 .unwrap_or(parameter.value);
+            // not a tolerance: a probe step large enough to change the evaluated model.
             let step = current.abs().mul_add(1.0e-4, 1.0e-3);
             let probed = if parameter
                 .max

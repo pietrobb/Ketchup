@@ -7,9 +7,9 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::tolerance::ROUNDING;
 
-/// Same slab as the native pair query: an apparent overlap up to this depth is
-/// shared faces within OCCT's coincidence tolerance, never common volume.
-const COINCIDENT_SLAB_MM: f64 = 3.0e-7;
+/// Same slab as the native pair query: an apparent overlap up to this many linear
+/// tolerances is shared faces within the contact tolerance, never common volume.
+const COINCIDENT_SLAB_TOLERANCES: f64 = 3.0;
 const PARALLEL: f64 = 1.0 - ROUNDING;
 
 /// Box in definition-local coordinates enclosing the whole solid.
@@ -289,6 +289,7 @@ pub(super) fn relate(a: &WorldHull, b: &WorldHull, tolerance_mm: f64) -> HullRel
             }
         }
     }
+    let coincident_slab_mm = COINCIDENT_SLAB_TOLERANCES * tolerance_mm;
     let mut min_overlap = f64::INFINITY;
     for axis in &axes {
         let overlap = a.radius(*axis) + b.radius(*axis) - dot(offset, *axis).abs();
@@ -297,7 +298,7 @@ pub(super) fn relate(a: &WorldHull, b: &WorldHull, tolerance_mm: f64) -> HullRel
         }
         min_overlap = min_overlap.min(overlap);
     }
-    if min_overlap > COINCIDENT_SLAB_MM {
+    if min_overlap > coincident_slab_mm {
         return HullRelation::Overlapping;
     }
     // Positive area needs a face of A coplanar with an opposite face of B.
@@ -305,7 +306,7 @@ pub(super) fn relate(a: &WorldHull, b: &WorldHull, tolerance_mm: f64) -> HullRel
     for i in 0..3 {
         let normal = a.axes[i];
         let overlap = a.radius(normal) + b.radius(normal) - dot(offset, normal).abs();
-        if overlap.abs() > COINCIDENT_SLAB_MM {
+        if overlap.abs() > coincident_slab_mm {
             continue;
         }
         let Some(j) = (0..3).find(|&j| dot(normal, b.axes[j]).abs() >= PARALLEL) else {

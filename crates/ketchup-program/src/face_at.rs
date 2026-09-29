@@ -18,7 +18,7 @@ impl Part {
     pub fn face_at(&self, point: [f64; 3], normal: [f64; 3], role: Option<&str>) -> Option<String> {
         let (min, max) = self.local_bounds();
         let extent = (0..3).map(|i| max[i] - min[i]).fold(1.0, f64::max);
-        let on_plane = |value: f64, plane: f64| (value - plane).abs() <= 1e-4 * extent;
+        let on_plane = |value: f64, plane: f64| (value - plane).abs() <= APPROXIMATION * extent;
         let cap = |axis: usize| {
             (normal[axis].abs() > 1.0 - APPROXIMATION).then(|| {
                 if normal[axis] > 0.0 {

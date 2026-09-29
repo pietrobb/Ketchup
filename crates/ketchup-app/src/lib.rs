@@ -117,7 +117,8 @@ use ketchup_core::three_mf_export::{
 };
 use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::tolerance::{
-    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM,
+    NEGLIGIBLE, ROUNDING, SCREEN_ROUNDING_PX,
 };
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_core::validation::ValidatorRoleIndex;
@@ -220,6 +221,7 @@ const PERSPECTIVE_NEAR_MM: f64 = 1.0;
 /// How far outside the model's bounding sphere a converging eye must sit.
 const CAMERA_CLEARANCE: f64 = 2.5;
 /// Smallest useful magnification. This still frames scenes hundreds of kilometres wide.
+// not a tolerance: a view limit.
 const MIN_CAMERA_ZOOM: f32 = 1.0e-6;
 /// Largest useful magnification before floating-point picking becomes unstable.
 const MAX_CAMERA_ZOOM: f32 = 8.0;
@@ -24629,11 +24631,11 @@ impl KetchupApp {
         };
         let projected = self.project(center + normal, rect) - self.project(center, rect);
         let pixels_per_mm = projected.length();
-        if pixels_per_mm > 1.0e-4 {
+        if pixels_per_mm > SCREEN_ROUNDING_PX {
             Some((projected / pixels_per_mm, pixels_per_mm))
         } else {
             let fallback_scale = self.zoom * rect.width().min(rect.height()) / 420.0;
-            Some((Vec2::new(0.0, -1.0), fallback_scale.max(1.0e-4)))
+            Some((Vec2::new(0.0, -1.0), fallback_scale.max(SCREEN_ROUNDING_PX)))
         }
     }
 
@@ -35309,14 +35311,14 @@ impl KetchupApp {
                                     angular_deflection_rad: coarse,
                                     max_tetrahedra: 512,
                                     max_relative_volume_error: 0.05,
-                                    min_tetrahedron_quality: 1.0e-6,
+                                    min_tetrahedron_quality: 1.0e-6, // not a tolerance: mesh quality
                                 },
                                 ExactVolumeMeshWireOptions {
                                     surface_deflection_mm: fine,
                                     angular_deflection_rad: fine,
                                     max_tetrahedra: 1_024,
                                     max_relative_volume_error: 0.02,
-                                    min_tetrahedron_quality: 1.0e-6,
+                                    min_tetrahedron_quality: 1.0e-6, // not a tolerance: mesh quality
                                 },
                             ],
                             solve_settings: FeaSolveSettings::default(),
@@ -36785,6 +36787,7 @@ fn world_scale_transform(
 }
 
 fn scale_is_meaningful(factor: f64) -> bool {
+    // not a tolerance: a smaller change is below the input resolution.
     factor.is_finite() && factor > 0.0 && factor <= 1_000.0 && (factor - 1.0).abs() >= 1.0e-4
 }
 
@@ -37952,7 +37955,7 @@ fn inverse_transform_point(transform: Transform, point: Vec3) -> Option<Vec3> {
     let determinant = rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
         - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
         + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0]);
-    if determinant.abs() <= 1.0e-12 {
+    if determinant.abs() <= NEGLIGIBLE {
         return None;
     }
     // Cramer's rule: replace one column of the matrix by the offset.
@@ -38654,7 +38657,7 @@ fn screen_cross(first: Pos2, second: Pos2, third: Pos2) -> f32 {
 }
 
 fn screen_point_on_segment(point: Pos2, first: Pos2, second: Pos2) -> bool {
-    const EPSILON: f32 = 1.0e-4;
+    const EPSILON: f32 = SCREEN_ROUNDING_PX;
     screen_cross(first, second, point).abs() <= EPSILON
         && point.x >= first.x.min(second.x) - EPSILON
         && point.x <= first.x.max(second.x) + EPSILON
@@ -38677,7 +38680,7 @@ fn screen_segments_intersect(first: [Pos2; 2], second: [Pos2; 2]) -> bool {
 }
 
 fn screen_triangle_contains_point(triangle: [Pos2; 3], point: Pos2) -> bool {
-    const EPSILON: f32 = 1.0e-4;
+    const EPSILON: f32 = SCREEN_ROUNDING_PX;
     let signs = [
         screen_cross(triangle[0], triangle[1], point),
         screen_cross(triangle[1], triangle[2], point),

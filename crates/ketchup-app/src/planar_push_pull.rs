@@ -2,7 +2,7 @@ use super::*;
 use ketchup_application::evaluation::{
     ProducerKey, publish_exact_products, start_exact_evaluation_scoped,
 };
-use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
+use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, SCREEN_ROUNDING_PX};
 use ketchup_interaction::exact_projection::ExactSurfaceHit;
 #[cfg(test)]
 #[path = "planar_push_pull_tests.rs"]
@@ -271,12 +271,12 @@ impl KetchupApp {
         let projected = self.project(hit.position_mm + hit.outward_normal, rect)
             - self.project(hit.position_mm, rect);
         let scale = projected.length();
-        if scale > 1.0e-4 {
+        if scale > SCREEN_ROUNDING_PX {
             Some((projected / scale, scale))
         } else {
             Some((
                 Vec2::new(0.0, -1.0),
-                (self.zoom * rect.width().min(rect.height()) / 420.0).max(1.0e-4),
+                (self.zoom * rect.width().min(rect.height()) / 420.0).max(SCREEN_ROUNDING_PX),
             ))
         }
     }

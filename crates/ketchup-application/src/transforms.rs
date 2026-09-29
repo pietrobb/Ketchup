@@ -1,4 +1,5 @@
 use ketchup_core::document::{CanonicalError, GroupId, Snapshot, Transform};
+use ketchup_core::tolerance::NEGLIGIBLE;
 use ketchup_interaction::Vec3;
 
 pub fn translated_transform(
@@ -19,7 +20,7 @@ fn inverse_affine_transform(transform: Transform) -> Option<Transform> {
         matrix[10],
     ];
     let determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    if !determinant.is_finite() || determinant.abs() <= 1.0e-12 {
+    if !determinant.is_finite() || determinant.abs() <= NEGLIGIBLE {
         return None;
     }
     let inverse_determinant = 1.0 / determinant;

@@ -280,7 +280,8 @@ fn exact_brep_graph_mesh_response(
     if !diagonal.is_finite() || diagonal <= 0.0 {
         return Err(WorkerFailure::code("invalid_shape"));
     }
-    let deflection = (diagonal * 1.0e-3).max(1.0e-3);
+    let deflection =
+        (diagonal * DISPLAY_MESH_RELATIVE_DEFLECTION).max(DISPLAY_MESH_MIN_DEFLECTION_MM);
     let mesh = backend
         .tessellate_body(
             &output.body,
@@ -822,7 +823,7 @@ fn append_cam_collision(
     moving: &ketchup_exact::ExactBody,
     obstacle: &ketchup_exact::ExactBody,
 ) -> Result<(), ketchup_exact::GeometryError> {
-    let relation = backend.query_body_pair(moving, obstacle, 1.0e-7)?;
+    let relation = backend.query_body_pair(moving, obstacle, DEFAULT_LINEAR_TOLERANCE_MM)?;
     if relation.relation != ExactPairRelation::Separated {
         collisions.push(CamSimulationWireCollision {
             motion_index,
@@ -952,7 +953,7 @@ fn simulate_cam_geometry(
         }
     }
     let stock_after_mm3 = stock.body.topology.volume_mm3;
-    let common = backend.query_body_pair(&stock.body, &target.body, 1.0e-7)?;
+    let common = backend.query_body_pair(&stock.body, &target.body, DEFAULT_LINEAR_TOLERANCE_MM)?;
     let residual_stock_mm3 = (stock_after_mm3 - common.common_volume_mm3).max(0.0);
     let gouge_mm3 = (target.body.topology.volume_mm3 - common.common_volume_mm3).max(0.0);
     let evidence = CamSimulationWireEvidence {
@@ -2137,7 +2138,8 @@ fn exact_brep_weldment_joint(
     policy: ExactBRepWeldmentJointPolicy,
     primary: ExactBRepWeldmentJointPrimary,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let input_relation = backend.query_body_pair(&first.body, &second.body, 1.0e-7)?;
+    let input_relation =
+        backend.query_body_pair(&first.body, &second.body, DEFAULT_LINEAR_TOLERANCE_MM)?;
     if input_relation.relation != ExactPairRelation::Penetrating
         || input_relation.common_volume_mm3 <= APPROXIMATION
     {
@@ -2201,7 +2203,7 @@ fn finish_exact_brep_weldment_joint(
     first: &ketchup_exact::ExactBody,
     second: &ketchup_exact::ExactBody,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let relation = backend.query_body_pair(first, second, 1.0e-6)?;
+    let relation = backend.query_body_pair(first, second, APPROXIMATION)?;
     if relation.relation == ExactPairRelation::Penetrating {
         return Err(exact_brep_graph_error(
             graph,
@@ -2958,6 +2960,10 @@ fn exact_brep_profile_error(
 
 /// Fixed angular deflection so the same part always meshes identically.
 const STEP_MESH_ANGULAR_DEFLECTION: f64 = 0.35;
+// not a tolerance: display mesh chord height relative to the part diagonal.
+const DISPLAY_MESH_RELATIVE_DEFLECTION: f64 = 1.0e-3;
+// not a tolerance: the finest display mesh chord height.
+const DISPLAY_MESH_MIN_DEFLECTION_MM: f64 = 1.0e-3;
 
 fn step_import_result_fingerprint(
     source_sha256: &str,
@@ -3237,7 +3243,8 @@ fn imported_mesh_response(
             &format!("{label} part has no measurable extent to tessellate"),
         ));
     }
-    let deflection = (diagonal * 1.0e-3).max(1.0e-3);
+    let deflection =
+        (diagonal * DISPLAY_MESH_RELATIVE_DEFLECTION).max(DISPLAY_MESH_MIN_DEFLECTION_MM);
     let mesh = backend
         .tessellate_body(
             &output.body,

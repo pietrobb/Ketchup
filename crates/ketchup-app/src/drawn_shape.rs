@@ -13,10 +13,6 @@ use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
 /// Distance within which the drawn shape counts as lying on a face.
 const ON_FACE_MM: f64 = APPROXIMATION;
 
-/// Distance within which a tessellated face counts as lying in the drawing's
-/// plane.
-const PLANE_MM: f64 = 1.0e-5;
-
 /// How a drawn-shape Push/Pull changes the document.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum DrawnShapeChange {
@@ -449,6 +445,8 @@ impl KetchupApp {
         distance_mm: f64,
     ) -> Option<Result<DrawnShapeEdit, String>> {
         let (low, high) = loop_bounds(segments);
+        // A tessellated face lies in the drawing's plane within the model tolerance.
+        let plane_mm = snapshot.tolerance().linear_mm();
         // Hosts with a face in the drawing plane that the shape overlaps; the
         // sign says whether that face looks along the drawing's normal.
         let mut hosts = Vec::new();
@@ -503,7 +501,7 @@ impl KetchupApp {
                 if cosine.abs() < 1.0 - APPROXIMATION
                     || [a, b, c]
                         .iter()
-                        .any(|p| dot3(sub3(*p, origin), axes[2]).abs() > PLANE_MM)
+                        .any(|p| dot3(sub3(*p, origin), axes[2]).abs() > plane_mm)
                 {
                     return None;
                 }
@@ -514,9 +512,9 @@ impl KetchupApp {
                     ]
                 });
                 let overlaps = (0..2).all(|i| {
-                    uv.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min) < high[i] - PLANE_MM
+                    uv.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min) < high[i] - plane_mm
                         && uv.iter().map(|p| p[i]).fold(f64::NEG_INFINITY, f64::max)
-                            > low[i] + PLANE_MM
+                            > low[i] + plane_mm
                 });
                 overlaps.then_some(cosine.signum())
             });

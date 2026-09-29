@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const MAX_SHEET_METAL_FLANGES: usize = 4;
+// not a tolerance: the smallest thickness, radius or flange a sheet may have.
 pub const MIN_SHEET_METAL_LENGTH_MM: f64 = 1.0e-4;
 pub const MAX_SHEET_METAL_LENGTH_MM: f64 = 100_000.0;
 pub const MIN_SHEET_METAL_BEND_ANGLE_DEGREES: f64 = 0.1;

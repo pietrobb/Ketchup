@@ -36,6 +36,7 @@ use ketchup_core::{
         CommandBatch, DocumentStore, OccurrenceId, Proposal, Snapshot, VerifiedProposalCommit,
     },
     exact_product::ExactResultRegistry,
+    tolerance::ROUNDING,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1126,6 +1127,7 @@ impl LiveBridge {
                             } else {
                                 return None;
                             };
+                            let linear_mm = snapshot.tolerance().linear_mm();
                             let matches_hole = edges.iter().any(|edge| {
                                 let (Some(radius), Some(center), Some(axis)) = (
                                     edge.circle_radius_mm,
@@ -1140,20 +1142,20 @@ impl LiveBridge {
                                 let depth = (0..3)
                                     .map(|i| delta[i] * hole.inward_unit_local[i])
                                     .sum::<f64>();
-                                (radius - hole.diameter_mm / 2.0).abs() < 1e-4
+                                (radius - hole.diameter_mm / 2.0).abs() <= linear_mm
                                     && (0..3)
                                         .map(|i| axis[i] * hole.inward_unit_local[i])
                                         .sum::<f64>()
                                         .abs()
-                                        > 1.0 - 1e-5
-                                    && depth >= -1e-4
-                                    && depth <= hole.depth_mm + 1e-4
+                                        >= 1.0 - ROUNDING
+                                    && depth >= -linear_mm
+                                    && depth <= hole.depth_mm + linear_mm
                                     && (0..3)
                                         .map(|i| {
                                             (delta[i] - depth * hole.inward_unit_local[i]).powi(2)
                                         })
                                         .sum::<f64>()
-                                        < 1e-8
+                                        <= linear_mm * linear_mm
                             });
                             matches_hole.then(|| {
                                 json!({"joint_id":joint.id.0,

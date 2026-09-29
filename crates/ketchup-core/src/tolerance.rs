@@ -40,6 +40,25 @@ pub const ACCUMULATED_ROUNDING: f64 = 1.0e-8;
 /// Absolute (mm, mm², mm³) for magnitudes up to 1; scale it by larger magnitudes.
 pub const APPROXIMATION: f64 = 1.0e-6;
 
+/// Numeric guard: a scaled quantity at most this large counts as zero. It marks a singular
+/// determinant or pivot, a degenerate area, and a residual that has converged relative to
+/// where it started. Such quantities are products of several values, so the bound is
+/// tighter than [`ROUNDING`].
+pub const NEGLIGIBLE: f64 = 1.0e-12;
+
+/// Relative step of a finite-difference derivative in the iterative solvers. Central
+/// differences at this step leave truncation (step²) and cancellation (rounding / step)
+/// errors far below [`APPROXIMATION`].
+pub const FINITE_DIFFERENCE_STEP: f64 = 1.0e-6;
+
+/// Starting Levenberg–Marquardt damping of the sketch solver, relative to unit-scaled
+/// equations; the solver adapts it every iteration.
+pub const INITIAL_DAMPING: f64 = 1.0e-6;
+
+/// Numeric guard for screen-space `f32` values in pixels: a projected length or a signed
+/// area at most this large is degenerate on screen.
+pub const SCREEN_ROUNDING_PX: f32 = 1.0e-4;
+
 /// Deserializing re-checks the values, so a stored policy is valid like a constructed one.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "StoredTolerancePolicy")]

@@ -2,6 +2,7 @@ use ketchup_core::document::{DefinitionId, FeatureId, Snapshot};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::fea::FeaSolveSettings;
 use ketchup_core::graph::sha256_bytes;
+use ketchup_core::tolerance::NEGLIGIBLE;
 use ketchup_scheduler::ExactWorkerSupervisor;
 pub use ketchup_scheduler::{ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions};
 use std::path::PathBuf;
@@ -244,7 +245,7 @@ fn validate_refinement_levels(levels: &[ExactVolumeMeshWireOptions]) -> Result<(
 }
 
 fn relative_change(previous: f64, current: f64) -> f64 {
-    (current - previous).abs() / current.abs().max(previous.abs()).max(1.0e-15)
+    (current - previous).abs() / current.abs().max(previous.abs()).max(NEGLIGIBLE)
 }
 
 #[allow(clippy::too_many_arguments)]

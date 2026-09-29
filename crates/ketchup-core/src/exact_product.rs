@@ -4050,8 +4050,17 @@ fn planar_line_segments_intersect(
     d: [f64; 2],
     tolerance_mm: f64,
 ) -> bool {
+    // Signed distance of `point` from the line through the segment, so it compares with a
+    // length tolerance; a degenerate segment keeps the raw cross product.
     let cross = |start: [f64; 2], end: [f64; 2], point: [f64; 2]| {
-        (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (point[0] - start[0])
+        let area = (end[0] - start[0]) * (point[1] - start[1])
+            - (end[1] - start[1]) * (point[0] - start[0]);
+        let length = (end[0] - start[0]).hypot(end[1] - start[1]);
+        if length > tolerance_mm {
+            area / length
+        } else {
+            area
+        }
     };
     let on_segment = |start: [f64; 2], end: [f64; 2], point: [f64; 2]| {
         point[0] >= start[0].min(end[0]) - tolerance_mm
@@ -4357,6 +4366,23 @@ mod tests {
         // With a document tolerance coarser than the slot width the sides touch.
         let coarse = TolerancePolicy::new(0.5).unwrap();
         assert!(exact_planar_offset_profile(&slot, true, coarse).is_none());
+    }
+
+    #[test]
+    fn segment_contact_tolerance_is_a_distance() {
+        // Two parallel 0.1 mm segments 0.05 mm apart do not touch at a 0.01 mm tolerance,
+        // however short they are; the tolerance bounds their distance, not a cross product.
+        let touch = |gap: f64, tolerance: f64| {
+            planar_line_segments_intersect(
+                [0.0, 0.0],
+                [0.1, 0.0],
+                [0.0, gap],
+                [0.1, gap],
+                tolerance,
+            )
+        };
+        assert!(!touch(0.05, 0.01));
+        assert!(touch(0.005, 0.01));
     }
 
     fn line(start: [f64; 2], end: [f64; 2]) -> ExactBRepPlanarSegment {

@@ -1,4 +1,4 @@
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, NEGLIGIBLE};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -435,7 +435,7 @@ pub fn inspect_sketchup_scene(
                 .into_iter()
                 .any(|index| matrix[index].abs() > MAX_COORDINATE_MM)
             || !determinant.is_finite()
-            || determinant.abs() <= 1.0e-12
+            || determinant.abs() <= NEGLIGIBLE
         {
             return Err(SketchupSceneImportError::InvalidTransform);
         }

@@ -2,8 +2,8 @@ use super::*;
 
 // Relative to unit-length equation rows. Below this threshold the numerical
 // evidence cannot establish another independent equation: never claim full rank.
-const RANK_TOLERANCE: f64 = 1.0e-6;
-const DIFFERENCE_STEP: f64 = 1.0e-5;
+// The Jacobian is a finite-difference approximation, so it agrees to APPROXIMATION.
+const RANK_TOLERANCE: f64 = APPROXIMATION;
 
 pub(super) fn analyze(
     entities: &[SketchEntity],
@@ -32,7 +32,7 @@ pub(super) fn analyze(
         let (local_entities, local_constraints) =
             translated_problem(entities, constraints, origins[column]);
         let parameters = pack_solver_parameters(&local_entities);
-        let step = DIFFERENCE_STEP * scales[column];
+        let step = FINITE_DIFFERENCE_STEP * scales[column];
         let mut positive_parameters = parameters.clone();
         let mut negative_parameters = parameters.clone();
         positive_parameters[column] += step;

@@ -1,7 +1,8 @@
 use crate::document::{Dimension, FeatureId};
 use crate::exact_product::BodySubshapeRef;
 use crate::tolerance::{
-    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, FINITE_DIFFERENCE_STEP,
+    INITIAL_DAMPING, MAX_COORDINATE_MM, NEGLIGIBLE, ROUNDING,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -518,8 +519,8 @@ impl Default for SketchSolverPolicy {
         Self {
             max_iterations: 64,
             tolerance_mm: EPSILON_MM,
-            finite_difference_step: 1.0e-6,
-            initial_damping: 1.0e-6,
+            finite_difference_step: FINITE_DIFFERENCE_STEP,
+            initial_damping: INITIAL_DAMPING,
         }
     }
 }
@@ -4601,7 +4602,7 @@ fn sketch_least_squares_step(
         let norm = remainder
             .iter()
             .fold(0.0_f64, |norm, value| norm.max(value.abs()));
-        if norm <= 1.0e-12 * initial_norm.max(1.0) {
+        if norm <= NEGLIGIBLE * initial_norm.max(1.0) {
             break;
         }
         preconditioned = remainder

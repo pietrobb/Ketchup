@@ -5,6 +5,9 @@ Tolerances and model limits have one home: crates/ketchup-core/src/tolerance.rs
 (the document's TolerancePolicy), handed to the exact kernel through its FFI.
 A literal such as 1.0e-9 anywhere else is a module-local tolerance.
 
+A number that is not a tolerance (a view limit, a mesh setting) carries a
+`not a tolerance: <reason>` comment on its line or the comment line above.
+
 The check is a ratchet: scripts/tolerance_literals_baseline.txt records the
 literals that still exist, per file. A count may only go down; a new file or a
 higher count fails. Run with --update after removing literals to shrink the
@@ -22,6 +25,28 @@ SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/include/**/
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 HOME = "crates/ketchup-core/src/tolerance.rs"
 LITERAL = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?:_f64)?[eE]-\d+")
+# An inline `#[cfg(test)] mod name { ... }` at the top level of a Rust file, up to its
+# closing brace in column 0; test assertions may state their own precision.
+TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod \w+ \{\n.*?^\}",
+                         re.MULTILINE | re.DOTALL)
+
+
+# A documented exception: a number that looks like a tolerance but is a view limit, a
+# mesh setting or a probe step. The marker sits on the line or on a comment line above.
+EXEMPT = "not a tolerance:"
+
+
+def production_text(path: Path) -> str:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if path.suffix == ".rs":
+        text = TEST_MODULE.sub("", text)
+    kept, previous = [], ""
+    for line in text.splitlines():
+        exempt = EXEMPT in line or (previous.lstrip().startswith(("//", "#")) and EXEMPT in previous)
+        if not exempt:
+            kept.append(line)
+        previous = line
+    return "\n".join(kept)
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
@@ -33,7 +58,7 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
             if (key == HOME or EXCLUDED_PARTS & set(relative.parts[:-1])
                     or path.stem.endswith("tests")):
                 continue
-            found = len(LITERAL.findall(path.read_text(encoding="utf-8", errors="replace")))
+            found = len(LITERAL.findall(production_text(path)))
             if found:
                 counts[key] = found
     return counts

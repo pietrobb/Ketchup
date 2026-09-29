@@ -1,4 +1,4 @@
-use crate::tolerance::ROUNDING;
+use crate::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -83,7 +83,7 @@ impl Default for FeaSolveSettings {
     fn default() -> Self {
         Self {
             maximum_nodes: 256,
-            relative_pivot_tolerance: 1.0e-12,
+            relative_pivot_tolerance: NEGLIGIBLE,
             maximum_small_deformation_ratio: 0.05,
             convergence_relative_tolerance: 0.02,
         }
@@ -489,7 +489,7 @@ impl FeaModel {
                         self.nodes[nodes[0]].position_mm,
                         self.nodes[nodes[1]].position_mm,
                         self.nodes[nodes[2]].position_mm,
-                    ) <= 1.0e-12
+                    ) <= NEGLIGIBLE
                     {
                         return Err(FeaError::InvalidLoad);
                     }
@@ -1160,7 +1160,7 @@ fn determinant3(matrix: [[f64; 3]; 3]) -> f64 {
 
 fn inverse3(matrix: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let determinant = determinant3(matrix);
-    if !determinant.is_finite() || determinant.abs() <= 1.0e-12 {
+    if !determinant.is_finite() || determinant.abs() <= NEGLIGIBLE {
         return None;
     }
     let inverse_determinant = 1.0 / determinant;
@@ -1346,7 +1346,7 @@ fn near_relative(left: f64, right: f64) -> bool {
 }
 
 fn relative_change(previous: f64, current: f64) -> f64 {
-    (current - previous).abs() / current.abs().max(previous.abs()).max(1.0e-15)
+    (current - previous).abs() / current.abs().max(previous.abs()).max(NEGLIGIBLE)
 }
 
 fn near_bounds(left: ([f64; 3], [f64; 3]), right: ([f64; 3], [f64; 3])) -> bool {

@@ -28,6 +28,31 @@ def test_counts_literals_outside_the_tolerance_home_and_tests(tmp_path):
     }
 
 
+def test_inline_test_modules_are_not_production_code(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "const E: f64 = 1.0e-9;\n"
+        "#[cfg(test)]\n#[allow(clippy::float_cmp)]\nmod tests {\n"
+        "    fn f() {\n        assert!(d < 1.0e-9);\n    }\n}\n"
+        "fn after() -> f64 { 1.0e-6 }\n"
+        "fn nested() {\n    #[cfg(test)]\n    let _ = 1.0e-3;\n}\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 3}
+
+
+def test_documented_exceptions_are_not_counted(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "// not a tolerance: a view limit.\nconst Z: f32 = 1.0e-6;\n"
+        "let q = 1.0e-6; // not a tolerance: mesh quality\n"
+        "// A view limit.\nconst W: f32 = 1.0e-6;\n"
+        "let e = 1.0e-9;\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 2}
+
+
 def test_ratchet_refuses_growth_and_locks_in_shrinking(tmp_path, capsys):
     (tmp_path / "scripts").mkdir()
     write(tmp_path, "crates/a/src/lib.rs", "const A: f64 = 1.0e-9;\nconst B: f64 = 1.0e-6;\n")

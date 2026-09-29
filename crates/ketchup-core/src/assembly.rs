@@ -4,7 +4,8 @@ use crate::document::{
 };
 use crate::exact_product::{BodySubshapeRef, ExactReferenceResolution, ExactResultRegistry};
 use crate::tolerance::{
-    ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+    ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, FINITE_DIFFERENCE_STEP, MAX_COORDINATE_MM,
+    NEGLIGIBLE, ROUNDING,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -523,8 +524,8 @@ impl Default for AssemblySolverPolicy {
             max_iterations: 32,
             linear_tolerance_mm: DEFAULT_LINEAR_TOLERANCE_MM,
             angular_tolerance_radians: ROUNDING,
-            finite_difference_step: 1.0e-6,
-            damping: 1.0e-12,
+            finite_difference_step: FINITE_DIFFERENCE_STEP,
+            damping: NEGLIGIBLE,
         }
     }
 }
