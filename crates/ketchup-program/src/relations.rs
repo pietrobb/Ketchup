@@ -6,7 +6,7 @@
 use crate::eval::{TOLERANCE_MM, contact};
 use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
-use crate::model::{Face, Part, ProgramBooleanKind, ProgramModel};
+use crate::model::{Part, ProgramBooleanKind, ProgramModel};
 use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
 use serde::Serialize;
 
@@ -52,7 +52,7 @@ pub struct Relation {
     pub kind: RelationKind,
     /// Contact: the touching face of each part, in that part's own frame.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub faces: Option<[Face; 2]>,
+    pub faces: Option<[String; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area_mm2: Option<f64>,
     /// Overlap: the shortest move along `direction` that separates them; for
@@ -243,7 +243,7 @@ fn relate(
         match contact(a, b) {
             Some(patch) => {
                 relation.kind = RelationKind::Contact;
-                relation.faces = Some([patch.face_a, patch.face_b]);
+                relation.faces = Some([patch.face_a.clone(), patch.face_b.clone()]);
                 relation.area_mm2 = Some(polygon_area(&patch.points_mm).round());
                 relation.direction = round_direction(patch.normal);
             }
@@ -308,7 +308,7 @@ fn exact_relation(a: &Part, b: &Part, mut relation: Relation, pair: ExactPair) -
         relation.kind = RelationKind::Contact;
         relation.area_mm2 = Some(pair.contact_area_mm2.round());
         if let Some(patch) = contact(a, b) {
-            relation.faces = Some([patch.face_a, patch.face_b]);
+            relation.faces = Some([patch.face_a.clone(), patch.face_b.clone()]);
             relation.direction = round_direction(patch.normal);
         }
     } else if pair.touching() {

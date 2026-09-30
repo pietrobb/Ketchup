@@ -63,15 +63,20 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `param(name, default, min=, max=, doc=)` | a number the caller can override |
 | `box(name, size, at=, material=, grain=, color=)` | an axis-aligned part; `at` is its minimum corner |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
-| `hole(part, face, at=(u, v) or world=(x, y, z), diameter=, depth=, id=)` | a drilled hole |
-| `pocket(part, face, rect=(u0, v0, u1, v1), depth=, id=)` | a rectangular pocket; may run off the face edges |
+| `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
+| `hole(part, face, at=(u, v) or world=(x, y, z), diameter=, depth=, id=)` | a hole drilled along the face's inward normal; `face` is a name or a `face()` value; on a round face `at=(angle, v)` |
+| `pocket(part, face, rect=(u0, v0, u1, v1), depth=, id=)` | a rectangular pocket in a flat face; may run off the face edges |
 | `contact(a, b)` | where two parts touch: `axis`, `face_a`, `face_b`, `min`, `max`, or `None` |
 | `joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=, name=)` | a declared connection |
 | `expect(name, terms=, op=, value=, tolerance=, unit=, hint=)` | a condition on the final model: a sum of `reach`/`distance`/`contact_area` measures compared with a value; the library's `expect_contact`, `expect_gap`, `expect_flush`, `expect_symmetric` and `expect_inside` are built on it |
 
-Faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own frame. Face
-coordinates `(u, v)` are measured from the part's minimum corner: z faces use
-(x, y), x faces use (y, z) and y faces use (x, z).
+A box's faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own
+frame; their coordinates `(u, v)` are measured from the part's minimum corner:
+z faces use (x, y), x faces use (y, z) and y faces use (x, z). An extruded or
+revolved profile has `start`, `end` and its segment names; a boolean leaves
+`<operation>.<tool face>`. `face()` gives each face's frame, and faces follow
+`push_pull`, `mirror`, `rotate` and `place`, so holes and pockets work in any
+order with them.
 
 ## Library (Starlark, `crates/ketchup-program/library/prelude.star`)
 

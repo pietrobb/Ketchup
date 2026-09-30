@@ -2,122 +2,13 @@
 //!
 //! Every part has a rigid frame: its local origin `at_mm` in world millimetres
 //! and a rotation (identity for axis-aligned parts). A panel occupies
-//! `0..size_mm` in its own frame. Holes and pockets are machined into one of
-//! the six local faces and use face-local coordinates.
+//! `0..size_mm` in its own frame. Holes and pockets are machined into a named
+//! face (see `crate::faces`) and are kept in the frame of the body before its
+//! operations, where they are drilled.
 
 use crate::frame::{self, Mat3, Obb};
 use ketchup_core::tolerance::ROUNDING;
 use serde::Serialize;
-
-/// One of the six faces of an axis-aligned part.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub enum Face {
-    #[serde(rename = "x-")]
-    XMin,
-    #[serde(rename = "x+")]
-    XMax,
-    #[serde(rename = "y-")]
-    YMin,
-    #[serde(rename = "y+")]
-    YMax,
-    #[serde(rename = "z-")]
-    ZMin,
-    #[serde(rename = "z+")]
-    ZMax,
-}
-
-impl Face {
-    pub const ALL: [Self; 6] = [
-        Self::XMin,
-        Self::XMax,
-        Self::YMin,
-        Self::YMax,
-        Self::ZMin,
-        Self::ZMax,
-    ];
-
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::XMin => "x-",
-            Self::XMax => "x+",
-            Self::YMin => "y-",
-            Self::YMax => "y+",
-            Self::ZMin => "z-",
-            Self::ZMax => "z+",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(text: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|face| face.name() == text)
-    }
-
-    /// Axis index (0 = x, 1 = y, 2 = z) the face is perpendicular to.
-    #[must_use]
-    pub const fn axis(self) -> usize {
-        match self {
-            Self::XMin | Self::XMax => 0,
-            Self::YMin | Self::YMax => 1,
-            Self::ZMin | Self::ZMax => 2,
-        }
-    }
-
-    #[must_use]
-    pub const fn is_max(self) -> bool {
-        matches!(self, Self::XMax | Self::YMax | Self::ZMax)
-    }
-
-    #[must_use]
-    pub const fn from_axis(axis: usize, max: bool) -> Self {
-        match (axis, max) {
-            (0, false) => Self::XMin,
-            (0, true) => Self::XMax,
-            (1, false) => Self::YMin,
-            (1, true) => Self::YMax,
-            (_, false) => Self::ZMin,
-            (_, true) => Self::ZMax,
-        }
-    }
-
-    #[must_use]
-    pub const fn opposite(self) -> Self {
-        Self::from_axis(self.axis(), !self.is_max())
-    }
-
-    /// Face-local (u, v) axes: z faces use (x, y), x faces (y, z), y faces (x, z).
-    #[must_use]
-    pub const fn uv_axes(self) -> (usize, usize) {
-        match self.axis() {
-            0 => (1, 2),
-            1 => (0, 2),
-            _ => (0, 1),
-        }
-    }
-
-    /// Unit vector pointing from the face into the material.
-    #[must_use]
-    pub fn inward(self) -> [f64; 3] {
-        let mut normal = [0.0; 3];
-        normal[self.axis()] = if self.is_max() { -1.0 } else { 1.0 };
-        normal
-    }
-
-    /// Part-local point on this face for face coordinates (u, v).
-    #[must_use]
-    pub fn local_point(self, size_mm: [f64; 3], u: f64, v: f64) -> [f64; 3] {
-        let (u_axis, v_axis) = self.uv_axes();
-        let mut point = [0.0; 3];
-        point[self.axis()] = if self.is_max() {
-            size_mm[self.axis()]
-        } else {
-            0.0
-        };
-        point[u_axis] = u;
-        point[v_axis] = v;
-        point
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Param {
@@ -171,50 +62,81 @@ pub struct ProgramFeature {
     pub parameters: Vec<ProgramFeatureParameter>,
 }
 
-/// A cylindrical hole drilled perpendicular to a face.
+/// A cylindrical hole drilled into a face along its inward normal at face
+/// coordinates `at_mm` (u, v on a plane; angle in degrees, v on a cylinder).
+/// `entry_mm` and `inward` are in the body's frame before the part's
+/// operations, where the hole is drilled.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Hole {
     pub id: String,
-    pub face: Face,
-    pub u_mm: f64,
-    pub v_mm: f64,
+    pub face: String,
+    pub at_mm: [f64; 2],
+    pub entry_mm: [f64; 3],
+    pub inward: [f64; 3],
     pub diameter_mm: f64,
     pub depth_mm: f64,
 }
 
-/// A rectangular pocket milled perpendicular to a face (grooves, rabbets,
-/// notches). The rectangle may run off the face edges.
+/// A rectangular pocket milled into a flat face (grooves, rabbets, notches):
+/// `rect_mm` = (u_min, v_min, u_max, v_max) in face coordinates, which may run
+/// off the face edges. `corner_mm` (the rectangle's (u_min, v_min) corner),
+/// `u`, `v` and `inward` are in the body's frame before its operations.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Pocket {
     pub id: String,
-    pub face: Face,
-    pub u_min_mm: f64,
-    pub v_min_mm: f64,
-    pub u_max_mm: f64,
-    pub v_max_mm: f64,
+    pub face: String,
+    pub rect_mm: [f64; 4],
+    pub corner_mm: [f64; 3],
+    pub u: [f64; 3],
+    pub v: [f64; 3],
+    pub inward: [f64; 3],
     pub depth_mm: f64,
 }
 
 impl Pocket {
-    /// Part-local removed box as (min, max).
+    /// Width and height of the rectangle along `u` and `v`.
     #[must_use]
-    pub fn local_box(&self, size_mm: [f64; 3]) -> ([f64; 3], [f64; 3]) {
-        let axis = self.face.axis();
-        let (u_axis, v_axis) = self.face.uv_axes();
-        let mut min = [0.0; 3];
-        let mut max = [0.0; 3];
-        min[u_axis] = self.u_min_mm;
-        max[u_axis] = self.u_max_mm;
-        min[v_axis] = self.v_min_mm;
-        max[v_axis] = self.v_max_mm;
-        if self.face.is_max() {
-            min[axis] = size_mm[axis] - self.depth_mm;
-            max[axis] = size_mm[axis];
-        } else {
-            min[axis] = 0.0;
-            max[axis] = self.depth_mm;
-        }
-        (min, max)
+    pub fn extent_mm(&self) -> [f64; 2] {
+        [
+            self.rect_mm[2] - self.rect_mm[0],
+            self.rect_mm[3] - self.rect_mm[1],
+        ]
+    }
+
+    /// The eight corners of the removed block, in the body's frame.
+    #[must_use]
+    pub fn corners(&self) -> [[f64; 3]; 8] {
+        let [du, dv] = self.extent_mm();
+        std::array::from_fn(|index| {
+            let along = |axis: [f64; 3], bit: usize, length: f64| {
+                if index >> bit & 1 == 1 {
+                    axis.map(|value| value * length)
+                } else {
+                    [0.0; 3]
+                }
+            };
+            let (a, b, c) = (
+                along(self.u, 0, du),
+                along(self.v, 1, dv),
+                along(self.inward, 2, self.depth_mm),
+            );
+            std::array::from_fn(|i| self.corner_mm[i] + a[i] + b[i] + c[i])
+        })
+    }
+
+    /// Bounds of the removed block in the body's frame as (min, max); the
+    /// block itself on a box's faces, which lie along its axes.
+    #[must_use]
+    pub fn local_box(&self) -> ([f64; 3], [f64; 3]) {
+        self.corners().iter().fold(
+            ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+            |(min, max), point| {
+                (
+                    std::array::from_fn(|i| min[i].min(point[i])),
+                    std::array::from_fn(|i| max[i].max(point[i])),
+                )
+            },
+        )
     }
 }
 
@@ -653,9 +575,9 @@ impl Part {
     #[must_use]
     pub fn body_face_names(&self) -> Vec<String> {
         match &self.body {
-            ProgramPartBody::Panel => Face::ALL
+            ProgramPartBody::Panel => crate::faces::PANEL_FACES
                 .iter()
-                .map(|face| face.name().to_owned())
+                .map(|(name, ..)| (*name).to_owned())
                 .collect(),
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. } => ["start", "end"]
@@ -756,17 +678,16 @@ impl Part {
             }
         };
         match &self.body {
-            ProgramPartBody::Panel => {
-                let face = Face::parse(name).ok_or_else(unknown)?;
-                Ok(match face {
-                    Face::ZMin => "start".to_owned(),
-                    Face::ZMax => "end".to_owned(),
-                    Face::YMin => "segment_1".to_owned(),
-                    Face::XMax => "segment_2".to_owned(),
-                    Face::YMax => "segment_3".to_owned(),
-                    Face::XMin => "segment_4".to_owned(),
-                })
+            ProgramPartBody::Panel => Ok(match name {
+                "z-" => "start",
+                "z+" => "end",
+                "y-" => "segment_1",
+                "x+" => "segment_2",
+                "y+" => "segment_3",
+                "x-" => "segment_4",
+                _ => return Err(unknown()),
             }
+            .to_owned()),
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. } => {
                 if name == "start" || name == "end" {
@@ -883,12 +804,14 @@ impl Part {
             let d = offset.distance_mm;
             let face = offset.face.split('#').next().unwrap_or_default();
             if matches!(self.body, ProgramPartBody::Panel)
-                && let Some(face) = Face::parse(face)
+                && let Some(&(_, axis, far)) = crate::faces::PANEL_FACES
+                    .iter()
+                    .find(|(name, ..)| *name == face)
             {
-                if face.is_max() {
-                    max[face.axis()] += d;
+                if far {
+                    max[axis] += d;
                 } else {
-                    min[face.axis()] -= d;
+                    min[axis] -= d;
                 }
                 continue;
             }
@@ -1249,7 +1172,7 @@ impl Part {
         }
         for hole in &self.holes {
             let prefix = format!("{} hole {}", self.name, hole.id);
-            let origin = hole.face.local_point(self.size_mm, hole.u_mm, hole.v_mm);
+            let origin = hole.entry_mm;
             features.push(feature(
                 format!("{prefix} workplane"),
                 ProgramFeatureKind::Workplane,
@@ -1272,11 +1195,10 @@ impl Part {
         }
         for pocket in &self.pockets {
             let prefix = format!("{} pocket {}", self.name, pocket.id);
-            let origin = pocket.face.local_point(
-                self.size_mm,
-                (pocket.u_min_mm + pocket.u_max_mm) * 0.5,
-                (pocket.v_min_mm + pocket.v_max_mm) * 0.5,
-            );
+            let [du, dv] = pocket.extent_mm();
+            let origin: [f64; 3] = std::array::from_fn(|i| {
+                pocket.corner_mm[i] + 0.5 * (pocket.u[i] * du + pocket.v[i] * dv)
+            });
             features.push(feature(
                 format!("{prefix} workplane"),
                 ProgramFeatureKind::Workplane,
@@ -1286,9 +1208,10 @@ impl Part {
                     .map(|(path, value)| length(path, value))
                     .collect(),
             ));
-            let u = (pocket.u_max_mm - pocket.u_min_mm) * 0.5;
-            let v = (pocket.v_max_mm - pocket.v_min_mm) * 0.5;
-            let (x, y) = if pocket.face.axis() == 1 {
+            // The planner's sketch x axis follows the next axis after the
+            // face normal's (x -> y -> z -> x); on a y face that is v.
+            let (u, v) = (du * 0.5, dv * 0.5);
+            let (x, y) = if pocket.inward[1].abs() > 0.5 {
                 (v, u)
             } else {
                 (u, v)

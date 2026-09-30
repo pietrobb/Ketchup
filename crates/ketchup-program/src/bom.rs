@@ -1,6 +1,6 @@
 //! Cut list, hardware list and machining plan derived from a model.
 
-use crate::model::{Face, ProgramModel};
+use crate::model::ProgramModel;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -24,8 +24,8 @@ pub struct HardwareRow {
 pub struct Operation {
     pub id: String,
     pub kind: &'static str,
-    pub face: Face,
-    /// Holes: (u, v) of the centre. Pockets: (u_min, v_min, u_max, v_max).
+    pub face: String,
+    /// Holes: face coordinates of the centre. Pockets: (u_min, v_min, u_max, v_max).
     pub position_mm: Vec<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diameter_mm: Option<f64>,
@@ -94,21 +94,16 @@ pub fn bom(model: &ProgramModel) -> Bom {
                 .map(|hole| Operation {
                     id: hole.id.clone(),
                     kind: "drill",
-                    face: hole.face,
-                    position_mm: vec![hole.u_mm, hole.v_mm],
+                    face: hole.face.clone(),
+                    position_mm: hole.at_mm.to_vec(),
                     diameter_mm: Some(hole.diameter_mm),
                     depth_mm: hole.depth_mm,
                 })
                 .chain(part.pockets.iter().map(|pocket| Operation {
                     id: pocket.id.clone(),
                     kind: "pocket",
-                    face: pocket.face,
-                    position_mm: vec![
-                        pocket.u_min_mm,
-                        pocket.v_min_mm,
-                        pocket.u_max_mm,
-                        pocket.v_max_mm,
-                    ],
+                    face: pocket.face.clone(),
+                    position_mm: pocket.rect_mm.to_vec(),
                     diameter_mm: None,
                     depth_mm: pocket.depth_mm,
                 }))

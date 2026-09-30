@@ -1,4 +1,3 @@
-use ketchup_program::model::Face;
 use ketchup_program::{
     COLLISION_UNVERIFIED, Issue, OverlapStatus, Relation, RelationKind, Report, Severity, run,
 };
@@ -36,7 +35,7 @@ fn table_map_shows_each_leg_standing_under_the_top_on_its_dowel_joint() {
         let relation = between(&report, "table/top", &leg);
         assert_eq!(relation.parts, ["table/top".to_owned(), leg.clone()]);
         assert_eq!(relation.kind, RelationKind::Contact);
-        assert_eq!(relation.faces, Some([Face::ZMin, Face::ZMax]));
+        assert_eq!(relation.faces, Some(["z-".to_owned(), "z+".to_owned()]));
         assert_eq!(relation.area_mm2, Some(4900.0));
         // The leg lies below the top.
         assert_eq!(relation.direction, [0.0, 0.0, -1.0]);

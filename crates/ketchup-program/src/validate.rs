@@ -3,6 +3,7 @@
 
 use crate::eval::{TOLERANCE_MM, contact};
 use crate::exact::ExactShapes;
+use crate::faces::FaceKind;
 use crate::frame::{self, Obb};
 use crate::model::{
     Part, ProgramBooleanKind, ProgramModel, ProgramPartBody, ProgramProfileSegment,
@@ -88,8 +89,16 @@ pub(crate) fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3]))
 
 pub(crate) fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
     part.pockets.iter().map(|pocket| {
-        let (min, max) = pocket.local_box(part.size_mm);
-        Obb::new(part.at_mm, &part.rotation, min, max).world_bounds()
+        pocket.corners().iter().fold(
+            ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+            |(min, max), corner| {
+                let point = part.to_world(part.after_operations((*corner, [0.0; 3])).0);
+                (
+                    std::array::from_fn(|i| min[i].min(point[i])),
+                    std::array::from_fn(|i| max[i].max(point[i])),
+                )
+            },
+        )
     })
 }
 
@@ -337,29 +346,41 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for part in &model.parts {
         for hole in &part.holes {
-            let (u_axis, v_axis) = hole.face.uv_axes();
             let radius = hole.diameter_mm / 2.0;
-            let thickness = part.size_mm[hole.face.axis()];
-            let inside = hole.u_mm - radius >= -TOLERANCE_MM
-                && hole.u_mm + radius <= part.size_mm[u_axis] + TOLERANCE_MM
-                && hole.v_mm - radius >= -TOLERANCE_MM
-                && hole.v_mm + radius <= part.size_mm[v_axis] + TOLERANCE_MM;
-            let entry = part.to_world(hole.face.local_point(part.size_mm, hole.u_mm, hole.v_mm));
-            if !inside {
+            let (local_entry, local_inward) = part.after_operations((hole.entry_mm, hole.inward));
+            let entry = part.to_world(local_entry);
+            let inward = frame::apply(&part.rotation, local_inward);
+            let thickness = part.reach(inward) - frame::dot(entry, inward);
+            // The hole's circle, in face coordinates, must lie on the face.
+            let fit = part.face_frame(&hole.face).ok().map(|face| {
+                let at = face.coordinates(local_entry);
+                let reach = match face.kind {
+                    FaceKind::Planar => [radius, radius],
+                    FaceKind::Cylindrical { radius_mm } => {
+                        [(radius / radius_mm).to_degrees(), radius]
+                    }
+                };
+                let inside = (0..2).all(|i| {
+                    at[i] - reach[i] >= face.min[i] - TOLERANCE_MM
+                        && at[i] + reach[i] <= face.max[i] + TOLERANCE_MM
+                });
+                (inside, at, face)
+            });
+            if let Some((false, at, face)) = fit {
                 issues.push(Issue {
                     severity: Severity::Error,
                     kind: "hole_outside_face",
                     parts: vec![part.name.clone()],
                     message: format!(
-                        "hole {} (d{}) at ({}, {}) on face {} of {} does not fit on the {} x {} mm face",
+                        "hole {} (d{}) at ({}, {}) on face {} of {} does not fit on the face, which spans {} x {}",
                         hole.id,
                         hole.diameter_mm,
-                        round(hole.u_mm),
-                        round(hole.v_mm),
-                        hole.face.name(),
+                        round(at[0]),
+                        round(at[1]),
+                        hole.face,
                         part.name,
-                        round(part.size_mm[u_axis]),
-                        round(part.size_mm[v_axis]),
+                        round(face.max[0] - face.min[0]),
+                        round(face.max[1] - face.min[1]),
                     ),
                     where_mm: Some((entry.map(round), entry.map(round))),
                     hint: "Move the hole inside the face or enlarge the part.".to_owned(),

@@ -1,4 +1,4 @@
-use ketchup_program::model::{Face, ProgramModel, ProgramPartBody};
+use ketchup_program::model::{ProgramModel, ProgramPartBody};
 use ketchup_program::{COLLISION_UNVERIFIED, Severity, run, validate};
 use std::collections::BTreeMap;
 
@@ -25,7 +25,7 @@ fn world_holes(model: &ProgramModel, part: &str, prefix: &str) -> Vec<[i64; 3]> 
         .iter()
         .filter(|hole| hole.id.starts_with(prefix))
         .map(|hole| {
-            let world = part.to_world(hole.face.local_point(part.size_mm, hole.u_mm, hole.v_mm));
+            let world = part.to_world(part.after_operations((hole.entry_mm, hole.inward)).0);
             #[allow(clippy::cast_possible_truncation)]
             world.map(|value| (value * 1000.0).round() as i64)
         })
@@ -115,8 +115,8 @@ fn dowel_holes_enter_the_shared_face_of_each_board() {
         .iter()
         .find(|hole| hole.id.starts_with("dowel:carcass/left"))
         .unwrap();
-    assert_eq!(side_hole.face, Face::XMax);
-    assert_eq!(bottom_hole.face, Face::XMin);
+    assert_eq!(side_hole.face, "x+");
+    assert_eq!(bottom_hole.face, "x-");
     // 8x30 into the face of an 18 mm side: 12 mm leaves a third; the bottom's
     // edge takes the rest of the dowel, both with 1.5 mm clearance.
     assert!((side_hole.depth_mm - 12.0).abs() < 1e-9);
@@ -224,25 +224,21 @@ fn hinges_hang_an_inset_door_across_its_reveal() {
     let cups = holes_of(&model, "door");
     assert_eq!(cups.len(), 2);
     for cup in &cups {
-        assert_eq!(cup.face, Face::YMax, "the cups face into the carcass");
+        assert_eq!(cup.face, "y+", "the cups face into the carcass");
         assert!((cup.diameter_mm - 35.0).abs() < 1e-9 && (cup.depth_mm - 13.0).abs() < 1e-9);
         // 4 mm from the hinge edge to the rim: centre 21.5 mm in.
-        assert!((cup.u_mm - 21.5).abs() < 1e-9, "{}", cup.u_mm);
+        assert!((cup.at_mm[0] - 21.5).abs() < 1e-9, "{}", cup.at_mm[0]);
     }
-    let heights: Vec<f64> = cups.iter().map(|cup| cup.v_mm).collect();
+    let heights: Vec<f64> = cups.iter().map(|cup| cup.at_mm[1]).collect();
     assert_eq!(heights, vec![100.0, 460.0]);
     let plates = holes_of(&model, "left");
     assert_eq!(plates.len(), 4);
     for plate in &plates {
-        assert_eq!(
-            plate.face,
-            Face::XMax,
-            "plates sit on the side's inner face"
-        );
+        assert_eq!(plate.face, "x+", "plates sit on the side's inner face");
         // 37 mm behind the door's inner face (y = 18).
-        assert!((plate.u_mm - 55.0).abs() < 1e-9, "{}", plate.u_mm);
+        assert!((plate.at_mm[0] - 55.0).abs() < 1e-9, "{}", plate.at_mm[0]);
     }
-    let mut plate_heights: Vec<f64> = plates.iter().map(|plate| plate.v_mm).collect();
+    let mut plate_heights: Vec<f64> = plates.iter().map(|plate| plate.at_mm[1]).collect();
     plate_heights.sort_by(f64::total_cmp);
     assert_eq!(plate_heights, vec![104.0, 136.0, 464.0, 496.0]);
     let hinges = report
@@ -264,12 +260,12 @@ fn hinges_hang_an_overlay_door_on_the_carcass_front() {
     assert!(report.issues.is_empty(), "{:#?}", report.issues);
     let model = evaluated.model;
     for cup in holes_of(&model, "door") {
-        assert_eq!(cup.face, Face::YMax);
-        assert!((cup.u_mm - 21.5).abs() < 1e-9, "{}", cup.u_mm);
+        assert_eq!(cup.face, "y+");
+        assert!((cup.at_mm[0] - 21.5).abs() < 1e-9, "{}", cup.at_mm[0]);
     }
     for plate in holes_of(&model, "left") {
-        assert_eq!(plate.face, Face::XMax);
-        assert!((plate.u_mm - 37.0).abs() < 1e-9, "{}", plate.u_mm);
+        assert_eq!(plate.face, "x+");
+        assert!((plate.at_mm[0] - 37.0).abs() < 1e-9, "{}", plate.at_mm[0]);
     }
 }
 
@@ -793,7 +789,10 @@ fn contact_and_dowels_work_on_rotated_parts_in_their_own_frames() {
         assert_eq!(flat.len(), turned.len());
         for (a, b) in flat.iter().zip(turned) {
             assert_eq!(a.face, b.face);
-            assert!((a.u_mm - b.u_mm).abs() < 1.0e-6 && (a.v_mm - b.v_mm).abs() < 1.0e-6);
+            assert!(
+                (a.at_mm[0] - b.at_mm[0]).abs() < 1.0e-6
+                    && (a.at_mm[1] - b.at_mm[1]).abs() < 1.0e-6
+            );
         }
     }
     assert_eq!(turned.model.joints.len(), 1);
@@ -808,7 +807,7 @@ fn contact_between_faces_turned_in_their_plane_is_the_overlap_polygon() {
     );
     let (base, top) = (model.part("base").unwrap(), model.part("top").unwrap());
     let contact = ketchup_program::eval::contact(base, top).unwrap();
-    assert_eq!((contact.face_a, contact.face_b), (Face::ZMax, Face::ZMin));
+    assert_eq!([contact.face_a, contact.face_b], ["z+", "z-"]);
     assert_eq!(contact.points_mm.len(), 4);
     let half_diagonal = 50.0 * std::f64::consts::SQRT_2;
     assert_close(

@@ -248,3 +248,81 @@ if face_at(ring, (100, 50, 40)) != None:
     .message;
     assert!(error.contains("does not exist on \"b\""), "{error}");
 }
+
+const KNOB: &str = "knob = revolve(\"knob\", axis = [(0, 0), (0, 1)], profile = [\
+[\"bottom\", [0, 0], [30, 0]], [\"side\", [30, 0], [30, 100]], \
+[\"top\", [30, 100], [0, 100]], [\"axis\", [0, 100], [0, 0]]])\n";
+
+#[test]
+fn holes_go_into_the_caps_and_the_round_side_of_a_revolved_part() {
+    let knob = part(
+        &format!(
+            "{KNOB}hole(knob, \"top\", at = (0, 0), diameter = 10, depth = 20)\n\
+             hole(knob, face(knob, \"side\"), at = (90, 50), diameter = 8, depth = 10)\n\
+             pocket(knob, \"bottom\", rect = (-5, -5, 5, 5), depth = 3)\n"
+        ),
+        "knob",
+    );
+    let [cap, radial] = [&knob.holes[0], &knob.holes[1]];
+    assert_near(cap.entry_mm, [0.0, 100.0, 0.0], "cap entry");
+    assert_near(cap.inward, [0.0, -1.0, 0.0], "cap inward");
+    // 90 degrees round from +x about +y is -z; the drill points at the axis.
+    assert_near(radial.entry_mm, [0.0, 50.0, -30.0], "radial entry");
+    assert_near(radial.inward, [0.0, 0.0, 1.0], "radial inward");
+    let tools = knob.machining_tools();
+    let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(names, ["hole h1", "hole h2", "pocket p1"]);
+    let drill = &tools[1].tool;
+    assert_near(drill.at_mm, [0.0, 50.0, -30.0], "drill placed at the entry");
+    assert_near(
+        std::array::from_fn(|row| drill.rotation[row][2]),
+        [0.0, 0.0, 1.0],
+        "drill runs along the hole",
+    );
+    let (min, max) = drill.local_bounds();
+    assert!((max[2] - min[2] - 10.0).abs() < 1e-9 && (max[0] - min[0] - 8.0).abs() < 1e-9);
+    let error = run(
+        "faces.star",
+        &format!("{KNOB}pocket(knob, \"side\", rect = (0, 0, 10, 10), depth = 2)\n"),
+        &Default::default(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(error.contains("curved"), "{error}");
+    let error = run(
+        "faces.star",
+        &format!("{KNOB}b = box(\"b\", (10, 10, 10))\nhole(knob, face(b, \"z+\"), at = (1, 1), diameter = 2, depth = 2)\n"),
+        &Default::default(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(error.contains("belongs to"), "{error}");
+}
+
+#[test]
+fn a_hole_drilled_after_a_mirror_lands_where_the_face_now_is() {
+    let before = part(
+        "b = box(\"b\", (100, 60, 40))\n\
+         hole(b, \"x+\", at = (20, 10), diameter = 8, depth = 30)\n\
+         mirror(b, axis = \"x\")\n",
+        "b",
+    );
+    let after = part(
+        "b = box(\"b\", (100, 60, 40))\n\
+         mirror(b, axis = \"x\")\n\
+         hole(b, \"x+\", at = (20, 10), diameter = 8, depth = 30)\n",
+        "b",
+    );
+    for b in [&before, &after] {
+        let hole = &b.holes[0];
+        // Drilled into the body before the mirror, from its x+ end ...
+        assert_near(hole.entry_mm, [100.0, 20.0, 10.0], "body entry");
+        assert_near(hole.inward, [-1.0, 0.0, 0.0], "body inward");
+        // ... which the mirror carries to x = 0, still named x+.
+        let (entry, inward) = b.after_operations((hole.entry_mm, hole.inward));
+        assert_near(entry, [0.0, 20.0, 10.0], "final entry");
+        assert_near(inward, [1.0, 0.0, 0.0], "final inward");
+        assert_near(world(b, "x+").origin_mm, [0.0, 0.0, 0.0], "mirrored face");
+    }
+    assert_eq!(before.holes, after.holes);
+}

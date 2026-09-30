@@ -26,7 +26,7 @@ pub use bom::{Bom, bom};
 pub use eval::{Evaluated, ProgramError, SourceLines, evaluate};
 pub use exact::{ExactPair, ExactShapes, exact_candidates};
 pub use model::{
-    Face, ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
+    ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
 };
 pub use relations::{OverlapStatus, Relation, RelationKind, relations, relations_with};

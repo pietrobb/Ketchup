@@ -12,10 +12,10 @@ use crate::expect::{Comparison, Direction, Expectation, Measure};
 use crate::faces::{FaceFrame, FaceKind};
 use crate::frame::{self, Mat3};
 use crate::model::{
-    Face, Hole, Joint, Param, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
-    ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramLoftSection,
-    ProgramMirror, ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment,
-    ProgramProfileSegment, ProgramShell, profile_bounds,
+    Hole, Joint, Param, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind, ProgramCut,
+    ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramLoftSection, ProgramMirror,
+    ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment, ProgramProfileSegment,
+    ProgramShell, profile_bounds,
 };
 use ketchup_core::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use serde::Serialize;
@@ -425,9 +425,31 @@ fn part_name<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<String> {
         })
 }
 
-fn box_face(value: &str) -> anyhow::Result<Face> {
-    Face::parse(value)
-        .ok_or_else(|| anyhow::anyhow!("face must be one of x-, x+, y-, y+, z-, z+; got {value:?}"))
+/// A face name, or a face value from face()/faces()/face_at() (whose part
+/// must be `part` when given).
+fn face_name<'v>(value: Value<'v>, heap: &'v Heap, part: Option<&str>) -> anyhow::Result<String> {
+    if let Some(name) = value.unpack_str() {
+        return Ok(name.to_owned());
+    }
+    let attribute = |name: &str| {
+        value
+            .get_attr(name, heap)
+            .ok()
+            .flatten()
+            .and_then(|value| value.unpack_str().map(ToOwned::to_owned))
+    };
+    let (Some(name), Some(owner)) = (attribute("name"), attribute("part")) else {
+        anyhow::bail!(
+            "expected a face name like \"z+\" or a face from face()/faces()/face_at(), got {}",
+            value.get_type()
+        );
+    };
+    if let Some(part) = part
+        && owner != part
+    {
+        anyhow::bail!("face {name:?} belongs to {owner:?}, not {part:?}");
+    }
+    Ok(name)
 }
 
 fn items<'v>(value: Value<'v>, heap: &'v Heap, what: &str) -> anyhow::Result<Vec<Value<'v>>> {
@@ -446,7 +468,7 @@ fn expect_direction<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Dire
     {
         return Ok(Direction::Face {
             part: part_name(*part, heap)?,
-            face: box_face(face_name)?,
+            face: face_name.to_owned(),
         });
     }
     let vector = numbers::<3>(value, heap, "direction")?;
@@ -479,9 +501,12 @@ fn expect_measure<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Measur
             face: values
                 .get(3)
                 .map(|face_name| {
-                    box_face(face_name.unpack_str().ok_or_else(|| {
-                        anyhow::anyhow!("contact_area face must be a string like \"z+\"")
-                    })?)
+                    face_name
+                        .unpack_str()
+                        .map(ToOwned::to_owned)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("contact_area face must be a string like \"z+\"")
+                        })
                 })
                 .transpose()?,
         },
@@ -921,9 +946,9 @@ pub struct Contact {
     /// Local axis of the first part the touching faces are perpendicular to.
     pub axis: usize,
     /// Face of the first part that touches the second, in the first part's frame.
-    pub face_a: Face,
+    pub face_a: String,
     /// Face of the second part that touches the first, in its own frame.
-    pub face_b: Face,
+    pub face_b: String,
     /// World bounds of the patch.
     pub min_mm: [f64; 3],
     pub max_mm: [f64; 3],
@@ -965,8 +990,11 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
             if area_ok {
                 min[axis] = plane;
                 max[axis] = plane;
-                let face_a = Face::from_axis(axis, max_side);
-                let (u_axis, v_axis) = face_a.uv_axes();
+                let (u_axis, v_axis) = match axis {
+                    0 => (1, 2),
+                    1 => (0, 2),
+                    _ => (0, 1),
+                };
                 let unit = |index: usize| -> [f64; 3] {
                     std::array::from_fn(|i| if i == index { 1.0 } else { 0.0 })
                 };
@@ -978,8 +1006,8 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
                 };
                 return Some(Contact {
                     axis,
-                    face_a,
-                    face_b: face_a.opposite(),
+                    face_a: panel_face(axis, max_side),
+                    face_b: panel_face(axis, !max_side),
                     min_mm: min,
                     max_mm: max,
                     normal: unit(axis).map(|value| if max_side { value } else { -value }),
@@ -1000,6 +1028,15 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
     None
 }
 
+/// Name of the box face across local `axis` at its far (`true`) or near end.
+fn panel_face(axis: usize, far: bool) -> String {
+    crate::faces::PANEL_FACES
+        .iter()
+        .find(|(_, face_axis, face_far)| *face_axis == axis && *face_far == far)
+        .map(|(name, ..)| (*name).to_owned())
+        .unwrap_or_default()
+}
+
 fn rotated_contact(a: &Part, b: &Part) -> Option<Contact> {
     let patch = a.obb().face_contact(&b.obb(), TOLERANCE_MM)?;
     let (min_mm, max_mm) = patch.points.iter().fold(
@@ -1013,8 +1050,8 @@ fn rotated_contact(a: &Part, b: &Part) -> Option<Contact> {
     );
     Some(Contact {
         axis: patch.face.0,
-        face_a: Face::from_axis(patch.face.0, patch.face.1),
-        face_b: Face::from_axis(patch.other_face.0, patch.other_face.1),
+        face_a: panel_face(patch.face.0, patch.face.1),
+        face_b: panel_face(patch.other_face.0, patch.other_face.1),
         min_mm,
         max_mm,
         normal: patch.normal,
@@ -1026,26 +1063,8 @@ fn rotated_contact(a: &Part, b: &Part) -> Option<Contact> {
     })
 }
 
-/// A mirror is a part's last step: its faces keep their names on the other
-/// side, so later steps would address them in the wrong place.
-fn reject_mirrored(part: &Part, step: &str) -> anyhow::Result<()> {
-    if let Some(mirror) = part
-        .operations
-        .iter()
-        .find(|operation| matches!(operation, ProgramOperation::Mirror(_)))
-    {
-        anyhow::bail!(
-            "{step:?} on {:?} comes after its mirror {:?}; shape the part first and mirror it last",
-            part.name,
-            mirror.name()
-        );
-    }
-    Ok(())
-}
-
 /// Appends one operation to a part, keeping operation names unique.
 fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result<()> {
-    reject_mirrored(part, operation.name())?;
     let name = operation.name();
     if part
         .operations
@@ -1474,7 +1493,8 @@ fn builtins(builder: &mut GlobalsBuilder) {
 
     /// Reflects the part's solid, as shaped so far, across its own middle
     /// plane across local `axis` ("x", "y" or "z"); its bounds stay. Faces keep
-    /// the names of the faces they mirror. It is the part's last shaping step.
+    /// the names of the faces they mirror, so later steps find them where
+    /// they now are.
     fn mirror<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         #[starlark(require = named, default = "x")] axis: &str,
@@ -1495,11 +1515,6 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
-            if !(part.holes.is_empty() && part.pockets.is_empty()) {
-                anyhow::bail!(
-                    "mirror({part_name:?}): the part has holes or pockets; mirror it first and drill the mirrored part"
-                );
-            }
             let (min, max) = part.local_bounds();
             add_operation(
                 part,
@@ -1902,11 +1917,13 @@ fn builtins(builder: &mut GlobalsBuilder) {
         Ok(result)
     }
 
-    /// Drills a hole perpendicular to `face`. Give either face coordinates
-    /// `at=(u, v)` or a world point `world=(x, y, z)` on the face.
+    /// Drills a hole into `face` (a face name or a face() value) along its
+    /// inward normal. Give either face coordinates `at=(u, v)` (on a curved
+    /// face `at=(angle, v)`, see face()) or a world point `world=(x, y, z)`
+    /// on the face.
     fn hole<'v>(
         #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] face: &str,
+        #[starlark(require = pos)] face: Value<'v>,
         #[starlark(require = named)] at: Option<Value<'v>>,
         #[starlark(require = named)] world: Option<Value<'v>>,
         #[starlark(require = named)] diameter: Value<'v>,
@@ -1916,7 +1933,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let name = part_name(part, heap)?;
-        let face = box_face(face)?;
+        let face = face_name(face, heap, Some(&name))?;
         let diameter = number(diameter, "diameter")?;
         let depth = number(depth, "depth")?;
         if diameter <= 0.0 || depth <= 0.0 {
@@ -1932,18 +1949,18 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         record_source(eval, &state, &[&name]);
         with_part(&state, &name, |part| {
-            let (u, v) = match (at, world) {
-                (Some([u, v]), None) => (u, v),
-                (None, Some(world)) => {
-                    let local = part.to_local(world);
-                    let (u_axis, v_axis) = face.uv_axes();
-                    (local[u_axis], local[v_axis])
-                }
+            let frame = part
+                .face_frame(&face)
+                .map_err(|error| anyhow::anyhow!("hole in {name:?}: {error}"))?;
+            let at = match (at, world) {
+                (Some(at), None) => at,
+                (None, Some(world)) => frame.coordinates(part.to_local(world)),
                 _ => anyhow::bail!(
                     "hole in {name:?}: give exactly one of at=(u, v) or world=(x, y, z)"
                 ),
             };
-            reject_mirrored(part, "hole")?;
+            let (entry_mm, inward) =
+                part.before_operations((frame.point(at), frame.normal_at(at).map(|value| -value)));
             let id = id.unwrap_or_else(|| format!("h{}", part.holes.len() + 1));
             if part.holes.iter().any(|hole| hole.id == id) {
                 anyhow::bail!("hole id {id:?} is used twice on part {name:?}");
@@ -1951,8 +1968,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
             part.holes.push(Hole {
                 id,
                 face,
-                u_mm: u,
-                v_mm: v,
+                at_mm: at,
+                entry_mm,
+                inward,
                 diameter_mm: diameter,
                 depth_mm: depth,
             });
@@ -1961,11 +1979,12 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Mills a rectangular pocket into `face`. `rect=(u_min, v_min, u_max, v_max)`
-    /// in face coordinates; it may extend past the face edges (grooves, rabbets).
+    /// Mills a rectangular pocket into the flat `face` (a name or a face()
+    /// value). `rect=(u_min, v_min, u_max, v_max)` in face coordinates; it may
+    /// extend past the face edges (grooves, rabbets).
     fn pocket<'v>(
         #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] face: &str,
+        #[starlark(require = pos)] face: Value<'v>,
         #[starlark(require = named)] rect: Value<'v>,
         #[starlark(require = named)] depth: Value<'v>,
         #[starlark(require = named)] id: Option<Value<'v>>,
@@ -1973,8 +1992,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let name = part_name(part, heap)?;
-        let face = box_face(face)?;
-        let [u_min, v_min, u_max, v_max] = numbers::<4>(rect, heap, "rect")?;
+        let face = face_name(face, heap, Some(&name))?;
+        let rect_mm = numbers::<4>(rect, heap, "rect")?;
+        let [u_min, v_min, u_max, v_max] = rect_mm;
         let depth = number(depth, "depth")?;
         let id = text(id, "id")?;
         if u_max - u_min <= TOLERANCE_MM || v_max - v_min <= TOLERANCE_MM || depth <= 0.0 {
@@ -1985,7 +2005,20 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         record_source(eval, &state, &[&name]);
         with_part(&state, &name, |part| {
-            reject_mirrored(part, "pocket")?;
+            let frame = part
+                .face_frame(&face)
+                .map_err(|error| anyhow::anyhow!("pocket in {name:?}: {error}"))?;
+            if frame.kind != FaceKind::Planar {
+                anyhow::bail!(
+                    "pocket in {name:?}: face {face:?} is curved; a pocket is milled into a flat face"
+                );
+            }
+            let (corner_mm, inward) = part.before_operations((
+                frame.point([u_min, v_min]),
+                frame.normal.map(|value| -value),
+            ));
+            let (_, u) = part.before_operations(([0.0; 3], frame.u));
+            let (_, v) = part.before_operations(([0.0; 3], frame.v));
             let id = id.unwrap_or_else(|| format!("p{}", part.pockets.len() + 1));
             if part.pockets.iter().any(|pocket| pocket.id == id) {
                 anyhow::bail!("pocket id {id:?} is used twice on part {name:?}");
@@ -1993,10 +2026,11 @@ fn builtins(builder: &mut GlobalsBuilder) {
             part.pockets.push(Pocket {
                 id,
                 face,
-                u_min_mm: u_min,
-                v_min_mm: v_min,
-                u_max_mm: u_max,
-                v_max_mm: v_max,
+                rect_mm,
+                corner_mm,
+                u,
+                v,
+                inward,
                 depth_mm: depth,
             });
             part.refresh_feature_tree();
@@ -2030,8 +2064,8 @@ fn builtins(builder: &mut GlobalsBuilder) {
             None => Value::new_none(),
             Some(contact) => heap.alloc(AllocStruct([
                 ("axis", heap.alloc(["x", "y", "z"][contact.axis])),
-                ("face_a", heap.alloc(contact.face_a.name())),
-                ("face_b", heap.alloc(contact.face_b.name())),
+                ("face_a", heap.alloc(contact.face_a.as_str())),
+                ("face_b", heap.alloc(contact.face_b.as_str())),
                 ("min", point(contact.min_mm)),
                 ("max", point(contact.max_mm)),
                 ("normal", point(contact.normal)),

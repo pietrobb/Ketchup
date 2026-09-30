@@ -223,21 +223,28 @@ fn a_mirrored_copy_is_the_reflection_across_a_world_plane() {
 }
 
 #[test]
-fn a_mirror_must_be_the_last_step_of_an_undrilled_part() {
-    let drilled = eval_error(&format!(
-        "{BLOCK}hole(block, \"z+\", at=(20, 30), diameter=8, depth=10)\nmirror(block)"
-    ));
-    assert!(drilled.contains("has holes or pockets"), "{drilled}");
-    let then_hole = eval_error(&format!(
-        "{BLOCK}mirror(block)\nhole(block, \"z+\", at=(20, 30), diameter=8, depth=10)"
-    ));
-    assert!(then_hole.contains("comes after its mirror"), "{then_hole}");
-    let then_fillet = eval_error(&format!(
-        "{BLOCK}mirror(block)\nfillet(block, edges=[[\"x+\", \"y+\"]], radius=3)"
-    ));
-    assert!(
-        then_fillet.contains("comes after its mirror"),
-        "{then_fillet}"
+fn a_mirror_can_come_before_or_after_holes_and_finishes() {
+    let mut worker = worker();
+    let drilled = A * B * C - PI * 16.0 * 10.0;
+    for program in [
+        format!("{BLOCK}hole(block, \"z+\", at=(20, 30), diameter=8, depth=10)\nmirror(block)"),
+        format!("{BLOCK}mirror(block)\nhole(block, \"z+\", at=(20, 30), diameter=8, depth=10)"),
+    ] {
+        assert_volume(volume(&mut worker, &program, "block"), drilled);
+        // The mirror carries the hole from x = 20 to x = 80 either way.
+        let model = program_model(&program);
+        let block = model.part("block").unwrap();
+        let hole = &block.holes[0];
+        assert_point(
+            block.after_operations((hole.entry_mm, hole.inward)).0,
+            [80.0, 30.0, 40.0],
+        );
+    }
+    let rounded =
+        format!("{BLOCK}mirror(block)\nfillet(block, edges=[[\"x+\", \"y+\"]], radius=3)");
+    assert_volume(
+        volume(&mut worker, &rounded, "block"),
+        A * B * C - fillet_loss(3.0, C),
     );
     let axis = eval_error(&format!("{BLOCK}mirror(block, axis=\"w\")"));
     assert!(axis.contains("axis must be"), "{axis}");

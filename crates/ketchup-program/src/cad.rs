@@ -9,14 +9,16 @@ use ketchup_core::assistant_sidecar::{
     AssistantPanelPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 
+/// A box carries its holes and pockets, in its frame before its operations;
+/// other bodies get them as subtracted tools (`Part::machining_tools`).
 fn panel(part: &Part) -> AssistantCadEditOperation {
     let holes = part
         .holes
         .iter()
         .map(|hole| AssistantPanelHole {
             id: hole.id.clone(),
-            entry_local_mm: hole.face.local_point(part.size_mm, hole.u_mm, hole.v_mm),
-            inward_unit_local: hole.face.inward(),
+            entry_local_mm: hole.entry_mm,
+            inward_unit_local: hole.inward,
             diameter_mm: hole.diameter_mm,
             depth_mm: hole.depth_mm,
         })
@@ -25,12 +27,12 @@ fn panel(part: &Part) -> AssistantCadEditOperation {
         .pockets
         .iter()
         .map(|pocket| {
-            let (min, max) = pocket.local_box(part.size_mm);
+            let (min, max) = pocket.local_box();
             AssistantPanelPocket {
                 id: pocket.id.clone(),
                 min_local_mm: min,
                 max_local_mm: max,
-                inward_unit_local: pocket.face.inward(),
+                inward_unit_local: pocket.inward,
             }
         })
         .collect();

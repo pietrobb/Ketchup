@@ -204,13 +204,17 @@ impl<'a> OperationPlanner<'a> {
         }
     }
 
-    /// Applies `part`'s operations in program order to its body solid
-    /// `target`; returns the final solid.
+    /// Drills `part`'s holes and pockets into its body solid `target` (a box
+    /// carries its own), then applies its operations in program order;
+    /// returns the final solid.
     pub fn apply(
         &mut self,
         part: &Part,
-        target: FeatureId,
+        mut target: FeatureId,
     ) -> Result<FeatureId, AssistantRejection> {
+        for boolean in part.machining_tools() {
+            target = self.boolean(part, &boolean, target, PART_BODY)?;
+        }
         self.apply_in(part, target, PART_BODY)
     }
 

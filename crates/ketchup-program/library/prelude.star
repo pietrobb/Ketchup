@@ -416,8 +416,12 @@ def ellipse(rx, ry, center = (0, 0), angle = 0, name = "side"):
 
 #@topic machining: Holes, pockets, grooves, rebates, trims and booleans
 #
-# Positions (u, v) are in the face's own coordinates (see basics).
+# Positions (u, v) are in the face's own coordinates (see basics). `face` is
+# a face name or a face() value of any part: a hole goes into any flat or
+# round face along its inward normal, a pocket into any flat face, before or
+# after a mirror or boolean.
 #   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, id=)
+#     on a round face at=(angle in degrees, v): a radial hole, see face()
 #   pocket(part, face, rect=(u_min, v_min, u_max, v_max), depth=, id=)
 #   pocket_shape(part, face, profile, depth, name=)  -> part: any closed
 #     profile (points or named segments in (u, v)) milled into any face of any
@@ -443,7 +447,8 @@ def ellipse(rx, ry, center = (0, 0), angle = 0, name = "side"):
 #     `thickness` thick inside it, open at the listed faces (at least one);
 #     the inner wall along face F is "<name>.F"
 #   mirror(part, axis="x", name=)  -> part: its solid reflected across its
-#     own middle plane across local axis; the last step, no holes or pockets
+#     own middle plane across local axis; faces keep their names, so later
+#     steps find them where they now are
 #   mirrored(part, name, point, normal)  -> a new part: the mirror image of
 #     part across the world plane through `point` with `normal`
 #   subtract(part, tool, name=)  -> part: part minus tool

@@ -7,7 +7,7 @@
 use crate::eval::{TOLERANCE_MM, contact};
 use crate::exact::ExactShapes;
 use crate::frame;
-use crate::model::{Face, Part, ProgramModel};
+use crate::model::{Part, ProgramModel};
 use crate::relations::polygon_area;
 use crate::validate::{Issue, Severity};
 use serde::Serialize;
@@ -18,7 +18,7 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     World([f64; 3]),
-    Face { part: String, face: Face },
+    Face { part: String, face: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -34,7 +34,7 @@ pub enum Measure {
         a: String,
         b: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        face: Option<Face>,
+        face: Option<String>,
     },
 }
 
@@ -103,12 +103,8 @@ fn direction(model: &ProgramModel, direction: &Direction) -> Option<[f64; 3]> {
     match direction {
         Direction::World(vector) => frame::normalized(*vector),
         Direction::Face { part, face } => {
-            let axis = frame::axis(&find(model, part)?.rotation, face.axis());
-            Some(if face.is_max() {
-                axis
-            } else {
-                axis.map(|value| -value)
-            })
+            let part = find(model, part)?;
+            Some(part.world_face(&part.face_frame(face).ok()?).normal)
         }
     }
 }
@@ -137,7 +133,9 @@ fn measure(model: &ProgramModel, exact: &ExactShapes, measure: &Measure) -> Opti
         Measure::ContactArea { a, b, face } => {
             let (a, b) = (find(model, a)?, find(model, b)?);
             let patch = contact(a, b);
-            let on_face = face.is_none_or(|face| patch.as_ref().is_some_and(|p| p.face_a == face));
+            let on_face = face
+                .as_ref()
+                .is_none_or(|face| patch.as_ref().is_some_and(|p| &p.face_a == face));
             match (exact.decides(a, b), patch) {
                 (Some(pair), _) if on_face => pair.contact_area_mm2,
                 (Some(_), _) => 0.0,

@@ -251,3 +251,58 @@ fn a_wrong_face_or_too_large_radius_is_explained() {
     .unwrap_err();
     assert!(error.contains("finish did not complete"), "{error}");
 }
+
+const KNOB: &str = "knob = revolve(\"knob\", axis=[[0, 0], [0, 1]], profile=[[\"bottom\", [0, 0], [30, 0]], [\"side\", [30, 0], [30, 100]], [\"top\", [30, 100], [0, 100]], [\"axis\", [0, 100], [0, 0]]])\n";
+
+#[test]
+fn holes_and_pockets_drill_a_revolved_part_on_its_caps_and_round_side() {
+    let mut worker = worker();
+    let (radius, height) = (30.0_f64, 100.0_f64);
+    let whole = PI * radius * radius * height;
+    assert_volume(volume(&mut worker, KNOB, "knob"), whole);
+    let cap = format!("{KNOB}hole(knob, \"top\", at=[0, 0], diameter=10, depth=20)");
+    assert_volume(volume(&mut worker, &cap, "knob"), whole - PI * 25.0 * 20.0);
+    // A radial hole starts where the round side touches its tangent plane,
+    // so the drill loses s(x) = R - sqrt(R^2 - x^2) of its length across it.
+    let (r, depth) = (4.0_f64, 10.0_f64);
+    let steps = 2000;
+    let short: f64 = (0..=steps)
+        .map(|index| {
+            let theta = -PI / 2.0 + PI * f64::from(index) / f64::from(steps);
+            let x = r * theta.sin();
+            let weight = if index == 0 || index == steps {
+                1.0
+            } else if index % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            weight * (radius - (radius * radius - x * x).sqrt()) * 2.0 * r * r * theta.cos().powi(2)
+        })
+        .sum::<f64>()
+        * PI
+        / f64::from(steps)
+        / 3.0;
+    let radial = format!("{KNOB}hole(knob, \"side\", at=[90, 50], diameter=8, depth=10)");
+    assert_volume(
+        volume(&mut worker, &radial, "knob"),
+        whole - (PI * r * r * depth - short),
+    );
+    let pocket = format!("{KNOB}pocket(knob, \"bottom\", rect=[-5, -8, 5, 8], depth=3)");
+    assert_volume(
+        volume(&mut worker, &pocket, "knob"),
+        whole - 10.0 * 16.0 * 3.0,
+    );
+}
+
+#[test]
+fn a_hole_after_a_mirror_drills_the_mirrored_part() {
+    let mut worker = worker();
+    // A wedge mirrored across its middle, then drilled into its back, which
+    // the mirror moved to x = 100: the whole drill lies in material only
+    // there.
+    let wedge = "w = extrude(\"w\", distance=40, profile=[[\"base\", [0, 0], [100, 0]], [\"slope\", [100, 0], [0, 50]], [\"back\", [0, 50], [0, 0]]])\nmirror(w, axis=\"x\")\n";
+    let whole = 0.5 * 100.0 * 50.0 * 40.0;
+    let drilled = format!("{wedge}hole(w, \"back\", at=[25, 20], diameter=6, depth=30)");
+    assert_volume(volume(&mut worker, &drilled, "w"), whole - PI * 9.0 * 30.0);
+}
