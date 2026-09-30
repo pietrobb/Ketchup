@@ -44,7 +44,7 @@ fn push_pull_clears_exact_preview_on_zero_or_failed_replan() {
         assert!(app.face_offset_evaluation.is_none());
         assert!(app.face_offset_preview_due.is_none());
         assert!(app.smart_push_pull_proposal.is_none());
-        assert!(app.preview_box.is_none());
+        assert!(app.tool_preview.get::<EphemeralBoxPreview>().is_none());
         assert!(app.push_pull_click_anchor_active());
         assert!(!app.confirm_push_pull_preview());
         assert_eq!(app.canonical_digest(), before);
@@ -267,8 +267,8 @@ fn push_pull_snaps_profile_corner_midpoint_and_edge_with_exact_preview_commit() 
         assert!((expected - target.z).abs() < 1e-8);
         let preview = &harness
             .state()
-            .preview_box
-            .as_ref()
+            .tool_preview
+            .get::<EphemeralBoxPreview>()
             .expect("snapped preview")
             .plan
             .preview_box;

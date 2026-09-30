@@ -929,21 +929,13 @@ impl LiveBridge {
 
     // Deliberately inspect raw state: validity-filtered preview helpers can hide stale human work.
     fn busy(app: &KetchupApp) -> bool {
-        app.preview.is_some()
-            || app.preview_box.is_some()
-            || app.preview_definition_id.is_some()
+        app.tool_preview.is_some()
             || app.smart_push_pull_proposal.is_some()
             || app.smart_push_pull_planning.is_some()
-            || app.occurrence_operation_preview.is_some()
             || app.solid_tool_target.is_some()
             || app.revolve_tool.is_some()
-            || app.revolve_preview.is_some()
-            || app.planar_offset_preview.is_some()
             || matches!(app.active_tool, ActiveTool::Helix | ActiveTool::Thread)
-            || app.sweep_preview.is_some()
             || app.loft_input_sections.is_some()
-            || app.loft_preview.is_some()
-            || app.general_finish_preview.is_some()
             || app.pocket_editor_feature.is_some()
             || app.parameter_editor_node.is_some()
             || app.parameter_provenance.is_some()

@@ -3,7 +3,7 @@ use crate::dialogs::{
     DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
     HistoryTruncationRequest, ImportDialogRequest, SaveRequest, ScriptedFileDialogs,
 };
-use crate::modal::ModalSlot;
+use crate::slot::Slot;
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
 #[path = "mesh_conversion_tests.rs"]
@@ -1703,9 +1703,29 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
     ));
 }
 
+/// A push/pull preview prepared in another window: raw preview state that is
+/// not a valid preview of this one.
+fn foreign_push_pull_preview() -> Option<crate::ToolPreview> {
+    let mut other = KetchupApp::new();
+    other.selection.select_exact(
+        SelectionId {
+            definition_id: crate::INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: crate::ElementId::Face {
+                axis: crate::Axis::Z,
+                side: crate::Side::Maximum,
+            },
+        },
+        false,
+    );
+    other.set_push_pull_distance_input("5");
+    assert!(other.start_preview(), "{}", other.digest);
+    other.tool_preview.take()
+}
+
 #[test]
 fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained() {
-    for state in 0..8 {
+    for state in 0..7 {
         let (mut app, mut bridge) = setup();
         app.selection.select_occurrence(OccurrenceId(1), true);
         let commit = proposal(&mut app, &mut bridge);
@@ -1716,7 +1736,7 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
         let camera = (app.yaw, app.pitch, app.zoom, app.pan);
         match state {
             0 => {
-                app.preview = Some(CommandBatch::new(vec![]));
+                app.tool_preview = foreign_push_pull_preview();
                 assert!(!app.has_preview());
             }
             1 => {
@@ -1766,9 +1786,6 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 );
             }
             6 => {
-                app.preview_definition_id = Some(DefinitionId(999));
-            }
-            7 => {
                 app.zoom_window_start = Some(egui::pos2(12.0, 34.0));
             }
             _ => unreachable!(),
@@ -1790,7 +1807,7 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
         assert_eq!((app.yaw, app.pitch, app.zoom, app.pan), camera);
         assert!(bridge.pending.is_some());
         match state {
-            0 => assert!(app.preview.is_some()),
+            0 => assert!(app.tool_preview.is_some()),
             1 => {
                 assert!(app.sketch_mode);
                 assert_eq!(app.line_chain_points, vec![crate::Vec3::new(1.0, 2.0, 3.0)]);
@@ -1818,8 +1835,7 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 app.move_session().unwrap().0.delta_mm,
                 crate::Vec3::new(1.0, 2.0, 3.0)
             ),
-            6 => assert_eq!(app.preview_definition_id, Some(DefinitionId(999))),
-            7 => assert_eq!(app.zoom_window_start, Some(egui::pos2(12.0, 34.0))),
+            6 => assert_eq!(app.zoom_window_start, Some(egui::pos2(12.0, 34.0))),
             _ => unreachable!(),
         }
     }
@@ -1853,17 +1869,17 @@ fn review_only_history_and_focused_editor_reject_mutations() {
             Err("read_only_document")
         );
     }
-    app.preview = Some(CommandBatch::new(vec![]));
+    app.tool_preview = foreign_push_pull_preview();
     // A committed proposal is never executed twice.
     assert_eq!(
         bridge.execute(&mut app, commit, true),
         Err("stale_document")
     );
-    assert!(app.preview.is_some());
+    assert!(app.tool_preview.is_some());
     assert_eq!(app.live_bridge_stamp(), stamp);
     assert_eq!((app.undo_step_count(), app.redo_step_count()), steps);
     app.review_candidate = None;
-    app.preview = None;
+    app.tool_preview = None;
     let new_commit = proposal(&mut app, &mut bridge);
     for request in protected_requests(&stamp, &new_commit) {
         assert_eq!(bridge.execute(&mut app, request, true), Err("busy"));

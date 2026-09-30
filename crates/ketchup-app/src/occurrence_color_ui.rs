@@ -41,8 +41,8 @@ mod tests {
                     "linear" => {
                         assert!(app.preview_linear_pattern(source, Axis::X, 100.0, 3));
                         assert_eq!(
-                            app.occurrence_operation_preview
-                                .as_ref()
+                            app.tool_preview
+                                .get::<OccurrenceOperationPreview>()
                                 .unwrap()
                                 .boxes
                                 .len(),
@@ -63,8 +63,8 @@ mod tests {
                             }
                         ));
                         assert_eq!(
-                            app.occurrence_operation_preview
-                                .as_ref()
+                            app.tool_preview
+                                .get::<OccurrenceOperationPreview>()
                                 .unwrap()
                                 .boxes
                                 .len(),
@@ -75,8 +75,8 @@ mod tests {
                     "circular" => {
                         assert!(app.preview_circular_pattern(source, Axis::Z, Vec3::ZERO, 90.0, 3));
                         assert_eq!(
-                            app.occurrence_operation_preview
-                                .as_ref()
+                            app.tool_preview
+                                .get::<OccurrenceOperationPreview>()
                                 .unwrap()
                                 .boxes
                                 .len(),

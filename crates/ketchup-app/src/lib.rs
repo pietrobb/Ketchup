@@ -135,7 +135,9 @@ use ketchup_interaction::{
     },
 };
 use ketchup_scheduler::{ExactWorkerSupervisor, assistant::AssistantCancellation};
-use modal::{Modal, ModalSlot};
+use modal::Modal;
+use slot::Slot;
+use tool_preview::ToolPreview;
 pub use view_settings::{ViewFlag, ViewSettings};
 mod assembly_ui;
 mod assistant_runtime;
@@ -155,6 +157,8 @@ mod occurrence_color_ui;
 mod planar_push_pull;
 mod program_edit;
 mod program_source_ui;
+mod slot;
+mod tool_preview;
 mod transform_operation;
 mod validator_ui;
 mod view_settings;
@@ -5143,24 +5147,14 @@ pub struct KetchupApp {
     face_workflow: face_workflow_ui::FaceWorkflowUiState,
     feature_history: feature_history_ui::FeatureHistoryUiState,
     push_pull_distance_input: String,
-    preview: Option<CommandBatch>,
-    preview_box: Option<EphemeralBoxPreview>,
     face_offset_evaluation: Option<planar_push_pull::FaceOffsetEvaluation>,
     face_offset_preview_due: Option<Instant>,
-    preview_definition_id: Option<DefinitionId>,
     smart_push_pull_proposal: Option<SmartPushPullProposal>,
     smart_push_pull_planning: Option<SmartPushPullPlanning>,
-    occurrence_operation_preview: Option<OccurrenceOperationPreview>,
     solid_tool_target: Option<SelectionId>,
     revolve_tool: Option<RevolveToolState>,
-    revolve_preview: Option<RevolvePreview>,
-    planar_offset_preview: Option<PlanarOffsetPreview>,
     helix_thread: helix_thread_ui::HelixThreadUiState,
-    sweep_preview: Option<SweepPreview>,
     loft_input_sections: Option<(DefinitionId, Vec<LoftSection>)>,
-    loft_preview: Option<LoftPreview>,
-    general_finish_preview: Option<GeneralFinishPreview>,
-    drawn_shape_preview: Option<drawn_shape::DrawnShapePreview>,
     pocket_editor_feature: Option<FeatureId>,
     pocket_depth_input: String,
     parameter_editor_node: Option<NodeId>,
@@ -5263,6 +5257,8 @@ pub struct KetchupApp {
     about_open: bool,
     /// The dialog waiting for the user, if any.
     modal: Option<Modal>,
+    /// The live tool preview shown before a commit, if any.
+    tool_preview: Option<ToolPreview>,
     mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState,
     viewport_rect: Option<Rect>,
     /// Zoom Fit was requested before the viewport was laid out or had anything
@@ -5381,24 +5377,14 @@ impl KetchupApp {
             face_workflow: face_workflow_ui::FaceWorkflowUiState::default(),
             feature_history: feature_history_ui::FeatureHistoryUiState::default(),
             push_pull_distance_input: String::new(),
-            preview: None,
-            preview_box: None,
             face_offset_evaluation: None,
             face_offset_preview_due: None,
-            preview_definition_id: None,
             smart_push_pull_proposal: None,
             smart_push_pull_planning: None,
-            occurrence_operation_preview: None,
             solid_tool_target: None,
             revolve_tool: None,
-            revolve_preview: None,
-            planar_offset_preview: None,
             helix_thread: helix_thread_ui::HelixThreadUiState::default(),
-            sweep_preview: None,
             loft_input_sections: None,
-            loft_preview: None,
-            general_finish_preview: None,
-            drawn_shape_preview: None,
             pocket_editor_feature: None,
             pocket_depth_input: String::new(),
             parameter_editor_node: None,
@@ -5494,6 +5480,7 @@ impl KetchupApp {
             shortcuts_open: false,
             about_open: false,
             modal: None,
+            tool_preview: None,
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
             viewport_rect: None,
             zoom_fit_pending: false,
@@ -5638,21 +5625,13 @@ impl KetchupApp {
     fn reset_document_presentation(&mut self) {
         self.invalidate_pending_import_reviews();
         self.cancel_mesh_conversion();
-        self.preview = None;
-        self.preview_box = None;
-        self.preview_definition_id = None;
+        self.tool_preview = None;
         self.smart_push_pull_proposal = None;
         self.smart_push_pull_planning = None;
-        self.occurrence_operation_preview = None;
         self.solid_tool_target = None;
         self.revolve_tool = None;
-        self.revolve_preview = None;
-        self.planar_offset_preview = None;
         self.clear_helix_thread_preview();
-        self.sweep_preview = None;
         self.loft_input_sections = None;
-        self.loft_preview = None;
-        self.general_finish_preview = None;
         self.pocket_editor_feature = None;
         self.pocket_depth_input.clear();
         self.parameter_editor_node = None;
@@ -14212,7 +14191,7 @@ impl KetchupApp {
             return false;
         };
         self.revolve_tool = Some(tool);
-        self.revolve_preview = None;
+        self.tool_preview.close::<RevolvePreview>();
         self.value_input = "360".to_owned();
         self.status_key = "status-revolve-axis-start";
         true
@@ -14228,7 +14207,7 @@ impl KetchupApp {
             || snapshot.canonical_digest() != tool.source.source_digest
         {
             self.revolve_tool = None;
-            self.revolve_preview = None;
+            self.tool_preview.close::<RevolvePreview>();
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -14306,7 +14285,7 @@ impl KetchupApp {
     }
 
     fn refresh_revolve_preview(&mut self) -> bool {
-        self.revolve_preview = None;
+        self.tool_preview.close::<RevolvePreview>();
         let Some(tool) = self.revolve_tool.as_ref() else {
             return false;
         };
@@ -14331,7 +14310,7 @@ impl KetchupApp {
             self.status_key = "error-preview-stale";
             return false;
         };
-        self.revolve_preview = Some(RevolvePreview { plan, batch });
+        self.tool_preview.open(RevolvePreview { plan, batch });
         self.status_key = "status-revolve-preview";
         self.digest = self.catalog.format(
             "digest-revolve-live",
@@ -14342,7 +14321,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn has_revolve_preview(&self) -> bool {
-        let Some(preview) = self.revolve_preview.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<RevolvePreview>() else {
             return false;
         };
         let Some(tool) = self.revolve_tool.as_ref() else {
@@ -14368,8 +14347,8 @@ impl KetchupApp {
     pub fn revolve_preview_parameters(&self) -> Option<([f64; 2], [f64; 2], f64)> {
         self.has_revolve_preview().then(|| {
             let preview = self
-                .revolve_preview
-                .as_ref()
+                .tool_preview
+                .get::<RevolvePreview>()
                 .expect("a current Revolve preview exists");
             (
                 preview.plan.axis_start_mm,
@@ -14401,11 +14380,11 @@ impl KetchupApp {
 
     fn confirm_revolve_preview(&mut self) -> bool {
         if !self.has_revolve_preview() {
-            self.revolve_preview = None;
+            self.tool_preview.close::<RevolvePreview>();
             self.status_key = "error-preview-stale";
             return false;
         }
-        let Some(preview) = self.revolve_preview.take() else {
+        let Some(preview) = self.tool_preview.remove::<RevolvePreview>() else {
             return false;
         };
         if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
@@ -14536,7 +14515,7 @@ impl KetchupApp {
     }
 
     fn refresh_planar_offset_preview(&mut self) -> bool {
-        self.planar_offset_preview = None;
+        self.tool_preview.close::<PlanarOffsetPreview>();
         let Some(source) = self.planar_offset_source_plan() else {
             return false;
         };
@@ -14552,7 +14531,7 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
             return false;
         };
-        self.planar_offset_preview = Some(PlanarOffsetPreview { plan, batch });
+        self.tool_preview.open(PlanarOffsetPreview { plan, batch });
         self.status_key = "status-planar-offset-preview";
         self.digest = self.catalog.format(
             "digest-planar-offset-live",
@@ -14563,7 +14542,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn planar_offset_preview_parameters(&self) -> Option<(FeatureId, f64, [[f64; 3]; 2])> {
-        let preview = self.planar_offset_preview.as_ref()?;
+        let preview = self.tool_preview.get::<PlanarOffsetPreview>()?;
         if !self.planar_offset_preview_is_current() {
             return None;
         }
@@ -14576,7 +14555,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn planar_offset_preview_is_current(&self) -> bool {
-        let Some(preview) = self.planar_offset_preview.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<PlanarOffsetPreview>() else {
             return false;
         };
         self.value_input == preview.plan.distance_expression
@@ -14607,11 +14586,11 @@ impl KetchupApp {
 
     fn confirm_planar_offset_preview(&mut self) -> bool {
         if !self.planar_offset_preview_is_current() {
-            self.planar_offset_preview = None;
+            self.tool_preview.close::<PlanarOffsetPreview>();
             self.status_key = "error-preview-stale";
             return false;
         }
-        let Some(preview) = self.planar_offset_preview.take() else {
+        let Some(preview) = self.tool_preview.remove::<PlanarOffsetPreview>() else {
             return false;
         };
         if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
@@ -14719,12 +14698,12 @@ impl KetchupApp {
     }
 
     fn refresh_sweep_preview(&mut self) -> bool {
-        self.sweep_preview = None;
+        self.tool_preview.close::<SweepPreview>();
         let Some((plan, batch)) = self.sweep_preview_candidate() else {
             self.digest = self.catalog.text("digest-sweep-invalid-inputs");
             return false;
         };
-        self.sweep_preview = Some(SweepPreview { plan, batch });
+        self.tool_preview.open(SweepPreview { plan, batch });
         self.status_key = "status-sweep-preview";
         self.digest = self.catalog.text("digest-sweep-live");
         true
@@ -14732,7 +14711,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn sweep_preview_parameters(&self) -> Option<(FeatureId, FeatureId, [[f64; 3]; 2])> {
-        let preview = self.sweep_preview.as_ref()?;
+        let preview = self.tool_preview.get::<SweepPreview>()?;
         if !self.sweep_preview_is_current() {
             return None;
         }
@@ -14745,7 +14724,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn sweep_preview_is_current(&self) -> bool {
-        let Some(preview) = self.sweep_preview.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<SweepPreview>() else {
             return false;
         };
         self.derive_sweep_preview_plan(&preview.plan.source)
@@ -14768,11 +14747,11 @@ impl KetchupApp {
 
     fn confirm_sweep_preview(&mut self) -> bool {
         if !self.sweep_preview_is_current() {
-            self.sweep_preview = None;
+            self.tool_preview.close::<SweepPreview>();
             self.status_key = "error-preview-stale";
             return false;
         }
-        let Some(preview) = self.sweep_preview.take() else {
+        let Some(preview) = self.tool_preview.remove::<SweepPreview>() else {
             return false;
         };
         if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
@@ -14887,12 +14866,12 @@ impl KetchupApp {
     }
 
     fn refresh_loft_preview(&mut self) -> bool {
-        self.loft_preview = None;
+        self.tool_preview.close::<LoftPreview>();
         let Some((plan, batch)) = self.loft_preview_candidate() else {
             self.digest = self.catalog.text("digest-loft-invalid-inputs");
             return false;
         };
-        self.loft_preview = Some(LoftPreview { plan, batch });
+        self.tool_preview.open(LoftPreview { plan, batch });
         self.status_key = "status-loft-preview";
         self.digest = self.catalog.text("digest-loft-live");
         true
@@ -14900,7 +14879,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn loft_preview_parameters(&self) -> Option<LoftPreviewParameters> {
-        let preview = self.loft_preview.as_ref()?;
+        let preview = self.tool_preview.get::<LoftPreview>()?;
         if !self.loft_preview_is_current() {
             return None;
         }
@@ -14918,7 +14897,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn loft_preview_is_current(&self) -> bool {
-        let Some(preview) = self.loft_preview.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<LoftPreview>() else {
             return false;
         };
         self.derive_loft_preview_plan(&preview.plan.source)
@@ -14947,11 +14926,11 @@ impl KetchupApp {
 
     fn confirm_loft_preview(&mut self) -> bool {
         if !self.loft_preview_is_current() {
-            self.loft_preview = None;
+            self.tool_preview.close::<LoftPreview>();
             self.status_key = "error-preview-stale";
             return false;
         }
-        let Some(preview) = self.loft_preview.take() else {
+        let Some(preview) = self.tool_preview.remove::<LoftPreview>() else {
             return false;
         };
         if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
@@ -15154,7 +15133,7 @@ impl KetchupApp {
     }
 
     fn refresh_general_finish_preview(&mut self) -> bool {
-        self.general_finish_preview = None;
+        self.tool_preview.close::<GeneralFinishPreview>();
         let kind = match self.active_tool {
             ActiveTool::Shell => GeneralFinishKind::Shell,
             ActiveTool::Fillet => GeneralFinishKind::Fillet,
@@ -15171,7 +15150,7 @@ impl KetchupApp {
             return false;
         };
         let amount_mm = f64::from_bits(plan.amount_mm_bits);
-        self.general_finish_preview = Some(GeneralFinishPreview { plan, batch });
+        self.tool_preview.open(GeneralFinishPreview { plan, batch });
         self.status_key = "status-general-finish-preview";
         self.digest = self.catalog.format(
             "digest-general-finish-live",
@@ -15221,7 +15200,7 @@ impl KetchupApp {
         GeneralFinishKind,
         f64,
     )> {
-        let preview = self.general_finish_preview.as_ref()?;
+        let preview = self.tool_preview.get::<GeneralFinishPreview>()?;
         self.general_finish_preview_is_current().then(|| {
             (
                 preview.plan.source.target_feature_id,
@@ -15240,7 +15219,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn general_finish_preview_is_current(&self) -> bool {
-        let Some(preview) = self.general_finish_preview.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<GeneralFinishPreview>() else {
             return false;
         };
         self.derive_general_finish_preview_plan(&preview.plan.source, &self.value_input)
@@ -15326,11 +15305,11 @@ impl KetchupApp {
 
     fn confirm_general_finish_preview(&mut self) -> bool {
         if !self.general_finish_preview_is_current() {
-            self.general_finish_preview = None;
+            self.tool_preview.close::<GeneralFinishPreview>();
             self.status_key = "error-preview-stale";
             return false;
         }
-        let Some(preview) = self.general_finish_preview.take() else {
+        let Some(preview) = self.tool_preview.remove::<GeneralFinishPreview>() else {
             return false;
         };
         let amount_mm = f64::from_bits(preview.plan.amount_mm_bits);
@@ -17844,12 +17823,12 @@ impl KetchupApp {
             || self.has_occurrence_operation_preview()
             || self.solid_tool_target.is_some()
             || self.revolve_tool.is_some()
-            || self.revolve_preview.is_some()
-            || self.planar_offset_preview.is_some()
+            || self.tool_preview.get::<RevolvePreview>().is_some()
+            || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
             || matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread)
-            || self.sweep_preview.is_some()
-            || self.loft_preview.is_some()
-            || self.general_finish_preview.is_some()
+            || self.tool_preview.get::<SweepPreview>().is_some()
+            || self.tool_preview.get::<LoftPreview>().is_some()
+            || self.tool_preview.get::<GeneralFinishPreview>().is_some()
             || self
                 .push_pull_drag
                 .as_ref()
@@ -19308,9 +19287,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.preview = None;
-        self.preview_box = None;
-        self.preview_definition_id = None;
+        self.tool_preview.close::<EphemeralBoxPreview>();
         self.push_pull_distance_input.clear();
         self.selection.select_exact(
             SelectionId {
@@ -20366,7 +20343,7 @@ impl KetchupApp {
         let Some(source) = self.occurrence_alignment_source_plan() else {
             return;
         };
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         self.modal.open(PendingOccurrenceAlign {
             source,
             axis: Axis::X,
@@ -20409,8 +20386,8 @@ impl KetchupApp {
                 self.occurrence_alignment_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
                     && self
-                        .occurrence_operation_preview
-                        .as_ref()
+                        .tool_preview
+                        .get::<OccurrenceOperationPreview>()
                         .is_some_and(|preview| {
                             self.has_occurrence_operation_preview()
                                 && preview.source_revision == plan.source.source_revision
@@ -20468,7 +20445,7 @@ impl KetchupApp {
         axis: Axis,
         mode: AlignMode,
     ) -> bool {
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         let Some(source) = self.occurrence_alignment_source_plan_for_pair(moving_id, reference_id)
         else {
             return false;
@@ -20480,7 +20457,7 @@ impl KetchupApp {
     }
 
     fn preview_occurrence_alignment_plan(&mut self, plan: OccurrenceAlignmentPlan) -> bool {
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         if self
             .occurrence_alignment_plan(&plan.source, plan.axis, plan.mode)
             .as_ref()
@@ -20489,7 +20466,7 @@ impl KetchupApp {
             return false;
         }
         let batch = CommandBatch::new(vec![plan.command.clone()]);
-        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+        self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
             batch,
@@ -20634,7 +20611,7 @@ impl KetchupApp {
         let Some(source) = self.occurrence_distribution_source_plan() else {
             return;
         };
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         self.modal.open(PendingOccurrenceDistribution {
             source,
             axis: Axis::X,
@@ -20682,8 +20659,8 @@ impl KetchupApp {
                 self.occurrence_distribution_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
                     && self
-                        .occurrence_operation_preview
-                        .as_ref()
+                        .tool_preview
+                        .get::<OccurrenceOperationPreview>()
                         .is_some_and(|preview| {
                             self.has_occurrence_operation_preview()
                                 && preview.source_revision == plan.source.source_revision
@@ -20741,7 +20718,7 @@ impl KetchupApp {
         axis: Axis,
         mode: DistributionMode,
     ) -> bool {
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         let Some(source) = self.occurrence_distribution_source_plan_for_ids(occurrence_ids) else {
             return false;
         };
@@ -20752,7 +20729,7 @@ impl KetchupApp {
     }
 
     fn preview_occurrence_distribution_plan(&mut self, plan: OccurrenceDistributionPlan) -> bool {
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         if self
             .occurrence_distribution_plan(&plan.source, plan.axis, plan.mode)
             .as_ref()
@@ -20761,7 +20738,7 @@ impl KetchupApp {
             return false;
         }
         let batch = CommandBatch::new(plan.commands.clone());
-        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+        self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
             batch,
@@ -20856,7 +20833,7 @@ impl KetchupApp {
         let Some(source) = self.linear_pattern_source_plan() else {
             return;
         };
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         self.modal.open(PendingLinearPattern {
             source,
             axis: Axis::X,
@@ -20907,8 +20884,8 @@ impl KetchupApp {
                 self.linear_pattern_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
                     && self
-                        .occurrence_operation_preview
-                        .as_ref()
+                        .tool_preview
+                        .get::<OccurrenceOperationPreview>()
                         .is_some_and(|preview| {
                             self.has_occurrence_operation_preview()
                                 && preview.source_revision == plan.source.source_revision
@@ -21024,7 +21001,7 @@ impl KetchupApp {
             return false;
         };
         let batch = CommandBatch::new(plan.commands.clone());
-        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+        self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
             batch,
@@ -21053,8 +21030,8 @@ impl KetchupApp {
             .as_ref()
             != Some(&plan)
             || !self
-                .occurrence_operation_preview
-                .as_ref()
+                .tool_preview
+                .get::<OccurrenceOperationPreview>()
                 .is_some_and(|preview| {
                     self.has_occurrence_operation_preview()
                         && preview.source_revision == plan.source.source_revision
@@ -21157,7 +21134,7 @@ impl KetchupApp {
         let Some(source) = self.rectangular_pattern_source_plan() else {
             return;
         };
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         self.modal.open(PendingRectangularPattern {
             source,
             primary_axis: Axis::X,
@@ -21232,8 +21209,8 @@ impl KetchupApp {
                 self.rectangular_pattern_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
                     && self
-                        .occurrence_operation_preview
-                        .as_ref()
+                        .tool_preview
+                        .get::<OccurrenceOperationPreview>()
                         .is_some_and(|preview| {
                             self.has_occurrence_operation_preview()
                                 && preview.source_revision == plan.source.source_revision
@@ -21383,7 +21360,7 @@ impl KetchupApp {
             return false;
         };
         let batch = CommandBatch::new(plan.commands.clone());
-        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+        self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
             batch,
@@ -21438,8 +21415,8 @@ impl KetchupApp {
             .as_ref()
             != Some(&plan)
             || !self
-                .occurrence_operation_preview
-                .as_ref()
+                .tool_preview
+                .get::<OccurrenceOperationPreview>()
                 .is_some_and(|preview| {
                     self.has_occurrence_operation_preview()
                         && preview.source_revision == plan.source.source_revision
@@ -21522,7 +21499,7 @@ impl KetchupApp {
         let Some(source) = self.circular_pattern_source_plan() else {
             return;
         };
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         self.modal.open(PendingCircularPattern {
             source,
             axis: Axis::Z,
@@ -21586,8 +21563,8 @@ impl KetchupApp {
                 self.circular_pattern_binding_is_current(pending)
                     && pending.preview_plan.as_ref() == Some(&plan)
                     && self
-                        .occurrence_operation_preview
-                        .as_ref()
+                        .tool_preview
+                        .get::<OccurrenceOperationPreview>()
                         .is_some_and(|preview| {
                             self.has_occurrence_operation_preview()
                                 && preview.source_revision == plan.source.source_revision
@@ -21748,7 +21725,7 @@ impl KetchupApp {
             return false;
         };
         let batch = CommandBatch::new(plan.commands.clone());
-        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+        self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: plan.source.source_revision,
             command_digest: batch.digest(),
             batch,
@@ -21794,8 +21771,8 @@ impl KetchupApp {
             .as_ref()
             != Some(&plan)
             || !self
-                .occurrence_operation_preview
-                .as_ref()
+                .tool_preview
+                .get::<OccurrenceOperationPreview>()
                 .is_some_and(|preview| {
                     self.has_occurrence_operation_preview()
                         && preview.source_revision == plan.source.source_revision
@@ -22100,7 +22077,7 @@ impl KetchupApp {
             });
         let batch = CommandBatch::new(vec![plan.command.clone()]);
         let target_occurrence_id = source.target_selection.instance_path.root_occurrence();
-        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+        self.tool_preview.open(OccurrenceOperationPreview {
             source_revision: source.source_revision,
             command_digest: batch.digest(),
             batch,
@@ -22278,8 +22255,8 @@ impl KetchupApp {
 
     #[must_use]
     pub fn has_occurrence_operation_preview(&self) -> bool {
-        self.occurrence_operation_preview
-            .as_ref()
+        self.tool_preview
+            .get::<OccurrenceOperationPreview>()
             .is_some_and(|preview| {
                 let authority_count = [
                     preview.canonical_plan.is_some(),
@@ -22312,8 +22289,8 @@ impl KetchupApp {
         &self,
         occurrence_id: OccurrenceId,
     ) -> Option<(Vec3, Vec3)> {
-        self.occurrence_operation_preview
-            .as_ref()?
+        self.tool_preview
+            .get::<OccurrenceOperationPreview>()?
             .boxes
             .get(&occurrence_id)
             .map(|item| (item.origin_mm, item.size_mm))
@@ -22321,11 +22298,11 @@ impl KetchupApp {
 
     pub fn confirm_occurrence_operation_preview(&mut self) -> bool {
         if !self.has_occurrence_operation_preview() {
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
             self.status_key = "error-preview-stale";
             return false;
         }
-        let Some(preview) = self.occurrence_operation_preview.take() else {
+        let Some(preview) = self.tool_preview.remove::<OccurrenceOperationPreview>() else {
             return false;
         };
         if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
@@ -22452,9 +22429,7 @@ impl KetchupApp {
         self.occurrence_clipboard = occurrence_ids.into_iter().collect();
         self.cut_occurrence_clipboard = clipboard;
         self.selection.clear();
-        self.preview = None;
-        self.preview_box = None;
-        self.preview_definition_id = None;
+        self.tool_preview.close::<EphemeralBoxPreview>();
         self.status_key = "status-object-deleted";
         self.digest = self.catalog.format(
             "digest-cut-to-clipboard",
@@ -22920,9 +22895,7 @@ impl KetchupApp {
             return false;
         }
         self.selection.clear();
-        self.preview = None;
-        self.preview_box = None;
-        self.preview_definition_id = None;
+        self.tool_preview.close::<EphemeralBoxPreview>();
         self.status_key = "status-object-deleted";
         self.digest = self.catalog.format(
             "digest-deleted",
@@ -23252,19 +23225,17 @@ impl KetchupApp {
         };
         let new_extent_mm = f64::from_bits(plan.new_extent_mm_bits);
         let shared_count = plan.shared_count;
-        self.preview = Some(batch.clone());
         self.smart_push_pull_proposal = Some(proposal);
-        self.occurrence_operation_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
         if plan.source.topological_reference.is_some()
             && self
-                .preview_box
-                .as_ref()
+                .tool_preview
+                .get::<EphemeralBoxPreview>()
                 .is_none_or(|preview| preview.plan != plan)
         {
             self.face_offset_preview_due = Some(Instant::now() + Duration::from_millis(150));
         }
-        self.preview_box = Some(EphemeralBoxPreview { plan, batch });
-        self.preview_definition_id = Some(selection.definition_id);
+        self.tool_preview.open(EphemeralBoxPreview { plan, batch });
         self.status_key = "status-preview";
         self.digest = match &selection.element {
             ElementId::Face { axis: Axis::Z, .. } => self.catalog.format(
@@ -23287,16 +23258,21 @@ impl KetchupApp {
         true
     }
 
+    /// The definition a push/pull preview is reshaping.
+    fn push_pull_preview_definition(&self) -> Option<DefinitionId> {
+        self.tool_preview
+            .get::<EphemeralBoxPreview>()
+            .map(|preview| preview.plan.source.target.definition_id)
+    }
+
     fn has_preview(&self) -> bool {
-        let Some(preview) = self.preview_box.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
             return false;
         };
         if self.push_pull_distance_input != preview.plan.distance_expression
             || parse_distance_mm(&self.push_pull_distance_input).map(f64::to_bits)
                 != Some(preview.plan.distance_mm_bits)
             || self.selection.primary.as_ref() != Some(&preview.plan.source.target)
-            || self.preview_definition_id != Some(preview.plan.source.target.definition_id)
-            || self.preview.as_ref() != Some(&preview.batch)
         {
             return false;
         }
@@ -23325,9 +23301,10 @@ impl KetchupApp {
     #[must_use]
     pub fn push_pull_preview_exact_evaluator(&self) -> Option<&'static str> {
         let (batch, definition_id) = if self.has_preview() {
-            (self.preview.as_ref()?, self.preview_definition_id?)
+            let preview = self.tool_preview.get::<EphemeralBoxPreview>()?;
+            (&preview.batch, preview.plan.source.target.definition_id)
         } else if self.has_occurrence_operation_preview() {
-            let preview = self.occurrence_operation_preview.as_ref()?;
+            let preview = self.tool_preview.get::<OccurrenceOperationPreview>()?;
             (
                 &preview.batch,
                 preview.selection_after.as_ref()?.definition_id,
@@ -23354,7 +23331,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn push_pull_preview_render_depth_mm(&self) -> Option<f64> {
-        let preview = self.preview_box.as_ref()?;
+        let preview = self.tool_preview.get::<EphemeralBoxPreview>()?;
         let mesh = self
             .canonical_profile_viewport_mesh(&self.document.current(), &preview.plan.preview_box)?;
         let (minimum, maximum) = mesh.0.iter().map(|position| position[2]).fold(
@@ -23380,13 +23357,11 @@ impl KetchupApp {
     fn clear_push_pull_preview(&mut self) {
         self.face_offset_evaluation = None;
         self.face_offset_preview_due = None;
-        self.preview = None;
-        self.preview_box = None;
-        self.preview_definition_id = None;
+        self.tool_preview.close::<EphemeralBoxPreview>();
         self.smart_push_pull_proposal = None;
         self.smart_push_pull_planning = None;
-        self.occurrence_operation_preview = None;
-        self.drawn_shape_preview = None;
+        self.tool_preview.close::<OccurrenceOperationPreview>();
+        self.tool_preview.close::<drawn_shape::DrawnShapePreview>();
     }
 
     fn cancel_ephemeral_edit_for_history(&mut self) -> bool {
@@ -23404,14 +23379,10 @@ impl KetchupApp {
 
     fn clear_ephemeral_edit_state(&mut self) {
         self.clear_push_pull_preview();
+        self.tool_preview = None;
         self.solid_tool_target = None;
         self.revolve_tool = None;
-        self.revolve_preview = None;
-        self.planar_offset_preview = None;
         self.clear_helix_thread_preview();
-        self.sweep_preview = None;
-        self.loft_preview = None;
-        self.general_finish_preview = None;
         self.push_pull_drag = None;
         self.push_pull_anchor = None;
         self.reset_transform_interaction();
@@ -23776,14 +23747,12 @@ impl KetchupApp {
             return false;
         }
         if !self.has_preview() {
-            self.preview = None;
-            self.preview_box = None;
-            self.preview_definition_id = None;
+            self.tool_preview.close::<EphemeralBoxPreview>();
             self.smart_push_pull_proposal = None;
             self.status_key = "error-preview-stale";
             return false;
         }
-        let Some(preview) = self.preview_box.as_ref().cloned() else {
+        let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>().cloned() else {
             return false;
         };
         let Some((plan, batch, proposal)) = self.derive_push_pull_preview_plan(
@@ -23820,9 +23789,7 @@ impl KetchupApp {
                 })
                 .is_err()
         {
-            self.preview = None;
-            self.preview_box = None;
-            self.preview_definition_id = None;
+            self.tool_preview.close::<EphemeralBoxPreview>();
             self.smart_push_pull_proposal = None;
             self.status_key = "error-preview-stale";
             return false;
@@ -23831,9 +23798,7 @@ impl KetchupApp {
             &preview.plan.preview_box,
             Some(&preview.plan.source.target.element),
         );
-        self.preview = None;
-        self.preview_box = None;
-        self.preview_definition_id = None;
+        self.tool_preview.close::<EphemeralBoxPreview>();
         self.smart_push_pull_proposal = None;
         self.status_key = "status-ready";
         if let Some(selection) = self.selection.primary.clone() {
@@ -23890,8 +23855,8 @@ impl KetchupApp {
             .find(|item| item.instance_path == selection.instance_path)
             .and_then(|item| face_extent(&item, Some(&selection.element)))?;
         let to = self
-            .preview_box
-            .as_ref()
+            .tool_preview
+            .get::<EphemeralBoxPreview>()
             .and_then(|item| face_extent(&item.plan.preview_box, Some(&selection.element)))?;
         Some(self.catalog.format(
             "action-smart-push-pull-height",
@@ -24121,8 +24086,8 @@ impl KetchupApp {
         if self.has_occurrence_operation_preview()
             && item.instance_path.is_root()
             && let Some(preview) = self
-                .occurrence_operation_preview
-                .as_ref()
+                .tool_preview
+                .get::<OccurrenceOperationPreview>()
                 .and_then(|operation| operation.boxes.get(&item.instance_path.root_occurrence()))
         {
             return preview.clone();
@@ -24130,7 +24095,7 @@ impl KetchupApp {
         if !self.has_preview() {
             return item;
         }
-        let Some(ephemeral) = self.preview_box.as_ref() else {
+        let Some(ephemeral) = self.tool_preview.get::<EphemeralBoxPreview>() else {
             return item;
         };
         let preview = &ephemeral.plan.preview_box;
@@ -25751,8 +25716,8 @@ impl KetchupApp {
                 ketchup_interaction::mesh_projection::segment_profile_mesh(&segments)
             })?;
         let extent = self
-            .preview_box
-            .as_ref()
+            .tool_preview
+            .get::<EphemeralBoxPreview>()
             .filter(|preview| {
                 preview.plan.source.target.instance_path == item.instance_path
                     && preview.plan.source.topological_reference.is_none()
@@ -25792,10 +25757,10 @@ impl KetchupApp {
         let push_pull_preview = self.has_preview()
             && self.face_offset_evaluation.is_none()
             && self
-                .preview_box
-                .as_ref()
+                .tool_preview
+                .get::<EphemeralBoxPreview>()
                 .is_some_and(|preview| preview.plan.source.topological_reference.is_none())
-            && self.preview_definition_id == Some(item.definition_id);
+            && self.push_pull_preview_definition() == Some(item.definition_id);
         let move_preview = self.move_session().is_some_and(|(drag, _)| {
             self.move_preview_is_current(drag)
                 && (drag.copy || drag.profile_target.is_none())
@@ -25805,8 +25770,8 @@ impl KetchupApp {
         let occurrence_preview = self.has_occurrence_operation_preview()
             && item.instance_path.is_root()
             && self
-                .occurrence_operation_preview
-                .as_ref()
+                .tool_preview
+                .get::<OccurrenceOperationPreview>()
                 .is_some_and(|preview| {
                     preview
                         .boxes
@@ -25841,7 +25806,7 @@ impl KetchupApp {
             boxes.extend(copies);
         }
         if self.has_occurrence_operation_preview()
-            && let Some(operation) = &self.occurrence_operation_preview
+            && let Some(operation) = self.tool_preview.get::<OccurrenceOperationPreview>()
         {
             for (occurrence_id, preview_box) in &operation.boxes {
                 if !boxes
@@ -25853,7 +25818,7 @@ impl KetchupApp {
             }
         }
         if self.has_occurrence_operation_preview()
-            && let Some(operation) = &self.occurrence_operation_preview
+            && let Some(operation) = self.tool_preview.get::<OccurrenceOperationPreview>()
         {
             boxes.retain(|item| {
                 !item.instance_path.is_root()
@@ -28165,7 +28130,7 @@ impl KetchupApp {
                         color: occurrence_color.unwrap_or(face.color),
                         depth,
                         previewed: (self.has_preview()
-                            && self.preview_definition_id == Some(item.definition_id)
+                            && self.push_pull_preview_definition() == Some(item.definition_id)
                             && matches!(
                                 face.element,
                                 ElementId::Face {
@@ -28175,13 +28140,14 @@ impl KetchupApp {
                             ))
                             || (self.has_occurrence_operation_preview()
                                 && item.instance_path.is_root()
-                                && self.occurrence_operation_preview.as_ref().is_some_and(
-                                    |preview| {
+                                && self
+                                    .tool_preview
+                                    .get::<OccurrenceOperationPreview>()
+                                    .is_some_and(|preview| {
                                         preview
                                             .boxes
                                             .contains_key(&item.instance_path.root_occurrence())
-                                    },
-                                )),
+                                    })),
                         out_of_context,
                     });
                 }
@@ -28199,8 +28165,8 @@ impl KetchupApp {
                     && !(self.has_occurrence_operation_preview()
                         && occurrence.instance_path.is_root()
                         && self
-                            .occurrence_operation_preview
-                            .as_ref()
+                            .tool_preview
+                            .get::<OccurrenceOperationPreview>()
                             .is_some_and(|preview| {
                                 let occurrence_id = occurrence.instance_path.root_occurrence();
                                 preview.boxes.contains_key(&occurrence_id)
@@ -29743,10 +29709,10 @@ impl KetchupApp {
             && self.has_occurrence_operation_preview()
             && context.input(|input| input.key_pressed(egui::Key::Enter));
         let confirm_sweep_preview = !context.wants_keyboard_input()
-            && self.sweep_preview.is_some()
+            && self.tool_preview.get::<SweepPreview>().is_some()
             && context.input(|input| input.key_pressed(egui::Key::Enter));
         let confirm_loft_preview = !context.wants_keyboard_input()
-            && self.loft_preview.is_some()
+            && self.tool_preview.get::<LoftPreview>().is_some()
             && context.input(|input| input.key_pressed(egui::Key::Enter));
         let escape = context.input(|input| input.key_pressed(egui::Key::Escape));
         if !context.wants_keyboard_input() {
@@ -29956,11 +29922,11 @@ impl KetchupApp {
             } else if self.has_preview()
                 || self.has_occurrence_operation_preview()
                 || self.revolve_tool.is_some()
-                || self.revolve_preview.is_some()
-                || self.planar_offset_preview.is_some()
-                || self.sweep_preview.is_some()
-                || self.loft_preview.is_some()
-                || self.general_finish_preview.is_some()
+                || self.tool_preview.get::<RevolvePreview>().is_some()
+                || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
+                || self.tool_preview.get::<SweepPreview>().is_some()
+                || self.tool_preview.get::<LoftPreview>().is_some()
+                || self.tool_preview.get::<GeneralFinishPreview>().is_some()
                 || self.solid_tool_target.is_some()
                 || self.push_pull_anchor.is_some()
                 || self.tool_session.is_some()
@@ -34028,11 +33994,11 @@ impl KetchupApp {
             }
         }
         if changed {
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
         }
         if cancel || !open {
             self.modal.close::<PendingOccurrenceAlign>();
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
             self.preview_pending_occurrence_align();
@@ -34121,11 +34087,11 @@ impl KetchupApp {
             }
         }
         if changed {
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
         }
         if cancel || !open {
             self.modal.close::<PendingOccurrenceDistribution>();
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
             self.preview_pending_occurrence_distribution();
@@ -34226,11 +34192,11 @@ impl KetchupApp {
             }
         }
         if changed {
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
         }
         if cancel || !open {
             self.modal.close::<PendingLinearPattern>();
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
             self.preview_pending_linear_pattern();
@@ -34395,11 +34361,11 @@ impl KetchupApp {
             }
         }
         if changed {
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
         }
         if cancel || !open {
             self.modal.close::<PendingRectangularPattern>();
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
             self.preview_pending_rectangular_pattern();
@@ -34525,11 +34491,11 @@ impl KetchupApp {
             }
         }
         if changed {
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
         }
         if cancel || !open {
             self.modal.close::<PendingCircularPattern>();
-            self.occurrence_operation_preview = None;
+            self.tool_preview.close::<OccurrenceOperationPreview>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
             self.preview_pending_circular_pattern();

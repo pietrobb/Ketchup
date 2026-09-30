@@ -5737,7 +5737,13 @@ fn push_pull_distance_accepts_units_and_moves_inward() {
 
     assert!(app.start_preview());
     assert_eq!(
-        app.preview_box.as_ref().unwrap().plan.preview_box.size_mm.z,
+        app.tool_preview
+            .get::<EphemeralBoxPreview>()
+            .unwrap()
+            .plan
+            .preview_box
+            .size_mm
+            .z,
         15.0
     );
     assert!(app.confirm_preview());
@@ -5761,7 +5767,13 @@ fn push_pull_minimum_side_keeps_the_opposite_face_fixed() {
 
     app.set_push_pull_distance_input("30");
     assert!(app.start_preview());
-    let preview = app.preview_box.as_ref().unwrap().plan.preview_box.clone();
+    let preview = app
+        .tool_preview
+        .get::<EphemeralBoxPreview>()
+        .unwrap()
+        .plan
+        .preview_box
+        .clone();
     assert_eq!(preview.origin_mm.x, -30.0);
     assert_eq!(preview.size_mm.x, 130.0);
     assert_eq!(preview.origin_mm.x + preview.size_mm.x, old_maximum);
@@ -8559,7 +8571,10 @@ fn occurrence_alignment_plan_rejects_tamper_and_replay_atomically() {
     app.begin_occurrence_align();
     app.modal.get_mut::<PendingOccurrenceAlign>().unwrap().axis = Axis::Z;
     assert!(app.preview_pending_occurrence_align());
-    let preview = app.occurrence_operation_preview.as_mut().unwrap();
+    let preview = app
+        .tool_preview
+        .get_mut::<OccurrenceOperationPreview>()
+        .unwrap();
     preview.batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
         id: source.reference_id,
     }]);
@@ -8570,8 +8585,8 @@ fn occurrence_alignment_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.undo_step_count(), undo_steps);
 
     assert!(app.preview_pending_occurrence_align());
-    app.occurrence_operation_preview
-        .as_mut()
+    app.tool_preview
+        .get_mut::<OccurrenceOperationPreview>()
         .unwrap()
         .boxes
         .get_mut(&source.moving_id)
@@ -8585,8 +8600,8 @@ fn occurrence_alignment_plan_rejects_tamper_and_replay_atomically() {
 
     assert!(app.preview_pending_occurrence_align());
     let Some(OccurrenceCanonicalPreviewPlan::Alignment(sealed_plan)) = app
-        .occurrence_operation_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<OccurrenceOperationPreview>()
         .unwrap()
         .canonical_plan
         .as_mut()
@@ -8944,8 +8959,8 @@ fn rectangle_sketch_creates_a_profile_then_push_pull_adds_the_extrusion() {
     app.set_push_pull_distance_input("-30");
     assert!(app.start_preview());
     assert_eq!(
-        app.preview_box
-            .as_ref()
+        app.tool_preview
+            .get::<EphemeralBoxPreview>()
             .unwrap()
             .plan
             .preview_box
@@ -9870,8 +9885,8 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     );
     assert!(app.has_occurrence_operation_preview());
     let source = &app
-        .occurrence_operation_preview
-        .as_ref()
+        .tool_preview
+        .get::<OccurrenceOperationPreview>()
         .unwrap()
         .solid_tool_plan
         .as_ref()
@@ -10134,8 +10149,8 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     );
     assert!(app.prepare_solid_tool_preview(tool.clone(), true));
     let graph_preview = app
-        .occurrence_operation_preview
-        .as_ref()
+        .tool_preview
+        .get::<OccurrenceOperationPreview>()
         .unwrap()
         .solid_tool_plan
         .as_ref()
@@ -10203,8 +10218,8 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
         false,
     ));
     let reverse_preview = app
-        .occurrence_operation_preview
-        .as_ref()
+        .tool_preview
+        .get::<OccurrenceOperationPreview>()
         .unwrap()
         .solid_tool_plan
         .as_ref()
@@ -10407,8 +10422,8 @@ fn solid_tool_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = command_tamper.canonical_digest();
     let undo_steps = command_tamper.undo_step_count();
     command_tamper
-        .occurrence_operation_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<OccurrenceOperationPreview>()
         .unwrap()
         .solid_tool_plan
         .as_mut()
@@ -10425,8 +10440,8 @@ fn solid_tool_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = source_tamper.canonical_digest();
     let undo_steps = source_tamper.undo_step_count();
     source_tamper
-        .occurrence_operation_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<OccurrenceOperationPreview>()
         .unwrap()
         .solid_tool_plan
         .as_mut()
@@ -10522,10 +10537,13 @@ fn revolve_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = batch_tamper.document_revision();
     let digest = batch_tamper.canonical_digest();
     let undo_steps = batch_tamper.undo_step_count();
-    batch_tamper.revolve_preview.as_mut().unwrap().batch =
-        CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1),
-        }]);
+    batch_tamper
+        .tool_preview
+        .get_mut::<RevolvePreview>()
+        .unwrap()
+        .batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
+        id: OccurrenceId(1),
+    }]);
     assert!(!batch_tamper.has_revolve_preview());
     assert!(!batch_tamper.confirm_revolve_preview());
     assert_unchanged(&batch_tamper, revision, &digest, undo_steps);
@@ -10534,10 +10552,14 @@ fn revolve_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = plan_tamper.document_revision();
     let digest = plan_tamper.canonical_digest();
     let undo_steps = plan_tamper.undo_step_count();
-    plan_tamper.revolve_preview.as_mut().unwrap().plan.command =
-        CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1),
-        };
+    plan_tamper
+        .tool_preview
+        .get_mut::<RevolvePreview>()
+        .unwrap()
+        .plan
+        .command = CanonicalCommand::DeleteOccurrence {
+        id: OccurrenceId(1),
+    };
     assert!(!plan_tamper.confirm_revolve_preview());
     assert_unchanged(&plan_tamper, revision, &digest, undo_steps);
 
@@ -10546,8 +10568,8 @@ fn revolve_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = source_tamper.canonical_digest();
     let undo_steps = source_tamper.undo_step_count();
     source_tamper
-        .revolve_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<RevolvePreview>()
         .unwrap()
         .plan
         .source
@@ -10576,8 +10598,8 @@ fn revolve_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
 
     let mut stale = prepared_revolve();
     let occurrence_id = stale
-        .revolve_preview
-        .as_ref()
+        .tool_preview
+        .get::<RevolvePreview>()
         .unwrap()
         .plan
         .source
@@ -10650,10 +10672,13 @@ fn planar_offset_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = batch_tamper.document_revision();
     let digest = batch_tamper.canonical_digest();
     let undo_steps = batch_tamper.undo_step_count();
-    batch_tamper.planar_offset_preview.as_mut().unwrap().batch =
-        CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1),
-        }]);
+    batch_tamper
+        .tool_preview
+        .get_mut::<PlanarOffsetPreview>()
+        .unwrap()
+        .batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
+        id: OccurrenceId(1),
+    }]);
     assert!(!batch_tamper.planar_offset_preview_is_current());
     assert!(!batch_tamper.confirm_planar_offset_preview());
     assert_unchanged(&batch_tamper, revision, &digest, undo_steps);
@@ -10663,8 +10688,8 @@ fn planar_offset_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = plan_tamper.canonical_digest();
     let undo_steps = plan_tamper.undo_step_count();
     plan_tamper
-        .planar_offset_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<PlanarOffsetPreview>()
         .unwrap()
         .plan
         .command = CanonicalCommand::DeleteOccurrence {
@@ -10678,8 +10703,8 @@ fn planar_offset_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = request_tamper.canonical_digest();
     let undo_steps = request_tamper.undo_step_count();
     request_tamper
-        .planar_offset_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<PlanarOffsetPreview>()
         .unwrap()
         .plan
         .exact_graph
@@ -10692,8 +10717,8 @@ fn planar_offset_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = source_tamper.canonical_digest();
     let undo_steps = source_tamper.undo_step_count();
     source_tamper
-        .planar_offset_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<PlanarOffsetPreview>()
         .unwrap()
         .plan
         .source
@@ -10722,8 +10747,8 @@ fn planar_offset_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
 
     let mut stale = prepared_planar_offset();
     let occurrence_id = stale
-        .planar_offset_preview
-        .as_ref()
+        .tool_preview
+        .get::<PlanarOffsetPreview>()
         .unwrap()
         .plan
         .source
@@ -10795,10 +10820,13 @@ fn sweep_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = batch_tamper.document_revision();
     let digest = batch_tamper.canonical_digest();
     let undo_steps = batch_tamper.undo_step_count();
-    batch_tamper.sweep_preview.as_mut().unwrap().batch =
-        CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1),
-        }]);
+    batch_tamper
+        .tool_preview
+        .get_mut::<SweepPreview>()
+        .unwrap()
+        .batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
+        id: OccurrenceId(1),
+    }]);
     assert!(!batch_tamper.sweep_preview_is_current());
     assert!(!batch_tamper.confirm_sweep_preview());
     assert_unchanged(&batch_tamper, revision, &digest, undo_steps);
@@ -10807,7 +10835,12 @@ fn sweep_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = plan_tamper.document_revision();
     let digest = plan_tamper.canonical_digest();
     let undo_steps = plan_tamper.undo_step_count();
-    plan_tamper.sweep_preview.as_mut().unwrap().plan.command = CanonicalCommand::DeleteOccurrence {
+    plan_tamper
+        .tool_preview
+        .get_mut::<SweepPreview>()
+        .unwrap()
+        .plan
+        .command = CanonicalCommand::DeleteOccurrence {
         id: OccurrenceId(1),
     };
     assert!(!plan_tamper.confirm_sweep_preview());
@@ -10818,8 +10851,8 @@ fn sweep_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = request_tamper.canonical_digest();
     let undo_steps = request_tamper.undo_step_count();
     request_tamper
-        .sweep_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<SweepPreview>()
         .unwrap()
         .plan
         .exact_graph
@@ -10832,8 +10865,8 @@ fn sweep_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = source_tamper.canonical_digest();
     let undo_steps = source_tamper.undo_step_count();
     source_tamper
-        .sweep_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<SweepPreview>()
         .unwrap()
         .plan
         .source
@@ -10862,8 +10895,8 @@ fn sweep_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
 
     let mut stale = prepared_sweep();
     let occurrence_id = stale
-        .sweep_preview
-        .as_ref()
+        .tool_preview
+        .get::<SweepPreview>()
         .unwrap()
         .plan
         .source
@@ -10940,10 +10973,13 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = batch_tamper.document_revision();
     let digest = batch_tamper.canonical_digest();
     let undo_steps = batch_tamper.undo_step_count();
-    batch_tamper.loft_preview.as_mut().unwrap().batch =
-        CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1),
-        }]);
+    batch_tamper
+        .tool_preview
+        .get_mut::<LoftPreview>()
+        .unwrap()
+        .batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
+        id: OccurrenceId(1),
+    }]);
     assert!(!batch_tamper.loft_preview_is_current());
     assert!(!batch_tamper.confirm_loft_preview());
     assert_unchanged(&batch_tamper, revision, &digest, undo_steps);
@@ -10952,7 +10988,12 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = plan_tamper.document_revision();
     let digest = plan_tamper.canonical_digest();
     let undo_steps = plan_tamper.undo_step_count();
-    plan_tamper.loft_preview.as_mut().unwrap().plan.command = CanonicalCommand::DeleteOccurrence {
+    plan_tamper
+        .tool_preview
+        .get_mut::<LoftPreview>()
+        .unwrap()
+        .plan
+        .command = CanonicalCommand::DeleteOccurrence {
         id: OccurrenceId(1),
     };
     assert!(!plan_tamper.confirm_loft_preview());
@@ -10963,8 +11004,8 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = request_tamper.canonical_digest();
     let undo_steps = request_tamper.undo_step_count();
     request_tamper
-        .loft_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<LoftPreview>()
         .unwrap()
         .plan
         .exact_graph
@@ -10977,8 +11018,8 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = source_tamper.canonical_digest();
     let undo_steps = source_tamper.undo_step_count();
     source_tamper
-        .loft_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<LoftPreview>()
         .unwrap()
         .plan
         .source
@@ -11008,8 +11049,8 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
 
     let mut stale = prepared_loft();
     let occurrence_id = stale
-        .loft_preview
-        .as_ref()
+        .tool_preview
+        .get::<LoftPreview>()
         .unwrap()
         .plan
         .source
@@ -11070,7 +11111,7 @@ fn manual_and_assistant_multi_edge_finish_share_the_canonical_plan() {
     assert!(app.select_topological_locator(locator(9)));
     assert!(app.select_topological_locator_additive(locator(2), true));
     app.dispatch_command(AppCommand::Fillet);
-    let manual_preview = app.general_finish_preview.as_ref().unwrap();
+    let manual_preview = app.tool_preview.get::<GeneralFinishPreview>().unwrap();
     let CanonicalCommand::CreateFeature {
         kind: manual_kind, ..
     } = &manual_preview.plan.command
@@ -11209,10 +11250,13 @@ fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() 
     let revision = batch_tamper.document_revision();
     let digest = batch_tamper.canonical_digest();
     let undo_steps = batch_tamper.undo_step_count();
-    batch_tamper.general_finish_preview.as_mut().unwrap().batch =
-        CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1),
-        }]);
+    batch_tamper
+        .tool_preview
+        .get_mut::<GeneralFinishPreview>()
+        .unwrap()
+        .batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
+        id: OccurrenceId(1),
+    }]);
     assert!(!batch_tamper.general_finish_preview_is_current());
     assert!(!batch_tamper.confirm_general_finish_preview());
     assert_unchanged(&batch_tamper, revision, &digest, undo_steps);
@@ -11222,8 +11266,8 @@ fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() 
     let digest = command_tamper.canonical_digest();
     let undo_steps = command_tamper.undo_step_count();
     command_tamper
-        .general_finish_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<GeneralFinishPreview>()
         .unwrap()
         .plan
         .command = CanonicalCommand::DeleteOccurrence {
@@ -11237,8 +11281,8 @@ fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() 
     let digest = request_tamper.canonical_digest();
     let undo_steps = request_tamper.undo_step_count();
     request_tamper
-        .general_finish_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<GeneralFinishPreview>()
         .unwrap()
         .plan
         .exact_graph
@@ -11251,8 +11295,8 @@ fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() 
     let digest = source_tamper.canonical_digest();
     let undo_steps = source_tamper.undo_step_count();
     source_tamper
-        .general_finish_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<GeneralFinishPreview>()
         .unwrap()
         .plan
         .source
@@ -11265,8 +11309,8 @@ fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() 
     let digest = amount_tamper.canonical_digest();
     let undo_steps = amount_tamper.undo_step_count();
     amount_tamper
-        .general_finish_preview
-        .as_mut()
+        .tool_preview
+        .get_mut::<GeneralFinishPreview>()
         .unwrap()
         .plan
         .amount_mm_bits = 3.0_f64.to_bits();
@@ -11347,7 +11391,7 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     assert!(app.start_preview());
     assert_eq!(app.document_revision(), source_revision);
     assert_eq!(app.canonical_digest(), source_digest);
-    let preview = app.preview_box.as_ref().unwrap();
+    let preview = app.tool_preview.get::<EphemeralBoxPreview>().unwrap();
     assert!(matches!(
         preview.batch.commands(),
         [CanonicalCommand::CreateFeature {
@@ -11409,8 +11453,8 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     let digest = minimum_face.canonical_digest();
     let undo_steps = minimum_face.undo_step_count();
     minimum_face
-        .preview_box
-        .as_mut()
+        .tool_preview
+        .get_mut::<EphemeralBoxPreview>()
         .unwrap()
         .plan
         .source
@@ -11446,10 +11490,13 @@ fn push_pull_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = batch_tamper.document_revision();
     let digest = batch_tamper.canonical_digest();
     let undo_steps = batch_tamper.undo_step_count();
-    batch_tamper.preview_box.as_mut().unwrap().batch =
-        CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1),
-        }]);
+    batch_tamper
+        .tool_preview
+        .get_mut::<EphemeralBoxPreview>()
+        .unwrap()
+        .batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
+        id: OccurrenceId(1),
+    }]);
     assert!(!batch_tamper.confirm_preview());
     assert_unchanged(&batch_tamper, revision, &digest, undo_steps);
 
@@ -11458,8 +11505,8 @@ fn push_pull_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = command_tamper.canonical_digest();
     let undo_steps = command_tamper.undo_step_count();
     command_tamper
-        .preview_box
-        .as_mut()
+        .tool_preview
+        .get_mut::<EphemeralBoxPreview>()
         .unwrap()
         .plan
         .commands
@@ -11472,8 +11519,8 @@ fn push_pull_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let digest = geometry_tamper.canonical_digest();
     let undo_steps = geometry_tamper.undo_step_count();
     geometry_tamper
-        .preview_box
-        .as_mut()
+        .tool_preview
+        .get_mut::<EphemeralBoxPreview>()
         .unwrap()
         .plan
         .preview_box
@@ -18105,4 +18152,27 @@ fn opening_a_dialog_replaces_the_one_that_was_open() {
     assert!(app.tag_creation_visible());
     assert!(app.modal.remove::<PendingTagCreation>().is_some());
     assert!(app.modal.is_none());
+}
+
+#[test]
+fn a_new_tool_preview_replaces_the_shown_one_and_cancel_clears_it() {
+    let mut app = KetchupApp::new();
+    select_initial_top_face(&mut app);
+    app.set_push_pull_distance_input("5");
+    assert!(app.start_preview(), "{}", app.digest);
+    assert!(app.has_preview());
+    assert_eq!(
+        app.push_pull_preview_definition(),
+        Some(INITIAL_BOX_DEFINITION)
+    );
+
+    assert!(app.preview_linear_pattern(OccurrenceId(1), Axis::Z, 50.0, 4));
+    assert!(app.has_occurrence_operation_preview());
+    assert!(app.tool_preview.get::<EphemeralBoxPreview>().is_none());
+    assert!(!app.has_preview());
+    assert_eq!(app.push_pull_preview_definition(), None);
+
+    app.cancel_preview();
+    assert!(app.tool_preview.is_none());
+    assert!(!app.has_occurrence_operation_preview());
 }

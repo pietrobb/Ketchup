@@ -249,7 +249,10 @@ fn a_shape_pulled_out_of_a_plain_part_is_left_to_become_a_part_of_its_own() {
     app.set_push_pull_distance_input("10");
     assert!(app.start_preview(), "{}", app.digest);
     assert!(!app.has_drawn_shape_preview());
-    assert_eq!(app.preview_definition_id, Some(shape.definition_id));
+    assert_eq!(
+        app.push_pull_preview_definition(),
+        Some(shape.definition_id)
+    );
     app.cancel_preview();
     evaluate_exact(&mut app);
     assert_volume(volume(&app, block), VOLUME);

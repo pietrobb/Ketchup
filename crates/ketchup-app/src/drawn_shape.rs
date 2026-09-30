@@ -674,7 +674,7 @@ impl KetchupApp {
                 ("part", edit.part.clone()),
             ]),
         );
-        self.drawn_shape_preview = Some(DrawnShapePreview {
+        self.tool_preview.open(DrawnShapePreview {
             canonical_digest: self.canonical_digest(),
             selection: selection.clone(),
             distance_mm_bits: distance_mm.to_bits(),
@@ -685,13 +685,13 @@ impl KetchupApp {
 
     #[must_use]
     pub fn has_drawn_shape_preview(&self) -> bool {
-        self.drawn_shape_preview.is_some()
+        self.tool_preview.get::<DrawnShapePreview>().is_some()
     }
 
     /// Commits the previewed drawn-shape Push/Pull and removes the drawn shape,
     /// as one Undo step. `None` when no such preview is open.
     pub(super) fn confirm_drawn_shape_preview(&mut self) -> Option<bool> {
-        let preview = self.drawn_shape_preview.take()?;
+        let preview = self.tool_preview.remove::<DrawnShapePreview>()?;
         let current = self.canonical_digest() == preview.canonical_digest
             && self.selection.primary.as_ref() == Some(&preview.selection)
             && parse_distance_mm(&self.push_pull_distance_input).map(f64::to_bits)

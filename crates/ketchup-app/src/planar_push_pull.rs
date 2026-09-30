@@ -374,8 +374,8 @@ impl KetchupApp {
     pub(super) fn preview_requires_face_offset_evaluation(&self) -> bool {
         // A bare polygon profile previews as its own prism, so only a picked face
         // of an evaluated body waits for the exact offset.
-        self.preview_box
-            .as_ref()
+        self.tool_preview
+            .get::<EphemeralBoxPreview>()
             .is_some_and(|preview| preview.plan.source.topological_reference.is_some())
     }
 
@@ -384,7 +384,7 @@ impl KetchupApp {
             self.face_offset_evaluation = None;
             return;
         }
-        let Some(preview) = self.preview_box.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
             self.face_offset_evaluation = None;
             return;
         };
@@ -541,7 +541,7 @@ impl KetchupApp {
             .face_offset_evaluation
             .as_ref()
             .filter(|evaluation| evaluation.ready)?;
-        let preview = self.preview_box.as_ref()?;
+        let preview = self.tool_preview.get::<EphemeralBoxPreview>()?;
         if preview.plan.source.target.definition_id != definition_id
             || !self.has_preview()
             || !self.face_offset_evaluation_is_current()
@@ -592,7 +592,7 @@ impl KetchupApp {
             self.request_face_offset_confirmation();
             return false;
         }
-        let Some(preview) = self.preview_box.as_ref() else {
+        let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
             return false;
         };
         let rule_program = match self.rewrite_program_push_pull(
@@ -662,7 +662,7 @@ impl KetchupApp {
     }
 
     pub(super) fn face_offset_drag_mesh(&self) -> Option<FaceOffsetDragMesh> {
-        let preview = self.preview_box.as_ref()?;
+        let preview = self.tool_preview.get::<EphemeralBoxPreview>()?;
         let source = &preview.plan.source;
         let reference = source.topological_reference.as_ref()?;
         if !self.has_preview()

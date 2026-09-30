@@ -1023,8 +1023,8 @@ fn failed_cancelled_or_stale_face_offset_never_changes_document() {
     app.set_push_pull_distance_input("2");
     assert!(app.start_preview());
     wait_preview(&mut app);
-    app.preview_box
-        .as_mut()
+    app.tool_preview
+        .get_mut::<EphemeralBoxPreview>()
         .unwrap()
         .plan
         .source
