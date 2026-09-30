@@ -48,6 +48,35 @@ def test_assistant_pdm_and_analysis_are_never_below_the_model():
         assert crate not in graph["ketchup-model"]
 
 
+def test_module_over_the_limit_fails_and_oversized_ones_only_shrink():
+    oversized = {"big.rs": 30}
+    assert checker.oversized_modules({"a.rs": 10, "big.rs": 30}, 10, oversized) == []
+    assert checker.oversized_modules({"a.rs": 11, "big.rs": 30}, 10, oversized) == [
+        "a.rs: 11 lines, limit 10; split it into modules"
+    ]
+    assert checker.oversized_modules({"big.rs": 31}, 10, oversized) == [
+        "big.rs: 31 lines, limit 30; split it into modules"
+    ]
+    assert checker.oversized_modules({"big.rs": 20}, 10, oversized) == [
+        "big.rs: shrank to 20 lines; lower OVERSIZED to it"
+    ]
+    assert checker.oversized_modules({"big.rs": 10}, 10, oversized) == [
+        "big.rs: fits 10 lines now; remove it from OVERSIZED"
+    ]
+
+
+def test_workspace_modules_fit_the_limit():
+    sizes = checker.module_sizes(ROOT)
+    assert checker.oversized_modules(sizes) == []
+    for module in [
+        "crates/ketchup-model/src/document.rs",
+        "crates/ketchup-model/src/exact_brep_graph.rs",
+        "crates/ketchup-geometry/src/sketch.rs",
+    ]:
+        assert sizes[module] <= checker.MAX_MODULE_LINES
+        assert module not in checker.OVERSIZED
+
+
 def test_geometry_depends_on_nothing_but_the_tolerances():
     graph = checker.workspace_dependencies(ROOT)
     assert graph["ketchup-geometry"] == ["ketchup-tolerance"]

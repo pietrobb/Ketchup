@@ -4,6 +4,10 @@ The table below is the one statement of the architecture. A new crate must be
 placed in it, and a dependency that points sideways or upward fails, so the
 assistant and PDM crates can never become dependencies of the model or geometry.
 Only normal `[dependencies]` count; tests may use any crate.
+
+No source module of any crate may exceed MAX_MODULE_LINES. Modules that were
+already larger are listed in OVERSIZED with their size: they may shrink but not
+grow, and an entry must be removed once its module fits the limit.
 """
 
 import sys
@@ -25,6 +29,14 @@ LAYERS = {
     "ketchup-application": 5,
     "ketchup-headless": 6,
     "ketchup-app": 6,
+}
+
+MAX_MODULE_LINES = 5_000
+
+OVERSIZED = {
+    "crates/ketchup-app/src/lib.rs": 37_980,
+    "crates/ketchup-app/src/tests.rs": 18_330,
+    "crates/ketchup-exact/src/lib.rs": 6_515,
 }
 
 
@@ -59,9 +71,32 @@ def violations(graph, layers=LAYERS):
     return problems
 
 
+def module_sizes(root):
+    """{"crates/<crate>/src/...rs": line count} for every crate source module."""
+    return {
+        path.relative_to(root).as_posix(): len(path.read_text(encoding="utf-8").splitlines())
+        for path in sorted((root / "crates").glob("*/src/**/*.rs"))
+    }
+
+
+def oversized_modules(sizes, limit=MAX_MODULE_LINES, oversized=OVERSIZED):
+    problems = []
+    for module, lines in sizes.items():
+        allowed = oversized.get(module, limit)
+        if lines > allowed:
+            problems.append(f"{module}: {lines} lines, limit {allowed}; split it into modules")
+    for module, recorded in oversized.items():
+        if sizes.get(module, 0) <= limit:
+            problems.append(f"{module}: fits {limit} lines now; remove it from OVERSIZED")
+        elif sizes[module] < recorded:
+            problems.append(f"{module}: shrank to {sizes[module]} lines; lower OVERSIZED to it")
+    return problems
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
+    problems += oversized_modules(module_sizes(root))
     for problem in problems:
         print(problem)
     if not problems:

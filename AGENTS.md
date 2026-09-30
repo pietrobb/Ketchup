@@ -69,7 +69,9 @@ reproduced failure that they catch, or explicit approval by the owner.
   "legacy" paths.
 - Do not grow `crates/ketchup-app/src/lib.rs` or `crates/ketchup-model/src/document.rs`. Put new
   code in new modules.
-- New code: functions under ~150 lines, files under ~3000 lines.
+- New code: functions under ~150 lines, files under ~3000 lines. No crate source module may
+  exceed 5000 lines; `scripts/check_crate_layers.py` enforces it and only lets the listed
+  older modules shrink.
 - Integration tests build as one binary per crate: add `tests/<name>.rs` as `mod <name>;` in
   that crate's `tests/integration.rs`; run one file with `cargo test -p <crate> --test
   integration <name>::`. A test that starts external processes (workers, plugins) takes
