@@ -1561,7 +1561,7 @@ fn load_document(
         .split_at_checked(2)
         .ok_or(PersistenceError::Truncated)?;
     let schema = u16::from_le_bytes([schema[0], schema[1]]);
-    let (revision_id, product, migration_losses, legacy_digest) = if schema > CURRENT_SCHEMA {
+    let (revision_id, mut product, migration_losses, legacy_digest) = if schema > CURRENT_SCHEMA {
         return Err(PersistenceError::UnsupportedSchema(schema));
     } else if schema >= snapshot_codec::FIRST_SNAPSHOT_FORMAT {
         let decoded = snapshot_codec::decode(schema, body)?;
@@ -1587,6 +1587,9 @@ fn load_document(
             Some(migrated.source_digest),
         )
     };
+    if schema < CURRENT_SCHEMA {
+        snapshot_codec::rename_format_99_role_categories(&mut product);
+    }
 
     let override_health = product
         .overrides

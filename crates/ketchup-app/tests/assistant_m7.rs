@@ -4468,7 +4468,7 @@ fn assistant_chat_reports_beam_deflection_tipping_and_anchoring_with_explicit_li
     assert!(
         shell
             .app_mut()
-            .create_classification_dimension(VALIDATOR_ROLE_DIMENSION_V1, "furniture.shelf.xy",)
+            .create_classification_dimension(VALIDATOR_ROLE_DIMENSION_V1, "physics.beam.xy",)
     );
     let role_dimension_id: ClassificationDimensionId = shell
         .app()
@@ -4480,7 +4480,7 @@ fn assistant_chat_reports_beam_deflection_tipping_and_anchoring_with_explicit_li
     assert!(
         shell
             .app_mut()
-            .add_classification_category(role_dimension_id, "furniture.case.z")
+            .add_classification_category(role_dimension_id, "physics.freestanding.z")
     );
     let (shelf_role_id, case_role_id): (ClassificationCategoryId, ClassificationCategoryId) = {
         let snapshot = shell.app().document_snapshot();
@@ -4490,12 +4490,12 @@ fn assistant_chat_reports_beam_deflection_tipping_and_anchoring_with_explicit_li
         (
             dimension
                 .categories()
-                .find(|category| category.name() == "furniture.shelf.xy")
+                .find(|category| category.name() == "physics.beam.xy")
                 .unwrap()
                 .id(),
             dimension
                 .categories()
-                .find(|category| category.name() == "furniture.case.z")
+                .find(|category| category.name() == "physics.freestanding.z")
                 .unwrap()
                 .id(),
         )
@@ -4622,7 +4622,7 @@ fn assistant_chat_reports_beam_deflection_tipping_and_anchoring_with_explicit_li
         "physics.beam_deflection_exceeded"
     );
     assert_eq!(shelf["issues"][0]["name"], "Opaque panel A");
-    assert_eq!(shelf["issues"][0]["role"], "furniture.shelf.xy");
+    assert_eq!(shelf["issues"][0]["role"], "physics.beam.xy");
     assert_eq!(
         shelf["issues"][0]["role_source"],
         "canonical_classification"
@@ -4649,10 +4649,10 @@ fn assistant_chat_reports_beam_deflection_tipping_and_anchoring_with_explicit_li
     assert_eq!(tipping["issue_count"], 1);
     assert_eq!(
         tipping["issues"][0]["code"],
-        "furniture.tip_angle_below_limit"
+        "stability.tip_angle_below_limit"
     );
     assert_eq!(tipping["issues"][0]["name"], "Shelf decoy B");
-    assert_eq!(tipping["issues"][0]["role"], "furniture.case.z");
+    assert_eq!(tipping["issues"][0]["role"], "physics.freestanding.z");
     assert_eq!(
         tipping["issues"][0]["role_source"],
         "canonical_classification"
@@ -4665,9 +4665,9 @@ fn assistant_chat_reports_beam_deflection_tipping_and_anchoring_with_explicit_li
     assert_eq!(anchoring["state"], "failed");
     assert_eq!(anchoring["applicable_count"], 2);
     assert_eq!(anchoring["required_count"], 1);
-    assert_eq!(anchoring["issues"][0]["code"], "furniture.anchor_required");
+    assert_eq!(anchoring["issues"][0]["code"], "stability.anchor_required");
     assert_eq!(anchoring["issues"][0]["name"], "Shelf decoy B");
-    assert_eq!(anchoring["issues"][0]["role"], "furniture.case.z");
+    assert_eq!(anchoring["issues"][0]["role"], "physics.freestanding.z");
     assert_eq!(anchoring["issues"][0]["base_depth_mm"], 300.0);
     assert_eq!(anchoring["issues"][0]["height_mm"], 1_800.0);
     assert_eq!(
@@ -4752,7 +4752,7 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
     };
     let role_names = [
         "manufacturing.panel.xy:door-a",
-        "manufacturing.hinge-cup.z:door-a",
+        "manufacturing.cup-bore.z:door-a",
         "manufacturing.hole.z:door-a",
         "hardware.linear-pair.x:drawer-a",
         "manufacturing.panel.xy:back-a",
@@ -4886,8 +4886,8 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
     assert_eq!(
         manufacturing["assumptions"],
         serde_json::json!([
-            "canonical validator roles declare panels, holes, hinge cups, linear-hardware pairs, source axes, and association groups",
-            "a hole or hinge-cup association group must resolve to exactly one explicitly declared host panel",
+            "canonical validator roles declare panels, holes, cup bores, linear-hardware pairs, source axes, and association groups",
+            "a hole or cup-bore association group must resolve to exactly one explicitly declared host panel",
             "panel thickness and hole depth use declared source-frame axes bound to accepted topology",
             "hole radial envelopes are conservatively treated as circular using their largest source-frame radial extent",
             "each linear-hardware association group must contain exactly two members",
@@ -4921,7 +4921,7 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
         "Opaque manufacturing A"
     );
     assert_eq!(
-        issue("manufacturing.hinge_cup_envelope_below_minimum")["name"],
+        issue("manufacturing.cup_bore_envelope_below_minimum")["name"],
         "Opaque manufacturing B"
     );
     assert_eq!(
@@ -4941,7 +4941,7 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
         .iter()
         .find(|evaluation| evaluation["rule"] == "hole_edge_distance")
         .unwrap();
-    assert_eq!(hole["role"], "manufacturing.hinge-cup.z:door-a");
+    assert_eq!(hole["role"], "manufacturing.cup-bore.z:door-a");
     assert_eq!(hole["host_role"], "manufacturing.panel.xy:door-a");
     assert_eq!(hole["topology_source"], "canonical_extrusion_topology");
     let pair = evaluations
@@ -5035,7 +5035,7 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
     };
     let role_names = [
         "spatial.room:living",
-        "spatial.furniture:living",
+        "spatial.occupant:living",
         "spatial.passage.xy:living",
         "spatial.obstacle:living",
     ];
@@ -5155,7 +5155,7 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
     assert_eq!(placement["issue_count"], 1);
     assert_eq!(
         placement["issues"][0]["code"],
-        "room.furniture_outside_boundary"
+        "room.occupant_outside_boundary"
     );
     assert_eq!(placement["issues"][0]["name"], "Opaque spatial C");
     assert_eq!(placement["issues"][0]["room_name"], "Passage decoy A");
@@ -5167,7 +5167,7 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
             .abs()
             < 1.0e-9
     );
-    assert_eq!(placement["issues"][0]["role"], "spatial.furniture:living");
+    assert_eq!(placement["issues"][0]["role"], "spatial.occupant:living");
     assert_eq!(placement["issues"][0]["room_role"], "spatial.room:living");
     assert_eq!(placement["issues"][0]["evidence_class"], "tolerant");
     assert_eq!(
@@ -5198,7 +5198,7 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
         .find(|issue| issue["code"] == "room.passage_blocked")
         .unwrap();
     assert_eq!(blocked["obstacle_name"], "Room envelope decoy E");
-    assert_eq!(blocked["obstacle_role"], "spatial.furniture:living");
+    assert_eq!(blocked["obstacle_role"], "spatial.occupant:living");
     assert_eq!(blocked["narrow_phase_relation"], "intersecting");
     assert_eq!(
         blocked["narrow_phase_method"],

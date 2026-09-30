@@ -348,15 +348,15 @@ mod tests {
     }
 
     #[test]
-    fn shelf_resting_on_bottom_touches_with_its_full_footprint() {
+    fn board_resting_on_bottom_touches_with_its_full_footprint() {
         let bottom = hull([0.0; 3], [500.0, 350.0, 18.0], IDENTITY);
-        let shelf = hull([0.0; 3], [464.0, 330.0, 18.0], translated(18.0, 0.0, 18.0));
-        let HullRelation::Touching { area_mm2 } = relate(&bottom, &shelf, 1e-7) else {
+        let board = hull([0.0; 3], [464.0, 330.0, 18.0], translated(18.0, 0.0, 18.0));
+        let HullRelation::Touching { area_mm2 } = relate(&bottom, &board, 1e-7) else {
             panic!()
         };
         assert!((area_mm2 - 464.0 * 330.0).abs() < 1e-6, "{area_mm2}");
         assert_eq!(
-            relate(&shelf, &bottom, 1e-7),
+            relate(&board, &bottom, 1e-7),
             HullRelation::Touching { area_mm2 }
         );
     }

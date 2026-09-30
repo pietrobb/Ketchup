@@ -10,6 +10,7 @@ pub mod evaluation;
 pub mod fea_workflow;
 pub mod mesh_conversion;
 pub mod model_query;
+mod part_role;
 pub mod pdm_workflow;
 mod planner;
 mod rule_exact_collisions;

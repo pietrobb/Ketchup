@@ -74,6 +74,95 @@ const STEEL_MATERIAL_CATEGORY: ClassificationCategoryId = ClassificationCategory
 const BEARING_MATERIAL_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(942);
 
 #[test]
+fn format_99_validator_roles_load_under_their_function_names() {
+    let categories = [
+        (901, "furniture.shelf.xy", "physics.beam.xy"),
+        (902, "furniture.case.z", "physics.freestanding.z"),
+        (
+            903,
+            "manufacturing.hinge-cup.z:door",
+            "manufacturing.cup-bore.z:door",
+        ),
+        (904, "spatial.furniture:kitchen", "spatial.occupant:kitchen"),
+        (905, "structure.support", "structure.support"),
+        // The new name is already taken, so this category keeps its old name.
+        (906, "furniture.shelf.yz", "furniture.shelf.yz"),
+        (907, "physics.beam.yz", "physics.beam.yz"),
+        (908, "furniture.shelves", "furniture.shelves"),
+    ];
+    let mut document = exact_only_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ROLE_DIMENSION,
+                name: VALIDATOR_ROLE_DIMENSION_V1.to_owned(),
+                categories: categories
+                    .iter()
+                    .map(|(id, old, _)| (ClassificationCategoryId(*id), (*old).to_owned()))
+                    .collect(),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_LEFT,
+                dimension_id: ROLE_DIMENSION,
+                category_id: Some(ClassificationCategoryId(901)),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_RIGHT,
+                dimension_id: ROLE_DIMENSION,
+                category_id: Some(ClassificationCategoryId(903)),
+            },
+        ]))
+        .unwrap();
+    let written = document.current();
+    let names = |snapshot: &Snapshot| {
+        snapshot
+            .classification_dimensions()
+            .find(|dimension| dimension.id() == ROLE_DIMENSION)
+            .unwrap()
+            .categories()
+            .map(|category| (category.id().0, category.name().to_owned()))
+            .collect::<Vec<_>>()
+    };
+
+    // The format-100 writer stores the same payload a format-99 writer did; only the
+    // format number differs, and it sits outside the checksummed payload.
+    let mut bytes = persistence::save(&written);
+    assert!(bytes.starts_with(b"KETCHUPDOC"));
+    assert_eq!(bytes[10..12], persistence::CURRENT_SCHEMA.to_le_bytes());
+    bytes[10..12].copy_from_slice(&99_u16.to_le_bytes());
+
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(loaded.source_schema(), 99);
+    let migrated = loaded.snapshot();
+    assert_eq!(
+        names(&migrated),
+        categories
+            .iter()
+            .map(|(id, _, new)| (*id, (*new).to_owned()))
+            .collect::<Vec<_>>()
+    );
+    let roles = ValidatorRoleIndex::from_snapshot(&migrated).unwrap();
+    assert_eq!(roles.role(EXACT_LEFT).unwrap().as_str(), "physics.beam.xy");
+    assert_eq!(
+        roles.role(EXACT_RIGHT).unwrap().as_str(),
+        "manufacturing.cup-bore.z:door"
+    );
+    // The digest its writer computed, so releases that recorded it still verify.
+    assert_eq!(
+        loaded.audit().source_canonical_digest,
+        written.canonical_digest()
+    );
+    assert_ne!(migrated.canonical_digest(), written.canonical_digest());
+
+    // Only older formats are renamed: the current format keeps names as written.
+    let current = persistence::load(&persistence::save(&written)).unwrap();
+    assert_eq!(names(&current.snapshot()), names(&written));
+    let resaved = persistence::load(&persistence::save(&migrated)).unwrap();
+    assert_eq!(resaved.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(names(&resaved.snapshot()), names(&migrated));
+}
+
+#[test]
 fn validator_roles_are_explicit_name_invariant_and_deterministic() {
     let mut document = exact_only_document();
     document

@@ -1861,9 +1861,9 @@ mod tests {
         let validator_input = GravitySupportInput::new(
             vec![
                 gravity_participant(1, [0.0, 0.0, 0.0], [20.0, 400.0, 500.0], true),
-                // A shelf hanging on the side panel, not resting on anything.
+                // A board hanging on the side panel, not resting on anything.
                 gravity_participant(2, [20.0, 0.0, 250.0], [500.0, 400.0, 270.0], false),
-                // A pin seated across the side/shelf interface.
+                // A pin seated across the side/board interface.
                 gravity_participant(3, [5.0, 100.0, 256.0], [35.0, 108.0, 264.0], false),
                 // An unrelated floating part.
                 gravity_participant(4, [600.0, 0.0, 250.0], [700.0, 100.0, 270.0], false),

@@ -1345,8 +1345,8 @@ fn structural_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
                 id: ClassificationDimensionId(1),
                 name: "ketchup.validator-role.v1".into(),
                 categories: vec![
-                    (ClassificationCategoryId(1), "furniture.shelf.xy".into()),
-                    (ClassificationCategoryId(2), "furniture.case.z".into()),
+                    (ClassificationCategoryId(1), "physics.beam.xy".into()),
+                    (ClassificationCategoryId(2), "physics.freestanding.z".into()),
                 ],
             },
             CanonicalCommand::SetOccurrenceClassification {

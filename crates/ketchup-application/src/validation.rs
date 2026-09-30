@@ -1,3 +1,4 @@
+pub use crate::part_role::{PartRole, RoleFrame, RoleFunction};
 use crate::validation_rules::{ValidationRules, occurrence_materials};
 use ketchup_core::assembly_joint::AssemblyJointKind;
 use ketchup_core::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
@@ -272,7 +273,7 @@ pub fn scoped_static_load_report(
         }
         let Some(role) = role_index
             .role(*occurrence_id)
-            .and_then(|role| assistant_physics_role(role.as_str()))
+            .and_then(|role| PartRole::parse(role.as_str()))
         else {
             return scoped_static_load_unavailable(
                 snapshot,
@@ -280,7 +281,7 @@ pub fn scoped_static_load_report(
                 "missing_or_invalid_static_load_role",
             );
         };
-        if role.kind != AssistantPhysicsRoleKind::StaticLoad {
+        if role.function != RoleFunction::StaticLoad {
             return scoped_static_load_unavailable(
                 snapshot,
                 scope,
@@ -296,20 +297,18 @@ pub fn scoped_static_load_report(
         if cancellation_requested() {
             return scoped_static_load_unavailable(snapshot, scope, "validation_cancelled");
         }
-        if let Some(role) = assistant_physics_role(assignment.role.as_str())
+        if let Some(role) = PartRole::parse(assignment.role.as_str())
             && load_cases.contains(role.group)
         {
-            match role.kind {
-                AssistantPhysicsRoleKind::StaticLoad
-                    if !load_ids.contains(&assignment.occurrence_id) =>
-                {
+            match role.function {
+                RoleFunction::StaticLoad if !load_ids.contains(&assignment.occurrence_id) => {
                     return scoped_static_load_unavailable(
                         snapshot,
                         scope,
                         "shared_static_load_case_outside_scope",
                     );
                 }
-                AssistantPhysicsRoleKind::StaticSupport => {
+                RoleFunction::StaticSupport => {
                     boundary_support_ids.insert(assignment.occurrence_id);
                     if boundary_support_ids.len() > MAX_STRUCTURAL_SCOPE_DEPENDENCIES {
                         return scoped_static_load_unavailable(
@@ -434,102 +433,10 @@ pub fn assistant_validator_catalog() -> Vec<serde_json::Value> {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AssistantSpatialRoleKind {
-    Room,
-    Furniture,
-    Passage {
-        surface_axes: [usize; 2],
-        height_axis: usize,
-    },
-    Obstacle,
-    Context,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct AssistantSpatialRole<'a> {
-    pub kind: AssistantSpatialRoleKind,
-    pub group: &'a str,
-}
-
-pub fn assistant_spatial_role(role: &str) -> Option<AssistantSpatialRole<'_>> {
-    let (role, group) = role.split_once(':')?;
-    if group.is_empty() {
-        return None;
-    }
-    let kind = match role {
-        "spatial.room" => AssistantSpatialRoleKind::Room,
-        "spatial.furniture" => AssistantSpatialRoleKind::Furniture,
-        "spatial.passage.xy" => AssistantSpatialRoleKind::Passage {
-            surface_axes: [0, 1],
-            height_axis: 2,
-        },
-        "spatial.passage.xz" => AssistantSpatialRoleKind::Passage {
-            surface_axes: [0, 2],
-            height_axis: 1,
-        },
-        "spatial.passage.yz" => AssistantSpatialRoleKind::Passage {
-            surface_axes: [1, 2],
-            height_axis: 0,
-        },
-        "spatial.obstacle" => AssistantSpatialRoleKind::Obstacle,
-        "spatial.context" => AssistantSpatialRoleKind::Context,
-        _ => return None,
-    };
-    Some(AssistantSpatialRole { kind, group })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AssistantPhysicsRoleKind {
-    GravityBody,
-    GravityGround,
-    StaticLoad,
-    StaticSupport,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct AssistantPhysicsRole<'a> {
-    pub kind: AssistantPhysicsRoleKind,
-    pub group: &'a str,
-}
-
-pub fn assistant_physics_role(role: &str) -> Option<AssistantPhysicsRole<'_>> {
-    let (role, group) = role.split_once(':')?;
-    if group.is_empty() {
-        return None;
-    }
-    let kind = match role {
-        "physics.gravity.body" => AssistantPhysicsRoleKind::GravityBody,
-        "physics.gravity.ground" => AssistantPhysicsRoleKind::GravityGround,
-        "physics.static.load" => AssistantPhysicsRoleKind::StaticLoad,
-        "physics.static.support" => AssistantPhysicsRoleKind::StaticSupport,
-        _ => return None,
-    };
-    Some(AssistantPhysicsRole { kind, group })
-}
-
 pub fn assistant_evidence_label(evidence: &EvidenceClass) -> &'static str {
     match evidence {
         EvidenceClass::Exact => "exact",
         EvidenceClass::Tolerant(_) => "tolerant",
-    }
-}
-
-pub fn assistant_shelf_role_axes(role: &str) -> Option<([usize; 2], usize)> {
-    match role {
-        "furniture.shelf.xy" => Some(([0, 1], 2)),
-        "furniture.shelf.xz" => Some(([0, 2], 1)),
-        "furniture.shelf.yz" => Some(([1, 2], 0)),
-        _ => None,
-    }
-}
-
-pub fn assistant_case_role_axis(role: &str) -> Option<usize> {
-    match role {
-        "furniture.case.x" => Some(0),
-        "furniture.case.y" => Some(1),
-        "furniture.case.z" => Some(2),
-        _ => None,
     }
 }
 
@@ -1546,9 +1453,16 @@ pub fn assistant_beam_deflection_report(
         let Some(role) = roles.role(occurrence_id) else {
             continue;
         };
-        let Some((surface_axes, thickness_axis)) = assistant_shelf_role_axes(role.as_str()) else {
+        let Some(PartRole {
+            function: RoleFunction::Beam,
+            frame,
+            ..
+        }) = PartRole::parse(role.as_str())
+        else {
             continue;
         };
+        let surface_axes = frame.plane_axes().expect("a beam role names its plane");
+        let thickness_axis = frame.axis().expect("a beam role names its plane");
         let name = names
             .get(&occurrence_id)
             .expect("validated visible participants retain display names");
@@ -1726,7 +1640,12 @@ pub fn assistant_tipping_report(
         let Some(role) = roles.role(occurrence_id) else {
             continue;
         };
-        let Some(vertical_axis) = assistant_case_role_axis(role.as_str()) else {
+        let Some(PartRole {
+            function: RoleFunction::Freestanding,
+            frame: RoleFrame::Axis(vertical_axis),
+            ..
+        }) = PartRole::parse(role.as_str())
+        else {
             continue;
         };
         let name = names
@@ -1741,7 +1660,7 @@ pub fn assistant_tipping_report(
                 "occurrence_id": occurrence_id.0,
                 "name": name,
                 "role": role.as_str(),
-                "reason": "declared case-furniture vertical axis is not aligned with world gravity",
+                "reason": "declared free-standing vertical axis is not aligned with world gravity",
                 "source_axis_world_z_alignment": vertical_alignment,
             }));
             continue;
@@ -1780,7 +1699,7 @@ pub fn assistant_tipping_report(
         });
         if failed {
             issues.push(serde_json::json!({
-                "code": "furniture.tip_angle_below_limit",
+                "code": "stability.tip_angle_below_limit",
                 "severity": "warning",
                 "occurrence_id": occurrence_id.0,
                 "name": name,
@@ -1815,11 +1734,11 @@ pub fn assistant_tipping_report(
         "inputs": { "mass_model": "uniform_source_frame_envelope" },
         "limit": { "minimum_tip_angle_degrees": rules.tipping.minimum_tip_angle_degrees },
         "assumptions": [
-            "canonical validator roles declare the case-furniture vertical axis",
+            "canonical validator roles declare the free-standing body vertical axis",
             "source-frame extents are bound to the accepted body geometry",
             "mass is uniformly distributed inside the source-frame envelope",
             "the full reported base depth contacts a level floor",
-            "no external pull or shelf load is included",
+            "no external pull or carried load is included",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
@@ -1873,7 +1792,12 @@ pub fn assistant_anchoring_report(
         let Some(role) = roles.role(occurrence_id) else {
             continue;
         };
-        let Some(vertical_axis) = assistant_case_role_axis(role.as_str()) else {
+        let Some(PartRole {
+            function: RoleFunction::Freestanding,
+            frame: RoleFrame::Axis(vertical_axis),
+            ..
+        }) = PartRole::parse(role.as_str())
+        else {
             continue;
         };
         let name = names
@@ -1888,7 +1812,7 @@ pub fn assistant_anchoring_report(
                 "occurrence_id": occurrence_id.0,
                 "name": name,
                 "role": role.as_str(),
-                "reason": "declared case-furniture vertical axis is not aligned with world gravity",
+                "reason": "declared free-standing vertical axis is not aligned with world gravity",
                 "source_axis_world_z_alignment": vertical_alignment,
             }));
             continue;
@@ -1928,7 +1852,7 @@ pub fn assistant_anchoring_report(
         });
         if anchoring_required {
             issues.push(serde_json::json!({
-                "code": "furniture.anchor_required",
+                "code": "stability.anchor_required",
                 "severity": "warning",
                 "occurrence_id": occurrence_id.0,
                 "name": name,
@@ -1967,7 +1891,7 @@ pub fn assistant_anchoring_report(
             "minimum_height_depth_ratio": rules.anchoring.minimum_height_depth_ratio,
         },
         "assumptions": [
-            "canonical validator roles declare the case-furniture vertical axis",
+            "canonical validator roles declare the free-standing body vertical axis",
             "source-frame extents are bound to the accepted body geometry",
             "wall-anchor declarations are not represented by the current document schema",
             "a requirement is reported rather than claiming that an anchor is absent",
@@ -1976,44 +1900,6 @@ pub fn assistant_anchoring_report(
         "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
     })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AssistantManufacturingRoleKind {
-    Panel,
-    Hole,
-    HingeCup,
-    LinearHardwarePair,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct AssistantManufacturingRole<'a> {
-    pub kind: AssistantManufacturingRoleKind,
-    axis: usize,
-    pub group: &'a str,
-}
-
-pub fn assistant_manufacturing_role(role: &str) -> Option<AssistantManufacturingRole<'_>> {
-    let (role, group) = role.split_once(':')?;
-    if group.is_empty() {
-        return None;
-    }
-    let (kind, axis) = match role {
-        "manufacturing.panel.xy" => (AssistantManufacturingRoleKind::Panel, 2),
-        "manufacturing.panel.xz" => (AssistantManufacturingRoleKind::Panel, 1),
-        "manufacturing.panel.yz" => (AssistantManufacturingRoleKind::Panel, 0),
-        "manufacturing.hole.x" => (AssistantManufacturingRoleKind::Hole, 0),
-        "manufacturing.hole.y" => (AssistantManufacturingRoleKind::Hole, 1),
-        "manufacturing.hole.z" => (AssistantManufacturingRoleKind::Hole, 2),
-        "manufacturing.hinge-cup.x" => (AssistantManufacturingRoleKind::HingeCup, 0),
-        "manufacturing.hinge-cup.y" => (AssistantManufacturingRoleKind::HingeCup, 1),
-        "manufacturing.hinge-cup.z" => (AssistantManufacturingRoleKind::HingeCup, 2),
-        "hardware.linear-pair.x" => (AssistantManufacturingRoleKind::LinearHardwarePair, 0),
-        "hardware.linear-pair.y" => (AssistantManufacturingRoleKind::LinearHardwarePair, 1),
-        "hardware.linear-pair.z" => (AssistantManufacturingRoleKind::LinearHardwarePair, 2),
-        _ => return None,
-    };
-    Some(AssistantManufacturingRole { kind, axis, group })
 }
 
 pub fn assistant_general_body_source_label(source: &GeneralBodySource) -> &'static str {
@@ -2072,7 +1958,7 @@ pub fn assistant_hardware_manufacturing_report(
         occurrence_id: OccurrenceId,
         name: &'a str,
         role: &'a str,
-        role_kind: AssistantManufacturingRoleKind,
+        role_kind: RoleFunction,
         axis: usize,
         group: &'a str,
         dimensions: [f64; 3],
@@ -2088,14 +1974,22 @@ pub fn assistant_hardware_manufacturing_report(
             let occurrence_id = participant.instance_path().root_occurrence();
             let name = names.get(&occurrence_id)?;
             let role = roles.role(occurrence_id)?;
-            let parsed_role = assistant_manufacturing_role(role.as_str())?;
+            let parsed_role = PartRole::parse(role.as_str()).filter(|role| {
+                matches!(
+                    role.function,
+                    RoleFunction::Panel
+                        | RoleFunction::Hole
+                        | RoleFunction::CupBore
+                        | RoleFunction::LinearPair
+                )
+            })?;
             let geometry = participant.geometry_evidence();
             Some(Geometry {
                 occurrence_id,
                 name,
                 role: role.as_str(),
-                role_kind: parsed_role.kind,
-                axis: parsed_role.axis,
+                role_kind: parsed_role.function,
+                axis: parsed_role.frame.axis()?,
                 group: parsed_role.group,
                 dimensions: geometry.source_frame_extents_mm(),
                 centre: geometry.source_frame_center_world_mm(),
@@ -2113,7 +2007,7 @@ pub fn assistant_hardware_manufacturing_report(
         .iter()
         .enumerate()
         .filter_map(|(index, geometry)| {
-            (geometry.role_kind == AssistantManufacturingRoleKind::Panel).then_some(index)
+            (geometry.role_kind == RoleFunction::Panel).then_some(index)
         })
         .collect::<Vec<_>>();
     let mut evaluations = Vec::new();
@@ -2159,7 +2053,7 @@ pub fn assistant_hardware_manufacturing_report(
     for (hole_index, hole) in geometries.iter().enumerate().filter(|(_, geometry)| {
         matches!(
             geometry.role_kind,
-            AssistantManufacturingRoleKind::Hole | AssistantManufacturingRoleKind::HingeCup
+            RoleFunction::Hole | RoleFunction::CupBore
         )
     }) {
         let host_indices = panel_indices
@@ -2273,11 +2167,11 @@ pub fn assistant_hardware_manufacturing_report(
                 "rule": format!("hole perimeter must leave at least {} mm of material to every panel edge", rules.hardware_manufacturing.minimum_hole_edge_material_mm),
             }));
         }
-        if hole.role_kind == AssistantManufacturingRoleKind::HingeCup {
-            let hinge_failed = diameter_mm < rules.hardware_manufacturing.minimum_cup_diameter_mm
+        if hole.role_kind == RoleFunction::CupBore {
+            let cup_failed = diameter_mm < rules.hardware_manufacturing.minimum_cup_diameter_mm
                 || depth_mm < rules.hardware_manufacturing.minimum_cup_depth_mm;
             evaluations.push(serde_json::json!({
-                "rule": "hinge_cup_envelope",
+                "rule": "cup_bore_envelope",
                 "occurrence_id": hole.occurrence_id.0,
                 "name": hole.name,
                 "host_occurrence_id": host.occurrence_id.0,
@@ -2286,11 +2180,11 @@ pub fn assistant_hardware_manufacturing_report(
                 "depth_mm": depth_mm,
                 "minimum_diameter_mm": rules.hardware_manufacturing.minimum_cup_diameter_mm,
                 "minimum_depth_mm": rules.hardware_manufacturing.minimum_cup_depth_mm,
-                "result": if hinge_failed { "failed" } else { "passed" },
+                "result": if cup_failed { "failed" } else { "passed" },
             }));
-            if hinge_failed {
+            if cup_failed {
                 issues.push(serde_json::json!({
-                    "code": "manufacturing.hinge_cup_envelope_below_minimum",
+                    "code": "manufacturing.cup_bore_envelope_below_minimum",
                     "severity": "warning",
                     "occurrence_id": hole.occurrence_id.0,
                     "name": hole.name,
@@ -2350,7 +2244,7 @@ pub fn assistant_hardware_manufacturing_report(
     let mut linear_pairs: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for geometry in geometries
         .iter()
-        .filter(|geometry| geometry.role_kind == AssistantManufacturingRoleKind::LinearHardwarePair)
+        .filter(|geometry| geometry.role_kind == RoleFunction::LinearPair)
     {
         linear_pairs
             .entry(geometry.group)
@@ -2444,8 +2338,8 @@ pub fn assistant_hardware_manufacturing_report(
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "limits": &rules.hardware_manufacturing,
         "assumptions": [
-            "canonical validator roles declare panels, holes, hinge cups, linear-hardware pairs, source axes, and association groups",
-            "a hole or hinge-cup association group must resolve to exactly one explicitly declared host panel",
+            "canonical validator roles declare panels, holes, cup bores, linear-hardware pairs, source axes, and association groups",
+            "a hole or cup-bore association group must resolve to exactly one explicitly declared host panel",
             "panel thickness and hole depth use declared source-frame axes bound to accepted topology",
             "hole radial envelopes are conservatively treated as circular using their largest source-frame radial extent",
             "each linear-hardware association group must contain exactly two members",
@@ -2498,7 +2392,8 @@ pub fn assistant_room_placement_report(
         occurrence_id: OccurrenceId,
         name: &'a str,
         participant: &'a GeneralBodyParticipant,
-        kind: AssistantSpatialRoleKind,
+        kind: RoleFunction,
+        frame: RoleFrame,
         group: &'a str,
     }
 
@@ -2509,19 +2404,30 @@ pub fn assistant_room_placement_report(
             let name = names.get(&occurrence_id)?;
             let role = roles
                 .role(occurrence_id)
-                .and_then(|role| assistant_spatial_role(role.as_str()))?;
+                .and_then(|role| PartRole::parse(role.as_str()))
+                .filter(|role| {
+                    matches!(
+                        role.function,
+                        RoleFunction::Room
+                            | RoleFunction::Occupant
+                            | RoleFunction::Passage
+                            | RoleFunction::Obstacle
+                            | RoleFunction::Context
+                    )
+                })?;
             Some(Geometry {
                 occurrence_id,
                 name,
                 participant,
-                kind: role.kind,
+                kind: role.function,
+                frame: role.frame,
                 group: role.group,
             })
         })
         .collect::<Vec<_>>();
     let rooms = geometries
         .iter()
-        .filter(|geometry| geometry.kind == AssistantSpatialRoleKind::Room)
+        .filter(|geometry| geometry.kind == RoleFunction::Room)
         .collect::<Vec<_>>();
     if rooms.is_empty() {
         return serde_json::json!({
@@ -2544,20 +2450,25 @@ pub fn assistant_room_placement_report(
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
     let mut not_evaluated = Vec::new();
-    for furniture in geometries
+    for occupant in geometries
         .iter()
-        .filter(|geometry| geometry.kind == AssistantSpatialRoleKind::Furniture)
+        .filter(|geometry| geometry.kind == RoleFunction::Occupant)
     {
         let matching_rooms = rooms
             .iter()
             .copied()
-            .filter(|room| room.group == furniture.group)
+            .filter(|room| room.group == occupant.group)
             .collect::<Vec<_>>();
         let [room] = matching_rooms.as_slice() else {
             not_evaluated.push(serde_json::json!({
                 "validator": "room_placement",
-                "occurrence_id": furniture.occurrence_id.0,
-                "role": format!("spatial.furniture:{}", furniture.group),
+                "occurrence_id": occupant.occurrence_id.0,
+                "role": PartRole {
+                    function: occupant.kind,
+                    frame: occupant.frame,
+                    group: occupant.group,
+                }
+                .to_string(),
                 "reason": if matching_rooms.is_empty() {
                     "associated_room_role_not_found"
                 } else {
@@ -2567,11 +2478,11 @@ pub fn assistant_room_placement_report(
             continue;
         };
         let Ok(containment) =
-            general_body_containment(room.participant, furniture.participant, tolerance)
+            general_body_containment(room.participant, occupant.participant, tolerance)
         else {
             not_evaluated.push(serde_json::json!({
                 "validator": "room_placement",
-                "occurrence_id": furniture.occurrence_id.0,
+                "occurrence_id": occupant.occurrence_id.0,
                 "reason": "oriented_geometry_evidence_unavailable",
             }));
             continue;
@@ -2584,10 +2495,15 @@ pub fn assistant_room_placement_report(
             .unwrap_or(0.0);
         let failed = maximum_outside_mm > rules.room_placement.boundary_tolerance_mm;
         evaluations.push(serde_json::json!({
-            "rule": "furniture_inside_associated_room",
-            "occurrence_id": furniture.occurrence_id.0,
-            "name": furniture.name,
-            "role": format!("spatial.furniture:{}", furniture.group),
+            "rule": "occupant_inside_associated_room",
+            "occurrence_id": occupant.occurrence_id.0,
+            "name": occupant.name,
+            "role": PartRole {
+                    function: occupant.kind,
+                    frame: occupant.frame,
+                    group: occupant.group,
+                }
+                .to_string(),
             "room_occurrence_id": room.occurrence_id.0,
             "room_name": room.name,
             "room_role": format!("spatial.room:{}", room.group),
@@ -2607,13 +2523,18 @@ pub fn assistant_room_placement_report(
         }));
         if failed {
             issues.push(serde_json::json!({
-                "code": "room.furniture_outside_boundary",
+                "code": "room.occupant_outside_boundary",
                 "severity": "warning",
-                "occurrence_id": furniture.occurrence_id.0,
-                "name": furniture.name,
+                "occurrence_id": occupant.occurrence_id.0,
+                "name": occupant.name,
                 "room_occurrence_id": room.occurrence_id.0,
                 "room_name": room.name,
-                "role": format!("spatial.furniture:{}", furniture.group),
+                "role": PartRole {
+                    function: occupant.kind,
+                    frame: occupant.frame,
+                    group: occupant.group,
+                }
+                .to_string(),
                 "room_role": format!("spatial.room:{}", room.group),
                 "evidence_class": assistant_evidence_label(&containment.evidence_class),
                 "narrow_phase_method": containment.method,
@@ -2627,7 +2548,7 @@ pub fn assistant_room_placement_report(
                 },
                 "maximum_outside_mm": maximum_outside_mm,
                 "boundary_tolerance_mm": rules.room_placement.boundary_tolerance_mm,
-                "rule": "a spatial.furniture occurrence must stay inside its associated spatial.room envelope",
+                "rule": "a spatial.occupant occurrence must stay inside its associated spatial.room envelope",
             }));
         }
     }
@@ -2650,7 +2571,7 @@ pub fn assistant_room_placement_report(
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "limits": { "boundary_tolerance_mm": rules.room_placement.boundary_tolerance_mm },
         "assumptions": [
-            "canonical spatial roles explicitly associate furniture with exactly one room group",
+            "canonical spatial roles explicitly associate each occupant with exactly one room group",
             "containment uses current revision-bound oriented source-frame geometry",
             "non-exact body envelopes retain tolerant false-positive-only evidence",
         ],
@@ -2702,7 +2623,8 @@ pub fn assistant_passage_clearance_report(
         occurrence_id: OccurrenceId,
         name: &'a str,
         participant: &'a GeneralBodyParticipant,
-        kind: AssistantSpatialRoleKind,
+        kind: RoleFunction,
+        frame: RoleFrame,
         group: &'a str,
     }
 
@@ -2713,19 +2635,30 @@ pub fn assistant_passage_clearance_report(
             let name = names.get(&occurrence_id)?;
             let role = roles
                 .role(occurrence_id)
-                .and_then(|role| assistant_spatial_role(role.as_str()))?;
+                .and_then(|role| PartRole::parse(role.as_str()))
+                .filter(|role| {
+                    matches!(
+                        role.function,
+                        RoleFunction::Room
+                            | RoleFunction::Occupant
+                            | RoleFunction::Passage
+                            | RoleFunction::Obstacle
+                            | RoleFunction::Context
+                    )
+                })?;
             Some(Geometry {
                 occurrence_id,
                 name,
                 participant,
-                kind: role.kind,
+                kind: role.function,
+                frame: role.frame,
                 group: role.group,
             })
         })
         .collect::<Vec<_>>();
     let passages = geometries
         .iter()
-        .filter(|geometry| matches!(geometry.kind, AssistantSpatialRoleKind::Passage { .. }))
+        .filter(|geometry| geometry.kind == RoleFunction::Passage)
         .collect::<Vec<_>>();
     if passages.is_empty() {
         return serde_json::json!({
@@ -2752,12 +2685,10 @@ pub fn assistant_passage_clearance_report(
     let mut issues = Vec::new();
     let mut not_evaluated = Vec::new();
     for passage in &passages {
-        let AssistantSpatialRoleKind::Passage {
-            surface_axes,
-            height_axis,
-        } = passage.kind
+        let (Some(surface_axes), Some(height_axis)) =
+            (passage.frame.plane_axes(), passage.frame.axis())
         else {
-            unreachable!("passages were filtered by canonical role");
+            unreachable!("a passage role names its plane");
         };
         let geometry = passage.participant.geometry_evidence();
         let dimensions_mm: [f64; 3] = std::array::from_fn(|axis| {
@@ -2807,7 +2738,7 @@ pub fn assistant_passage_clearance_report(
                 && geometry.group == passage.group
                 && matches!(
                     geometry.kind,
-                    AssistantSpatialRoleKind::Furniture | AssistantSpatialRoleKind::Obstacle
+                    RoleFunction::Occupant | RoleFunction::Obstacle
                 )
         }) {
             let Ok(narrow_phase) =
@@ -2829,11 +2760,12 @@ pub fn assistant_passage_clearance_report(
                     "passage_name": passage.name,
                     "obstacle_occurrence_id": obstacle.occurrence_id.0,
                     "obstacle_name": obstacle.name,
-                    "obstacle_role": format!("spatial.{}:{}", match obstacle.kind {
-                        AssistantSpatialRoleKind::Furniture => "furniture",
-                        AssistantSpatialRoleKind::Obstacle => "obstacle",
-                        _ => unreachable!("obstacles were filtered by canonical role"),
-                    }, obstacle.group),
+                    "obstacle_role": PartRole {
+                        function: obstacle.kind,
+                        frame: obstacle.frame,
+                        group: obstacle.group,
+                    }
+                    .to_string(),
                     "evidence_class": assistant_evidence_label(&narrow_phase.evidence_class),
                     "narrow_phase_method": narrow_phase.method,
                     "narrow_phase_relation": "intersecting",
@@ -3128,8 +3060,8 @@ fn assistant_static_load_report_filtered(
                 .copied()
                 .collect::<BTreeSet<_>>();
             ids.extend(roles.assignments().filter_map(|assignment| {
-                assistant_physics_role(assignment.role.as_str())
-                    .filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
+                PartRole::parse(assignment.role.as_str())
+                    .filter(|role| role.function == RoleFunction::StaticLoad)
                     .map(|_| assignment.occurrence_id)
             }));
             ids.into_iter().collect::<Vec<_>>()
@@ -3156,10 +3088,10 @@ fn assistant_static_load_report_filtered(
         let load_declarations = applied_loads.get(&loaded_id);
         let loaded_role = roles
             .role(loaded_id)
-            .and_then(|role| assistant_physics_role(role.as_str()));
+            .and_then(|role| PartRole::parse(role.as_str()));
         let missing_reason = if loaded_name.is_none() {
             Some("loaded_occurrence_not_visible")
-        } else if loaded_role.is_none_or(|role| role.kind != AssistantPhysicsRoleKind::StaticLoad) {
+        } else if loaded_role.is_none_or(|role| role.function != RoleFunction::StaticLoad) {
             Some("missing_or_invalid_static_load_role")
         } else if mass_declarations.is_none_or(|values| values.len() != 1) {
             Some("missing_or_ambiguous_mass")
@@ -3173,8 +3105,7 @@ fn assistant_static_load_report_filtered(
             None
         };
         if let Some(reason) = missing_reason {
-            if let Some(role) =
-                loaded_role.filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
+            if let Some(role) = loaded_role.filter(|role| role.function == RoleFunction::StaticLoad)
             {
                 incomplete_cases.insert(role.group.to_owned());
             }
@@ -3223,8 +3154,8 @@ fn assistant_static_load_report_filtered(
                 }));
                 break 'cases;
             }
-            if let Some(role) = assistant_physics_role(assignment.role.as_str())
-                && role.kind == AssistantPhysicsRoleKind::StaticSupport
+            if let Some(role) = PartRole::parse(assignment.role.as_str())
+                && role.function == RoleFunction::StaticSupport
                 && role.group == load_case
             {
                 support_ids.insert(assignment.occurrence_id);
@@ -3654,17 +3585,16 @@ pub(crate) fn assistant_validation_context_base(
                     let occurrence_id = body.instance_path().root_occurrence();
                     let role = roles
                         .role(occurrence_id)
-                        .and_then(|role| assistant_physics_role(role.as_str()))?;
+                        .and_then(|role| PartRole::parse(role.as_str()))?;
                     matches!(
-                        role.kind,
-                        AssistantPhysicsRoleKind::GravityBody
-                            | AssistantPhysicsRoleKind::GravityGround
+                        role.function,
+                        RoleFunction::GravityBody | RoleFunction::GravityGround
                     )
                     .then(|| {
                         GravitySupportParticipant::new(
                             body.clone(),
                             role.group,
-                            role.kind == AssistantPhysicsRoleKind::GravityGround
+                            role.function == RoleFunction::GravityGround
                                 || snapshot.occurrence_is_grounded(occurrence_id),
                         )
                     })

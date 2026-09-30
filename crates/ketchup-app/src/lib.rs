@@ -11227,7 +11227,7 @@ impl KetchupApp {
             };
             let Some(candidate_role) = roles
                 .role(occurrence_id)
-                .and_then(|role| assistant_physics_role(role.as_str()))
+                .and_then(|role| PartRole::parse(role.as_str()))
             else {
                 continue;
             };
@@ -11239,13 +11239,13 @@ impl KetchupApp {
             for (support_occurrence_id, support) in &participants {
                 let Some(support_role) = roles
                     .role(*support_occurrence_id)
-                    .and_then(|role| assistant_physics_role(role.as_str()))
+                    .and_then(|role| PartRole::parse(role.as_str()))
                 else {
                     continue;
                 };
                 if *support_occurrence_id == occurrence_id
                     || support_role.group != candidate_role.group
-                    || (support_role.kind != AssistantPhysicsRoleKind::GravityGround
+                    || (support_role.function != RoleFunction::GravityGround
                         && !snapshot.occurrence_is_grounded(*support_occurrence_id))
                 {
                     continue;

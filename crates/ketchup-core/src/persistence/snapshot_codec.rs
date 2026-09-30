@@ -9,7 +9,7 @@ use super::{MAGIC, PersistenceError};
 use crate::document::{ProductModel, Snapshot};
 
 /// Format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 99;
+pub(super) const SNAPSHOT_FORMAT: u16 = 100;
 
 /// First format this codec wrote. Numbers below it belong to the retired hand-written
 /// codec.
@@ -90,15 +90,19 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
     }
     let mut value: ciborium::Value =
         ciborium::from_reader(payload).map_err(|error| invalid(&error))?;
-    if let Some(product) = field(&mut value, "product") {
+    let format_98 = format < 99;
+    if format_98 && let Some(product) = field(&mut value, "product") {
         rename_format_98_fields(product, |(old, new)| (old, new));
     }
     let decoded: DecodedSnapshot = value.deserialized().map_err(|error| invalid(&error))?;
-    // The writer hashed the identity form under its own field names.
+    // The writer hashed the identity form under its own field names, and before
+    // [`rename_format_99_role_categories`], which the caller applies to every older format.
     let mut writer_form =
         crate::document::identity_form(|| ciborium::Value::serialized(&decoded.product))
             .map_err(|error| invalid(&error))?;
-    rename_format_98_fields(&mut writer_form, |(old, new)| (new, old));
+    if format_98 {
+        rename_format_98_fields(&mut writer_form, |(old, new)| (new, old));
+    }
     Ok(Decoded {
         revision_id: decoded.revision_id,
         writer_digest: Some(crate::document::digest_product(&writer_form)),
@@ -129,6 +133,50 @@ fn rename_format_98_fields(
     {
         for (_, item) in joinery {
             rename_field(item, recipe_joint.0, recipe_joint.1);
+        }
+    }
+}
+
+/// Format 100 names validator roles by what a part does, not by the product it belongs
+/// to. A category of the validator-role classification whose name starts with an old
+/// function name gets the new one; frame and group suffixes are kept. A document that
+/// already holds the new name keeps the old category unchanged.
+pub(super) fn rename_format_99_role_categories(product: &mut ProductModel) {
+    const RENAMED: [(&str, &str); 4] = [
+        ("furniture.shelf", "physics.beam"),
+        ("furniture.case", "physics.freestanding"),
+        ("manufacturing.hinge-cup", "manufacturing.cup-bore"),
+        ("spatial.furniture", "spatial.occupant"),
+    ];
+    for dimension in product.classification_dimensions.values_mut() {
+        if dimension.name != crate::validation::VALIDATOR_ROLE_DIMENSION_V1 {
+            continue;
+        }
+        let renamed = dimension
+            .categories
+            .values()
+            .filter_map(|category| {
+                RENAMED.iter().find_map(|(old, new)| {
+                    let rest = category.name.strip_prefix(old)?;
+                    (rest.is_empty() || rest.starts_with(['.', ':']))
+                        .then(|| (category.id, format!("{new}{rest}")))
+                })
+            })
+            .filter(|(_, name)| {
+                !dimension
+                    .categories
+                    .values()
+                    .any(|category| category.name == *name)
+            })
+            .collect::<Vec<_>>();
+        if renamed.is_empty() {
+            continue;
+        }
+        let dimension = std::sync::Arc::make_mut(dimension);
+        for (id, name) in renamed {
+            if let Some(category) = dimension.categories.get_mut(&id) {
+                category.name = name;
+            }
         }
     }
 }
