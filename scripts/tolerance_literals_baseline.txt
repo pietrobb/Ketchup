@@ -1,2 +1,1 @@
 # Remaining tolerance literals outside tolerance.rs; may only shrink.
-crates/ketchup-exact/src/native.cc 102

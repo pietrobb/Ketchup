@@ -132,6 +132,13 @@
 namespace ketchup::exact {
 namespace {
 
+// The tolerances and numeric guards of ketchup-tolerance; native code compares
+// geometry only against these values.
+const NativeTolerances& tolerances() noexcept {
+  static const NativeTolerances values = native_tolerances();
+  return values;
+}
+
 constexpr std::uint8_t STATUS_OK = 0;
 constexpr std::uint8_t STATUS_INVALID_PARAMETER = 1;
 constexpr std::uint8_t STATUS_NON_FINITE_PARAMETER = 2;
@@ -262,7 +269,7 @@ bool oriented_planar_face_normal(const TopoDS_Face& face, gp_Dir& normal) {
   const auto surface = BRep_Tool::Surface(face);
   const occ::handle<Geom_Surface> trimmed =
       new Geom_RectangularTrimmedSurface(surface, u0, u1, v0, v1);
-  const GeomLib_IsPlanarSurface planar(trimmed, 1.0e-7);
+  const GeomLib_IsPlanarSurface planar(trimmed, tolerances().linear_mm);
   if (!planar.IsPlanar()) {
     return false;
   }
@@ -270,7 +277,7 @@ bool oriented_planar_face_normal(const TopoDS_Face& face, gp_Dir& normal) {
   gp_Vec du, dv;
   surface->D1((u0 + u1) * 0.5, (v0 + v1) * 0.5, point, du, dv);
   const gp_Vec cross = du.Crossed(dv);
-  if (cross.SquareMagnitude() <= 1.0e-24) {
+  if (cross.SquareMagnitude() <= tolerances().negligible * tolerances().negligible) {
     return false;
   }
   normal = gp_Dir(cross);
@@ -545,12 +552,12 @@ std::unique_ptr<NativeOperationResult> success_result(
       && solids == 0
       && faces.Extent() == 1
       && std::isfinite(volume)
-      && std::abs(volume) <= 1.0e-12;
+      && std::abs(volume) <= tolerances().negligible;
   const bool valid_surface = allow_surface
       && solids == 0
       && faces.Extent() >= 1
       && std::isfinite(volume)
-      && std::abs(volume) <= 1.0e-12;
+      && std::abs(volume) <= tolerances().negligible;
   const bool valid_solid = !allow_planar_face && !allow_surface
       && ((!allow_multi_solid && solids == 1) || (allow_multi_solid && solids >= 2))
       && std::isfinite(volume)
@@ -917,7 +924,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
         const double radius = start.Distance(center);
         const double end_radius = end.Distance(center);
         if (!std::isfinite(radius) || radius < 0.01 || radius > 100000.0
-            || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})
+            || std::abs(radius - end_radius) > tolerances().rounding * std::max({radius, end_radius, 1.0})
             || std::abs(center_x) + radius > 1000000.0
             || std::abs(center_y) + radius > 1000000.0) {
           return error_result(STATUS_INVALID_PARAMETER, "Planar offset arc radius is invalid");
@@ -1045,7 +1052,7 @@ std::unique_ptr<NativeOperationResult> trim_surface_native(
     BRepGProp::SurfaceProperties(result, result_properties);
     const double target_area = target_properties.Mass();
     const double result_area = result_properties.Mass();
-    const double tolerance = 1.0e-9 * std::max({target_area, result_area, 1.0});
+    const double tolerance = tolerances().rounding * std::max({target_area, result_area, 1.0});
     if (!std::isfinite(target_area) || !std::isfinite(result_area)
         || result_area <= tolerance || result_area >= target_area - tolerance) {
       return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Surface trim requires a finite proper subset of the target");
@@ -1103,7 +1110,7 @@ std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
     BRepGProp::SurfaceProperties(result, result_properties);
     const double source_area = source_properties.Mass();
     const double result_area = result_properties.Mass();
-    const double tolerance = 1.0e-9 * std::max({source_area, result_area, 1.0});
+    const double tolerance = tolerances().rounding * std::max({source_area, result_area, 1.0});
     if (!std::isfinite(source_area) || !std::isfinite(result_area)
         || result_area <= source_area + tolerance) {
       return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Surface extend did not increase the bounded face area");
@@ -1150,10 +1157,10 @@ std::unique_ptr<NativeOperationResult> knit_surface_compound_native(
         || surfaces.impl().summary.face_count < 2
         || surfaces.impl().summary.face_count > 256
         || !std::isfinite(tolerance)
-        || tolerance < 1.0e-7 || tolerance > 10.0) {
+        || tolerance < tolerances().linear_mm || tolerance > 10.0) {
       return error_result(
           STATUS_INVALID_PARAMETER,
-          "Surface knit requires 2..256 non-solid faces and a tolerance from 1e-7 to 10 mm");
+          "Surface knit requires 2..256 non-solid faces and a tolerance from the linear tolerance to 10 mm");
     }
 
     BRepBuilderAPI_Sewing sewing(tolerance, true, true, true, false);
@@ -1259,7 +1266,7 @@ std::unique_ptr<NativeOperationResult> thicken_surface_native(
       }
       GProp_GProps properties;
       BRepGProp::VolumeProperties(solid, properties);
-      if (!std::isfinite(properties.Mass()) || properties.Mass() <= 1.0e-9) {
+      if (!std::isfinite(properties.Mass()) || properties.Mass() <= tolerances().rounding) {
         return TopoDS_Solid{};
       }
       return solid;
@@ -1383,7 +1390,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
           if (segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
               || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)
               || radius < 0.01 || radius > 100000.0
-              || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})
+              || std::abs(radius - end_radius) > tolerances().rounding * std::max({radius, end_radius, 1.0})
               || std::abs(center_x) + radius > 1000000.0
               || std::abs(center_y) + radius > 1000000.0) {
             return TopoDS_Wire{};
@@ -1543,7 +1550,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
       const double source_loop_area = source_loop_properties.Mass();
       const double offset_loop_area = offset_loop_properties.Mass();
       const double loop_area_tolerance =
-          1.0e-9 * std::max({source_loop_area, offset_loop_area, 1.0});
+          tolerances().rounding * std::max({source_loop_area, offset_loop_area, 1.0});
       const double loop_distance = index == 0 ? distance : -distance;
       if (!std::isfinite(source_loop_area) || !std::isfinite(offset_loop_area)
           || source_loop_area <= 0.0001 || offset_loop_area <= 0.0001
@@ -1574,7 +1581,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
     BRepGProp::SurfaceProperties(result, result_properties);
     const double source_area = source_properties.Mass();
     const double result_area = result_properties.Mass();
-    const double area_tolerance = 1.0e-9 * std::max({source_area, result_area, 1.0});
+    const double area_tolerance = tolerances().rounding * std::max({source_area, result_area, 1.0});
     if (!std::isfinite(source_area) || !std::isfinite(result_area)
         || source_area <= 0.0001 || result_area <= 0.0001
         || (distance > 0.0 && result_area <= source_area + area_tolerance)
@@ -1693,7 +1700,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       if (kind == 0.0) {
         const gp_Vec direction(end_x - start_x, end_y - start_y, 0.0);
         length = direction.Magnitude();
-        if (length <= 1.0e-7) return false;
+        if (length <= tolerances().linear_mm) return false;
         start_tangent = direction.Normalized();
         end_tangent = start_tangent;
         return true;
@@ -1714,7 +1721,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         const double projection_1 = start_handle.Dot(chord);
         const double projection_2 = control_2_from_start.Dot(chord);
         length = start_length + middle.Magnitude() + end_length;
-        if (start_length <= 1.0e-7 || end_length <= 1.0e-7
+        if (start_length <= tolerances().linear_mm || end_length <= tolerances().linear_mm
             || projection_1 <= 0.0 || projection_2 < projection_1
             || projection_2 >= chord_squared) {
           return false;
@@ -1732,8 +1739,8 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       const double end_dy = end_y - center_y;
       const double radius = std::hypot(start_dx, start_dy);
       const double end_radius = std::hypot(end_dx, end_dy);
-      if (radius <= 1.0e-7 || std::abs(radius - end_radius) > 1.0e-9
-          || std::hypot(end_x - start_x, end_y - start_y) <= 1.0e-7) {
+      if (radius <= tolerances().linear_mm || std::abs(radius - end_radius) > tolerances().rounding
+          || std::hypot(end_x - start_x, end_y - start_y) <= tolerances().linear_mm) {
         return false;
       }
       const bool clockwise = path_segments[offset + 9] != 0.0;
@@ -1747,7 +1754,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         sweep += tau;
       }
       length = radius * std::abs(sweep);
-      if (length <= 1.0e-7) return false;
+      if (length <= tolerances().linear_mm) return false;
       const double sign = clockwise ? -1.0 : 1.0;
       start_tangent = gp_Vec(sign * -start_dy / radius, sign * start_dx / radius, 0.0);
       end_tangent = gp_Vec(sign * -end_dy / end_radius, sign * end_dx / end_radius, 0.0);
@@ -1766,9 +1773,9 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       }
       path_length += segment_lengths[index];
       if (index > 0
-          && (end_tangents[index - 1].Dot(start_tangents[index]) < 1.0 - 1.0e-9
+          && (end_tangents[index - 1].Dot(start_tangents[index]) < 1.0 - tolerances().rounding
               || end_tangents[index - 1].Crossed(start_tangents[index]).Magnitude()
-                  > 1.0e-9)) {
+                  > tolerances().rounding)) {
         return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path violates its bounded C1 contract");
       }
       const std::size_t offset = index * 10;
@@ -1780,7 +1787,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
             path_segments[offset + 1] - path_segments[offset + 5],
             path_segments[offset + 2] - path_segments[offset + 6]);
         if (segment_lengths[index - 1] + segment_lengths[index]
-            >= 2.0 * std::acos(-1.0) * radius - 1.0e-7) {
+            >= 2.0 * std::acos(-1.0) * radius - tolerances().linear_mm) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep adjacent arcs overlap");
         }
       }
@@ -1841,15 +1848,15 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         if (!distance.IsDone()) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path intersection check failed");
         }
-        if (distance.Value() <= 1.0e-7) {
+        if (distance.Value() <= tolerances().linear_mm) {
           bool shared_endpoint_only = false;
           if (right == left + 1 && distance.NbSolution() > 0) {
             const gp_Pnt shared(
                 path_segments[right * 10 + 1], path_segments[right * 10 + 2], 0.0);
             shared_endpoint_only = true;
             for (Standard_Integer solution = 1; solution <= distance.NbSolution(); ++solution) {
-              if (distance.PointOnShape1(solution).Distance(shared) > 1.0e-7
-                  || distance.PointOnShape2(solution).Distance(shared) > 1.0e-7) {
+              if (distance.PointOnShape1(solution).Distance(shared) > tolerances().linear_mm
+                  || distance.PointOnShape2(solution).Distance(shared) > tolerances().linear_mm) {
                 shared_endpoint_only = false;
                 break;
               }
@@ -1947,7 +1954,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
 
     BRepOffsetAPI_MakePipeShell operation(spine);
     operation.SetMode(gp_Dir(0.0, 0.0, 1.0));
-    operation.SetTolerance(1.0e-7, 1.0e-7, 1.0e-9);
+    operation.SetTolerance(tolerances().linear_mm, tolerances().linear_mm, tolerances().rounding);
     operation.Add(profile, false, false);
     if (!operation.IsReady()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep pipe is not ready");
@@ -1975,8 +1982,8 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
     rust::Slice<const double> path_segments) noexcept {
   return guarded([&] {
     constexpr std::size_t spatial_stride = 14;
-    constexpr double epsilon = 1.0e-9;
-    constexpr double minimum_segment_length = 1.0e-7;
+    const double epsilon = tolerances().rounding;
+    const double minimum_segment_length = tolerances().linear_mm;
     constexpr double coordinate_limit = 1000000.0;
     const double tau = 2.0 * std::acos(-1.0);
     const auto bounded = [&](double value) {
@@ -2295,7 +2302,7 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
     BRepOffsetAPI_MakePipeShell operation(spine);
     // Corrected Frenet is OCCT's deterministic minimum-twist transport mode.
     operation.SetMode(false);
-    operation.SetTolerance(1.0e-7, 1.0e-7, 1.0e-9);
+    operation.SetTolerance(tolerances().linear_mm, tolerances().linear_mm, tolerances().rounding);
     operation.Add(profile, false, false);
     if (!operation.IsReady()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT spatial Sweep pipe is not ready");
@@ -2360,13 +2367,13 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
       const gp_Vec x_axis(frame[3], frame[4], frame[5]);
       const gp_Vec y_axis(frame[6], frame[7], frame[8]);
       const gp_Vec normal(frame[9], frame[10], frame[11]);
-      if (std::abs(x_axis.Magnitude() - 1.0) > 1.0e-8
-          || std::abs(y_axis.Magnitude() - 1.0) > 1.0e-8
-          || std::abs(normal.Magnitude() - 1.0) > 1.0e-8
-          || std::abs(x_axis.Dot(y_axis)) > 1.0e-8
-          || std::abs(x_axis.Dot(normal)) > 1.0e-8
-          || std::abs(y_axis.Dot(normal)) > 1.0e-8
-          || x_axis.Crossed(y_axis).Dot(normal) < 1.0 - 1.0e-8) {
+      if (std::abs(x_axis.Magnitude() - 1.0) > tolerances().accumulated_rounding
+          || std::abs(y_axis.Magnitude() - 1.0) > tolerances().accumulated_rounding
+          || std::abs(normal.Magnitude() - 1.0) > tolerances().accumulated_rounding
+          || std::abs(x_axis.Dot(y_axis)) > tolerances().accumulated_rounding
+          || std::abs(x_axis.Dot(normal)) > tolerances().accumulated_rounding
+          || std::abs(y_axis.Dot(normal)) > tolerances().accumulated_rounding
+          || x_axis.Crossed(y_axis).Dot(normal) < 1.0 - tolerances().accumulated_rounding) {
         return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft frame is not right-handed orthonormal");
       }
       const auto world_point = [&](double x, double y) {
@@ -2414,7 +2421,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
             if (values[offset + 7] != 0.0 || values[offset + 8] != 0.0
                 || (values[offset + 9] != 0.0 && values[offset + 9] != 1.0)
                 || radius < 0.01 || radius > 100000.0
-                || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})) {
+                || std::abs(radius - end_radius) > tolerances().rounding * std::max({radius, end_radius, 1.0})) {
               return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft arc is invalid");
             }
             const double tau = 2.0 * std::acos(-1.0);
@@ -2508,7 +2515,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
           }
           points->SetValue(static_cast<Standard_Integer>(point + 1), world_point(x, y));
         }
-        GeomAPI_Interpolate interpolation(points, true, 1.0e-9);
+        GeomAPI_Interpolate interpolation(points, true, tolerances().rounding);
         interpolation.Perform();
         if (!interpolation.IsDone()) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft spline interpolation failed");
@@ -2552,7 +2559,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
             guide_segments[offset + 1], guide_segments[offset + 2], guide_segments[offset + 3]);
         const gp_Pnt end(
             guide_segments[offset + 4], guide_segments[offset + 5], guide_segments[offset + 6]);
-        if (has_previous && previous_end.Distance(start) > 1.0e-7) {
+        if (has_previous && previous_end.Distance(start) > tolerances().linear_mm) {
           return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path is disconnected");
         }
         TopoDS_Edge edge;
@@ -2577,8 +2584,8 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
               guide_segments[offset + 10], guide_segments[offset + 11], guide_segments[offset + 12]);
           const gp_Vec start_radius(center, start);
           const gp_Vec end_radius(center, end);
-          if (normal.SquareMagnitude() <= 1.0e-18
-              || start_radius.SquareMagnitude() <= 1.0e-18) {
+          if (normal.SquareMagnitude() <= tolerances().rounding * tolerances().rounding
+              || start_radius.SquareMagnitude() <= tolerances().rounding * tolerances().rounding) {
             return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft arc is degenerate");
           }
           const double signed_angle = std::atan2(
@@ -2609,7 +2616,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
       }
       BRepOffsetAPI_MakePipeShell operation(spine_builder.Wire());
       operation.SetMode(false);
-      operation.SetTolerance(1.0e-7, 1.0e-7, 1.0e-9);
+      operation.SetTolerance(tolerances().linear_mm, tolerances().linear_mm, tolerances().rounding);
       operation.SetForceApproxC1(continuity == 1);
       for (const TopoDS_Wire& wire : wires) operation.Add(wire, false, false);
       if (!operation.IsReady()) {
@@ -2641,7 +2648,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
       return success_result(
           result, std::move(history), false, false, {}, !make_solid);
     }
-    BRepOffsetAPI_ThruSections operation(make_solid, false, 1.0e-6);
+    BRepOffsetAPI_ThruSections operation(make_solid, false, tolerances().approximation);
     operation.CheckCompatibility(true);
     operation.SetMutableInput(false);
     operation.SetContinuity(
@@ -2715,7 +2722,7 @@ std::unique_ptr<NativeOperationResult> loft_spline_native(
         points->SetValue(
             static_cast<Standard_Integer>(point + 1), gp_Pnt(x, y, elevation));
       }
-      GeomAPI_Interpolate interpolation(points, true, 1.0e-9);
+      GeomAPI_Interpolate interpolation(points, true, tolerances().rounding);
       interpolation.Perform();
       if (!interpolation.IsDone()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT spline interpolation did not complete");
@@ -2735,7 +2742,7 @@ std::unique_ptr<NativeOperationResult> loft_spline_native(
     if (cursor != values.size()) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT Loft payload has trailing values");
     }
-    BRepOffsetAPI_ThruSections operation(true, false, 1.0e-6);
+    BRepOffsetAPI_ThruSections operation(true, false, tolerances().approximation);
     operation.CheckCompatibility(false);
     operation.SetMutableInput(false);
     for (const TopoDS_Wire& wire : wires) {
@@ -2829,7 +2836,7 @@ std::unique_ptr<NativeOperationResult> loft_planar_profiles_native(
           if (segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
               || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)
               || radius < 0.01 || radius > 100000.0
-              || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})) {
+              || std::abs(radius - end_radius) > tolerances().rounding * std::max({radius, end_radius, 1.0})) {
             return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft arc is invalid");
           }
           const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
@@ -2894,7 +2901,7 @@ std::unique_ptr<NativeOperationResult> loft_planar_profiles_native(
       first_segment += segment_count;
     }
 
-    BRepOffsetAPI_ThruSections operation(true, false, 1.0e-6);
+    BRepOffsetAPI_ThruSections operation(true, false, tolerances().approximation);
     operation.CheckCompatibility(true);
     operation.SetMutableInput(false);
     for (const TopoDS_Wire& wire : wires) operation.AddWire(wire);
@@ -2950,9 +2957,9 @@ std::unique_ptr<NativeOperationResult> extrude_circle_native(
       }
       GProp_GProps properties;
       BRepGProp::SurfaceProperties(candidate, properties);
-      if (std::abs(properties.CentreOfMass().Z()) <= 1.0e-9) {
+      if (std::abs(properties.CentreOfMass().Z()) <= tolerances().rounding) {
         bottom = candidate;
-      } else if (std::abs(properties.CentreOfMass().Z() - height) <= 1.0e-9) {
+      } else if (std::abs(properties.CentreOfMass().Z() - height) <= tolerances().rounding) {
         top = candidate;
       }
     }
@@ -3020,10 +3027,10 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
       const double dy = end.Y() - start.Y();
       const double dz = end.Z() - start.Z();
       const double planar_length = std::hypot(dx, dy);
-      if (planar_length <= 1.0e-9) {
+      if (planar_length <= tolerances().rounding) {
         const gp_Pnt bottom(start.X(), start.Y(), std::min(start.Z(), end.Z()));
         result = cylinder(bottom);
-        if (std::abs(dz) > 1.0e-9) {
+        if (std::abs(dz) > tolerances().rounding) {
           BRepPrimAPI_MakeCylinder builder(
               gp_Ax2(bottom, gp_Dir(0.0, 0.0, 1.0)),
               radius,
@@ -3032,7 +3039,7 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
           result = builder.IsDone() ? builder.Shape() : TopoDS_Shape{};
         }
       } else {
-        if (std::abs(dz) > 1.0e-9) {
+        if (std::abs(dz) > tolerances().rounding) {
           return error_result(
               STATUS_INVALID_PARAMETER,
               "Axial tool line sweep must be horizontal or vertical");
@@ -3058,16 +3065,16 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
       }
     } else {
       const gp_Pnt center(values[7], values[8], values[9]);
-      if (std::abs(start.Z() - end.Z()) > 1.0e-9
-          || std::abs(start.Z() - center.Z()) > 1.0e-9
+      if (std::abs(start.Z() - end.Z()) > tolerances().rounding
+          || std::abs(start.Z() - center.Z()) > tolerances().rounding
           || (values[10] != 0.0 && values[10] != 1.0)) {
         return error_result(STATUS_INVALID_PARAMETER, "Axial tool arc sweep is malformed");
       }
       const double centerline_radius = std::hypot(start.X() - center.X(), start.Y() - center.Y());
       const double end_radius = std::hypot(end.X() - center.X(), end.Y() - center.Y());
-      if (centerline_radius <= 1.0e-9
-          || std::abs(centerline_radius - end_radius) > 1.0e-7
-          || start.Distance(end) <= 1.0e-9) {
+      if (centerline_radius <= tolerances().rounding
+          || std::abs(centerline_radius - end_radius) > tolerances().linear_mm
+          || start.Distance(end) <= tolerances().rounding) {
         return error_result(STATUS_DEGENERATE_OPERATION, "Axial tool arc sweep is degenerate");
       }
       const bool clockwise = values[10] != 0.0;
@@ -3100,7 +3107,7 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
       const TopoDS_Edge outer = arc(outer_radius, start_angle, sweep);
       BRepBuilderAPI_MakeWire wire;
       wire.Add(outer);
-      if (inner_radius > 1.0e-9) {
+      if (inner_radius > tolerances().rounding) {
         const TopoDS_Edge end_cap = BRepBuilderAPI_MakeEdge(
             point(outer_radius, start_angle + sweep),
             point(inner_radius, start_angle + sweep)).Edge();
@@ -3253,10 +3260,10 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
         const gp_Pnt first_point = BRep_Tool::Pnt(first);
         const gp_Pnt last_point = BRep_Tool::Pnt(last);
         const bool endpoints_match =
-            (first_point.Distance(expected_reference_start) <= 1.0e-9
-                && last_point.Distance(expected_reference_end) <= 1.0e-9)
-            || (first_point.Distance(expected_reference_end) <= 1.0e-9
-                && last_point.Distance(expected_reference_start) <= 1.0e-9);
+            (first_point.Distance(expected_reference_start) <= tolerances().rounding
+                && last_point.Distance(expected_reference_end) <= tolerances().rounding)
+            || (first_point.Distance(expected_reference_end) <= tolerances().rounding
+                && last_point.Distance(expected_reference_start) <= tolerances().rounding);
         // Two arcs of one circle share both endpoints (a circle drawn as two
         // halves); the arc's midpoint tells them apart.
         bool middle_matches = true;
@@ -3264,7 +3271,7 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
           const BRepAdaptor_Curve curve(candidate);
           const gp_Pnt candidate_middle =
               curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
-          middle_matches = candidate_middle.Distance(first_arc_middle) <= 1.0e-6;
+          middle_matches = candidate_middle.Distance(first_arc_middle) <= tolerances().approximation;
         }
         if (endpoints_match && middle_matches) {
           if (!profile_reference.IsNull()) {
@@ -3341,7 +3348,7 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
         if (kind == 0.0) {
           const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
           const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-          if (start.Distance(end) <= Precision::Confusion()) {
+          if (start.Distance(end) <= tolerances().linear_mm) {
             return TopoDS_Wire{};
           }
           BRepBuilderAPI_MakeEdge edge_builder(start, end);
@@ -3386,7 +3393,7 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
           const double center_y = segments[offset + 2];
           const double radius = segments[offset + 3];
           if (!std::isfinite(center_x) || !std::isfinite(center_y)
-              || !std::isfinite(radius) || radius <= Precision::Confusion()) {
+              || !std::isfinite(radius) || radius <= tolerances().linear_mm) {
             return TopoDS_Wire{};
           }
           BRepBuilderAPI_MakeEdge edge_builder(
@@ -3474,7 +3481,7 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
         axis_end_x - axis_start_x,
         axis_end_y - axis_start_y,
         0.0);
-    if (axis_vector.Magnitude() <= 1.0e-12) {
+    if (axis_vector.Magnitude() <= tolerances().negligible) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region revolve axis is degenerate");
     }
 
@@ -3487,7 +3494,7 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
         if (kind == 0.0) {
           const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
           const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-          if (start.Distance(end) <= Precision::Confusion()) {
+          if (start.Distance(end) <= tolerances().linear_mm) {
             return TopoDS_Wire{};
           }
           BRepBuilderAPI_MakeEdge edge_builder(start, end);
@@ -3531,7 +3538,7 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
           const double center_y = segments[offset + 2];
           const double radius = segments[offset + 3];
           if (!std::isfinite(center_x) || !std::isfinite(center_y)
-              || !std::isfinite(radius) || radius <= Precision::Confusion()) {
+              || !std::isfinite(radius) || radius <= tolerances().linear_mm) {
             return TopoDS_Wire{};
           }
           BRepBuilderAPI_MakeEdge edge_builder(
@@ -3617,7 +3624,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
         axis_end_x - axis_start_x,
         axis_end_y - axis_start_y,
         0.0);
-    if (axis_vector.Magnitude() <= 1.0e-12) {
+    if (axis_vector.Magnitude() <= tolerances().negligible) {
       return error_result(STATUS_INVALID_PARAMETER, "General revolve axis is degenerate");
     }
 
@@ -3721,17 +3728,17 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
         const gp_Pnt first_point = BRep_Tool::Pnt(first);
         const gp_Pnt last_point = BRep_Tool::Pnt(last);
         const bool endpoints_match =
-            (first_point.Distance(expected_start) <= 1.0e-9
-                && last_point.Distance(expected_end) <= 1.0e-9)
-            || (first_point.Distance(expected_end) <= 1.0e-9
-                && last_point.Distance(expected_start) <= 1.0e-9);
+            (first_point.Distance(expected_start) <= tolerances().rounding
+                && last_point.Distance(expected_end) <= tolerances().rounding)
+            || (first_point.Distance(expected_end) <= tolerances().rounding
+                && last_point.Distance(expected_start) <= tolerances().rounding);
         if (!endpoints_match) {
           continue;
         }
         if (kind == 1.0) {
           const gp_Pnt candidate_middle = curve.Value(
               (curve.FirstParameter() + curve.LastParameter()) / 2.0);
-          if (candidate_middle.Distance(expected_middle) > 1.0e-8) {
+          if (candidate_middle.Distance(expected_middle) > tolerances().accumulated_rounding) {
             continue;
           }
         }
@@ -3811,7 +3818,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
           body.impl().shape,
           closing_faces,
           offset,
-          1.0e-6,
+          tolerances().approximation,
           BRepOffset_Skin,
           false,
           false,
@@ -3853,7 +3860,7 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
         operation.PerformByJoin(
             body.impl().shape,
             offset,
-            1.0e-6,
+            tolerances().approximation,
             BRepOffset_Skin,
             false,
             false,
@@ -4046,7 +4053,7 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
     double distance) noexcept {
   return guarded([&] {
     if (!body.valid() || face_ordinal >= body.impl().summary.face_count
-        || !std::isfinite(distance) || std::abs(distance) < 1.0e-9) {
+        || !std::isfinite(distance) || std::abs(distance) < tolerances().rounding) {
       return error_result(STATUS_INVALID_PARAMETER, "Body face offset payload is outside the bounded envelope");
     }
     const TopoDS_Face face = face_at_ordinal(body.impl().shape, face_ordinal);
@@ -4654,7 +4661,7 @@ bool parse_export_transform(
       return false;
     }
   }
-  constexpr double epsilon = 1.0e-10;
+  const double epsilon = tolerances().rounding;
   if (std::abs(matrix[12]) > epsilon || std::abs(matrix[13]) > epsilon
       || std::abs(matrix[14]) > epsilon || std::abs(matrix[15] - 1.0) > epsilon) {
     return false;
@@ -5138,12 +5145,12 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
           + matrix[8 + left] * matrix[8 + right];
     };
     const bool rigid =
-        std::abs(dot_column(0, 0) - 1.0) <= 1.0e-10
-        && std::abs(dot_column(1, 1) - 1.0) <= 1.0e-10
-        && std::abs(dot_column(2, 2) - 1.0) <= 1.0e-10
-        && std::abs(dot_column(0, 1)) <= 1.0e-10
-        && std::abs(dot_column(0, 2)) <= 1.0e-10
-        && std::abs(dot_column(1, 2)) <= 1.0e-10;
+        std::abs(dot_column(0, 0) - 1.0) <= tolerances().rounding
+        && std::abs(dot_column(1, 1) - 1.0) <= tolerances().rounding
+        && std::abs(dot_column(2, 2) - 1.0) <= tolerances().rounding
+        && std::abs(dot_column(0, 1)) <= tolerances().rounding
+        && std::abs(dot_column(0, 2)) <= tolerances().rounding
+        && std::abs(dot_column(1, 2)) <= tolerances().rounding;
     const std::uint32_t source_solids = count_subshapes(body.impl().shape, TopAbs_SOLID);
     const bool source_is_planar_face = source_solids == 0
         && count_subshapes(body.impl().shape, TopAbs_FACE) == 1;
@@ -5210,12 +5217,12 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
       return error_result(STATUS_INVALID_PARAMETER, "Plane trim input is unavailable or non-finite");
     }
     const gp_Vec normal(normal_x, normal_y, normal_z);
-    if (normal.SquareMagnitude() <= 1.0e-18) {
+    if (normal.SquareMagnitude() <= tolerances().rounding * tolerances().rounding) {
       return error_result(STATUS_DEGENERATE_OPERATION, "Plane trim normal is degenerate");
     }
     const gp_Pnt origin(origin_x, origin_y, origin_z);
     const gp_Pnt keep(keep_x, keep_y, keep_z);
-    if (std::abs(gp_Vec(origin, keep).Dot(normal.Normalized())) <= 1.0e-7) {
+    if (std::abs(gp_Vec(origin, keep).Dot(normal.Normalized())) <= tolerances().linear_mm) {
       return error_result(STATUS_DEGENERATE_OPERATION, "Plane trim keep point lies on the cutting plane");
     }
     BRepBuilderAPI_MakeFace face_builder(gp_Pln(origin, gp_Dir(normal)));
@@ -5242,7 +5249,7 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
     BRepGProp::VolumeProperties(result, result_properties);
     const double source_volume = source_properties.Mass();
     const double result_volume = result_properties.Mass();
-    const double tolerance = 1.0e-9 * std::max(source_volume, 1.0);
+    const double tolerance = tolerances().rounding * std::max(source_volume, 1.0);
     if (!std::isfinite(source_volume) || !std::isfinite(result_volume)
         || result_volume <= tolerance || result_volume >= source_volume - tolerance) {
       return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Plane trim must remove a bounded positive volume");
@@ -5382,7 +5389,7 @@ NativePairQuery query_body_pair_native(
         const double high = std::min(left_max[axis], right_max[axis]);
         // Optimal bounds still carry ~Confusion() per side, so an apparent overlap up
         // to 3 * Confusion() is a true overlap of at most the contact tolerance.
-        if (high - low <= 3.0 * Precision::Confusion()) {
+        if (high - low <= 3.0 * tolerances().linear_mm) {
           slab_axis = axis;
           slab_low = std::min(low, high);
           slab_high = std::max(low, high);
@@ -5452,13 +5459,13 @@ NativePairQuery query_body_pair_native(
           BRepBndLib::AddOptimal(face.Current(), geometry, false, false);
           // Flatness is proven by the face lying inside the slab, whatever its surface
           // type: extruded profile edges are flat SurfaceOfExtrusion faces, not planes.
-          if (geometry.IsVoid() || (planar && std::abs(normal.Dot(axis)) < 1.0 - 1e-10)) {
+          if (geometry.IsVoid() || (planar && std::abs(normal.Dot(axis)) < 1.0 - tolerances().rounding)) {
             continue;
           }
           double minimum[3], maximum[3];
           geometry.Get(minimum[0], minimum[1], minimum[2], maximum[0], maximum[1], maximum[2]);
-          if (minimum[slab_axis] < slab_low - Precision::Confusion() ||
-              maximum[slab_axis] > slab_high + Precision::Confusion()) {
+          if (minimum[slab_axis] < slab_low - tolerances().linear_mm ||
+              maximum[slab_axis] > slab_high + tolerances().linear_mm) {
             continue;
           }
         }
@@ -5477,7 +5484,7 @@ NativePairQuery query_body_pair_native(
           if (left_face.bounds.IsVoid() || right_face.bounds.IsVoid() ||
               left_face.bounds.IsOut(right_face.bounds) ||
               (left_face.planar && right_face.planar &&
-               std::abs(left_face.normal.Dot(right_face.normal)) < 1.0 - 1e-10)) {
+               std::abs(left_face.normal.Dot(right_face.normal)) < 1.0 - tolerances().rounding)) {
             continue;
           }
           BRepAlgoAPI_Common face_common(left_face.shape, right_face.shape);
@@ -5523,7 +5530,7 @@ NativePairQuery query_body_pair_native(
       return result;
     }
     // Touching within the contact tolerance still shares face area.
-    if (distance.Value() <= Precision::Confusion() && slab_axis < 0 && !measure_contact_area()) {
+    if (distance.Value() <= tolerances().linear_mm && slab_axis < 0 && !measure_contact_area()) {
       return result;
     }
     result.common_volume_mm3 = volume;
@@ -5858,7 +5865,7 @@ std::unique_ptr<NativeVolumeMeshResult> volume_mesh_body_native(
                                "Volume meshing requires a valid closed solid");
     }
 
-    const double classifier_tolerance = std::max(1.0e-9, deflection * 1.0e-7);
+    const double classifier_tolerance = std::max(tolerances().rounding, deflection * tolerances().linear_mm);
     GProp_GProps volume_properties;
     BRepGProp::VolumeProperties(solid, volume_properties);
     gp_Pnt interior = volume_properties.CentreOfMass();
@@ -5919,7 +5926,7 @@ std::unique_ptr<NativeVolumeMeshResult> volume_mesh_body_native(
     auto impl = std::make_unique<NativeVolumeMeshResult::Impl>();
     impl->vertices.push_back(
         NativeMeshVertex{interior.X(), interior.Y(), interior.Z()});
-    const double merge_tolerance = std::max(1.0e-9, deflection * 1.0e-7);
+    const double merge_tolerance = std::max(tolerances().rounding, deflection * tolerances().linear_mm);
     std::map<std::array<std::int64_t, 3>, std::uint32_t> vertex_indices;
     const auto append_boundary_vertex = [&](const gp_Pnt& point) {
       const std::array<std::int64_t, 3> key{
@@ -5939,7 +5946,7 @@ std::unique_ptr<NativeVolumeMeshResult> volume_mesh_body_native(
     TopTools_IndexedMapOfShape faces;
     TopExp::MapShapes(meshed_shape, TopAbs_FACE, faces);
     const double volume_epsilon =
-        std::max(1.0e-15, std::abs(body.impl().summary.volume_mm3) * 1.0e-14);
+        tolerances().negligible * std::max(1.0, std::abs(body.impl().summary.volume_mm3));
     for (Standard_Integer face_index = 1; face_index <= faces.Extent(); ++face_index) {
       const auto face_ordinal = static_cast<std::uint32_t>(face_index - 1);
       const TopoDS_Face face = TopoDS::Face(faces(face_index));
@@ -6051,7 +6058,7 @@ TopoDS_Face named_profile_face(
     const gp_Pnt end(segments[offset + 3], segments[offset + 4], z);
     TopoDS_Edge edge;
     if (kind == 0.0) {
-      if (start.Distance(end) <= Precision::Confusion()) return {};
+      if (start.Distance(end) <= tolerances().linear_mm) return {};
       BRepBuilderAPI_MakeEdge edge_builder(start, end);
       if (!edge_builder.IsDone()) return {};
       edge = edge_builder.Edge();
@@ -6161,7 +6168,7 @@ std::string finish_name(const std::string& kind, std::vector<std::string> around
 // `reach`, and its nearest point on the face is strictly inside the face.
 bool lies_over(const gp_Pnt& point, const TopoDS_Face& face, double reach) {
   BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(), face);
-  if (!distance.IsDone() || distance.Value() <= Precision::Confusion()
+  if (!distance.IsDone() || distance.Value() <= tolerances().linear_mm
       || distance.Value() > reach) {
     return false;
   }
@@ -6306,7 +6313,7 @@ std::unique_ptr<NativeOperationResult> named_revol_native(
     const gp_Vec axis_vector(axis_end_x - axis_start_x, axis_end_y - axis_start_y, 0.0);
     if (segments.empty() || segments.size() % 10 != 0 || segments.size() > 10 * 4096
         || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0
-        || !(axis_vector.Magnitude() > 1.0e-12)) {
+        || !(axis_vector.Magnitude() > tolerances().negligible)) {
       return error_result(STATUS_INVALID_PARAMETER, "Named revolve payload is malformed");
     }
     std::vector<TopoDS_Edge> wire_edges;
@@ -6427,7 +6434,7 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
   return guarded([&]() -> std::unique_ptr<NativeOperationResult> {
     if (!body.valid() || !labels_match(body.impl().shape, labels)
         || face_ordinal >= labels.size() || !std::isfinite(distance)
-        || std::abs(distance) < 1.0e-9) {
+        || std::abs(distance) < tolerances().rounding) {
       return error_result(STATUS_INVALID_PARAMETER, "Named face offset payload is malformed");
     }
     const TopoDS_Face face = face_at_ordinal(body.impl().shape, face_ordinal);
@@ -6513,7 +6520,7 @@ bool interior_point(const TopoDS_Face& face, gp_Pnt& point) {
       v_fraction = ((step - 1) / GRID + 0.5) / GRID;
     }
     const gp_Pnt2d uv(u_min + (u_max - u_min) * u_fraction, v_min + (v_max - v_min) * v_fraction);
-    BRepClass_FaceClassifier classifier(face, uv, Precision::Confusion());
+    BRepClass_FaceClassifier classifier(face, uv, tolerances().linear_mm);
     if (classifier.State() == TopAbs_IN) {
       point = surface.Value(uv.X(), uv.Y());
       return true;
@@ -6551,7 +6558,7 @@ std::unique_ptr<NativeOperationResult> named_shell_native(
                  "use thinner walls or open other faces";
     BRepOffsetAPI_MakeThickSolid operation;
     operation.MakeThickSolidByJoin(
-        source, closing, -thickness, 1.0e-6, BRepOffset_Skin, false, false,
+        source, closing, -thickness, tolerances().approximation, BRepOffset_Skin, false, false,
         GeomAbs_Intersection, true);
     if (!operation.IsDone() || operation.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, too_thick.str());
@@ -6567,7 +6574,7 @@ std::unique_ptr<NativeOperationResult> named_shell_native(
     TopExp::MapShapes(source, TopAbs_FACE, source_faces);
     TopTools_IndexedMapOfShape result_faces;
     TopExp::MapShapes(result, TopAbs_FACE, result_faces);
-    const double tolerance = 1.0e-5 * std::max(1.0, thickness);
+    const double tolerance = tolerances().approximation * std::max(1.0, thickness);
     const std::string inner_prefix = std::string(prefix) + ".";
     std::vector<HistoryRecord> history;
     for (Standard_Integer index = 1; index <= result_faces.Extent(); ++index) {

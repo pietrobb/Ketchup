@@ -1,7 +1,8 @@
 //! Narrow, exception-safe exact geometry boundary used by the A0 gate.
 
 use ketchup_tolerance::{
-    ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, ROUNDING,
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM,
+    NEGLIGIBLE, ROUNDING,
 };
 use std::fmt;
 
@@ -30,9 +31,33 @@ pub const fn tolerance_profile() -> &'static str {
     TOLERANCE_PROFILE
 }
 
+const fn native_tolerances() -> ffi::NativeTolerances {
+    ffi::NativeTolerances {
+        linear_mm: DEFAULT_LINEAR_TOLERANCE_MM,
+        rounding: ROUNDING,
+        accumulated_rounding: ACCUMULATED_ROUNDING,
+        approximation: APPROXIMATION,
+        negligible: NEGLIGIBLE,
+    }
+}
+
 #[allow(dead_code, unsafe_code)]
 #[cxx::bridge(namespace = "ketchup::exact")]
 mod ffi {
+    /// The tolerances and numeric guards of `ketchup-tolerance`, the only values native
+    /// code compares geometry against.
+    struct NativeTolerances {
+        linear_mm: f64,
+        rounding: f64,
+        accumulated_rounding: f64,
+        approximation: f64,
+        negligible: f64,
+    }
+
+    extern "Rust" {
+        fn native_tolerances() -> NativeTolerances;
+    }
+
     struct NativePairQuery {
         status: u8,
         diagnostic: String,
@@ -5551,6 +5576,48 @@ mod tests {
                 end_mm: min,
             },
         ])
+    }
+
+    #[test]
+    fn native_code_reads_the_tolerances_of_ketchup_tolerance() {
+        let native = native_tolerances();
+        assert_eq!(
+            [
+                native.linear_mm,
+                native.rounding,
+                native.accumulated_rounding,
+                native.approximation,
+                native.negligible,
+            ],
+            [
+                DEFAULT_LINEAR_TOLERANCE_MM,
+                ROUNDING,
+                ACCUMULATED_ROUNDING,
+                APPROXIMATION,
+                NEGLIGIBLE,
+            ]
+        );
+        // The native knit check reads the same linear tolerance as the Rust one: a value
+        // just below it is refused, the tolerance itself is accepted.
+        let backend = ExactBackend::new();
+        let left = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [10.0, 10.0]))
+            .unwrap();
+        let right = backend
+            .planar_surface_profile(&planar_rectangle([10.0, 0.0], [20.0, 10.0]))
+            .unwrap();
+        let native_knit = |tolerance_mm: f64| {
+            let compound = ffi::combine_surfaces_native(
+                left.body.native.as_ref().unwrap(),
+                right.body.native.as_ref().unwrap(),
+            );
+            ffi::knit_surface_compound_native(compound.as_ref().unwrap(), tolerance_mm, false)
+                .as_ref()
+                .unwrap()
+                .status_code()
+        };
+        assert_eq!(native_knit(DEFAULT_LINEAR_TOLERANCE_MM * 0.5), 1);
+        assert_eq!(native_knit(DEFAULT_LINEAR_TOLERANCE_MM), 0);
     }
 
     #[test]
