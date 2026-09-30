@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "scripts/tolerance_literals_baseline.txt"
-SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/include/**/*.hxx"]
+SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/src/**/*.hxx", "crates/*/include/**/*.hxx"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 HOME = "crates/ketchup-tolerance/src/lib.rs"
 LITERAL = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?:_f64)?[eE]-\d+")

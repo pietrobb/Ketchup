@@ -64,8 +64,14 @@ fn main() {
         );
     }
 
+    let mut native_units: Vec<PathBuf> = fs::read_dir(manifest_dir.join("src"))
+        .expect("failed to list native sources")
+        .map(|entry| entry.expect("failed to inspect native source").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "cc"))
+        .collect();
+    native_units.sort();
     cxx_build::bridge("src/lib.rs")
-        .file("src/native.cc")
+        .files(&native_units)
         .include("include")
         .include(&include_dir)
         .std("c++17")
@@ -111,6 +117,6 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=src/lib.rs");
-    println!("cargo:rerun-if-changed=src/native.cc");
+    println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=include/ketchup_exact.hxx");
 }

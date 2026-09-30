@@ -21,7 +21,7 @@ from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's u
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "named_products_baseline.txt"
-SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/include/**/*.hxx",
+SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/src/**/*.hxx", "crates/*/include/**/*.hxx",
            "sdk/python/**/*.py", "skills/**/*.py"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 # Readers of old file formats must name the old fields and role categories they convert;
