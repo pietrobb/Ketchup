@@ -36,7 +36,6 @@ MAX_MODULE_LINES = 5_000
 OVERSIZED = {
     "crates/ketchup-app/src/lib.rs": 37_980,
     "crates/ketchup-app/src/tests.rs": 18_330,
-    "crates/ketchup-exact/src/lib.rs": 6_515,
 }
 
 
