@@ -9,6 +9,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::expect::{Comparison, Direction, Expectation, Measure};
+use crate::faces::{FaceFrame, FaceKind};
 use crate::frame::{self, Mat3};
 use crate::model::{
     Face, Hole, Joint, Param, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
@@ -424,7 +425,7 @@ fn part_name<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<String> {
         })
 }
 
-fn face(value: &str) -> anyhow::Result<Face> {
+fn box_face(value: &str) -> anyhow::Result<Face> {
     Face::parse(value)
         .ok_or_else(|| anyhow::anyhow!("face must be one of x-, x+, y-, y+, z-, z+; got {value:?}"))
 }
@@ -445,7 +446,7 @@ fn expect_direction<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Dire
     {
         return Ok(Direction::Face {
             part: part_name(*part, heap)?,
-            face: face(face_name)?,
+            face: box_face(face_name)?,
         });
     }
     let vector = numbers::<3>(value, heap, "direction")?;
@@ -478,7 +479,7 @@ fn expect_measure<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Measur
             face: values
                 .get(3)
                 .map(|face_name| {
-                    face(face_name.unpack_str().ok_or_else(|| {
+                    box_face(face_name.unpack_str().ok_or_else(|| {
                         anyhow::anyhow!("contact_area face must be a string like \"z+\"")
                     })?)
                 })
@@ -516,6 +517,31 @@ fn part_value<'v>(part: &Part, heap: &'v Heap) -> Value<'v> {
         ("x", triple(frame::axis(&part.rotation, 0))),
         ("y", triple(frame::axis(&part.rotation, 1))),
         ("z", triple(frame::axis(&part.rotation, 2))),
+    ]))
+}
+
+/// A face as a program value: struct(part, name, kind, origin, normal, u, v,
+/// min, max, radius, center) in world.
+fn face_value<'v>(part: &Part, face: &FaceFrame, heap: &'v Heap) -> Value<'v> {
+    let world = part.world_face(face);
+    let triple = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
+    let pair = |value: [f64; 2]| heap.alloc((value[0], value[1]));
+    let (kind, radius) = match world.kind {
+        FaceKind::Planar => ("planar", Value::new_none()),
+        FaceKind::Cylindrical { radius_mm } => ("cylindrical", heap.alloc(radius_mm)),
+    };
+    heap.alloc(AllocStruct([
+        ("part", heap.alloc(part.name.as_str())),
+        ("name", heap.alloc(world.name.as_str())),
+        ("kind", heap.alloc(kind)),
+        ("origin", triple(world.origin_mm)),
+        ("normal", triple(world.normal)),
+        ("u", triple(world.u)),
+        ("v", triple(world.v)),
+        ("min", pair(world.min)),
+        ("max", pair(world.max)),
+        ("radius", radius),
+        ("center", triple(world.center())),
     ]))
 }
 
@@ -1643,6 +1669,62 @@ fn builtins(builder: &mut GlobalsBuilder) {
         Ok(known_part(&model, &name)?.reach(direction))
     }
 
+    /// Face `name` of a part as it is now, in world: struct(part, name, kind,
+    /// origin, normal, u, v, min, max, radius, center). kind "planar": points
+    /// origin + a*u + b*v for face coordinates (a, b) from min to max, normal
+    /// outward. kind "cylindrical": points origin + b*v + radius*(cos a*u +
+    /// sin a*(v x u)), a in degrees; normal is the outward normal at a = 0.
+    fn face<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] name: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let state = state(eval)?;
+        let model = state.model.borrow();
+        let part = known_part(&model, &part_name)?;
+        let face = part
+            .face_frame(name)
+            .map_err(|error| anyhow::anyhow!("face({part_name:?}, {name:?}): {error}"))?;
+        Ok(face_value(part, &face, heap))
+    }
+
+    /// Every flat or cylindrical face of a part as it is now, like face().
+    fn faces<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let state = state(eval)?;
+        let model = state.model.borrow();
+        let part = known_part(&model, &part_name)?;
+        Ok(heap.alloc(
+            part.face_frames()
+                .iter()
+                .map(|face| face_value(part, face, heap))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// The face of a part the world `point` lies on, like face(), or None.
+    fn face_at<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] point: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let point = numbers::<3>(point, heap, "point")?;
+        let state = state(eval)?;
+        let model = state.model.borrow();
+        let part = known_part(&model, &part_name)?;
+        Ok(part
+            .face_frame_at(part.to_local(point), TOLERANCE_MM)
+            .map_or_else(Value::new_none, |face| face_value(part, &face, heap)))
+    }
+
     /// Moves a part (and what it carries: holes, cuts, tools) by the world
     /// vector `by`.
     fn r#move<'v>(
@@ -1834,7 +1916,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let name = part_name(part, heap)?;
-        let face = self::face(face)?;
+        let face = box_face(face)?;
         let diameter = number(diameter, "diameter")?;
         let depth = number(depth, "depth")?;
         if diameter <= 0.0 || depth <= 0.0 {
@@ -1891,7 +1973,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let name = part_name(part, heap)?;
-        let face = self::face(face)?;
+        let face = box_face(face)?;
         let [u_min, v_min, u_max, v_max] = numbers::<4>(rect, heap, "rect")?;
         let depth = number(depth, "depth")?;
         let id = text(id, "id")?;

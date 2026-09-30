@@ -30,6 +30,19 @@
 # Face coordinates (u, v): z faces use (x, y), x faces use (y, z), y faces
 # use (x, z), measured from the part's minimum corner.
 #
+# Any part's faces can be looked up by name: a box has "x-" ... "z+", an
+# extruded or revolved profile "start", "end" and its segment names, a face a
+# boolean left "<operation>.<tool face>", a shell's inner wall "<shell>.<face>".
+# They follow push_pull, mirror, rotate and place:
+#   face(part, name)  -> struct(part, name, kind, origin, normal, u, v, min,
+#     max, radius, center) in world. kind "planar": the points
+#     origin + a*u + b*v for (a, b) from min to max, normal outward.
+#     kind "cylindrical": the points origin + b*v + radius*(cos a*u +
+#     sin a*(v x u)), a in degrees from min[0] to max[0]; normal is the
+#     outward normal at a = 0 (u on a round outside, -u in a bore)
+#   faces(part)  -> every flat or cylindrical face, like face()
+#   face_at(part, point)  -> the face a world point lies on, or None
+#
 
 AXES = {"x": 0, "y": 1, "z": 2}
 

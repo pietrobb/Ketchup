@@ -5,6 +5,7 @@ mod document;
 mod exact_shapes;
 mod expect;
 mod face_at;
+mod faces;
 mod profile_arcs;
 mod program;
 mod relations;
