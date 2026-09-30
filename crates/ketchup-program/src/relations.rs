@@ -3,7 +3,8 @@
 //! allowed, and the clearance between nearby parts. It lets a caller check a
 //! model against its intent without a picture.
 
-use crate::eval::{TOLERANCE_MM, contact};
+use crate::contact::contact;
+use crate::eval::TOLERANCE_MM;
 use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
 use crate::model::{Part, ProgramBooleanKind, ProgramModel};

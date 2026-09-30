@@ -10,6 +10,7 @@
 
 pub mod bom;
 pub mod cad;
+pub mod contact;
 pub mod document;
 pub mod eval;
 pub mod exact;

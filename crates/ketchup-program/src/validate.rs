@@ -1,7 +1,8 @@
 //! Generic checks over an evaluated model. They report issues; they never
 //! reject the model. Production export decides whether issues block.
 
-use crate::eval::{TOLERANCE_MM, contact};
+use crate::contact::contact;
+use crate::eval::TOLERANCE_MM;
 use crate::exact::ExactShapes;
 use crate::faces::FaceKind;
 use crate::frame::{self, Obb};

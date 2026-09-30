@@ -1,6 +1,7 @@
 //! Faces of any part are frames found by name: planes and cylinders computed
 //! from the body and carried through push_pull, mirror, booleans and the
 //! part's placement.
+use ketchup_program::contact::contact;
 use ketchup_program::faces::{FaceFrame, FaceKind};
 use ketchup_program::model::Part;
 use ketchup_program::run;
@@ -325,4 +326,98 @@ fn a_hole_drilled_after_a_mirror_lands_where_the_face_now_is() {
         assert_near(world(b, "x+").origin_mm, [0.0, 0.0, 0.0], "mirrored face");
     }
     assert_eq!(before.holes, after.holes);
+}
+
+#[test]
+fn contact_finds_a_profile_face_mirrored_in_the_middle_of_the_program() {
+    let source = "\
+w = extrude(\"w\", distance = 20, profile = [[\"base\", [0, 0], [100, 0]], \
+[\"slope\", [100, 0], [0, 50]], [\"back\", [0, 50], [0, 0]]])
+hole(w, \"base\", at = (70, 10), diameter = 5, depth = 10)
+mirror(w, axis = \"x\")
+post = box(\"post\", (30, 50, 20), at = (100, 0, 0))
+c = contact(w, post)
+if (c.face_a, c.face_b) != (\"back\", \"x-\"):
+    fail(\"faces %s %s\" % (c.face_a, c.face_b))
+dowels(w, post, dowel = \"6x30\", margin = 10)
+";
+    let (evaluated, report) = run("faces.star", source, &Default::default()).expect("evaluates");
+    assert!(report.ok, "{:#?}", report.issues);
+    let (w, post) = (
+        evaluated.model.part("w").unwrap(),
+        evaluated.model.part("post").unwrap(),
+    );
+    // The mirror across x = 50 turned the back from x = 0 to x = 100, where
+    // the post stands; a bounding box would call it x+.
+    let found = contact(w, post).expect("touching");
+    assert_eq!(
+        [found.face_a.as_str(), found.face_b.as_str()],
+        ["back", "x-"]
+    );
+    assert_near(found.normal, [1.0, 0.0, 0.0], "out of the back");
+    assert_eq!(found.points_mm.len(), 4);
+    assert!(
+        (found.size_mm[0] * found.size_mm[1] - 1000.0).abs() < 1e-6,
+        "{:?}",
+        found.size_mm
+    );
+    assert!(found.points_mm.iter().all(|p| (p[0] - 100.0).abs() < 1e-9));
+    // The dowel holes go into that face: after the base hole, two in the back.
+    let dowels: Vec<_> = w.holes.iter().filter(|h| h.face == "back").collect();
+    assert_eq!(dowels.len(), 2);
+    for hole in dowels {
+        let (entry, inward) = w.after_operations((hole.entry_mm, hole.inward));
+        assert!((entry[0] - 100.0).abs() < 1e-9, "{entry:?}");
+        assert_near(inward, [-1.0, 0.0, 0.0], "into the mirrored back");
+    }
+    assert_eq!(post.holes.iter().filter(|h| h.face == "x-").count(), 2);
+}
+
+#[test]
+fn a_leaning_board_trimmed_flat_joins_a_board_it_is_not_square_to() {
+    let source = "\
+base = box(\"base\", (300, 200, 30), at = (0, 0, -30))
+leg = box(\"leg\", (100, 30, 300), at = (100, 85, -50))
+rotate(leg, axis = (1, 0, 0), angle = 20, pivot = (150, 100, 0))
+trim = box(\"trim\", (1000, 1000, 200), at = (-350, -400, -200), tool = True)
+subtract(leg, trim, name = \"cut\")
+c = contact(leg, base)
+if (c.face_a, c.face_b) != (\"cut.z+\", \"z+\"):
+    fail(\"faces %s %s\" % (c.face_a, c.face_b))
+dowels(leg, base, dowel = \"8x30\", margin = 25)
+";
+    let (evaluated, report) = run("faces.star", source, &Default::default()).expect("evaluates");
+    assert!(report.ok, "{:#?}", report.issues);
+    let (leg, base) = (
+        evaluated.model.part("leg").unwrap(),
+        evaluated.model.part("base").unwrap(),
+    );
+    let found = contact(leg, base).expect("the cut end stands on the base");
+    assert_near(found.normal, [0.0, 0.0, -1.0], "down out of the cut");
+    // The cut crosses the 30 mm leg leaning 20 degrees: 100 by 30 / cos 20.
+    let across = 30.0 / 20f64.to_radians().cos();
+    assert!(
+        (found.size_mm[0] - 100.0).abs() < 1e-6,
+        "{:?}",
+        found.size_mm
+    );
+    assert!(
+        (found.size_mm[1] - across).abs() < 1e-6,
+        "{:?}",
+        found.size_mm
+    );
+    assert!(found.points_mm.iter().all(|p| p[2].abs() < 1e-9));
+    let dowels: Vec<_> = leg.holes.iter().filter(|h| h.face == "cut.z+").collect();
+    assert_eq!(dowels.len(), 2);
+    for hole in &dowels {
+        // Square to the base, so at 20 degrees to the leg's own axes.
+        let inward = std::array::from_fn(|row| {
+            (0..3)
+                .map(|k| leg.rotation[row][k] * hole.inward[k])
+                .sum::<f64>()
+        });
+        assert_near(inward, [0.0, 0.0, 1.0], "up into the leg");
+        assert!(leg.to_world(hole.entry_mm)[2].abs() < 1e-9);
+    }
+    assert_eq!(base.holes.iter().filter(|h| h.face == "z+").count(), 2);
 }

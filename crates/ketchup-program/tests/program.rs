@@ -806,7 +806,7 @@ fn contact_between_faces_turned_in_their_plane_is_the_overlap_polygon() {
          rotate(top, axis = (0, 0, 1), angle = 45, pivot = (100, 100, 0))\n",
     );
     let (base, top) = (model.part("base").unwrap(), model.part("top").unwrap());
-    let contact = ketchup_program::eval::contact(base, top).unwrap();
+    let contact = ketchup_program::contact::contact(base, top).unwrap();
     assert_eq!([contact.face_a, contact.face_b], ["z+", "z-"]);
     assert_eq!(contact.points_mm.len(), 4);
     let half_diagonal = 50.0 * std::f64::consts::SQRT_2;
@@ -821,7 +821,7 @@ fn contact_between_faces_turned_in_their_plane_is_the_overlap_polygon() {
          top = box(\"top\", (100, 100, 20), at = (0, 0, 20))\n\
          rotate(top, axis = (0, 0, 1), angle = 45, pivot = (50, 50, 0))\n",
     );
-    let clipped = ketchup_program::eval::contact(
+    let clipped = ketchup_program::contact::contact(
         overhang.part("base").unwrap(),
         overhang.part("top").unwrap(),
     )

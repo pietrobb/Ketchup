@@ -4,7 +4,8 @@
 //! library states new kinds of intent without Rust changes. A condition that
 //! does not hold is an error with the measured and required numbers.
 
-use crate::eval::{TOLERANCE_MM, contact};
+use crate::contact::contact;
+use crate::eval::TOLERANCE_MM;
 use crate::exact::ExactShapes;
 use crate::frame;
 use crate::model::{Part, ProgramModel};

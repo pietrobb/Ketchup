@@ -940,129 +940,6 @@ fn apply_boolean<'v>(
     })
 }
 
-/// A shared face patch of positive area between two parts.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Contact {
-    /// Local axis of the first part the touching faces are perpendicular to.
-    pub axis: usize,
-    /// Face of the first part that touches the second, in the first part's frame.
-    pub face_a: String,
-    /// Face of the second part that touches the first, in its own frame.
-    pub face_b: String,
-    /// World bounds of the patch.
-    pub min_mm: [f64; 3],
-    pub max_mm: [f64; 3],
-    /// World unit normal pointing out of the first part.
-    pub normal: [f64; 3],
-    /// World directions of `face_a`'s (u, v) axes; the patch's bounding
-    /// rectangle along them starts at `origin_mm` and measures `size_mm`.
-    pub u: [f64; 3],
-    pub v: [f64; 3],
-    pub origin_mm: [f64; 3],
-    pub size_mm: [f64; 2],
-    /// World corners of the convex patch.
-    pub points_mm: Vec<[f64; 3]>,
-}
-
-/// Finds the face patch where `a` touches `b`, if any. Faces are the uncut
-/// box faces of each part in its own frame.
-#[must_use]
-pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
-    if a.is_rotated() || b.is_rotated() {
-        return rotated_contact(a, b);
-    }
-    let ((a_min, a_max), (b_min, b_max)) = (a.world_bounds(), b.world_bounds());
-    for axis in 0..3 {
-        for max_side in [true, false] {
-            let plane = if max_side { a_max[axis] } else { a_min[axis] };
-            let other = if max_side { b_min[axis] } else { b_max[axis] };
-            if (plane - other).abs() > TOLERANCE_MM {
-                continue;
-            }
-            let mut min = [0.0; 3];
-            let mut max = [0.0; 3];
-            let mut area_ok = true;
-            for other_axis in (0..3).filter(|candidate| *candidate != axis) {
-                min[other_axis] = a_min[other_axis].max(b_min[other_axis]);
-                max[other_axis] = a_max[other_axis].min(b_max[other_axis]);
-                area_ok &= max[other_axis] - min[other_axis] > TOLERANCE_MM;
-            }
-            if area_ok {
-                min[axis] = plane;
-                max[axis] = plane;
-                let (u_axis, v_axis) = match axis {
-                    0 => (1, 2),
-                    1 => (0, 2),
-                    _ => (0, 1),
-                };
-                let unit = |index: usize| -> [f64; 3] {
-                    std::array::from_fn(|i| if i == index { 1.0 } else { 0.0 })
-                };
-                let corner = |u: f64, v: f64| {
-                    let mut point = min;
-                    point[u_axis] = u;
-                    point[v_axis] = v;
-                    point
-                };
-                return Some(Contact {
-                    axis,
-                    face_a: panel_face(axis, max_side),
-                    face_b: panel_face(axis, !max_side),
-                    min_mm: min,
-                    max_mm: max,
-                    normal: unit(axis).map(|value| if max_side { value } else { -value }),
-                    u: unit(u_axis),
-                    v: unit(v_axis),
-                    origin_mm: min,
-                    size_mm: [max[u_axis] - min[u_axis], max[v_axis] - min[v_axis]],
-                    points_mm: vec![
-                        corner(min[u_axis], min[v_axis]),
-                        corner(max[u_axis], min[v_axis]),
-                        corner(max[u_axis], max[v_axis]),
-                        corner(min[u_axis], max[v_axis]),
-                    ],
-                });
-            }
-        }
-    }
-    None
-}
-
-/// Name of the box face across local `axis` at its far (`true`) or near end.
-fn panel_face(axis: usize, far: bool) -> String {
-    crate::faces::PANEL_FACES
-        .iter()
-        .find(|(_, face_axis, face_far)| *face_axis == axis && *face_far == far)
-        .map(|(name, ..)| (*name).to_owned())
-        .unwrap_or_default()
-}
-
-fn rotated_contact(a: &Part, b: &Part) -> Option<Contact> {
-    let patch = a.obb().face_contact(&b.obb(), TOLERANCE_MM)?;
-    let (min_mm, max_mm) = patch.points.iter().fold(
-        ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
-        |(min, max), point| {
-            (
-                std::array::from_fn(|i| f64::min(min[i], point[i])),
-                std::array::from_fn(|i| f64::max(max[i], point[i])),
-            )
-        },
-    );
-    Some(Contact {
-        axis: patch.face.0,
-        face_a: panel_face(patch.face.0, patch.face.1),
-        face_b: panel_face(patch.other_face.0, patch.other_face.1),
-        min_mm,
-        max_mm,
-        normal: patch.normal,
-        u: patch.u,
-        v: patch.v,
-        origin_mm: patch.origin,
-        size_mm: patch.size,
-        points_mm: patch.points,
-    })
-}
-
 /// Appends one operation to a part, keeping operation names unique.
 fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result<()> {
     let name = operation.name();
@@ -2038,9 +1915,10 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Where part `a` touches part `b` face to face (rotated parts too): a
-    /// struct with `axis` (a's local "x"/"y"/"z"), `face_a`/`face_b` in each
-    /// part's own frame, world bounds `min`/`max`, world `normal` out of `a`,
+    /// Where a flat face of part `a` lies against a flat face of part `b`
+    /// (any bodies, frames and operations): a struct with `axis` (a's local
+    /// "x"/"y"/"z" nearest the normal), the face names `face_a`/`face_b`
+    /// (see faces()), world bounds `min`/`max`, world `normal` out of `a`,
     /// the patch rectangle `origin` + `size=(du, dv)` along world directions
     /// `u`/`v` (face_a's face axes) and its world corner `points`; None if
     /// they do not touch.
@@ -2060,7 +1938,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             .part(&b)
             .ok_or_else(|| anyhow::anyhow!("unknown part {b:?}"))?;
         let point = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
-        Ok(match self::contact(part_a, part_b) {
+        Ok(match crate::contact::contact(part_a, part_b) {
             None => Value::new_none(),
             Some(contact) => heap.alloc(AllocStruct([
                 ("axis", heap.alloc(["x", "y", "z"][contact.axis])),

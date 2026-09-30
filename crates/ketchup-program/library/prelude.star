@@ -24,7 +24,7 @@
 # rotate()/place() turn that frame. Sizes, faces, holes and pockets are always
 # in the part's own frame, so they follow the part when it is rotated.
 # part_info().min/max are world bounds. contact() and dowels() work between
-# any faces that lie flat against each other, rotated or not.
+# any flat faces that lie against each other, on any body, rotated or not.
 #
 # Faces are "x-", "x+", "y-", "y+", "z-", "z+" in the part's own frame.
 # Face coordinates (u, v): z faces use (x, y), x faces use (y, z), y faces
@@ -151,8 +151,11 @@ def member(name, start, end, section, across = None, material = "timber", grain 
 # nearest() use each part's box in its own frame (exact for box parts).
 #
 #   contact(a, b)  -> struct(axis, face_a, face_b, min, max, normal, u, v,
-#                    origin, size, points) or None; works for rotated parts
-#     the shared face of two parts lying flat against each other
+#                    origin, size, points) or None
+#     the largest patch where a flat face of `a` lies against a flat face of
+#     `b`, for any bodies (boxes, extrusions, revolves, cut or mirrored,
+#     rotated or not); face_a/face_b are face names as in faces(), e.g.
+#     "x+", "segment2" or "<boolean>.z+" for the face a cut left
 
 def face_normal(part, face):
     """World outward normal of `face` ("x-" ... "z+") in the part's own frame,
