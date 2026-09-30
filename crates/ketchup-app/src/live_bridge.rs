@@ -715,7 +715,7 @@ impl KetchupApp {
     /// Explicit opt-in by a trusted UI-thread host; binds ONLY 127.0.0.1:0.
     /// Generates fresh credentials; launcher-supplied tokens use the separate bootstrap API.
     pub fn enable_live_bridge(&mut self, context: &egui::Context) -> io::Result<SocketAddr> {
-        if self.live_bridge.is_some() {
+        if self.live.bridge.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "bridge already enabled",
@@ -723,20 +723,20 @@ impl KetchupApp {
         }
         let bridge = transport::start(context.clone())?;
         let address = bridge.address;
-        self.live_bridge = Some(bridge);
+        self.live.bridge = Some(bridge);
         Ok(address)
     }
 
     /// Secret-bearing out-of-band accessor for trusted host code only.
     pub fn live_bridge_credentials(&self) -> Option<Credentials> {
-        self.live_bridge.as_ref().map(|b| Credentials {
+        self.live.bridge.as_ref().map(|b| Credentials {
             address: b.address,
             token: b.token.clone(),
         })
     }
 
     pub fn disable_live_bridge(&mut self) {
-        self.live_bridge = None;
+        self.live.bridge = None;
     }
 
     pub fn live_bridge_stamp(&self) -> Stamp {
@@ -750,7 +750,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn poll_live_bridge(&mut self, context: &egui::Context) {
-        let Some(mut bridge) = self.live_bridge.take() else {
+        let Some(mut bridge) = self.live.bridge.take() else {
             return;
         };
         let mut revoke_consent = false;
@@ -763,7 +763,7 @@ impl KetchupApp {
             };
             if queued.connection_closed {
                 bridge.remove_client(queued.session);
-                if self.live_consent_attached {
+                if self.live.consent_attached {
                     revoke_consent = true;
                     break;
                 }
@@ -857,16 +857,16 @@ impl KetchupApp {
             if disconnect {
                 bridge.remove_client(session);
             }
-            if disconnect && self.live_consent_attached {
+            if disconnect && self.live.consent_attached {
                 revoke_consent = true;
                 break;
             }
         }
         if revoke_consent {
-            self.live_consent_attached = false;
+            self.live.consent_attached = false;
             self.poll_live_consent(context);
         } else {
-            self.live_bridge = Some(bridge);
+            self.live.bridge = Some(bridge);
         }
     }
 }
@@ -930,22 +930,22 @@ impl LiveBridge {
     // Deliberately inspect raw state: validity-filtered preview helpers can hide stale human work.
     fn busy(app: &KetchupApp) -> bool {
         app.tool_preview.is_some()
-            || app.smart_push_pull_proposal.is_some()
-            || app.smart_push_pull_planning.is_some()
-            || app.solid_tool_target.is_some()
-            || app.revolve_tool.is_some()
+            || app.push_pull.smart_proposal.is_some()
+            || app.push_pull.smart_planning.is_some()
+            || app.solid_tools.target.is_some()
+            || app.solid_tools.revolve.is_some()
             || matches!(app.active_tool, ActiveTool::Helix | ActiveTool::Thread)
-            || app.loft_input_sections.is_some()
-            || app.pocket_editor_feature.is_some()
-            || app.parameter_editor_node.is_some()
-            || app.parameter_provenance.is_some()
-            || app.assistant_proposal.is_some()
-            || app.assistant_pending_execution.is_some()
-            || app.assistant_chat_task.is_some()
+            || app.solid_tools.loft_input_sections.is_some()
+            || app.solid_tools.pocket_editor_feature.is_some()
+            || app.parameter.editor_node.is_some()
+            || app.parameter.provenance.is_some()
+            || app.assistant.proposal.is_some()
+            || app.assistant.pending_execution.is_some()
+            || app.assistant.chat_task.is_some()
             || app.gesture.drag.is_some()
             || app.transform_gesture_active()
-            || app.camera_drag_active
-            || app.camera_wheel_active
+            || app.camera.drag_active
+            || app.camera.wheel_active
             || app.gesture.sketch.armed
             || app.gesture.sketch.start.is_some()
             || app.gesture.sketch.end.is_some()
@@ -953,13 +953,13 @@ impl LiveBridge {
             || app.gesture.sketch.chain_origin.is_some()
             || !app.gesture.sketch.chain_points.is_empty()
             || !app.gesture.sketch.chain_items.is_empty()
-            || app.focus_value_box
+            || app.value_box.focus
             || app.gesture.measure.start.is_some()
             || app.gesture.measure.cursor.is_some()
             || app.gesture.measure.end.is_some()
             || app.modal.is_some()
             || app.mesh_conversion_active()
-            || app.migration_review_plan.is_some()
+            || app.file.migration_review_plan.is_some()
             || app.assembly_preview_pending()
             || app.body_preview_pending()
             || app.feature_history_preview_pending()
@@ -970,7 +970,7 @@ impl LiveBridge {
         false
     }
     fn available(app: &KetchupApp, ui_busy: bool) -> Result<(), &'static str> {
-        if app.review_candidate.is_some() {
+        if app.file.review_candidate.is_some() {
             return Err("read_only_document");
         }
         if ui_busy || Self::busy(app) {
@@ -1044,7 +1044,7 @@ impl LiveBridge {
         }
         let target = app.selection.topological[0]
             .1
-            .resolve_current(&snapshot, &app.topology_results);
+            .resolve_current(&snapshot, &app.exact.topology_results);
         let Ok(target) = target else {
             return json!({"state":"stale_topology","instance_paths":selected_paths,
                 "pin_pair":Value::Null});
@@ -1054,7 +1054,8 @@ impl LiveBridge {
             .resolve_instance_path(&target.instance_path)
             .ok()
             .and_then(|instance| {
-                app.topology_results
+                app.exact
+                    .topology_results
                     .get_render(&snapshot, instance.definition_id)
             })
             .map(|package| {
@@ -1423,7 +1424,7 @@ impl LiveBridge {
     }
 
     fn worker_path(app: &KetchupApp) -> Option<PathBuf> {
-        app.exact_worker_path.clone().or_else(|| {
+        app.exact.worker_path.clone().or_else(|| {
             exact_worker_candidates()
                 .into_iter()
                 .find(|path| path.is_file())
@@ -1461,7 +1462,7 @@ impl LiveBridge {
         let save_path = match save {
             None => None,
             Some(ApplyAndVerifySave::Current {}) => {
-                Some(app.document_path.clone().ok_or("save_path_required")?)
+                Some(app.file.path.clone().ok_or("save_path_required")?)
             }
             Some(ApplyAndVerifySave::Path { path }) => {
                 if path.is_empty()
@@ -1506,7 +1507,7 @@ impl LiveBridge {
         let exact_selection = plan_incremental_exact_evaluation(
             &app.document.current(),
             &candidate,
-            app.exact_source.as_ref(),
+            app.exact.source.as_ref(),
         )
         .map_err(|error| failure("planning_rejected", format!("{error:?}"), json!({})))?
         .selection;
@@ -1557,9 +1558,9 @@ impl LiveBridge {
                 return;
             }
         };
-        let container_data = app.container_data.clone();
-        let render = app.exact_results.clone();
-        let topology = app.topology_results.clone();
+        let container_data = app.file.container_data.clone();
+        let render = app.exact.results.clone();
+        let topology = app.exact.topology_results.clone();
         let worker_path = Self::worker_path(app);
         let candidate = plan.candidate.clone();
         let (started, timeout_ms) = (plan.started, plan.timeout_ms);
@@ -1703,8 +1704,8 @@ impl LiveBridge {
                 WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
             })?;
         let after = app.live_bridge_stamp();
-        app.exact_source = Some(exact_source(candidate));
-        app.exact_retry_at = None;
+        app.exact.source = Some(exact_source(candidate));
+        app.exact.retry_at = None;
         app.invalidate_pending_import_reviews();
         app.clear_ephemeral_edit_state();
         app.reconcile_selection();
@@ -1786,9 +1787,9 @@ impl LiveBridge {
         )?;
         let prepared = Self::evaluate_apply_and_verify_candidate(
             &plan.candidate,
-            &app.container_data,
-            &app.exact_results,
-            &app.topology_results,
+            &app.file.container_data,
+            &app.exact.results,
+            &app.exact.topology_results,
             Self::worker_path(app),
             &exact_selection,
             &validation_selection,
@@ -1901,7 +1902,7 @@ impl LiveBridge {
             Request::Status {} => Ok(
                 json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
                 "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata","variable_size","selection_framing","detail_selection_framing"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen","framing_modes":["viewport","selection","detail_selection"],"default_framing":"viewport","min_side_px":MIN_IMAGE_SIDE_PX,"max_side_px":MAX_IMAGE_SIDE_PX,"default_side_px":512},
-                "busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
+                "busy":ui_busy || Self::busy(app),"read_only":app.file.review_candidate.is_some(),
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "selected_context":Self::selected_context(app),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
@@ -1917,14 +1918,14 @@ impl LiveBridge {
                 .query
                 .edit_context(
                     &app.document.current(),
-                    &app.topology_results,
+                    &app.exact.topology_results,
                     app.document.mutation_epoch(),
                     &EditContextRequest { targets },
                 )
                 .map_err(|error| error.code()),
             Request::Query { query, .. } => self
                 .query
-                .page_with_topology(&app.document.current(), &app.topology_results, &query)
+                .page_with_topology(&app.document.current(), &app.exact.topology_results, &query)
                 .map_err(|e| e.code()),
             Request::Detail {
                 kind, entity_id, ..
@@ -1932,7 +1933,7 @@ impl LiveBridge {
                 .query
                 .detail_with_topology(
                     &app.document.current(),
-                    &app.topology_results,
+                    &app.exact.topology_results,
                     kind,
                     entity_id,
                 )
@@ -2140,7 +2141,7 @@ impl LiveBridge {
             Request::Save { expected } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                let path = app.document_path.clone().ok_or("save_path_required")?;
+                let path = app.file.path.clone().ok_or("save_path_required")?;
                 if !app.save_document_to_while(&path, || !cancelled.load(Ordering::Acquire)) {
                     return Err("save_rejected");
                 }

@@ -15,7 +15,14 @@ fn shell() -> Harness<'static, KetchupApp> {
 
 fn point(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> Pos2 {
     let screen = harness.state().viewport_position(world).unwrap();
-    assert!(harness.state().viewport_rect.unwrap().contains(screen));
+    assert!(
+        harness
+            .state()
+            .camera
+            .viewport_rect
+            .unwrap()
+            .contains(screen)
+    );
     harness
         .input_mut()
         .events
@@ -176,7 +183,7 @@ fn painted_body_vertices(app: &mut KetchupApp, context: &egui::Context) -> Vec<(
         !points.is_empty(),
         "must observe painted model faces: selection={:?}, rect={:?}",
         app.selection.occurrences,
-        app.viewport_rect
+        app.camera.viewport_rect
     );
     points
 }
@@ -198,7 +205,7 @@ fn rotation_rendered_preview_matches_committed_geometry_and_copy() {
             let context = egui::Context::default();
             let _ = context.run(egui::RawInput::default(), |ctx| app.ui(ctx));
             let pivot = Vec3::new(100.0, 60.0, 20.0);
-            let rect = app.viewport_rect.unwrap();
+            let rect = app.camera.viewport_rect.unwrap();
             assert!(app.begin_rotate_drag_at(app.project(pivot, rect), rect, copy));
             app.rotate_session_mut().unwrap().angle_degrees = 37.0;
             let digest = app.canonical_digest();
@@ -256,7 +263,7 @@ fn rotation_typed_angle_uses_pivot_and_escape_discards_it() {
     assert_eq!(harness.state().canonical_digest(), before);
     harness.state_mut().dispatch_command(AppCommand::Rotate);
     click(&mut harness, pivot);
-    harness.state_mut().value_input = "90".to_owned();
+    harness.state_mut().value_box.input = "90".to_owned();
     assert!(harness.state_mut().apply_value_input());
     let transform = harness
         .state()

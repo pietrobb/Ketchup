@@ -498,7 +498,7 @@ impl KetchupApp {
         }
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
-        let cache = self.interaction_projection_cache.borrow();
+        let cache = self.hover.projection_cache.borrow();
         let Some(cache) = cache.as_ref() else {
             return Vec::new();
         };
@@ -550,10 +550,10 @@ impl KetchupApp {
         pointer: Pos2,
         rect: Rect,
     ) -> Option<SnapResult> {
-        let hovered = self.hovered.as_ref()?;
+        let hovered = self.hover.target.as_ref()?;
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
-        let cache = self.interaction_projection_cache.borrow();
+        let cache = self.hover.projection_cache.borrow();
         let geometry = cache
             .as_ref()?
             .snap_geometry
@@ -596,12 +596,12 @@ impl KetchupApp {
         }
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
-        let cache = self.interaction_projection_cache.borrow();
+        let cache = self.hover.projection_cache.borrow();
         let geometry = cache
             .as_ref()?
             .snap_geometry
             .get_or_init(|| self.build_scene_snap_geometry(&snapshot));
-        let retained = self.hover_snap.as_ref().filter(|s| {
+        let retained = self.hover.snap.as_ref().filter(|s| {
             self.active_tool != ActiveTool::Rectangle
                 && !matches!(s.kind, SnapKind::Edge | SnapKind::Face)
         });
@@ -679,7 +679,7 @@ impl KetchupApp {
                 if denominator <= ROUNDING {
                     continue;
                 }
-                let t = if self.projection_mode == ProjectionMode::Perspective {
+                let t = if self.camera.projection_mode == ProjectionMode::Perspective {
                     ((b * dot(w, ray.direction) - dot(edge, w)) / denominator).clamp(0.0, 1.0)
                 } else {
                     f64::from(factor)

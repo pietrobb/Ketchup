@@ -345,7 +345,8 @@ impl KetchupApp {
             return Vec::new();
         };
         let Some(package) = self
-            .exact_results
+            .exact
+            .results
             .get_render(snapshot, occurrence.definition_id())
         else {
             return Vec::new();
@@ -355,11 +356,13 @@ impl KetchupApp {
             .iter()
             .filter(|reference| {
                 if kind.requires_planar_faces() {
-                    self.exact_results
+                    self.exact
+                        .results
                         .planar_face_attachment(snapshot, reference)
                         .is_some()
                 } else {
-                    self.exact_results
+                    self.exact
+                        .results
                         .axial_attachment(snapshot, reference)
                         .is_some()
                 }
@@ -664,11 +667,13 @@ impl KetchupApp {
             return Err(self.catalog.text("assembly-error-references"));
         };
         if self
-            .exact_results
+            .exact
+            .results
             .planar_face_attachment(&snapshot, target.reference())
             != Some(target)
             || self
-                .exact_results
+                .exact
+                .results
                 .planar_face_attachment(&snapshot, source.reference())
                 != Some(source)
         {
@@ -1637,8 +1642,8 @@ impl KetchupApp {
                     ]),
                 );
                 self.status_key = "status-preview";
-                self.assistant_verification = None;
-                self.assistant_proposal = Some(AssistantPreviewPlan {
+                self.assistant.verification = None;
+                self.assistant.proposal = Some(AssistantPreviewPlan {
                     source: AssistantPreviewSource::Assembly(source),
                     proposal,
                     repair: None,
@@ -1646,7 +1651,7 @@ impl KetchupApp {
                 true
             }
             Err(error) => {
-                self.assistant_proposal = None;
+                self.assistant.proposal = None;
                 self.assembly_error(error);
                 false
             }
@@ -1736,7 +1741,7 @@ impl KetchupApp {
             .and_then(|sheet| sheet.with_bom_balloons(balloons))
             .map_err(|error| error.to_string())?;
         let (proposal, drawing) =
-            prepare_create_drawing_sheet(&self.document, &self.exact_results, sheet)
+            prepare_create_drawing_sheet(&self.document, &self.exact.results, sheet)
                 .map_err(|error| error.to_string())?;
         if drawing.views.len() != 3
             || drawing
@@ -1879,11 +1884,13 @@ impl KetchupApp {
         });
         let endpoints = match kind {
             AssemblyMateKind::ConcentricAxial { .. } => self
-                .exact_results
+                .exact
+                .results
                 .axial_attachment(&snapshot, &reference_a)
                 .cloned()
                 .zip(
-                    self.exact_results
+                    self.exact
+                        .results
                         .axial_attachment(&snapshot, &reference_b)
                         .cloned(),
                 )
@@ -1896,11 +1903,13 @@ impl KetchupApp {
             AssemblyMateKind::CoincidentPlanar { .. }
             | AssemblyMateKind::Distance { .. }
             | AssemblyMateKind::Angle { .. } => self
-                .exact_results
+                .exact
+                .results
                 .planar_face_attachment(&snapshot, &reference_a)
                 .cloned()
                 .zip(
-                    self.exact_results
+                    self.exact
+                        .results
                         .planar_face_attachment(&snapshot, &reference_b)
                         .cloned(),
                 )
@@ -1991,7 +2000,7 @@ impl KetchupApp {
     fn plan_assembly_solve(&self) -> Result<Proposal, String> {
         let recomputed = recompute_rigid_assembly(
             &self.document,
-            &self.exact_results,
+            &self.exact.results,
             AssemblySolverPolicy::default(),
         )
         .map_err(|error| error.to_string())?;
@@ -2006,7 +2015,7 @@ impl KetchupApp {
     fn preview_assembly_solve(&mut self) -> bool {
         let recomputed = match recompute_rigid_assembly(
             &self.document,
-            &self.exact_results,
+            &self.exact.results,
             AssemblySolverPolicy::default(),
         ) {
             Ok(result) => result,
@@ -3050,10 +3059,12 @@ impl KetchupApp {
             self.assembly_editor.reference_b.as_deref()?,
         )?;
         let target = self
-            .exact_results
+            .exact
+            .results
             .planar_face_attachment(&snapshot, &target_reference)?;
         let source = self
-            .exact_results
+            .exact
+            .results
             .planar_face_attachment(&snapshot, &source_reference)?;
         let target_world = snapshot.world_transform_for_occurrence(target_id)?;
         let source_world = snapshot.world_transform_for_occurrence(source_id)?;
@@ -3118,7 +3129,7 @@ impl KetchupApp {
     ) -> Option<(String, Vec<String>)> {
         let snapshot = self.document.current();
         let sheet = snapshot.drawing_sheet(sheet_id)?;
-        let drawing = project_orthographic_drawing(&snapshot, &self.exact_results, sheet).ok()?;
+        let drawing = project_orthographic_drawing(&snapshot, &self.exact.results, sheet).ok()?;
         Some((
             drawing.result_digest,
             drawing
@@ -3134,7 +3145,7 @@ impl KetchupApp {
     pub fn headless_capstone_drawing_fingerprint(&self) -> Option<(String, Vec<String>)> {
         let snapshot = self.document.current();
         let sheet = snapshot.drawing_sheets().next()?;
-        let drawing = project_orthographic_drawing(&snapshot, &self.exact_results, sheet).ok()?;
+        let drawing = project_orthographic_drawing(&snapshot, &self.exact.results, sheet).ok()?;
         Some((
             drawing.result_digest,
             drawing

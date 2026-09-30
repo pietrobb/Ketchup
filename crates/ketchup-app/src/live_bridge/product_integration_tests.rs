@@ -26,8 +26,8 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             path.is_file(),
             "selected exact worker does not exist: {path:?}"
         );
-        app.exact_worker_path = Some(path);
-        app.exact_worker_attempted = true;
+        app.exact.worker_path = Some(path);
+        app.exact.worker_attempted = true;
     }
     assert!(app.open_document_path(&source));
     // The fixture was saved without grounding. Parts resting on the XY plane
@@ -47,7 +47,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         .unwrap();
     let context = egui::Context::default();
     let baseline_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while app.exact_source.as_ref()
+    while app.exact.source.as_ref()
         != Some(&ketchup_application::evaluation::exact_source(
             &app.document.current(),
         ))
@@ -59,7 +59,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         app.refresh_exact_products(&context);
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(!app.exact_results.is_empty());
+    assert!(!app.exact.results.is_empty());
     let before = app.live_bridge_stamp();
     let undo = app.undo_step_count();
     let face = |id, origin, inward, maximum| AssistantPinJointFace {
@@ -131,7 +131,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     let incremental = ketchup_application::evaluation::plan_incremental_exact_evaluation(
         &app.document.current(),
         &candidate,
-        app.exact_source.as_ref(),
+        app.exact.source.as_ref(),
     )
     .unwrap();
     assert!(incremental.baseline_reused, "{incremental:?}");
@@ -206,6 +206,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     let path = joint.first.instance_path.clone();
     let definition_id = repaired.resolve_instance_path(&path).unwrap().definition_id;
     let package = app
+        .exact
         .topology_results
         .get_render(&repaired, definition_id)
         .unwrap()
@@ -291,6 +292,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         .unwrap()
         .definition_id;
     let second_package = app
+        .exact
         .topology_results
         .get_render(&repaired, second_definition)
         .unwrap()
@@ -420,12 +422,12 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         .push(egui::Event::PointerMoved(pointer));
     harness.step();
     assert_eq!(
-        harness.state().hover_snap.as_ref().map(|snap| snap.kind),
+        harness.state().hover.snap.as_ref().map(|snap| snap.kind),
         Some(ketchup_interaction::SnapKind::Center),
         "pointer={pointer:?} rect={:?} hovered={:?} snap={:?}",
         harness.state().viewport_rect(),
-        harness.state().hovered,
-        harness.state().hover_snap
+        harness.state().hover.target,
+        harness.state().hover.snap
     );
     harness.input_mut().events.push(egui::Event::PointerButton {
         pos: pointer,
@@ -495,8 +497,8 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
     let (mut app, mut bridge) = setup();
     #[cfg(feature = "private-oauth")]
     {
-        assert_eq!(app.assistant_provider.protocol_name(), "codex-oauth");
-        assert_eq!(app.assistant_model, "gpt-5.6-sol");
+        assert_eq!(app.assistant.provider.protocol_name(), "codex-oauth");
+        assert_eq!(app.assistant.model, "gpt-5.6-sol");
     }
     app.document
         .apply_batch(&CommandBatch::new(vec![
@@ -535,15 +537,15 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
         .unwrap();
     crate::tests::install_initial_graph_result(&mut app);
     app.selection.select_occurrence(OccurrenceId(1), false);
-    app.yaw = -0.42;
-    app.pitch = -0.61;
-    app.zoom = 3.1;
-    app.pan = egui::vec2(12.0, -18.0);
-    app.camera_target_z = 15.0;
+    app.camera.yaw = -0.42;
+    app.camera.pitch = -0.61;
+    app.camera.zoom = 3.1;
+    app.camera.pan = egui::vec2(12.0, -18.0);
+    app.camera.target_z = 15.0;
     app.view.set(ViewFlag::GridAxes, false);
     app.view.set(ViewFlag::Profiles, false);
-    app.dimensions_visible = false;
-    app.tags_visible = true;
+    app.panels.dimensions_visible = false;
+    app.panels.tags_visible = true;
     let camera = app.camera_view_state();
     let camera_target = app.camera_target();
     let selection = (
@@ -615,8 +617,8 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
             (&app.selection.occurrences, &app.selection.primary),
             (&selection.0, &selection.1)
         );
-        assert!(!app.dimensions_visible);
-        assert!(app.tags_visible);
+        assert!(!app.panels.dimensions_visible);
+        assert!(app.panels.tags_visible);
         let snapshot = app.document.current();
         assert_eq!(snapshot.tag(TagId(1)).unwrap().name(), "Furniture");
         assert!(snapshot.tag(TagId(1)).unwrap().visible());
@@ -630,8 +632,8 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
             snapshot.occurrence(OccurrenceId(2)).unwrap().tag(),
             Some(TagId(2))
         );
-        assert!(app.exact_results.is_bound_to(&snapshot));
-        assert!(app.topology_results.is_bound_to(&snapshot));
+        assert!(app.exact.results.is_bound_to(&snapshot));
+        assert!(app.exact.topology_results.is_bound_to(&snapshot));
         let fingerprints = exact_fingerprints(app);
         assert!(expected_exact.iter().all(|key| fingerprints.contains(key)));
         let boxes = app.active_boxes();

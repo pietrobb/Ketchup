@@ -144,7 +144,7 @@ impl KetchupApp {
         .map_err(session_error)?;
         self.finish_program_edit();
         if edit == ProgramEdit::Created {
-            self.zoom_fit_pending = true;
+            self.camera.zoom_fit_pending = true;
         }
         Ok((edit, plan.report, plan.evaluated.model))
     }
@@ -176,7 +176,7 @@ impl KetchupApp {
         let mut edges = Vec::new();
         for selection in &source.topological_selections {
             let names = selection
-                .resolve_current(&snapshot, &self.topology_results)
+                .resolve_current(&snapshot, &self.exact.topology_results)
                 .ok()
                 .and_then(|resolved| {
                     live_bridge::program_pick::edge_names(

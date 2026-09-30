@@ -140,6 +140,7 @@ use modal::Modal;
 use slot::Slot;
 use tool_preview::ToolPreview;
 pub use view_settings::{ViewFlag, ViewSettings};
+mod app_state;
 mod assembly_ui;
 mod assistant_runtime;
 mod body_ui;
@@ -5002,20 +5003,9 @@ impl<E: std::fmt::Display> std::fmt::Display for WorkRecoveryMutationError<E> {
 
 pub struct KetchupApp {
     document: DocumentStore,
-    live_bridge: Option<live_bridge::LiveBridge>,
+    live: app_state::LiveState,
     close_guard: close_guard::CloseGuard,
-    live_consent_broker: Option<live_bridge::consent::ConsentBroker>,
-    live_consent_attached: bool,
-    container_data: ketchup_core::persistence::ContainerData,
-    review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
-    migration_review_plan: Option<MigrationReviewPlan>,
-    recovery_open: Option<RecoveryOpenState>,
-    document_path: Option<PathBuf>,
-    file_identity: Option<ketchup_core::persistence::FileIdentity>,
-    work_recovery_identity: Option<ketchup_core::persistence::FileIdentity>,
-    pending_work_recovery_cleanup: Option<(PathBuf, ketchup_core::persistence::FileIdentity)>,
-    work_recovery_digest: Option<String>,
-    saved_digest: String,
+    file: app_state::FileState,
     confirmation_surface: TrustedConfirmationSurface,
     side_effect_receipts: Vec<SideEffectAuthorizationReceipt>,
     btlx_profile_strategy: BtlxProfileStrategy,
@@ -5025,90 +5015,25 @@ pub struct KetchupApp {
     body_editor: body_ui::BodyEditorState,
     face_workflow: face_workflow_ui::FaceWorkflowUiState,
     feature_history: feature_history_ui::FeatureHistoryUiState,
-    push_pull_distance_input: String,
-    face_offset_evaluation: Option<planar_push_pull::FaceOffsetEvaluation>,
-    face_offset_preview_due: Option<Instant>,
-    smart_push_pull_proposal: Option<SmartPushPullProposal>,
-    smart_push_pull_planning: Option<SmartPushPullPlanning>,
-    solid_tool_target: Option<SelectionId>,
-    revolve_tool: Option<RevolveToolState>,
+    push_pull: app_state::PushPullState,
+    solid_tools: app_state::SolidToolInputs,
     helix_thread: helix_thread_ui::HelixThreadUiState,
-    loft_input_sections: Option<(DefinitionId, Vec<LoftSection>)>,
-    pocket_editor_feature: Option<FeatureId>,
-    pocket_depth_input: String,
-    parameter_editor_node: Option<NodeId>,
-    parameter_expression_input: String,
-    validator_panel_selection: BTreeSet<&'static str>,
-    validator_panel_report: Option<ValidatorPanelReport>,
-    validator_panel_state: validator_ui::ValidatorPanelState,
-    parameter_canonical_source: String,
-    parameter_provenance: Option<(DocumentId, u64, String)>,
-    parameter_last_recomputed_nodes: BTreeSet<NodeId>,
+    parameter: app_state::ParameterEditor,
+    validator_panel: app_state::ValidatorPanel,
     status_key: &'static str,
     theme: ThemeKind,
-    projection_mode: ProjectionMode,
-    camera_distance_mm: f64,
-    yaw: f32,
-    pitch: f32,
-    camera_target_z: f64,
-    zoom: f32,
-    pan: Vec2,
+    camera: app_state::CameraState,
     view: ViewSettings,
-    previous_camera_view: Option<CameraViewState>,
-    camera_drag_active: bool,
-    camera_wheel_active: bool,
     selection: SelectionState,
-    hovered: Option<SelectionId>,
-    /// The profile a drawing tool just created, with the revision it created;
-    /// Push/Pull targets it next while that revision is current.
-    drawn_profile: Option<(u64, SelectionId)>,
-    hover_pick: Option<PickResult>,
-    hover_snap: Option<SnapResult>,
-    hover_overlap_index: usize,
-    hover_pointer: Option<Pos2>,
-    interaction_projection_cache: RefCell<Option<InteractionProjectionCache>>,
+    hover: app_state::HoverState,
     active_tool: ActiveTool,
-    command_search: String,
+    panels: app_state::Panels,
     digest: String,
-    assistant_provider: AssistantProvider,
-    assistant_model: String,
-    assistant_workspace_mode: AssistantWorkspaceMode,
-    outliner_visible: bool,
-    tags_visible: bool,
-    dimensions_visible: bool,
-    manual_cad_panels_visible: bool,
-    classification_dimension_name_input: String,
-    classification_category_name_input: String,
-    classification_selected_dimension: Option<ClassificationDimensionId>,
-    assistant_input: String,
-    assistant_messages: Vec<AssistantChatMessage>,
-    assistant_memory: AssistantProjectMemory,
-    assistant_diagnostics_enabled: bool,
-    assistant_api_logs: Vec<AssistantApiLogEntry>,
-    assistant_selected_api_log: Option<usize>,
-    assistant_inspector_tab: AssistantInspectorTab,
-    assistant_memory_search: String,
-    assistant_transport: Arc<dyn AssistantTransport>,
-    assistant_context_preparation_delay: Duration,
-    assistant_chat_task: Option<AssistantChatTask>,
-    assistant_pending_execution: Option<AssistantPendingExecution>,
-    assistant_request_sequence: u64,
-    saved_assistant_conversation_digest: String,
-    assistant_intent_kind: AssistantIntentKind,
-    assistant_target_input: String,
-    assistant_value_input: String,
-    assistant_proposal: Option<AssistantPreviewPlan>,
-    assistant_verification: Option<AssistantVerification>,
-    last_push_pull: Option<LastPushPull>,
-    tool_session: Option<ToolSession>,
-    transform_input: TransformInputInterpreter,
-    correction_session: Option<CorrectionSession>,
-    value_input: String,
-    focus_value_box: bool,
-    occurrence_clipboard: Vec<OccurrenceId>,
-    cut_occurrence_clipboard: Vec<CutClipboardOccurrence>,
-    shortcuts_open: bool,
-    about_open: bool,
+    assistant: app_state::AssistantState,
+    classification: app_state::ClassificationInputs,
+    transform_tool: app_state::TransformToolState,
+    value_box: app_state::ValueBox,
+    clipboard: app_state::Clipboard,
     /// The dialog waiting for the user, if any.
     modal: Option<Modal>,
     /// The live tool preview shown before a commit, if any.
@@ -5116,36 +5041,10 @@ pub struct KetchupApp {
     /// The drawing, measurement, transform modifiers and pointer drag in progress.
     gesture: Gesture,
     mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState,
-    viewport_rect: Option<Rect>,
-    /// Zoom Fit was requested before the viewport was laid out or had anything
-    /// to frame (e.g. right after launch); it is applied on the next frame that can.
-    zoom_fit_pending: bool,
-    /// The pending fit frames a just-opened document and must not replace its
-    /// open/recovery status message.
-    zoom_fit_pending_quiet: bool,
     dialogs: Box<dyn FileDialogs>,
-    cam_reviews: CamReviewWorkflow,
-    cam_export_dialog: Option<CamExportDialog>,
-    fea_reviews: FeaReviewWorkflow,
-    fea_review_dialog: Option<FeaReviewDialog>,
-    pdm: LocalPdmWorkflow,
-    pdm_review_dialog: Option<PdmReviewDialog>,
-    exact_worker_path: Option<PathBuf>,
-    exact_worker_attempted: bool,
-    exact_task: Option<ExactEvaluationTask>,
-    mutation_readiness: MutationReadiness,
-    exact_results: ExactResultRegistry,
-    topology_results: ExactResultRegistry,
-    exact_result_history: BTreeMap<ExactSource, ExactResultRegistry>,
-    topology_result_history: BTreeMap<ExactSource, ExactResultRegistry>,
-    exact_source: Option<ExactSource>,
-    exact_retry_at: Option<Instant>,
-    render_cache: DerivedRenderCache,
-    render_plan: Option<Arc<InstancedRenderPlan>>,
-    overlay_edge_cache: RefCell<BTreeMap<DefinitionId, OverlayEdges>>,
-    wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
-    wgpu_device: Option<eframe::wgpu::Device>,
-    wgpu_queue: Option<eframe::wgpu::Queue>,
+    reviews: app_state::ReviewWorkflows,
+    exact: app_state::ExactState,
+    render: app_state::RenderState,
 }
 
 impl Default for KetchupApp {
@@ -5209,20 +5108,24 @@ impl KetchupApp {
         let digest = catalog.text("status-ready");
         Self {
             document,
-            live_bridge: None,
+            live: app_state::LiveState {
+                bridge: None,
+                consent_broker: None,
+                consent_attached: false,
+            },
             close_guard: close_guard::CloseGuard::default(),
-            live_consent_broker: None,
-            live_consent_attached: false,
-            container_data: ketchup_core::persistence::ContainerData::default(),
-            review_candidate: None,
-            migration_review_plan: None,
-            recovery_open: None,
-            document_path: None,
-            file_identity: None,
-            work_recovery_identity: None,
-            pending_work_recovery_cleanup: None,
-            work_recovery_digest: None,
-            saved_digest,
+            file: app_state::FileState {
+                container_data: ketchup_core::persistence::ContainerData::default(),
+                review_candidate: None,
+                migration_review_plan: None,
+                recovery_open: None,
+                path: None,
+                identity: None,
+                work_recovery_identity: None,
+                pending_work_recovery_cleanup: None,
+                work_recovery_digest: None,
+                saved_digest,
+            },
             confirmation_surface,
             side_effect_receipts: Vec::new(),
             btlx_profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
@@ -5232,118 +5135,148 @@ impl KetchupApp {
             body_editor: body_ui::BodyEditorState::default(),
             face_workflow: face_workflow_ui::FaceWorkflowUiState::default(),
             feature_history: feature_history_ui::FeatureHistoryUiState::default(),
-            push_pull_distance_input: String::new(),
-            face_offset_evaluation: None,
-            face_offset_preview_due: None,
-            smart_push_pull_proposal: None,
-            smart_push_pull_planning: None,
-            solid_tool_target: None,
-            revolve_tool: None,
+            push_pull: app_state::PushPullState {
+                distance_input: String::new(),
+                face_offset_evaluation: None,
+                face_offset_preview_due: None,
+                smart_proposal: None,
+                smart_planning: None,
+                last: None,
+            },
+            solid_tools: app_state::SolidToolInputs {
+                target: None,
+                revolve: None,
+                loft_input_sections: None,
+                pocket_editor_feature: None,
+                pocket_depth_input: String::new(),
+            },
             helix_thread: helix_thread_ui::HelixThreadUiState::default(),
-            loft_input_sections: None,
-            pocket_editor_feature: None,
-            pocket_depth_input: String::new(),
-            parameter_editor_node: None,
-            parameter_expression_input: String::new(),
-            validator_panel_selection: ASSISTANT_VALIDATOR_IDS.into_iter().collect(),
-            validator_panel_report: None,
-            validator_panel_state: validator_ui::ValidatorPanelState::default(),
-            parameter_canonical_source: String::new(),
-            parameter_provenance: None,
-            parameter_last_recomputed_nodes: BTreeSet::new(),
+            parameter: app_state::ParameterEditor {
+                editor_node: None,
+                expression_input: String::new(),
+                canonical_source: String::new(),
+                provenance: None,
+                last_recomputed_nodes: BTreeSet::new(),
+            },
+            validator_panel: app_state::ValidatorPanel {
+                selection: ASSISTANT_VALIDATOR_IDS.into_iter().collect(),
+                report: None,
+                state: validator_ui::ValidatorPanelState::default(),
+            },
             status_key: "status-ready",
             theme: ThemeKind::default(),
-            projection_mode: ProjectionMode::Parallel,
-            camera_distance_mm: 420.0 / 2.8,
-            yaw: -0.65,
-            pitch: -0.5,
-            camera_target_z: 10.0,
-            zoom: 2.8,
-            pan: Vec2::ZERO,
+            camera: app_state::CameraState {
+                projection_mode: ProjectionMode::Parallel,
+                distance_mm: 420.0 / 2.8,
+                yaw: -0.65,
+                pitch: -0.5,
+                target_z: 10.0,
+                zoom: 2.8,
+                pan: Vec2::ZERO,
+                previous_view: None,
+                drag_active: false,
+                wheel_active: false,
+                viewport_rect: None,
+                zoom_fit_pending: false,
+                zoom_fit_pending_quiet: false,
+            },
             view: ViewSettings::default(),
-            previous_camera_view: None,
-            camera_drag_active: false,
-            camera_wheel_active: false,
             selection: SelectionState::default(),
-            hovered: None,
-            drawn_profile: None,
-            hover_pick: None,
-            hover_snap: None,
-            hover_overlap_index: 0,
-            hover_pointer: None,
-            interaction_projection_cache: RefCell::new(None),
+            hover: app_state::HoverState {
+                target: None,
+                drawn_profile: None,
+                pick: None,
+                snap: None,
+                overlap_index: 0,
+                pointer: None,
+                projection_cache: RefCell::new(None),
+            },
             active_tool: ActiveTool::Select,
-            command_search: String::new(),
+            panels: app_state::Panels {
+                outliner_visible: true,
+                tags_visible: true,
+                dimensions_visible: true,
+                manual_cad_panels_visible: false,
+                shortcuts_open: false,
+                about_open: false,
+                command_search: String::new(),
+            },
             digest,
-            assistant_provider: AssistantProvider::initial(),
-            assistant_model: AssistantProvider::initial().default_model().to_owned(),
-            assistant_workspace_mode: AssistantWorkspaceMode::Dock,
-            outliner_visible: true,
-            tags_visible: true,
-            dimensions_visible: true,
-            manual_cad_panels_visible: false,
-            classification_dimension_name_input: String::new(),
-            classification_category_name_input: String::new(),
-            classification_selected_dimension: None,
-            assistant_input: String::new(),
-            assistant_messages: Vec::new(),
-            assistant_memory,
-            assistant_diagnostics_enabled: false,
-            assistant_api_logs: Vec::new(),
-            assistant_selected_api_log: None,
-            assistant_inspector_tab: AssistantInspectorTab::default(),
-            assistant_memory_search: String::new(),
-            assistant_transport: Arc::new(ProcessAssistantTransport),
-            assistant_context_preparation_delay: Duration::ZERO,
-            assistant_chat_task: None,
-            assistant_pending_execution: None,
-            assistant_request_sequence: 0,
-            saved_assistant_conversation_digest: assistant_conversation_digest(&[]),
-            assistant_intent_kind: AssistantIntentKind::FeatureDimension,
-            assistant_target_input: "2".to_owned(),
-            assistant_value_input: "35".to_owned(),
-            assistant_proposal: None,
-            assistant_verification: None,
-            last_push_pull: None,
-            tool_session: None,
-            transform_input: TransformInputInterpreter::default(),
-            correction_session: None,
-            value_input: String::new(),
-            focus_value_box: false,
-            occurrence_clipboard: Vec::new(),
-            cut_occurrence_clipboard: Vec::new(),
-            shortcuts_open: false,
-            about_open: false,
+            assistant: app_state::AssistantState {
+                provider: AssistantProvider::initial(),
+                model: AssistantProvider::initial().default_model().to_owned(),
+                workspace_mode: AssistantWorkspaceMode::Dock,
+                input: String::new(),
+                messages: Vec::new(),
+                memory: assistant_memory,
+                diagnostics_enabled: false,
+                api_logs: Vec::new(),
+                selected_api_log: None,
+                inspector_tab: AssistantInspectorTab::default(),
+                memory_search: String::new(),
+                transport: Arc::new(ProcessAssistantTransport),
+                context_preparation_delay: Duration::ZERO,
+                chat_task: None,
+                pending_execution: None,
+                request_sequence: 0,
+                saved_conversation_digest: assistant_conversation_digest(&[]),
+                intent_kind: AssistantIntentKind::FeatureDimension,
+                target_input: "2".to_owned(),
+                value_input: "35".to_owned(),
+                proposal: None,
+                verification: None,
+            },
+            classification: app_state::ClassificationInputs {
+                dimension_name_input: String::new(),
+                category_name_input: String::new(),
+                selected_dimension: None,
+            },
+            transform_tool: app_state::TransformToolState {
+                session: None,
+                input: TransformInputInterpreter::default(),
+                correction: None,
+            },
+            value_box: app_state::ValueBox {
+                input: String::new(),
+                focus: false,
+            },
+            clipboard: app_state::Clipboard {
+                occurrences: Vec::new(),
+                cut_occurrences: Vec::new(),
+            },
             modal: None,
             tool_preview: None,
             gesture: Gesture::default(),
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
-            viewport_rect: None,
-            zoom_fit_pending: false,
-            zoom_fit_pending_quiet: false,
             dialogs: Box::new(NativeFileDialogs::default()),
-            cam_reviews: CamReviewWorkflow::new(None),
-            cam_export_dialog: None,
-            fea_reviews: FeaReviewWorkflow::new(None),
-            fea_review_dialog: None,
-            pdm: LocalPdmWorkflow::new(),
-            pdm_review_dialog: None,
-            exact_worker_path: None,
-            exact_worker_attempted: false,
-            exact_task: None,
-            mutation_readiness: MutationReadiness::Ready,
-            exact_results: ExactResultRegistry::default(),
-            topology_results: ExactResultRegistry::default(),
-            exact_result_history: BTreeMap::new(),
-            topology_result_history: BTreeMap::new(),
-            exact_source: None,
-            exact_retry_at: None,
-            render_cache: DerivedRenderCache::default(),
-            render_plan: None,
-            overlay_edge_cache: RefCell::new(BTreeMap::new()),
-            wgpu_target_format: None,
-            wgpu_device: None,
-            wgpu_queue: None,
+            reviews: app_state::ReviewWorkflows {
+                cam_reviews: CamReviewWorkflow::new(None),
+                cam_export_dialog: None,
+                fea_reviews: FeaReviewWorkflow::new(None),
+                fea_review_dialog: None,
+                pdm: LocalPdmWorkflow::new(),
+                pdm_review_dialog: None,
+            },
+            exact: app_state::ExactState {
+                worker_path: None,
+                worker_attempted: false,
+                task: None,
+                mutation_readiness: MutationReadiness::Ready,
+                results: ExactResultRegistry::default(),
+                topology_results: ExactResultRegistry::default(),
+                result_history: BTreeMap::new(),
+                topology_result_history: BTreeMap::new(),
+                source: None,
+                retry_at: None,
+            },
+            render: app_state::RenderState {
+                cache: DerivedRenderCache::default(),
+                plan: None,
+                overlay_edge_cache: RefCell::new(BTreeMap::new()),
+                wgpu_target_format: None,
+                wgpu_device: None,
+                wgpu_queue: None,
+            },
         }
     }
 
@@ -5362,9 +5295,9 @@ impl KetchupApp {
                     &render_state.device,
                     render_state.target_format,
                 ));
-            app.wgpu_target_format = Some(render_state.target_format);
-            app.wgpu_device = Some(render_state.device.clone());
-            app.wgpu_queue = Some(render_state.queue.clone());
+            app.render.wgpu_target_format = Some(render_state.target_format);
+            app.render.wgpu_device = Some(render_state.device.clone());
+            app.render.wgpu_queue = Some(render_state.queue.clone());
         }
         app
     }
@@ -5378,7 +5311,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn with_assistant_transport(mut self, transport: Arc<dyn AssistantTransport>) -> Self {
-        self.assistant_transport = transport;
+        self.assistant.transport = transport;
         self
     }
 
@@ -5407,10 +5340,12 @@ impl KetchupApp {
 
     fn document_title(&self) -> String {
         let name = self
-            .document_path
+            .file
+            .path
             .as_deref()
             .or_else(|| {
-                self.recovery_open
+                self.file
+                    .recovery_open
                     .as_ref()
                     .map(|recovery| recovery.requested_path.as_path())
             })
@@ -5430,9 +5365,9 @@ impl KetchupApp {
     }
 
     fn cancel_pending_assistant_work(&mut self) {
-        self.assistant_proposal = None;
-        self.assistant_pending_execution = None;
-        if let Some(task) = self.assistant_chat_task.take() {
+        self.assistant.proposal = None;
+        self.assistant.pending_execution = None;
+        if let Some(task) = self.assistant.chat_task.take() {
             task.cancellation.cancel();
         }
     }
@@ -5462,42 +5397,42 @@ impl KetchupApp {
         self.invalidate_pending_import_reviews();
         self.cancel_mesh_conversion();
         self.tool_preview = None;
-        self.smart_push_pull_proposal = None;
-        self.smart_push_pull_planning = None;
-        self.solid_tool_target = None;
-        self.revolve_tool = None;
+        self.push_pull.smart_proposal = None;
+        self.push_pull.smart_planning = None;
+        self.solid_tools.target = None;
+        self.solid_tools.revolve = None;
         self.clear_helix_thread_preview();
-        self.loft_input_sections = None;
-        self.pocket_editor_feature = None;
-        self.pocket_depth_input.clear();
-        self.parameter_editor_node = None;
-        self.parameter_expression_input.clear();
-        self.parameter_canonical_source.clear();
-        self.parameter_provenance = None;
-        self.parameter_last_recomputed_nodes.clear();
+        self.solid_tools.loft_input_sections = None;
+        self.solid_tools.pocket_editor_feature = None;
+        self.solid_tools.pocket_depth_input.clear();
+        self.parameter.editor_node = None;
+        self.parameter.expression_input.clear();
+        self.parameter.canonical_source.clear();
+        self.parameter.provenance = None;
+        self.parameter.last_recomputed_nodes.clear();
         self.assembly_editor = assembly_ui::AssemblyEditorState::default();
         self.body_editor = body_ui::BodyEditorState::default();
         self.face_workflow = face_workflow_ui::FaceWorkflowUiState::default();
         self.feature_history = feature_history_ui::FeatureHistoryUiState::default();
         self.selection = SelectionState::default();
-        self.hovered = None;
-        self.hover_pick = None;
-        self.hover_snap = None;
-        self.hover_overlap_index = 0;
-        self.hover_pointer = None;
-        self.interaction_projection_cache.get_mut().take();
+        self.hover.target = None;
+        self.hover.pick = None;
+        self.hover.snap = None;
+        self.hover.overlap_index = 0;
+        self.hover.pointer = None;
+        self.hover.projection_cache.get_mut().take();
         self.gesture.drag.close::<ZoomWindowDrag>();
         self.active_tool = ActiveTool::Select;
         self.cancel_pending_assistant_work();
-        self.assistant_verification = None;
+        self.assistant.verification = None;
         self.side_effect_receipts.clear();
         self.gesture.drag.close::<PushPullDrag>();
         self.gesture.drag.close::<PushPullAnchor>();
-        self.last_push_pull = None;
+        self.push_pull.last = None;
         self.reset_transform_interaction();
         self.end_transform_correction();
-        self.occurrence_clipboard.clear();
-        self.cut_occurrence_clipboard.clear();
+        self.clipboard.occurrences.clear();
+        self.clipboard.cut_occurrences.clear();
         self.gesture.sketch.armed = false;
         self.gesture.sketch.start = None;
         self.gesture.sketch.end = None;
@@ -5507,66 +5442,66 @@ impl KetchupApp {
         self.gesture.sketch.chain_items.clear();
         self.gesture.sketch.axis_lock = None;
         self.clear_measurement();
-        self.value_input.clear();
-        self.focus_value_box = false;
-        if let Some(task) = self.exact_task.take() {
+        self.value_box.input.clear();
+        self.value_box.focus = false;
+        if let Some(task) = self.exact.task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
-        self.exact_results.clear();
-        self.topology_results.clear();
-        self.exact_result_history.clear();
-        self.topology_result_history.clear();
-        self.render_plan = None;
-        self.exact_source = None;
-        self.exact_retry_at = None;
+        self.exact.results.clear();
+        self.exact.topology_results.clear();
+        self.exact.result_history.clear();
+        self.exact.topology_result_history.clear();
+        self.render.plan = None;
+        self.exact.source = None;
+        self.exact.retry_at = None;
         self.status_key = "status-ready";
     }
 
     fn new_document(&mut self) {
         self.cancel_pending_assistant_work();
-        let mut live_bridge = self.live_bridge.take();
+        let mut live_bridge = self.live.bridge.take();
         if let Some(bridge) = live_bridge.as_mut() {
             bridge.invalidate_document_context();
         }
-        let live_consent_broker = self.live_consent_broker.take();
-        let live_consent_attached = self.live_consent_attached;
+        let live_consent_broker = self.live.consent_broker.take();
+        let live_consent_attached = self.live.consent_attached;
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
-        let assistant_transport = Arc::clone(&self.assistant_transport);
-        let assistant_request_sequence = self.assistant_request_sequence;
-        let assistant_diagnostics_enabled = self.assistant_diagnostics_enabled;
-        let assistant_inspector_tab = self.assistant_inspector_tab;
+        let assistant_transport = Arc::clone(&self.assistant.transport);
+        let assistant_request_sequence = self.assistant.request_sequence;
+        let assistant_diagnostics_enabled = self.assistant.diagnostics_enabled;
+        let assistant_inspector_tab = self.assistant.inspector_tab;
         let catalog = self.catalog.clone();
-        let outliner_visible = self.outliner_visible;
-        let tags_visible = self.tags_visible;
-        let dimensions_visible = self.dimensions_visible;
-        let manual_cad_panels_visible = self.manual_cad_panels_visible;
-        let about_open = self.about_open;
-        let exact_worker_path = self.exact_worker_path.clone();
-        let exact_worker_attempted = self.exact_worker_attempted;
+        let outliner_visible = self.panels.outliner_visible;
+        let tags_visible = self.panels.tags_visible;
+        let dimensions_visible = self.panels.dimensions_visible;
+        let manual_cad_panels_visible = self.panels.manual_cad_panels_visible;
+        let about_open = self.panels.about_open;
+        let exact_worker_path = self.exact.worker_path.clone();
+        let exact_worker_attempted = self.exact.worker_attempted;
         // The graphics device outlives the document: losing its target format
         // here would silently drop the whole instanced scene until restart.
-        let wgpu_target_format = self.wgpu_target_format;
-        let wgpu_device = self.wgpu_device.clone();
-        let wgpu_queue = self.wgpu_queue.clone();
+        let wgpu_target_format = self.render.wgpu_target_format;
+        let wgpu_device = self.render.wgpu_device.clone();
+        let wgpu_queue = self.render.wgpu_queue.clone();
         *self = Self::with_catalog_and_initial_box(catalog, false)
             .with_dialogs(dialogs)
             .with_assistant_transport(assistant_transport);
-        self.live_bridge = live_bridge;
-        self.live_consent_broker = live_consent_broker;
-        self.live_consent_attached = live_consent_attached;
-        self.wgpu_target_format = wgpu_target_format;
-        self.wgpu_device = wgpu_device;
-        self.wgpu_queue = wgpu_queue;
-        self.exact_worker_path = exact_worker_path;
-        self.exact_worker_attempted = exact_worker_attempted;
-        self.assistant_request_sequence = assistant_request_sequence;
-        self.assistant_diagnostics_enabled = assistant_diagnostics_enabled;
-        self.assistant_inspector_tab = assistant_inspector_tab;
-        self.outliner_visible = outliner_visible;
-        self.tags_visible = tags_visible;
-        self.dimensions_visible = dimensions_visible;
-        self.manual_cad_panels_visible = manual_cad_panels_visible;
-        self.about_open = about_open;
+        self.live.bridge = live_bridge;
+        self.live.consent_broker = live_consent_broker;
+        self.live.consent_attached = live_consent_attached;
+        self.render.wgpu_target_format = wgpu_target_format;
+        self.render.wgpu_device = wgpu_device;
+        self.render.wgpu_queue = wgpu_queue;
+        self.exact.worker_path = exact_worker_path;
+        self.exact.worker_attempted = exact_worker_attempted;
+        self.assistant.request_sequence = assistant_request_sequence;
+        self.assistant.diagnostics_enabled = assistant_diagnostics_enabled;
+        self.assistant.inspector_tab = assistant_inspector_tab;
+        self.panels.outliner_visible = outliner_visible;
+        self.panels.tags_visible = tags_visible;
+        self.panels.dimensions_visible = dimensions_visible;
+        self.panels.manual_cad_panels_visible = manual_cad_panels_visible;
+        self.panels.about_open = about_open;
         self.digest = self.catalog.text("digest-new-document");
     }
 
@@ -5635,8 +5570,8 @@ impl KetchupApp {
                     ) {
                         Ok(plan) => plan,
                         Err(reason) => {
-                            self.review_candidate = None;
-                            self.migration_review_plan = None;
+                            self.file.review_candidate = None;
+                            self.file.migration_review_plan = None;
                             self.digest = self.catalog.format(
                                 "error-open-document",
                                 &BTreeMap::from([
@@ -5647,8 +5582,8 @@ impl KetchupApp {
                             return false;
                         }
                     };
-                    self.review_candidate = Some(outcome);
-                    self.migration_review_plan = Some(plan);
+                    self.file.review_candidate = Some(outcome);
+                    self.file.migration_review_plan = Some(plan);
                     self.digest = self.catalog.format(
                         "error-open-document",
                         &BTreeMap::from([
@@ -5678,21 +5613,21 @@ impl KetchupApp {
                     )
                     .expect("an opened document accepts the application confirmation policy");
                 self.document = document;
-                self.container_data = container_data;
-                self.review_candidate = None;
-                self.migration_review_plan = None;
-                self.document_path = recovery_open.is_none().then(|| path.to_owned());
-                self.recovery_open = recovery_open;
-                self.file_identity = file_identity;
-                self.work_recovery_identity = work_recovery_identity;
-                self.work_recovery_digest = None;
-                self.saved_digest = self.document.history_digest();
+                self.file.container_data = container_data;
+                self.file.review_candidate = None;
+                self.file.migration_review_plan = None;
+                self.file.path = recovery_open.is_none().then(|| path.to_owned());
+                self.file.recovery_open = recovery_open;
+                self.file.identity = file_identity;
+                self.file.work_recovery_identity = work_recovery_identity;
+                self.file.work_recovery_digest = None;
+                self.file.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
-                self.zoom_fit_pending = true;
-                self.zoom_fit_pending_quiet = true;
+                self.camera.zoom_fit_pending = true;
+                self.camera.zoom_fit_pending_quiet = true;
                 self.load_assistant_conversation();
                 self.load_assistant_memory();
-                if let Some(recovery) = &self.recovery_open {
+                if let Some(recovery) = &self.file.recovery_open {
                     self.status_key = "status-recovery";
                     self.digest = self.catalog.format(
                         "digest-opened-recovery",
@@ -5788,12 +5723,12 @@ impl KetchupApp {
     }
 
     fn retry_pending_work_recovery_cleanup(&mut self) -> Result<(), String> {
-        let Some((path, identity)) = self.pending_work_recovery_cleanup.clone() else {
+        let Some((path, identity)) = self.file.pending_work_recovery_cleanup.clone() else {
             return Ok(());
         };
         ketchup_core::persistence::clear_work_recovery(&path, Some(identity))
             .map_err(|error| error.to_string())?;
-        self.pending_work_recovery_cleanup = None;
+        self.file.pending_work_recovery_cleanup = None;
         Ok(())
     }
 
@@ -5802,23 +5737,26 @@ impl KetchupApp {
         let checkpoint_digest = format!(
             "{}:{}",
             self.document.history_digest(),
-            assistant_conversation_digest(&self.assistant_messages)
+            assistant_conversation_digest(&self.assistant.messages)
         );
         if !self.is_dirty() {
-            if let Some(path) = self.document_path.as_deref()
-                && ketchup_core::persistence::clear_work_recovery(path, self.work_recovery_identity)
-                    .is_err()
+            if let Some(path) = self.file.path.as_deref()
+                && ketchup_core::persistence::clear_work_recovery(
+                    path,
+                    self.file.work_recovery_identity,
+                )
+                .is_err()
             {
                 return;
             }
-            self.work_recovery_identity = None;
-            self.work_recovery_digest = None;
+            self.file.work_recovery_identity = None;
+            self.file.work_recovery_digest = None;
             return;
         }
-        if self.work_recovery_digest.as_deref() == Some(&checkpoint_digest) {
+        if self.file.work_recovery_digest.as_deref() == Some(&checkpoint_digest) {
             return;
         }
-        let (Some(path), Some(identity)) = (self.document_path.clone(), self.file_identity) else {
+        let (Some(path), Some(identity)) = (self.file.path.clone(), self.file.identity) else {
             return;
         };
         self.store_assistant_conversation();
@@ -5827,12 +5765,12 @@ impl KetchupApp {
             ketchup_core::persistence::save_work_recovery_document_store_with_container(
                 &path,
                 &self.document,
-                &self.container_data,
+                &self.file.container_data,
                 identity,
             )
         {
-            self.work_recovery_identity = Some(checkpoint_identity);
-            self.work_recovery_digest = Some(checkpoint_digest);
+            self.file.work_recovery_identity = Some(checkpoint_identity);
+            self.file.work_recovery_digest = Some(checkpoint_digest);
         }
     }
 
@@ -5869,13 +5807,13 @@ impl KetchupApp {
         self.store_assistant_memory();
         let (prepared, truncate_history) = match ketchup_core::persistence::save_document_store(
             &self.document,
-            &self.container_data,
+            &self.file.container_data,
         ) {
             Ok(bytes) => (bytes, false),
             Err(ketchup_core::persistence::PersistenceError::ResourceLimit) => {
                 let bytes = match ketchup_core::persistence::save_document_store_current_snapshot(
                     &self.document,
-                    &self.container_data,
+                    &self.file.container_data,
                 ) {
                     Ok(bytes) => bytes,
                     Err(error) => {
@@ -5930,8 +5868,8 @@ impl KetchupApp {
             }
         };
         let saved_identity = ketchup_core::persistence::FileIdentity::from_bytes(&prepared);
-        let owned_identity = (self.document_path.as_deref() == Some(path))
-            .then_some(self.file_identity)
+        let owned_identity = (self.file.path.as_deref() == Some(path))
+            .then_some(self.file.identity)
             .flatten();
         let expected_identity = match ketchup_core::persistence::read_native_document_identity(path)
         {
@@ -5985,27 +5923,27 @@ impl KetchupApp {
             (true, Some(expected)) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
                 path,
                 &self.document,
-                &self.container_data,
+                &self.file.container_data,
                 expected,
             )
             .map(|_| ()),
             (false, Some(expected)) => ketchup_core::persistence::save_atomic_document_store_with_container_if_unchanged(
                 path,
                 &self.document,
-                &self.container_data,
+                &self.file.container_data,
                 expected,
             )
             .map(|_| ()),
             (true, None) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container_if_absent(
                 path,
                 &self.document,
-                &self.container_data,
+                &self.file.container_data,
             )
             .map(|_| ()),
             (false, None) => ketchup_core::persistence::save_atomic_document_store_with_container_if_absent(
                 path,
                 &self.document,
-                &self.container_data,
+                &self.file.container_data,
             )
             .map(|_| ()),
         }
@@ -6015,29 +5953,31 @@ impl KetchupApp {
                 if truncate_history {
                     self.document.discard_history_before_current();
                 }
-                let owned_recovery_path = self.document_path.clone().or_else(|| {
-                    self.recovery_open
+                let owned_recovery_path = self.file.path.clone().or_else(|| {
+                    self.file
+                        .recovery_open
                         .as_ref()
                         .map(|recovery| recovery.requested_path.clone())
                 });
                 if let (Some(recovery_path), Some(recovery_identity)) =
-                    (owned_recovery_path, self.work_recovery_identity)
+                    (owned_recovery_path, self.file.work_recovery_identity)
                     && ketchup_core::persistence::clear_work_recovery(
                         &recovery_path,
                         Some(recovery_identity),
                     )
                     .is_err()
                 {
-                    self.pending_work_recovery_cleanup = Some((recovery_path, recovery_identity));
+                    self.file.pending_work_recovery_cleanup =
+                        Some((recovery_path, recovery_identity));
                 }
-                self.document_path = Some(path.to_owned());
-                self.recovery_open = None;
-                self.file_identity = Some(saved_identity);
-                self.work_recovery_identity = None;
-                self.work_recovery_digest = None;
-                self.saved_digest = self.document.history_digest();
-                self.saved_assistant_conversation_digest =
-                    assistant_conversation_digest(&self.assistant_messages);
+                self.file.path = Some(path.to_owned());
+                self.file.recovery_open = None;
+                self.file.identity = Some(saved_identity);
+                self.file.work_recovery_identity = None;
+                self.file.work_recovery_digest = None;
+                self.file.saved_digest = self.document.history_digest();
+                self.assistant.saved_conversation_digest =
+                    assistant_conversation_digest(&self.assistant.messages);
                 let digest_key = if truncate_history {
                     "digest-saved-document-current-only"
                 } else {
@@ -6145,7 +6085,8 @@ impl KetchupApp {
         };
         let filter_label = self.catalog.text(filter_key);
         let stem = self
-            .document_path
+            .file
+            .path
             .as_deref()
             .and_then(Path::file_stem)
             .and_then(|stem| stem.to_str())
@@ -6475,13 +6416,14 @@ impl KetchupApp {
     }
 
     fn exact_worker_executable(&mut self) -> Result<PathBuf, String> {
-        if !self.exact_worker_attempted {
-            self.exact_worker_attempted = true;
-            self.exact_worker_path = exact_worker_candidates()
+        if !self.exact.worker_attempted {
+            self.exact.worker_attempted = true;
+            self.exact.worker_path = exact_worker_candidates()
                 .into_iter()
                 .find(|path| path.is_file());
         }
-        self.exact_worker_path
+        self.exact
+            .worker_path
             .clone()
             .ok_or_else(|| "exact worker is unavailable".to_owned())
     }
@@ -6540,7 +6482,7 @@ impl KetchupApp {
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
             .map_err(|error| error.to_string())?;
-        let mut staged_container = self.container_data.clone();
+        let mut staged_container = self.file.container_data.clone();
         let blob_hash = staged_container
             .insert_import_blob(source.source.clone())
             .map_err(|error| error.to_string())?;
@@ -6574,7 +6516,7 @@ impl KetchupApp {
                     "STEP import evidence, proposal, or blob changed after review".to_owned(),
                 );
             }
-            let mut staged_container = self.container_data.clone();
+            let mut staged_container = self.file.container_data.clone();
             let blob_hash = staged_container
                 .insert_import_blob(pending.plan.source.source.clone())
                 .map_err(|error| error.to_string())?;
@@ -6683,7 +6625,7 @@ impl KetchupApp {
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
             .map_err(|error| error.to_string())?;
-        let mut staged_container = self.container_data.clone();
+        let mut staged_container = self.file.container_data.clone();
         let blob_hash = staged_container
             .insert_import_blob(source.source.clone())
             .map_err(|error| error.to_string())?;
@@ -6709,7 +6651,7 @@ impl KetchupApp {
             if rederived != pending.plan {
                 return Err("IGES import evidence or proposal changed after review".to_owned());
             }
-            let mut staged_container = self.container_data.clone();
+            let mut staged_container = self.file.container_data.clone();
             if staged_container
                 .insert_import_blob(source)
                 .map_err(|error| error.to_string())?
@@ -6896,7 +6838,8 @@ impl KetchupApp {
         let mut scene = Vec::new();
         for occurrence in occurrences {
             let packages = self
-                .exact_results
+                .exact
+                .results
                 .render_values(snapshot)
                 .filter(|package| package.definition_id() == occurrence.definition_id)
                 .collect::<Vec<_>>();
@@ -6964,7 +6907,7 @@ impl KetchupApp {
                     }
                 } else {
                     let package = self
-                        .exact_results
+                        .exact.results
                         .render_values(snapshot)
                         .find(|package| {
                             package.definition_id() == occurrence.definition_id
@@ -7483,7 +7426,7 @@ impl KetchupApp {
             .map(|occurrence| {
                 GeneralBodyParticipant::accept(
                     &snapshot,
-                    &self.exact_results,
+                    &self.exact.results,
                     occurrence.instance_path,
                     tolerance,
                 )
@@ -7494,13 +7437,13 @@ impl KetchupApp {
             ketchup_application::validation::fabrication_collision_validation_with_worker(
                 &snapshot,
                 &participants,
-                &self.container_data,
+                &self.file.container_data,
                 self.validator_worker_path(),
                 Duration::from_secs(30),
             )?;
         project_general_fabrication(
             &snapshot,
-            &self.exact_results,
+            &self.exact.results,
             &collision_validation.cases,
             &collision_validation.report,
             tolerance,
@@ -7855,7 +7798,8 @@ impl KetchupApp {
             Self::validate_exact_exchange_extension(path, "STEP export", &["step", "stp"])?;
             let model = self.current_visible_exact_scene(&snapshot)?;
             let executable = self
-                .exact_worker_path
+                .exact
+                .worker_path
                 .clone()
                 .or_else(|| {
                     exact_worker_candidates()
@@ -7876,7 +7820,7 @@ impl KetchupApp {
                     &snapshot,
                     &model,
                     &prepared_step,
-                    self.container_data.blobs(),
+                    self.file.container_data.blobs(),
                 )
                 .map_err(|error| error.to_string())?;
             let mut step = String::from_utf8(verified_step).map_err(|error| error.to_string())?;
@@ -7964,7 +7908,8 @@ impl KetchupApp {
             Self::validate_exact_exchange_extension(path, "IGES export", &["iges", "igs"])?;
             let model = self.current_visible_exact_scene(&snapshot)?;
             let executable = self
-                .exact_worker_path
+                .exact
+                .worker_path
                 .clone()
                 .or_else(|| {
                     exact_worker_candidates()
@@ -7986,7 +7931,7 @@ impl KetchupApp {
                     &snapshot,
                     &model,
                     &prepared_step,
-                    self.container_data.blobs(),
+                    self.file.container_data.blobs(),
                 )
                 .map_err(|error| error.to_string())?;
             let iges = worker
@@ -8083,13 +8028,14 @@ impl KetchupApp {
             AppCommand::New if self.confirm_discard_if_dirty() => self.new_document(),
             AppCommand::Open if self.confirm_discard_if_dirty() => {
                 if let Some(path) = self.choose_open_path() {
-                    let reopening_active = self.document_path.as_deref() == Some(path.as_path())
+                    let reopening_active = self.file.path.as_deref() == Some(path.as_path())
                         || self
+                            .file
                             .recovery_open
                             .as_ref()
                             .is_some_and(|recovery| recovery.requested_path == path);
                     if reopening_active {
-                        if let Some(identity) = self.work_recovery_identity
+                        if let Some(identity) = self.file.work_recovery_identity
                             && let Err(error) = ketchup_core::persistence::clear_work_recovery(
                                 &path,
                                 Some(identity),
@@ -8104,18 +8050,14 @@ impl KetchupApp {
                             );
                             return;
                         }
-                        self.work_recovery_identity = None;
-                        self.work_recovery_digest = None;
+                        self.file.work_recovery_identity = None;
+                        self.file.work_recovery_digest = None;
                     }
                     self.open_document_from(&path);
                 }
             }
             AppCommand::Save => {
-                if let Some(path) = self
-                    .document_path
-                    .clone()
-                    .or_else(|| self.choose_save_path())
-                {
+                if let Some(path) = self.file.path.clone().or_else(|| self.choose_save_path()) {
                     self.save_document_to(&path);
                 }
             }
@@ -8361,7 +8303,7 @@ impl KetchupApp {
                 }
             }
             AppCommand::ReviewCamExport => {
-                self.cam_export_dialog =
+                self.reviews.cam_export_dialog =
                     self.document
                         .current()
                         .cam_plans()
@@ -8370,7 +8312,7 @@ impl KetchupApp {
                             plan_id: plan.id(),
                             review: None,
                         });
-                if self.cam_export_dialog.is_none() {
+                if self.reviews.cam_export_dialog.is_none() {
                     self.digest = self.catalog.text("cam-review-no-plan");
                 }
             }
@@ -8413,21 +8355,22 @@ impl KetchupApp {
                     })
                 })();
                 match result {
-                    Ok(dialog) => self.fea_review_dialog = Some(dialog),
+                    Ok(dialog) => self.reviews.fea_review_dialog = Some(dialog),
                     Err(error) => self.digest = error,
                 }
             }
             AppCommand::ReviewLocalPdm => {
                 let snapshot = self.document.current();
                 let repository = self
-                    .document_path
+                    .file
+                    .path
                     .as_deref()
                     .and_then(Path::parent)
                     .map_or_else(
                         || PathBuf::from(".ketchup-pdm"),
                         |parent| parent.join(".ketchup-pdm"),
                     );
-                self.pdm_review_dialog = Some(PdmReviewDialog {
+                self.reviews.pdm_review_dialog = Some(PdmReviewDialog {
                     source: PdmSourceIdentity::observed(&snapshot, self.document.mutation_epoch()),
                     repository: repository.display().to_string(),
                     parent_release_id: String::new(),
@@ -8553,7 +8496,7 @@ impl KetchupApp {
         else {
             return false;
         };
-        let selecting_tool = self.solid_tool_target.is_some();
+        let selecting_tool = self.solid_tools.target.is_some();
         self.select_solid_tool_occurrence(
             Some(SelectionId {
                 definition_id,
@@ -8568,7 +8511,8 @@ impl KetchupApp {
         if selecting_tool {
             self.has_occurrence_operation_preview()
         } else {
-            self.solid_tool_target
+            self.solid_tools
+                .target
                 .as_ref()
                 .is_some_and(|selection| selection.instance_path.root_occurrence() == occurrence_id)
         }
@@ -8576,7 +8520,7 @@ impl KetchupApp {
 
     #[must_use]
     pub const fn parameter_last_recomputed_nodes(&self) -> &BTreeSet<NodeId> {
-        &self.parameter_last_recomputed_nodes
+        &self.parameter.last_recomputed_nodes
     }
 
     /// Canonical identity of the active document: schema, units, IDs,
@@ -8590,27 +8534,29 @@ impl KetchupApp {
     /// has laid the shell out.
     #[must_use]
     pub fn viewport_rect(&self) -> Option<Rect> {
-        self.viewport_rect
+        self.camera.viewport_rect
     }
 
     #[must_use]
     pub fn viewport_position(&self, point_mm: Vec3) -> Option<Pos2> {
-        self.viewport_rect.map(|rect| self.project(point_mm, rect))
+        self.camera
+            .viewport_rect
+            .map(|rect| self.project(point_mm, rect))
     }
 
     #[must_use]
     pub fn hovered_selection(&self) -> Option<&SelectionId> {
-        self.hovered.as_ref()
+        self.hover.target.as_ref()
     }
 
     #[must_use]
     pub fn hovered_snap_kind(&self) -> Option<SnapKind> {
-        self.hover_snap.as_ref().map(|snap| snap.kind)
+        self.hover.snap.as_ref().map(|snap| snap.kind)
     }
 
     #[must_use]
     pub fn hovered_snap_position(&self) -> Option<Vec3> {
-        self.hover_snap.as_ref().map(|snap| snap.position_mm)
+        self.hover.snap.as_ref().map(|snap| snap.position_mm)
     }
 
     #[must_use]
@@ -8620,9 +8566,10 @@ impl KetchupApp {
 
     #[must_use]
     pub fn hovered_overlap_choice(&self) -> Option<(usize, usize)> {
-        self.hover_pick
+        self.hover
+            .pick
             .as_ref()
-            .map(|pick| (self.hover_overlap_index, pick.overlapping.len()))
+            .map(|pick| (self.hover.overlap_index, pick.overlapping.len()))
     }
 
     #[must_use]
@@ -8638,11 +8585,11 @@ impl KetchupApp {
     /// Whether the active document carries unsaved changes.
     #[must_use]
     pub fn has_review_candidate(&self) -> bool {
-        self.review_candidate.is_some()
+        self.file.review_candidate.is_some()
     }
 
     pub fn confirm_review_candidate_migration_to(&mut self, destination: &Path) -> bool {
-        let Some(plan) = self.migration_review_plan.clone() else {
+        let Some(plan) = self.file.migration_review_plan.clone() else {
             return false;
         };
         let result = (|| {
@@ -8671,6 +8618,7 @@ impl KetchupApp {
                 return Err("active document changed after migration review".to_owned());
             }
             let pending = self
+                .file
                 .review_candidate
                 .as_ref()
                 .ok_or_else(|| "no review candidate is pending".to_owned())?;
@@ -8737,15 +8685,15 @@ impl KetchupApp {
         document.discard_history_before_current();
         let saved_digest = document.history_digest();
         self.document = document;
-        self.container_data = container_data;
-        self.review_candidate = None;
-        self.migration_review_plan = None;
-        self.recovery_open = None;
-        self.document_path = Some(destination.to_owned());
-        self.file_identity = Some(file_identity);
-        self.work_recovery_identity = None;
-        self.work_recovery_digest = None;
-        self.saved_digest = saved_digest;
+        self.file.container_data = container_data;
+        self.file.review_candidate = None;
+        self.file.migration_review_plan = None;
+        self.file.recovery_open = None;
+        self.file.path = Some(destination.to_owned());
+        self.file.identity = Some(file_identity);
+        self.file.work_recovery_identity = None;
+        self.file.work_recovery_digest = None;
+        self.file.saved_digest = saved_digest;
         self.reset_document_presentation();
         self.digest = self.catalog.format(
             "digest-migrated-document",
@@ -8755,10 +8703,10 @@ impl KetchupApp {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.recovery_open.is_some()
-            || self.document.history_digest() != self.saved_digest
-            || assistant_conversation_digest(&self.assistant_messages)
-                != self.saved_assistant_conversation_digest
+        self.file.recovery_open.is_some()
+            || self.document.history_digest() != self.file.saved_digest
+            || assistant_conversation_digest(&self.assistant.messages)
+                != self.assistant.saved_conversation_digest
     }
 
     /// Opens a native Kečup document from a caller-provided path.
@@ -8769,13 +8717,14 @@ impl KetchupApp {
     /// Path the active document is bound to, if it has been saved or opened.
     #[must_use]
     pub fn document_path(&self) -> Option<&Path> {
-        self.document_path.as_deref()
+        self.file.path.as_deref()
     }
 
     /// Corrupt-primary path whose backup is active until an explicit Save As succeeds.
     #[must_use]
     pub fn recovery_requested_path(&self) -> Option<&Path> {
-        self.recovery_open
+        self.file
+            .recovery_open
             .as_ref()
             .map(|recovery| recovery.requested_path.as_path())
     }
@@ -8783,7 +8732,8 @@ impl KetchupApp {
     /// Actual backup source supplying the active recovered document.
     #[must_use]
     pub fn recovery_source_path(&self) -> Option<&Path> {
-        self.recovery_open
+        self.file
+            .recovery_open
             .as_ref()
             .map(|recovery| recovery.source_path.as_path())
     }
@@ -8847,8 +8797,8 @@ impl KetchupApp {
                     ]),
                 );
                 self.status_key = "status-preview";
-                self.assistant_verification = None;
-                self.assistant_proposal = Some(AssistantPreviewPlan {
+                self.assistant.verification = None;
+                self.assistant.proposal = Some(AssistantPreviewPlan {
                     source: AssistantPreviewSource::Workflow(intent),
                     proposal,
                     repair: None,
@@ -8856,7 +8806,7 @@ impl KetchupApp {
                 true
             }
             Err(error) => {
-                self.assistant_proposal = None;
+                self.assistant.proposal = None;
                 self.digest = self.catalog.format(
                     "assistant-digest-rejected",
                     &BTreeMap::from([("reason", error.failed_invariant)]),
@@ -8869,14 +8819,15 @@ impl KetchupApp {
     pub fn apply_assistant_intent(&mut self, intent: WorkflowIntent) -> bool {
         self.prepare_assistant_intent(intent)
             && self
-                .assistant_proposal
+                .assistant
+                .proposal
                 .as_ref()
                 .is_some_and(|plan| Self::assistant_proposal_is_low_risk(&plan.proposal))
             && self.confirm_assistant_proposal()
     }
 
     pub fn confirm_assistant_proposal(&mut self) -> bool {
-        let Some(plan) = self.assistant_proposal.take() else {
+        let Some(plan) = self.assistant.proposal.take() else {
             return false;
         };
         let snapshot = self.document.current();
@@ -8916,7 +8867,7 @@ impl KetchupApp {
                             .expect("repair preview carries its validator selection");
                         let revalidated = self.assistant_validation_context(
                             &snapshot,
-                            &self.exact_results,
+                            &self.exact.results,
                             selection,
                         );
                         debug_assert_eq!(revalidated, repair.validation_after);
@@ -8955,7 +8906,7 @@ impl KetchupApp {
                     ]),
                 );
                 self.status_key = "status-ready";
-                self.assistant_verification = Some(verification);
+                self.assistant.verification = Some(verification);
                 true
             }
             Err(error) => {
@@ -8969,7 +8920,7 @@ impl KetchupApp {
     }
 
     pub fn cancel_assistant_proposal(&mut self) -> bool {
-        if self.assistant_proposal.take().is_none() {
+        if self.assistant.proposal.take().is_none() {
             return false;
         }
         self.status_key = "status-ready";
@@ -8979,12 +8930,13 @@ impl KetchupApp {
 
     #[must_use]
     pub fn assistant_proposal(&self) -> Option<&Proposal> {
-        self.assistant_proposal.as_ref().map(|plan| &plan.proposal)
+        self.assistant.proposal.as_ref().map(|plan| &plan.proposal)
     }
 
     #[must_use]
     pub fn assistant_repair_program(&self) -> Option<&AssistantRepairProgram> {
-        self.assistant_proposal
+        self.assistant
+            .proposal
             .as_ref()
             .and_then(|plan| plan.repair.as_ref())
             .map(|repair| &repair.program)
@@ -9752,61 +9704,62 @@ impl KetchupApp {
 
     #[must_use]
     pub const fn assistant_provider(&self) -> AssistantProvider {
-        self.assistant_provider
+        self.assistant.provider
     }
 
     #[must_use]
     pub fn assistant_model(&self) -> &str {
-        &self.assistant_model
+        &self.assistant.model
     }
 
     pub fn select_assistant_provider(&mut self, provider: AssistantProvider) {
-        self.assistant_provider = provider;
-        self.assistant_model = provider.default_model().to_owned();
+        self.assistant.provider = provider;
+        self.assistant.model = provider.default_model().to_owned();
     }
 
     pub fn set_assistant_model(&mut self, model: impl Into<String>) {
-        self.assistant_model = model.into();
+        self.assistant.model = model.into();
     }
 
     #[must_use]
     pub const fn assistant_workspace_mode(&self) -> AssistantWorkspaceMode {
-        self.assistant_workspace_mode
+        self.assistant.workspace_mode
     }
 
     pub fn set_assistant_workspace_mode(&mut self, mode: AssistantWorkspaceMode) {
-        self.assistant_workspace_mode = mode;
+        self.assistant.workspace_mode = mode;
     }
 
     #[must_use]
     pub fn assistant_messages(&self) -> &[AssistantChatMessage] {
-        &self.assistant_messages
+        &self.assistant.messages
     }
 
     pub fn set_assistant_diagnostics_enabled(&mut self, enabled: bool) {
-        self.assistant_diagnostics_enabled = enabled;
+        self.assistant.diagnostics_enabled = enabled;
     }
 
     #[must_use]
     pub fn last_assistant_api_diagnostics(&self) -> Option<&AssistantApiDiagnostics> {
-        self.assistant_api_logs
+        self.assistant
+            .api_logs
             .last()
             .map(|entry| &entry.diagnostics)
     }
 
     pub fn new_assistant_chat(&mut self) {
-        self.assistant_input.clear();
-        self.assistant_messages.clear();
+        self.assistant.input.clear();
+        self.assistant.messages.clear();
         self.cancel_pending_assistant_work();
-        self.assistant_verification = None;
-        self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
+        self.assistant.verification = None;
+        self.assistant.request_sequence = self.assistant.request_sequence.saturating_add(1);
         self.store_assistant_conversation();
     }
 
     fn store_assistant_conversation(&mut self) {
         let conversation = AssistantConversation {
             document_id: self.document.current().document_id().0,
-            messages: self.assistant_messages.clone(),
+            messages: self.assistant.messages.clone(),
         };
         let Ok(bytes) = serde_json::to_vec(&conversation) else {
             return;
@@ -9819,11 +9772,11 @@ impl KetchupApp {
         ) else {
             return;
         };
-        self.container_data.set_extension(entry);
+        self.file.container_data.set_extension(entry);
     }
 
     fn store_assistant_memory(&mut self) {
-        let Ok(bytes) = serde_json::to_vec(&self.assistant_memory) else {
+        let Ok(bytes) = serde_json::to_vec(&self.assistant.memory) else {
             return;
         };
         if bytes.len() > MAX_ASSISTANT_MEMORY_STORAGE_BYTES {
@@ -9837,12 +9790,13 @@ impl KetchupApp {
         ) else {
             return;
         };
-        self.container_data.set_extension(entry);
+        self.file.container_data.set_extension(entry);
     }
 
     fn remember_latest_assistant_exchange(&mut self, answer: &str) {
         let Some(user) = self
-            .assistant_messages
+            .assistant
+            .messages
             .iter()
             .rev()
             .find(|message| message.role == AssistantMessageRole::User)
@@ -9850,13 +9804,14 @@ impl KetchupApp {
         else {
             return;
         };
-        self.assistant_memory.remember(&user, answer);
+        self.assistant.memory.remember(&user, answer);
         self.store_assistant_memory();
     }
 
     fn load_assistant_conversation(&mut self) {
         let document_id = self.document.current().document_id().0;
-        self.assistant_messages = self
+        self.assistant.messages = self
+            .file
             .container_data
             .extensions()
             .find(|entry| {
@@ -9873,13 +9828,14 @@ impl KetchupApp {
                     })
             })
             .map_or_else(Vec::new, |conversation| conversation.messages);
-        self.saved_assistant_conversation_digest =
-            assistant_conversation_digest(&self.assistant_messages);
+        self.assistant.saved_conversation_digest =
+            assistant_conversation_digest(&self.assistant.messages);
     }
 
     fn load_assistant_memory(&mut self) {
         let document_id = self.document.current().document_id().0;
-        self.assistant_memory = self
+        self.assistant.memory = self
+            .file
             .container_data
             .extensions()
             .find(|entry| {
@@ -9894,14 +9850,14 @@ impl KetchupApp {
 
     #[must_use]
     pub fn assistant_models(&self) -> Vec<String> {
-        assistant_models_for(self.assistant_provider)
+        assistant_models_for(self.assistant.provider)
     }
 
     fn assistant_source_label(&self) -> String {
         format!(
             "{} · {}",
-            self.catalog.text(self.assistant_provider.label_key()),
-            self.assistant_model
+            self.catalog.text(self.assistant.provider.label_key()),
+            self.assistant.model
         )
     }
 
@@ -9913,14 +9869,14 @@ impl KetchupApp {
             AssistantCapability::QueryDocument,
             AssistantCapability::ProposeWorkflowIntent,
         ]);
-        if self.assistant_diagnostics_enabled {
+        if self.assistant.diagnostics_enabled {
             capabilities.insert(AssistantCapability::DebugObservability);
         }
         AssistantHandshake {
             protocol_version: ASSISTANT_PROTOCOL_VERSION,
-            distribution: self.assistant_provider.distribution(),
-            provider: self.assistant_provider.protocol_name().to_owned(),
-            model: self.assistant_model.clone(),
+            distribution: self.assistant.provider.distribution(),
+            provider: self.assistant.provider.protocol_name().to_owned(),
+            model: self.assistant.model.clone(),
             capabilities,
         }
     }
@@ -9943,7 +9899,7 @@ impl KetchupApp {
                 requested: selection.requested.clone(),
                 unknown: selection.unknown.clone(),
             },
-            &self.container_data,
+            &self.file.container_data,
             self.validator_worker_path(),
             Duration::from_secs(30),
         )
@@ -9959,14 +9915,14 @@ impl KetchupApp {
         &self,
         snapshot: &Snapshot,
     ) -> BTreeMap<InstancePath, (DefinitionId, [Vec3; 2])> {
-        assistant_body_bounds_from_snapshot(snapshot, &self.exact_results)
+        assistant_body_bounds_from_snapshot(snapshot, &self.exact.results)
     }
 
     fn assistant_occurrence_records(
         &self,
         snapshot: &Snapshot,
     ) -> Vec<(InstancePath, serde_json::Value)> {
-        assistant_occurrence_records_from_snapshot(snapshot, &self.exact_results)
+        assistant_occurrence_records_from_snapshot(snapshot, &self.exact.results)
     }
 
     fn assistant_context_for(&self, query: &str) -> serde_json::Value {
@@ -9974,12 +9930,12 @@ impl KetchupApp {
         let semantic_state = encode_semantic_state(&snapshot);
         let state_view = bounded_assistant_state_view(&semantic_state.agent());
         let (fea_faces_complete, fea_faces) =
-            assistant_fea_face_context(&snapshot, &self.topology_results);
-        let project_memory = self.assistant_memory.retrieval_context(query);
+            assistant_fea_face_context(&snapshot, &self.exact.topology_results);
+        let project_memory = self.assistant.memory.retrieval_context(query);
         let validation_selection = AssistantValidationSelection::parse(query);
         let validation = self.assistant_validation_context(
             &snapshot,
-            &self.exact_results,
+            &self.exact.results,
             &validation_selection,
         );
         let body_bounds = self.assistant_body_bounds(&snapshot);
@@ -9998,7 +9954,8 @@ impl KetchupApp {
             .map(|(_, record)| record.clone())
             .collect::<Vec<_>>();
         let conversation = self
-            .assistant_messages
+            .assistant
+            .messages
             .iter()
             .rev()
             .take(20)
@@ -10067,7 +10024,7 @@ impl KetchupApp {
         );
         let mut topology_face_references = assistant_topology_references(
             &snapshot,
-            &self.topology_results,
+            &self.exact.topology_results,
             TopologicalElementKind::Face,
         );
         let topology_face_references_complete = topology_face_references.len() <= 64;
@@ -10084,7 +10041,7 @@ impl KetchupApp {
             .collect::<Vec<_>>();
         let mut topology_edge_references = assistant_topology_references(
             &snapshot,
-            &self.topology_results,
+            &self.exact.topology_results,
             TopologicalElementKind::Edge,
         );
         let topology_edge_references_complete = topology_edge_references.len() <= 64;
@@ -10193,20 +10150,20 @@ impl KetchupApp {
             .unwrap_or(serde_json::Value::Null);
         AssistantRequestSnapshot {
             snapshot,
-            exact_results: self.exact_results.clone(),
-            topology_results: self.topology_results.clone(),
-            container_data: self.container_data.clone(),
+            exact_results: self.exact.results.clone(),
+            topology_results: self.exact.topology_results.clone(),
+            container_data: self.file.container_data.clone(),
             worker_path: self.validator_worker_path(),
             query: query.to_owned(),
-            project_memory: self.assistant_memory.clone(),
-            conversation: self.assistant_messages.clone(),
+            project_memory: self.assistant.memory.clone(),
+            conversation: self.assistant.messages.clone(),
             selected_paths,
             selected_occurrence_ids,
             selection_scope,
             selected_group_id: self.selection.selected_group.map(|id| id.0),
             selected_profile_translation_target,
             selected_parameter_edit_target,
-            preparation_delay: self.assistant_context_preparation_delay,
+            preparation_delay: self.assistant.context_preparation_delay,
         }
     }
 
@@ -10250,12 +10207,12 @@ impl KetchupApp {
         diagnostic: AssistantRejectionDiagnostic,
         replan_will_run: bool,
     ) -> AssistantRejectionDiagnostic {
-        self.assistant_proposal = None;
+        self.assistant.proposal = None;
         self.digest = self.catalog.format(
             "assistant-digest-rejected",
             &BTreeMap::from([("reason", diagnostic.failed_invariant.clone())]),
         );
-        self.assistant_messages.push(AssistantChatMessage {
+        self.assistant.messages.push(AssistantChatMessage {
             role: AssistantMessageRole::Error,
             text: self.localized_assistant_rejection(&diagnostic, replan_will_run),
             source: self.catalog.text("assistant-role-error"),
@@ -10278,11 +10235,11 @@ impl KetchupApp {
         let request_document_id = self.document.current().document_id();
         let request_revision_id = self.document.current().revision_id();
         let request_canonical_digest = self.document.current().canonical_digest();
-        self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
-        let request_id = format!("chat-{}", self.assistant_request_sequence);
+        self.assistant.request_sequence = self.assistant.request_sequence.saturating_add(1);
+        let request_id = format!("chat-{}", self.assistant.request_sequence);
         let task_request_id = request_id.clone();
         let task_message = message.clone();
-        let transport = Arc::clone(&self.assistant_transport);
+        let transport = Arc::clone(&self.assistant.transport);
         let repaint = context.clone();
         let cancellation = AssistantCancellation::default();
         let worker_cancellation = cancellation.clone();
@@ -10321,7 +10278,7 @@ impl KetchupApp {
                 repaint.request_repaint();
             }
         });
-        self.assistant_chat_task = Some(AssistantChatTask {
+        self.assistant.chat_task = Some(AssistantChatTask {
             receiver,
             request_id: task_request_id,
             message: task_message,
@@ -10342,24 +10299,24 @@ impl KetchupApp {
     }
 
     fn send_assistant_message(&mut self, context: &egui::Context) {
-        if self.assistant_chat_task.is_some() || self.assistant_pending_execution.is_some() {
+        if self.assistant.chat_task.is_some() || self.assistant.pending_execution.is_some() {
             return;
         }
-        let message = self.assistant_input.trim().to_owned();
+        let message = self.assistant.input.trim().to_owned();
         if message.is_empty() {
             return;
         }
         if assistant_query_requests_repair(&message) {
-            self.assistant_input.clear();
+            self.assistant.input.clear();
             let source = self.assistant_source_label();
-            self.assistant_messages.push(AssistantChatMessage {
+            self.assistant.messages.push(AssistantChatMessage {
                 role: AssistantMessageRole::User,
                 text: message.clone(),
                 source: source.clone(),
                 diagnostic: None,
             });
             let prepared = self.prepare_assistant_validation_repair(&message);
-            self.assistant_messages.push(AssistantChatMessage {
+            self.assistant.messages.push(AssistantChatMessage {
                 role: if prepared {
                     AssistantMessageRole::Assistant
                 } else {
@@ -10376,10 +10333,10 @@ impl KetchupApp {
             self.store_assistant_conversation();
             return;
         }
-        self.assistant_input.clear();
+        self.assistant.input.clear();
         let request_snapshot = self.assistant_request_snapshot(&message);
         let source = self.assistant_source_label();
-        self.assistant_messages.push(AssistantChatMessage {
+        self.assistant.messages.push(AssistantChatMessage {
             role: AssistantMessageRole::User,
             text: message.clone(),
             source: source.clone(),
@@ -10393,7 +10350,7 @@ impl KetchupApp {
             false,
             None,
         ) {
-            self.assistant_messages.push(AssistantChatMessage {
+            self.assistant.messages.push(AssistantChatMessage {
                 role: AssistantMessageRole::Error,
                 text: error,
                 source,
@@ -10523,7 +10480,7 @@ impl KetchupApp {
         ketchup_application::plan_assistant_cad_edit_program(
             &self.document,
             &self.selected_occurrence_ids(),
-            &self.topology_results,
+            &self.exact.topology_results,
             program,
         )
     }
@@ -10546,7 +10503,7 @@ impl KetchupApp {
         if terminal_features.as_slice() != [FeatureId(request.feature_id)] {
             return Err("assistant FEA target is not the sole current exact body".to_owned());
         }
-        self.fea_review_dialog = Some(FeaReviewDialog {
+        self.reviews.fea_review_dialog = Some(FeaReviewDialog {
             definition_id: occurrence.definition_id(),
             feature_id: FeatureId(request.feature_id),
             occurrence_id: OccurrenceId(request.occurrence_id),
@@ -10776,7 +10733,7 @@ impl KetchupApp {
         &self,
         snapshot: &Snapshot,
     ) -> BTreeMap<OccurrenceId, GeneralBodyParticipant> {
-        let exact_results = ExactResultRegistry::carried_forward(snapshot, &self.exact_results);
+        let exact_results = ExactResultRegistry::carried_forward(snapshot, &self.exact.results);
         snapshot
             .scene_query()
             .into_iter()
@@ -10988,7 +10945,7 @@ impl KetchupApp {
         }
         let snapshot = self.document.current();
         let validation_before =
-            self.assistant_validation_context(&snapshot, &self.exact_results, selection);
+            self.assistant_validation_context(&snapshot, &self.exact.results, selection);
         if validation_before["complete"].as_bool() != Some(true) {
             return Err(assistant_rejection(
                 AssistantRejectionPhase::DomainValidation,
@@ -11072,7 +11029,7 @@ impl KetchupApp {
                     }
                 };
                 let trial_results =
-                    ExactResultRegistry::carried_forward(&trial_candidate, &self.exact_results);
+                    ExactResultRegistry::carried_forward(&trial_candidate, &self.exact.results);
                 let trial_validation =
                     self.assistant_validation_context(&trial_candidate, &trial_results, selection);
                 let Some(trial_total) = Self::assistant_validation_issue_total(&trial_validation)
@@ -11210,7 +11167,7 @@ impl KetchupApp {
         let plan = match self.derive_assistant_preview_plan(&source) {
             Ok(plan) => plan,
             Err(error) => {
-                self.assistant_proposal = None;
+                self.assistant.proposal = None;
                 self.digest = self.catalog.format(
                     "assistant-digest-rejected",
                     &BTreeMap::from([("reason", error.failed_invariant)]),
@@ -11226,8 +11183,8 @@ impl KetchupApp {
             ]),
         );
         self.status_key = "status-preview";
-        self.assistant_verification = None;
-        self.assistant_proposal = Some(plan);
+        self.assistant.verification = None;
+        self.assistant.proposal = Some(plan);
         true
     }
 
@@ -11244,8 +11201,8 @@ impl KetchupApp {
             ]),
         );
         self.status_key = "status-preview";
-        self.assistant_verification = None;
-        self.assistant_proposal = Some(plan);
+        self.assistant.verification = None;
+        self.assistant.proposal = Some(plan);
         Ok(())
     }
 
@@ -11260,7 +11217,7 @@ impl KetchupApp {
         match self.prepare_assistant_model_intent_result(intent) {
             Ok(()) => true,
             Err(error) => {
-                self.assistant_proposal = None;
+                self.assistant.proposal = None;
                 self.digest = self.catalog.format(
                     "assistant-digest-rejected",
                     &BTreeMap::from([("reason", error.failed_invariant)]),
@@ -11273,20 +11230,21 @@ impl KetchupApp {
     pub fn apply_assistant_model_intent(&mut self, intent: AssistantModelIntent) -> bool {
         self.prepare_assistant_model_intent(intent)
             && self
-                .assistant_proposal
+                .assistant
+                .proposal
                 .as_ref()
                 .is_some_and(|plan| Self::assistant_proposal_is_low_risk(&plan.proposal))
             && self.confirm_assistant_proposal()
     }
 
     fn poll_assistant_chat(&mut self, context: &egui::Context) {
-        if let Some(mut pending) = self.assistant_pending_execution.take() {
+        if let Some(mut pending) = self.assistant.pending_execution.take() {
             let snapshot = self.document.current();
             if snapshot.document_id() != pending.document_id
                 || snapshot.revision_id() != pending.revision_id
                 || snapshot.canonical_digest() != pending.canonical_digest
             {
-                self.assistant_messages.push(AssistantChatMessage {
+                self.assistant.messages.push(AssistantChatMessage {
                     role: AssistantMessageRole::Error,
                     text: self.catalog.text("assistant-error-stale-response"),
                     source: self.catalog.text("assistant-role-error"),
@@ -11306,7 +11264,7 @@ impl KetchupApp {
                         Ok(()) => {
                             let answer = pending.result.message;
                             self.remember_latest_assistant_exchange(&answer);
-                            self.assistant_messages.push(AssistantChatMessage {
+                            self.assistant.messages.push(AssistantChatMessage {
                                 role: AssistantMessageRole::Assistant,
                                 text: answer,
                                 source: pending.source,
@@ -11343,17 +11301,17 @@ impl KetchupApp {
                                 })
                             })();
                             if let Some(verification) = verification {
-                                self.assistant_verification = Some(verification);
+                                self.assistant.verification = Some(verification);
                                 let answer = pending.result.message;
                                 self.remember_latest_assistant_exchange(&answer);
-                                self.assistant_messages.push(AssistantChatMessage {
+                                self.assistant.messages.push(AssistantChatMessage {
                                     role: AssistantMessageRole::Assistant,
                                     text: answer,
                                     source: pending.source,
                                     diagnostic: None,
                                 });
                             } else {
-                                self.assistant_messages.push(AssistantChatMessage {
+                                self.assistant.messages.push(AssistantChatMessage {
                                     role: AssistantMessageRole::Error,
                                     text: "apply_and_verify: invalid_result".to_owned(),
                                     source: pending.source,
@@ -11382,7 +11340,7 @@ impl KetchupApp {
                             if let Some(hint) = detail("hint") {
                                 text.push_str(&format!(" ({hint})"));
                             }
-                            self.assistant_messages.push(AssistantChatMessage {
+                            self.assistant.messages.push(AssistantChatMessage {
                                 role: AssistantMessageRole::Error,
                                 text,
                                 source: pending.source,
@@ -11403,7 +11361,7 @@ impl KetchupApp {
                     Ok(()) => {
                         let answer = pending.result.message;
                         self.remember_latest_assistant_exchange(&answer);
-                        self.assistant_messages.push(AssistantChatMessage {
+                        self.assistant.messages.push(AssistantChatMessage {
                             role: AssistantMessageRole::Assistant,
                             text: answer,
                             source: pending.source,
@@ -11425,7 +11383,7 @@ impl KetchupApp {
                                 true,
                                 Some(diagnostic),
                             ) {
-                                self.assistant_messages.push(AssistantChatMessage {
+                                self.assistant.messages.push(AssistantChatMessage {
                                     role: AssistantMessageRole::Error,
                                     text,
                                     source: pending.source,
@@ -11440,7 +11398,7 @@ impl KetchupApp {
             return;
         }
 
-        let Some(task) = self.assistant_chat_task.as_ref() else {
+        let Some(task) = self.assistant.chat_task.as_ref() else {
             return;
         };
         let source = task.source.clone();
@@ -11457,11 +11415,12 @@ impl KetchupApp {
             || snapshot.canonical_digest() != request_canonical_digest
         {
             let task = self
-                .assistant_chat_task
+                .assistant
+                .chat_task
                 .take()
                 .expect("stale assistant task is still pending");
             task.cancellation.cancel();
-            self.assistant_messages.push(AssistantChatMessage {
+            self.assistant.messages.push(AssistantChatMessage {
                 role: AssistantMessageRole::Error,
                 text: self.catalog.text("assistant-error-stale-response"),
                 source: self.catalog.text("assistant-role-error"),
@@ -11472,19 +11431,20 @@ impl KetchupApp {
         }
         match task.receiver.try_recv() {
             Ok(response) => {
-                self.assistant_chat_task = None;
+                self.assistant.chat_task = None;
                 let result = response.and_then(|response| {
                     if let Some(diagnostics) = response.diagnostics {
-                        self.assistant_api_logs.push(AssistantApiLogEntry {
+                        self.assistant.api_logs.push(AssistantApiLogEntry {
                             request_id,
                             diagnostics,
                         });
-                        if self.assistant_api_logs.len() > 100 {
-                            self.assistant_api_logs
-                                .drain(..self.assistant_api_logs.len() - 100);
+                        if self.assistant.api_logs.len() > 100 {
+                            self.assistant
+                                .api_logs
+                                .drain(..self.assistant.api_logs.len() - 100);
                         }
-                        self.assistant_selected_api_log =
-                            self.assistant_api_logs.len().checked_sub(1);
+                        self.assistant.selected_api_log =
+                            self.assistant.api_logs.len().checked_sub(1);
                     }
                     let mut cad_edit_program = response.cad_edit_program;
                     if let Some(program) = cad_edit_program.as_mut() {
@@ -11505,14 +11465,14 @@ impl KetchupApp {
                         match self.prepare_assistant_fea_review(&request) {
                             Ok(()) => {
                                 self.remember_latest_assistant_exchange(&result.message);
-                                self.assistant_messages.push(AssistantChatMessage {
+                                self.assistant.messages.push(AssistantChatMessage {
                                     role: AssistantMessageRole::Assistant,
                                     text: result.message,
                                     source,
                                     diagnostic: None,
                                 });
                             }
-                            Err(text) => self.assistant_messages.push(AssistantChatMessage {
+                            Err(text) => self.assistant.messages.push(AssistantChatMessage {
                                 role: AssistantMessageRole::Error,
                                 text,
                                 source,
@@ -11523,7 +11483,7 @@ impl KetchupApp {
                     Ok((result, cad_edit_program, None))
                         if result.model_intent.is_some() || cad_edit_program.is_some() =>
                     {
-                        self.assistant_pending_execution = Some(AssistantPendingExecution {
+                        self.assistant.pending_execution = Some(AssistantPendingExecution {
                             result,
                             cad_edit_program,
                             message: request_message,
@@ -11538,14 +11498,14 @@ impl KetchupApp {
                     }
                     Ok((result, _, None)) => {
                         self.remember_latest_assistant_exchange(&result.message);
-                        self.assistant_messages.push(AssistantChatMessage {
+                        self.assistant.messages.push(AssistantChatMessage {
                             role: AssistantMessageRole::Assistant,
                             text: result.message,
                             source,
                             diagnostic: None,
                         });
                     }
-                    Err(text) => self.assistant_messages.push(AssistantChatMessage {
+                    Err(text) => self.assistant.messages.push(AssistantChatMessage {
                         role: AssistantMessageRole::Error,
                         text,
                         source,
@@ -11556,8 +11516,8 @@ impl KetchupApp {
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.assistant_chat_task = None;
-                self.assistant_messages.push(AssistantChatMessage {
+                self.assistant.chat_task = None;
+                self.assistant.messages.push(AssistantChatMessage {
                     role: AssistantMessageRole::Error,
                     text: self.catalog.text("assistant-error-disconnected"),
                     source,
@@ -11570,12 +11530,13 @@ impl KetchupApp {
 
     #[must_use]
     pub const fn assistant_verification(&self) -> Option<&AssistantVerification> {
-        self.assistant_verification.as_ref()
+        self.assistant.verification.as_ref()
     }
 
     #[must_use]
     pub fn assistant_change_can_undo(&self) -> bool {
-        self.assistant_verification
+        self.assistant
+            .verification
             .as_ref()
             .is_some_and(|verification| {
                 let snapshot = self.document.current();
@@ -11669,19 +11630,22 @@ impl KetchupApp {
     /// carrying forward re-checks every product against `snapshot` and drops
     /// whatever it no longer carries the evidence for.
     fn rebind_exact_results(&mut self, snapshot: &Snapshot) {
-        Self::archive_exact_registry(&self.exact_results, &mut self.exact_result_history);
-        Self::archive_exact_registry(&self.topology_results, &mut self.topology_result_history);
+        Self::archive_exact_registry(&self.exact.results, &mut self.exact.result_history);
+        Self::archive_exact_registry(
+            &self.exact.topology_results,
+            &mut self.exact.topology_result_history,
+        );
         let source = ketchup_application::evaluation::exact_source(snapshot);
-        if let Some(saved) = self.exact_result_history.get(&source) {
-            self.exact_results = saved.clone();
+        if let Some(saved) = self.exact.result_history.get(&source) {
+            self.exact.results = saved.clone();
         }
-        if let Some(saved) = self.topology_result_history.get(&source) {
-            self.topology_results = saved.clone();
+        if let Some(saved) = self.exact.topology_result_history.get(&source) {
+            self.exact.topology_results = saved.clone();
         }
         ketchup_application::evaluation::rebind_exact_results(
             snapshot,
-            &mut self.exact_results,
-            &mut self.topology_results,
+            &mut self.exact.results,
+            &mut self.exact.topology_results,
         );
     }
 
@@ -11710,18 +11674,22 @@ impl KetchupApp {
     }
 
     fn exact_results_for_snapshot(&self, snapshot: &Snapshot) -> Option<&ExactResultRegistry> {
-        if !self.exact_results.is_empty() && self.exact_results.is_bound_to(snapshot) {
-            return Some(&self.exact_results);
+        if !self.exact.results.is_empty() && self.exact.results.is_bound_to(snapshot) {
+            return Some(&self.exact.results);
         }
-        self.exact_result_history
+        self.exact
+            .result_history
             .get(&ketchup_application::evaluation::exact_source(snapshot))
     }
 
     fn topology_results_for_snapshot(&self, snapshot: &Snapshot) -> Option<&ExactResultRegistry> {
-        if !self.topology_results.is_empty() && self.topology_results.is_bound_to(snapshot) {
-            return Some(&self.topology_results);
+        if !self.exact.topology_results.is_empty()
+            && self.exact.topology_results.is_bound_to(snapshot)
+        {
+            return Some(&self.exact.topology_results);
         }
-        self.topology_result_history
+        self.exact
+            .topology_result_history
             .get(&ketchup_application::evaluation::exact_source(snapshot))
     }
 
@@ -11730,24 +11698,26 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let source = ketchup_application::evaluation::exact_source(&snapshot);
         if self
-            .exact_source
+            .exact
+            .source
             .as_ref()
             .is_some_and(|known| known != &source)
         {
-            self.exact_source = None;
+            self.exact.source = None;
         }
         self.rebind_exact_results(&snapshot);
         if self
-            .exact_task
+            .exact
+            .task
             .as_ref()
             .is_some_and(|task| task.source != source)
         {
-            self.exact_task.take();
+            self.exact.task.take();
         }
-        if let Some(task) = self.exact_task.as_ref() {
+        if let Some(task) = self.exact.task.as_ref() {
             match task.poll() {
                 Ok(result) => {
-                    let task = self.exact_task.take().expect("completed task exists");
+                    let task = self.exact.task.take().expect("completed task exists");
                     let published = match result {
                         Ok(products) => self
                             .complete_mutation_and_exact_results_with_work_recovery(
@@ -11765,72 +11735,72 @@ impl KetchupApp {
                     };
                     match published {
                         Ok(report) => {
-                            self.render_plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
+                            self.render.plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
                                 &snapshot,
-                                &self.exact_results,
-                                &mut self.render_cache,
+                                &self.exact.results,
+                                &mut self.render.cache,
                             )));
-                            self.interaction_projection_cache.get_mut().take();
-                            self.exact_source = (!report.needs_retry()).then(|| source.clone());
-                            self.exact_retry_at = report
+                            self.hover.projection_cache.get_mut().take();
+                            self.exact.source = (!report.needs_retry()).then(|| source.clone());
+                            self.exact.retry_at = report
                                 .needs_retry()
                                 .then(|| Instant::now() + Duration::from_secs(1));
                             // Continue through the shared retry wake-up below.
                         }
                         Err(error) => {
                             eprintln!("exact evaluation rejected: {error}");
-                            self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                            self.exact.retry_at = Some(Instant::now() + Duration::from_secs(1));
                         }
                     }
                 }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
-                    self.exact_task.take();
-                    self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                    self.exact.task.take();
+                    self.exact.retry_at = Some(Instant::now() + Duration::from_secs(1));
                 }
             }
         }
-        if self.exact_source.as_ref() == Some(&source) {
+        if self.exact.source.as_ref() == Some(&source) {
             return;
         }
-        if let Some(retry) = self.exact_retry_at {
+        if let Some(retry) = self.exact.retry_at {
             let remaining = retry.saturating_duration_since(Instant::now());
             if !remaining.is_zero() {
                 context.request_repaint_after(remaining);
                 return;
             }
         }
-        if !self.exact_worker_attempted {
-            self.exact_worker_attempted = true;
-            self.exact_worker_path = exact_worker_candidates()
+        if !self.exact.worker_attempted {
+            self.exact.worker_attempted = true;
+            self.exact.worker_path = exact_worker_candidates()
                 .into_iter()
                 .find(|path| path.is_file());
         }
         let repaint = context.clone();
-        self.exact_task = Some(ketchup_application::evaluation::start_exact_evaluation(
+        self.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
             snapshot,
-            &self.container_data,
-            &self.exact_results,
-            &self.topology_results,
-            self.exact_worker_path.clone(),
+            &self.file.container_data,
+            &self.exact.results,
+            &self.exact.topology_results,
+            self.exact.worker_path.clone(),
             move || repaint.request_repaint(),
         ));
     }
 
     #[doc(hidden)]
     pub fn headless_force_exact_worker_path(&mut self, executable: impl AsRef<Path>) {
-        self.exact_worker_path = Some(executable.as_ref().to_owned());
-        self.exact_worker_attempted = true;
+        self.exact.worker_path = Some(executable.as_ref().to_owned());
+        self.exact.worker_attempted = true;
     }
 
     #[doc(hidden)]
     pub fn headless_set_assistant_context_preparation_delay(&mut self, delay: Duration) {
-        self.assistant_context_preparation_delay = delay;
+        self.assistant.context_preparation_delay = delay;
     }
 
     #[doc(hidden)]
     pub fn headless_install_exact_package(&mut self, package: ExactBodyPackage) -> bool {
-        if let Some(task) = self.exact_task.take() {
+        if let Some(task) = self.exact.task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
         let snapshot = self.document.current();
@@ -11844,10 +11814,10 @@ impl KetchupApp {
             && (package.topological_references().is_empty()
                 || topology_results.insert_current(&snapshot, package).is_ok());
         if inserted {
-            self.exact_results = exact_results;
-            self.topology_results = topology_results;
-            self.exact_source = Some(source);
-            self.exact_retry_at = None;
+            self.exact.results = exact_results;
+            self.exact.topology_results = topology_results;
+            self.exact.source = Some(source);
+            self.exact.retry_at = None;
         }
         inserted
     }
@@ -11857,23 +11827,23 @@ impl KetchupApp {
         if !executable.is_file() {
             return Err("exact worker executable was not found".to_owned());
         }
-        if let Some(task) = self.exact_task.take() {
+        if let Some(task) = self.exact.task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
-        self.exact_worker_path = Some(executable.to_owned());
-        self.exact_worker_attempted = true;
-        self.exact_results.clear();
-        self.topology_results.clear();
-        self.exact_result_history.clear();
-        self.topology_result_history.clear();
-        self.exact_source = None;
-        self.exact_retry_at = None;
+        self.exact.worker_path = Some(executable.to_owned());
+        self.exact.worker_attempted = true;
+        self.exact.results.clear();
+        self.exact.topology_results.clear();
+        self.exact.result_history.clear();
+        self.exact.topology_result_history.clear();
+        self.exact.source = None;
+        self.exact.retry_at = None;
         Ok(())
     }
 
     #[doc(hidden)]
     pub fn enable_headless_instanced_scene(&mut self) {
-        self.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Bgra8UnormSrgb);
+        self.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Bgra8UnormSrgb);
     }
 
     fn visible_exact_packages<'a>(
@@ -11886,7 +11856,8 @@ impl KetchupApp {
             .filter(|occurrence| occurrence.visible)
             .map(|occurrence| occurrence.definition_id)
             .collect::<BTreeSet<_>>();
-        self.exact_results
+        self.exact
+            .results
             .render_values(snapshot)
             .filter(|package| visible_definitions.contains(&package.definition_id()))
             .collect()
@@ -11936,7 +11907,7 @@ impl KetchupApp {
     /// as an exact product but never reached the scene reports zero here.
     #[must_use]
     pub fn instanced_scene_triangle_count(&self) -> usize {
-        self.render_plan.as_ref().map_or(0, |plan| {
+        self.render.plan.as_ref().map_or(0, |plan| {
             plan.batches()
                 .iter()
                 .map(|batch| batch.geometry.index_count() / 3 * batch.instances.len())
@@ -11957,7 +11928,7 @@ impl KetchupApp {
         ExactInteractionProjection::from_snapshot(
             snapshot,
             self.exact_results_for_snapshot(snapshot)
-                .unwrap_or(&self.exact_results),
+                .unwrap_or(&self.exact.results),
         )
     }
 
@@ -11965,7 +11936,7 @@ impl KetchupApp {
         ExactInteractionProjection::from_snapshot(
             snapshot,
             self.topology_results_for_snapshot(snapshot)
-                .unwrap_or(&self.topology_results),
+                .unwrap_or(&self.exact.topology_results),
         )
     }
 
@@ -11980,7 +11951,7 @@ impl KetchupApp {
         identity: &str,
         build: impl FnOnce() -> (Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<Option<G>>),
     ) -> Arc<Vec<([u32; 2], Vec<u32>)>> {
-        let mut cache = self.overlay_edge_cache.borrow_mut();
+        let mut cache = self.render.overlay_edge_cache.borrow_mut();
         if let Some(cached) = cache.get(&definition_id)
             && cached.identity == identity
         {
@@ -12003,7 +11974,7 @@ impl KetchupApp {
     }
 
     fn refresh_interaction_projection_cache(&self, snapshot: &Snapshot) {
-        let Ok(cache) = self.interaction_projection_cache.try_borrow() else {
+        let Ok(cache) = self.hover.projection_cache.try_borrow() else {
             return;
         };
         let current = self.document.current();
@@ -12011,7 +11982,7 @@ impl KetchupApp {
             && snapshot.revision_id() == current.revision_id()
             && snapshot.canonical_digest() == current.canonical_digest()
         {
-            Some(&self.exact_results)
+            Some(&self.exact.results)
         } else {
             self.exact_results_for_snapshot(snapshot)
         };
@@ -12062,7 +12033,7 @@ impl KetchupApp {
                         && occurrence.local_box.is_some()
                 })
                 .expect("canonical visible proxy projections are valid");
-            if let Ok(mut cache) = self.interaction_projection_cache.try_borrow_mut() {
+            if let Ok(mut cache) = self.hover.projection_cache.try_borrow_mut() {
                 *cache = Some(InteractionProjectionCache {
                     document_id: snapshot.document_id(),
                     revision_id: snapshot.revision_id(),
@@ -12118,7 +12089,8 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
         if let Some(bounds) = self
-            .interaction_projection_cache
+            .hover
+            .projection_cache
             .borrow()
             .as_ref()
             .and_then(|cache| cache.frame_bounds.get())
@@ -12180,7 +12152,7 @@ impl KetchupApp {
                 });
             bounds.push((minimum, maximum - minimum));
         }
-        if let Some(cache) = self.interaction_projection_cache.borrow().as_ref() {
+        if let Some(cache) = self.hover.projection_cache.borrow().as_ref() {
             let _ = cache.frame_bounds.set(bounds.clone());
         }
         bounds
@@ -12203,7 +12175,7 @@ impl KetchupApp {
     fn active_boxes(&self) -> Vec<RenderBox> {
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
-        let cache = self.interaction_projection_cache.borrow();
+        let cache = self.hover.projection_cache.borrow();
         cache
             .as_ref()
             .expect("interaction cache was built")
@@ -12916,7 +12888,7 @@ impl KetchupApp {
     }
 
     fn end_transform_correction(&mut self) {
-        self.correction_session = None;
+        self.transform_tool.correction = None;
     }
 
     fn record_transform_correction(
@@ -12924,7 +12896,7 @@ impl KetchupApp {
         selection: CorrectionSelection,
         operation: CorrectionOperation,
     ) {
-        self.correction_session = Some(CorrectionSession {
+        self.transform_tool.correction = Some(CorrectionSession {
             revision: self.document_revision(),
             canonical_digest: self.canonical_digest(),
             selection,
@@ -12962,13 +12934,14 @@ impl KetchupApp {
 
     fn current_transform_correction(&mut self) -> Option<&CorrectionSession> {
         let stale = self
-            .correction_session
+            .transform_tool
+            .correction
             .as_ref()
             .is_some_and(|session| !self.correction_session_is_current(session));
         if stale {
             self.end_transform_correction();
         }
-        self.correction_session.as_ref()
+        self.transform_tool.correction.as_ref()
     }
 
     fn current_move_correction(&mut self) -> Option<(CorrectionSelection, MoveCorrection)> {
@@ -13049,105 +13022,105 @@ impl KetchupApp {
         if let Some(CorrectionSession {
             operation: CorrectionOperation::Move(operation),
             ..
-        }) = self.correction_session.as_mut()
+        }) = self.transform_tool.correction.as_mut()
         {
             operation.accepts_vector_correction = enabled;
         }
     }
 
     fn move_session(&self) -> Option<(&MoveDrag, ToolSessionPhase)> {
-        match self.tool_session.as_ref()? {
+        match self.transform_tool.session.as_ref()? {
             ToolSession::Move { phase, drag } => Some((drag, *phase)),
             ToolSession::Rotate { .. } | ToolSession::Scale(_) => None,
         }
     }
 
     fn move_session_mut(&mut self) -> Option<&mut MoveDrag> {
-        match self.tool_session.as_mut()? {
+        match self.transform_tool.session.as_mut()? {
             ToolSession::Move { drag, .. } => Some(drag),
             ToolSession::Rotate { .. } | ToolSession::Scale(_) => None,
         }
     }
 
     fn set_move_session(&mut self, phase: ToolSessionPhase, drag: MoveDrag) {
-        self.tool_session = Some(ToolSession::Move { phase, drag });
+        self.transform_tool.session = Some(ToolSession::Move { phase, drag });
     }
 
     fn take_move_session(&mut self, phase: Option<ToolSessionPhase>) -> Option<MoveDrag> {
-        match self.tool_session.take() {
+        match self.transform_tool.session.take() {
             Some(ToolSession::Move {
                 phase: actual,
                 drag,
             }) if phase.is_none_or(|expected| expected == actual) => Some(drag),
             session => {
-                self.tool_session = session;
+                self.transform_tool.session = session;
                 None
             }
         }
     }
 
     fn rotate_session(&self) -> Option<(&RotateDrag, ToolSessionPhase)> {
-        match self.tool_session.as_ref()? {
+        match self.transform_tool.session.as_ref()? {
             ToolSession::Rotate { phase, drag } => Some((drag, *phase)),
             ToolSession::Move { .. } | ToolSession::Scale(_) => None,
         }
     }
 
     fn rotate_session_mut(&mut self) -> Option<&mut RotateDrag> {
-        match self.tool_session.as_mut()? {
+        match self.transform_tool.session.as_mut()? {
             ToolSession::Rotate { drag, .. } => Some(drag),
             ToolSession::Move { .. } | ToolSession::Scale(_) => None,
         }
     }
 
     fn set_rotate_session(&mut self, phase: ToolSessionPhase, drag: RotateDrag) {
-        self.tool_session = Some(ToolSession::Rotate { phase, drag });
+        self.transform_tool.session = Some(ToolSession::Rotate { phase, drag });
     }
 
     fn take_rotate_session(&mut self, phase: Option<ToolSessionPhase>) -> Option<RotateDrag> {
-        match self.tool_session.take() {
+        match self.transform_tool.session.take() {
             Some(ToolSession::Rotate {
                 phase: actual,
                 drag,
             }) if phase.is_none_or(|expected| expected == actual) => Some(drag),
             session => {
-                self.tool_session = session;
+                self.transform_tool.session = session;
                 None
             }
         }
     }
 
     fn scale_session(&self) -> Option<&ScaleDrag> {
-        match self.tool_session.as_ref()? {
+        match self.transform_tool.session.as_ref()? {
             ToolSession::Scale(drag) => Some(drag),
             ToolSession::Move { .. } | ToolSession::Rotate { .. } => None,
         }
     }
 
     fn scale_session_mut(&mut self) -> Option<&mut ScaleDrag> {
-        match self.tool_session.as_mut()? {
+        match self.transform_tool.session.as_mut()? {
             ToolSession::Scale(drag) => Some(drag),
             ToolSession::Move { .. } | ToolSession::Rotate { .. } => None,
         }
     }
 
     fn set_scale_session(&mut self, drag: ScaleDrag) {
-        self.tool_session = Some(ToolSession::Scale(drag));
+        self.transform_tool.session = Some(ToolSession::Scale(drag));
     }
 
     fn take_scale_session(&mut self) -> Option<ScaleDrag> {
-        match self.tool_session.take() {
+        match self.transform_tool.session.take() {
             Some(ToolSession::Scale(drag)) => Some(drag),
             session => {
-                self.tool_session = session;
+                self.transform_tool.session = session;
                 None
             }
         }
     }
 
     fn cancel_transform_session(&mut self) {
-        self.tool_session = None;
-        self.transform_input.reset();
+        self.transform_tool.session = None;
+        self.transform_tool.input.reset();
         self.gesture.transform.move_copy = false;
         self.gesture.transform.rotate_copy = false;
     }
@@ -13301,6 +13274,7 @@ impl KetchupApp {
         reference: &TopologicalElementRef,
     ) -> Option<RenderBox> {
         let package = self
+            .exact
             .topology_results
             .get_render(snapshot, reference.definition_id)?;
         if reference.kind != TopologicalElementKind::Face
@@ -13358,6 +13332,7 @@ impl KetchupApp {
             return None;
         }
         let package = self
+            .exact
             .topology_results
             .get_render(snapshot, reference.definition_id)?;
         if package.producer_feature_id() != reference.producer_feature_id {
@@ -14025,15 +14000,15 @@ impl KetchupApp {
         let Some(tool) = self.selected_revolve_profile() else {
             return false;
         };
-        self.revolve_tool = Some(tool);
+        self.solid_tools.revolve = Some(tool);
         self.tool_preview.close::<RevolvePreview>();
-        self.value_input = "360".to_owned();
+        self.value_box.input = "360".to_owned();
         self.status_key = "status-revolve-axis-start";
         true
     }
 
     fn add_revolve_axis_point(&mut self, point_mm: Vec3) -> bool {
-        let Some(mut tool) = self.revolve_tool.clone() else {
+        let Some(mut tool) = self.solid_tools.revolve.clone() else {
             return false;
         };
         let snapshot = self.document.current();
@@ -14041,7 +14016,7 @@ impl KetchupApp {
             || snapshot.revision_id() != tool.source.source_revision
             || snapshot.canonical_digest() != tool.source.source_digest
         {
-            self.revolve_tool = None;
+            self.solid_tools.revolve = None;
             self.tool_preview.close::<RevolvePreview>();
             self.status_key = "error-preview-stale";
             return false;
@@ -14060,7 +14035,7 @@ impl KetchupApp {
             tool.axis_start_mm = Some(local);
             self.status_key = "status-revolve-axis-end";
         }
-        self.revolve_tool = Some(tool);
+        self.solid_tools.revolve = Some(tool);
         self.refresh_revolve_preview()
     }
 
@@ -14121,7 +14096,7 @@ impl KetchupApp {
 
     fn refresh_revolve_preview(&mut self) -> bool {
         self.tool_preview.close::<RevolvePreview>();
-        let Some(tool) = self.revolve_tool.as_ref() else {
+        let Some(tool) = self.solid_tools.revolve.as_ref() else {
             return false;
         };
         let Some(axis_start_mm) = tool.axis_start_mm else {
@@ -14130,8 +14105,8 @@ impl KetchupApp {
         let Some(axis_end_mm) = tool.axis_end_mm else {
             return false;
         };
-        let Some(angle_degrees) =
-            parse_distance_mm(&self.value_input).filter(|angle| *angle > 0.0 && *angle <= 360.0)
+        let Some(angle_degrees) = parse_distance_mm(&self.value_box.input)
+            .filter(|angle| *angle > 0.0 && *angle <= 360.0)
         else {
             self.digest = self.catalog.text("digest-revolve-invalid-angle");
             return false;
@@ -14159,14 +14134,14 @@ impl KetchupApp {
         let Some(preview) = self.tool_preview.get::<RevolvePreview>() else {
             return false;
         };
-        let Some(tool) = self.revolve_tool.as_ref() else {
+        let Some(tool) = self.solid_tools.revolve.as_ref() else {
             return false;
         };
         let angle_degrees = f64::from_bits(preview.plan.angle_degrees_bits);
         tool.source == preview.plan.source
             && tool.axis_start_mm == Some(preview.plan.axis_start_mm)
             && tool.axis_end_mm == Some(preview.plan.axis_end_mm)
-            && parse_distance_mm(&self.value_input).map(f64::to_bits)
+            && parse_distance_mm(&self.value_box.input).map(f64::to_bits)
                 == Some(preview.plan.angle_degrees_bits)
             && self
                 .derive_revolve_preview_plan(
@@ -14227,7 +14202,7 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.value_input.clear();
+        self.value_box.input.clear();
         self.status_key = "status-ready";
         self.digest = self.catalog.format(
             "digest-revolve-committed",
@@ -14354,14 +14329,14 @@ impl KetchupApp {
         let Some(source) = self.planar_offset_source_plan() else {
             return false;
         };
-        let Some(distance_mm) =
-            parse_distance_mm(&self.value_input).filter(|distance| distance.abs() > APPROXIMATION)
+        let Some(distance_mm) = parse_distance_mm(&self.value_box.input)
+            .filter(|distance| distance.abs() > APPROXIMATION)
         else {
             self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
             return false;
         };
         let Some((plan, batch)) =
-            self.derive_planar_offset_preview_plan(&source, &self.value_input, distance_mm)
+            self.derive_planar_offset_preview_plan(&source, &self.value_box.input, distance_mm)
         else {
             self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
             return false;
@@ -14393,8 +14368,8 @@ impl KetchupApp {
         let Some(preview) = self.tool_preview.get::<PlanarOffsetPreview>() else {
             return false;
         };
-        self.value_input == preview.plan.distance_expression
-            && parse_distance_mm(&self.value_input).map(f64::to_bits)
+        self.value_box.input == preview.plan.distance_expression
+            && parse_distance_mm(&self.value_box.input).map(f64::to_bits)
                 == Some(preview.plan.distance_mm_bits)
             && self
                 .derive_planar_offset_preview_plan(
@@ -14434,7 +14409,7 @@ impl KetchupApp {
         }
         self.clear_ephemeral_edit_state();
         self.active_tool = ActiveTool::Select;
-        self.value_input.clear();
+        self.value_box.input.clear();
         self.status_key = "status-ready";
         self.digest = self.catalog.format(
             "digest-planar-offset-committed",
@@ -14611,7 +14586,7 @@ impl KetchupApp {
         {
             return None;
         }
-        let (definition_id, sections) = self.loft_input_sections.as_ref()?;
+        let (definition_id, sections) = self.solid_tools.loft_input_sections.as_ref()?;
         if selection.definition_id != *definition_id {
             return None;
         }
@@ -14773,7 +14748,7 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.loft_input_sections = None;
+        self.solid_tools.loft_input_sections = None;
         self.active_tool = ActiveTool::Select;
         self.status_key = "status-ready";
         self.digest = self.catalog.text("digest-loft-committed");
@@ -14797,7 +14772,7 @@ impl KetchupApp {
         let mut references = Vec::with_capacity(self.selection.topological.len());
         for (_, topological) in &self.selection.topological {
             let resolved = topological
-                .resolve_current(&snapshot, &self.topology_results)
+                .resolve_current(&snapshot, &self.exact.topology_results)
                 .ok()?;
             if resolved.instance_path != selection.instance_path
                 || resolved.reference.definition_id != selection.definition_id
@@ -14813,7 +14788,8 @@ impl KetchupApp {
             return None;
         }
         let package = self
-            .exact_results
+            .exact
+            .results
             .get_render(&snapshot, selection.definition_id)?;
         if package.producer_feature_id() != target_feature_id {
             return None;
@@ -14925,7 +14901,7 @@ impl KetchupApp {
             .iter()
             .map(|selection| {
                 selection
-                    .resolve_current(&snapshot, &self.topology_results)
+                    .resolve_current(&snapshot, &self.exact.topology_results)
                     .ok()
                     .map(|resolved| resolved.reference)
             })
@@ -14979,7 +14955,7 @@ impl KetchupApp {
             return false;
         };
         let Some((plan, batch)) =
-            self.derive_general_finish_preview_plan(&source, &self.value_input)
+            self.derive_general_finish_preview_plan(&source, &self.value_box.input)
         else {
             self.digest = self.catalog.text("digest-general-finish-invalid-amount");
             return false;
@@ -15009,7 +14985,7 @@ impl KetchupApp {
             GeneralFinishKind::Fillet => ActiveTool::Fillet,
             GeneralFinishKind::Chamfer => ActiveTool::Chamfer,
         };
-        self.value_input = amount_mm.to_string();
+        self.value_box.input = amount_mm.to_string();
         self.refresh_general_finish_preview()
     }
 
@@ -15057,7 +15033,7 @@ impl KetchupApp {
         let Some(preview) = self.tool_preview.get::<GeneralFinishPreview>() else {
             return false;
         };
-        self.derive_general_finish_preview_plan(&preview.plan.source, &self.value_input)
+        self.derive_general_finish_preview_plan(&preview.plan.source, &self.value_box.input)
             .is_some_and(|(plan, batch)| plan == preview.plan && batch == preview.batch)
     }
 
@@ -15163,7 +15139,7 @@ impl KetchupApp {
         }
         self.clear_ephemeral_edit_state();
         self.active_tool = ActiveTool::Select;
-        self.value_input.clear();
+        self.value_box.input.clear();
         self.status_key = "status-ready";
         self.digest = self.catalog.format(
             "digest-general-finish-committed",
@@ -15233,7 +15209,8 @@ impl KetchupApp {
                                     ..
                                 }) | FeatureKind::ImportedExactBody(_)
                             ) || self
-                                .exact_results
+                                .exact
+                                .results
                                 .get_render(&snapshot, item.definition_id)
                                 .is_some();
                             has_current_geometry
@@ -15291,12 +15268,12 @@ impl KetchupApp {
                         || self.view.contains(ViewFlag::Monochrome)
                         || self.view.contains(ViewFlag::HiddenLine)
                 }
-                AppCommand::PreviousView => self.previous_camera_view.is_some(),
+                AppCommand::PreviousView => self.camera.previous_view.is_some(),
                 AppCommand::ZoomSelection | AppCommand::CenterSelection => {
                     !self.selected_active_boxes().is_empty()
                 }
-                AppCommand::ZoomIn => self.zoom < MAX_CAMERA_ZOOM,
-                AppCommand::ZoomOut => self.zoom > MIN_CAMERA_ZOOM,
+                AppCommand::ZoomIn => self.camera.zoom < MAX_CAMERA_ZOOM,
+                AppCommand::ZoomOut => self.camera.zoom > MIN_CAMERA_ZOOM,
                 _ => true,
             }
     }
@@ -15334,6 +15311,7 @@ impl KetchupApp {
                 // rests on the face it was drawn on.
                 let revision = self.document.current().revision_id();
                 let drawn = self
+                    .hover
                     .drawn_profile
                     .clone()
                     .filter(|(drawn_revision, selection)| {
@@ -15342,7 +15320,7 @@ impl KetchupApp {
                     })
                     .map(|(_, selection)| selection);
                 let target = drawn
-                    .or_else(|| self.hovered.clone())
+                    .or_else(|| self.hover.target.clone())
                     .filter(|selection| {
                         matches!(
                             selection.element,
@@ -15361,9 +15339,9 @@ impl KetchupApp {
                     self.select_push_pull_reference(target);
                 }
             }
-            self.value_input.clear();
+            self.value_box.input.clear();
             if tool == ActiveTool::PlanarOffset {
-                self.value_input = "5".to_owned();
+                self.value_box.input = "5".to_owned();
                 self.refresh_planar_offset_preview();
             } else if matches!(tool, ActiveTool::Helix | ActiveTool::Thread) {
                 self.begin_helix_thread_tool(tool);
@@ -15377,7 +15355,7 @@ impl KetchupApp {
                 tool,
                 ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer
             ) {
-                self.value_input = if tool == ActiveTool::Shell {
+                self.value_box.input = if tool == ActiveTool::Shell {
                     "2".to_owned()
                 } else {
                     "1".to_owned()
@@ -15591,8 +15569,8 @@ impl KetchupApp {
             AppCommand::CenterSelection => self.center_selection(),
             AppCommand::ZoomIn => self.zoom_by(CAMERA_ZOOM_STEP, "digest-zoom-in"),
             AppCommand::ZoomOut => self.zoom_by(CAMERA_ZOOM_STEP.recip(), "digest-zoom-out"),
-            AppCommand::Shortcuts => self.shortcuts_open = true,
-            AppCommand::About => self.about_open = true,
+            AppCommand::Shortcuts => self.panels.shortcuts_open = true,
+            AppCommand::About => self.panels.about_open = true,
             AppCommand::Select
             | AppCommand::Line
             | AppCommand::Rectangle
@@ -16584,9 +16562,9 @@ impl KetchupApp {
         {
             return false;
         }
-        self.classification_selected_dimension = Some(dimension_id);
-        self.classification_dimension_name_input.clear();
-        self.classification_category_name_input.clear();
+        self.classification.selected_dimension = Some(dimension_id);
+        self.classification.dimension_name_input.clear();
+        self.classification.category_name_input.clear();
         self.digest = self.catalog.format(
             "digest-created-dimension",
             &BTreeMap::from([
@@ -16643,7 +16621,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.classification_category_name_input.clear();
+        self.classification.category_name_input.clear();
         self.digest = self.catalog.format(
             "digest-added-dimension-category",
             &BTreeMap::from([("dimension", dimension_name), ("category", name.to_owned())]),
@@ -17631,7 +17609,7 @@ impl KetchupApp {
     /// Contents of the value box, where exact input is typed.
     #[must_use]
     pub fn value_input(&self) -> &str {
-        &self.value_input
+        &self.value_box.input
     }
 
     #[doc(hidden)]
@@ -17649,15 +17627,15 @@ impl KetchupApp {
     #[doc(hidden)]
     #[must_use]
     pub fn transform_gesture_active(&self) -> bool {
-        self.tool_session.is_some()
+        self.transform_tool.session.is_some()
     }
 
     fn ephemeral_edit_active(&self) -> bool {
         self.has_preview()
             || self.has_drawn_shape_preview()
             || self.has_occurrence_operation_preview()
-            || self.solid_tool_target.is_some()
-            || self.revolve_tool.is_some()
+            || self.solid_tools.target.is_some()
+            || self.solid_tools.revolve.is_some()
             || self.tool_preview.get::<RevolvePreview>().is_some()
             || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
             || matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread)
@@ -17814,44 +17792,44 @@ impl KetchupApp {
     /// Current camera magnification, as changed by zoom commands and the wheel.
     #[must_use]
     pub const fn camera_zoom(&self) -> f32 {
-        self.zoom
+        self.camera.zoom
     }
 
     /// Current camera yaw and pitch in radians.
     #[must_use]
     pub const fn camera_orientation(&self) -> (f32, f32) {
-        (self.yaw, self.pitch)
+        (self.camera.yaw, self.camera.pitch)
     }
 
     /// Whether the keyboard shortcut reference is on screen.
     #[must_use]
     pub const fn shortcuts_visible(&self) -> bool {
-        self.shortcuts_open
+        self.panels.shortcuts_open
     }
 
     /// Whether the About window is on screen.
     #[must_use]
     pub const fn about_visible(&self) -> bool {
-        self.about_open
+        self.panels.about_open
     }
 
     #[must_use]
     pub const fn outliner_visible(&self) -> bool {
-        self.outliner_visible
+        self.panels.outliner_visible
     }
 
     #[must_use]
     pub const fn tags_visible(&self) -> bool {
-        self.tags_visible
+        self.panels.tags_visible
     }
 
     #[must_use]
     pub const fn manual_cad_panels_visible(&self) -> bool {
-        self.manual_cad_panels_visible
+        self.panels.manual_cad_panels_visible
     }
 
     pub fn set_manual_cad_panels_visible(&mut self, visible: bool) {
-        self.manual_cad_panels_visible = visible;
+        self.panels.manual_cad_panels_visible = visible;
     }
 
     /// How many occurrences of the active document are hidden.
@@ -17884,12 +17862,12 @@ impl KetchupApp {
 
     fn camera_view_state(&self) -> CameraViewState {
         CameraViewState {
-            projection_mode: self.projection_mode,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            target_z: self.camera_target_z,
-            zoom: self.zoom,
-            pan: self.pan,
+            projection_mode: self.camera.projection_mode,
+            yaw: self.camera.yaw,
+            pitch: self.camera.pitch,
+            target_z: self.camera.target_z,
+            zoom: self.camera.zoom,
+            pan: self.camera.pan,
             view: self.view,
         }
     }
@@ -17898,24 +17876,24 @@ impl KetchupApp {
         if self.camera_view_state() == before {
             return false;
         }
-        self.previous_camera_view = Some(before);
+        self.camera.previous_view = Some(before);
         true
     }
 
     pub fn previous_view(&mut self) {
-        let Some(previous) = self.previous_camera_view.take() else {
+        let Some(previous) = self.camera.previous_view.take() else {
             return;
         };
         let current = self.camera_view_state();
-        self.projection_mode = previous.projection_mode;
-        self.yaw = previous.yaw;
-        self.pitch = previous.pitch;
-        self.camera_target_z = previous.target_z;
-        self.zoom = previous.zoom;
-        self.pan = previous.pan;
+        self.camera.projection_mode = previous.projection_mode;
+        self.camera.yaw = previous.yaw;
+        self.camera.pitch = previous.pitch;
+        self.camera.target_z = previous.target_z;
+        self.camera.zoom = previous.zoom;
+        self.camera.pan = previous.pan;
         self.view = previous.view;
         self.refresh_camera_distance();
-        self.previous_camera_view = Some(current);
+        self.camera.previous_view = Some(current);
         self.digest = self.catalog.text("digest-previous-view");
     }
 
@@ -17942,14 +17920,14 @@ impl KetchupApp {
 
     /// Restore the isometric home orientation and frame every visible occurrence.
     pub fn home_view(&mut self) {
-        self.yaw = -2.25;
-        self.pitch = 0.52;
+        self.camera.yaw = -2.25;
+        self.camera.pitch = 0.52;
         let bounds = self.active_frame_bounds();
         let count = bounds.len();
         if !self.frame_bounds(&bounds) {
-            self.camera_target_z = 10.0;
-            self.pan = Vec2::ZERO;
-            self.zoom = 2.8;
+            self.camera.target_z = 10.0;
+            self.camera.pan = Vec2::ZERO;
+            self.camera.zoom = 2.8;
             self.refresh_camera_distance();
         }
         self.digest = self.catalog.format(
@@ -17959,9 +17937,9 @@ impl KetchupApp {
     }
 
     fn look_from(&mut self, yaw: f32, pitch: f32, view_key: &str) {
-        self.zoom_fit_pending = false;
-        self.yaw = yaw;
-        self.pitch = pitch;
+        self.camera.zoom_fit_pending = false;
+        self.camera.yaw = yaw;
+        self.camera.pitch = pitch;
         self.digest = self.catalog.format(
             "digest-view-changed",
             &BTreeMap::from([("view", self.catalog.text(view_key))]),
@@ -17970,11 +17948,11 @@ impl KetchupApp {
 
     /// Frame every visible occurrence in the viewport laid out by the last frame.
     pub fn zoom_fit(&mut self) {
-        self.zoom_fit_pending_quiet = false;
+        self.camera.zoom_fit_pending_quiet = false;
         let bounds = self.active_frame_bounds();
         let count = bounds.len();
-        self.zoom_fit_pending = !self.frame_bounds(&bounds);
-        if !self.zoom_fit_pending {
+        self.camera.zoom_fit_pending = !self.frame_bounds(&bounds);
+        if !self.camera.zoom_fit_pending {
             self.digest = self.catalog.format(
                 "digest-zoom-fit",
                 &BTreeMap::from([("count", count.to_string())]),
@@ -18006,7 +17984,7 @@ impl KetchupApp {
     pub fn center_selection(&mut self) {
         let boxes = self.selected_active_boxes();
         let count = boxes.len();
-        let Some(rect) = self.viewport_rect else {
+        let Some(rect) = self.camera.viewport_rect else {
             return;
         };
         let corners = boxes
@@ -18020,9 +17998,9 @@ impl KetchupApp {
             return;
         };
         let centre = (minimum + maximum) * 0.5;
-        self.camera_target_z = centre.z;
-        self.pan = Vec2::ZERO;
-        self.pan = rect.center() - self.project(centre, rect);
+        self.camera.target_z = centre.z;
+        self.camera.pan = Vec2::ZERO;
+        self.camera.pan = rect.center() - self.project(centre, rect);
         self.digest = self.catalog.format(
             "digest-center-selection",
             &BTreeMap::from([("count", count.to_string())]),
@@ -18036,16 +18014,16 @@ impl KetchupApp {
         }
         let anchor = self
             .surface_point_at_screen(window.center(), viewport)
-            .or_else(|| self.screen_to_plane(window.center(), viewport, self.camera_target_z));
+            .or_else(|| self.screen_to_plane(window.center(), viewport, self.camera.target_z));
         let Some(anchor) = anchor else {
             return false;
         };
         let before = self.camera_view_state();
         let factor = (viewport.width() / window.width()).min(viewport.height() / window.height());
-        self.zoom = (self.zoom * factor).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+        self.camera.zoom = (self.camera.zoom * factor).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
         self.refresh_camera_distance();
         let anchor_position = self.project(anchor, viewport);
-        self.pan += viewport.center() - anchor_position;
+        self.camera.pan += viewport.center() - anchor_position;
         if !self.remember_camera_change(before) {
             return false;
         }
@@ -18054,9 +18032,9 @@ impl KetchupApp {
     }
 
     fn zoom_by(&mut self, factor: f32, digest_key: &str) {
-        let zoom = (self.zoom * factor).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
-        if zoom != self.zoom {
-            self.zoom = zoom;
+        let zoom = (self.camera.zoom * factor).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+        if zoom != self.camera.zoom {
+            self.camera.zoom = zoom;
             self.refresh_camera_distance();
             self.digest = self.catalog.text(digest_key);
         }
@@ -18071,7 +18049,7 @@ impl KetchupApp {
     }
 
     fn frame_bounds(&mut self, bounds: &[(Vec3, Vec3)]) -> bool {
-        let Some(rect) = self.viewport_rect else {
+        let Some(rect) = self.camera.viewport_rect else {
             return false;
         };
         let corners = bounds
@@ -18088,15 +18066,15 @@ impl KetchupApp {
             low = low.min(corner.z);
             high = high.max(corner.z);
         }
-        self.camera_target_z = f64::midpoint(low, high);
-        self.pan = Vec2::ZERO;
-        self.zoom = 1.0;
+        self.camera.target_z = f64::midpoint(low, high);
+        self.camera.pan = Vec2::ZERO;
+        self.camera.zoom = 1.0;
         let flat = projected_bounds(&corners, |point| self.project(point, rect));
         let fit =
             (rect.width() / flat.width().max(1.0)).min(rect.height() / flat.height().max(1.0));
-        self.zoom = (fit * 0.82).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+        self.camera.zoom = (fit * 0.82).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
         let scaled = projected_bounds(&corners, |point| self.project(point, rect));
-        self.pan = rect.center() - scaled.center();
+        self.camera.pan = rect.center() - scaled.center();
         true
     }
 
@@ -18530,7 +18508,8 @@ impl KetchupApp {
             .into_iter()
             .find(|occurrence| &occurrence.instance_path == instance_path)?;
         let package = self
-            .exact_results
+            .exact
+            .results
             .get_render(&snapshot, occurrence.definition_id)?;
         Some(AssemblySelectionTarget {
             instance_path: instance_path.clone(),
@@ -18550,7 +18529,8 @@ impl KetchupApp {
             .find(|occurrence| &occurrence.instance_path == instance_path)
             .ok_or_else(|| "canonical occurrence is unavailable".to_owned())
             .and_then(|occurrence| {
-                self.exact_results
+                self.exact
+                    .results
                     .get_render(&snapshot, occurrence.definition_id)
                     .ok_or_else(|| {
                         "a unique current visible exact body result is unavailable".to_owned()
@@ -18885,7 +18865,7 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.loft_input_sections = Some((definition_id, loft_sections));
+        self.solid_tools.loft_input_sections = Some((definition_id, loft_sections));
         self.selection.select_exact(
             SelectionId {
                 definition_id,
@@ -18974,7 +18954,7 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.push_pull_distance_input.clear();
+        self.push_pull.distance_input.clear();
         self.select_drawn_profile(definition_id, occurrence_id);
         true
     }
@@ -18989,7 +18969,7 @@ impl KetchupApp {
             },
         };
         self.selection.select_exact(selection.clone(), false);
-        self.drawn_profile = Some((self.document.current().revision_id(), selection));
+        self.hover.drawn_profile = Some((self.document.current().revision_id(), selection));
     }
 
     fn create_profile_at(&mut self, origin_mm: Vec3, points_mm: Vec<[f64; 2]>) -> bool {
@@ -19058,7 +19038,7 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.push_pull_distance_input.clear();
+        self.push_pull.distance_input.clear();
         self.select_drawn_profile(definition_id, occurrence_id);
         self.status_key = "status-sketch-created";
         true
@@ -19126,7 +19106,7 @@ impl KetchupApp {
             return false;
         }
         self.tool_preview.close::<EphemeralBoxPreview>();
-        self.push_pull_distance_input.clear();
+        self.push_pull.distance_input.clear();
         self.selection.select_exact(
             SelectionId {
                 definition_id,
@@ -19169,7 +19149,7 @@ impl KetchupApp {
 
     fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
         self.gesture.transform.move_copy = false;
-        self.transform_input.reset();
+        self.transform_tool.input.reset();
         if !self.move_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
@@ -19273,7 +19253,7 @@ impl KetchupApp {
 
     fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
         self.gesture.transform.rotate_copy = false;
-        self.transform_input.reset();
+        self.transform_tool.input.reset();
         if !self.rotate_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
@@ -21658,7 +21638,8 @@ impl KetchupApp {
                 ..
             }) | FeatureKind::ImportedExactBody(_)
         ) && self
-            .exact_results
+            .exact
+            .results
             .get_render(&snapshot, selection.definition_id)
             .is_none()
         {
@@ -21888,7 +21869,7 @@ impl KetchupApp {
     }
 
     fn prepare_solid_tool_preview(&mut self, tool_selection: SelectionId, keep_tool: bool) -> bool {
-        let Some(target_selection) = self.solid_tool_target.clone() else {
+        let Some(target_selection) = self.solid_tools.target.clone() else {
             return false;
         };
         if target_selection.instance_path == tool_selection.instance_path {
@@ -21953,8 +21934,8 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-solid-tool-invalid");
             return;
         }
-        if self.solid_tool_target.is_none() {
-            self.solid_tool_target = Some(selection.clone());
+        if self.solid_tools.target.is_none() {
+            self.solid_tools.target = Some(selection.clone());
             self.selection.select_exact(selection, false);
             self.status_key = if self.active_solid_tool_operation() == Some(BooleanOperation::Split)
             {
@@ -22150,7 +22131,7 @@ impl KetchupApp {
         if let Some(selection) = preview.selection_after {
             self.selection.select_exact(selection, false);
         }
-        self.solid_tool_target = None;
+        self.solid_tools.target = None;
         self.status_key = "status-ready";
         self.digest = self.catalog.text(preview.committed_digest_key);
         true
@@ -22182,8 +22163,8 @@ impl KetchupApp {
         {
             return false;
         }
-        self.occurrence_clipboard = plan.occurrence_ids.into_iter().collect();
-        self.cut_occurrence_clipboard.clear();
+        self.clipboard.occurrences = plan.occurrence_ids.into_iter().collect();
+        self.clipboard.cut_occurrences.clear();
         self.digest = self.catalog.format(
             "digest-copied-to-clipboard",
             &BTreeMap::from([("count", plan.occurrence_count.to_string())]),
@@ -22264,8 +22245,8 @@ impl KetchupApp {
         {
             return false;
         }
-        self.occurrence_clipboard = occurrence_ids.into_iter().collect();
-        self.cut_occurrence_clipboard = clipboard;
+        self.clipboard.occurrences = occurrence_ids.into_iter().collect();
+        self.clipboard.cut_occurrences = clipboard;
         self.selection.clear();
         self.tool_preview.close::<EphemeralBoxPreview>();
         self.status_key = "status-object-deleted";
@@ -22284,25 +22265,28 @@ impl KetchupApp {
     }
 
     fn paste_source_plan(&self) -> Option<PasteSourcePlan> {
-        if self.occurrence_clipboard.is_empty() || !self.selection.edit_context.is_empty() {
+        if self.clipboard.occurrences.is_empty() || !self.selection.edit_context.is_empty() {
             return None;
         }
         let source_occurrence_ids = self
-            .occurrence_clipboard
+            .clipboard
+            .occurrences
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let source_occurrence_count = self.occurrence_clipboard.len();
+        let source_occurrence_count = self.clipboard.occurrences.len();
         if source_occurrence_count != source_occurrence_ids.len()
             || !self
-                .occurrence_clipboard
+                .clipboard
+                .occurrences
                 .iter()
                 .copied()
                 .eq(source_occurrence_ids.iter().copied())
-            || (!self.cut_occurrence_clipboard.is_empty()
-                && (self.cut_occurrence_clipboard.len() != source_occurrence_count
+            || (!self.clipboard.cut_occurrences.is_empty()
+                && (self.clipboard.cut_occurrences.len() != source_occurrence_count
                     || !self
-                        .cut_occurrence_clipboard
+                        .clipboard
+                        .cut_occurrences
                         .iter()
                         .map(|item| item.source_occurrence_id)
                         .eq(source_occurrence_ids.iter().copied())))
@@ -22323,7 +22307,8 @@ impl KetchupApp {
 
         for source_id in source_occurrence_ids.iter().copied() {
             let cut_source = self
-                .cut_occurrence_clipboard
+                .clipboard
+                .cut_occurrences
                 .iter()
                 .find(|item| item.source_occurrence_id == source_id);
             let live_source = if cut_source.is_none() {
@@ -22765,7 +22750,7 @@ impl KetchupApp {
     }
 
     pub fn set_push_pull_distance_input(&mut self, value: impl Into<String>) {
-        self.push_pull_distance_input = value.into();
+        self.push_pull.distance_input = value.into();
     }
 
     fn prepare_smart_push_pull_proposal(
@@ -22791,7 +22776,7 @@ impl KetchupApp {
     }
 
     fn push_pull_planning_snapshot(&self) -> Snapshot {
-        match self.smart_push_pull_planning.as_ref() {
+        match self.push_pull.smart_planning.as_ref() {
             Some(SmartPushPullPlanning::TipReplacement(parent)) => parent.snapshot().clone(),
             _ => self.document.current(),
         }
@@ -22801,7 +22786,7 @@ impl KetchupApp {
         &self,
         batch: CommandBatch,
     ) -> Option<SmartPushPullProposal> {
-        match self.smart_push_pull_planning.as_ref() {
+        match self.push_pull.smart_planning.as_ref() {
             Some(SmartPushPullPlanning::TipReplacement(parent)) => self
                 .document
                 .prepare_tip_replacement_proposal(
@@ -22824,7 +22809,7 @@ impl KetchupApp {
     fn start_preview_for(&mut self, planning: SmartPushPullPlanning) -> bool {
         self.status_key = "error-preview-stale";
         self.digest = self.catalog.text("error-preview-stale");
-        if self.mutation_readiness != MutationReadiness::Ready {
+        if self.exact.mutation_readiness != MutationReadiness::Ready {
             return false;
         }
         let prepared = self.try_start_preview_for(planning);
@@ -22835,7 +22820,7 @@ impl KetchupApp {
     }
 
     fn try_start_preview_for(&mut self, planning: SmartPushPullPlanning) -> bool {
-        self.smart_push_pull_planning = Some(planning.clone());
+        self.push_pull.smart_planning = Some(planning.clone());
         let Some(selection) = self.selection.primary.clone() else {
             self.clear_ephemeral_edit_state();
             self.status_key = "error-push-pull-selection-required";
@@ -22845,7 +22830,7 @@ impl KetchupApp {
         if !self.occurrence_in_active_context(&selection.instance_path) {
             return false;
         }
-        let Some(distance_mm) = parse_distance_mm(&self.push_pull_distance_input) else {
+        let Some(distance_mm) = parse_distance_mm(&self.push_pull.distance_input) else {
             return false;
         };
         if let Some(failure) = self.face_workflow.take_headless_failure() {
@@ -22893,7 +22878,7 @@ impl KetchupApp {
     }
 
     fn push_pull_planning_plan(&self) -> Option<PushPullPlanningPlan> {
-        match self.smart_push_pull_planning.as_ref()? {
+        match self.push_pull.smart_planning.as_ref()? {
             SmartPushPullPlanning::Append => Some(PushPullPlanningPlan::Append),
             SmartPushPullPlanning::TipReplacement(parent) => {
                 Some(PushPullPlanningPlan::TipReplacement {
@@ -22915,7 +22900,7 @@ impl KetchupApp {
                 [] => (None, None),
                 [(_, topological)] => {
                     let resolved = topological
-                        .resolve_current(&snapshot, &self.topology_results)
+                        .resolve_current(&snapshot, &self.exact.topology_results)
                         .ok()?;
                     if resolved.instance_path != target.instance_path
                         || resolved.reference.definition_id != target.definition_id
@@ -23042,7 +23027,7 @@ impl KetchupApp {
         distance_mm: f64,
         principal: ProposalPrincipal,
     ) -> bool {
-        let distance_expression = self.push_pull_distance_input.clone();
+        let distance_expression = self.push_pull.distance_input.clone();
         if parse_distance_mm(&distance_expression).map(f64::to_bits) != Some(distance_mm.to_bits())
         {
             return false;
@@ -23063,7 +23048,7 @@ impl KetchupApp {
         };
         let new_extent_mm = f64::from_bits(plan.new_extent_mm_bits);
         let shared_count = plan.shared_count;
-        self.smart_push_pull_proposal = Some(proposal);
+        self.push_pull.smart_proposal = Some(proposal);
         self.tool_preview.close::<OccurrenceOperationPreview>();
         if plan.source.topological_reference.is_some()
             && self
@@ -23071,7 +23056,8 @@ impl KetchupApp {
                 .get::<EphemeralBoxPreview>()
                 .is_none_or(|preview| preview.plan != plan)
         {
-            self.face_offset_preview_due = Some(Instant::now() + Duration::from_millis(150));
+            self.push_pull.face_offset_preview_due =
+                Some(Instant::now() + Duration::from_millis(150));
         }
         self.tool_preview.open(EphemeralBoxPreview { plan, batch });
         self.status_key = "status-preview";
@@ -23107,8 +23093,8 @@ impl KetchupApp {
         let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
             return false;
         };
-        if self.push_pull_distance_input != preview.plan.distance_expression
-            || parse_distance_mm(&self.push_pull_distance_input).map(f64::to_bits)
+        if self.push_pull.distance_input != preview.plan.distance_expression
+            || parse_distance_mm(&self.push_pull.distance_input).map(f64::to_bits)
                 != Some(preview.plan.distance_mm_bits)
             || self.selection.primary.as_ref() != Some(&preview.plan.source.target)
         {
@@ -23126,7 +23112,8 @@ impl KetchupApp {
                 && batch == preview.batch
                 && candidate.is_current(&snapshot)
                 && self
-                    .smart_push_pull_proposal
+                    .push_pull
+                    .smart_proposal
                     .as_ref()
                     .is_some_and(|proposal| {
                         proposal.is_current(&snapshot)
@@ -23150,7 +23137,7 @@ impl KetchupApp {
         } else {
             return None;
         };
-        let snapshot = if let Some(proposal) = self.smart_push_pull_proposal.as_ref() {
+        let snapshot = if let Some(proposal) = self.push_pull.smart_proposal.as_ref() {
             if proposal.batch() != batch {
                 return None;
             }
@@ -23193,11 +23180,11 @@ impl KetchupApp {
     }
 
     fn clear_push_pull_preview(&mut self) {
-        self.face_offset_evaluation = None;
-        self.face_offset_preview_due = None;
+        self.push_pull.face_offset_evaluation = None;
+        self.push_pull.face_offset_preview_due = None;
         self.tool_preview.close::<EphemeralBoxPreview>();
-        self.smart_push_pull_proposal = None;
-        self.smart_push_pull_planning = None;
+        self.push_pull.smart_proposal = None;
+        self.push_pull.smart_planning = None;
         self.tool_preview.close::<OccurrenceOperationPreview>();
         self.tool_preview.close::<drawn_shape::DrawnShapePreview>();
     }
@@ -23218,8 +23205,8 @@ impl KetchupApp {
     fn clear_ephemeral_edit_state(&mut self) {
         self.clear_push_pull_preview();
         self.tool_preview = None;
-        self.solid_tool_target = None;
-        self.revolve_tool = None;
+        self.solid_tools.target = None;
+        self.solid_tools.revolve = None;
         self.clear_helix_thread_preview();
         self.gesture.drag.close::<PushPullDrag>();
         self.gesture.drag.close::<PushPullAnchor>();
@@ -23295,7 +23282,7 @@ impl KetchupApp {
             self.selection.topological.clear();
         }
         let _ = self.current_transform_correction();
-        self.push_pull_distance_input.clear();
+        self.push_pull.distance_input.clear();
     }
 
     #[must_use]
@@ -23324,14 +23311,14 @@ impl KetchupApp {
     ) -> Result<T, WorkRecoveryMutationError<E>> {
         self.store_assistant_conversation();
         self.store_assistant_memory();
-        let document_path = self.document_path.clone();
-        let file_identity = self.file_identity;
-        let recovery_open = self.recovery_open.is_some();
-        let saved_digest = self.saved_digest.clone();
-        let conversation_digest = assistant_conversation_digest(&self.assistant_messages);
-        let saved_conversation_digest = self.saved_assistant_conversation_digest.clone();
-        let container_data = &self.container_data;
-        let work_recovery_identity = self.work_recovery_identity;
+        let document_path = self.file.path.clone();
+        let file_identity = self.file.identity;
+        let recovery_open = self.file.recovery_open.is_some();
+        let saved_digest = self.file.saved_digest.clone();
+        let conversation_digest = assistant_conversation_digest(&self.assistant.messages);
+        let saved_conversation_digest = self.assistant.saved_conversation_digest.clone();
+        let container_data = &self.file.container_data;
+        let work_recovery_identity = self.file.work_recovery_identity;
         let mut next_work_recovery_identity = work_recovery_identity;
         let result = self.document.try_canonical_transaction(
             |document| mutate(document).map_err(WorkRecoveryMutationError::Mutation),
@@ -23367,8 +23354,8 @@ impl KetchupApp {
         );
         match result {
             Ok(value) => {
-                self.work_recovery_identity = next_work_recovery_identity;
-                self.work_recovery_digest = (self.is_dirty()
+                self.file.work_recovery_identity = next_work_recovery_identity;
+                self.file.work_recovery_digest = (self.is_dirty()
                     && document_path.is_some()
                     && file_identity.is_some())
                 .then(|| format!("{}:{conversation_digest}", self.document.history_digest()));
@@ -23397,18 +23384,18 @@ impl KetchupApp {
         mutate: impl FnOnce(&mut DocumentStore) -> Result<(T, P), E>,
         publish: impl FnOnce(&mut Self, P),
     ) -> Result<T, WorkRecoveryMutationError<E>> {
-        self.mutation_readiness = MutationReadiness::Pending;
+        self.exact.mutation_readiness = MutationReadiness::Pending;
         let result = self.mutate_document_with_work_recovery(mutate);
         match result {
             Ok((value, publication)) => {
                 publish(self, publication);
                 let snapshot = self.document.current();
                 self.rebind_exact_results(&snapshot);
-                self.mutation_readiness = MutationReadiness::Ready;
+                self.exact.mutation_readiness = MutationReadiness::Ready;
                 Ok(value)
             }
             Err(error) => {
-                self.mutation_readiness = MutationReadiness::Ready;
+                self.exact.mutation_readiness = MutationReadiness::Ready;
                 Err(error)
             }
         }
@@ -23432,16 +23419,16 @@ impl KetchupApp {
             &mut ExactResultRegistry,
         ) -> Result<T, E>,
     ) -> Result<T, WorkRecoveryMutationError<E>> {
-        let mut exact_results = self.exact_results.clone();
-        let mut topology_results = self.topology_results.clone();
+        let mut exact_results = self.exact.results.clone();
+        let mut topology_results = self.exact.topology_results.clone();
         self.complete_mutation_with_publication(
             move |document| {
                 let value = mutate(document, &mut exact_results, &mut topology_results)?;
                 Ok((value, (exact_results, topology_results)))
             },
             |app, (exact_results, topology_results)| {
-                app.exact_results = exact_results;
-                app.topology_results = topology_results;
+                app.exact.results = exact_results;
+                app.exact.topology_results = topology_results;
             },
         )
     }
@@ -23512,10 +23499,10 @@ impl KetchupApp {
         ketchup_core::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
-        let previous_container = std::mem::replace(&mut self.container_data, staged_container);
+        let previous_container = std::mem::replace(&mut self.file.container_data, staged_container);
         let result = self.commit_verified_proposal_with_work_recovery(proposal);
         if result.is_err() {
-            self.container_data = previous_container;
+            self.file.container_data = previous_container;
         }
         result
     }
@@ -23538,14 +23525,14 @@ impl KetchupApp {
         }
         self.invalidate_pending_import_reviews();
         if undoing_assistant_change {
-            self.assistant_verification = None;
+            self.assistant.verification = None;
         }
         self.clear_ephemeral_edit_state();
         self.end_transform_correction();
         self.cancel_rectangle_sketch();
-        self.parameter_editor_node = None;
-        self.parameter_provenance = None;
-        self.parameter_last_recomputed_nodes.clear();
+        self.parameter.editor_node = None;
+        self.parameter.provenance = None;
+        self.parameter.last_recomputed_nodes.clear();
         self.reconcile_selection();
         self.status_key = "status-undo";
         true
@@ -23562,9 +23549,9 @@ impl KetchupApp {
         self.clear_ephemeral_edit_state();
         self.end_transform_correction();
         self.cancel_rectangle_sketch();
-        self.parameter_editor_node = None;
-        self.parameter_provenance = None;
-        self.parameter_last_recomputed_nodes.clear();
+        self.parameter.editor_node = None;
+        self.parameter.provenance = None;
+        self.parameter.last_recomputed_nodes.clear();
         self.reconcile_selection();
         self.status_key = "status-redo";
         true
@@ -23574,7 +23561,7 @@ impl KetchupApp {
         if let Some(confirmed) = self.confirm_drawn_shape_preview() {
             return confirmed;
         }
-        if self.face_offset_evaluation.is_some() {
+        if self.push_pull.face_offset_evaluation.is_some() {
             return self.confirm_face_offset_preview();
         }
         if self.has_preview() && self.preview_requires_face_offset_evaluation() {
@@ -23585,7 +23572,7 @@ impl KetchupApp {
         }
         if !self.has_preview() {
             self.tool_preview.close::<EphemeralBoxPreview>();
-            self.smart_push_pull_proposal = None;
+            self.push_pull.smart_proposal = None;
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -23627,7 +23614,7 @@ impl KetchupApp {
                 .is_err()
         {
             self.tool_preview.close::<EphemeralBoxPreview>();
-            self.smart_push_pull_proposal = None;
+            self.push_pull.smart_proposal = None;
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -23636,10 +23623,10 @@ impl KetchupApp {
             Some(&preview.plan.source.target.element),
         );
         self.tool_preview.close::<EphemeralBoxPreview>();
-        self.smart_push_pull_proposal = None;
+        self.push_pull.smart_proposal = None;
         self.status_key = "status-ready";
         if let Some(selection) = self.selection.primary.clone() {
-            self.last_push_pull = Some(LastPushPull {
+            self.push_pull.last = Some(LastPushPull {
                 selection: selection.clone(),
                 revision: self.document_revision(),
                 canonical_digest: self.canonical_digest(),
@@ -23652,7 +23639,7 @@ impl KetchupApp {
                 &BTreeMap::from([
                     (
                         "distance",
-                        parse_distance_mm(&self.push_pull_distance_input)
+                        parse_distance_mm(&self.push_pull.distance_input)
                             .map_or_else(String::new, format_signed_mm),
                     ),
                     (
@@ -23683,7 +23670,7 @@ impl KetchupApp {
             return Some(format!(
                 "{}: {}",
                 definition.name(),
-                format_signed_mm(parse_distance_mm(&self.push_pull_distance_input)?)
+                format_signed_mm(parse_distance_mm(&self.push_pull.distance_input)?)
             ));
         }
         let from = self
@@ -23726,18 +23713,20 @@ impl KetchupApp {
         if !self.face_workflow.snaps_enabled() {
             return None;
         }
-        if self.hover_overlap_index == 0
+        if self.hover.overlap_index == 0
             && let Some(snap) = self
-                .hover_snap
+                .hover
+                .snap
                 .as_ref()
                 .filter(|snap| snap.kind != SnapKind::Face)
         {
             return Some(snap.clone());
         }
         let hit = self
-            .hover_pick
+            .hover
+            .pick
             .as_ref()?
-            .overlap_choice(self.hover_overlap_index)?;
+            .overlap_choice(self.hover.overlap_index)?;
         Some(SnapResult {
             kind: SnapKind::Face,
             reference: hit.reference.clone(),
@@ -23820,9 +23809,9 @@ impl KetchupApp {
         let distance = snapped.unwrap_or_else(|| {
             push_pull_distance_from_pointer(drag, pointer, self.face_workflow.snaps_enabled())
         });
-        self.push_pull_distance_input =
+        self.push_pull.distance_input =
             snapped.map_or_else(|| format_height(distance), |value| value.to_string());
-        self.value_input = self.push_pull_distance_input.clone();
+        self.value_box.input = self.push_pull.distance_input.clone();
         if distance.abs() >= 0.01 {
             self.start_preview()
         } else {
@@ -23839,7 +23828,8 @@ impl KetchupApp {
     }
 
     fn push_pull_pointer_target(&self) -> Option<SelectionId> {
-        self.hovered
+        self.hover
+            .target
             .clone()
             .filter(|selection| {
                 matches!(
@@ -23855,7 +23845,7 @@ impl KetchupApp {
                         matches!(
                             selection.element,
                             ElementId::Face { .. } | ElementId::TopologicalFace(_)
-                        ) && self.hover_pick.as_ref().is_some_and(|pick| {
+                        ) && self.hover.pick.as_ref().is_some_and(|pick| {
                             pick.overlapping
                                 .iter()
                                 .any(|hit| hit.reference == **selection)
@@ -23914,7 +23904,7 @@ impl KetchupApp {
         if pixels_per_mm > SCREEN_ROUNDING_PX {
             Some((projected / pixels_per_mm, pixels_per_mm))
         } else {
-            let fallback_scale = self.zoom * rect.width().min(rect.height()) / 420.0;
+            let fallback_scale = self.camera.zoom * rect.width().min(rect.height()) / 420.0;
             Some((Vec2::new(0.0, -1.0), fallback_scale.max(SCREEN_ROUNDING_PX)))
         }
     }
@@ -24115,7 +24105,8 @@ impl KetchupApp {
             return None;
         }
         let ExactBodyPackage::Graph(package) = self
-            .exact_results
+            .exact
+            .results
             .get_render(snapshot, selection.definition_id)?
             .as_ref()
         else {
@@ -24625,11 +24616,12 @@ impl KetchupApp {
             .as_ref()
             .map(|(selection, _, _)| selection.clone())
             .or_else(|| {
-                self.hover_snap
+                self.hover
+                    .snap
                     .as_ref()
                     .filter(|snap| snap.kind != SnapKind::Face)
                     .map(|snap| snap.reference.clone())
-                    .or_else(|| self.hovered.clone())
+                    .or_else(|| self.hover.target.clone())
                     .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
             })
         else {
@@ -24643,7 +24635,8 @@ impl KetchupApp {
             .as_ref()
             .map(|(_, _, position)| position.z)
             .or_else(|| {
-                self.hover_pick
+                self.hover
+                    .pick
                     .as_ref()
                     .filter(|pick| pick.primary.reference.instance_path == selection.instance_path)
                     .map(|pick| pick.primary.position_mm.z)
@@ -24661,7 +24654,8 @@ impl KetchupApp {
             .as_ref()
             .map(|(_, _, position)| *position)
             .or_else(|| {
-                self.hover_snap
+                self.hover
+                    .snap
                     .as_ref()
                     .filter(|snap| {
                         snap.kind != SnapKind::Face
@@ -24673,7 +24667,7 @@ impl KetchupApp {
         let Some(pointer_start_world) = pointer_start_world else {
             return false;
         };
-        self.value_input = "0".to_owned();
+        self.value_box.input = "0".to_owned();
         let group_id = self.selection.selected_group;
         let profile_target = circular_profile
             .as_ref()
@@ -24720,7 +24714,7 @@ impl KetchupApp {
     /// that axis, so pinning mid-drag never makes the body jump.
     fn advance_move(&self, drag: &mut MoveDrag, pointer: Pos2, rect: Rect, free: bool) {
         let Some(axis) = drag.axis else {
-            if let Some(snap) = self.hover_snap.as_ref().filter(|snap| {
+            if let Some(snap) = self.hover.snap.as_ref().filter(|snap| {
                 snap.kind != SnapKind::Face
                     && snap.reference.instance_path != drag.selection.instance_path
             }) {
@@ -24765,7 +24759,7 @@ impl KetchupApp {
     /// Whether the value box currently owns the keyboard, either because it
     /// already has focus or because a keystroke this frame asked for it.
     fn value_box_is_being_typed_into(&self, context: &egui::Context) -> bool {
-        self.focus_value_box || context.wants_keyboard_input()
+        self.value_box.focus || context.wants_keyboard_input()
     }
 
     fn apply_transform_input_event(&mut self, tool: ActiveTool, event: TransformInputEvent) {
@@ -24832,7 +24826,8 @@ impl KetchupApp {
         command_chord: bool,
     ) {
         if let Some(event) =
-            self.transform_input
+            self.transform_tool
+                .input
                 .interpret_command(enabled, command_down, command_chord)
         {
             self.apply_transform_input_event(tool, event);
@@ -24858,7 +24853,7 @@ impl KetchupApp {
             drag.axis_reference = None;
             drag.delta_mm = Vec3::ZERO;
         }
-        self.value_input = "0".to_owned();
+        self.value_box.input = "0".to_owned();
         self.digest = self.catalog.format(
             "digest-move-axis-locked",
             &BTreeMap::from([(
@@ -24871,7 +24866,8 @@ impl KetchupApp {
 
     fn set_scale_axis_lock(&mut self, axis: Option<Axis>) {
         if matches!(
-            self.correction_session
+            self.transform_tool
+                .correction
                 .as_ref()
                 .map(|session| &session.operation),
             Some(CorrectionOperation::Scale(_))
@@ -24944,7 +24940,8 @@ impl KetchupApp {
     fn begin_scale_drag_at(&mut self, pointer: Pos2, rect: Rect) -> bool {
         let selected = self.selected_move_reference();
         let Some(selection) = selected.clone().or_else(|| {
-            self.hovered
+            self.hover
+                .target
                 .clone()
                 .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
         }) else {
@@ -24978,7 +24975,7 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-scale-start-too-close");
             return false;
         }
-        self.value_input = "1".to_owned();
+        self.value_box.input = "1".to_owned();
         self.set_scale_session(ScaleDrag {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -25216,7 +25213,7 @@ impl KetchupApp {
     fn rotation_bounds_for(&self, applies: &dyn Fn(&InstancePath) -> bool) -> Option<[Vec3; 2]> {
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
-        let cache = self.interaction_projection_cache.borrow();
+        let cache = self.hover.projection_cache.borrow();
         let projection = &cache
             .as_ref()
             .expect("interaction cache was built")
@@ -25278,10 +25275,11 @@ impl KetchupApp {
     fn begin_rotate_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
         let selected = self.selected_move_reference();
         let Some(selection) = selected.clone().or_else(|| {
-            self.hover_snap
+            self.hover
+                .snap
                 .as_ref()
                 .map(|snap| snap.reference.clone())
-                .or_else(|| self.hovered.clone())
+                .or_else(|| self.hover.target.clone())
                 .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
         }) else {
             self.digest = self.catalog.text("digest-rotate-start-missed");
@@ -25326,7 +25324,7 @@ impl KetchupApp {
             return false;
         };
         let reference_mm = None;
-        self.value_input = "0".to_owned();
+        self.value_box.input = "0".to_owned();
         self.set_rotate_session(
             ToolSessionPhase::Gesture,
             RotateDrag {
@@ -25351,7 +25349,8 @@ impl KetchupApp {
     /// click establishes one in the new plane without a hover-induced turn.
     fn set_rotate_axis_lock(&mut self, axis: Option<Axis>) {
         if matches!(
-            self.correction_session
+            self.transform_tool
+                .correction
                 .as_ref()
                 .map(|session| &session.operation),
             Some(CorrectionOperation::Rotate(_))
@@ -25365,7 +25364,7 @@ impl KetchupApp {
             drag.reference_mm = None;
             drag.angle_degrees = 0.0;
         }
-        self.value_input = "0".to_owned();
+        self.value_box.input = "0".to_owned();
         self.digest = self.catalog.format(
             "digest-rotate-axis-locked",
             &BTreeMap::from([(
@@ -25597,7 +25596,7 @@ impl KetchupApp {
 
     fn proxy_preview_is_active(&self, item: &RenderBox) -> bool {
         let push_pull_preview = self.has_preview()
-            && self.face_offset_evaluation.is_none()
+            && self.push_pull.face_offset_evaluation.is_none()
             && self
                 .tool_preview
                 .get::<EphemeralBoxPreview>()
@@ -25688,8 +25687,8 @@ impl KetchupApp {
     }
 
     fn orbit(&mut self, pointer_delta: Vec2) {
-        self.yaw += pointer_delta.x * 0.006;
-        self.pitch += pointer_delta.y * 0.006;
+        self.camera.yaw += pointer_delta.x * 0.006;
+        self.camera.pitch += pointer_delta.y * 0.006;
     }
 
     /// The first measured point while a measurement is being taken.
@@ -25718,7 +25717,7 @@ impl KetchupApp {
             self.gesture.measure.start = Some(point);
             self.gesture.measure.cursor = Some(point);
             self.gesture.measure.end = None;
-            self.value_input.clear();
+            self.value_box.input.clear();
             self.status_key = "status-measure-second-point";
         }
     }
@@ -25811,7 +25810,7 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-pocket-invalid-depth");
             return false;
         }
-        self.value_input = format_height(depth_mm);
+        self.value_box.input = format_height(depth_mm);
         self.status_key = "status-pocket-created";
         self.digest = self.catalog.format(
             "digest-pocket-depth-edited",
@@ -25860,7 +25859,7 @@ impl KetchupApp {
             self.gesture.sketch.armed = true;
             self.gesture.sketch.start = Some(end);
             self.gesture.sketch.cursor = Some(end);
-            self.value_input.clear();
+            self.value_box.input.clear();
             self.status_key = "status-line-end";
             self.digest = self.catalog.format(
                 "digest-exact-line",
@@ -26008,7 +26007,7 @@ impl KetchupApp {
         self.gesture.sketch.chain_origin = None;
         self.gesture.sketch.chain_points.clear();
         self.gesture.sketch.chain_items.clear();
-        self.value_input.clear();
+        self.value_box.input.clear();
         self.select_drawn_profile(definition_id, occurrence_id);
         self.status_key = "status-line-closed";
         self.digest = self.catalog.format(
@@ -26022,7 +26021,8 @@ impl KetchupApp {
         let Some(start) = self.gesture.sketch.start else {
             return false;
         };
-        let Some(length_mm) = parse_distance_mm(&self.value_input).filter(|value| *value > 0.01)
+        let Some(length_mm) =
+            parse_distance_mm(&self.value_box.input).filter(|value| *value > 0.01)
         else {
             return false;
         };
@@ -26091,7 +26091,7 @@ impl KetchupApp {
             self.gesture.sketch.armed = self.uses_drawing_plane();
             self.gesture.sketch.start = None;
             self.gesture.sketch.cursor = None;
-            self.value_input = format_height(radius_mm);
+            self.value_box.input = format_height(radius_mm);
             self.status_key = "status-circle-created";
             self.digest = self.catalog.format(
                 "digest-exact-circle",
@@ -26105,7 +26105,8 @@ impl KetchupApp {
         let Some(center) = self.gesture.sketch.start else {
             return false;
         };
-        let Some(radius_mm) = parse_distance_mm(&self.value_input).filter(|radius| *radius > 0.01)
+        let Some(radius_mm) =
+            parse_distance_mm(&self.value_box.input).filter(|radius| *radius > 0.01)
         else {
             return false;
         };
@@ -26148,7 +26149,7 @@ impl KetchupApp {
             self.gesture.sketch.start = None;
             self.gesture.sketch.end = None;
             self.gesture.sketch.cursor = None;
-            self.value_input = format_height(bulge_mm);
+            self.value_box.input = format_height(bulge_mm);
             self.status_key = "status-arc-created";
             self.digest = self.catalog.format(
                 "digest-exact-arc",
@@ -26163,7 +26164,7 @@ impl KetchupApp {
             return false;
         };
         let Some(bulge_mm) =
-            parse_distance_mm(&self.value_input).filter(|value| value.abs() > 0.01)
+            parse_distance_mm(&self.value_box.input).filter(|value| value.abs() > 0.01)
         else {
             return false;
         };
@@ -26222,7 +26223,7 @@ impl KetchupApp {
         self.gesture.sketch.armed = self.uses_drawing_plane();
         self.gesture.sketch.start = None;
         self.gesture.sketch.cursor = None;
-        self.value_input.clear();
+        self.value_box.input.clear();
         self.status_key = "status-sketch-first-point";
         self.digest = self.catalog.format(
             "digest-exact-rectangle",
@@ -26265,7 +26266,7 @@ impl KetchupApp {
             self.gesture.sketch.armed = self.uses_drawing_plane();
             self.gesture.sketch.start = None;
             self.gesture.sketch.cursor = None;
-            self.value_input.clear();
+            self.value_box.input.clear();
             self.status_key = "status-sketch-first-point";
             self.digest = self.catalog.format(
                 "digest-exact-rectangle",
@@ -26282,7 +26283,7 @@ impl KetchupApp {
         let Some(start) = self.gesture.sketch.start else {
             return false;
         };
-        let Some([width, depth]) = parse_rectangle_dimensions(&self.value_input) else {
+        let Some([width, depth]) = parse_rectangle_dimensions(&self.value_box.input) else {
             return false;
         };
         let frame = self.drawing_frame(Some(start));
@@ -26320,7 +26321,8 @@ impl KetchupApp {
         }
         if self.active_tool == ActiveTool::Scale {
             let Some(factor) = self
-                .value_input
+                .value_box
+                .input
                 .trim()
                 .parse::<f64>()
                 .ok()
@@ -26348,7 +26350,7 @@ impl KetchupApp {
         }
         if self.active_tool == ActiveTool::Rotate {
             let Some(angle_degrees) =
-                parse_angle_degrees(&self.value_input).filter(|angle| angle.abs() <= 360.0)
+                parse_angle_degrees(&self.value_box.input).filter(|angle| angle.abs() <= 360.0)
             else {
                 self.digest = self.catalog.text("digest-rotate-invalid-angle");
                 return false;
@@ -26389,7 +26391,7 @@ impl KetchupApp {
                 self.digest = self.catalog.text("error-push-pull-selection-required");
                 return false;
             };
-            if parse_distance_mm(&self.value_input).is_none() {
+            if parse_distance_mm(&self.value_box.input).is_none() {
                 self.digest = self.catalog.text("digest-nothing-to-apply");
                 return false;
             }
@@ -26397,7 +26399,7 @@ impl KetchupApp {
             // replacement against its guarded parent. The committed tip remains
             // untouched throughout chooser and preview interaction.
             let current = self.document.current();
-            let correction = self.last_push_pull.as_ref().filter(|operation| {
+            let correction = self.push_pull.last.as_ref().filter(|operation| {
                 operation.selection == selection
                     && operation.revision == current.revision_id()
                     && operation.canonical_digest == current.canonical_digest()
@@ -26409,13 +26411,13 @@ impl KetchupApp {
                 });
             self.gesture.drag.close::<PushPullDrag>();
             self.gesture.drag.close::<PushPullAnchor>();
-            self.push_pull_distance_input = self.value_input.clone();
+            self.push_pull.distance_input = self.value_box.input.clone();
             if self.start_preview_for(planning) && self.confirm_push_pull_preview() {
                 self.digest = self.catalog.format(
                     "digest-exact-value-applied",
                     &BTreeMap::from([(
                         "value",
-                        parse_distance_mm(&self.value_input)
+                        parse_distance_mm(&self.value_box.input)
                             .map_or_else(String::new, format_signed_mm),
                     )]),
                 );
@@ -26423,7 +26425,7 @@ impl KetchupApp {
             }
         }
         if self.active_tool == ActiveTool::Move {
-            let value = self.value_input.trim();
+            let value = self.value_box.input.trim();
             if value.starts_with(['x', 'X', '*', '×', '/']) {
                 let Some((mode, count)) = parse_move_copy_array(value) else {
                     self.digest = self.catalog.text("digest-copy-array-invalid");
@@ -26437,10 +26439,10 @@ impl KetchupApp {
             }
             // A pinned axis turns a plain number into travel along that axis,
             // which is how a part gets set down exactly 25 mm higher.
-            let exact_vector = parse_move_vector(&self.value_input);
+            let exact_vector = parse_move_vector(&self.value_box.input);
             let typed = exact_vector.or_else(|| {
                 let axis = self.gesture.transform.move_axis_lock?;
-                let distance = parse_distance_mm(&self.value_input)?;
+                let distance = parse_distance_mm(&self.value_box.input)?;
                 (distance.abs() >= 0.01).then(|| axis_direction(axis) * distance)
             });
             // A gesture in flight already knows its target and its copy mode;
@@ -26473,7 +26475,7 @@ impl KetchupApp {
                 let previous = self
                     .current_move_correction()
                     .filter(|(_, operation)| operation.accepts_vector_correction);
-                if self.correction_session.is_some() && previous.is_none() {
+                if self.transform_tool.correction.is_some() && previous.is_none() {
                     self.end_transform_correction();
                 }
                 if let Some((selection, previous)) = previous {
@@ -26495,7 +26497,7 @@ impl KetchupApp {
                     );
                     return true;
                 }
-            } else if let Some(distance_mm) = parse_distance_mm(&self.value_input) {
+            } else if let Some(distance_mm) = parse_distance_mm(&self.value_box.input) {
                 if let Some((_, previous)) = self.current_move_copy_correction() {
                     let previous_distance_mm = vector_length(previous.delta_mm);
                     if previous_distance_mm > 0.0
@@ -26512,7 +26514,7 @@ impl KetchupApp {
                     self.end_transform_correction();
                 }
                 let previous = self.current_move_correction();
-                if self.correction_session.is_some() && previous.is_none() {
+                if self.transform_tool.correction.is_some() && previous.is_none() {
                     self.end_transform_correction();
                 }
                 if let Some((selection, previous)) = previous {
@@ -26572,10 +26574,10 @@ impl KetchupApp {
 
     /// Camera axes in world space: screen right, screen up, and view direction.
     fn camera_basis(&self) -> (Vec3, Vec3, Vec3) {
-        let yaw_sin = f64::from(self.yaw.sin());
-        let yaw_cos = f64::from(self.yaw.cos());
-        let pitch_sin = f64::from(self.pitch.sin());
-        let pitch_cos = f64::from(self.pitch.cos());
+        let yaw_sin = f64::from(self.camera.yaw.sin());
+        let yaw_cos = f64::from(self.camera.yaw.cos());
+        let pitch_sin = f64::from(self.camera.pitch.sin());
+        let pitch_cos = f64::from(self.camera.pitch.cos());
         (
             Vec3::new(yaw_cos, -yaw_sin, 0.0),
             Vec3::new(yaw_sin * pitch_cos, yaw_cos * pitch_cos, -pitch_sin),
@@ -26584,7 +26586,7 @@ impl KetchupApp {
     }
 
     fn camera_target(&self) -> Vec3 {
-        Vec3::new(BOX_WIDTH_MM * 0.5, BOX_DEPTH_MM * 0.5, self.camera_target_z)
+        Vec3::new(BOX_WIDTH_MM * 0.5, BOX_DEPTH_MM * 0.5, self.camera.target_z)
     }
 
     /// Millimetres between the eye and the orbit target — the readout's `dist`.
@@ -26593,12 +26595,12 @@ impl KetchupApp {
     /// only meaningful while the eye is outside the model, so the cached value
     /// is pushed back to clear the scene. See [`Self::refresh_camera_distance`].
     fn camera_distance(&self) -> f64 {
-        self.camera_distance_mm
+        self.camera.distance_mm
     }
 
     /// Recompute the eye distance for the current scene. Once per frame.
     fn refresh_camera_distance(&mut self) {
-        let nominal = 420.0 / f64::from(self.zoom);
+        let nominal = 420.0 / f64::from(self.camera.zoom);
         let target = self.camera_target();
         let radius = self
             .active_frame_bounds()
@@ -26608,7 +26610,7 @@ impl KetchupApp {
                     .map(|corner| vector_length(origin + corner - target))
             })
             .fold(0.0_f64, f64::max);
-        self.camera_distance_mm = nominal
+        self.camera.distance_mm = nominal
             .max(radius * CAMERA_CLEARANCE)
             .max(PERSPECTIVE_NEAR_MM);
     }
@@ -26618,7 +26620,7 @@ impl KetchupApp {
     /// Both projections agree here by construction, so switching between them
     /// keeps the model the same size and only changes how depth is treated.
     fn view_scale(&self, rect: Rect) -> f64 {
-        f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0
+        f64::from(self.camera.zoom) * f64::from(rect.width().min(rect.height())) / 420.0
     }
 
     /// Focal length in pixels, chosen so the target plane matches `view_scale`.
@@ -26627,14 +26629,14 @@ impl KetchupApp {
     }
 
     pub fn toggle_projection_mode(&mut self) {
-        self.projection_mode = self.projection_mode.toggled();
-        self.digest = self.catalog.text(self.projection_mode.label_key());
+        self.camera.projection_mode = self.camera.projection_mode.toggled();
+        self.digest = self.catalog.text(self.camera.projection_mode.label_key());
     }
 
     /// Current viewport projection.
     #[must_use]
     pub const fn projection_mode(&self) -> ProjectionMode {
-        self.projection_mode
+        self.camera.projection_mode
     }
 
     /// Colours every surface of the shell paints with.
@@ -26658,9 +26660,9 @@ impl KetchupApp {
     fn view_ray(&self, pointer: Pos2, rect: Rect) -> Option<Ray> {
         let (right, up, forward) = self.camera_basis();
         let target = self.camera_target();
-        let horizontal = f64::from(pointer.x - rect.center().x - self.pan.x);
-        let vertical = f64::from(rect.center().y + self.pan.y - pointer.y);
-        match self.projection_mode {
+        let horizontal = f64::from(pointer.x - rect.center().x - self.camera.pan.x);
+        let vertical = f64::from(rect.center().y + self.camera.pan.y - pointer.y);
+        match self.camera.projection_mode {
             ProjectionMode::Parallel => {
                 let scale = self.view_scale(rect);
                 let view_plane_point =
@@ -26731,19 +26733,20 @@ impl KetchupApp {
     pub fn zoom_at_screen(&mut self, pointer: Pos2, rect: Rect, scroll: f32) {
         let anchor = self
             .surface_point_at_screen(pointer, rect)
-            .or_else(|| self.screen_to_plane(pointer, rect, self.camera_target_z));
+            .or_else(|| self.screen_to_plane(pointer, rect, self.camera.target_z));
         let Some(anchor) = anchor else {
             return;
         };
         let old_position = self.project(anchor, rect);
-        let new_zoom = (self.zoom * (scroll * 0.001).exp()).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
-        if new_zoom == self.zoom {
+        let new_zoom =
+            (self.camera.zoom * (scroll * 0.001).exp()).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+        if new_zoom == self.camera.zoom {
             return;
         }
-        self.zoom = new_zoom;
+        self.camera.zoom = new_zoom;
         self.refresh_camera_distance();
         let new_position = self.project(anchor, rect);
-        self.pan += old_position - new_position;
+        self.camera.pan += old_position - new_position;
     }
 
     fn surface_point_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
@@ -26786,7 +26789,12 @@ impl KetchupApp {
     }
 
     fn hover_readout(&self) -> String {
-        let Some(hovered) = self.hovered.as_ref().or(self.selection.primary.as_ref()) else {
+        let Some(hovered) = self
+            .hover
+            .target
+            .as_ref()
+            .or(self.selection.primary.as_ref())
+        else {
             return self.catalog.text("hover-none");
         };
         let snapshot = self.document.current();
@@ -26808,10 +26816,11 @@ impl KetchupApp {
             _ => "face-side",
         });
         let overlap_count = self
-            .hover_pick
+            .hover
+            .pick
             .as_ref()
             .map_or(0, |pick| pick.overlapping.len());
-        if let Some(snap) = self.hover_snap.as_ref()
+        if let Some(snap) = self.hover.snap.as_ref()
             && (snap.kind != SnapKind::Face || overlap_count > 1)
         {
             return self.catalog.format(
@@ -26831,7 +26840,7 @@ impl KetchupApp {
                             SnapKind::Face => "snap-face",
                         }),
                     ),
-                    ("index", (self.hover_overlap_index + 1).to_string()),
+                    ("index", (self.hover.overlap_index + 1).to_string()),
                     ("count", overlap_count.to_string()),
                 ]),
             );
@@ -26914,10 +26923,13 @@ impl KetchupApp {
             "camera-readout",
             &BTreeMap::from([
                 ("distance", format_height(self.camera_distance())),
-                ("azimuth", format_height(f64::from(self.yaw.to_degrees()))),
+                (
+                    "azimuth",
+                    format_height(f64::from(self.camera.yaw.to_degrees())),
+                ),
                 (
                     "elevation",
-                    format_height(f64::from(self.pitch.to_degrees())),
+                    format_height(f64::from(self.camera.pitch.to_degrees())),
                 ),
             ]),
         );
@@ -27049,7 +27061,7 @@ impl KetchupApp {
         let response = ui
             .put(
                 input_rect,
-                egui::TextEdit::singleline(&mut self.value_input)
+                egui::TextEdit::singleline(&mut self.value_box.input)
                     .id(egui::Id::new("value-box-input"))
                     .hint_text(self.catalog.text("value-placeholder"))
                     .font(egui::FontId::monospace(15.0))
@@ -27058,9 +27070,9 @@ impl KetchupApp {
                     .frame(false),
             )
             .labelled_by(value_label_response.id);
-        if self.focus_value_box {
+        if self.value_box.focus {
             response.request_focus();
-            self.focus_value_box = false;
+            self.value_box.focus = false;
         }
         if response.changed() && self.active_tool == ActiveTool::PlanarOffset {
             self.refresh_planar_offset_preview();
@@ -27080,12 +27092,12 @@ impl KetchupApp {
         self.refresh_camera_distance();
         let desired = ui.available_size().max(Vec2::new(320.0, 280.0));
         let (response, painter) = ui.allocate_painter(desired, Sense::click_and_drag());
-        self.viewport_rect = Some(response.rect);
-        if self.zoom_fit_pending {
-            if self.zoom_fit_pending_quiet {
+        self.camera.viewport_rect = Some(response.rect);
+        if self.camera.zoom_fit_pending {
+            if self.camera.zoom_fit_pending_quiet {
                 let bounds = self.active_frame_bounds();
-                self.zoom_fit_pending = !self.frame_bounds(&bounds);
-                self.zoom_fit_pending_quiet = self.zoom_fit_pending;
+                self.camera.zoom_fit_pending = !self.frame_bounds(&bounds);
+                self.camera.zoom_fit_pending_quiet = self.camera.zoom_fit_pending;
             } else {
                 self.zoom_fit();
             }
@@ -27103,9 +27115,9 @@ impl KetchupApp {
             || (response.dragged_by(egui::PointerButton::Primary)
                 && matches!(self.active_tool, ActiveTool::Orbit | ActiveTool::Pan));
         if camera_dragging {
-            self.hover_pick = None;
-            self.hovered = None;
-            self.hover_snap = None;
+            self.hover.pick = None;
+            self.hover.target = None;
+            self.hover.snap = None;
         } else if !preserve_hover {
             self.update_viewport_inference(response.hover_pos(), response.rect);
         }
@@ -27155,7 +27167,7 @@ impl KetchupApp {
                                 } else if vector_length(point - start) > 0.01 {
                                     self.gesture.sketch.end = Some(point);
                                     self.gesture.sketch.cursor = Some(point);
-                                    self.value_input.clear();
+                                    self.value_box.input.clear();
                                     self.status_key = "status-arc-bulge";
                                 }
                             }
@@ -27172,7 +27184,7 @@ impl KetchupApp {
                             self.gesture.sketch.chain_points.push(point);
                             self.gesture.sketch.chain_items.clear();
                         }
-                        self.value_input.clear();
+                        self.value_box.input.clear();
                         self.status_key = match self.active_tool {
                             ActiveTool::Line => "status-line-end",
                             ActiveTool::Circle => "status-circle-radius",
@@ -27182,7 +27194,11 @@ impl KetchupApp {
                     }
                 }
             } else if self.active_tool == ActiveTool::Revolve {
-                if let Some(plane_z) = self.revolve_tool.as_ref().map(|tool| tool.source.plane_z)
+                if let Some(plane_z) = self
+                    .solid_tools
+                    .revolve
+                    .as_ref()
+                    .map(|tool| tool.source.plane_z)
                     && let Some(point) =
                         self.viewport_point_at_screen(pointer, response.rect, plane_z)
                 {
@@ -27191,7 +27207,8 @@ impl KetchupApp {
             } else if self.active_tool == ActiveTool::Select {
                 let additive = ui.input(|input| input.modifiers.shift);
                 let target = self
-                    .hover_snap
+                    .hover
+                    .snap
                     .as_ref()
                     .filter(|snap| {
                         matches!(
@@ -27207,16 +27224,16 @@ impl KetchupApp {
                                 .distance(pointer)
                                 <= 3.0
                             && (snap.kind != SnapKind::Center
-                                || self.hovered.as_ref().is_some_and(|hit| {
+                                || self.hover.target.as_ref().is_some_and(|hit| {
                                     hit.instance_path == snap.reference.instance_path
                                 })))
                             || (matches!(snap.reference.element, ElementId::Snap { .. })
-                                && self.hovered.as_ref().is_none_or(|hit| {
+                                && self.hover.target.as_ref().is_none_or(|hit| {
                                     hit.instance_path != snap.reference.instance_path
                                 }))
                     })
                     .map(|snap| snap.reference.clone())
-                    .or_else(|| self.hovered.clone());
+                    .or_else(|| self.hover.target.clone());
                 if target.is_none() {
                     self.gesture.drag.open(SelectionWindowDrag {
                         start: pointer,
@@ -27261,7 +27278,7 @@ impl KetchupApp {
                     | ActiveTool::SolidIntersect
                     | ActiveTool::SolidSplit
             ) {
-                let selection = self.hovered.clone();
+                let selection = self.hover.target.clone();
                 let keep_tool = self.active_tool == ActiveTool::SolidTrim
                     || ui.input(|input| input.modifiers.ctrl);
                 self.select_solid_tool_occurrence(selection, keep_tool);
@@ -27290,8 +27307,8 @@ impl KetchupApp {
                         && let Some(extent_start_mm) = self.selected_face_extent_mm()
                     {
                         let snapshot = self.document.current();
-                        self.push_pull_distance_input = "0".to_owned();
-                        self.value_input = "0".to_owned();
+                        self.push_pull.distance_input = "0".to_owned();
+                        self.value_box.input = "0".to_owned();
                         self.gesture.drag.open(PushPullDrag {
                             source_document_id: snapshot.document_id(),
                             source_revision: snapshot.revision_id(),
@@ -27396,7 +27413,7 @@ impl KetchupApp {
 
         if self.active_tool == ActiveTool::Select
             && response.double_clicked()
-            && let Some(target) = self.hovered.clone()
+            && let Some(target) = self.hover.target.clone()
         {
             self.enter_occurrence_context(target.instance_path);
         }
@@ -27422,7 +27439,7 @@ impl KetchupApp {
             // one is the stronger statement, so the live reading must not
             // overwrite what is being entered.
             if !self.value_box_is_being_typed_into(ui.ctx()) {
-                self.value_input = format_height(distance);
+                self.value_box.input = format_height(distance);
             }
             self.digest = self.catalog.format(
                 if copy {
@@ -27455,7 +27472,7 @@ impl KetchupApp {
             let copy = anchor.copy;
             self.set_rotate_session(ToolSessionPhase::Anchor, anchor);
             if !self.value_box_is_being_typed_into(ui.ctx()) {
-                self.value_input = format_angle(angle);
+                self.value_box.input = format_angle(angle);
             }
             self.digest = self.catalog.format(
                 if self
@@ -27490,13 +27507,13 @@ impl KetchupApp {
 
         let pointer_delta = ui.input(|input| input.pointer.delta());
         let camera_before =
-            (camera_dragging && !self.camera_drag_active && pointer_delta != Vec2::ZERO)
+            (camera_dragging && !self.camera.drag_active && pointer_delta != Vec2::ZERO)
                 .then(|| self.camera_view_state());
         if response.dragged_by(egui::PointerButton::Secondary) {
             self.orbit(pointer_delta);
         } else if response.dragged_by(egui::PointerButton::Middle) {
             if ui.input(|input| input.modifiers.shift) {
-                self.pan += pointer_delta;
+                self.camera.pan += pointer_delta;
             } else {
                 self.orbit(pointer_delta);
             }
@@ -27516,7 +27533,7 @@ impl KetchupApp {
             } else if self.active_tool == ActiveTool::Orbit {
                 self.orbit(pointer_delta);
             } else if self.active_tool == ActiveTool::Pan {
-                self.pan += pointer_delta;
+                self.camera.pan += pointer_delta;
             } else if self.gesture.sketch.armed {
                 if let (Some(start), Some(pointer)) =
                     (self.gesture.sketch.start, response.interact_pointer_pos())
@@ -27543,7 +27560,7 @@ impl KetchupApp {
                 let delta_mm = drag.delta_mm;
                 let copy = drag.copy;
                 self.set_move_session(ToolSessionPhase::Gesture, drag);
-                self.value_input = format_height(distance);
+                self.value_box.input = format_height(distance);
                 self.digest = self.catalog.format(
                     if copy {
                         "digest-copy-live"
@@ -27571,7 +27588,7 @@ impl KetchupApp {
                 let axis = drag.axis;
                 let copy = drag.copy;
                 self.set_rotate_session(ToolSessionPhase::Gesture, drag);
-                self.value_input = format_angle(angle);
+                self.value_box.input = format_angle(angle);
                 self.digest = self.catalog.format(
                     if copy {
                         "digest-rotate-copy-live"
@@ -27591,7 +27608,7 @@ impl KetchupApp {
                 let factor = drag.factor;
                 let axis = drag.axis;
                 self.set_scale_session(drag);
-                self.value_input = format_scale_factor(factor);
+                self.value_box.input = format_scale_factor(factor);
                 self.digest = self.catalog.format(
                     "digest-scale-live",
                     &BTreeMap::from([
@@ -27613,8 +27630,8 @@ impl KetchupApp {
         if let Some(before) = camera_before {
             self.remember_camera_change(before);
         }
-        self.camera_drag_active =
-            camera_dragging && (self.camera_drag_active || pointer_delta != Vec2::ZERO);
+        self.camera.drag_active =
+            camera_dragging && (self.camera.drag_active || pointer_delta != Vec2::ZERO);
         if response.drag_stopped_by(egui::PointerButton::Primary)
             || (response.hovered() && primary_release)
         {
@@ -27680,11 +27697,11 @@ impl KetchupApp {
             // focus request only takes effect next frame, so the freshly typed
             // text would otherwise be overwritten by the hovered dimensions.
             if !ui.ctx().wants_keyboard_input()
-                && !self.focus_value_box
+                && !self.value_box.focus
                 && let (Some(start), Some(cursor)) =
                     (self.gesture.sketch.start, self.gesture.sketch.cursor)
             {
-                self.value_input = match self.active_tool {
+                self.value_box.input = match self.active_tool {
                     ActiveTool::Line => format_height(vector_length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
@@ -27727,9 +27744,9 @@ impl KetchupApp {
         }
         if let Some((start, end)) = self.measure_span()
             && !ui.ctx().wants_keyboard_input()
-            && !self.focus_value_box
+            && !self.value_box.focus
         {
-            self.value_input = format_height(vector_length(Vec3::new(
+            self.value_box.input = format_height(vector_length(Vec3::new(
                 end.x - start.x,
                 end.y - start.y,
                 end.z - start.z,
@@ -27740,30 +27757,30 @@ impl KetchupApp {
             if scroll != 0.0
                 && let Some(pointer) = response.hover_pos()
             {
-                if self.camera_wheel_active {
+                if self.camera.wheel_active {
                     self.zoom_at_screen(pointer, response.rect, scroll);
                 } else {
                     let before = self.camera_view_state();
                     self.zoom_at_screen(pointer, response.rect, scroll);
-                    self.camera_wheel_active = self.remember_camera_change(before);
+                    self.camera.wheel_active = self.remember_camera_change(before);
                 }
             } else {
-                self.camera_wheel_active = false;
+                self.camera.wheel_active = false;
             }
         } else {
-            self.camera_wheel_active = false;
+            self.camera.wheel_active = false;
         }
         let forward = Vec3::new(
-            -f64::from(self.yaw.sin() * self.pitch.sin()),
-            -f64::from(self.yaw.cos() * self.pitch.sin()),
-            -f64::from(self.pitch.cos()),
+            -f64::from(self.camera.yaw.sin() * self.camera.pitch.sin()),
+            -f64::from(self.camera.yaw.cos() * self.camera.pitch.sin()),
+            -f64::from(self.camera.pitch.cos()),
         );
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let move_transform_overrides = self.preview_transform_overrides();
         let rotate_copies = self.rotation_preview_transforms(true);
-        let use_wgpu_scene = self.face_offset_evaluation.is_none()
-            && self.wgpu_target_format.is_some()
+        let use_wgpu_scene = self.push_pull.face_offset_evaluation.is_none()
+            && self.render.wgpu_target_format.is_some()
             && !self.has_occurrence_operation_preview()
             && !(self.view.contains(ViewFlag::Xray) || self.face_workflow.xray_preview())
             && !self.view.contains(ViewFlag::Wireframe)
@@ -27772,29 +27789,29 @@ impl KetchupApp {
         let scene_plan = if use_wgpu_scene {
             let preview_active = !move_transform_overrides.is_empty();
             if preview_active
-                || self.render_plan.as_ref().is_none_or(|plan| {
+                || self.render.plan.as_ref().is_none_or(|plan| {
                     !plan.is_same_revision(&snapshot)
-                        || !plan.matches_exact_results(&snapshot, &self.exact_results)
+                        || !plan.matches_exact_results(&snapshot, &self.exact.results)
                 })
             {
                 let plan = Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
                     &snapshot,
-                    &self.exact_results,
-                    &mut self.render_cache,
+                    &self.exact.results,
+                    &mut self.render.cache,
                     &move_transform_overrides,
                 ));
                 if !preview_active {
-                    self.render_plan = Some(Arc::clone(&plan));
+                    self.render.plan = Some(Arc::clone(&plan));
                 }
                 Some(plan)
             } else {
-                self.render_plan.clone()
+                self.render.plan.clone()
             }
         } else {
             None
         };
         self.refresh_interaction_projection_cache(&snapshot);
-        let interaction_projection_cache = self.interaction_projection_cache.borrow();
+        let interaction_projection_cache = self.hover.projection_cache.borrow();
         let exact_projection = &interaction_projection_cache
             .as_ref()
             .expect("interaction cache was built")
@@ -27842,7 +27859,8 @@ impl KetchupApp {
             let needs_cpu_overlay = !camera_dragging
                 && (self.selection.contains(&item.instance_path)
                     || self
-                        .hovered
+                        .hover
+                        .target
                         .as_ref()
                         .is_some_and(|hovered| hovered.instance_path == item.instance_path)
                     || proxy_preview
@@ -27924,7 +27942,7 @@ impl KetchupApp {
                             ..selection.clone()
                         };
                         if point_depth(normal, forward) >= -ROUNDING
-                            && self.hovered.as_ref() != Some(&selection)
+                            && self.hover.target.as_ref() != Some(&selection)
                         {
                             continue;
                         }
@@ -27959,7 +27977,7 @@ impl KetchupApp {
             let projected = corners.map(|point| self.project(point, response.rect));
             for face in box_faces().into_iter().filter(|face| {
                 (face_is_visible(&face.element, forward)
-                    || self.hovered.as_ref().is_some_and(|hovered| {
+                    || self.hover.target.as_ref().is_some_and(|hovered| {
                         hovered.definition_id == item.definition_id
                             && hovered.instance_path == item.instance_path
                             && hovered.element == face.element
@@ -28061,13 +28079,13 @@ impl KetchupApp {
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay = !camera_dragging
-                && (self.selection.contains(&occurrence.instance_path)
-                    || self
-                        .hovered
-                        .as_ref()
-                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
-                    || out_of_context);
+            let needs_cpu_overlay =
+                !camera_dragging
+                    && (self.selection.contains(&occurrence.instance_path)
+                        || self.hover.target.as_ref().is_some_and(|hovered| {
+                            hovered.instance_path == occurrence.instance_path
+                        })
+                        || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
@@ -28171,7 +28189,7 @@ impl KetchupApp {
                 let normal = triangle_normal(points_mm);
                 let element = planar_push_pull::triangle_element(&package, triangle_index, normal);
                 let hovered = !previewed
-                    && self.hovered.as_ref().is_some_and(|hovered| {
+                    && self.hover.target.as_ref().is_some_and(|hovered| {
                         hovered.definition_id == occurrence.body.definition_id
                             && hovered.instance_path == occurrence.instance_path
                             && hovered.element == element
@@ -28236,13 +28254,13 @@ impl KetchupApp {
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay = !camera_dragging
-                && (self.selection.contains(&occurrence.instance_path)
-                    || self
-                        .hovered
-                        .as_ref()
-                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
-                    || out_of_context);
+            let needs_cpu_overlay =
+                !camera_dragging
+                    && (self.selection.contains(&occurrence.instance_path)
+                        || self.hover.target.as_ref().is_some_and(|hovered| {
+                            hovered.instance_path == occurrence.instance_path
+                        })
+                        || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
@@ -28628,7 +28646,8 @@ impl KetchupApp {
             })
             .flatten();
         if let Some(position) = measure_vertex.or_else(|| {
-            self.hover_snap
+            self.hover
+                .snap
                 .as_ref()
                 .filter(|snap| snap.kind != SnapKind::Face)
                 .map(|snap| snap.position_mm)
@@ -28646,7 +28665,7 @@ impl KetchupApp {
             );
         }
         if response.secondary_clicked()
-            && let Some(target) = self.hovered.clone()
+            && let Some(target) = self.hover.target.clone()
             && !self.selection.contains(&target.instance_path)
         {
             self.select_from_viewport(Some(target), false);
@@ -28775,9 +28794,10 @@ impl KetchupApp {
         let ray = self.view_ray(pointer, rect)?;
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
-        let cache = self.interaction_projection_cache.borrow();
+        let cache = self.hover.projection_cache.borrow();
         let cache = cache.as_ref().expect("interaction cache was built");
-        let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
+        let scale =
+            f64::from(self.camera.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
         let exact_hits = cache.exact.exact_surface_picks(ray);
         let exact_hit = exact_hits.first().cloned();
         let mesh_hits = cache.mesh.exact_surface_picks(ray);
@@ -28867,7 +28887,8 @@ impl KetchupApp {
                 position_mm: hit.position_mm,
                 ray_distance_mm: hit.ray_distance_mm,
             };
-            let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
+            let scale =
+                f64::from(self.camera.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
             let proxy_pick = cache.proxies.exact_pick(ray, tolerance_px / scale);
             let snap = self
                 .scene_snap_at_screen(pointer, rect, tolerance_px as f32, None)
@@ -29117,7 +29138,7 @@ impl KetchupApp {
 
     #[cfg(test)]
     fn interaction_projection_cache_ptrs(&self) -> Option<(*const (), *const (), *const ())> {
-        let cache = self.interaction_projection_cache.borrow();
+        let cache = self.hover.projection_cache.borrow();
         let cache = cache.as_ref()?;
         Some((
             std::ptr::from_ref(&cache.exact).cast(),
@@ -29165,17 +29186,18 @@ impl KetchupApp {
         if let Some(pick) = pick.as_mut() {
             self.prioritize_push_pull_profile_pick(pick);
         }
-        let previous = self.hover_pick.as_ref().map(overlap_signature);
+        let previous = self.hover.pick.as_ref().map(overlap_signature);
         let current = pick.as_ref().map(overlap_signature);
-        let pointer_moved = self.hover_pointer != pointer;
-        self.hover_pointer = pointer;
+        let pointer_moved = self.hover.pointer != pointer;
+        self.hover.pointer = pointer;
         if pointer_moved {
             // A deliberate non-front choice stays attached to that face while
             // the moving pointer still intersects it; leaving it resets to front.
-            self.hover_overlap_index = if self.hover_overlap_index == 0 {
+            self.hover.overlap_index = if self.hover.overlap_index == 0 {
                 0
             } else {
-                self.hovered
+                self.hover
+                    .target
                     .as_ref()
                     .and_then(|chosen| {
                         current
@@ -29193,10 +29215,11 @@ impl KetchupApp {
             // chosen body is still under the pointer. Without such a choice
             // the front body stays hovered: a profile just drawn on a face is
             // in front of that face.
-            self.hover_overlap_index = if self.hover_overlap_index == 0 {
+            self.hover.overlap_index = if self.hover.overlap_index == 0 {
                 0
             } else {
-                self.hovered
+                self.hover
+                    .target
                     .as_ref()
                     .and_then(|chosen| {
                         current
@@ -29210,7 +29233,7 @@ impl KetchupApp {
                 self.face_workflow.set_xray_preview(false);
             }
         }
-        self.hover_snap = pointer.and_then(|pointer| {
+        self.hover.snap = pointer.and_then(|pointer| {
             if self.uses_drawing_plane() {
                 self.drawing_snap_at_screen(pointer, rect)
             } else {
@@ -29230,25 +29253,26 @@ impl KetchupApp {
                     })
             }
         });
-        self.hover_pick = pick;
+        self.hover.pick = pick;
         self.refresh_hover_choice();
     }
 
     fn refresh_hover_choice(&mut self) {
-        self.hovered = self
-            .hover_pick
+        self.hover.target = self
+            .hover
+            .pick
             .as_ref()
-            .and_then(|pick| pick.overlap_choice(self.hover_overlap_index))
+            .and_then(|pick| pick.overlap_choice(self.hover.overlap_index))
             .map(|hit| hit.reference.clone());
         if self.active_tool == ActiveTool::Select
             && self.face_workflow.snaps_enabled()
-            && let (Some(pointer), Some(rect)) = (self.hover_pointer, self.viewport_rect)
+            && let (Some(pointer), Some(rect)) = (self.hover.pointer, self.camera.viewport_rect)
             && let Some(center) = self.select_circle_center_at_screen(pointer, rect)
         {
-            self.hover_snap = Some(center);
+            self.hover.snap = Some(center);
         }
         if self.active_tool == ActiveTool::PushPull {
-            self.hover_snap = self.push_pull_target_snap();
+            self.hover.snap = self.push_pull_target_snap();
             if let Some(drag) = self.gesture.drag.get::<PushPullDrag>().or(self
                 .gesture
                 .drag
@@ -29256,26 +29280,27 @@ impl KetchupApp {
                 .map(|anchor| &anchor.0))
                 && self.push_pull_snap_distance(drag).is_none()
             {
-                self.hover_snap = None;
+                self.hover.snap = None;
             }
         }
     }
 
     pub fn cycle_hover_overlap(&mut self) -> bool {
         let Some(count) = self
-            .hover_pick
+            .hover
+            .pick
             .as_ref()
             .map(|pick| pick.overlapping.len())
             .filter(|count| *count > 1)
         else {
             return false;
         };
-        self.hover_overlap_index = (self.hover_overlap_index + 1) % count;
+        self.hover.overlap_index = (self.hover.overlap_index + 1) % count;
         self.refresh_hover_choice();
         self.digest = self.catalog.format(
             "digest-overlap-choice",
             &BTreeMap::from([
-                ("index", (self.hover_overlap_index + 1).to_string()),
+                ("index", (self.hover.overlap_index + 1).to_string()),
                 ("count", count.to_string()),
             ]),
         );
@@ -29343,23 +29368,23 @@ impl KetchupApp {
     }
 
     fn world_to_clip(&self, rect: Rect) -> [f32; 16] {
-        if self.projection_mode == ProjectionMode::Perspective {
+        if self.camera.projection_mode == ProjectionMode::Perspective {
             return self.perspective_world_to_clip(rect);
         }
-        let yaw_sin = self.yaw.sin();
-        let yaw_cos = self.yaw.cos();
-        let pitch_sin = self.pitch.sin();
-        let pitch_cos = self.pitch.cos();
-        let scale = self.zoom * rect.width().min(rect.height()) / 420.0;
+        let yaw_sin = self.camera.yaw.sin();
+        let yaw_cos = self.camera.yaw.cos();
+        let pitch_sin = self.camera.pitch.sin();
+        let pitch_cos = self.camera.pitch.cos();
+        let scale = self.camera.zoom * rect.width().min(rect.height()) / 420.0;
         let centre_x = BOX_WIDTH_MM as f32 * 0.5;
         let centre_y = BOX_DEPTH_MM as f32 * 0.5;
-        let centre_z = self.camera_target_z as f32;
+        let centre_z = self.camera.target_z as f32;
         let sx = 2.0 / rect.width();
         let sy = 2.0 / rect.height();
-        let x_constant =
-            rect.width() * 0.5 + self.pan.x - scale * (yaw_cos * centre_x - yaw_sin * centre_y);
+        let x_constant = rect.width() * 0.5 + self.camera.pan.x
+            - scale * (yaw_cos * centre_x - yaw_sin * centre_y);
         let y_constant = rect.height() * 0.5
-            + self.pan.y
+            + self.camera.pan.y
             + scale
                 * (yaw_sin * pitch_cos * centre_x + yaw_cos * pitch_cos * centre_y
                     - pitch_sin * centre_z);
@@ -29394,8 +29419,8 @@ impl KetchupApp {
         let focal = self.camera_focal(rect);
         let sx = f64::from(2.0 / rect.width());
         let sy = f64::from(2.0 / rect.height());
-        let a = sx * f64::from(rect.width() * 0.5 + self.pan.x) - 1.0;
-        let b = 1.0 - sy * f64::from(rect.height() * 0.5 + self.pan.y);
+        let a = sx * f64::from(rect.width() * 0.5 + self.camera.pan.x) - 1.0;
+        let b = 1.0 - sy * f64::from(rect.height() * 0.5 + self.camera.pan.y);
 
         let clip_x = forward * a + right * (sx * focal);
         let clip_y = forward * b + up * (sy * focal);
@@ -29425,7 +29450,7 @@ impl KetchupApp {
         let centered = point - self.camera_target();
         let view_x = dot(centered, right);
         let view_y = dot(centered, up);
-        let scale = match self.projection_mode {
+        let scale = match self.camera.projection_mode {
             ProjectionMode::Parallel => self.view_scale(rect),
             ProjectionMode::Perspective => {
                 // Depth measured from the eye. Points at or behind the eye have
@@ -29437,14 +29462,14 @@ impl KetchupApp {
             }
         };
         Pos2::new(
-            rect.center().x + self.pan.x + (view_x * scale) as f32,
-            rect.center().y + self.pan.y - (view_y * scale) as f32,
+            rect.center().x + self.camera.pan.x + (view_x * scale) as f32,
+            rect.center().y + self.camera.pan.y - (view_y * scale) as f32,
         )
     }
 
     /// Clip a long world-space line at the eye plane before projecting it.
     fn project_visible_segment(&self, mut points: [Vec3; 2], rect: Rect) -> Option<[Pos2; 2]> {
-        if self.projection_mode == ProjectionMode::Perspective {
+        if self.camera.projection_mode == ProjectionMode::Perspective {
             let (_, _, forward) = self.camera_basis();
             let target = self.camera_target();
             let mut depths =
@@ -29497,7 +29522,8 @@ impl KetchupApp {
         let alt_pick_through = !context.wants_keyboard_input()
             && context.input(|input| input.modifiers.alt)
             && self
-                .hover_pick
+                .hover
+                .pick
                 .as_ref()
                 .is_some_and(|pick| pick.overlapping.len() > 1);
         let cycle_with_alt = self.face_workflow.update_alt_pick_through(alt_pick_through);
@@ -29526,9 +29552,9 @@ impl KetchupApp {
                     .collect::<String>()
             });
             if !typed.is_empty() {
-                self.value_input.clear();
-                self.value_input.push_str(&typed);
-                self.focus_value_box = true;
+                self.value_box.input.clear();
+                self.value_box.input.push_str(&typed);
+                self.value_box.focus = true;
                 if self.active_tool == ActiveTool::PlanarOffset {
                     self.refresh_planar_offset_preview();
                 } else if self.active_tool == ActiveTool::Revolve {
@@ -29563,7 +29589,7 @@ impl KetchupApp {
             if let Some((_, axis)) = requested {
                 let typed_value = context
                     .memory(|memory| memory.has_focus(egui::Id::new("value-box-input")))
-                    .then(|| self.value_input.clone());
+                    .then(|| self.value_box.input.clone());
                 let held = match self.active_tool {
                     ActiveTool::Move => self.gesture.transform.move_axis_lock,
                     ActiveTool::Scale => self.gesture.transform.scale_axis_lock,
@@ -29604,7 +29630,7 @@ impl KetchupApp {
                     _ => self.set_rotate_axis_lock(axis),
                 }
                 if let Some(value) = typed_value {
-                    self.value_input = value;
+                    self.value_box.input = value;
                 }
             }
         }
@@ -29661,15 +29687,15 @@ impl KetchupApp {
             self.status_key = "status-measure-first-point";
         } else if self.has_preview()
             || self.has_occurrence_operation_preview()
-            || self.revolve_tool.is_some()
+            || self.solid_tools.revolve.is_some()
             || self.tool_preview.get::<RevolvePreview>().is_some()
             || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
             || self.tool_preview.get::<SweepPreview>().is_some()
             || self.tool_preview.get::<LoftPreview>().is_some()
             || self.tool_preview.get::<GeneralFinishPreview>().is_some()
-            || self.solid_tool_target.is_some()
+            || self.solid_tools.target.is_some()
             || self.gesture.drag.get::<PushPullAnchor>().is_some()
-            || self.tool_session.is_some()
+            || self.transform_tool.session.is_some()
             || self.gesture.sketch.armed
         {
             self.clear_ephemeral_edit_state();
@@ -29846,7 +29872,7 @@ impl KetchupApp {
         accent_when_on: bool,
     ) -> bool {
         let label = if id == AppCommand::ViewProjection {
-            self.catalog.text(self.projection_mode.label_key())
+            self.catalog.text(self.camera.projection_mode.label_key())
         } else {
             self.command_label(id)
         };
@@ -29924,14 +29950,14 @@ impl KetchupApp {
     fn show_command_search(&mut self, ui: &mut egui::Ui) {
         let label = self.catalog.text("command-search");
         let response = ui.add(
-            egui::TextEdit::singleline(&mut self.command_search)
+            egui::TextEdit::singleline(&mut self.panels.command_search)
                 .hint_text(self.catalog.text("command-search-placeholder"))
                 .desired_width(170.0),
         );
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label.clone())
         });
-        let query = self.command_search.trim().to_lowercase();
+        let query = self.panels.command_search.trim().to_lowercase();
         if query.is_empty() {
             return;
         }
@@ -29967,7 +29993,7 @@ impl KetchupApp {
             });
         if let Some(command) = chosen {
             ui.memory_mut(|memory| memory.surrender_focus(response.id));
-            self.command_search.clear();
+            self.panels.command_search.clear();
             self.dispatch_command(command);
         }
     }
@@ -30165,16 +30191,19 @@ impl KetchupApp {
             });
             ui.menu_button(self.catalog.text("menu-window"), |ui| {
                 ui.checkbox(
-                    &mut self.outliner_visible,
+                    &mut self.panels.outliner_visible,
                     self.catalog.text("dock-outliner"),
                 );
-                ui.checkbox(&mut self.tags_visible, self.catalog.text("dock-tags"));
                 ui.checkbox(
-                    &mut self.dimensions_visible,
+                    &mut self.panels.tags_visible,
+                    self.catalog.text("dock-tags"),
+                );
+                ui.checkbox(
+                    &mut self.panels.dimensions_visible,
                     self.catalog.text("dock-dimensions"),
                 );
                 ui.checkbox(
-                    &mut self.manual_cad_panels_visible,
+                    &mut self.panels.manual_cad_panels_visible,
                     self.catalog.text("dock-manual-cad"),
                 );
             });
@@ -30531,7 +30560,7 @@ impl KetchupApp {
                 Color32::from_rgb(194, 89, 48)
             } else if !face.previewed && self.selection.contains(&face.selection.instance_path) {
                 Color32::from_rgb(154, 91, 67)
-            } else if !face.previewed && self.hovered.as_ref() == Some(&face.selection) {
+            } else if !face.previewed && self.hover.target.as_ref() == Some(&face.selection) {
                 Color32::from_rgb(76, 111, 158)
             } else if face.previewed {
                 Color32::from_rgb(58, 126, 174)
@@ -30731,12 +30760,12 @@ impl KetchupApp {
     }
 
     fn prepare_assistant_from_inputs(&mut self) -> bool {
-        let Ok(target) = self.assistant_target_input.trim().parse::<u64>() else {
+        let Ok(target) = self.assistant.target_input.trim().parse::<u64>() else {
             self.digest = self.catalog.text("assistant-error-target");
             return false;
         };
-        let value_text = self.assistant_value_input.clone();
-        let intent = match self.assistant_intent_kind {
+        let value_text = self.assistant.value_input.clone();
+        let intent = match self.assistant.intent_kind {
             AssistantIntentKind::CreateEvaluatorInput => {
                 let Some((name, value_text)) = value_text.split_once(':') else {
                     self.digest = self.catalog.text("assistant-error-create-evaluator-input");
@@ -31388,31 +31417,31 @@ impl KetchupApp {
     fn show_assistant_inspector(&mut self, ui: &mut egui::Ui) {
         let palette = self.palette();
         ui.checkbox(
-            &mut self.assistant_diagnostics_enabled,
+            &mut self.assistant.diagnostics_enabled,
             self.catalog.text("assistant-diagnostics-capture"),
         )
         .on_hover_text(self.catalog.text("assistant-diagnostics-capture-help"));
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(
-                &mut self.assistant_inspector_tab,
+                &mut self.assistant.inspector_tab,
                 AssistantInspectorTab::ApiLogs,
                 self.catalog.text("assistant-diagnostics-api-logs"),
             );
             ui.selectable_value(
-                &mut self.assistant_inspector_tab,
+                &mut self.assistant.inspector_tab,
                 AssistantInspectorTab::Memory,
                 self.catalog.text("assistant-diagnostics-memory"),
             );
         });
         ui.separator();
-        match self.assistant_inspector_tab {
+        match self.assistant.inspector_tab {
             AssistantInspectorTab::ApiLogs => {
                 ui.small(self.catalog.format(
                     "assistant-diagnostics-log-count",
-                    &BTreeMap::from([("count", self.assistant_api_logs.len().to_string())]),
+                    &BTreeMap::from([("count", self.assistant.api_logs.len().to_string())]),
                 ));
-                if self.assistant_api_logs.is_empty() {
-                    ui.weak(self.catalog.text(if self.assistant_diagnostics_enabled {
+                if self.assistant.api_logs.is_empty() {
+                    ui.weak(self.catalog.text(if self.assistant.diagnostics_enabled {
                         "assistant-diagnostics-no-logs"
                     } else {
                         "assistant-diagnostics-disabled"
@@ -31423,9 +31452,9 @@ impl KetchupApp {
                     .id_salt("assistant-api-log-list")
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            for index in (0..self.assistant_api_logs.len()).rev() {
-                                let entry = &self.assistant_api_logs[index];
-                                let selected = self.assistant_selected_api_log == Some(index);
+                            for index in (0..self.assistant.api_logs.len()).rev() {
+                                let entry = &self.assistant.api_logs[index];
+                                let selected = self.assistant.selected_api_log == Some(index);
                                 if ui
                                     .selectable_label(
                                         selected,
@@ -31436,14 +31465,15 @@ impl KetchupApp {
                                     )
                                     .clicked()
                                 {
-                                    self.assistant_selected_api_log = Some(index);
+                                    self.assistant.selected_api_log = Some(index);
                                 }
                             }
                         });
                     });
                 let Some(entry) = self
-                    .assistant_selected_api_log
-                    .and_then(|index| self.assistant_api_logs.get(index))
+                    .assistant
+                    .selected_api_log
+                    .and_then(|index| self.assistant.api_logs.get(index))
                     .cloned()
                 else {
                     return;
@@ -31508,18 +31538,18 @@ impl KetchupApp {
             AssistantInspectorTab::Memory => {
                 ui.small(self.catalog.format(
                     "assistant-memory-stored",
-                    &BTreeMap::from([("count", self.assistant_memory.entries.len().to_string())]),
+                    &BTreeMap::from([("count", self.assistant.memory.entries.len().to_string())]),
                 ));
                 let search_label = self.catalog.text("assistant-memory-search");
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.assistant_memory_search)
+                    egui::TextEdit::singleline(&mut self.assistant.memory_search)
                         .hint_text(&search_label)
                         .desired_width(f32::INFINITY),
                 );
                 search.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &search_label)
                 });
-                let matches = self.assistant_memory.search(&self.assistant_memory_search);
+                let matches = self.assistant.memory.search(&self.assistant.memory_search);
                 if matches.is_empty() {
                     ui.weak(self.catalog.text("assistant-memory-no-results"));
                     return;
@@ -31564,19 +31594,20 @@ impl KetchupApp {
             if ui.button(self.catalog.text("assistant-new-chat")).clicked() {
                 self.new_assistant_chat();
             }
-            let mode_label = match self.assistant_workspace_mode {
+            let mode_label = match self.assistant.workspace_mode {
                 AssistantWorkspaceMode::Dock => self.catalog.text("assistant-open-tab"),
                 AssistantWorkspaceMode::Tab => self.catalog.text("assistant-dock-right"),
             };
             if ui.button(mode_label).clicked() {
-                self.assistant_workspace_mode = match self.assistant_workspace_mode {
+                self.assistant.workspace_mode = match self.assistant.workspace_mode {
                     AssistantWorkspaceMode::Dock => AssistantWorkspaceMode::Tab,
                     AssistantWorkspaceMode::Tab => AssistantWorkspaceMode::Dock,
                 };
             }
         });
         let conversation_document = self
-            .document_path
+            .file
+            .path
             .as_deref()
             .and_then(Path::file_name)
             .map_or_else(
@@ -31622,7 +31653,7 @@ impl KetchupApp {
                 .small()
                 .color(palette.dim),
         );
-        let previous_provider = self.assistant_provider;
+        let previous_provider = self.assistant.provider;
         ui.label(
             egui::RichText::new(self.catalog.text("assistant-provider"))
                 .small()
@@ -31630,33 +31661,33 @@ impl KetchupApp {
         );
         egui::ComboBox::from_id_salt("assistant-provider")
             .width(ui.available_width())
-            .selected_text(self.catalog.text(self.assistant_provider.label_key()))
+            .selected_text(self.catalog.text(self.assistant.provider.label_key()))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
-                    &mut self.assistant_provider,
+                    &mut self.assistant.provider,
                     AssistantProvider::AnthropicApi,
                     self.catalog.text("assistant-provider-anthropic-api"),
                 );
                 ui.selectable_value(
-                    &mut self.assistant_provider,
+                    &mut self.assistant.provider,
                     AssistantProvider::OpenAiApi,
                     self.catalog.text("assistant-provider-openai-api"),
                 );
                 #[cfg(feature = "private-oauth")]
                 ui.selectable_value(
-                    &mut self.assistant_provider,
+                    &mut self.assistant.provider,
                     AssistantProvider::ClaudeCodeOauth,
                     self.catalog.text("assistant-provider-claude-oauth"),
                 );
                 #[cfg(feature = "private-oauth")]
                 ui.selectable_value(
-                    &mut self.assistant_provider,
+                    &mut self.assistant.provider,
                     AssistantProvider::CodexOauth,
                     self.catalog.text("assistant-provider-codex-oauth"),
                 );
             });
-        if self.assistant_provider != previous_provider {
-            self.assistant_model = self.assistant_provider.default_model().to_owned();
+        if self.assistant.provider != previous_provider {
+            self.assistant.model = self.assistant.provider.default_model().to_owned();
         }
         let models = self.assistant_models();
         ui.label(
@@ -31666,13 +31697,13 @@ impl KetchupApp {
         );
         egui::ComboBox::from_id_salt("assistant-model")
             .width(ui.available_width())
-            .selected_text(&self.assistant_model)
+            .selected_text(&self.assistant.model)
             .show_ui(ui, |ui| {
                 for model in models {
-                    ui.selectable_value(&mut self.assistant_model, model.clone(), model);
+                    ui.selectable_value(&mut self.assistant.model, model.clone(), model);
                 }
             });
-        let messages_height = if self.assistant_workspace_mode == AssistantWorkspaceMode::Tab {
+        let messages_height = if self.assistant.workspace_mode == AssistantWorkspaceMode::Tab {
             (ui.available_height() - 210.0).max(260.0)
         } else {
             (ui.available_height() - 330.0).clamp(220.0, 420.0)
@@ -31687,10 +31718,10 @@ impl KetchupApp {
                     .stick_to_bottom(true)
                     .max_height(messages_height)
                     .show(ui, |ui| {
-                        if self.assistant_messages.is_empty() {
+                        if self.assistant.messages.is_empty() {
                             ui.weak(self.catalog.text("assistant-empty-chat"));
                         }
-                        for message in &self.assistant_messages {
+                        for message in &self.assistant.messages {
                             let (heading, fill, stroke) = match message.role {
                                 AssistantMessageRole::User => (
                                     self.catalog.text("assistant-role-you"),
@@ -31761,9 +31792,9 @@ impl KetchupApp {
                                 });
                             ui.add_space(8.0);
                         }
-                        if self.assistant_pending_execution.is_some() {
+                        if self.assistant.pending_execution.is_some() {
                             ui.weak(self.catalog.text("assistant-progress-executing"));
-                        } else if let Some(task) = self.assistant_chat_task.as_ref() {
+                        } else if let Some(task) = self.assistant.chat_task.as_ref() {
                             let elapsed = task.started_at.elapsed();
                             let clock = assistant_clock_frame(elapsed);
                             ui.horizontal(|ui| {
@@ -31778,7 +31809,7 @@ impl KetchupApp {
                         }
                     });
             });
-        if let Some(proposal) = self.assistant_proposal.clone() {
+        if let Some(proposal) = self.assistant.proposal.clone() {
             let mut confirm_clicked = false;
             let mut cancel_clicked = false;
             let review = egui::Frame::new()
@@ -31866,7 +31897,7 @@ impl KetchupApp {
                 self.cancel_assistant_proposal();
             }
         }
-        if let Some(verification) = self.assistant_verification.clone() {
+        if let Some(verification) = self.assistant.verification.clone() {
             let can_undo = self.assistant_change_can_undo();
             let mut undo_clicked = false;
             egui::Frame::new()
@@ -31934,12 +31965,12 @@ impl KetchupApp {
             ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
         let input_label = self.catalog.text("assistant-input-hint");
         let input = ui.add(
-            egui::TextEdit::multiline(&mut self.assistant_input)
+            egui::TextEdit::multiline(&mut self.assistant.input)
                 .id_salt("assistant-chat-input")
                 .hint_text(&input_label)
                 .desired_width(f32::INFINITY)
                 .desired_rows(
-                    if self.assistant_workspace_mode == AssistantWorkspaceMode::Tab {
+                    if self.assistant.workspace_mode == AssistantWorkspaceMode::Tab {
                         4
                     } else {
                         3
@@ -31952,9 +31983,9 @@ impl KetchupApp {
         });
         input.on_hover_text(self.catalog.text("assistant-send-shortcut"));
 
-        let enabled = self.assistant_chat_task.is_none()
-            && self.assistant_pending_execution.is_none()
-            && !self.assistant_input.trim().is_empty();
+        let enabled = self.assistant.chat_task.is_none()
+            && self.assistant.pending_execution.is_none()
+            && !self.assistant.input.trim().is_empty();
         let send_clicked = ui
             .allocate_ui_with_layout(
                 Vec2::new(ui.available_width(), 28.0),
@@ -32007,7 +32038,7 @@ impl KetchupApp {
             .default_open(false)
             .show(ui, |ui| {
                 egui::ComboBox::from_label(self.catalog.text("assistant-intent"))
-                    .selected_text(self.catalog.text(match self.assistant_intent_kind {
+                    .selected_text(self.catalog.text(match self.assistant.intent_kind {
                         AssistantIntentKind::CreateEvaluatorInput => {
                             "assistant-intent-create-evaluator-input"
                         }
@@ -32115,258 +32146,259 @@ impl KetchupApp {
                     }))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateEvaluatorInput,
                             self.catalog.text("assistant-intent-create-evaluator-input"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateEvaluatorExpression,
                             self.catalog
                                 .text("assistant-intent-create-evaluator-expression"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateEvaluatorRule,
                             self.catalog.text("assistant-intent-create-evaluator-rule"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateRuleOverride,
                             self.catalog.text("assistant-intent-create-rule-override"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteRuleOverride,
                             self.catalog.text("assistant-intent-delete-rule-override"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateFeatureParameterBinding,
                             self.catalog
                                 .text("assistant-intent-create-feature-parameter-binding"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteFeatureParameterBinding,
                             self.catalog
                                 .text("assistant-intent-delete-feature-parameter-binding"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreatePersistentDimension,
                             self.catalog
                                 .text("assistant-intent-create-persistent-dimension"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateSpace,
                             self.catalog.text("assistant-intent-create-space"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateClearanceVolume,
                             self.catalog
                                 .text("assistant-intent-create-clearance-volume"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateJoint,
                             self.catalog.text("assistant-intent-create-joint"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CloneProfileDefinitionAndRepoint,
                             self.catalog
                                 .text("assistant-intent-clone-profile-definition"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::ConvertEmptyGroupToComponent,
                             self.catalog.text("assistant-intent-convert-empty-group"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::RecomputeFeatureParameter,
                             self.catalog
                                 .text("assistant-intent-recompute-feature-parameter"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteJoint,
                             self.catalog.text("assistant-intent-delete-joint"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteSpace,
                             self.catalog.text("assistant-intent-delete-space"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteClearanceVolume,
                             self.catalog
                                 .text("assistant-intent-delete-clearance-volume"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeletePersistentDimension,
                             self.catalog
                                 .text("assistant-intent-delete-persistent-dimension"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::RuleDimension,
                             self.catalog.text("assistant-intent-rule"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::EvaluatorName,
                             self.catalog.text("assistant-intent-evaluator-name"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::EvaluatorExpression,
                             self.catalog.text("assistant-intent-evaluator-expression"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::RuleOutputs,
                             self.catalog.text("assistant-intent-rule-outputs"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::FeatureDimension,
                             self.catalog.text("assistant-intent-feature"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::ProfilePoints,
                             self.catalog.text("assistant-intent-profile-points"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DefinitionName,
                             self.catalog.text("assistant-intent-definition-name"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::OccurrenceVisibility,
                             self.catalog.text("assistant-intent-occurrence-visibility"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::TagVisibility,
                             self.catalog.text("assistant-intent-tag-visibility"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::OccurrenceTranslation,
                             self.catalog.text("assistant-intent-occurrence-translation"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::OccurrenceTag,
                             self.catalog.text("assistant-intent-occurrence-tag"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::OccurrenceDefinition,
                             self.catalog.text("assistant-intent-occurrence-definition"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::OccurrenceParent,
                             self.catalog.text("assistant-intent-occurrence-parent"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::GroupTranslation,
                             self.catalog.text("assistant-intent-group-translation"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::GroupParent,
                             self.catalog.text("assistant-intent-group-parent"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CollectionOccurrences,
                             self.catalog.text("assistant-intent-collection-occurrences"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateTag,
                             self.catalog.text("assistant-intent-create-tag"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteTag,
                             self.catalog.text("assistant-intent-delete-tag"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateCollection,
                             self.catalog.text("assistant-intent-create-collection"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteCollection,
                             self.catalog.text("assistant-intent-delete-collection"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteGroup,
                             self.catalog.text("assistant-intent-delete-group"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteOccurrence,
                             self.catalog.text("assistant-intent-delete-occurrence"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateDefinition,
                             self.catalog.text("assistant-intent-create-definition"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteDefinition,
                             self.catalog.text("assistant-intent-delete-definition"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateProfileFeature,
                             self.catalog.text("assistant-intent-create-profile-feature"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::DeleteProfileFeature,
                             self.catalog.text("assistant-intent-delete-profile-feature"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateGroup,
                             self.catalog.text("assistant-intent-create-group"),
                         );
                         ui.selectable_value(
-                            &mut self.assistant_intent_kind,
+                            &mut self.assistant.intent_kind,
                             AssistantIntentKind::CreateOccurrence,
                             self.catalog.text("assistant-intent-create-occurrence"),
                         );
                     });
                 egui::Grid::new("assistant-intent-inputs").show(ui, |ui| {
                     ui.label(self.catalog.text("assistant-target"));
-                    ui.text_edit_singleline(&mut self.assistant_target_input);
+                    ui.text_edit_singleline(&mut self.assistant.target_input);
                     ui.end_row();
                     ui.label(self.catalog.text("assistant-value-label"))
                         .on_hover_text(self.catalog.text("assistant-value"));
-                    ui.text_edit_singleline(&mut self.assistant_value_input);
+                    ui.text_edit_singleline(&mut self.assistant.value_input);
                     ui.end_row();
                 });
                 if ui.button(self.catalog.text("assistant-preview")).clicked()
                     && self.prepare_assistant_from_inputs()
                     && self
-                        .assistant_proposal
+                        .assistant
+                        .proposal
                         .as_ref()
                         .is_some_and(|plan| Self::assistant_proposal_is_low_risk(&plan.proposal))
                 {
@@ -32392,7 +32424,7 @@ impl KetchupApp {
     }
 
     fn apply_parameter_expression(&mut self) -> bool {
-        let Some(node_id) = self.parameter_editor_node else {
+        let Some(node_id) = self.parameter.editor_node else {
             return false;
         };
         let snapshot = self.document.current();
@@ -32401,15 +32433,15 @@ impl KetchupApp {
             snapshot.revision_id(),
             snapshot.canonical_digest(),
         );
-        if self.parameter_provenance.as_ref() != Some(&current_provenance) {
-            self.parameter_provenance = Some(current_provenance);
+        if self.parameter.provenance.as_ref() != Some(&current_provenance) {
+            self.parameter.provenance = Some(current_provenance);
             self.digest = self.catalog.text("error-parameter-stale");
             return false;
         }
         let batch = CommandBatch::edit_evaluator_and_recompute_affected(
             EvaluatorParameterEdit::SetExpression {
                 id: node_id,
-                expression: self.parameter_expression_input.clone(),
+                expression: self.parameter.expression_input.clone(),
             },
             EvaluationIdentity::default(),
         );
@@ -32432,11 +32464,11 @@ impl KetchupApp {
         }
         match self.commit_verified_proposal_with_work_recovery(&proposal) {
             Ok(committed) => {
-                self.parameter_last_recomputed_nodes =
+                self.parameter.last_recomputed_nodes =
                     committed.revision().recomputed_nodes().clone();
-                self.parameter_canonical_source = self.parameter_expression_input.clone();
+                self.parameter.canonical_source = self.parameter.expression_input.clone();
                 let committed_snapshot = committed.revision().snapshot();
-                self.parameter_provenance = Some((
+                self.parameter.provenance = Some((
                     committed_snapshot.document_id(),
                     committed_snapshot.revision_id(),
                     committed_snapshot.canonical_digest(),
@@ -32482,18 +32514,19 @@ impl KetchupApp {
     pub fn validator_panel_selection(&self) -> Vec<&'static str> {
         ASSISTANT_VALIDATOR_IDS
             .into_iter()
-            .filter(|validator| self.validator_panel_selection.contains(validator))
+            .filter(|validator| self.validator_panel.selection.contains(validator))
             .collect()
     }
 
     /// The findings of the last manual validator run, if one has been made.
     #[must_use]
     pub fn validator_panel_report(&self) -> Option<&ValidatorPanelReport> {
-        self.validator_panel_state
+        self.validator_panel
+            .state
             .report_source
             .as_ref()
             .filter(|source| source.matches(&self.document.current()))
-            .and(self.validator_panel_report.as_ref())
+            .and(self.validator_panel.report.as_ref())
     }
 
     /// Runs the selected validators on the current document without mutating it.
@@ -32508,15 +32541,15 @@ impl KetchupApp {
         self.rebind_exact_results(&snapshot);
         let selection = AssistantValidationSelection {
             mode: "only",
-            requested: self.validator_panel_selection.clone(),
+            requested: self.validator_panel.selection.clone(),
             unknown: Vec::new(),
         };
         let validation =
-            self.assistant_validation_context(&snapshot, &self.exact_results, &selection);
-        self.validator_panel_state.report_source =
+            self.assistant_validation_context(&snapshot, &self.exact.results, &selection);
+        self.validator_panel.state.report_source =
             Some(validator_ui::ValidatorSnapshot::new(&snapshot));
-        self.validator_panel_state.notice = None;
-        self.validator_panel_report = Some(validator_panel_report(&validation));
+        self.validator_panel.state.notice = None;
+        self.validator_panel.report = Some(validator_panel_report(&validation));
     }
 
     fn show_validator_panel(&mut self, ui: &mut egui::Ui) {
@@ -32529,13 +32562,13 @@ impl KetchupApp {
 
     fn show_validator_panel_content(&mut self, ui: &mut egui::Ui) {
         for validator in ASSISTANT_VALIDATOR_IDS {
-            let mut enabled = self.validator_panel_selection.contains(validator);
+            let mut enabled = self.validator_panel.selection.contains(validator);
             let label = self.catalog.text(&format!("validator-{validator}-name"));
             if ui.checkbox(&mut enabled, &label).changed() {
                 if enabled {
-                    self.validator_panel_selection.insert(validator);
+                    self.validator_panel.selection.insert(validator);
                 } else {
-                    self.validator_panel_selection.remove(validator);
+                    self.validator_panel.selection.remove(validator);
                 }
             }
             ui.label(
@@ -32547,7 +32580,7 @@ impl KetchupApp {
         let run = self.catalog.text("validators-run");
         if ui
             .add_enabled(
-                !self.validator_panel_pending() && !self.validator_panel_selection.is_empty(),
+                !self.validator_panel_pending() && !self.validator_panel.selection.is_empty(),
                 egui::Button::new(&run),
             )
             .clicked()
@@ -32560,11 +32593,11 @@ impl KetchupApp {
                 ui.label(self.catalog.text("validators-pending"));
             });
         }
-        if let Some(notice) = self.validator_panel_state.notice {
+        if let Some(notice) = self.validator_panel.state.notice {
             ui.label(self.catalog.text(notice));
         }
         let Some(report) = self.validator_panel_report() else {
-            if !self.validator_panel_pending() && self.validator_panel_state.notice.is_none() {
+            if !self.validator_panel_pending() && self.validator_panel.state.notice.is_none() {
                 ui.label(self.catalog.text("validators-not-run"));
             }
             return;
@@ -32635,20 +32668,22 @@ impl KetchupApp {
     fn show_parameter_editor(&mut self, ui: &mut egui::Ui) {
         let nodes = self.parameter_expression_nodes();
         if nodes.is_empty() {
-            self.parameter_editor_node = None;
-            self.parameter_expression_input.clear();
-            self.parameter_canonical_source.clear();
-            self.parameter_provenance = None;
+            self.parameter.editor_node = None;
+            self.parameter.expression_input.clear();
+            self.parameter.canonical_source.clear();
+            self.parameter.provenance = None;
             return;
         }
         let selected_is_current = self
-            .parameter_editor_node
+            .parameter
+            .editor_node
             .is_some_and(|selected| nodes.iter().any(|(id, _, _)| *id == selected));
         if !selected_is_current {
-            self.parameter_editor_node = Some(nodes[0].0);
+            self.parameter.editor_node = Some(nodes[0].0);
         }
         let mut selected = self
-            .parameter_editor_node
+            .parameter
+            .editor_node
             .expect("an editable evaluator node was selected");
         let previous_selected = selected;
         let selected_name = nodes
@@ -32671,17 +32706,17 @@ impl KetchupApp {
         selector.response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &selector_label)
         });
-        self.parameter_editor_node = Some(selected);
+        self.parameter.editor_node = Some(selected);
         let canonical_source = nodes
             .iter()
             .find(|(id, _, _)| *id == selected)
             .map(|(_, _, source)| source.clone())
             .expect("the selected evaluator node is present");
-        if selected != previous_selected || canonical_source != self.parameter_canonical_source {
-            self.parameter_expression_input = canonical_source.clone();
-            self.parameter_canonical_source = canonical_source;
+        if selected != previous_selected || canonical_source != self.parameter.canonical_source {
+            self.parameter.expression_input = canonical_source.clone();
+            self.parameter.canonical_source = canonical_source;
             let snapshot = self.document.current();
-            self.parameter_provenance = Some((
+            self.parameter.provenance = Some((
                 snapshot.document_id(),
                 snapshot.revision_id(),
                 snapshot.canonical_digest(),
@@ -32691,7 +32726,7 @@ impl KetchupApp {
         let input_label = self.catalog.text("parameters-expression");
         ui.label(&input_label);
         let input = ui.add(
-            egui::TextEdit::singleline(&mut self.parameter_expression_input)
+            egui::TextEdit::singleline(&mut self.parameter.expression_input)
                 .hint_text(self.catalog.text("parameters-expression-hint")),
         );
         input.widget_info(|| {
@@ -32717,13 +32752,13 @@ impl KetchupApp {
 
     fn show_pocket_properties(&mut self, ui: &mut egui::Ui) {
         let Some((feature_id, depth)) = self.selected_pocket() else {
-            self.pocket_editor_feature = None;
-            self.pocket_depth_input.clear();
+            self.solid_tools.pocket_editor_feature = None;
+            self.solid_tools.pocket_depth_input.clear();
             return;
         };
-        if self.pocket_editor_feature != Some(feature_id) {
-            self.pocket_editor_feature = Some(feature_id);
-            self.pocket_depth_input = depth.source_token().to_owned();
+        if self.solid_tools.pocket_editor_feature != Some(feature_id) {
+            self.solid_tools.pocket_editor_feature = Some(feature_id);
+            self.solid_tools.pocket_depth_input = depth.source_token().to_owned();
         }
         section_header(
             ui,
@@ -32732,16 +32767,16 @@ impl KetchupApp {
         );
         ui.horizontal(|ui| {
             ui.label(self.catalog.text("pocket-properties-depth"));
-            ui.text_edit_singleline(&mut self.pocket_depth_input);
+            ui.text_edit_singleline(&mut self.solid_tools.pocket_depth_input);
             ui.label(self.catalog.text("unit-mm"));
         });
         let apply = ui
             .button(self.catalog.text("pocket-properties-apply"))
             .clicked();
         if apply {
-            if let Some(depth_mm) = parse_distance_mm(&self.pocket_depth_input) {
+            if let Some(depth_mm) = parse_distance_mm(&self.solid_tools.pocket_depth_input) {
                 if self.set_selected_pocket_depth(depth_mm) {
-                    self.pocket_depth_input = format_height(depth_mm);
+                    self.solid_tools.pocket_depth_input = format_height(depth_mm);
                 }
             } else {
                 self.digest = self.catalog.text("digest-pocket-invalid-depth");
@@ -32751,7 +32786,7 @@ impl KetchupApp {
     }
 
     fn show_classification_dimensions(&mut self, ui: &mut egui::Ui) {
-        if !self.dimensions_visible {
+        if !self.panels.dimensions_visible {
             return;
         }
         ui.separator();
@@ -32761,7 +32796,7 @@ impl KetchupApp {
         let dimension_label = self.catalog.text("dimensions-name");
         ui.label(&dimension_label);
         ui.add(
-            egui::TextEdit::singleline(&mut self.classification_dimension_name_input)
+            egui::TextEdit::singleline(&mut self.classification.dimension_name_input)
                 .hint_text(self.catalog.text("dimensions-name-hint")),
         )
         .widget_info(|| {
@@ -32770,7 +32805,7 @@ impl KetchupApp {
         let first_category_label = self.catalog.text("dimensions-first-category");
         ui.label(&first_category_label);
         ui.add(
-            egui::TextEdit::singleline(&mut self.classification_category_name_input)
+            egui::TextEdit::singleline(&mut self.classification.category_name_input)
                 .hint_text(self.catalog.text("dimensions-category-hint")),
         )
         .widget_info(|| {
@@ -32778,14 +32813,14 @@ impl KetchupApp {
         });
         let create_clicked = ui
             .add_enabled(
-                !self.classification_dimension_name_input.trim().is_empty()
-                    && !self.classification_category_name_input.trim().is_empty(),
+                !self.classification.dimension_name_input.trim().is_empty()
+                    && !self.classification.category_name_input.trim().is_empty(),
                 egui::Button::new(self.catalog.text("dimensions-create")),
             )
             .clicked();
         if create_clicked {
-            let name = self.classification_dimension_name_input.clone();
-            let category = self.classification_category_name_input.clone();
+            let name = self.classification.dimension_name_input.clone();
+            let category = self.classification.category_name_input.clone();
             self.create_classification_dimension(&name, &category);
         }
 
@@ -32796,12 +32831,13 @@ impl KetchupApp {
         }
         if !rows
             .iter()
-            .any(|row| Some(row.id) == self.classification_selected_dimension)
+            .any(|row| Some(row.id) == self.classification.selected_dimension)
         {
-            self.classification_selected_dimension = Some(rows[0].id);
+            self.classification.selected_dimension = Some(rows[0].id);
         }
         let mut selected = self
-            .classification_selected_dimension
+            .classification
+            .selected_dimension
             .expect("a classification dimension is available");
         let selected_name = rows
             .iter()
@@ -32822,14 +32858,14 @@ impl KetchupApp {
             .widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &selector_label)
             });
-        self.classification_selected_dimension = Some(selected);
+        self.classification.selected_dimension = Some(selected);
 
         let category_label = self.catalog.text("dimensions-new-category");
         ui.label(&category_label);
         let mut add_category_clicked = false;
         ui.horizontal(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut self.classification_category_name_input)
+                egui::TextEdit::singleline(&mut self.classification.category_name_input)
                     .hint_text(self.catalog.text("dimensions-category-hint")),
             )
             .widget_info(|| {
@@ -32837,13 +32873,13 @@ impl KetchupApp {
             });
             add_category_clicked = ui
                 .add_enabled(
-                    !self.classification_category_name_input.trim().is_empty(),
+                    !self.classification.category_name_input.trim().is_empty(),
                     egui::Button::new(self.catalog.text("dimensions-add-category")),
                 )
                 .clicked();
         });
         if add_category_clicked {
-            let category = self.classification_category_name_input.clone();
+            let category = self.classification.category_name_input.clone();
             self.add_classification_category(selected, &category);
         }
 
@@ -32894,7 +32930,7 @@ impl KetchupApp {
     /// Feature history, bodies and assembly joints serve manual CAD editing only;
     /// they stay hidden unless Window > Manual CAD panels turns them on.
     fn show_manual_cad_panels(&mut self, ui: &mut egui::Ui) {
-        if !self.manual_cad_panels_visible {
+        if !self.panels.manual_cad_panels_visible {
             return;
         }
         self.show_feature_history(ui);
@@ -32905,7 +32941,7 @@ impl KetchupApp {
     fn show_outliner_without_assistant(&mut self, ui: &mut egui::Ui) {
         self.show_pocket_properties(ui);
         self.show_classification_dimensions(ui);
-        if self.outliner_visible {
+        if self.panels.outliner_visible {
             let groups = self.outliner_groups();
             let entries = self.outliner_query();
             section_header(ui, self.palette(), &self.catalog.text("dock-outliner"));
@@ -33024,7 +33060,7 @@ impl KetchupApp {
                     }
                 });
         }
-        if self.tags_visible {
+        if self.panels.tags_visible {
             ui.separator();
             section_header(ui, self.palette(), &self.catalog.text("dock-tags"));
             ui.horizontal_wrapped(|ui| {
@@ -34244,7 +34280,7 @@ impl KetchupApp {
     }
 
     fn show_cam_export_window(&mut self, context: &egui::Context) {
-        let Some(mut pending) = self.cam_export_dialog.take() else {
+        let Some(mut pending) = self.reviews.cam_export_dialog.take() else {
             return;
         };
         let mut open = true;
@@ -34308,8 +34344,9 @@ impl KetchupApp {
                     .default_facing_operation(&snapshot, 1)
                     .map_err(|error| error.to_string())?;
                 let worker_path = self.exact_worker_executable()?;
-                self.cam_reviews.set_worker_path(worker_path);
-                self.cam_reviews
+                self.reviews.cam_reviews.set_worker_path(worker_path);
+                self.reviews
+                    .cam_reviews
                     .preview(
                         &snapshot,
                         mutation_epoch,
@@ -34337,7 +34374,7 @@ impl KetchupApp {
         {
             let snapshot = self.document.current();
             let mutation_epoch = self.document.mutation_epoch();
-            let result = self.cam_reviews.export(
+            let result = self.reviews.cam_reviews.export(
                 &snapshot,
                 mutation_epoch,
                 &review.token,
@@ -34354,12 +34391,12 @@ impl KetchupApp {
             }
         }
         if open && !cancel {
-            self.cam_export_dialog = Some(pending);
+            self.reviews.cam_export_dialog = Some(pending);
         }
     }
 
     fn show_fea_review_window(&mut self, context: &egui::Context) {
-        let Some(mut pending) = self.fea_review_dialog.take() else {
+        let Some(mut pending) = self.reviews.fea_review_dialog.take() else {
             return;
         };
         let mut open = true;
@@ -34466,8 +34503,9 @@ impl KetchupApp {
                 let coarse = parse_f64(&pending.coarse_deflection_mm, "Coarse deflection")?;
                 let fine = parse_f64(&pending.fine_deflection_mm, "Fine deflection")?;
                 let worker_path = self.exact_worker_executable()?;
-                self.fea_reviews.set_worker_path(worker_path);
-                self.fea_reviews
+                self.reviews.fea_reviews.set_worker_path(worker_path);
+                self.reviews
+                    .fea_reviews
                     .review(
                         &self.document.current(),
                         &FeaStudyRequest {
@@ -34520,12 +34558,12 @@ impl KetchupApp {
             }
         }
         if open && !cancel {
-            self.fea_review_dialog = Some(pending);
+            self.reviews.fea_review_dialog = Some(pending);
         }
     }
 
     fn show_pdm_review_window(&mut self, context: &egui::Context) {
-        let Some(mut pending) = self.pdm_review_dialog.take() else {
+        let Some(mut pending) = self.reviews.pdm_review_dialog.take() else {
             return;
         };
         let mut open = true;
@@ -34635,10 +34673,12 @@ impl KetchupApp {
         let current =
             PdmDocumentState::observed(self.document.current(), self.document.mutation_epoch());
         if refresh {
-            match self
-                .pdm
-                .catalog(&current, &pending.source, &pending.repository, &cancelled)
-            {
+            match self.reviews.pdm.catalog(
+                &current,
+                &pending.source,
+                &pending.repository,
+                &cancelled,
+            ) {
                 Ok(catalog) => {
                     if let Some(latest) = catalog
                         .iter()
@@ -34659,7 +34699,7 @@ impl KetchupApp {
             }
         }
         if open_release {
-            match self.pdm.open(
+            match self.reviews.pdm.open(
                 &current,
                 &pending.source,
                 &pending.repository,
@@ -34674,7 +34714,7 @@ impl KetchupApp {
             }
         }
         if compare {
-            match self.pdm.compare(
+            match self.reviews.pdm.compare(
                 &current,
                 &pending.source,
                 &pending.repository,
@@ -34721,10 +34761,11 @@ impl KetchupApp {
                         pending.note.trim(),
                     ),
                 };
-                self.pdm
+                self.reviews
+                    .pdm
                     .create(
                         &current,
-                        &self.container_data,
+                        &self.file.container_data,
                         &pending.source,
                         &request,
                         true,
@@ -34743,7 +34784,7 @@ impl KetchupApp {
             }
         }
         if open && !cancel {
-            self.pdm_review_dialog = Some(pending);
+            self.reviews.pdm_review_dialog = Some(pending);
         }
     }
 
@@ -35175,7 +35216,7 @@ impl KetchupApp {
     }
 
     fn show_shortcuts_window(&mut self, context: &egui::Context) {
-        if !self.shortcuts_open {
+        if !self.panels.shortcuts_open {
             return;
         }
         let mut open = true;
@@ -35198,16 +35239,16 @@ impl KetchupApp {
                 }
                 ui.separator();
                 if ui.button(self.catalog.text("shortcuts-close")).clicked() {
-                    self.shortcuts_open = false;
+                    self.panels.shortcuts_open = false;
                 }
             });
         if !open {
-            self.shortcuts_open = false;
+            self.panels.shortcuts_open = false;
         }
     }
 
     fn show_about_window(&mut self, context: &egui::Context) {
-        if !self.about_open {
+        if !self.panels.about_open {
             return;
         }
         let mut open = true;
@@ -35228,11 +35269,11 @@ impl KetchupApp {
                 ));
                 ui.separator();
                 if ui.button(self.catalog.text("about-close")).clicked() {
-                    self.about_open = false;
+                    self.panels.about_open = false;
                 }
             });
         if !open {
-            self.about_open = false;
+            self.panels.about_open = false;
         }
     }
 
@@ -35294,7 +35335,7 @@ impl KetchupApp {
                 },
                 self.catalog.text("status-refs-guaranteed"),
             ];
-            chips.push(if self.exact_results.is_empty() {
+            chips.push(if self.exact.results.is_empty() {
                 self.catalog.text("status-exact-unavailable")
             } else {
                 self.catalog.format(
@@ -35445,7 +35486,7 @@ impl KetchupApp {
                     .stroke(hairline),
             )
             .show(context, |ui| self.show_tool_rail(ui));
-        if self.assistant_workspace_mode == AssistantWorkspaceMode::Dock {
+        if self.assistant.workspace_mode == AssistantWorkspaceMode::Dock {
             egui::SidePanel::right("right-dock")
                 .resizable(true)
                 .default_width(440.0)

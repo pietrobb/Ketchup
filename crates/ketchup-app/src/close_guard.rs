@@ -21,7 +21,7 @@ impl KetchupApp {
         CloseIdentity {
             document: self.document.current().document_id(),
             history: self.document.history_digest(),
-            conversation: assistant_conversation_digest(&self.assistant_messages),
+            conversation: assistant_conversation_digest(&self.assistant.messages),
         }
     }
 
@@ -66,11 +66,7 @@ impl KetchupApp {
         if cancel || response.should_close() {
             self.close_guard = CloseGuard::default();
         } else if save {
-            let Some(path) = self
-                .document_path
-                .clone()
-                .or_else(|| self.choose_save_path())
-            else {
+            let Some(path) = self.file.path.clone().or_else(|| self.choose_save_path()) else {
                 self.close_guard.error = None;
                 return;
             };

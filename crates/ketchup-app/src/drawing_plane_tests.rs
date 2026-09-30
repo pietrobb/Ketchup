@@ -38,9 +38,14 @@ fn shell(app: KetchupApp) -> Harness<'static, KetchupApp> {
 fn pointer(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> Pos2 {
     let screen = harness.state().viewport_position(world).unwrap();
     assert!(
-        harness.state().viewport_rect.unwrap().contains(screen),
+        harness
+            .state()
+            .camera
+            .viewport_rect
+            .unwrap()
+            .contains(screen),
         "{world:?} projects outside viewport at {screen:?} ({:?})",
-        harness.state().projection_mode
+        harness.state().camera.projection_mode
     );
     harness
         .input_mut()
@@ -91,7 +96,7 @@ fn drawing_plane_first_point_accepts_z_axis() {
         for projection in [ProjectionMode::Parallel, ProjectionMode::Perspective] {
             let mut app = KetchupApp::new();
             app.new_document();
-            app.projection_mode = projection;
+            app.camera.projection_mode = projection;
             app.dispatch_command(command);
             let mut harness = shell(app);
             let expected = Vec3::new(0.0, 0.0, 25.0);
@@ -168,7 +173,7 @@ fn drawing_plane_rectangle_headless_preview_commit_repeat_and_history() {
         click(&mut harness, end);
         assert_eq!(harness.state().undo_step_count(), undo + 1);
         let after = harness.state().canonical_digest();
-        let rect = harness.state().viewport_rect.unwrap();
+        let rect = harness.state().camera.viewport_rect.unwrap();
         for corner in corners {
             near(
                 harness

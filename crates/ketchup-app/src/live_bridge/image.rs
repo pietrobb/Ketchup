@@ -85,16 +85,16 @@ impl VisualState {
         Ok(Self {
             stamp: app.live_bridge_stamp(),
             camera: app.camera_view_state(),
-            distance: app.camera_distance_mm,
+            distance: app.camera.distance_mm,
             selection: LiveBridge::selection(app)?,
             primary: app.selection.primary.clone(),
-            exact: app.exact_results.contents_stamp(),
-            topology: app.topology_results.contents_stamp(),
-            exact_complete: app.exact_source.as_ref()
+            exact: app.exact.results.contents_stamp(),
+            topology: app.exact.topology_results.contents_stamp(),
+            exact_complete: app.exact.source.as_ref()
                 == Some(&ketchup_application::evaluation::exact_source(
                     &app.document.current(),
                 )),
-            evaluating: app.exact_task.is_some(),
+            evaluating: app.exact.task.is_some(),
             theme: format!("{:?}", app.theme),
         })
     }
@@ -217,7 +217,7 @@ fn resolve_detail(
     let detail = query
         .detail_with_topology(
             &snapshot,
-            &app.topology_results,
+            &app.exact.topology_results,
             target.kind,
             target.entity_id,
         )
@@ -250,6 +250,7 @@ fn resolve_detail(
     };
     let mut local_bounds = None;
     for (key, package) in app
+        .exact
         .topology_results
         .body_values(&snapshot)
         .map_err(|_| "invalid_image_framing")?
@@ -337,12 +338,13 @@ impl KetchupApp {
         self.dispatch_command(command);
     }
     pub(crate) fn begin_live_image_frame(&mut self) {
-        if let Some(bridge) = self.live_bridge.as_mut() {
+        if let Some(bridge) = self.live.bridge.as_mut() {
             bridge.image.painted = None;
         }
     }
     pub(crate) fn live_offscreen_image_pending(&self) -> bool {
-        self.live_bridge
+        self.live
+            .bridge
             .as_ref()
             .and_then(|bridge| bridge.image.pending.as_ref())
             .is_some_and(|request| request.mode == CaptureMode::Offscreen)
@@ -360,7 +362,8 @@ impl KetchupApp {
         plan: Option<Arc<crate::InstancedRenderPlan>>,
     ) {
         let Some((mode, framing, detail)) = self
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .and_then(|bridge| bridge.image.pending.as_ref())
             .map(|request| (request.mode, request.framing, request.detail.clone()))
@@ -444,16 +447,16 @@ impl KetchupApp {
                 atlas,
             })
         })();
-        if let Some(bridge) = self.live_bridge.as_mut() {
+        if let Some(bridge) = self.live.bridge.as_mut() {
             bridge.image.painted = Some(painted);
         }
     }
     pub(crate) fn finish_live_image_frame(&mut self, ctx: &egui::Context) {
-        let Some(mut bridge) = self.live_bridge.take() else {
+        let Some(mut bridge) = self.live.bridge.take() else {
             return;
         };
         bridge.finish_image(self, ctx);
-        self.live_bridge = Some(bridge);
+        self.live.bridge = Some(bridge);
     }
 }
 impl LiveBridge {
@@ -516,7 +519,7 @@ impl LiveBridge {
                     detail,
                     nonce,
                     capture: None,
-                    fit_pending_at_request: app.zoom_fit_pending,
+                    fit_pending_at_request: app.camera.zoom_fit_pending,
                 })
             }
             Err(code) => {
@@ -554,7 +557,7 @@ impl LiveBridge {
                 // photographing the unframed camera would show an empty grid.
                 let state = VisualState::read(app)?;
                 // Exact results landing mid-capture would also make it stale.
-                let settling = app.zoom_fit_pending || state.evaluating;
+                let settling = app.camera.zoom_fit_pending || state.evaluating;
                 if settling && Instant::now() + FIT_WAIT_RESERVE < request.deadline {
                     return Ok(None);
                 }
@@ -603,12 +606,12 @@ impl LiveBridge {
                     return Err("stale_image");
                 }
                 let direct = request.mode == CaptureMode::Offscreen
-                    && app.wgpu_device.is_some()
-                    && app.wgpu_queue.is_some();
+                    && app.render.wgpu_device.is_some()
+                    && app.render.wgpu_queue.is_some();
                 let readback = if direct {
                     target::submit(
-                        app.wgpu_device.as_ref().unwrap(),
-                        app.wgpu_queue.as_ref().unwrap(),
+                        app.render.wgpu_device.as_ref().unwrap(),
+                        app.render.wgpu_queue.as_ref().unwrap(),
                         &painted,
                         request.nonce.clone(),
                         request.queued.cancelled.clone(),

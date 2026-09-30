@@ -121,23 +121,23 @@ fn evaluate_exact(app: &mut KetchupApp) {
     let snapshot = app.document.current();
     let task = ketchup_application::evaluation::start_exact_evaluation(
         snapshot.clone(),
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         Some(worker),
         || {},
     );
     let products = task.wait(Duration::from_secs(60)).unwrap();
     let report = ketchup_application::evaluation::publish_exact_products(
         &mut app.document,
-        &mut app.exact_results,
-        &mut app.topology_results,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
         &task,
         products,
     )
     .unwrap();
     assert!(report.complete && report.topology_complete, "{report:?}");
-    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
 }
 
 /// Picks every face or edge of the part `name` in turn and returns what the
@@ -154,6 +154,7 @@ fn picks(
         .find(|occurrence| occurrence.name() == name)
         .unwrap();
     let package = app
+        .exact
         .topology_results
         .get_render(&snapshot, occurrence.definition_id())
         .unwrap();
@@ -265,7 +266,8 @@ fn face_count(app: &KetchupApp, name: &str) -> usize {
         .occurrences()
         .find(|occurrence| occurrence.name() == name)
         .unwrap();
-    app.topology_results
+    app.exact
+        .topology_results
         .get_render(&snapshot, occurrence.definition_id())
         .unwrap()
         .topological_references()
@@ -297,6 +299,7 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     let locator = ketchup_interaction::exact_projection::TopologicalPickLocator {
         instance_path: InstancePath::root(occurrence.id()),
         producer_feature_id: app
+            .exact
             .topology_results
             .get_render(&snapshot, occurrence.definition_id())
             .unwrap()
@@ -441,6 +444,7 @@ fn exact_volume(app: &KetchupApp, name: &str) -> f64 {
         .find(|occurrence| occurrence.name() == name)
         .unwrap();
     let package = app
+        .exact
         .topology_results
         .get_render(&snapshot, occurrence.definition_id())
         .unwrap();

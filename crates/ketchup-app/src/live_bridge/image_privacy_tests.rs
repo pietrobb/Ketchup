@@ -12,7 +12,7 @@ fn gpu_test_guard() -> std::sync::MutexGuard<'static, ()> {
 
 fn settle_exact(h: &mut Harness<'_, KetchupApp>) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while h.state().exact_task.is_some() {
+    while h.state().exact.task.is_some() {
         assert!(Instant::now() < deadline, "exact scene did not settle");
         h.step();
         std::thread::sleep(Duration::from_millis(10));
@@ -28,7 +28,7 @@ fn queue_with_options(
 ) -> mpsc::Receiver<Response> {
     let ctx = h.ctx.clone();
     let app = h.state_mut();
-    let mut bridge = app.live_bridge.take().unwrap();
+    let mut bridge = app.live.bridge.take().unwrap();
     bridge.session = session;
     let (reply, rx) = mpsc::sync_channel(1);
     bridge.request_image(
@@ -50,7 +50,7 @@ fn queue_with_options(
             reply,
         },
     );
-    app.live_bridge = Some(bridge);
+    app.live.bridge = Some(bridge);
     rx
 }
 
@@ -141,7 +141,8 @@ fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
         h.step();
         let capture_pass = h
             .state()
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .unwrap()
             .image
@@ -207,7 +208,7 @@ fn discarded_capture_and_session_replacement_never_reuse_authority() {
         }),
     );
     h.step(); // No renderer runs the discarded pass.
-    let bridge = h.state_mut().live_bridge.as_mut().unwrap();
+    let bridge = h.state_mut().live.bridge.as_mut().unwrap();
     bridge
         .image
         .pending
@@ -219,7 +220,8 @@ fn discarded_capture_and_session_replacement_never_reuse_authority() {
     let new = queue(&mut h, 2); // Before any intervening finish: must not inherit busy.
     assert!(
         h.state()
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .unwrap()
             .image
@@ -231,7 +233,7 @@ fn discarded_capture_and_session_replacement_never_reuse_authority() {
         old.try_recv(),
         Err(mpsc::TryRecvError::Disconnected)
     ));
-    let bridge = h.state_mut().live_bridge.as_mut().unwrap();
+    let bridge = h.state_mut().live.bridge.as_mut().unwrap();
     bridge.image.revoke();
     assert!(bridge.image.pending.is_none());
     assert!(matches!(
@@ -246,7 +248,7 @@ fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, Ketc
     // Select the same ScenePaintCallback branch as the native app. No scene
     // resources are installed in the outer harness renderer: only the private
     // production target creates them. No desktop window or input is involved.
-    app.wgpu_target_format = Some(wgpu::TextureFormat::Rgba8Unorm);
+    app.render.wgpu_target_format = Some(wgpu::TextureFormat::Rgba8Unorm);
     app.view.set(ViewFlag::GridAxes, false);
     app.view.set(ViewFlag::WhiteBackground, true);
     app.view.set(ViewFlag::Shadows, false);
@@ -273,7 +275,8 @@ fn native_harness(ppp: f32) -> Harness<'static, KetchupApp> {
 
 fn capture<'a>(h: &'a Harness<'_, KetchupApp>) -> &'a (Painted, target::Readback, bool) {
     h.state()
-        .live_bridge
+        .live
+        .bridge
         .as_ref()
         .unwrap()
         .image
@@ -288,7 +291,7 @@ fn capture<'a>(h: &'a Harness<'_, KetchupApp>) -> &'a (Painted, target::Readback
 fn native_pixel_proof(ppp: f32) -> Value {
     let mut h = native_harness(ppp);
     let stamp = h.state().live_bridge_stamp();
-    let plan = h.state().render_plan.as_ref().unwrap();
+    let plan = h.state().render.plan.as_ref().unwrap();
     assert_eq!(plan.batches().len(), 1, "built-in 100 x 60 x 20 mm box");
     assert_eq!(plan.batches()[0].instances.len(), 1);
     assert_eq!(plan.batches()[0].geometry.index_count(), 36);
@@ -317,7 +320,8 @@ fn native_pixel_proof(ppp: f32) -> Value {
     assert_eq!(
         pixels.nonce,
         h.state()
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .unwrap()
             .image
@@ -387,7 +391,7 @@ fn native_pixel_proof(ppp: f32) -> Value {
         "thumbnail must also contain background: {white}"
     );
     let expected_png = base64(&png_rgb(w, height, &rgb));
-    h.state_mut().live_bridge.as_mut().unwrap().image.revoke();
+    h.state_mut().live.bridge.as_mut().unwrap().image.revoke();
     assert!(matches!(
         oracle_rx.try_recv(),
         Err(mpsc::TryRecvError::Disconnected)
@@ -447,16 +451,16 @@ fn image_requested_during_a_pending_zoom_fit_shows_the_framed_camera() {
     // the only thing the image waits for is the pending fit.
     h.step();
     settle_exact(&mut h);
-    h.state_mut().zoom = 0.05;
-    h.state_mut().zoom_fit_pending = true;
+    h.state_mut().camera.zoom = 0.05;
+    h.state_mut().camera.zoom_fit_pending = true;
     let rx = queue(&mut h, 41);
     h.step();
-    assert!(!h.state().zoom_fit_pending);
+    assert!(!h.state().camera.zoom_fit_pending);
     render_private_capture(&mut h, "image after a deferred zoom fit");
     let response = response(&mut h, &rx);
     assert!(response.ok, "{:?}", response.error);
-    assert!(!h.state().zoom_fit_pending);
-    let framed_zoom = f64::from(h.state().zoom);
+    assert!(!h.state().camera.zoom_fit_pending);
+    let framed_zoom = f64::from(h.state().camera.zoom);
     let result = response.result.unwrap();
     let image_zoom = result["view"]["zoom"].as_f64().unwrap();
     assert!(
@@ -486,7 +490,8 @@ fn selection_framing_crops_real_cad_pixels_without_mutating_view_or_selection() 
 
     let selection_rx = queue_with_framing(&mut h, 1, ImageFraming::Selection);
     if h.state()
-        .live_bridge
+        .live
+        .bridge
         .as_ref()
         .unwrap()
         .image
@@ -549,13 +554,14 @@ fn host_topology_detail_framing_crops_real_pixels_without_gui_selection() {
     let (entity_id, reference_id) = {
         let app = h.state();
         let page = app
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .unwrap()
             .query
             .page_with_topology(
                 &app.document.current(),
-                &app.topology_results,
+                &app.exact.topology_results,
                 &PageRequest {
                     kind: EntityKind::Edges,
                     limit: 10,
@@ -737,7 +743,8 @@ fn pending_native_capture_rejects_exact_registry_replacement_without_document_mu
     assert!(reply.result.is_none());
     assert!(
         h.state()
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .unwrap()
             .image

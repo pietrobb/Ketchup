@@ -184,14 +184,14 @@ impl KetchupApp {
         let mut mesh = egui::Mesh::default();
         // Cycling to a hidden overlap is an explicit choice that must stay visible.
         let choosing_hidden_target =
-            self.face_workflow.xray_preview() || self.hover_overlap_index != 0;
+            self.face_workflow.xray_preview() || self.hover.overlap_index != 0;
         // Draw the hovered target last, including when it is behind another body.
         for hovered_pass in [false, true] {
             for face in &faces {
                 if face.previewed {
                     continue;
                 }
-                let hovered = self.hovered.as_ref() == Some(&face.selection);
+                let hovered = self.hover.target.as_ref() == Some(&face.selection);
                 if hovered != hovered_pass {
                     continue;
                 }
@@ -266,7 +266,7 @@ mod tests {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0));
         let origin = Vec3::new(0.0, 0.0, 0.0);
         for zoom in [0.5, 1.0, 4.0] {
-            app.zoom = zoom;
+            app.camera.zoom = zoom;
             let pointer = app.project(origin, rect) + Vec2::new(5.0, 2.0);
             assert_eq!(
                 app.viewport_point_at_screen(pointer, rect, 0.0),
@@ -385,7 +385,7 @@ mod tests {
                 side: Side::Maximum,
             },
         };
-        app.hovered = Some(selection.clone());
+        app.hover.target = Some(selection.clone());
         // A face with pin holes tessellates into long slivers like this one.
         let sliver = [
             Pos2::new(300.0, 100.0),
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn native_viewport_emits_filled_hover_overlay_after_gpu_callback() {
         let mut app = KetchupApp::new();
-        app.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
         let context = egui::Context::default();
         let input = || egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
@@ -438,7 +438,7 @@ mod tests {
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
         let output = context.run(raw, |context| app.ui(context));
-        assert!(app.hovered.is_some());
+        assert!(app.hover.target.is_some());
         let callback = output
             .shapes
             .iter()
@@ -453,7 +453,7 @@ mod tests {
             .expect("visible face fill, not just internal hover state");
         assert!(overlay > callback);
 
-        app.select_from_viewport(app.hovered.clone(), false);
+        app.select_from_viewport(app.hover.target.clone(), false);
         let mut raw = input();
         raw.events.push(egui::Event::PointerGone);
         let output = context.run(raw, |context| app.ui(context));
@@ -464,12 +464,12 @@ mod tests {
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
         let _ = context.run(raw, |context| app.ui(context));
-        let before = app.hovered.clone();
+        let before = app.hover.target.clone();
         let revision = app.document_revision();
         let mut raw = input();
         raw.modifiers.alt = true;
         let output = context.run(raw, |context| app.ui(context));
-        assert_ne!(app.hovered, before);
+        assert_ne!(app.hover.target, before);
         assert!(app.face_workflow.xray_preview());
         assert!(
             !app.view.contains(ViewFlag::Xray),
@@ -483,9 +483,9 @@ mod tests {
             output_has_fill(&output.shapes, &[], |fill| fill == HOVER_FILL),
             "cycled target must have a filled highlight"
         );
-        let chosen = app.hovered.clone();
+        let chosen = app.hover.target.clone();
         let output = context.run(input(), |context| app.ui(context));
-        assert_eq!(app.hovered, chosen);
+        assert_eq!(app.hover.target, chosen);
         assert!(!app.face_workflow.xray_preview());
         assert!(
             output
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn clicked_selection_stays_visible_while_the_pointer_keeps_moving() {
         let mut app = KetchupApp::new();
-        app.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
         let context = egui::Context::default();
         let input = || egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn cycled_back_face_emits_a_filled_hover_overlay() {
         let mut app = KetchupApp::new();
-        app.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
         let context = egui::Context::default();
         let input = || egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
@@ -564,12 +564,13 @@ mod tests {
         let _ = context.run(raw, |context| app.ui(context));
 
         let forward = Vec3::new(
-            -f64::from(app.yaw.sin() * app.pitch.sin()),
-            -f64::from(app.yaw.cos() * app.pitch.sin()),
-            -f64::from(app.pitch.cos()),
+            -f64::from(app.camera.yaw.sin() * app.camera.pitch.sin()),
+            -f64::from(app.camera.yaw.cos() * app.camera.pitch.sin()),
+            -f64::from(app.camera.pitch.cos()),
         );
         let (hidden_index, hidden) = app
-            .hover_pick
+            .hover
+            .pick
             .as_ref()
             .expect("the box must be pickable")
             .overlapping
@@ -578,12 +579,12 @@ mod tests {
             .find(|(_, hit)| !face_is_visible(&hit.reference.element, forward))
             .map(|(index, hit)| (index, hit.reference.clone()))
             .expect("the ray must expose a back face for overlap cycling");
-        app.hover_overlap_index = hidden_index;
+        app.hover.overlap_index = hidden_index;
         app.refresh_hover_choice();
-        assert_eq!(app.hovered.as_ref(), Some(&hidden));
+        assert_eq!(app.hover.target.as_ref(), Some(&hidden));
 
         let output = context.run(input(), |context| app.ui(context));
-        assert_eq!(app.hovered.as_ref(), Some(&hidden));
+        assert_eq!(app.hover.target.as_ref(), Some(&hidden));
         assert!(
             output_has_fill(&output.shapes, &[], |fill| fill == HOVER_FILL),
             "a cycled back face must remain visibly highlighted"

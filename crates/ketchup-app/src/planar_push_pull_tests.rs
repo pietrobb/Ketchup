@@ -50,28 +50,29 @@ pub(crate) fn prism(points: &[[f64; 2]], transform: Transform) -> KetchupApp {
     let snapshot = app.document.current();
     let task = ketchup_application::evaluation::start_exact_evaluation(
         snapshot.clone(),
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         Some(worker),
         || {},
     );
     let products = task.wait(Duration::from_secs(30)).unwrap();
     let report = publish_exact_products(
         &mut app.document,
-        &mut app.exact_results,
-        &mut app.topology_results,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
         &task,
         products,
     )
     .unwrap();
     assert!(report.complete && report.topology_complete, "{report:?}");
-    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
     app
 }
 
 fn package(app: &KetchupApp) -> Arc<ExactBodyPackage> {
-    app.topology_results
+    app.exact
+        .topology_results
         .get_render(&app.document.current(), TEST_PRISM_DEFINITION)
         .unwrap()
         .clone()
@@ -88,12 +89,13 @@ fn volume(app: &KetchupApp) -> f64 {
 }
 
 pub(crate) fn wait_preview(app: &mut KetchupApp) {
-    if app.face_offset_evaluation.is_none() {
+    if app.push_pull.face_offset_evaluation.is_none() {
         app.begin_face_offset_evaluation();
     }
     let context = egui::Context::default();
     let deadline = Instant::now() + Duration::from_secs(30);
     while app
+        .push_pull
         .face_offset_evaluation
         .as_ref()
         .is_some_and(|evaluation| evaluation.task.is_some())
@@ -103,7 +105,8 @@ pub(crate) fn wait_preview(app: &mut KetchupApp) {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
-        app.face_offset_evaluation
+        app.push_pull
+            .face_offset_evaluation
             .as_ref()
             .is_some_and(|evaluation| evaluation.ready),
         "{}",
@@ -163,25 +166,26 @@ fn program_push_pull_updates_source_and_survives_save_open_with_identity() {
     assert_eq!(graph.profiles[0].segment_entity_ids, [1, 2, 3, 4]);
     let task = ketchup_application::evaluation::start_exact_evaluation(
         snapshot.clone(),
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         Some(worker),
         || {},
     );
     let products = task.wait(Duration::from_secs(30)).unwrap();
     let report = publish_exact_products(
         &mut app.document,
-        &mut app.exact_results,
-        &mut app.topology_results,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
         &task,
         products,
     )
     .unwrap();
     assert!(report.complete && report.topology_complete, "{report:?}");
-    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
 
     let package = app
+        .exact
         .topology_results
         .get_render(&snapshot, definition_id)
         .unwrap();
@@ -319,25 +323,26 @@ fn table_top_push_pull_rewrites_program_through_undo_redo_and_save_open() {
     let definition_id = snapshot.occurrence(top).unwrap().definition_id();
     let task = ketchup_application::evaluation::start_exact_evaluation(
         snapshot.clone(),
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         Some(worker),
         || {},
     );
     let products = task.wait(Duration::from_secs(60)).unwrap();
     let report = publish_exact_products(
         &mut app.document,
-        &mut app.exact_results,
-        &mut app.topology_results,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
         &task,
         products,
     )
     .unwrap();
     assert!(report.complete && report.topology_complete, "{report:?}");
-    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
 
     let package = app
+        .exact
         .topology_results
         .get_render(&snapshot, definition_id)
         .unwrap();
@@ -451,7 +456,7 @@ fn continuous_motion_paints_surface_preview_without_waiting_for_exact_worker() {
                 != Color32::TRANSPARENT),
             "every pointer update must paint a filled surface, not only an arrow"
         );
-        assert!(app.face_offset_evaluation.is_none());
+        assert!(app.push_pull.face_offset_evaluation.is_none());
         assert_eq!(app.canonical_digest(), digest);
         assert_eq!(app.undo_step_count(), steps);
     }
@@ -475,14 +480,15 @@ fn continuous_motion_defers_exact_worker_until_idle_or_confirmation() {
         app.set_push_pull_distance_input((f64::from(step) / 10.0).to_string());
         assert!(app.start_preview());
         assert!(
-            app.face_offset_evaluation.is_none(),
+            app.push_pull.face_offset_evaluation.is_none(),
             "live pointer motion must not spawn overlapping exact workers"
         );
     }
 
     assert!(!app.confirm_preview());
     assert!(
-        app.face_offset_evaluation
+        app.push_pull
+            .face_offset_evaluation
             .as_ref()
             .is_some_and(|evaluation| {
                 evaluation.task.is_some() && evaluation.confirm_requested
@@ -619,7 +625,8 @@ fn every_polygon_face_supports_signed_offset_and_repeated_edit_with_exact_undo()
                 assert_eq!(preview_graph.topology_counts[3..], [1, 1]);
                 assert!(app.confirm_preview());
                 let committed = app
-                    .exact_results
+                    .exact
+                    .results
                     .get_render(&app.document.current(), TEST_PRISM_DEFINITION)
                     .unwrap()
                     .clone();
@@ -656,7 +663,7 @@ fn every_polygon_face_supports_signed_offset_and_repeated_edit_with_exact_undo()
                 assert!(volume(&app) > result_volume);
                 let saved = ketchup_core::persistence::save_document_store(
                     &app.document,
-                    &app.container_data,
+                    &app.file.container_data,
                 )
                 .unwrap();
                 let reopened = ketchup_core::persistence::load(&saved)
@@ -745,8 +752,8 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         &[[0.0, 0.0], [40.0, 0.0], [8.0, 30.0]],
         Transform::identity(),
     );
-    app.yaw = 0.8;
-    app.pitch = 0.9;
+    app.camera.yaw = 0.8;
+    app.camera.pitch = 0.9;
     app.dispatch_command(AppCommand::PushPull);
     let mut harness = egui_kittest::Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
@@ -761,7 +768,7 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         .push(egui::Event::PointerMoved(pointer));
     harness.step();
     assert!(matches!(
-        harness.state().hovered.as_ref().unwrap().element,
+        harness.state().hover.target.as_ref().unwrap().element,
         ElementId::TopologicalFace(_)
     ));
     harness.input_mut().events.push(egui::Event::PointerButton {
@@ -822,8 +829,8 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
     assert!(
         harness.state().preview_action_digest().is_some(),
         "snap={:?}, distance={}, source={face:?}",
-        harness.state().hover_snap,
-        harness.state().push_pull_distance_input
+        harness.state().hover.snap,
+        harness.state().push_pull.distance_input
     );
     for distance in [4.0, -2.0, 8.0] {
         let position = harness
@@ -857,7 +864,8 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
     }
     let state = harness.state();
     let snapshot = state.document.current();
-    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &state.topology_results);
+    let projection =
+        ExactInteractionProjection::from_snapshot(&snapshot, &state.exact.topology_results);
     assert!(
         state.viewport_boxes(&snapshot, &projection).is_empty(),
         "side-face offset must not draw the original profile extruded along Z"
@@ -897,7 +905,8 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
     assert!(volume(harness.state()) > 7200.0);
     let committed = harness
         .state()
-        .exact_results
+        .exact
+        .results
         .get_render(&harness.state().document.current(), TEST_PRISM_DEFINITION)
         .unwrap()
         .clone();
@@ -921,7 +930,7 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         after_support - before_support,
         hit.outward_normal
     );
-    assert!(harness.state().face_offset_evaluation.is_none());
+    assert!(harness.state().push_pull.face_offset_evaluation.is_none());
     assert!(
         harness
             .state()
@@ -946,16 +955,33 @@ fn idle_preview_coalesces_in_flight_changes_and_confirms_latest_distance() {
     let face = app.selected_planar_face(&target).unwrap();
     app.set_push_pull_distance_input("2");
     assert!(app.start_preview());
-    app.face_offset_preview_due = Some(Instant::now());
+    app.push_pull.face_offset_preview_due = Some(Instant::now());
     app.poll_face_offset_evaluation(&context);
-    let first_source = app.face_offset_evaluation.as_ref().unwrap().source.clone();
-    assert!(app.face_offset_evaluation.as_ref().unwrap().task.is_some());
+    let first_source = app
+        .push_pull
+        .face_offset_evaluation
+        .as_ref()
+        .unwrap()
+        .source
+        .clone();
+    assert!(
+        app.push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .unwrap()
+            .task
+            .is_some()
+    );
     for distance in [3, 5, -1, 4] {
         app.set_push_pull_distance_input(distance.to_string());
         assert!(app.start_preview());
         app.begin_face_offset_evaluation();
         assert_eq!(
-            app.face_offset_evaluation.as_ref().unwrap().source,
+            app.push_pull
+                .face_offset_evaluation
+                .as_ref()
+                .unwrap()
+                .source,
             first_source,
             "pointer motion must not replace an in-flight worker"
         );
@@ -1004,7 +1030,7 @@ fn ready_preview_is_hidden_after_direction_change_and_cancel_is_non_mutating() {
         app.face_offset_preview_package(TEST_PRISM_DEFINITION)
             .is_none()
     );
-    app.face_offset_preview_due = Some(Instant::now());
+    app.push_pull.face_offset_preview_due = Some(Instant::now());
     app.poll_face_offset_evaluation(&egui::Context::default());
     wait_preview(&mut app);
     let second = app
@@ -1012,8 +1038,8 @@ fn ready_preview_is_hidden_after_direction_change_and_cancel_is_non_mutating() {
         .unwrap();
     assert_ne!(first.result_fingerprint(), second.result_fingerprint());
     app.cancel_preview();
-    assert!(app.face_offset_preview_due.is_none());
-    assert!(app.face_offset_evaluation.is_none());
+    assert!(app.push_pull.face_offset_preview_due.is_none());
+    assert!(app.push_pull.face_offset_evaluation.is_none());
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), steps);
 }
@@ -1056,12 +1082,25 @@ fn failed_cancelled_or_stale_face_offset_never_changes_document() {
     assert!(!app.confirm_preview());
     let context = egui::Context::default();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while app.face_offset_evaluation.as_ref().unwrap().task.is_some() {
+    while app
+        .push_pull
+        .face_offset_evaluation
+        .as_ref()
+        .unwrap()
+        .task
+        .is_some()
+    {
         assert!(Instant::now() < deadline);
         app.poll_face_offset_evaluation(&context);
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(app.face_offset_evaluation.as_ref().unwrap().failed);
+    assert!(
+        app.push_pull
+            .face_offset_evaluation
+            .as_ref()
+            .unwrap()
+            .failed
+    );
     assert!(!app.confirm_preview());
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), steps);

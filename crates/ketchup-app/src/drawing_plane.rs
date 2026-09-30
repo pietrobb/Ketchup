@@ -157,6 +157,6 @@ impl KetchupApp {
         self.face_workflow.set_datum(plane);
         self.gesture.sketch.end = end.map(|p| self.drawing_world_delta(start, p));
         self.gesture.sketch.cursor = cursor.map(|p| self.drawing_world_delta(start, p));
-        self.hover_snap = None;
+        self.hover.snap = None;
     }
 }

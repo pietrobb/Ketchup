@@ -22,10 +22,11 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
     ));
     // Inject the state left by a successful render request followed by a
     // failed topology request. The render is real worker evidence, not a mock.
-    app.exact_results
+    app.exact
+        .results
         .insert_current(&snapshot, Arc::clone(&render))
         .unwrap();
-    assert!(app.topology_results.is_empty());
+    assert!(app.exact.topology_results.is_empty());
     let stamp = app.live_bridge_stamp();
     let history = (app.undo_step_count(), app.redo_step_count(), app.is_dirty());
     for kind in [EntityKind::Faces, EntityKind::Edges] {
@@ -46,17 +47,17 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
     // topology, rather than silently report this producer as complete.
     let task = start_exact_evaluation(
         snapshot.clone(),
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         None,
         || {},
     );
     let products = task.wait(Duration::from_secs(10)).unwrap();
     let report = publish_exact_products(
         &mut app.document,
-        &mut app.exact_results,
-        &mut app.topology_results,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
         &task,
         products,
     )
@@ -71,22 +72,23 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
         if reason == "exact worker unavailable")
     );
     assert_eq!(
-        app.exact_results.values().next().unwrap().as_ref(),
+        app.exact.results.values().next().unwrap().as_ref(),
         render.as_ref()
     );
 
     // Exercise desktop completion through egui_kittest, without OS input.
-    app.exact_task = Some(start_exact_evaluation(
+    app.exact.task = Some(start_exact_evaluation(
         snapshot,
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         None,
         || {},
     ));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !app
-        .exact_task
+        .exact
+        .task
         .as_ref()
         .unwrap()
         .finished
@@ -99,26 +101,30 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
         |context, app: &mut KetchupApp| app.refresh_exact_products(context),
         app,
     );
-    assert!(harness.state().exact_source.is_none());
-    assert!(harness.state().exact_retry_at.is_some());
-    assert!(harness.state().topology_results.is_empty());
-    harness.state_mut().exact_worker_path = Some(worker);
-    harness.state_mut().exact_worker_attempted = true;
+    assert!(harness.state().exact.source.is_none());
+    assert!(harness.state().exact.retry_at.is_some());
+    assert!(harness.state().exact.topology_results.is_empty());
+    harness.state_mut().exact.worker_path = Some(worker);
+    harness.state_mut().exact.worker_attempted = true;
     // Deadline scheduling in an idle UI is separately covered by goal #2005.
-    harness.state_mut().exact_retry_at = Some(Instant::now());
+    harness.state_mut().exact.retry_at = Some(Instant::now());
     let deadline = Instant::now() + Duration::from_secs(30);
-    while harness.state().exact_source.is_none() {
+    while harness.state().exact.source.is_none() {
         assert!(Instant::now() < deadline, "topology recovery deadline");
         harness.step();
         std::thread::sleep(Duration::from_millis(5));
     }
     let app = harness.state_mut();
-    assert!(app.exact_retry_at.is_none());
+    assert!(app.exact.retry_at.is_none());
     assert_eq!(
-        app.exact_results.values().next().unwrap().as_ref(),
+        app.exact.results.values().next().unwrap().as_ref(),
         render.as_ref()
     );
-    assert!(app.topology_results.is_bound_to(&app.document.current()));
+    assert!(
+        app.exact
+            .topology_results
+            .is_bound_to(&app.document.current())
+    );
     for kind in [EntityKind::Faces, EntityKind::Edges] {
         let result = bridge
             .execute(
@@ -138,20 +144,25 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
         (app.undo_step_count(), app.redo_step_count(), app.is_dirty()),
         history
     );
-    let topology = app.topology_results.values().cloned().collect::<Vec<_>>();
+    let topology = app
+        .exact
+        .topology_results
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
     let task = start_exact_evaluation(
         app.document.current(),
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         None,
         || {},
     );
     let products = task.wait(Duration::from_secs(10)).unwrap();
     let cached = publish_exact_products(
         &mut app.document,
-        &mut app.exact_results,
-        &mut app.topology_results,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
         &task,
         products,
     )
@@ -159,7 +170,11 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
     assert!(cached.complete && cached.topology_complete && !cached.needs_retry());
     assert_eq!(cached.producers[0].topology, EvidenceStatus::Current);
     assert_eq!(
-        app.topology_results.values().cloned().collect::<Vec<_>>(),
+        app.exact
+            .topology_results
+            .values()
+            .cloned()
+            .collect::<Vec<_>>(),
         topology
     );
 }

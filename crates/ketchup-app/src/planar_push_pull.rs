@@ -135,6 +135,7 @@ impl KetchupApp {
         self.selected_planar_face(target)?;
         let snapshot = self.document.current();
         let package = self
+            .exact
             .topology_results
             .get_render(&snapshot, target.definition_id)?;
         let occurrence = snapshot
@@ -276,7 +277,8 @@ impl KetchupApp {
         } else {
             Some((
                 Vec2::new(0.0, -1.0),
-                (self.zoom * rect.width().min(rect.height()) / 420.0).max(SCREEN_ROUNDING_PX),
+                (self.camera.zoom * rect.width().min(rect.height()) / 420.0)
+                    .max(SCREEN_ROUNDING_PX),
             ))
         }
     }
@@ -326,9 +328,10 @@ impl KetchupApp {
             .iter()
             .find(|(selection, _)| selection == target)?;
         let resolved = bound
-            .resolve_current(&snapshot, &self.topology_results)
+            .resolve_current(&snapshot, &self.exact.topology_results)
             .ok()?;
         let package = self
+            .exact
             .topology_results
             .get_render(&snapshot, target.definition_id)?;
         let occurrence = snapshot
@@ -356,6 +359,7 @@ impl KetchupApp {
         if let ElementId::TopologicalFace(ordinal) = target.element {
             let snapshot = self.document.current();
             if let Some(package) = self
+                .exact
                 .topology_results
                 .get_render(&snapshot, target.definition_id)
             {
@@ -381,14 +385,14 @@ impl KetchupApp {
 
     pub(super) fn begin_face_offset_evaluation(&mut self) {
         if !self.preview_requires_face_offset_evaluation() {
-            self.face_offset_evaluation = None;
+            self.push_pull.face_offset_evaluation = None;
             return;
         }
         let Some(preview) = self.tool_preview.get::<EphemeralBoxPreview>() else {
-            self.face_offset_evaluation = None;
+            self.push_pull.face_offset_evaluation = None;
             return;
         };
-        let Some(proposal) = self.smart_push_pull_proposal.as_ref() else {
+        let Some(proposal) = self.push_pull.smart_proposal.as_ref() else {
             return;
         };
         let Some(snapshot) = proposal.preview(&self.document) else {
@@ -396,6 +400,7 @@ impl KetchupApp {
         };
         let source = ketchup_application::evaluation::exact_source(&snapshot);
         if self
+            .push_pull
             .face_offset_evaluation
             .as_ref()
             .is_some_and(|evaluation| evaluation.source == source || evaluation.task.is_some())
@@ -403,7 +408,7 @@ impl KetchupApp {
             return;
         }
         let Some(document) =
-            ketchup_core::persistence::save_container(&snapshot, &self.container_data)
+            ketchup_core::persistence::save_container(&snapshot, &self.file.container_data)
                 .ok()
                 .and_then(|bytes| ketchup_core::persistence::load(&bytes).ok())
                 .and_then(|loaded| loaded.into_editable().ok())
@@ -421,21 +426,21 @@ impl KetchupApp {
             definition_id: preview.plan.source.target.definition_id,
             feature_id,
         }]);
-        let worker = self.exact_worker_path.clone().or_else(|| {
+        let worker = self.exact.worker_path.clone().or_else(|| {
             exact_worker_candidates()
                 .into_iter()
                 .find(|path| path.is_file())
         });
         let task = start_exact_evaluation_scoped(
             snapshot,
-            &self.container_data,
+            &self.file.container_data,
             &ExactResultRegistry::default(),
             &ExactResultRegistry::default(),
             worker,
             Some(&scope),
             || {},
         );
-        self.face_offset_evaluation = Some(FaceOffsetEvaluation {
+        self.push_pull.face_offset_evaluation = Some(FaceOffsetEvaluation {
             source,
             document,
             task: Some(task),
@@ -449,7 +454,7 @@ impl KetchupApp {
 
     pub(super) fn request_face_offset_confirmation(&mut self) -> bool {
         self.begin_face_offset_evaluation();
-        let Some(evaluation) = self.face_offset_evaluation.as_mut() else {
+        let Some(evaluation) = self.push_pull.face_offset_evaluation.as_mut() else {
             return false;
         };
         evaluation.confirm_requested = true;
@@ -457,22 +462,23 @@ impl KetchupApp {
     }
 
     pub(super) fn poll_face_offset_evaluation(&mut self, context: &egui::Context) {
-        if let Some(due) = self.face_offset_preview_due {
+        if let Some(due) = self.push_pull.face_offset_preview_due {
             if !self.has_preview() {
-                self.face_offset_preview_due = None;
+                self.push_pull.face_offset_preview_due = None;
             } else if Instant::now() >= due
                 && self
+                    .push_pull
                     .face_offset_evaluation
                     .as_ref()
                     .is_none_or(|evaluation| evaluation.task.is_none())
             {
-                self.face_offset_preview_due = None;
+                self.push_pull.face_offset_preview_due = None;
                 self.begin_face_offset_evaluation();
             } else {
                 context.request_repaint_after(Duration::from_millis(16));
             }
         }
-        let Some(evaluation) = self.face_offset_evaluation.as_mut() else {
+        let Some(evaluation) = self.push_pull.face_offset_evaluation.as_mut() else {
             return;
         };
         let Some(task) = evaluation.task.as_ref() else {
@@ -505,7 +511,7 @@ impl KetchupApp {
         let failed = evaluation.failed;
         if !self.face_offset_evaluation_is_current() {
             if confirm_requested {
-                self.face_offset_evaluation = None;
+                self.push_pull.face_offset_evaluation = None;
                 self.request_face_offset_confirmation();
             }
             context.request_repaint();
@@ -520,10 +526,12 @@ impl KetchupApp {
     }
 
     fn face_offset_evaluation_is_current(&self) -> bool {
-        self.face_offset_evaluation
+        self.push_pull
+            .face_offset_evaluation
             .as_ref()
             .is_some_and(|evaluation| {
-                self.smart_push_pull_proposal
+                self.push_pull
+                    .smart_proposal
                     .as_ref()
                     .and_then(|proposal| proposal.preview(&self.document))
                     .is_some_and(|snapshot| {
@@ -538,6 +546,7 @@ impl KetchupApp {
         definition_id: DefinitionId,
     ) -> Option<Arc<ExactBodyPackage>> {
         let evaluation = self
+            .push_pull
             .face_offset_evaluation
             .as_ref()
             .filter(|evaluation| evaluation.ready)?;
@@ -555,7 +564,8 @@ impl KetchupApp {
     }
 
     pub(super) fn face_offset_confirmation_pending(&self) -> bool {
-        self.face_offset_evaluation
+        self.push_pull
+            .face_offset_evaluation
             .as_ref()
             .is_some_and(|evaluation| evaluation.confirm_requested && !evaluation.failed)
     }
@@ -565,30 +575,31 @@ impl KetchupApp {
             return false;
         }
         if self
+            .push_pull
             .face_offset_evaluation
             .as_ref()
             .is_some_and(|evaluation| evaluation.task.is_none())
             && !self.face_offset_evaluation_is_current()
         {
-            self.face_offset_evaluation = None;
+            self.push_pull.face_offset_evaluation = None;
             self.request_face_offset_confirmation();
             return false;
         }
-        let Some(evaluation) = self.face_offset_evaluation.as_mut() else {
+        let Some(evaluation) = self.push_pull.face_offset_evaluation.as_mut() else {
             return false;
         };
         if !evaluation.ready {
             evaluation.confirm_requested = !evaluation.failed;
             return false;
         }
-        let Some(proposal) = self.smart_push_pull_proposal.as_ref() else {
+        let Some(proposal) = self.push_pull.smart_proposal.as_ref() else {
             return false;
         };
         let Some(snapshot) = proposal.preview(&self.document) else {
             return false;
         };
         if ketchup_application::evaluation::exact_source(&snapshot) != evaluation.source {
-            self.face_offset_evaluation = None;
+            self.push_pull.face_offset_evaluation = None;
             self.request_face_offset_confirmation();
             return false;
         }
@@ -605,12 +616,13 @@ impl KetchupApp {
                 return false;
             }
         };
-        let Some(proposal) = self.smart_push_pull_proposal.take() else {
+        let Some(proposal) = self.push_pull.smart_proposal.take() else {
             return false;
         };
-        let evaluation = self.face_offset_evaluation.as_ref().unwrap();
-        let mut render = ExactResultRegistry::carried_forward(&snapshot, &self.exact_results);
-        let mut topology = ExactResultRegistry::carried_forward(&snapshot, &self.topology_results);
+        let evaluation = self.push_pull.face_offset_evaluation.as_ref().unwrap();
+        let mut render = ExactResultRegistry::carried_forward(&snapshot, &self.exact.results);
+        let mut topology =
+            ExactResultRegistry::carried_forward(&snapshot, &self.exact.topology_results);
         for package in evaluation.render.values() {
             if render
                 .insert_current(&snapshot, Arc::clone(package))
@@ -655,8 +667,8 @@ impl KetchupApp {
         }
         self.clear_ephemeral_edit_state();
         self.selection.clear();
-        self.interaction_projection_cache.get_mut().take();
-        self.render_plan = None;
+        self.hover.projection_cache.get_mut().take();
+        self.render.plan = None;
         self.status_key = "status-ready";
         true
     }
@@ -675,6 +687,7 @@ impl KetchupApp {
         let world_face = self.selected_planar_face(&source.target)?;
         let snapshot = self.document.current();
         let package = self
+            .exact
             .topology_results
             .get_render(&snapshot, source.target.definition_id)?;
         let local_face = planar_face(package, reference, Transform::identity())?;
@@ -727,9 +740,9 @@ impl KetchupApp {
             Color32::from_rgb(240, 130, 90)
         };
         let forward = Vec3::new(
-            f64::from(self.yaw.sin() * self.pitch.sin()),
-            f64::from(self.yaw.cos() * self.pitch.sin()),
-            -f64::from(self.pitch.cos()),
+            f64::from(self.camera.yaw.sin() * self.camera.pitch.sin()),
+            f64::from(self.camera.yaw.cos() * self.camera.pitch.sin()),
+            -f64::from(self.camera.pitch.cos()),
         );
         let mut surfaces = Vec::new();
         let mut outlines = Vec::new();

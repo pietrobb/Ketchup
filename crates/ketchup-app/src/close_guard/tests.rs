@@ -57,7 +57,7 @@ fn click(harness: &mut Harness<'_, KetchupApp>, key: &str) {
 }
 
 fn chat(app: &mut KetchupApp) {
-    app.assistant_messages.push(AssistantChatMessage {
+    app.assistant.messages.push(AssistantChatMessage {
         role: AssistantMessageRole::User,
         text: "Keep this unsaved conversation.".to_owned(),
         source: "test".to_owned(),
@@ -99,7 +99,7 @@ fn conversation_only_changes_also_block_close() {
     close_event(&mut harness);
     assert!(canceled(&harness));
     click(&mut harness, "action-cancel");
-    assert_eq!(harness.state().assistant_messages.len(), 1);
+    assert_eq!(harness.state().assistant.messages.len(), 1);
     assert_eq!(harness.state().document.history_digest(), before);
 }
 
@@ -145,7 +145,7 @@ fn save_on_close_preserves_model_conversation_and_undo_on_disk() {
     let mut harness = shell(ScriptedFileDialogs::new().queue_save(&path), true);
     chat(harness.state_mut());
     let history = harness.state().document.history_digest();
-    let conversation = harness.state().assistant_messages.clone();
+    let conversation = harness.state().assistant.messages.clone();
     close_event(&mut harness);
     assert!(canceled(&harness));
     click(&mut harness, "file-save");
@@ -157,7 +157,7 @@ fn save_on_close_preserves_model_conversation_and_undo_on_disk() {
     let mut reopened = KetchupApp::new().with_dialogs(Box::new(ScriptedFileDialogs::new()));
     reopened.open_document_from(&path);
     assert_eq!(reopened.document.history_digest(), history);
-    assert_eq!(reopened.assistant_messages, conversation);
+    assert_eq!(reopened.assistant.messages, conversation);
     assert!(!reopened.is_dirty());
 }
 

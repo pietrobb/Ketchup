@@ -145,7 +145,7 @@ impl LiveBridge {
         let mut report = applied.report.clone();
         let model = applied.model.clone();
         let snapshot = applied.after.clone();
-        let container = app.container_data.clone();
+        let container = app.file.container_data.clone();
         let worker_path = Self::worker_path(app);
         let worker_cancelled = Arc::new(AtomicBool::new(false));
         let thread_cancelled = Arc::clone(&worker_cancelled);

@@ -1687,7 +1687,7 @@ fn cad_edit_program_enters_revision_bound_preview_without_mutating_document() {
     app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program.clone()))
         .unwrap();
 
-    let preview = app.assistant_proposal.as_ref().unwrap();
+    let preview = app.assistant.proposal.as_ref().unwrap();
     assert_eq!(preview.source, AssistantPreviewSource::CadEdit(program));
     assert_eq!(preview.document_id(), snapshot.document_id());
     assert_eq!(preview.provenance_revision(), snapshot.revision_id());
@@ -1851,8 +1851,8 @@ fn structured_rejection_is_localized_and_drives_exactly_one_bounded_replan() {
         contexts: std::sync::Mutex::new(Vec::new()),
     });
     let mut app = KetchupApp::new();
-    app.assistant_transport = transport.clone();
-    app.assistant_messages.push(AssistantChatMessage {
+    app.assistant.transport = transport.clone();
+    app.assistant.messages.push(AssistantChatMessage {
         role: AssistantMessageRole::User,
         text: "Move occurrence 999.".to_owned(),
         source: "test".to_owned(),
@@ -1863,7 +1863,7 @@ fn structured_rejection_is_localized_and_drives_exactly_one_bounded_replan() {
         app.document.current().canonical_digest(),
         app.document.visible_undo_steps(),
     );
-    app.assistant_pending_execution = Some(AssistantPendingExecution {
+    app.assistant.pending_execution = Some(AssistantPendingExecution {
         cad_edit_program: None,
         result: AssistantChatResult {
             message: "Moved it.".to_owned(),
@@ -1881,21 +1881,22 @@ fn structured_rejection_is_localized_and_drives_exactly_one_bounded_replan() {
     app.poll_assistant_chat(&context);
 
     let first_diagnostic = app
-        .assistant_messages
+        .assistant
+        .messages
         .last()
         .and_then(|message| message.diagnostic.clone())
         .expect("the first rejection preserves its structured diagnostic");
     assert_eq!(first_diagnostic.code, "canonical.occurrence_not_found");
-    assert!(app.assistant_chat_task.is_some());
+    assert!(app.assistant.chat_task.is_some());
     let deadline = Instant::now() + Duration::from_secs(2);
-    while app.assistant_pending_execution.is_none()
-        && app.assistant_chat_task.is_some()
+    while app.assistant.pending_execution.is_none()
+        && app.assistant.chat_task.is_some()
         && Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(5));
         app.poll_assistant_chat(&context);
     }
-    assert!(app.assistant_pending_execution.is_some());
+    assert!(app.assistant.pending_execution.is_some());
 
     let contexts = transport.contexts.lock().unwrap();
     assert_eq!(contexts.len(), 1);
@@ -1910,11 +1911,12 @@ fn structured_rejection_is_localized_and_drives_exactly_one_bounded_replan() {
 
     app.poll_assistant_chat(&context);
 
-    assert!(app.assistant_chat_task.is_none());
-    assert!(app.assistant_pending_execution.is_none());
+    assert!(app.assistant.chat_task.is_none());
+    assert!(app.assistant.pending_execution.is_none());
     assert_eq!(transport.contexts.lock().unwrap().len(), 1);
     assert_eq!(
-        app.assistant_messages
+        app.assistant
+            .messages
             .iter()
             .filter(|message| message.diagnostic.is_some())
             .count(),
@@ -2154,20 +2156,21 @@ fn active_boxes_cache_invalidates_on_same_revision_exact_results_and_registry_re
             unreachable!("the test double returns a graph package");
         };
         graph_package.bounds_mm = [minimum, maximum];
-        let stamp = app.exact_results.contents_stamp();
+        let stamp = app.exact.results.contents_stamp();
         if replace_registry {
             let mut replacement = ExactResultRegistry::default();
             replacement
                 .insert_current(&snapshot, Arc::new(package))
                 .unwrap();
-            assert_eq!(replacement.len(), app.exact_results.len());
-            app.exact_results = replacement;
+            assert_eq!(replacement.len(), app.exact.results.len());
+            app.exact.results = replacement;
         } else {
-            app.exact_results
+            app.exact
+                .results
                 .insert_current(&snapshot, Arc::new(package))
                 .unwrap();
         }
-        assert_ne!(app.exact_results.contents_stamp(), stamp);
+        assert_ne!(app.exact.results.contents_stamp(), stamp);
         assert_eq!(app.document.current().revision_id(), snapshot.revision_id());
         let mut expected = canonical.clone();
         expected[0].origin_mm = Vec3::new(minimum[0], minimum[1], minimum[2]);
@@ -2184,7 +2187,7 @@ fn active_boxes_cache_invalidates_on_same_revision_exact_results_and_registry_re
         );
     }
 
-    app.exact_results = ExactResultRegistry::default();
+    app.exact.results = ExactResultRegistry::default();
     assert_eq!(app.document.current().revision_id(), snapshot.revision_id());
     assert_eq!(app.active_boxes(), canonical);
 }
@@ -2229,7 +2232,7 @@ fn historical_exact_geometry_is_bound_to_its_own_snapshot() {
 
     for (snapshot, expected_height) in [(&parent, 20.0), (&tip, 40.0)] {
         app.refresh_interaction_projection_cache(snapshot);
-        let cache = app.interaction_projection_cache.borrow();
+        let cache = app.hover.projection_cache.borrow();
         let cache = cache.as_ref().expect("the requested snapshot is cached");
         assert_eq!(cache.document_id, snapshot.document_id());
         assert_eq!(cache.revision_id, snapshot.revision_id());
@@ -2293,15 +2296,15 @@ fn interaction_projection_refresh_defers_while_the_current_frame_reads_the_cache
     let snapshot = app.document.current();
     app.refresh_interaction_projection_cache(&snapshot);
     let expected_revision = snapshot.revision_id();
-    let expected_exact_stamp = (app.exact_results.contents_stamp(), 0);
+    let expected_exact_stamp = (app.exact.results.contents_stamp(), 0);
     {
-        let mut cache = app.interaction_projection_cache.borrow_mut();
+        let mut cache = app.hover.projection_cache.borrow_mut();
         let cache = cache.as_mut().expect("the initial projection is cached");
         cache.revision_id = expected_revision.wrapping_add(1);
         cache.exact_results_stamp = (expected_exact_stamp.0.wrapping_add(1), 0);
     }
 
-    let current_frame = app.interaction_projection_cache.borrow();
+    let current_frame = app.hover.projection_cache.borrow();
     app.refresh_interaction_projection_cache(&snapshot);
     let deferred = current_frame
         .as_ref()
@@ -2311,7 +2314,7 @@ fn interaction_projection_refresh_defers_while_the_current_frame_reads_the_cache
     drop(current_frame);
 
     app.refresh_interaction_projection_cache(&snapshot);
-    let refreshed = app.interaction_projection_cache.borrow();
+    let refreshed = app.hover.projection_cache.borrow();
     let refreshed = refreshed
         .as_ref()
         .expect("the deferred projection rebuild completes next frame");
@@ -2731,7 +2734,7 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
                 },
             ],
         };
-        app.assistant_pending_execution = Some(AssistantPendingExecution {
+        app.assistant.pending_execution = Some(AssistantPendingExecution {
             cad_edit_program: Some(cad_edit_program),
             result: AssistantChatResult {
                 message: "Classified the purchased subassembly for review.".to_owned(),
@@ -2745,7 +2748,7 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
             source: "test assistant transport".to_owned(),
         });
         app.poll_assistant_chat(&egui::Context::default());
-        assert!(app.assistant_proposal.is_some());
+        assert!(app.assistant.proposal.is_some());
         assert!(app.confirm_assistant_proposal());
         install_initial_graph_result(&mut app);
         app
@@ -3017,7 +3020,7 @@ fn manual_and_assistant_push_pull_share_the_identical_canonical_batch() {
     );
     app.set_push_pull_distance_input("15");
     assert!(app.start_preview());
-    let manual = app.smart_push_pull_proposal.as_ref().unwrap().clone();
+    let manual = app.push_pull.smart_proposal.as_ref().unwrap().clone();
     app.cancel_preview();
 
     assert!(
@@ -3026,7 +3029,7 @@ fn manual_and_assistant_push_pull_share_the_identical_canonical_batch() {
             value_text: "35".to_owned(),
         })
     );
-    let assistant = app.assistant_proposal.as_ref().unwrap();
+    let assistant = app.assistant.proposal.as_ref().unwrap();
     assert_eq!(manual.batch(), assistant.batch());
     assert_eq!(manual.command_digest(), assistant.command_digest());
     assert_eq!(manual.principal(), ProposalPrincipal::ManualClient);
@@ -3051,7 +3054,7 @@ fn assistant_preview_plan_rejects_source_proposal_stale_and_replay_atomically() 
 
     let mut proposal_tampered = KetchupApp::new();
     assert!(proposal_tampered.prepare_assistant_intent(visibility_intent.clone()));
-    let mut visibility_plan = proposal_tampered.assistant_proposal.take().unwrap();
+    let mut visibility_plan = proposal_tampered.assistant.proposal.take().unwrap();
     assert!(
         proposal_tampered.prepare_assistant_intent(WorkflowIntent::RenameDefinition {
             target: INITIAL_BOX_DEFINITION,
@@ -3059,24 +3062,25 @@ fn assistant_preview_plan_rejects_source_proposal_stale_and_replay_atomically() 
         })
     );
     visibility_plan.proposal = proposal_tampered
-        .assistant_proposal
+        .assistant
+        .proposal
         .take()
         .unwrap()
         .proposal;
     let before_tamper = state(&proposal_tampered);
-    proposal_tampered.assistant_proposal = Some(visibility_plan);
+    proposal_tampered.assistant.proposal = Some(visibility_plan);
     assert!(!proposal_tampered.confirm_assistant_proposal());
     assert_eq!(state(&proposal_tampered), before_tamper);
 
     let mut source_tampered = KetchupApp::new();
     assert!(source_tampered.prepare_assistant_intent(visibility_intent.clone()));
-    let mut plan = source_tampered.assistant_proposal.take().unwrap();
+    let mut plan = source_tampered.assistant.proposal.take().unwrap();
     plan.source = AssistantPreviewSource::Workflow(WorkflowIntent::SetOccurrenceVisibility {
         target: OccurrenceId(1),
         visible: true,
     });
     let before_source_tamper = state(&source_tampered);
-    source_tampered.assistant_proposal = Some(plan);
+    source_tampered.assistant.proposal = Some(plan);
     assert!(!source_tampered.confirm_assistant_proposal());
     assert_eq!(state(&source_tampered), before_source_tamper);
 
@@ -3096,11 +3100,11 @@ fn assistant_preview_plan_rejects_source_proposal_stale_and_replay_atomically() 
         linear_arrays: Vec::new(),
     };
     assert!(model_tampered.prepare_assistant_model_intent(model_intent));
-    let mut model_plan = model_tampered.assistant_proposal.take().unwrap();
+    let mut model_plan = model_tampered.assistant.proposal.take().unwrap();
     assert!(model_tampered.prepare_assistant_intent(visibility_intent.clone()));
-    model_plan.proposal = model_tampered.assistant_proposal.take().unwrap().proposal;
+    model_plan.proposal = model_tampered.assistant.proposal.take().unwrap().proposal;
     let before_model_tamper = state(&model_tampered);
-    model_tampered.assistant_proposal = Some(model_plan);
+    model_tampered.assistant.proposal = Some(model_plan);
     assert!(!model_tampered.confirm_assistant_proposal());
     assert_eq!(state(&model_tampered), before_model_tamper);
 
@@ -3114,7 +3118,7 @@ fn assistant_preview_plan_rejects_source_proposal_stale_and_replay_atomically() 
     let mut valid = KetchupApp::new();
     let initial = state(&valid);
     assert!(valid.prepare_assistant_intent(visibility_intent));
-    let replay = valid.assistant_proposal.clone().unwrap();
+    let replay = valid.assistant.proposal.clone().unwrap();
     assert!(valid.confirm_assistant_proposal());
     assert_eq!(valid.document.visible_undo_steps(), initial.2 + 1);
     assert!(
@@ -3126,7 +3130,7 @@ fn assistant_preview_plan_rejects_source_proposal_stale_and_replay_atomically() 
             .visible()
     );
     let committed = state(&valid);
-    valid.assistant_proposal = Some(replay);
+    valid.assistant.proposal = Some(replay);
     assert!(!valid.confirm_assistant_proposal());
     assert_eq!(state(&valid), committed);
     assert!(valid.undo());
@@ -3143,7 +3147,7 @@ fn assistant_conversation_changes_participate_in_document_dirty_state() {
 
     assert!(app.save_document_to(&path));
     assert!(!app.is_dirty());
-    app.assistant_messages.push(AssistantChatMessage {
+    app.assistant.messages.push(AssistantChatMessage {
         role: AssistantMessageRole::User,
         text: "Create a shelf.".to_owned(),
         source: "test".to_owned(),
@@ -3322,7 +3326,7 @@ fn provider_context_remains_bounded_for_extreme_selection_and_history() {
 #[test]
 fn only_successful_assistant_completion_enters_project_memory() {
     let mut app = KetchupApp::new();
-    app.assistant_messages.push(AssistantChatMessage {
+    app.assistant.messages.push(AssistantChatMessage {
         role: AssistantMessageRole::User,
         text: "Remember the shelf spacing.".to_owned(),
         source: "test".to_owned(),
@@ -3340,7 +3344,7 @@ fn only_successful_assistant_completion_enters_project_memory() {
             diagnostics: None,
         }))
         .unwrap();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -3354,13 +3358,13 @@ fn only_successful_assistant_completion_enters_project_memory() {
         source: "test".to_owned(),
     });
     app.poll_assistant_chat(&egui::Context::default());
-    assert_eq!(app.assistant_memory.entries.len(), 1);
-    assert!(app.container_data.extensions().any(|entry| {
+    assert_eq!(app.assistant.memory.entries.len(), 1);
+    assert!(app.file.container_data.extensions().any(|entry| {
         entry.namespace() == ASSISTANT_CHAT_NAMESPACE && entry.path() == ASSISTANT_MEMORY_PATH
     }));
 
     let mut failed = KetchupApp::new();
-    failed.assistant_messages.push(AssistantChatMessage {
+    failed.assistant.messages.push(AssistantChatMessage {
         role: AssistantMessageRole::User,
         text: "Do not remember a failed request.".to_owned(),
         source: "test".to_owned(),
@@ -3368,7 +3372,7 @@ fn only_successful_assistant_completion_enters_project_memory() {
     });
     let (sender, receiver) = mpsc::channel();
     sender.send(Err("provider unavailable".to_owned())).unwrap();
-    failed.assistant_chat_task = Some(AssistantChatTask {
+    failed.assistant.chat_task = Some(AssistantChatTask {
         receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -3382,7 +3386,7 @@ fn only_successful_assistant_completion_enters_project_memory() {
         source: "test".to_owned(),
     });
     failed.poll_assistant_chat(&egui::Context::default());
-    assert!(failed.assistant_memory.entries.is_empty());
+    assert!(failed.assistant.memory.entries.is_empty());
 }
 
 #[test]
@@ -3400,7 +3404,7 @@ fn assistant_geometry_program_uses_bounded_apply_and_verify_in_gui_document() {
     app.selection.occurrences = BTreeSet::from([InstancePath::root(OccurrenceId(1))]);
     let before = app.live_bridge_stamp();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_pending_execution = Some(AssistantPendingExecution {
+    app.assistant.pending_execution = Some(AssistantPendingExecution {
         cad_edit_program: Some(AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::Transform {
                 selector: AssistantCadEntitySelector::CurrentSelection {},
@@ -3423,15 +3427,16 @@ fn assistant_geometry_program_uses_bounded_apply_and_verify_in_gui_document() {
     app.poll_assistant_chat(&egui::Context::default());
 
     let after = app.live_bridge_stamp();
-    let verification = app.assistant_verification.as_ref().unwrap_or_else(|| {
+    let verification = app.assistant.verification.as_ref().unwrap_or_else(|| {
         panic!(
             "bounded Assistant result missing: {}",
-            app.assistant_messages
+            app.assistant
+                .messages
                 .last()
                 .map_or("no result", |message| message.text.as_str())
         )
     });
-    assert!(app.assistant_proposal.is_none());
+    assert!(app.assistant.proposal.is_none());
     assert_eq!(after.document_id, before.document_id);
     assert_eq!(after.revision, before.revision + 1);
     assert!(after.mutation_epoch > before.mutation_epoch);
@@ -3468,7 +3473,7 @@ fn ambiguous_assistant_request_surfaces_clarification_without_mutation() {
             diagnostics: None,
         }))
         .unwrap();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "ambiguous-request".to_owned(),
@@ -3492,9 +3497,9 @@ fn ambiguous_assistant_request_surfaces_clarification_without_mutation() {
         ),
         before
     );
-    assert!(app.assistant_pending_execution.is_none());
-    assert!(app.assistant_proposal.is_none());
-    assert!(app.assistant_messages.iter().any(|message| {
+    assert!(app.assistant.pending_execution.is_none());
+    assert!(app.assistant.proposal.is_none());
+    assert!(app.assistant.messages.iter().any(|message| {
         message.role == AssistantMessageRole::Assistant
             && message.text == "Which of the two side panels should I extend?"
     }));
@@ -3504,12 +3509,13 @@ fn ambiguous_assistant_request_surfaces_clarification_without_mutation() {
 fn assistant_project_memory_retrieval_is_bounded_relevant_and_read_only() {
     let mut app = KetchupApp::new();
     for index in 0..140 {
-        app.assistant_memory.remember(
+        app.assistant.memory.remember(
             &format!("Fixture note {index}"),
             &format!("Fixture answer {index}"),
         );
     }
-    app.assistant_memory
+    app.assistant
+        .memory
         .remember("Remember shelf spacing", "The shelf spacing is 320 mm.");
     let before = (
         app.document.current().revision_id(),
@@ -3553,7 +3559,8 @@ fn assistant_project_memory_persists_in_its_document_and_rejects_foreign_scope()
     let mut app = KetchupApp::new().with_dialogs(Box::new(
         dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
     ));
-    app.assistant_memory
+    app.assistant
+        .memory
         .remember("Shelf material", "Use birch plywood.");
     assert!(app.save_document_to(&path));
 
@@ -3578,15 +3585,15 @@ fn assistant_project_memory_persists_in_its_document_and_rejects_foreign_scope()
         serde_json::to_vec(&foreign).unwrap(),
     )
     .unwrap();
-    reopened.container_data.set_extension(entry);
+    reopened.file.container_data.set_extension(entry);
     let before = (
         reopened.document.current().revision_id(),
         reopened.document.current().canonical_digest(),
         reopened.document.visible_undo_steps(),
     );
     reopened.load_assistant_memory();
-    assert_eq!(reopened.assistant_memory.document_id, document_id);
-    assert!(reopened.assistant_memory.entries.is_empty());
+    assert_eq!(reopened.assistant.memory.document_id, document_id);
+    assert!(reopened.assistant.memory.entries.is_empty());
     assert_eq!(
         (
             reopened.document.current().revision_id(),
@@ -3602,7 +3609,7 @@ fn new_chat_cancels_the_active_assistant_request() {
     let mut app = KetchupApp::new();
     let cancellation = AssistantCancellation::default();
     let (_sender, receiver) = mpsc::channel();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -3619,7 +3626,7 @@ fn new_chat_cancels_the_active_assistant_request() {
     app.new_assistant_chat();
 
     assert!(cancellation.is_cancelled());
-    assert!(app.assistant_chat_task.is_none());
+    assert!(app.assistant.chat_task.is_none());
 }
 
 #[test]
@@ -3651,7 +3658,7 @@ fn new_and_open_cancel_active_assistant_requests() {
     let mut app = KetchupApp::new();
     let new_cancellation = AssistantCancellation::default();
     let (_new_sender, new_receiver) = mpsc::channel();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver: new_receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -3668,14 +3675,14 @@ fn new_and_open_cancel_active_assistant_requests() {
     app.new_document();
 
     assert!(new_cancellation.is_cancelled());
-    assert!(app.assistant_chat_task.is_none());
+    assert!(app.assistant.chat_task.is_none());
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("assistant-open-cancel.ketchup");
     assert!(app.save_document_to(&path));
     let open_cancellation = AssistantCancellation::default();
     let (_open_sender, open_receiver) = mpsc::channel();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver: open_receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -3692,7 +3699,7 @@ fn new_and_open_cancel_active_assistant_requests() {
     assert!(app.open_document_from(&path));
 
     assert!(open_cancellation.is_cancelled());
-    assert!(app.assistant_chat_task.is_none());
+    assert!(app.assistant.chat_task.is_none());
 }
 
 #[test]
@@ -3726,7 +3733,7 @@ fn assistant_panel_progress_phases_are_accessible_with_deterministic_channels() 
         assistant_clock_frame(Duration::from_millis(250))
     );
     let (_sender, receiver) = mpsc::channel();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -3772,8 +3779,8 @@ fn assistant_panel_progress_phases_are_accessible_with_deterministic_channels() 
             .is_some()
     );
     let state = harness.state_mut();
-    state.assistant_chat_task = None;
-    state.assistant_pending_execution = Some(AssistantPendingExecution {
+    state.assistant.chat_task = None;
+    state.assistant.pending_execution = Some(AssistantPendingExecution {
         cad_edit_program: None,
         message: "test".to_owned(),
         replan_attempted: false,
@@ -3817,7 +3824,7 @@ fn assistant_panel_progress_phases_are_accessible_with_deterministic_channels() 
             .is_some()
     );
     assert!(
-        harness.state().assistant_pending_execution.is_none(),
+        harness.state().assistant.pending_execution.is_none(),
         "the announced execution must be consumed by the frame that announced it"
     );
 }
@@ -3826,7 +3833,7 @@ fn assistant_panel_progress_phases_are_accessible_with_deterministic_channels() 
 fn new_chat_discards_a_pending_assistant_execution_before_commit() {
     let mut app = KetchupApp::new();
     let revision = app.document.current().revision_id();
-    app.assistant_pending_execution = Some(AssistantPendingExecution {
+    app.assistant.pending_execution = Some(AssistantPendingExecution {
         cad_edit_program: None,
         message: "test".to_owned(),
         replan_attempted: false,
@@ -3856,9 +3863,9 @@ fn new_chat_discards_a_pending_assistant_execution_before_commit() {
     app.new_assistant_chat();
     app.poll_assistant_chat(&egui::Context::default());
 
-    assert!(app.assistant_pending_execution.is_none());
+    assert!(app.assistant.pending_execution.is_none());
     assert_eq!(app.document.current().revision_id(), revision);
-    assert!(app.assistant_verification.is_none());
+    assert!(app.assistant.verification.is_none());
 }
 
 #[test]
@@ -3866,7 +3873,7 @@ fn assistant_model_change_requires_explicit_confirmation_after_validation() {
     let mut app = KetchupApp::new();
     let revision = app.document.current().revision_id();
     let (sender, receiver) = mpsc::channel();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -3907,23 +3914,23 @@ fn assistant_model_change_requires_explicit_confirmation_after_validation() {
 
     app.poll_assistant_chat(&context);
 
-    assert!(app.assistant_chat_task.is_none());
-    assert!(app.assistant_pending_execution.is_some());
+    assert!(app.assistant.chat_task.is_none());
+    assert!(app.assistant.pending_execution.is_some());
     assert_eq!(app.document.current().revision_id(), revision);
 
     app.poll_assistant_chat(&context);
 
-    assert!(app.assistant_pending_execution.is_none());
+    assert!(app.assistant.pending_execution.is_none());
     assert_eq!(app.document.current().revision_id(), revision);
-    assert!(app.assistant_proposal.is_some());
-    assert!(app.assistant_verification.is_none());
-    assert!(app.assistant_messages.iter().any(|message| {
+    assert!(app.assistant.proposal.is_some());
+    assert!(app.assistant.verification.is_none());
+    assert!(app.assistant.messages.iter().any(|message| {
         message.role == AssistantMessageRole::Assistant && message.text == "Moved it."
     }));
 
     assert!(app.confirm_assistant_proposal());
     assert_eq!(app.document.current().revision_id(), revision + 1);
-    assert!(app.assistant_verification.is_some());
+    assert!(app.assistant.verification.is_some());
 }
 
 #[test]
@@ -3998,7 +4005,7 @@ fn stale_assistant_model_result_is_reported_without_mutating_the_newer_document(
     let request_digest = app.document.current().canonical_digest();
     let (sender, receiver) = mpsc::channel();
     let cancellation = AssistantCancellation::default();
-    app.assistant_chat_task = Some(AssistantChatTask {
+    app.assistant.chat_task = Some(AssistantChatTask {
         receiver,
         selected_occurrence_ids: Vec::new(),
         request_id: "test".to_owned(),
@@ -4055,7 +4062,7 @@ fn stale_assistant_model_result_is_reported_without_mutating_the_newer_document(
     assert_eq!(app.document.current().revision_id(), changed_revision);
     assert_eq!(app.document.current().canonical_digest(), changed_digest);
     assert_eq!(app.document.visible_undo_steps(), undo_steps);
-    assert!(app.assistant_messages.iter().any(|message| {
+    assert!(app.assistant.messages.iter().any(|message| {
         message.role == AssistantMessageRole::Error
             && message.text == app.catalog.text("assistant-error-stale-response")
     }));
@@ -4068,7 +4075,7 @@ fn assistant_conversation_round_trips_with_its_document() {
     let mut app = KetchupApp::new().with_dialogs(Box::new(
         dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
     ));
-    app.assistant_messages = vec![
+    app.assistant.messages = vec![
         AssistantChatMessage {
             role: AssistantMessageRole::User,
             text: "Posuň hranol o 100 mm.".to_owned(),
@@ -4096,15 +4103,15 @@ fn assistant_conversation_round_trips_with_its_document() {
         dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
     ));
     assert!(reopened.open_document_from(&path));
-    assert_eq!(reopened.assistant_messages, app.assistant_messages);
-    assert_eq!(reopened.document_path.as_deref(), Some(path.as_path()));
+    assert_eq!(reopened.assistant.messages, app.assistant.messages);
+    assert_eq!(reopened.file.path.as_deref(), Some(path.as_path()));
 
     reopened.new_assistant_chat();
-    assert!(reopened.assistant_messages.is_empty());
+    assert!(reopened.assistant.messages.is_empty());
     assert!(reopened.save_document_to(&path));
     let mut cleared = KetchupApp::new();
     assert!(cleared.open_document_from(&path));
-    assert!(cleared.assistant_messages.is_empty());
+    assert!(cleared.assistant.messages.is_empty());
 }
 
 // Palette contrast is proved once for all four appearances in
@@ -4425,7 +4432,8 @@ fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
     let mut app = KetchupApp::new();
     let package = current_box_package(&app);
     let snapshot = app.document.current();
-    app.exact_results
+    app.exact
+        .results
         .insert_current(&snapshot, Arc::new(package))
         .unwrap();
     let exact_projection = app.exact_projection(&snapshot);
@@ -4467,7 +4475,8 @@ fn exact_occurrence_reference_and_mesh_export_use_the_canonical_world_transform(
         .unwrap();
     let package = current_box_package(&app);
     let snapshot = app.document.current();
-    app.exact_results
+    app.exact
+        .results
         .insert_current(&snapshot, Arc::new(package))
         .unwrap();
     let instance_path = InstancePath::root(OccurrenceId(1));
@@ -4608,12 +4617,12 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
     let baseline_revision = app.document_revision();
     let baseline_digest = app.canonical_digest();
     let baseline_undo = app.undo_step_count();
-    let baseline_container = app.container_data.clone();
+    let baseline_container = app.file.container_data.clone();
     let assert_unchanged = |app: &KetchupApp| {
         assert_eq!(app.document_revision(), baseline_revision);
         assert_eq!(app.canonical_digest(), baseline_digest);
         assert_eq!(app.undo_step_count(), baseline_undo);
-        assert_eq!(app.container_data, baseline_container);
+        assert_eq!(app.file.container_data, baseline_container);
     };
 
     let mut evidence_tamper = pending.clone();
@@ -4654,18 +4663,18 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
     assert_eq!(app.document_revision(), baseline_revision + 1);
     assert_eq!(app.undo_step_count(), baseline_undo + 1);
     assert_eq!(
-        app.container_data.blobs().get(&pending.plan.blob_hash),
+        app.file.container_data.blobs().get(&pending.plan.blob_hash),
         Some(&pending.plan.source.source)
     );
     let committed_revision = app.document_revision();
     let committed_digest = app.canonical_digest();
     let committed_undo = app.undo_step_count();
-    let committed_container = app.container_data.clone();
+    let committed_container = app.file.container_data.clone();
     assert!(!app.import_step_from(&pending));
     assert_eq!(app.document_revision(), committed_revision);
     assert_eq!(app.canonical_digest(), committed_digest);
     assert_eq!(app.undo_step_count(), committed_undo);
-    assert_eq!(app.container_data, committed_container);
+    assert_eq!(app.file.container_data, committed_container);
 }
 
 #[test]
@@ -4793,7 +4802,7 @@ endsolid tetrahedron\n";
     let mut render_cache = renderer::DerivedRenderCache::default();
     let render_plan = renderer::InstancedRenderPlan::from_snapshot(
         &snapshot,
-        &app.exact_results,
+        &app.exact.results,
         &mut render_cache,
     );
     let imported_batch = render_plan
@@ -4906,7 +4915,8 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
     assert!(selection_stroke_segments(&context, &mut app) > 0);
 
     let cached = Arc::clone(
-        &app.overlay_edge_cache
+        &app.render
+            .overlay_edge_cache
             .borrow()
             .values()
             .next()
@@ -4921,7 +4931,8 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
     assert!(
         Arc::ptr_eq(
             &cached,
-            &app.overlay_edge_cache
+            &app.render
+                .overlay_edge_cache
                 .borrow()
                 .values()
                 .next()
@@ -5212,7 +5223,7 @@ fn the_armed_rotate_tool_paints_a_protractor_on_the_axis_it_will_turn_about() {
     // far it has come, which is the part that answers "which way".
     app.set_rotate_axis_lock(Some(Axis::Z));
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1_000.0, 800.0));
-    app.viewport_rect = Some(rect);
+    app.camera.viewport_rect = Some(rect);
     let grab = app.project(Vec3::new(90.0, 30.0, 20.0), rect);
     app.update_viewport_inference(Some(grab), rect);
     assert!(app.begin_rotate_drag_at(grab, rect, false));
@@ -5375,14 +5386,15 @@ fn production_exact_refresh_uses_graph_for_a_general_boolean_chain() {
     app.connect_exact_worker(&executable).unwrap();
     let context = egui::Context::default();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while app.exact_results.len() != 1 && Instant::now() < deadline {
+    while app.exact.results.len() != 1 && Instant::now() < deadline {
         app.refresh_exact_products(&context);
         std::thread::sleep(Duration::from_millis(10));
     }
 
     let snapshot = app.document.current();
     let package = app
-        .exact_results
+        .exact
+        .results
         .get_render(&snapshot, definition_id)
         .expect("the general boolean chain must produce one exact body");
     assert!(matches!(
@@ -5419,28 +5431,28 @@ fn gui_exact_publication_rolls_back_when_work_recovery_finalization_fails() {
 
     app.refresh_exact_products(&context);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while app.exact_task.is_some() && std::time::Instant::now() < deadline {
+    while app.exact.task.is_some() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
         app.refresh_exact_products(&context);
     }
 
-    assert!(app.exact_task.is_none(), "exact worker did not complete");
+    assert!(app.exact.task.is_none(), "exact worker did not complete");
     assert_eq!(
         app.document.current().canonical_digest(),
         before.canonical_digest()
     );
     assert_eq!(app.document.current().revision_id(), before.revision_id());
     assert_eq!(app.document.current().exact_reference_evidence().count(), 0);
-    assert!(app.exact_results.is_empty());
-    assert!(app.topology_results.is_empty());
+    assert!(app.exact.results.is_empty());
+    assert!(app.exact.topology_results.is_empty());
 
     std::fs::remove_dir(&recovery).unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while app.exact_results.is_empty() && std::time::Instant::now() < deadline {
+    while app.exact.results.is_empty() && std::time::Instant::now() < deadline {
         app.refresh_exact_products(&context);
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(!app.exact_results.is_empty());
+    assert!(!app.exact.results.is_empty());
     assert!(app.document.current().exact_reference_evidence().count() > 0);
 }
 
@@ -5533,10 +5545,10 @@ fn orbit_passes_both_poles_without_a_pitch_limit() {
     let mut app = KetchupApp::new();
 
     app.orbit(Vec2::new(0.0, 400.0));
-    assert!(app.pitch > 1.2);
+    assert!(app.camera.pitch > 1.2);
 
     app.orbit(Vec2::new(0.0, -800.0));
-    assert!(app.pitch < -1.2);
+    assert!(app.camera.pitch < -1.2);
 }
 
 #[test]
@@ -5615,9 +5627,9 @@ fn move_drag_keeps_the_existing_multi_selection_for_preview_and_commit() {
     };
     app.selection.select_exact(first.clone(), false);
     app.selection.select_exact(second, true);
-    app.hovered = Some(first);
-    app.hover_snap = None;
-    app.hover_pick = None;
+    app.hover.target = Some(first);
+    app.hover.snap = None;
+    app.hover.pick = None;
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0));
     let pointer = app.project(Vec3::new(50.0, 30.0, 20.0), rect);
 
@@ -5805,15 +5817,15 @@ fn assistant_evaluator_rename_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::EvaluatorName;
-    app.assistant_target_input = node.0.to_string();
-    app.assistant_value_input = String::new();
+    app.assistant.intent_kind = AssistantIntentKind::EvaluatorName;
+    app.assistant.target_input = node.0.to_string();
+    app.assistant.value_input = String::new();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = "cabinet width".to_owned();
+    app.assistant.value_input = "cabinet width".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::RenameEvaluatorNode(node));
@@ -5865,15 +5877,15 @@ fn assistant_evaluator_expression_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::EvaluatorExpression;
-    app.assistant_target_input = expression.0.to_string();
-    app.assistant_value_input = "(".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::EvaluatorExpression;
+    app.assistant.target_input = expression.0.to_string();
+    app.assistant.value_input = "(".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = "$20 * 3".to_owned();
+    app.assistant.value_input = "$20 * 3".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -5929,9 +5941,9 @@ fn assistant_tag_visibility_review_is_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::TagVisibility;
-    app.assistant_target_input = tag.0.to_string();
-    app.assistant_value_input = "yes".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::TagVisibility;
+    app.assistant.target_input = tag.0.to_string();
+    app.assistant.value_input = "yes".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
@@ -5984,14 +5996,14 @@ fn assistant_occurrence_tag_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::OccurrenceTag;
-    app.assistant_target_input = "1".to_owned();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::OccurrenceTag;
+    app.assistant.target_input = "1".to_owned();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "none".to_owned();
+    app.assistant.value_input = "none".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -6046,14 +6058,14 @@ fn assistant_occurrence_repoint_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::OccurrenceDefinition;
-    app.assistant_target_input = "1".to_owned();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::OccurrenceDefinition;
+    app.assistant.target_input = "1".to_owned();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = definition.0.to_string();
+    app.assistant.value_input = definition.0.to_string();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -6114,14 +6126,14 @@ fn assistant_occurrence_parent_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::OccurrenceParent;
-    app.assistant_target_input = "1".to_owned();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::OccurrenceParent;
+    app.assistant.target_input = "1".to_owned();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "none".to_owned();
+    app.assistant.value_input = "none".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -6185,14 +6197,14 @@ fn assistant_group_parent_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::GroupParent;
-    app.assistant_target_input = group.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::GroupParent;
+    app.assistant.target_input = group.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = parent.0.to_string();
+    app.assistant.value_input = parent.0.to_string();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::SetGroupParent(group));
@@ -6233,14 +6245,14 @@ fn assistant_group_translation_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::GroupTranslation;
-    app.assistant_target_input = group.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::GroupTranslation;
+    app.assistant.target_input = group.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "4.5, -2, 11.25".to_owned();
+    app.assistant.value_input = "4.5, -2, 11.25".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     let expected = Transform::from_translation(4.5, -2.0, 11.25).unwrap();
@@ -6293,16 +6305,16 @@ fn assistant_profile_points_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::ProfilePoints;
-    app.assistant_target_input = profile.0.to_string();
-    app.assistant_value_input = "0,0; invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::ProfilePoints;
+    app.assistant.target_input = profile.0.to_string();
+    app.assistant.value_input = "0,0; invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
     assert_eq!(app.canonical_digest(), digest_before);
 
     let requested = vec![[0.0, 0.0], [12.0, 0.0], [12.0, 8.0], [0.0, 8.0]];
-    app.assistant_value_input = "0,0; 12,0; 12,8; 0,8".to_owned();
+    app.assistant.value_input = "0,0; 12,0; 12,8; 0,8".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::SetProfilePoints(profile));
@@ -6352,16 +6364,16 @@ fn assistant_rule_outputs_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::RuleOutputs;
-    app.assistant_target_input = rule.0.to_string();
-    app.assistant_value_input = "result".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::RuleOutputs;
+    app.assistant.target_input = rule.0.to_string();
+    app.assistant.value_input = "result".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
     assert_eq!(app.canonical_digest(), digest_before);
 
     let requested = vec![output("center"), output("right")];
-    app.assistant_value_input = "result:center; result:right".to_owned();
+    app.assistant.value_input = "result:center; result:right".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::SetRuleOutputs(rule));
@@ -6397,14 +6409,14 @@ fn assistant_create_tag_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateTag;
-    app.assistant_target_input = tag.0.to_string();
-    app.assistant_value_input = "visible:Reviewed".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateTag;
+    app.assistant.target_input = tag.0.to_string();
+    app.assistant.value_input = "visible:Reviewed".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "true:Reviewed tag".to_owned();
+    app.assistant.value_input = "true:Reviewed tag".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateTag(tag));
@@ -6440,14 +6452,14 @@ fn assistant_create_collection_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateCollection;
-    app.assistant_target_input = collection.0.to_string();
-    app.assistant_value_input = String::new();
+    app.assistant.intent_kind = AssistantIntentKind::CreateCollection;
+    app.assistant.target_input = collection.0.to_string();
+    app.assistant.value_input = String::new();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "Reviewed selection".to_owned();
+    app.assistant.value_input = "Reviewed selection".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateCollection(collection));
@@ -6496,9 +6508,9 @@ fn assistant_delete_collection_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteCollection;
-    app.assistant_target_input = collection.0.to_string();
-    app.assistant_value_input.clear();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteCollection;
+    app.assistant.target_input = collection.0.to_string();
+    app.assistant.value_input.clear();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -6545,9 +6557,9 @@ fn assistant_delete_tag_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteTag;
-    app.assistant_target_input = tag.0.to_string();
-    app.assistant_value_input.clear();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteTag;
+    app.assistant.target_input = tag.0.to_string();
+    app.assistant.value_input.clear();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -6592,9 +6604,9 @@ fn assistant_delete_group_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteGroup;
-    app.assistant_target_input = group.0.to_string();
-    app.assistant_value_input.clear();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteGroup;
+    app.assistant.target_input = group.0.to_string();
+    app.assistant.value_input.clear();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -6641,9 +6653,9 @@ fn assistant_delete_occurrence_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteOccurrence;
-    app.assistant_target_input = occurrence.0.to_string();
-    app.assistant_value_input.clear();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteOccurrence;
+    app.assistant.target_input = occurrence.0.to_string();
+    app.assistant.value_input.clear();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -6688,14 +6700,14 @@ fn assistant_create_definition_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateDefinition;
-    app.assistant_target_input = definition.0.to_string();
-    app.assistant_value_input = String::new();
+    app.assistant.intent_kind = AssistantIntentKind::CreateDefinition;
+    app.assistant.target_input = definition.0.to_string();
+    app.assistant.value_input = String::new();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "Reviewed component".to_owned();
+    app.assistant.value_input = "Reviewed component".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateDefinition(definition));
@@ -6732,14 +6744,14 @@ fn assistant_create_group_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateGroup;
-    app.assistant_target_input = group.0.to_string();
-    app.assistant_value_input = String::new();
+    app.assistant.intent_kind = AssistantIntentKind::CreateGroup;
+    app.assistant.target_input = group.0.to_string();
+    app.assistant.value_input = String::new();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "Reviewed root group".to_owned();
+    app.assistant.value_input = "Reviewed root group".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateGroup(group));
@@ -6777,14 +6789,14 @@ fn assistant_create_occurrence_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateOccurrence;
-    app.assistant_target_input = occurrence.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateOccurrence;
+    app.assistant.target_input = occurrence.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "1:Reviewed occurrence".to_owned();
+    app.assistant.value_input = "1:Reviewed occurrence".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateOccurrence(occurrence));
@@ -6836,14 +6848,14 @@ fn assistant_create_profile_feature_review_is_typed_observational_and_undoable()
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateProfileFeature;
-    app.assistant_target_input = feature.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateProfileFeature;
+    app.assistant.target_input = feature.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "1:Reviewed profile:0,0;20,0;20,10;0,10".to_owned();
+    app.assistant.value_input = "1:Reviewed profile:0,0;20,0;20,10;0,10".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateProfileFeature(feature));
@@ -6933,9 +6945,9 @@ fn assistant_delete_profile_feature_review_is_typed_observational_and_undoable()
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteProfileFeature;
-    app.assistant_target_input = feature.0.to_string();
-    app.assistant_value_input.clear();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteProfileFeature;
+    app.assistant.target_input = feature.0.to_string();
+    app.assistant.value_input.clear();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -7006,14 +7018,14 @@ fn assistant_create_evaluator_input_review_is_typed_observational_and_undoable()
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateEvaluatorInput;
-    app.assistant_target_input = target.0.to_string();
-    app.assistant_value_input = "missing delimiter".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateEvaluatorInput;
+    app.assistant.target_input = target.0.to_string();
+    app.assistant.value_input = "missing delimiter".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "Reviewed depth:42.5".to_owned();
+    app.assistant.value_input = "Reviewed depth:42.5".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateEvaluatorInput(target));
@@ -7065,14 +7077,14 @@ fn assistant_create_evaluator_expression_review_is_typed_observational_and_undoa
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateEvaluatorExpression;
-    app.assistant_target_input = target.0.to_string();
-    app.assistant_value_input = "missing delimiter".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateEvaluatorExpression;
+    app.assistant.target_input = target.0.to_string();
+    app.assistant.value_input = "missing delimiter".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "Reviewed double:$1 * 2".to_owned();
+    app.assistant.value_input = "Reviewed double:$1 * 2".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -7124,14 +7136,14 @@ fn assistant_create_evaluator_rule_review_is_typed_observational_and_undoable() 
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateEvaluatorRule;
-    app.assistant_target_input = target.0.to_string();
-    app.assistant_value_input = "missing delimiter".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateEvaluatorRule;
+    app.assistant.target_input = target.0.to_string();
+    app.assistant.value_input = "missing delimiter".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "Reviewed rule:$1 * 2".to_owned();
+    app.assistant.value_input = "Reviewed rule:$1 * 2".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateEvaluatorRule(target));
@@ -7203,14 +7215,14 @@ fn assistant_create_rule_override_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateRuleOverride;
-    app.assistant_target_input = target.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateRuleOverride;
+    app.assistant.target_input = target.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "101:result:left:offset:2.5".to_owned();
+    app.assistant.value_input = "101:result:left:offset:2.5".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateRuleOverride(target));
@@ -7297,14 +7309,14 @@ fn assistant_create_feature_parameter_binding_is_typed_observational_and_undoabl
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateFeatureParameterBinding;
-    app.assistant_target_input = feature.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateFeatureParameterBinding;
+    app.assistant.target_input = feature.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "extent.distance:203:result:left".to_owned();
+    app.assistant.value_input = "extent.distance:203:result:left".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -7405,14 +7417,14 @@ fn assistant_delete_feature_parameter_binding_is_typed_observational_and_undoabl
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteFeatureParameterBinding;
-    app.assistant_target_input = feature.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteFeatureParameterBinding;
+    app.assistant.target_input = feature.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "extent.distance".to_owned();
+    app.assistant.value_input = "extent.distance".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -7513,14 +7525,14 @@ fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::RecomputeFeatureParameter;
-    app.assistant_target_input = feature.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::RecomputeFeatureParameter;
+    app.assistant.target_input = feature.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "extent.distance".to_owned();
+    app.assistant.value_input = "extent.distance".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -7590,14 +7602,14 @@ fn assistant_clone_profile_definition_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CloneProfileDefinitionAndRepoint;
-    app.assistant_target_input = occurrence.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CloneProfileDefinitionAndRepoint;
+    app.assistant.target_input = occurrence.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = format!(
+    app.assistant.value_input = format!(
         "{}:{}:{}:{}:Independent profile",
         source_definition.0, source_feature.0, new_definition.0, new_feature.0
     );
@@ -7672,14 +7684,14 @@ fn assistant_convert_empty_group_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::ConvertEmptyGroupToComponent;
-    app.assistant_target_input = group.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::ConvertEmptyGroupToComponent;
+    app.assistant.target_input = group.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = format!(
+    app.assistant.value_input = format!(
         "{}:{}:Reviewed component",
         new_definition.0, new_occurrence.0
     );
@@ -7752,13 +7764,13 @@ fn assistant_create_joint_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateJoint;
-    app.assistant_target_input = target.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateJoint;
+    app.assistant.target_input = target.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = "500,result,left:500,result,right:1,2,3:4,5,6".to_owned();
+    app.assistant.value_input = "500,result,left:500,result,right:1,2,3:4,5,6".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateJoint(target));
@@ -7820,8 +7832,8 @@ fn assistant_delete_joint_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteJoint;
-    app.assistant_target_input = target.0.to_string();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteJoint;
+    app.assistant.target_input = target.0.to_string();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -7858,13 +7870,13 @@ fn assistant_create_space_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateSpace;
-    app.assistant_target_input = target.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateSpace;
+    app.assistant.target_input = target.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = "maintenance access:1,2,3:4,5,6".to_owned();
+    app.assistant.value_input = "maintenance access:1,2,3:4,5,6".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateSpace(target));
@@ -7923,13 +7935,13 @@ fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreateClearanceVolume;
-    app.assistant_target_input = target.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreateClearanceVolume;
+    app.assistant.target_input = target.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = "220:maintenance envelope:1,2,3:4,5,6:0.01:required".to_owned();
+    app.assistant.value_input = "220:maintenance envelope:1,2,3:4,5,6:0.01:required".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(proposal.goal(), ProposalGoal::CreateClearanceVolume(target));
@@ -7995,8 +8007,8 @@ fn assistant_delete_space_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteSpace;
-    app.assistant_target_input = target.0.to_string();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteSpace;
+    app.assistant.target_input = target.0.to_string();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -8059,8 +8071,8 @@ fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteClearanceVolume;
-    app.assistant_target_input = target.0.to_string();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteClearanceVolume;
+    app.assistant.target_input = target.0.to_string();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -8121,8 +8133,8 @@ fn assistant_delete_persistent_dimension_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeletePersistentDimension;
-    app.assistant_target_input = target.0.to_string();
+    app.assistant.intent_kind = AssistantIntentKind::DeletePersistentDimension;
+    app.assistant.target_input = target.0.to_string();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -8173,13 +8185,13 @@ fn assistant_create_persistent_dimension_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CreatePersistentDimension;
-    app.assistant_target_input = target.0.to_string();
-    app.assistant_value_input = "invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CreatePersistentDimension;
+    app.assistant.target_input = target.0.to_string();
+    app.assistant.value_input = "invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert_eq!(app.canonical_digest(), digest_before);
 
-    app.assistant_value_input = "Reviewed height:2:extent.distance:cm:2".to_owned();
+    app.assistant.value_input = "Reviewed height:2:extent.distance:cm:2".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -8267,9 +8279,9 @@ fn assistant_delete_rule_override_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteRuleOverride;
-    app.assistant_target_input = target.to_string();
-    app.assistant_value_input.clear();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteRuleOverride;
+    app.assistant.target_input = target.to_string();
+    app.assistant.value_input.clear();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -8323,9 +8335,9 @@ fn assistant_delete_definition_review_is_typed_observational_and_undoable() {
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::DeleteDefinition;
-    app.assistant_target_input = definition.0.to_string();
-    app.assistant_value_input.clear();
+    app.assistant.intent_kind = AssistantIntentKind::DeleteDefinition;
+    app.assistant.target_input = definition.0.to_string();
+    app.assistant.value_input.clear();
 
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
@@ -8373,19 +8385,19 @@ fn assistant_collection_membership_review_is_typed_observational_and_undoable() 
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
     let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::CollectionOccurrences;
-    app.assistant_target_input = collection.0.to_string();
-    app.assistant_value_input = "1, invalid".to_owned();
+    app.assistant.intent_kind = AssistantIntentKind::CollectionOccurrences;
+    app.assistant.target_input = collection.0.to_string();
+    app.assistant.value_input = "1, invalid".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "1, 1".to_owned();
+    app.assistant.value_input = "1, 1".to_owned();
     assert!(!app.prepare_assistant_from_inputs());
     assert!(app.assistant_proposal().is_none());
     assert_eq!(app.document_revision(), revision_before);
 
-    app.assistant_value_input = "1".to_owned();
+    app.assistant.value_input = "1".to_owned();
     assert!(app.prepare_assistant_from_inputs());
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
@@ -9091,7 +9103,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     let before_digest = app.canonical_digest();
     let before_revision = app.document_revision();
     let before_undo = app.document.visible_undo_steps();
-    app.solid_tool_target = Some(target.clone());
+    app.solid_tools.target = Some(target.clone());
     assert!(app.prepare_solid_tool_preview(tool.clone(), false));
     assert!(app.has_occurrence_operation_preview());
     assert_eq!(app.canonical_digest(), before_digest);
@@ -9106,7 +9118,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     assert_eq!(app.canonical_digest(), before_digest);
 
     app.active_tool = ActiveTool::SolidUnion;
-    app.solid_tool_target = Some(target);
+    app.solid_tools.target = Some(target);
     assert!(app.prepare_solid_tool_preview(tool, false));
     assert!(app.confirm_occurrence_operation_preview());
     assert_eq!(app.document.visible_undo_steps(), before_undo + 1);
@@ -9153,7 +9165,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     );
     partial.active_tool = ActiveTool::SolidUnion;
     let partial_digest = partial.canonical_digest();
-    partial.solid_tool_target = Some(SelectionId {
+    partial.solid_tools.target = Some(SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
         element: ElementId::Face {
@@ -9206,7 +9218,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     let intersect_before_digest = intersection.canonical_digest();
     let intersect_before_revision = intersection.document_revision();
     let intersect_before_undo = intersection.document.visible_undo_steps();
-    intersection.solid_tool_target = Some(intersect_target.clone());
+    intersection.solid_tools.target = Some(intersect_target.clone());
     assert!(intersection.prepare_solid_tool_preview(intersect_tool.clone(), false));
     assert!(intersection.has_occurrence_operation_preview());
     assert_eq!(intersection.canonical_digest(), intersect_before_digest);
@@ -9224,7 +9236,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     assert_eq!(intersection.canonical_digest(), intersect_before_digest);
 
     intersection.active_tool = ActiveTool::SolidIntersect;
-    intersection.solid_tool_target = Some(intersect_target);
+    intersection.solid_tools.target = Some(intersect_target);
     assert!(intersection.prepare_solid_tool_preview(intersect_tool, false));
     assert!(intersection.confirm_occurrence_operation_preview());
     assert_eq!(
@@ -9274,7 +9286,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     );
     crossing.active_tool = ActiveTool::SolidIntersect;
     let crossing_digest = crossing.canonical_digest();
-    crossing.solid_tool_target = Some(SelectionId {
+    crossing.solid_tools.target = Some(SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
         element: ElementId::Face {
@@ -9311,7 +9323,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     let split_before_digest = split.canonical_digest();
     let split_before_revision = split.document_revision();
     let split_before_undo = split.document.visible_undo_steps();
-    split.solid_tool_target = Some(SelectionId {
+    split.solid_tools.target = Some(SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
         element: ElementId::Face {
@@ -9341,7 +9353,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     assert_eq!(split.canonical_digest(), split_before_digest);
 
     split.active_tool = ActiveTool::SolidSplit;
-    split.solid_tool_target = Some(SelectionId {
+    split.solid_tools.target = Some(SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
         element: ElementId::Face {
@@ -9392,7 +9404,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     );
     boundary_touching.active_tool = ActiveTool::SolidSplit;
     let boundary_digest = boundary_touching.canonical_digest();
-    boundary_touching.solid_tool_target = Some(SelectionId {
+    boundary_touching.solid_tools.target = Some(SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
         element: ElementId::Face {
@@ -9502,7 +9514,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     let subtract_before_digest = subtract.canonical_digest();
     let subtract_before_revision = subtract.document_revision();
     let subtract_before_undo = subtract.document.visible_undo_steps();
-    subtract.solid_tool_target = Some(target());
+    subtract.solid_tools.target = Some(target());
     assert!(subtract.prepare_solid_tool_preview(tool(), false));
     assert_eq!(subtract.canonical_digest(), subtract_before_digest);
     assert_eq!(subtract.document_revision(), subtract_before_revision);
@@ -9520,7 +9532,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert_eq!(subtract.canonical_digest(), subtract_before_digest);
 
     subtract.active_tool = ActiveTool::SolidSubtract;
-    subtract.solid_tool_target = Some(target());
+    subtract.solid_tools.target = Some(target());
     assert!(subtract.prepare_solid_tool_preview(tool(), false));
     assert!(subtract.confirm_occurrence_operation_preview());
     assert_eq!(
@@ -9560,7 +9572,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         let mut rejected = app_with_circle_tool(center, radius);
         rejected.active_tool = ActiveTool::SolidSubtract;
         let digest = rejected.canonical_digest();
-        rejected.solid_tool_target = Some(target());
+        rejected.solid_tools.target = Some(target());
         assert!(rejected.prepare_solid_tool_preview(tool(), false));
         assert_eq!(rejected.canonical_digest(), digest);
         assert!(rejected.has_occurrence_operation_preview());
@@ -9571,7 +9583,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     let union_before_digest = union.canonical_digest();
     let union_before_revision = union.document_revision();
     let union_before_undo = union.document.visible_undo_steps();
-    union.solid_tool_target = Some(target());
+    union.solid_tools.target = Some(target());
     assert!(union.prepare_solid_tool_preview(tool(), false));
     assert_eq!(union.canonical_digest(), union_before_digest);
     assert_eq!(union.document_revision(), union_before_revision);
@@ -9585,7 +9597,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert_eq!(union.canonical_digest(), union_before_digest);
 
     union.active_tool = ActiveTool::SolidUnion;
-    union.solid_tool_target = Some(target());
+    union.solid_tools.target = Some(target());
     assert!(union.prepare_solid_tool_preview(tool(), false));
     assert!(union.confirm_occurrence_operation_preview());
     assert_eq!(union.document.visible_undo_steps(), union_before_undo + 1);
@@ -9627,7 +9639,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         let mut rejected = app_with_circle_tool(center, radius);
         rejected.active_tool = ActiveTool::SolidUnion;
         let digest = rejected.canonical_digest();
-        rejected.solid_tool_target = Some(target());
+        rejected.solid_tools.target = Some(target());
         assert!(rejected.prepare_solid_tool_preview(tool(), false));
         assert_eq!(rejected.canonical_digest(), digest);
         assert!(rejected.has_occurrence_operation_preview());
@@ -9638,7 +9650,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     let before_digest = app.canonical_digest();
     let before_revision = app.document_revision();
     let before_undo = app.document.visible_undo_steps();
-    app.solid_tool_target = Some(target());
+    app.solid_tools.target = Some(target());
     assert!(app.prepare_solid_tool_preview(tool(), false));
     assert_eq!(app.canonical_digest(), before_digest);
     assert_eq!(app.document_revision(), before_revision);
@@ -9652,7 +9664,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert_eq!(app.canonical_digest(), before_digest);
 
     app.active_tool = ActiveTool::SolidIntersect;
-    app.solid_tool_target = Some(target());
+    app.solid_tools.target = Some(target());
     assert!(app.prepare_solid_tool_preview(tool(), false));
     assert!(app.confirm_occurrence_operation_preview());
     assert_eq!(app.document.visible_undo_steps(), before_undo + 1);
@@ -9686,7 +9698,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     let split_before_digest = split.canonical_digest();
     let split_before_revision = split.document_revision();
     let split_before_undo = split.document.visible_undo_steps();
-    split.solid_tool_target = Some(target());
+    split.solid_tools.target = Some(target());
     assert!(split.prepare_solid_tool_preview(tool(), false));
     assert_eq!(split.canonical_digest(), split_before_digest);
     assert_eq!(split.document_revision(), split_before_revision);
@@ -9700,7 +9712,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert_eq!(split.canonical_digest(), split_before_digest);
 
     split.active_tool = ActiveTool::SolidSplit;
-    split.solid_tool_target = Some(target());
+    split.solid_tools.target = Some(target());
     assert!(split.prepare_solid_tool_preview(tool(), false));
     assert!(split.confirm_occurrence_operation_preview());
     assert_eq!(split.document.visible_undo_steps(), split_before_undo + 1);
@@ -9737,7 +9749,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         let mut boundary_tangent = app_with_circle_tool([10.0, 30.0], 10.0);
         boundary_tangent.active_tool = active_tool;
         let digest = boundary_tangent.canonical_digest();
-        boundary_tangent.solid_tool_target = Some(target());
+        boundary_tangent.solid_tools.target = Some(target());
         assert!(boundary_tangent.prepare_solid_tool_preview(tool(), false));
         assert_eq!(boundary_tangent.canonical_digest(), digest);
         assert!(boundary_tangent.has_occurrence_operation_preview());
@@ -9745,7 +9757,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         let mut disjoint = app_with_circle_tool([120.0, 30.0], 5.0);
         disjoint.active_tool = active_tool;
         let digest = disjoint.canonical_digest();
-        disjoint.solid_tool_target = Some(target());
+        disjoint.solid_tools.target = Some(target());
         assert!(!disjoint.prepare_solid_tool_preview(tool(), false));
         assert_eq!(disjoint.canonical_digest(), digest);
         assert!(!disjoint.has_occurrence_operation_preview());
@@ -9867,7 +9879,8 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     assert!(app.viewport_boxes(&snapshot, &exact_projection).is_empty());
     app.refresh_interaction_projection_cache(&snapshot);
     assert_eq!(
-        app.interaction_projection_cache
+        app.hover
+            .projection_cache
             .borrow()
             .as_ref()
             .unwrap()
@@ -9879,7 +9892,7 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     let before_digest = app.canonical_digest();
     let before_revision = app.document_revision();
     let before_undo_steps = app.undo_step_count();
-    app.solid_tool_target = Some(selection(target_definition_id, target_occurrence_id));
+    app.solid_tools.target = Some(selection(target_definition_id, target_occurrence_id));
     assert!(
         app.prepare_solid_tool_preview(selection(tool_definition_id, tool_occurrence_id), true,)
     );
@@ -9978,7 +9991,8 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
         .unwrap();
     let imported_occurrence_id = imported_occurrence.id();
     let imported_definition_id = imported_occurrence.definition_id();
-    app.container_data
+    app.file
+        .container_data
         .insert_import_blob(source.to_vec())
         .unwrap();
     let target_angle = 15.0_f64.to_radians();
@@ -10057,7 +10071,7 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     app.active_tool = ActiveTool::SolidUnion;
     let before_digest = app.canonical_digest();
     let before_undo = app.undo_step_count();
-    app.solid_tool_target = Some(target);
+    app.solid_tools.target = Some(target);
     assert!(app.prepare_solid_tool_preview(tool.clone(), true));
     assert_eq!(app.canonical_digest(), before_digest);
     assert!(app.confirm_occurrence_operation_preview());
@@ -10107,7 +10121,7 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
         }
     )));
     let reopened = ketchup_core::persistence::load(
-        &ketchup_core::persistence::save_container(&committed, &app.container_data).unwrap(),
+        &ketchup_core::persistence::save_container(&committed, &app.file.container_data).unwrap(),
     )
     .unwrap()
     .snapshot();
@@ -10124,7 +10138,7 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
         "graph-derived bodies without a current exact package must fail closed"
     );
     app.active_tool = ActiveTool::SolidSubtract;
-    app.solid_tool_target = Some(SelectionId {
+    app.solid_tools.target = Some(SelectionId {
         definition_id: result_definition_id,
         instance_path: InstancePath::root(OccurrenceId(1)),
         element: ElementId::Face {
@@ -10198,7 +10212,7 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     assert_eq!(app.canonical_digest(), before_digest);
 
     app.active_tool = ActiveTool::SolidIntersect;
-    app.solid_tool_target = Some(SelectionId {
+    app.solid_tools.target = Some(SelectionId {
         definition_id: imported_definition_id,
         instance_path: InstancePath::root(imported_occurrence_id),
         element: ElementId::Face {
@@ -10290,7 +10304,7 @@ fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() 
         },
     };
     app.active_tool = ActiveTool::SolidIntersect;
-    app.solid_tool_target = Some(target);
+    app.solid_tools.target = Some(target);
     assert!(app.prepare_solid_tool_preview(tool, false));
     let preview_geometry = app
         .occurrence_operation_preview_geometry(OccurrenceId(1))
@@ -10405,7 +10419,7 @@ fn solid_tool_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
             },
         };
         app.active_tool = ActiveTool::SolidIntersect;
-        app.solid_tool_target = Some(target);
+        app.solid_tools.target = Some(target);
         assert!(app.prepare_solid_tool_preview(tool, false));
         assert!(app.has_occurrence_operation_preview());
         app
@@ -11552,7 +11566,7 @@ fn push_pull_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     let revision = input_drift.document_revision();
     let digest = input_drift.canonical_digest();
     let undo_steps = input_drift.undo_step_count();
-    input_drift.push_pull_distance_input = "6".to_owned();
+    input_drift.push_pull.distance_input = "6".to_owned();
     assert!(!input_drift.confirm_preview());
     assert_unchanged(&input_drift, revision, &digest, undo_steps);
 
@@ -11812,19 +11826,19 @@ fn typed_push_pull_values_correct_the_last_one_instead_of_stacking() {
     );
 
     let base_digest = app.canonical_digest();
-    app.value_input = "20".to_owned();
+    app.value_box.input = "20".to_owned();
     assert!(app.apply_value_input());
     let original_revision = app.document_revision();
     assert_eq!(app.document_height_mm(), base_height + 20.0);
     assert_eq!(app.document.visible_undo_steps(), 1);
 
-    app.value_input = "25".to_owned();
+    app.value_box.input = "25".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.document_revision(), original_revision + 1);
     assert_eq!(app.document_height_mm(), base_height + 25.0);
     assert_eq!(app.document.visible_undo_steps(), 1);
 
-    app.value_input = "0".to_owned();
+    app.value_box.input = "0".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.document_revision(), original_revision + 2);
     assert_eq!(app.document_height_mm(), base_height);
@@ -11851,21 +11865,22 @@ fn rejected_push_pull_correction_preserves_the_last_valid_operation() {
         },
         false,
     );
-    app.value_input = "20".to_owned();
+    app.value_box.input = "20".to_owned();
     assert!(app.apply_value_input());
     let valid_height = app.document_height_mm();
     let valid_revision = app.document_revision();
     let valid_digest = app.canonical_digest();
     let valid_undo_steps = app.document.visible_undo_steps();
 
-    app.value_input = "-100".to_owned();
+    app.value_box.input = "-100".to_owned();
     assert!(!app.apply_value_input());
     assert_eq!(app.document_height_mm(), valid_height);
     assert_eq!(app.document_revision(), valid_revision);
     assert_eq!(app.canonical_digest(), valid_digest);
     assert_eq!(app.document.visible_undo_steps(), valid_undo_steps);
     assert_eq!(
-        app.last_push_pull
+        app.push_pull
+            .last
             .as_ref()
             .map(|operation| operation.canonical_digest.as_str()),
         Some(valid_digest.as_str())
@@ -11877,7 +11892,7 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
     let mut app = KetchupApp::new();
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
 
     let occurrence_source = app.occurrence_rename_source_plan().unwrap();
     assert_eq!(occurrence_source.source_revision, app.document_revision());
@@ -11908,7 +11923,7 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -11918,7 +11933,7 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     app.selection.edit_context.clear();
 
     assert!(app.apply_occurrence_rename_plan(occurrence_plan));
@@ -11926,7 +11941,7 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
         app.occurrence_name(OccurrenceId(1)),
         Some("Exact occurrence".to_owned())
     );
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     assert!(app.undo());
 
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
@@ -11954,7 +11969,7 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -11964,7 +11979,7 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     app.selection.edit_context.clear();
 
     assert!(app.apply_definition_rename_plan(definition_plan));
@@ -11972,7 +11987,7 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
         app.definition_name(INITIAL_BOX_DEFINITION),
         Some("Exact definition".to_owned())
     );
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -12096,7 +12111,7 @@ fn group_and_ungroup_plans_are_revision_bound_exact_and_clipboard_preserving() {
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
 
     let group_plan = app.group_selection_source_plan().unwrap();
     assert_eq!(group_plan.source_revision, app.document_revision());
@@ -12111,7 +12126,7 @@ fn group_and_ungroup_plans_are_revision_bound_exact_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.create_box());
     let stale_digest = app.canonical_digest();
@@ -12121,7 +12136,7 @@ fn group_and_ungroup_plans_are_revision_bound_exact_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
@@ -12142,7 +12157,7 @@ fn group_and_ungroup_plans_are_revision_bound_exact_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), grouped_digest);
     assert_eq!(app.undo_step_count(), grouped_undo_steps);
     assert_eq!(app.action_digest(), grouped_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -12151,13 +12166,13 @@ fn group_and_ungroup_plans_are_revision_bound_exact_and_clipboard_preserving() {
     assert_eq!(app.canonical_digest(), grouped_digest);
     assert_eq!(app.undo_step_count(), grouped_undo_steps);
     assert_eq!(app.action_digest(), grouped_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     app.selection.edit_context.clear();
 
     assert!(app.ungroup_selected());
     assert_eq!(app.group_count(), 0);
     assert_eq!(app.selected_occurrence_count(), 2);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -12247,12 +12262,12 @@ fn zoom_steps_clamp_without_changing_camera_basis_projection_or_document() {
     let digest = app.canonical_digest();
     let undo_steps = app.undo_step_count();
 
-    app.zoom = MAX_CAMERA_ZOOM / 1.1;
+    app.camera.zoom = MAX_CAMERA_ZOOM / 1.1;
     app.dispatch_command(AppCommand::ZoomIn);
     assert_eq!(app.camera_zoom(), MAX_CAMERA_ZOOM);
     assert!(!app.command_enabled(AppCommand::ZoomIn));
 
-    app.zoom = MIN_CAMERA_ZOOM * 1.1;
+    app.camera.zoom = MIN_CAMERA_ZOOM * 1.1;
     app.dispatch_command(AppCommand::ZoomOut);
     assert_eq!(app.camera_zoom(), MIN_CAMERA_ZOOM);
     assert!(!app.command_enabled(AppCommand::ZoomOut));
@@ -12394,12 +12409,12 @@ fn camera_clearance_keeps_every_mesh_bound_in_front_during_orbit() {
             },
         ]))
         .unwrap();
-    app.projection_mode = ProjectionMode::Perspective;
-    app.zoom = MAX_CAMERA_ZOOM;
+    app.camera.projection_mode = ProjectionMode::Perspective;
+    app.camera.zoom = MAX_CAMERA_ZOOM;
 
     for yaw in [-2.8_f32, -1.4, 0.0, 1.4, 2.8] {
-        app.yaw = yaw;
-        app.pitch = 0.45;
+        app.camera.yaw = yaw;
+        app.camera.pitch = 0.45;
         app.refresh_camera_distance();
         let (_, _, forward) = app.camera_basis();
         let target = app.camera_target();
@@ -12418,7 +12433,7 @@ fn gpu_projection_matches_cpu_projection_inside_callback_viewport() {
     let rect = Rect::from_min_size(Pos2::new(87.0, 163.0), Vec2::new(1_927.0, 1_184.0));
 
     for mode in [ProjectionMode::Perspective, ProjectionMode::Parallel] {
-        app.projection_mode = mode;
+        app.camera.projection_mode = mode;
         let matrix = app.world_to_clip(rect);
         for point in box_corners(BOX_WIDTH_MM, BOX_DEPTH_MM, app.document_height_mm()) {
             let clip_x = matrix[0] * point.x as f32
@@ -12451,15 +12466,15 @@ fn viewport_omits_edge_on_faces_that_collapse_to_a_line() {
     let mut app = KetchupApp::new();
     // Only a parallel projection collapses an edge-on face to a line; a
     // converging one always leaves a sliver of area.
-    app.projection_mode = ProjectionMode::Parallel;
-    app.yaw = std::f32::consts::FRAC_PI_2;
+    app.camera.projection_mode = ProjectionMode::Parallel;
+    app.camera.yaw = std::f32::consts::FRAC_PI_2;
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
     let projected = box_corners(BOX_WIDTH_MM, BOX_DEPTH_MM, app.document_height_mm())
         .map(|point| app.project(point, rect));
     let forward = Vec3::new(
-        -f64::from(app.yaw.sin() * app.pitch.sin()),
-        -f64::from(app.yaw.cos() * app.pitch.sin()),
-        -f64::from(app.pitch.cos()),
+        -f64::from(app.camera.yaw.sin() * app.camera.pitch.sin()),
+        -f64::from(app.camera.yaw.cos() * app.camera.pitch.sin()),
+        -f64::from(app.camera.pitch.cos()),
     );
 
     assert_eq!(
@@ -12478,9 +12493,9 @@ fn viewport_omits_edge_on_faces_that_collapse_to_a_line() {
 fn viewport_draws_only_the_three_camera_facing_box_faces() {
     let app = KetchupApp::new();
     let forward = Vec3::new(
-        -f64::from(app.yaw.sin() * app.pitch.sin()),
-        -f64::from(app.yaw.cos() * app.pitch.sin()),
-        -f64::from(app.pitch.cos()),
+        -f64::from(app.camera.yaw.sin() * app.camera.pitch.sin()),
+        -f64::from(app.camera.yaw.cos() * app.camera.pitch.sin()),
+        -f64::from(app.camera.pitch.cos()),
     );
 
     assert_eq!(
@@ -12541,10 +12556,10 @@ fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
             linear_arrays: Vec::new(),
         }
     ));
-    app.projection_mode = ProjectionMode::Parallel;
-    app.yaw = 0.0;
-    app.pitch = 0.0;
-    app.camera_target_z = 30.0;
+    app.camera.projection_mode = ProjectionMode::Parallel;
+    app.camera.yaw = 0.0;
+    app.camera.pitch = 0.0;
+    app.camera.target_z = 30.0;
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
     let pointer = app.project(Vec3::new(50.0, 30.0, 60.0), rect);
 
@@ -12596,7 +12611,7 @@ fn repeated_large_scene_picks_reuse_revision_bound_spatial_indices() {
 fn parallel_view_picks_a_hundred_metre_body_after_zoom_fit() {
     let mut app = KetchupApp::new();
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 900.0));
-    app.viewport_rect = Some(rect);
+    app.camera.viewport_rect = Some(rect);
     assert!(app.create_box_at(Vec3::new(0.0, 200.0, 0.0), Vec3::new(100_000.0, 60.0, 20.0),));
     app.zoom_fit();
     app.refresh_camera_distance();
@@ -12674,8 +12689,8 @@ fn dimensions_panel_creates_categories_and_assigns_independent_values_in_one_und
         None
     );
 
-    app.assistant_workspace_mode = AssistantWorkspaceMode::Tab;
-    app.classification_selected_dimension = Some(ClassificationDimensionId(1));
+    app.assistant.workspace_mode = AssistantWorkspaceMode::Tab;
+    app.classification.selected_dimension = Some(ClassificationDimensionId(1));
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
@@ -12761,13 +12776,13 @@ fn exact_topological_selection_ends_numeric_move_correction() {
     let initial_steps = app.undo_step_count();
 
     app.dispatch_command(AppCommand::Move);
-    app.value_input = "25,0,0".to_owned();
+    app.value_box.input = "25,0,0".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.undo_step_count(), initial_steps + 1);
 
     install_initial_graph_result(&mut app);
     select_initial_topological(&mut app, TopologicalElementKind::Face, 3);
-    app.value_input = "40,0,0".to_owned();
+    app.value_box.input = "40,0,0".to_owned();
     assert!(app.apply_value_input());
 
     assert_eq!(
@@ -12923,7 +12938,7 @@ fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
         },
         false,
     );
-    app.push_pull_distance_input = "60".to_owned();
+    app.push_pull.distance_input = "60".to_owned();
 
     assert!(app.start_preview());
     let rendered = app
@@ -12949,7 +12964,7 @@ fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
         },
         false,
     );
-    app.push_pull_distance_input = "30".to_owned();
+    app.push_pull.distance_input = "30".to_owned();
     assert!(app.start_preview());
     let rendered = app
         .active_boxes()
@@ -12968,7 +12983,7 @@ fn exact_rectangle_and_push_pull_are_atomic_undo_steps() {
     app.dispatch_command(AppCommand::Rectangle);
     app.gesture.sketch.start = Some(Vec3::new(40.0, 30.0, 20.0));
     app.gesture.sketch.cursor = Some(Vec3::new(20.0, 10.0, 20.0));
-    app.value_input = "300,200".to_owned();
+    app.value_box.input = "300,200".to_owned();
 
     assert!(app.apply_value_input());
     assert_eq!(app.active_box_count(), 2);
@@ -12978,7 +12993,7 @@ fn exact_rectangle_and_push_pull_are_atomic_undo_steps() {
     assert_eq!(app.document.visible_undo_steps(), 1);
 
     app.dispatch_command(AppCommand::PushPull);
-    app.value_input = "55".to_owned();
+    app.value_box.input = "55".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.active_boxes()[1].size_mm.z, 55.0);
     assert_eq!(app.document.visible_undo_steps(), 2);
@@ -13064,7 +13079,7 @@ fn move_copy_array_multiplies_and_divides_the_last_vector_in_one_undo_step() {
     assert!(app.copy_selected(delta));
     assert_eq!(app.document.visible_undo_steps(), 1);
 
-    app.value_input = "×5".to_owned();
+    app.value_box.input = "×5".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.document.visible_undo_steps(), 1);
     assert_eq!(app.document.current().occurrences().count(), 6);
@@ -13090,7 +13105,7 @@ fn move_copy_array_multiplies_and_divides_the_last_vector_in_one_undo_step() {
         InstancePath::root(OccurrenceId(6))
     );
 
-    app.value_input = "/5".to_owned();
+    app.value_box.input = "/5".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.document.visible_undo_steps(), 1);
     assert_eq!(app.document.current().occurrences().count(), 6);
@@ -13129,7 +13144,7 @@ fn move_copy_array_repeats_the_entire_multi_selection_atomically() {
     app.dispatch_command(AppCommand::Move);
     assert!(app.copy_selected(delta));
     assert_eq!(app.selected_occurrence_count(), 2);
-    app.value_input = "×3".to_owned();
+    app.value_box.input = "×3".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.document.current().occurrences().count(), 8);
     assert_eq!(app.selected_occurrence_count(), 2);
@@ -13144,7 +13159,7 @@ fn move_copy_array_repeats_the_entire_multi_selection_atomically() {
         assert_eq!(copied.origin_mm, origin + delta * 3.0);
     }
 
-    app.value_input = "/3".to_owned();
+    app.value_box.input = "/3".to_owned();
     assert!(app.apply_value_input());
     assert_eq!(app.document.current().occurrences().count(), 8);
     for copy_index in 1..=3 {
@@ -13176,12 +13191,12 @@ fn move_copy_array_rejects_stale_or_invalid_modifiers_without_mutation() {
     let undo_steps = app.document.visible_undo_steps();
 
     app.dispatch_command(AppCommand::Move);
-    app.value_input = "x5".to_owned();
+    app.value_box.input = "x5".to_owned();
     assert!(!app.apply_value_input());
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.document.visible_undo_steps(), undo_steps);
 
-    app.value_input = "/0".to_owned();
+    app.value_box.input = "/0".to_owned();
     assert!(!app.apply_value_input());
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.document.visible_undo_steps(), undo_steps);
@@ -13417,7 +13432,7 @@ fn stale_numeric_transform_confirmation_ends_the_copy_toggle_without_mutation() 
     move_app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
     let digest = move_app.canonical_digest();
     let undo_steps = move_app.undo_step_count();
-    move_app.value_input = "25, 0, 0".to_owned();
+    move_app.value_box.input = "25, 0, 0".to_owned();
 
     assert!(!move_app.apply_value_input());
     assert!(!move_app.gesture.transform.move_copy);
@@ -13452,7 +13467,7 @@ fn stale_numeric_transform_confirmation_ends_the_copy_toggle_without_mutation() 
     rotate_app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
     let digest = rotate_app.canonical_digest();
     let undo_steps = rotate_app.undo_step_count();
-    rotate_app.value_input = "45".to_owned();
+    rotate_app.value_box.input = "45".to_owned();
 
     assert!(!rotate_app.apply_value_input());
     assert!(!rotate_app.gesture.transform.rotate_copy);
@@ -13537,7 +13552,7 @@ fn directional_selection_window_contains_left_to_right_and_crosses_right_to_left
     );
     assert!(app.copy_selected(Vec3::new(240.0, 0.0, 0.0)));
     let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0));
-    app.viewport_rect = Some(viewport);
+    app.camera.viewport_rect = Some(viewport);
     app.home_view();
     let projected_box = |app: &KetchupApp, occurrence_id| {
         let (origin, size) = app.occurrence_box_geometry(occurrence_id).unwrap();
@@ -13662,8 +13677,8 @@ fn crossing_selection_uses_projected_geometry_instead_of_its_empty_bounds() {
         ]))
         .unwrap();
     let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0));
-    app.viewport_rect = Some(viewport);
-    app.projection_mode = ProjectionMode::Parallel;
+    app.camera.viewport_rect = Some(viewport);
+    app.camera.projection_mode = ProjectionMode::Parallel;
     app.dispatch_command(AppCommand::ViewTop);
     app.home_view();
 
@@ -13706,7 +13721,7 @@ fn move_vcb_accepts_last_direction_distance_and_exact_vector() {
     );
     app.dispatch_command(AppCommand::Move);
     assert!(app.move_selected(Vec3::new(30.0, 40.0, 0.0)));
-    app.value_input = "100 mm".to_owned();
+    app.value_box.input = "100 mm".to_owned();
     assert!(app.apply_value_input());
     let transform = app
         .document
@@ -13718,7 +13733,7 @@ fn move_vcb_accepts_last_direction_distance_and_exact_vector() {
     assert_eq!(transform.matrix()[7], 80.0);
     assert_eq!(app.document.visible_undo_steps(), 1);
 
-    app.value_input = "10,-20,5".to_owned();
+    app.value_box.input = "10,-20,5".to_owned();
     assert!(app.apply_value_input());
     let transform = app
         .document
@@ -13746,12 +13761,12 @@ fn adaptive_grid_keeps_metric_lines_readable_across_camera_scales() {
 #[test]
 fn perspective_ground_axes_share_the_projected_world_origin() {
     let mut app = KetchupApp::new();
-    app.projection_mode = ProjectionMode::Perspective;
-    app.yaw = -0.65;
-    app.pitch = -0.5;
-    app.zoom = 2.8;
-    app.pan = Vec2::ZERO;
-    app.camera_distance_mm = 150.0;
+    app.camera.projection_mode = ProjectionMode::Perspective;
+    app.camera.yaw = -0.65;
+    app.camera.pitch = -0.5;
+    app.camera.zoom = 2.8;
+    app.camera.pan = Vec2::ZERO;
+    app.camera.distance_mm = 150.0;
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
     let origin = app.project(Vec3::ZERO, rect);
     let context = egui::Context::default();
@@ -13792,8 +13807,8 @@ fn gpu_scene_is_painted_after_the_ground_grid() {
     let snapshot = app.document.current();
     let plan = Arc::new(InstancedRenderPlan::from_snapshot(
         &snapshot,
-        &app.exact_results,
-        &mut app.render_cache,
+        &app.exact.results,
+        &mut app.render.cache,
     ));
     let context = egui::Context::default();
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
@@ -13821,8 +13836,8 @@ fn shadows_are_painted_under_the_gpu_scene_without_grid_dependency() {
     let snapshot = app.document.current();
     let plan = Arc::new(InstancedRenderPlan::from_snapshot(
         &snapshot,
-        &app.exact_results,
-        &mut app.render_cache,
+        &app.exact.results,
+        &mut app.render.cache,
     ));
     let context = egui::Context::default();
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
@@ -13849,8 +13864,8 @@ fn fog_is_painted_over_the_gpu_scene_as_a_depth_gradient() {
     let snapshot = app.document.current();
     let plan = Arc::new(InstancedRenderPlan::from_snapshot(
         &snapshot,
-        &app.exact_results,
-        &mut app.render_cache,
+        &app.exact.results,
+        &mut app.render.cache,
     ));
     let context = egui::Context::default();
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
@@ -15159,7 +15174,7 @@ fn make_component_plan_rejects_tampering_context_drift_and_staleness_without_sid
     assert!(app.create_box());
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
     assert!(app.group_selected());
@@ -15193,7 +15208,7 @@ fn make_component_plan_rejects_tampering_context_drift_and_staleness_without_sid
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -15204,7 +15219,7 @@ fn make_component_plan_rejects_tampering_context_drift_and_staleness_without_sid
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.create_box());
     assert!(app.select_group(group_id));
@@ -15217,7 +15232,7 @@ fn make_component_plan_rejects_tampering_context_drift_and_staleness_without_sid
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -15920,7 +15935,7 @@ fn copy_plan_is_exact_document_preserving_and_stale_safe() {
     assert!(app.apply_copy_source_plan(plan.clone()));
 
     assert_eq!(
-        app.occurrence_clipboard,
+        app.clipboard.occurrences,
         vec![OccurrenceId(1), OccurrenceId(2)]
     );
     assert_eq!(app.document_revision(), revision);
@@ -15936,7 +15951,7 @@ fn copy_plan_is_exact_document_preserving_and_stale_safe() {
     assert!(!app.command_enabled(AppCommand::Copy));
     assert!(!app.apply_copy_source_plan(plan));
     assert_eq!(
-        app.occurrence_clipboard,
+        app.clipboard.occurrences,
         vec![OccurrenceId(1), OccurrenceId(2)]
     );
     assert_eq!(app.document_revision(), revision);
@@ -15976,10 +15991,10 @@ fn cut_plan_is_exact_atomic_pasteable_and_stale_safe() {
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
     assert_eq!(
-        app.occurrence_clipboard,
+        app.clipboard.occurrences,
         vec![OccurrenceId(1), OccurrenceId(2)]
     );
-    assert_eq!(app.cut_occurrence_clipboard.len(), 2);
+    assert_eq!(app.clipboard.cut_occurrences.len(), 2);
     assert!(app.command_enabled(AppCommand::Paste));
     assert!(app.paste_clipboard());
     assert_eq!(app.occurrence_count(), 2);
@@ -15999,12 +16014,12 @@ fn cut_plan_is_exact_atomic_pasteable_and_stale_safe() {
     let stale_revision = app.document_revision();
     let stale_digest = app.canonical_digest();
     let stale_undo_steps = app.undo_step_count();
-    let stale_clipboard = app.occurrence_clipboard.clone();
+    let stale_clipboard = app.clipboard.occurrences.clone();
     assert!(!app.apply_cut_source_plan(stale_plan));
     assert_eq!(app.document_revision(), stale_revision);
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
-    assert_eq!(app.occurrence_clipboard, stale_clipboard);
+    assert_eq!(app.clipboard.occurrences, stale_clipboard);
 
     app.selection
         .edit_context
@@ -16077,9 +16092,9 @@ fn paste_plan_is_exact_atomic_context_bound_and_stale_safe() {
     assert_eq!(app.action_digest(), stale_action_digest);
     app.selection.edit_context.clear();
 
-    app.occurrence_clipboard = vec![OccurrenceId(2), OccurrenceId(1)];
+    app.clipboard.occurrences = vec![OccurrenceId(2), OccurrenceId(1)];
     assert!(app.paste_source_plan().is_none());
-    app.occurrence_clipboard = vec![OccurrenceId(1), OccurrenceId(1)];
+    app.clipboard.occurrences = vec![OccurrenceId(1), OccurrenceId(1)];
     assert!(app.paste_source_plan().is_none());
 }
 
@@ -16093,7 +16108,7 @@ fn duplicate_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
         InstancePath::root(OccurrenceId(1)),
     ]);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let plan = app.duplicate_source_plan().unwrap();
     assert_eq!(plan.source_revision, app.document_revision());
     assert_eq!(
@@ -16119,12 +16134,12 @@ fn duplicate_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.occurrence_count(), 4);
     assert_eq!(app.selected_occurrence_count(), 2);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), digest);
     assert!(app.redo());
     assert_eq!(app.occurrence_count(), 4);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     app.select_from_outliner(InstancePath::root(OccurrenceId(3)), false);
     app.select_from_outliner(InstancePath::root(OccurrenceId(4)), true);
 
@@ -16139,7 +16154,7 @@ fn duplicate_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection.selected_group = Some(GroupId(999));
     assert!(app.duplicate_source_plan().is_none());
@@ -16154,7 +16169,7 @@ fn duplicate_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -16167,7 +16182,7 @@ fn delete_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
         .occurrences
         .insert(InstancePath::root(OccurrenceId(3)));
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     app.selection.clear();
     app.selection.occurrences.extend([
         InstancePath::root(OccurrenceId(2)),
@@ -16192,7 +16207,7 @@ fn delete_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.occurrence_count(), 1);
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     assert!(app.command_enabled(AppCommand::Paste));
     assert_eq!(
         app.action_digest(),
@@ -16203,10 +16218,10 @@ fn delete_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
     );
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), before_delete);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     assert!(app.redo());
     assert_eq!(app.occurrence_count(), 1);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.undo());
     app.selection.clear();
@@ -16225,7 +16240,7 @@ fn delete_plan_is_exact_atomic_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection.clear();
     app.selection
@@ -16276,8 +16291,8 @@ fn deselect_plan_is_exact_clipboard_preserving_and_stale_safe() {
     let revision = app.document_revision();
     let digest = app.canonical_digest();
     let undo_steps = app.undo_step_count();
-    app.occurrence_clipboard = vec![OccurrenceId(1)];
-    let clipboard = app.occurrence_clipboard.clone();
+    app.clipboard.occurrences = vec![OccurrenceId(1)];
+    let clipboard = app.clipboard.occurrences.clone();
     let plan = app.deselect_source_plan().unwrap();
     assert_eq!(plan.source_revision, revision);
     assert!(plan.occurrence_paths.is_empty());
@@ -16296,7 +16311,7 @@ fn deselect_plan_is_exact_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     assert!(!app.command_enabled(AppCommand::Deselect));
     let action_digest = app.action_digest().to_owned();
     assert!(!app.clear_selection());
@@ -16312,7 +16327,7 @@ fn deselect_plan_is_exact_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let mut stale_app = KetchupApp::new();
     stale_app.selection.clear();
@@ -16383,7 +16398,7 @@ fn select_all_plan_is_exact_clipboard_preserving_and_stale_safe() {
         .insert(InstancePath::root(OccurrenceId(1)));
     let copy_plan = app.copy_source_plan().unwrap();
     assert!(app.apply_copy_source_plan(copy_plan));
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     app.selection.clear();
 
     let plan = app.select_all_source_plan().unwrap();
@@ -16410,7 +16425,7 @@ fn select_all_plan_is_exact_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     assert_eq!(
         app.action_digest(),
         app.catalog.format(
@@ -16433,7 +16448,7 @@ fn select_all_plan_is_exact_clipboard_preserving_and_stale_safe() {
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection.clear();
     let stale_selection_plan = app.select_all_source_plan().unwrap();
@@ -16450,7 +16465,7 @@ fn select_all_plan_is_exact_clipboard_preserving_and_stale_safe() {
         .push(EditContext::Group(GroupId(999)));
     assert!(!app.apply_select_all_source_plan(stale_context_plan));
     assert!(app.selection.occurrences.is_empty());
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let mut tampered_app = KetchupApp::new();
     let mut tampered_plan = tampered_app.select_all_source_plan().unwrap();
@@ -16602,7 +16617,7 @@ fn select_all_instances_plan_rejects_tampering_context_drift_and_staleness_witho
     assert!(app.copy_selected(Vec3::new(150.0, 0.0, 0.0)));
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let plan = app.select_all_instances_source_plan().unwrap();
     assert_eq!(plan.source_revision, app.document_revision());
     assert_eq!(
@@ -16635,7 +16650,7 @@ fn select_all_instances_plan_rejects_tampering_context_drift_and_staleness_witho
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -16647,7 +16662,7 @@ fn select_all_instances_plan_rejects_tampering_context_drift_and_staleness_witho
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), context_action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     app.selection.edit_context.pop();
 
     assert!(app.set_selected_occurrence_grounded(true));
@@ -16661,7 +16676,7 @@ fn select_all_instances_plan_rejects_tampering_context_drift_and_staleness_witho
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -16669,7 +16684,7 @@ fn grounded_occurrence_plan_is_exact_and_rejects_tampering_context_drift_and_sta
     let mut app = KetchupApp::new();
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let plan = app.grounded_occurrence_source_plan(true).unwrap();
     assert_eq!(plan.source_revision, app.document_revision());
     assert_eq!(plan.source_digest, app.canonical_digest());
@@ -16708,7 +16723,7 @@ fn grounded_occurrence_plan_is_exact_and_rejects_tampering_context_drift_and_sta
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -16720,7 +16735,7 @@ fn grounded_occurrence_plan_is_exact_and_rejects_tampering_context_drift_and_sta
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.set_selected_occurrence_grounded(true));
     let stale_revision = app.document_revision();
@@ -16733,7 +16748,7 @@ fn grounded_occurrence_plan_is_exact_and_rejects_tampering_context_drift_and_sta
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -16741,7 +16756,7 @@ fn selection_visibility_plan_is_exact_and_rejects_tampering_context_drift_and_st
     let mut app = KetchupApp::new();
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let plan = app.selection_visibility_source_plan(false).unwrap();
     assert_eq!(plan.source_revision, app.document_revision());
     assert_eq!(plan.source_digest, app.canonical_digest());
@@ -16786,7 +16801,7 @@ fn selection_visibility_plan_is_exact_and_rejects_tampering_context_drift_and_st
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -16798,7 +16813,7 @@ fn selection_visibility_plan_is_exact_and_rejects_tampering_context_drift_and_st
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.set_selected_occurrence_grounded(true));
     let stale_revision = app.document_revision();
@@ -16811,7 +16826,7 @@ fn selection_visibility_plan_is_exact_and_rejects_tampering_context_drift_and_st
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -16831,7 +16846,7 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
     assert!(app.copy_selection_to_clipboard());
     let occurrence_ids = BTreeSet::from([OccurrenceId(1)]);
     let selection = app.selected_instance_paths();
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let source = app.tag_creation_source_plan(Some(&occurrence_ids)).unwrap();
     assert_eq!(source.source_revision, app.document_revision());
     assert_eq!(source.source_digest, app.canonical_digest());
@@ -16870,7 +16885,7 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let mut tampered_source = plan.clone();
     tampered_source
@@ -16891,7 +16906,7 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
 
     assert!(app.apply_tag_creation_plan(plan.clone()));
@@ -16906,7 +16921,7 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
     );
     assert_eq!(created.tag(existing_tag).unwrap().name(), "Other");
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let applied_revision = app.document_revision();
     let applied_digest = app.canonical_digest();
@@ -16964,7 +16979,7 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
     let selection = app.selected_instance_paths();
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let source = app.tag_clear_source_plan(tag).unwrap();
     assert_eq!(source.source_revision, app.document_revision());
     assert_eq!(source.source_digest, app.canonical_digest());
@@ -17003,7 +17018,7 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let mut tampered_source = plan.clone();
     tampered_source
@@ -17019,7 +17034,7 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.apply_tag_clear_plan(plan.clone()));
     assert_eq!(app.document_revision(), revision + 1);
@@ -17030,7 +17045,7 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     assert_eq!(cleared.occurrence(OccurrenceId(1)).unwrap().tag(), None);
     assert_eq!(cleared.tag(other_tag).unwrap().name(), "Other");
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let applied_revision = app.document_revision();
     let applied_digest = app.canonical_digest();
@@ -17042,7 +17057,7 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     assert_eq!(app.undo_step_count(), applied_undo_steps);
     assert_eq!(app.action_digest(), applied_action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.undo());
     assert_eq!(
@@ -17089,7 +17104,7 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
     let selection = app.selected_instance_paths();
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let source = app.tag_deletion_source_plan(tag).unwrap();
     assert_eq!(source.source_revision, app.document_revision());
     assert_eq!(source.source_digest, app.canonical_digest());
@@ -17128,7 +17143,7 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let mut tampered_source = plan.clone();
     tampered_source
@@ -17144,7 +17159,7 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.apply_tag_deletion_plan(plan.clone()));
     assert_eq!(app.document_revision(), revision + 1);
@@ -17154,7 +17169,7 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
     assert_eq!(deleted.occurrence(OccurrenceId(1)).unwrap().tag(), None);
     assert_eq!(deleted.tag(other_tag).unwrap().name(), "Other");
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let applied_revision = app.document_revision();
     let applied_digest = app.canonical_digest();
@@ -17166,7 +17181,7 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
     assert_eq!(app.undo_step_count(), applied_undo_steps);
     assert_eq!(app.action_digest(), applied_action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.undo());
     assert_eq!(app.document_snapshot().tag(tag).unwrap().name(), "Hardware");
@@ -17215,7 +17230,7 @@ fn tag_rename_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness(
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
     let selection = app.selected_instance_paths();
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let source = app.tag_rename_source_plan(tag).unwrap();
     assert_eq!(source.source_revision, app.document_revision());
     assert_eq!(source.source_digest, app.canonical_digest());
@@ -17256,7 +17271,7 @@ fn tag_rename_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness(
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let mut tampered_source = plan.clone();
     tampered_source
@@ -17272,7 +17287,7 @@ fn tag_rename_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness(
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.apply_tag_rename_plan(plan.clone()));
     assert_eq!(app.document_revision(), revision + 1);
@@ -17286,7 +17301,7 @@ fn tag_rename_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness(
     );
     assert_eq!(renamed.tag(other_tag).unwrap().name(), "Other");
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let applied_revision = app.document_revision();
     let applied_digest = app.canonical_digest();
@@ -17298,7 +17313,7 @@ fn tag_rename_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness(
     assert_eq!(app.undo_step_count(), applied_undo_steps);
     assert_eq!(app.action_digest(), applied_action_digest);
     assert_eq!(app.selected_instance_paths(), selection);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.undo());
     assert_eq!(app.document_snapshot().tag(tag).unwrap().name(), "Hardware");
@@ -17336,7 +17351,7 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     let source = app.tag_assignment_source_plan().unwrap();
     assert_eq!(source.source_revision, app.document_revision());
     assert_eq!(source.source_digest, app.canonical_digest());
@@ -17394,7 +17409,7 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -17405,14 +17420,14 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.apply_tag_assignment_plan(plan.clone()));
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
     assert_eq!(app.occurrence_tag(OccurrenceId(1)), Some(target_tag));
     assert_eq!(app.occurrence_tag(OccurrenceId(2)), Some(target_tag));
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
     let applied_revision = app.document_revision();
     let applied_digest = app.canonical_digest();
     let applied_undo_steps = app.undo_step_count();
@@ -17422,7 +17437,7 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     assert_eq!(app.canonical_digest(), applied_digest);
     assert_eq!(app.undo_step_count(), applied_undo_steps);
     assert_eq!(app.action_digest(), applied_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.undo());
     assert_eq!(app.occurrence_tag(OccurrenceId(1)), Some(source_tag));
@@ -17437,7 +17452,7 @@ fn component_replacement_plan_rejects_tampering_context_drift_and_staleness_with
     let mut app = KetchupApp::new();
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     assert!(app.create_box());
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
     let source = app.component_replacement_source_plan().unwrap();
@@ -17485,7 +17500,7 @@ fn component_replacement_plan_rejects_tampering_context_drift_and_staleness_with
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     let mut tampered_source = plan.clone();
     tampered_source.source.source_definition_name.push('!');
@@ -17494,7 +17509,7 @@ fn component_replacement_plan_rejects_tampering_context_drift_and_staleness_with
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -17505,7 +17520,7 @@ fn component_replacement_plan_rejects_tampering_context_drift_and_staleness_with
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.create_box());
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
@@ -17518,7 +17533,7 @@ fn component_replacement_plan_rejects_tampering_context_drift_and_staleness_with
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -17544,7 +17559,7 @@ fn make_unique_plan_rejects_tampering_context_drift_and_staleness_without_side_e
     let mut app = KetchupApp::new();
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(app.copy_selection_to_clipboard());
-    let clipboard = app.occurrence_clipboard.clone();
+    let clipboard = app.clipboard.occurrences.clone();
     assert!(app.copy_selected(Vec3::new(150.0, 0.0, 0.0)));
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
     let plan = app.make_unique_source_plan().unwrap();
@@ -17581,7 +17596,7 @@ fn make_unique_plan_rejects_tampering_context_drift_and_staleness_without_side_e
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     app.selection
         .edit_context
@@ -17592,7 +17607,7 @@ fn make_unique_plan_rejects_tampering_context_drift_and_staleness_without_side_e
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.action_digest(), action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.create_box());
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
@@ -17605,7 +17620,7 @@ fn make_unique_plan_rejects_tampering_context_drift_and_staleness_without_side_e
     assert_eq!(app.canonical_digest(), stale_digest);
     assert_eq!(app.undo_step_count(), stale_undo_steps);
     assert_eq!(app.action_digest(), stale_action_digest);
-    assert_eq!(app.occurrence_clipboard, clipboard);
+    assert_eq!(app.clipboard.occurrences, clipboard);
 }
 
 #[test]
@@ -17808,7 +17823,7 @@ fn review_only_open_preserves_the_active_document_and_its_history() {
     let before_digest = before.canonical_digest();
     let before_canonical_bytes = ketchup_core::persistence::save(&before);
     let before_evaluation = before.evaluate(&Default::default()).unwrap();
-    let before_path = app.document_path.clone();
+    let before_path = app.file.path.clone();
     let before_dirty = app.is_dirty();
     let before_undo_steps = app.document.visible_undo_steps();
     let before_redo_steps = app.document.visible_redo_steps();
@@ -17817,7 +17832,7 @@ fn review_only_open_preserves_the_active_document_and_its_history() {
 
     assert!(!app.open_document_from(&review_path));
     assert!(app.has_review_candidate());
-    assert!(!app.review_candidate.as_ref().unwrap().is_editable());
+    assert!(!app.file.review_candidate.as_ref().unwrap().is_editable());
 
     let after = app.document.current();
     assert_eq!(after.document_id(), before_document_id);
@@ -17831,7 +17846,7 @@ fn review_only_open_preserves_the_active_document_and_its_history() {
         after.evaluate(&Default::default()).unwrap(),
         before_evaluation
     );
-    assert_eq!(app.document_path, before_path);
+    assert_eq!(app.file.path, before_path);
     assert_eq!(app.is_dirty(), before_dirty);
     assert_eq!(app.document.visible_undo_steps(), before_undo_steps);
     assert_eq!(app.document.visible_redo_steps(), before_redo_steps);
@@ -17859,7 +17874,7 @@ fn migration_confirmation_rejects_review_candidate_tamper_atomically() {
     let value_start = alternate_source.len() - 12;
     alternate_source[value_start..value_start + 8]
         .copy_from_slice(&4.5_f64.to_bits().to_le_bytes());
-    app.review_candidate = Some(ketchup_core::persistence::load(&alternate_source).unwrap());
+    app.file.review_candidate = Some(ketchup_core::persistence::load(&alternate_source).unwrap());
 
     assert!(!app.confirm_review_candidate_migration_to(&destination));
     assert!(!destination.exists());
@@ -17900,7 +17915,7 @@ fn lossless_open_replaces_the_document_preserves_history_and_clears_review() {
     assert_eq!(opened.revision_id(), expected.revision_id());
     assert_eq!(opened.canonical_digest(), expected.canonical_digest());
     assert_eq!(ketchup_core::persistence::save(&opened), expected_bytes);
-    assert_eq!(app.document_path.as_deref(), Some(lossless_path.as_path()));
+    assert_eq!(app.file.path.as_deref(), Some(lossless_path.as_path()));
     assert!(!app.is_dirty());
     assert_eq!(app.document.visible_undo_steps(), expected_undo_steps);
     assert_eq!(app.document.visible_redo_steps(), 0);
@@ -17925,7 +17940,7 @@ fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
     assert!(app.is_dirty());
     assert!(app.save_document_to(&path));
     assert!(!app.is_dirty());
-    assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
+    assert_eq!(app.file.path.as_deref(), Some(path.as_path()));
 
     let mut reopened = KetchupApp::new().with_dialogs(Box::new(
         dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
@@ -17980,19 +17995,19 @@ fn failed_open_and_save_preserve_the_active_document_and_file_identity() {
     let mut app = KetchupApp::new();
     assert!(app.create_box());
     let before_digest = app.document.current().canonical_digest();
-    let before_path = app.document_path.clone();
-    let before_saved_digest = app.saved_digest.clone();
+    let before_path = app.file.path.clone();
+    let before_saved_digest = app.file.saved_digest.clone();
 
     assert!(!app.open_document_from(&malformed));
     assert_eq!(app.document.current().canonical_digest(), before_digest);
-    assert_eq!(app.document_path, before_path);
-    assert_eq!(app.saved_digest, before_saved_digest);
+    assert_eq!(app.file.path, before_path);
+    assert_eq!(app.file.saved_digest, before_saved_digest);
     assert!(app.digest.contains("active model was not changed"));
 
     assert!(!app.save_document_to(directory.path()));
     assert_eq!(app.document.current().canonical_digest(), before_digest);
-    assert_eq!(app.document_path, before_path);
-    assert_eq!(app.saved_digest, before_saved_digest);
+    assert_eq!(app.file.path, before_path);
+    assert_eq!(app.file.saved_digest, before_saved_digest);
     assert!(app.is_dirty());
     assert!(app.digest.contains("active model remains unsaved"));
 }
@@ -18031,8 +18046,8 @@ fn opening_program_document_evaluates_and_frames_actual_scene() {
         app.digest
     );
     assert_eq!(app.occurrence_count(), 5);
-    assert!(app.zoom_fit_pending);
-    let zoom_before = app.zoom;
+    assert!(app.camera.zoom_fit_pending);
+    let zoom_before = app.camera.zoom;
     app.headless_force_exact_worker_path(worker);
 
     let mut harness = Harness::builder()
@@ -18040,22 +18055,22 @@ fn opening_program_document_evaluates_and_frames_actual_scene() {
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline
-        && (harness.state().exact_results.len() != 5
+        && (harness.state().exact.results.len() != 5
             || harness.state().instanced_scene_triangle_count() == 0
-            || harness.state().zoom_fit_pending)
+            || harness.state().camera.zoom_fit_pending)
     {
         harness.step();
         std::thread::sleep(Duration::from_millis(10));
     }
 
     let app = harness.state();
-    assert_eq!(app.exact_results.len(), 5, "all table bodies must evaluate");
+    assert_eq!(app.exact.results.len(), 5, "all table bodies must evaluate");
     assert!(
         app.instanced_scene_triangle_count() > 0,
         "the evaluated table must reach the painted scene"
     );
-    assert!(!app.zoom_fit_pending);
-    assert_ne!(app.zoom, zoom_before, "the table must be framed");
+    assert!(!app.camera.zoom_fit_pending);
+    assert_ne!(app.camera.zoom, zoom_before, "the table must be framed");
 }
 
 /// A live client that opens a window and immediately asks for Zoom Fit must
@@ -18064,20 +18079,20 @@ fn opening_program_document_evaluates_and_frames_actual_scene() {
 fn zoom_fit_before_first_layout_is_applied_on_the_first_frame() {
     let mut app = KetchupApp::new();
     install_initial_graph_result(&mut app);
-    assert!(app.viewport_rect.is_none());
-    let zoom_before = app.zoom;
+    assert!(app.camera.viewport_rect.is_none());
+    let zoom_before = app.camera.zoom;
     app.dispatch_command(AppCommand::ZoomFit);
-    assert!(app.zoom_fit_pending);
-    assert_eq!(app.zoom, zoom_before);
+    assert!(app.camera.zoom_fit_pending);
+    assert_eq!(app.camera.zoom, zoom_before);
 
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
     let app = harness.state();
-    assert!(!app.zoom_fit_pending);
+    assert!(!app.camera.zoom_fit_pending);
     assert_ne!(
-        app.zoom, zoom_before,
+        app.camera.zoom, zoom_before,
         "the pending fit must frame the model"
     );
 
@@ -18085,7 +18100,7 @@ fn zoom_fit_before_first_layout_is_applied_on_the_first_frame() {
     app.dispatch_command(AppCommand::ZoomFit);
     app.dispatch_command(AppCommand::ViewTop);
     assert!(
-        !app.zoom_fit_pending,
+        !app.camera.zoom_fit_pending,
         "an explicit later view choice supersedes a pending fit"
     );
 }
@@ -18294,4 +18309,24 @@ fn platform_clipboard_requests_run_the_clipboard_commands() {
         Some(AppCommand::Paste)
     );
     assert_eq!(press_in_a_frame(vec![egui::Event::Cut], true), None);
+}
+
+#[test]
+fn the_shell_state_stays_grouped_into_a_few_owned_parts() {
+    // Loose fields are how two dialogs, two previews or two drags ended up
+    // alive at once; new state joins the part it serves instead.
+    let source = include_str!("lib.rs");
+    let start = source
+        .find("pub struct KetchupApp {")
+        .expect("KetchupApp is declared in lib.rs");
+    let end = start + source[start..].find("\n}\n").expect("KetchupApp ends");
+    let fields = source[start..end]
+        .lines()
+        .filter(|line| {
+            line.strip_prefix("    ").is_some_and(|field| {
+                field.starts_with(|c: char| c.is_ascii_lowercase()) && field.contains(": ")
+            })
+        })
+        .count();
+    assert!(fields <= 60, "KetchupApp has {fields} fields");
 }

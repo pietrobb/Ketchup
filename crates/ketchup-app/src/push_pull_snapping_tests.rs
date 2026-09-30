@@ -34,16 +34,16 @@ fn push_pull_clears_exact_preview_on_zero_or_failed_replan() {
         let steps = app.undo_step_count();
         assert!(app.update_push_pull_gesture(&drag, Pos2::new(0.0, -2.0)));
         planar_push_pull::tests::wait_preview(&mut app);
-        assert!(app.face_offset_evaluation.is_some());
+        assert!(app.push_pull.face_offset_evaluation.is_some());
         if zero_gesture {
             assert!(!app.update_push_pull_gesture(&drag, Pos2::ZERO));
         } else {
             app.set_push_pull_distance_input("invalid");
             assert!(!app.start_preview());
         }
-        assert!(app.face_offset_evaluation.is_none());
-        assert!(app.face_offset_preview_due.is_none());
-        assert!(app.smart_push_pull_proposal.is_none());
+        assert!(app.push_pull.face_offset_evaluation.is_none());
+        assert!(app.push_pull.face_offset_preview_due.is_none());
+        assert!(app.push_pull.smart_proposal.is_none());
         assert!(app.tool_preview.get::<EphemeralBoxPreview>().is_none());
         assert!(app.push_pull_click_anchor_active());
         assert!(!app.confirm_push_pull_preview());
@@ -83,7 +83,7 @@ fn push_pull_snaps_points_and_edges_on_all_signed_axes() {
                         Vec3::ZERO
                     };
                 for distance in [17.123456789, -3.125] {
-                    app.hover_snap = Some(SnapResult {
+                    app.hover.snap = Some(SnapResult {
                         kind,
                         reference: selection.clone(),
                         position_mm: origin + normal * distance,
@@ -124,7 +124,7 @@ fn push_pull_snaps_oblique_scaled_face_using_world_normal() {
         assert!(face.normal.x.abs() > 0.01 && face.normal.y.abs() > 0.01);
         let drag = drag(&app, selection.clone());
         let tangent = cross(face.normal, Vec3::new(0.0, 0.0, 1.0));
-        app.hover_snap = Some(SnapResult {
+        app.hover.snap = Some(SnapResult {
             kind: SnapKind::Edge,
             reference: selection,
             position_mm: face.origin + face.normal * distance + tangent * 25.0,
@@ -134,7 +134,7 @@ fn push_pull_snaps_oblique_scaled_face_using_world_normal() {
         let steps = app.undo_step_count();
         assert!(app.update_push_pull_gesture(&drag, Pos2::ZERO));
         assert!(
-            (parse_distance_mm(&app.push_pull_distance_input).unwrap() - distance).abs() < 1e-10
+            (parse_distance_mm(&app.push_pull.distance_input).unwrap() - distance).abs() < 1e-10
         );
         planar_push_pull::tests::wait_preview(&mut app);
         assert!(app.confirm_push_pull_preview());
@@ -177,7 +177,7 @@ fn push_pull_negative_profile_target_and_invalid_solid_extent() {
     app.active_tool = ActiveTool::PushPull;
     let drag = drag(&app, selection.clone());
     assert_eq!(drag.extent_start_mm, 0.0);
-    app.hover_snap = Some(SnapResult {
+    app.hover.snap = Some(SnapResult {
         kind: SnapKind::Endpoint,
         reference: selection,
         position_mm: Vec3::new(100.0, 0.0, 13.123456789),
@@ -204,7 +204,7 @@ fn push_pull_negative_profile_target_and_invalid_solid_extent() {
     solid.selection.primary = Some(selection.clone());
     let drag = self::drag(&solid, selection.clone());
     for z in [0.0, -10.0, f64::NAN, f64::INFINITY] {
-        solid.hover_snap = Some(SnapResult {
+        solid.hover.snap = Some(SnapResult {
             kind: SnapKind::Endpoint,
             reference: selection.clone(),
             position_mm: Vec3::new(0.0, 0.0, z),
@@ -216,7 +216,7 @@ fn push_pull_negative_profile_target_and_invalid_solid_extent() {
 
 fn pointer(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> Pos2 {
     let pos = harness.state().viewport_position(world).unwrap();
-    assert!(harness.state().viewport_rect.unwrap().contains(pos));
+    assert!(harness.state().camera.viewport_rect.unwrap().contains(pos));
     harness
         .input_mut()
         .events
@@ -309,7 +309,7 @@ fn push_pull_snaps_to_nonparallel_face_at_pointer() {
     let point = Vec3::new(200.0, 0.0, 47.123456789);
     app.update_viewport_inference(Some(app.project(point, rect)), rect);
     assert_eq!(app.hovered_snap_kind(), Some(SnapKind::Face));
-    let hit = app.hover_pick.as_ref().unwrap().overlap_choice(0).unwrap();
+    let hit = app.hover.pick.as_ref().unwrap().overlap_choice(0).unwrap();
     assert!(matches!(
         hit.reference.element,
         ElementId::Face { axis: Axis::Y, .. }

@@ -116,6 +116,7 @@ pub(super) fn describe(
         ketchup_program::run(&program.file_name, &program.source, &program.overrides).ok()?;
     let part = evaluated.model.part(occurrence.name())?;
     let package = app
+        .exact
         .topology_results
         .get_render(snapshot, occurrence.definition_id())?;
     let ordinal = |kind| {

@@ -5,7 +5,7 @@ fn finishes(app: &KetchupApp) -> Vec<AssistantCadBodyFeature> {
     let reference = |kind| {
         ketchup_application::topology::assistant_topology_references(
             &snapshot,
-            &app.topology_results,
+            &app.exact.topology_results,
             kind,
         )
         .into_iter()
@@ -66,15 +66,28 @@ fn prefix_preserves_current_topology_for_all_finishes_and_one_undo_step() {
         install_initial_graph_result(&mut app);
         let before = app.live_bridge_stamp();
         let history = app.undo_step_count();
-        let references = app.topology_results.values().cloned().collect::<Vec<_>>();
+        let references = app
+            .exact
+            .topology_results
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         let proposal = app
             .derive_assistant_cad_edit_proposal(&program(finishes(&app)[finish_index].clone()))
             .unwrap();
         assert_eq!(app.live_bridge_stamp(), before);
         assert_eq!(app.undo_step_count(), history);
-        assert!(app.topology_results.is_bound_to(&app.document.current()));
+        assert!(
+            app.exact
+                .topology_results
+                .is_bound_to(&app.document.current())
+        );
         assert_eq!(
-            app.topology_results.values().cloned().collect::<Vec<_>>(),
+            app.exact
+                .topology_results
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
             references
         );
         app.document.commit_proposal(&proposal).unwrap();
@@ -112,7 +125,11 @@ fn prefix_rejects_changed_producer_geometry_and_stale_registry() {
                         },
                     ]))
                     .unwrap();
-                assert!(!app.topology_results.is_bound_to(&app.document.current()));
+                assert!(
+                    !app.exact
+                        .topology_results
+                        .is_bound_to(&app.document.current())
+                );
             } else {
                 input.operations[0] = AssistantCadEditOperation::SetDimension {
                     feature_id: 2,

@@ -139,7 +139,7 @@ mod tests {
             let start = Vec3::new(2.0, 3.0, 5.0);
             app.gesture.sketch.start = Some(start);
             app.gesture.sketch.cursor = Some(start + delta);
-            app.value_input = "26".into();
+            app.value_box.input = "26".into();
             assert!(app.complete_exact_line());
             let points = selected_line_points(&app);
             assert_point(points[0], start);

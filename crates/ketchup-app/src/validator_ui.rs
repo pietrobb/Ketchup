@@ -43,24 +43,24 @@ impl KetchupApp {
     /// must finish before another expensive worker can be started.
     #[must_use]
     pub fn validator_panel_pending(&self) -> bool {
-        self.validator_panel_state.task.is_some()
+        self.validator_panel.state.task.is_some()
     }
 
     /// Starts read-only validation in the background. Returns false for an empty
     /// selection, a duplicate request, or failure to start the background thread.
     pub fn start_validator_panel(&mut self, context: &egui::Context) -> bool {
-        if self.validator_panel_pending() || self.validator_panel_selection.is_empty() {
+        if self.validator_panel_pending() || self.validator_panel.selection.is_empty() {
             return false;
         }
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let source = ValidatorSnapshot::new(&snapshot);
-        let exact_results = self.exact_results.clone();
-        let container = self.container_data.clone();
+        let exact_results = self.exact.results.clone();
+        let container = self.file.container_data.clone();
         let executable = self.validator_worker_path();
         let selection = ketchup_application::validation::AssistantValidationSelection {
             mode: "only",
-            requested: self.validator_panel_selection.clone(),
+            requested: self.validator_panel.selection.clone(),
             unknown: Vec::new(),
         };
         let (sender, receiver) = mpsc::channel();
@@ -80,14 +80,14 @@ impl KetchupApp {
                 let _ = sender.send(validator_panel_report(&validation));
                 repaint.request_repaint();
             });
-        self.validator_panel_report = None;
-        self.validator_panel_state.report_source = None;
+        self.validator_panel.report = None;
+        self.validator_panel.state.report_source = None;
         if started.is_err() {
-            self.validator_panel_state.notice = Some("validators-run-unavailable");
+            self.validator_panel.state.notice = Some("validators-run-unavailable");
             return false;
         }
-        self.validator_panel_state.notice = None;
-        self.validator_panel_state.task = Some(ValidatorPanelTask {
+        self.validator_panel.state.notice = None;
+        self.validator_panel.state.task = Some(ValidatorPanelTask {
             source,
             receiver,
             stale: false,
@@ -97,7 +97,7 @@ impl KetchupApp {
     }
 
     pub(super) fn validator_worker_path(&self) -> Option<PathBuf> {
-        self.exact_worker_path.clone().or_else(|| {
+        self.exact.worker_path.clone().or_else(|| {
             exact_worker_candidates()
                 .into_iter()
                 .find(|path| path.is_file())
@@ -107,27 +107,29 @@ impl KetchupApp {
     pub(super) fn poll_validator_panel(&mut self, context: &egui::Context) {
         let snapshot = self.document.current();
         if self
-            .validator_panel_state
+            .validator_panel
+            .state
             .report_source
             .as_ref()
             .is_some_and(|source| !source.matches(&snapshot))
         {
-            self.validator_panel_report = None;
-            self.validator_panel_state.report_source = None;
-            self.validator_panel_state.notice = Some("validators-stale");
+            self.validator_panel.report = None;
+            self.validator_panel.state.report_source = None;
+            self.validator_panel.state.notice = Some("validators-stale");
         }
-        let Some(task) = self.validator_panel_state.task.as_mut() else {
+        let Some(task) = self.validator_panel.state.task.as_mut() else {
             return;
         };
         task.stale |= !task.source.matches(&snapshot);
         if task.stale {
-            self.validator_panel_state.notice = Some("validators-stale");
+            self.validator_panel.state.notice = Some("validators-stale");
         }
         let received = task.receiver.try_recv();
         match received {
             Ok(report) => {
                 let task = self
-                    .validator_panel_state
+                    .validator_panel
+                    .state
                     .task
                     .take()
                     .expect("pending validation");
@@ -135,11 +137,11 @@ impl KetchupApp {
                     || report.revision != task.source.revision
                     || report.canonical_digest != task.source.canonical_digest
                 {
-                    self.validator_panel_state.notice = Some("validators-stale");
+                    self.validator_panel.state.notice = Some("validators-stale");
                 } else {
-                    self.validator_panel_state.report_source = Some(task.source);
-                    self.validator_panel_state.notice = None;
-                    self.validator_panel_report = Some(report);
+                    self.validator_panel.state.report_source = Some(task.source);
+                    self.validator_panel.state.notice = None;
+                    self.validator_panel.report = Some(report);
                 }
             }
             Err(TryRecvError::Empty) => {
@@ -147,8 +149,8 @@ impl KetchupApp {
                 context.request_repaint_after(Duration::from_millis(50));
             }
             Err(TryRecvError::Disconnected) => {
-                self.validator_panel_state.task = None;
-                self.validator_panel_state.notice = Some("validators-run-unavailable");
+                self.validator_panel.state.task = None;
+                self.validator_panel.state.notice = Some("validators-run-unavailable");
             }
         }
     }
@@ -170,7 +172,7 @@ mod tests {
             "not_evaluated": [{"validator": "collision", "reason": "worker_unavailable"}]
         }));
         let (sender, receiver) = mpsc::channel();
-        app.validator_panel_state.task = Some(ValidatorPanelTask {
+        app.validator_panel.state.task = Some(ValidatorPanelTask {
             source: ValidatorSnapshot::new(&snapshot),
             receiver,
             stale: false,
@@ -225,7 +227,7 @@ mod tests {
         for field in ["document", "revision", "digest"] {
             let mut app = KetchupApp::new();
             let (sender, report) = pending(&mut app);
-            let source = &mut app.validator_panel_state.task.as_mut().unwrap().source;
+            let source = &mut app.validator_panel.state.task.as_mut().unwrap().source;
             match field {
                 "document" => source.document_id = DocumentId(source.document_id.0 + 1),
                 "revision" => source.revision += 1,
@@ -238,7 +240,7 @@ mod tests {
             app.poll_validator_panel(&egui::Context::default());
             assert!(!app.validator_panel_pending());
             assert!(app.validator_panel_report().is_none());
-            assert_eq!(app.validator_panel_state.notice, Some("validators-stale"));
+            assert_eq!(app.validator_panel.state.notice, Some("validators-stale"));
         }
     }
 
@@ -251,7 +253,7 @@ mod tests {
         assert!(!app.validator_panel_pending());
         assert!(app.validator_panel_report().is_none());
         assert_eq!(
-            app.validator_panel_state.notice,
+            app.validator_panel.state.notice,
             Some("validators-run-unavailable")
         );
     }
@@ -263,14 +265,15 @@ mod tests {
         sender.send(report).unwrap();
         app.poll_validator_panel(&egui::Context::default());
         assert!(app.validator_panel_report().is_some());
-        app.validator_panel_state
+        app.validator_panel
+            .state
             .report_source
             .as_mut()
             .unwrap()
             .revision += 1;
         assert!(app.validator_panel_report().is_none());
         app.poll_validator_panel(&egui::Context::default());
-        assert!(app.validator_panel_report.is_none());
-        assert_eq!(app.validator_panel_state.notice, Some("validators-stale"));
+        assert!(app.validator_panel.report.is_none());
+        assert_eq!(app.validator_panel.state.notice, Some("validators-stale"));
     }
 }

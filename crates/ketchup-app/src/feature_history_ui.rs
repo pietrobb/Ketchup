@@ -366,7 +366,8 @@ impl KetchupApp {
             Axis::Z => 2,
         }] = if side == Side::Maximum { 1.0 } else { -1.0 };
         let mut references = self
-            .exact_results
+            .exact
+            .results
             .values()
             .filter(|package| {
                 package.definition_id() == definition_id
@@ -431,7 +432,7 @@ impl KetchupApp {
         let definition_id = self.feature_history.definition?;
         let base = match project_feature_history(
             snapshot,
-            &self.exact_results,
+            &self.exact.results,
             definition_id,
             &FeatureHistoryQuery::default(),
         ) {
@@ -496,7 +497,7 @@ impl KetchupApp {
                 },
             ),
         };
-        match project_feature_history(snapshot, &self.exact_results, definition_id, &query) {
+        match project_feature_history(snapshot, &self.exact.results, definition_id, &query) {
             Ok(projection) => Some(projection),
             Err(error) => {
                 self.feature_history_error(error);
@@ -525,7 +526,7 @@ impl KetchupApp {
                 let (execution, affected) = if let Some((occurrence_id, fork_name)) = fork {
                     let impact = project_occurrence_fork_impact(
                         &self.document,
-                        &self.exact_results,
+                        &self.exact.results,
                         OccurrenceForkChangeRequest::exact_parameter_edit(
                             &snapshot,
                             *occurrence_id,
@@ -540,7 +541,7 @@ impl KetchupApp {
                 } else {
                     match project_shared_change_impact(
                         &self.document,
-                        &self.exact_results,
+                        &self.exact.results,
                         SharedDefinitionChangeRequest::exact_parameter_edit(
                             &snapshot,
                             request.clone(),
@@ -620,7 +621,7 @@ impl KetchupApp {
                 {
                     let impact = project_occurrence_fork_impact(
                         &self.document,
-                        &self.exact_results,
+                        &self.exact.results,
                         OccurrenceForkChangeRequest::body_history_mutation(
                             &snapshot,
                             *occurrence_id,
@@ -648,7 +649,7 @@ impl KetchupApp {
                 } else {
                     match project_shared_change_impact(
                         &self.document,
-                        &self.exact_results,
+                        &self.exact.results,
                         SharedDefinitionChangeRequest::body_history_mutation(&snapshot, *request),
                         ProposalPrincipal::ManualClient,
                     ) {
@@ -767,7 +768,7 @@ impl KetchupApp {
             FeatureHistoryPreviewSource::Replacement(request) => {
                 let impact = project_component_replacement_impact(
                     &self.document,
-                    &self.exact_results,
+                    &self.exact.results,
                     request.clone(),
                 )
                 .map_err(|error| error.to_string())?;
@@ -1287,7 +1288,8 @@ impl KetchupApp {
             .flat_map(|definition| definition.bodies())
             .filter(|body| body.visible() && body.consumed_by().is_none())
             .filter_map(|body| {
-                self.exact_results
+                self.exact
+                    .results
                     .get_body(&snapshot, target_definition_id, body.id())
                     .ok()
                     .flatten()
@@ -1328,9 +1330,9 @@ impl KetchupApp {
                 };
                 packages.push(package);
             }
-            self.exact_results = match ExactResultRegistry::publish_body_results(
+            self.exact.results = match ExactResultRegistry::publish_body_results(
                 &snapshot,
-                &self.exact_results,
+                &self.exact.results,
                 packages,
             ) {
                 Ok(results) => results,
@@ -1404,7 +1406,7 @@ impl KetchupApp {
                         return false;
                     }
                 };
-                if let Some(task) = self.exact_task.take() {
+                if let Some(task) = self.exact.task.take() {
                     task.cancelled.store(true, Ordering::Release);
                 }
                 match &preview.execution {
@@ -1457,15 +1459,15 @@ impl KetchupApp {
                 self.reconcile_selection();
                 if propagated {
                     let snapshot = self.document.current();
-                    self.render_plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
+                    self.render.plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
                         &snapshot,
-                        &self.exact_results,
-                        &mut self.render_cache,
+                        &self.exact.results,
+                        &mut self.render.cache,
                     )));
-                    self.interaction_projection_cache.get_mut().take();
-                    self.exact_source =
+                    self.hover.projection_cache.get_mut().take();
+                    self.exact.source =
                         Some(ketchup_application::evaluation::exact_source(&snapshot));
-                    self.exact_retry_at = None;
+                    self.exact.retry_at = None;
                 }
                 self.digest = self.catalog.format(
                     "feature-history-committed",
@@ -2207,9 +2209,9 @@ impl KetchupApp {
                 Ok(_) => {
                     self.invalidate_pending_import_reviews();
                     self.clear_ephemeral_edit_state();
-                    self.parameter_editor_node = None;
-                    self.parameter_provenance = None;
-                    self.parameter_last_recomputed_nodes.clear();
+                    self.parameter.editor_node = None;
+                    self.parameter.provenance = None;
+                    self.parameter.last_recomputed_nodes.clear();
                     self.reconcile_selection();
                     self.digest = self.catalog.format(
                         "revision-history-rolled-back",
@@ -2951,7 +2953,8 @@ impl KetchupApp {
         let definition_id = self.feature_history.definition?;
         let body_id = self.feature_history.selected_body?;
         let package = self
-            .exact_results
+            .exact
+            .results
             .get_body(&snapshot, definition_id, body_id)
             .ok()??;
         let fingerprint = &package.result_key().result_fingerprint;
@@ -2975,7 +2978,7 @@ impl KetchupApp {
         for sheet in snapshot.drawing_sheets() {
             drawing_view_count += ketchup_core::drawing::project_orthographic_drawing(
                 &snapshot,
-                &self.exact_results,
+                &self.exact.results,
                 sheet,
             )
             .ok()?

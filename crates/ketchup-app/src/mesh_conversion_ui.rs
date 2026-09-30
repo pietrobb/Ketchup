@@ -177,27 +177,29 @@ impl KetchupApp {
             commit_mesh_conversion(document, &pending.plan, pending.verification)
         }) {
             Ok(package) => {
-                if let Some(task) = self.exact_task.take() {
+                if let Some(task) = self.exact.task.take() {
                     task.cancelled.store(true, Ordering::Release);
                 }
                 let snapshot = self.document.current();
                 let package = Arc::new(ExactBodyPackage::from(package));
-                self.exact_results
+                self.exact
+                    .results
                     .insert_current(&snapshot, Arc::clone(&package))
                     .expect("verified conversion package matches committed snapshot");
                 if !package.topological_references().is_empty() {
-                    self.topology_results
+                    self.exact
+                        .topology_results
                         .insert_current(&snapshot, package)
                         .expect("verified topology package matches committed snapshot");
                 }
-                self.exact_source = None;
-                self.exact_retry_at = None;
-                self.render_plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
+                self.exact.source = None;
+                self.exact.retry_at = None;
+                self.render.plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
                     &snapshot,
-                    &self.exact_results,
-                    &mut self.render_cache,
+                    &self.exact.results,
+                    &mut self.render.cache,
                 )));
-                self.interaction_projection_cache.get_mut().take();
+                self.hover.projection_cache.get_mut().take();
                 self.digest = self.catalog.text("digest-mesh-conversion-committed");
             }
             Err(error) => self.set_mesh_conversion_error(error.to_string()),

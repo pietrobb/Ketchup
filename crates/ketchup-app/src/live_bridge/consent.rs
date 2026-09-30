@@ -116,7 +116,7 @@ impl KetchupApp {
         context: &egui::Context,
         discovery_root: &Path,
     ) -> io::Result<SocketAddr> {
-        if self.live_consent_broker.is_some() {
+        if self.live.consent_broker.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "live consent broker already enabled",
@@ -126,37 +126,39 @@ impl KetchupApp {
             context.clone(),
             discovery_root,
             self.live_consent_document(),
-            self.live_bridge.is_none(),
+            self.live.bridge.is_none(),
         )?;
         let address = broker.address;
-        self.live_consent_broker = Some(broker);
-        self.live_consent_attached = self.live_bridge.is_some();
+        self.live.consent_broker = Some(broker);
+        self.live.consent_attached = self.live.bridge.is_some();
         Ok(address)
     }
 
     #[must_use]
     pub fn live_consent_address(&self) -> Option<SocketAddr> {
-        self.live_consent_broker
+        self.live
+            .consent_broker
             .as_ref()
             .map(|broker| broker.address)
     }
 
     #[must_use]
     pub fn live_consent_instance_id(&self) -> Option<&str> {
-        self.live_consent_broker
+        self.live
+            .consent_broker
             .as_ref()
             .map(|broker| broker.instance_id.as_str())
     }
 
     #[must_use]
     pub fn live_consent_attached(&self) -> bool {
-        self.live_consent_attached
+        self.live.consent_attached
     }
 
     /// Local attach requests are granted immediately; the window stays usable and
     /// shows only a passive "connected" panel with a disconnect button.
     pub(crate) fn poll_live_consent(&mut self, context: &egui::Context) {
-        let delivery_failed = self.live_consent_broker.as_ref().is_some_and(|broker| {
+        let delivery_failed = self.live.consent_broker.as_ref().is_some_and(|broker| {
             let mut failed = false;
             while let Ok(delivered) = broker.deliveries.try_recv() {
                 failed |= !delivered;
@@ -164,21 +166,21 @@ impl KetchupApp {
             failed
         });
         if delivery_failed {
-            self.live_consent_attached = false;
+            self.live.consent_attached = false;
             self.disable_live_bridge();
         }
         let document = self.live_consent_document();
-        let Some(broker) = self.live_consent_broker.as_ref() else {
+        let Some(broker) = self.live.consent_broker.as_ref() else {
             return;
         };
         if let Ok(mut discovery) = broker.discovery.lock() {
             discovery.document = document;
-            discovery.available = !self.live_consent_attached;
+            discovery.available = !self.live.consent_attached;
         }
         let Ok(request) = broker.requests.try_recv() else {
             return;
         };
-        if self.live_consent_attached {
+        if self.live.consent_attached {
             // The previous client may be gone or forgotten without disconnecting;
             // a new local attach takes over with a fresh credential.
             self.revoke_live_consent();
@@ -187,12 +189,12 @@ impl KetchupApp {
     }
 
     fn allow_live_consent(&mut self, context: &egui::Context, pending: PendingConsent) {
-        if self.live_bridge.is_none() {
+        if self.live.bridge.is_none() {
             let Ok(bridge) = transport::start(context.clone()) else {
                 let _ = pending.decision.try_send(ConsentDecision::Reject);
                 return;
             };
-            self.live_bridge = Some(bridge);
+            self.live.bridge = Some(bridge);
         }
         let Some(credentials) = self.live_bridge_credentials() else {
             let _ = pending.decision.try_send(ConsentDecision::Reject);
@@ -206,19 +208,19 @@ impl KetchupApp {
             })
             .is_ok()
         {
-            self.live_consent_attached = true;
+            self.live.consent_attached = true;
         } else {
             self.disable_live_bridge();
         }
     }
 
     pub fn revoke_live_consent(&mut self) {
-        self.live_consent_attached = false;
+        self.live.consent_attached = false;
         self.disable_live_bridge();
     }
 
     pub(crate) fn confirm_live_open_path(&mut self, path: &Path) -> bool {
-        if !self.live_consent_attached {
+        if !self.live.consent_attached {
             return true;
         }
         let title = self.catalog.text("live-open-consent-title");
@@ -235,7 +237,8 @@ impl KetchupApp {
     }
 
     fn live_consent_document(&self) -> String {
-        self.document_path
+        self.file
+            .path
             .as_deref()
             .and_then(Path::file_name)
             .and_then(std::ffi::OsStr::to_str)
@@ -244,7 +247,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn show_live_consent(&mut self, context: &egui::Context) {
-        if self.live_consent_attached {
+        if self.live.consent_attached {
             let mut revoke = false;
             egui::Window::new(self.catalog.text("live-consent-connected-title"))
                 .collapsible(false)

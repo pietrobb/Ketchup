@@ -16,23 +16,23 @@ fn evaluate_exact(app: &mut KetchupApp) {
     let snapshot = app.document.current();
     let task = ketchup_application::evaluation::start_exact_evaluation(
         snapshot.clone(),
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         Some(worker),
         || {},
     );
     let products = task.wait(Duration::from_secs(60)).unwrap();
     let report = ketchup_application::evaluation::publish_exact_products(
         &mut app.document,
-        &mut app.exact_results,
-        &mut app.topology_results,
+        &mut app.exact.results,
+        &mut app.exact.topology_results,
         &task,
         products,
     )
     .unwrap();
     assert!(report.complete && report.topology_complete, "{report:?}");
-    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+    app.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
 }
 
 /// A rotation by `degrees` about z followed by a move to `at`.
@@ -157,6 +157,7 @@ fn volume(app: &KetchupApp, occurrence: OccurrenceId) -> f64 {
     let snapshot = app.document.current();
     let definition_id = snapshot.occurrence(occurrence).unwrap().definition_id();
     let package = app
+        .exact
         .topology_results
         .get_render(&snapshot, definition_id)
         .unwrap();

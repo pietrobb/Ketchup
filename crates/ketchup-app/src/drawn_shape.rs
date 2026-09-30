@@ -217,7 +217,7 @@ impl KetchupApp {
         // as it was before that step.
         let snapshot = self.push_pull_planning_snapshot();
         let correcting = matches!(
-            self.smart_push_pull_planning,
+            self.push_pull.smart_planning,
             Some(SmartPushPullPlanning::TipReplacement(_))
         );
         let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
@@ -459,10 +459,14 @@ impl KetchupApp {
             // A correction plans against an earlier revision; a host the last
             // step left alone keeps the solid evaluated for the current one.
             let Some(package) = self
+                .exact
                 .topology_results
                 .get_render(snapshot, definition_id)
                 .or_else(|| {
-                    let package = self.topology_results.get_render(&current, definition_id)?;
+                    let package = self
+                        .exact
+                        .topology_results
+                        .get_render(&current, definition_id)?;
                     let producer = package.producer_feature_id();
                     let input = |snapshot: &Snapshot| {
                         snapshot
@@ -659,9 +663,9 @@ impl KetchupApp {
                 return Some(false);
             }
         };
-        let planning = self.smart_push_pull_planning.take();
+        let planning = self.push_pull.smart_planning.take();
         self.clear_push_pull_preview();
-        self.smart_push_pull_planning = planning;
+        self.push_pull.smart_planning = planning;
         self.status_key = "status-preview";
         self.digest = self.catalog.format(
             if edit.pocket {
@@ -694,7 +698,7 @@ impl KetchupApp {
         let preview = self.tool_preview.remove::<DrawnShapePreview>()?;
         let current = self.canonical_digest() == preview.canonical_digest
             && self.selection.primary.as_ref() == Some(&preview.selection)
-            && parse_distance_mm(&self.push_pull_distance_input).map(f64::to_bits)
+            && parse_distance_mm(&self.push_pull.distance_input).map(f64::to_bits)
                 == Some(preview.distance_mm_bits);
         let fresh = self
             .drawn_shape_edit(&preview.selection, f64::from_bits(preview.distance_mm_bits))
@@ -724,7 +728,7 @@ impl KetchupApp {
             self.digest = error;
             return Some(false);
         }
-        self.smart_push_pull_planning = None;
+        self.push_pull.smart_planning = None;
         self.status_key = "status-ready";
         self.digest = self.catalog.format(
             if edit.pocket {

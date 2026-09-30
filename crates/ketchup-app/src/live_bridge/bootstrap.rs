@@ -138,7 +138,7 @@ impl PendingBootstrap {
         context: &egui::Context,
         mut readiness: W,
     ) -> Result<(), BootstrapError> {
-        if app.live_bridge.is_some() {
+        if app.live.bridge.is_some() {
             return Err(BootstrapError);
         }
         if let Some(path) = self.document_path
@@ -149,7 +149,7 @@ impl PendingBootstrap {
         let bridge =
             transport::start_with_token(context.clone(), self.token).map_err(|_| BootstrapError)?;
         let address = bridge.address;
-        app.live_bridge = Some(bridge);
+        app.live.bridge = Some(bridge);
         let result = with_deadline(move || {
             // SocketAddr is bound internally to IPv4 loopback; never credential data.
             let line = format!("{{\"version\":1,\"live_bridge_address\":\"{address}\"}}\n");

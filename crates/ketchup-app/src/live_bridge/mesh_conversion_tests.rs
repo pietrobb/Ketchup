@@ -60,13 +60,13 @@ fn mesh_wire() -> Wire {
         ]))
         .unwrap();
     wire.app.selection.select_occurrence(OccurrenceId(1), true);
-    wire.app.exact_worker_path = Some(
+    wire.app.exact.worker_path = Some(
         exact_worker_candidates()
             .into_iter()
             .find(|path| path.is_file())
             .expect("build ketchup-exact-worker before this test"),
     );
-    wire.app.exact_worker_attempted = true;
+    wire.app.exact.worker_attempted = true;
     wire
 }
 

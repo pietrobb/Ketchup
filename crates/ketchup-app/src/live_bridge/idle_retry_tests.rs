@@ -20,7 +20,7 @@ fn assert_idle_retry(failure: Failure) {
     let stamp = app.live_bridge_stamp();
     let history = (app.undo_step_count(), app.redo_step_count(), app.is_dirty());
     // Settle egui startup without starting evaluation or receiving OS input.
-    app.exact_source = Some(exact_source(&snapshot));
+    app.exact.source = Some(exact_source(&snapshot));
     let (repaint_tx, repaint_rx) = std::sync::mpsc::channel();
     let mut harness = egui_kittest::Harness::builder()
         .with_step_dt(1.0 / 60.0)
@@ -44,9 +44,9 @@ fn assert_idle_retry(failure: Failure) {
     let app = harness.state_mut();
     let task = start_exact_evaluation(
         snapshot,
-        &app.container_data,
-        &app.exact_results,
-        &app.topology_results,
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
         None,
         move || completed_tx.send(()).unwrap(),
     );
@@ -63,15 +63,15 @@ fn assert_idle_retry(failure: Failure) {
             );
         }
     }
-    app.exact_source = None;
-    app.exact_task = Some(task);
-    app.exact_worker_attempted = true;
-    app.exact_worker_path = Some(worker);
+    app.exact.source = None;
+    app.exact.task = Some(task);
+    app.exact.worker_attempted = true;
+    app.exact.worker_path = Some(worker);
     // This is the completion-event frame, not a periodic poll.
     harness.step();
-    assert!(harness.state().exact_task.is_none(), "{failure:?}");
-    assert!(harness.state().exact_source.is_none(), "{failure:?}");
-    let retry_at = harness.state().exact_retry_at.unwrap();
+    assert!(harness.state().exact.task.is_none(), "{failure:?}");
+    assert!(harness.state().exact.source.is_none(), "{failure:?}");
+    let retry_at = harness.state().exact.retry_at.unwrap();
     let delay = harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay;
     assert!(
         delay > Duration::ZERO && delay <= Duration::from_secs(1),
@@ -86,8 +86,8 @@ fn assert_idle_retry(failure: Failure) {
     // An incidental early frame must re-arm the remaining delay, not reset the
     // one-second backoff or start a worker early.
     harness.step();
-    assert_eq!(harness.state().exact_retry_at, Some(retry_at));
-    assert!(harness.state().exact_task.is_none());
+    assert_eq!(harness.state().exact.retry_at, Some(retry_at));
+    assert!(harness.state().exact.task.is_none());
     let delay = harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay;
     assert!(delay > Duration::ZERO && delay <= Duration::from_secs(1));
     for _ in repaint_rx.try_iter() {}
@@ -96,14 +96,14 @@ fn assert_idle_retry(failure: Failure) {
     std::thread::sleep(delay + Duration::from_millis(30));
     harness.step();
     assert!(
-        harness.state().exact_task.is_some(),
+        harness.state().exact.task.is_some(),
         "{failure:?}: no retry"
     );
 
     // From here frames are driven only by repaint callbacks, including the
     // real worker's completion notification. Never poll with repeated steps.
     for _ in 0..8 {
-        if harness.state().exact_source.is_some() {
+        if harness.state().exact.source.is_some() {
             break;
         }
         let delay = repaint_rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -111,13 +111,13 @@ fn assert_idle_retry(failure: Failure) {
         harness.step();
     }
     assert!(
-        harness.state().exact_source.is_some(),
+        harness.state().exact.source.is_some(),
         "{failure:?}: not recovered"
     );
-    assert!(harness.state().exact_task.is_none());
-    assert!(harness.state().exact_retry_at.is_none());
-    assert!(!harness.state().exact_results.is_empty());
-    assert!(!harness.state().topology_results.is_empty());
+    assert!(harness.state().exact.task.is_none());
+    assert!(harness.state().exact.retry_at.is_none());
+    assert!(!harness.state().exact.results.is_empty());
+    assert!(!harness.state().exact.topology_results.is_empty());
     assert_eq!(harness.state().live_bridge_stamp(), stamp);
     assert_eq!(
         (

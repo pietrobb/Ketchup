@@ -105,7 +105,8 @@ fn worker_required_program() -> AssistantCadEditProgram {
 }
 fn exact_fingerprints(app: &KetchupApp) -> Vec<String> {
     let mut fingerprints = app
-        .exact_results
+        .exact
+        .results
         .values()
         .map(|package| package.result_key().result_fingerprint)
         .collect::<Vec<_>>();
@@ -206,7 +207,7 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
     }
 
     assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-    assert!(app.document_path.is_none());
+    assert!(app.file.path.is_none());
     assert!(app.is_dirty());
 }
 
@@ -329,7 +330,7 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         Err("save_rejected")
     );
     assert!(app.is_dirty());
-    assert!(app.document_path.is_none());
+    assert!(app.file.path.is_none());
     assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
 
     let saved = bridge
@@ -347,7 +348,7 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         json!({"saved":true,"same_gui_document":true,"dirty":false})
     );
     assert_eq!(probe.high_risk_prompts().len(), 2);
-    assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
+    assert_eq!(app.file.path.as_deref(), Some(path.as_path()));
     assert_ne!(std::fs::read(&path).unwrap(), original_bytes);
     let mut reopened = KetchupApp::new();
     assert!(reopened.open_document_path(&path));
@@ -730,7 +731,8 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
         wire.app.poll_live_bridge(&wire.context);
         if wire
             .app
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .is_some_and(|bridge| bridge.apply_and_verify_job.is_some())
         {
@@ -815,7 +817,8 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
         wire.app.poll_live_bridge(&wire.context);
         if wire
             .app
-            .live_bridge
+            .live
+            .bridge
             .as_ref()
             .is_some_and(|bridge| bridge.apply_and_verify_job.is_some())
         {
@@ -962,7 +965,7 @@ fn apply_and_verify_real_exact_worker_crash_is_zero_mutation() {
     let worker = directory.path().join("crash-worker.cmd");
     std::fs::write(&worker, "@exit /b 23\r\n").unwrap();
     let (mut app, mut bridge) = setup();
-    app.exact_worker_path = Some(worker);
+    app.exact.worker_path = Some(worker);
     app.document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetOccurrenceGrounded {
@@ -1024,7 +1027,7 @@ fn apply_and_verify_cancels_a_running_exact_worker_without_mutation() {
     )
     .unwrap();
     let (mut app, mut bridge) = setup();
-    app.exact_worker_path = Some(worker);
+    app.exact.worker_path = Some(worker);
     app.document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetOccurrenceGrounded {
@@ -1168,8 +1171,8 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
     assert_ne!(after_transform, before_transform);
     assert_eq!(after.assembly_recipe(), Some(&recipe));
     recipe.audit(&after).unwrap();
-    assert!(app.exact_results.is_bound_to(&after));
-    assert!(app.topology_results.is_bound_to(&after));
+    assert!(app.exact.results.is_bound_to(&after));
+    assert!(app.exact.topology_results.is_bound_to(&after));
     assert_eq!(before_exact, after_exact);
     assert_eq!(app.undo_step_count(), before_steps + 1);
 
@@ -1191,7 +1194,7 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
             .iter()
             .all(|fingerprint| undone_exact.contains(fingerprint))
     );
-    assert!(app.exact_results.is_bound_to(&undone));
+    assert!(app.exact.results.is_bound_to(&undone));
     assert_eq!(app.redo_step_count(), 1);
 
     assert!(app.redo());
@@ -1208,7 +1211,7 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
     assert_eq!(redone.assembly_recipe(), Some(&recipe));
     recipe.audit(&redone).unwrap();
     assert_eq!(exact_fingerprints(&app), after_exact);
-    assert!(app.exact_results.is_bound_to(&redone));
+    assert!(app.exact.results.is_bound_to(&redone));
     assert_eq!(app.undo_step_count(), before_steps + 1);
 }
 
@@ -1234,8 +1237,8 @@ fn apply_and_verify_save_io_failure_preserves_last_good_file_and_dirty_gui_state
     assert!(app.save_document_to(&path));
     let original_bytes = std::fs::read(&path).unwrap();
     let original_stamp = app.live_bridge_stamp();
-    let saved_digest = app.saved_digest.clone();
-    let file_identity = app.file_identity;
+    let saved_digest = app.file.saved_digest.clone();
+    let file_identity = app.file.identity;
     let undo_before = app.undo_step_count();
     // Fail the real atomic-save backup write, without touching any user's save-lock.
     std::fs::create_dir(directory.path().join("save-io-failure.ketchup.recovery")).unwrap();
@@ -1270,9 +1273,9 @@ fn apply_and_verify_save_io_failure_preserves_last_good_file_and_dirty_gui_state
     );
     assert_eq!(app.undo_step_count(), undo_before + 1);
     assert!(app.is_dirty());
-    assert_eq!(app.saved_digest, saved_digest);
-    assert_eq!(app.file_identity, file_identity);
-    assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
+    assert_eq!(app.file.saved_digest, saved_digest);
+    assert_eq!(app.file.identity, file_identity);
+    assert_eq!(app.file.path.as_deref(), Some(path.as_path()));
     assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
     let disk = ketchup_core::persistence::load(&original_bytes)
         .unwrap()
@@ -1349,7 +1352,7 @@ fn apply_and_verify_saves_only_the_explicit_absolute_path() {
     assert_eq!(report["save_error"], Value::Null);
     assert_eq!(report["save_path"], path.to_string_lossy().as_ref());
     assert!(!app.is_dirty());
-    assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
+    assert_eq!(app.file.path.as_deref(), Some(path.as_path()));
     let mut reopened = KetchupApp::new();
     assert!(reopened.open_document_path(&path));
     assert_eq!(
@@ -1733,7 +1736,12 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
         let steps = (app.undo_step_count(), app.redo_step_count());
         let primary = app.selection.primary.clone();
         let paths = app.selection.occurrences.clone();
-        let camera = (app.yaw, app.pitch, app.zoom, app.pan);
+        let camera = (
+            app.camera.yaw,
+            app.camera.pitch,
+            app.camera.zoom,
+            app.camera.pan,
+        );
         match state {
             0 => {
                 app.tool_preview = foreign_push_pull_preview();
@@ -1745,15 +1753,15 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                     .sketch
                     .chain_points
                     .push(crate::Vec3::new(1.0, 2.0, 3.0));
-                app.value_input = "unfinished sketch".into();
+                app.value_box.input = "unfinished sketch".into();
             }
             2 => {
-                app.parameter_editor_node = Some(NodeId(999));
-                app.parameter_expression_input = "human unfinished expression".into();
+                app.parameter.editor_node = Some(NodeId(999));
+                app.parameter.expression_input = "human unfinished expression".into();
             }
             3 => {
-                app.pocket_editor_feature = Some(FeatureId(999));
-                app.pocket_depth_input = "human depth".into();
+                app.solid_tools.pocket_editor_feature = Some(FeatureId(999));
+                app.solid_tools.pocket_depth_input = "human depth".into();
             }
             4 => {
                 app.begin_definition_rename();
@@ -1810,7 +1818,15 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
         assert_eq!((app.undo_step_count(), app.redo_step_count()), steps);
         assert_eq!(app.selection.primary, primary);
         assert_eq!(app.selection.occurrences, paths);
-        assert_eq!((app.yaw, app.pitch, app.zoom, app.pan), camera);
+        assert_eq!(
+            (
+                app.camera.yaw,
+                app.camera.pitch,
+                app.camera.zoom,
+                app.camera.pan
+            ),
+            camera
+        );
         assert!(bridge.pending.is_some());
         match state {
             0 => assert!(app.tool_preview.is_some()),
@@ -1820,18 +1836,18 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                     app.gesture.sketch.chain_points,
                     vec![crate::Vec3::new(1.0, 2.0, 3.0)]
                 );
-                assert_eq!(app.value_input, "unfinished sketch");
+                assert_eq!(app.value_box.input, "unfinished sketch");
             }
             2 => {
-                assert_eq!(app.parameter_editor_node, Some(NodeId(999)));
+                assert_eq!(app.parameter.editor_node, Some(NodeId(999)));
                 assert_eq!(
-                    app.parameter_expression_input,
+                    app.parameter.expression_input,
                     "human unfinished expression"
                 );
             }
             3 => {
-                assert_eq!(app.pocket_editor_feature, Some(FeatureId(999)));
-                assert_eq!(app.pocket_depth_input, "human depth");
+                assert_eq!(app.solid_tools.pocket_editor_feature, Some(FeatureId(999)));
+                assert_eq!(app.solid_tools.pocket_depth_input, "human depth");
             }
             4 => assert_eq!(
                 app.modal
@@ -1865,7 +1881,7 @@ fn review_only_history_and_focused_editor_reject_mutations() {
     let stamp = app.live_bridge_stamp();
     let steps = (app.undo_step_count(), app.redo_step_count());
     // Presence of a review candidate is the GUI's read-only boundary.
-    app.review_candidate = Some(
+    app.file.review_candidate = Some(
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&app.document.current()))
             .unwrap(),
     );
@@ -1893,7 +1909,7 @@ fn review_only_history_and_focused_editor_reject_mutations() {
     assert!(app.tool_preview.is_some());
     assert_eq!(app.live_bridge_stamp(), stamp);
     assert_eq!((app.undo_step_count(), app.redo_step_count()), steps);
-    app.review_candidate = None;
+    app.file.review_candidate = None;
     app.tool_preview = None;
     let new_commit = proposal(&mut app, &mut bridge);
     for request in protected_requests(&stamp, &new_commit) {
@@ -2221,7 +2237,7 @@ fn hundred_authenticated_disconnect_cycles_leave_host_and_registries_clean() {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             app.poll_live_bridge(&context);
-            let bridge = app.live_bridge.as_ref().unwrap();
+            let bridge = app.live.bridge.as_ref().unwrap();
             if bridge.active_connections.load(Ordering::Acquire) == 0
                 && bridge.session == 0
                 && bridge.client_states.is_empty()
@@ -2234,7 +2250,7 @@ fn hundred_authenticated_disconnect_cycles_leave_host_and_registries_clean() {
     }
 
     assert_eq!(app.live_bridge_stamp().document_id, document_id);
-    assert!(app.live_bridge.is_some());
+    assert!(app.live.bridge.is_some());
 }
 
 #[test]

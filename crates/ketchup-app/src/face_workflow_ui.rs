@@ -150,7 +150,7 @@ impl KetchupApp {
         }
         if snaps_enabled != self.face_workflow.snaps_enabled {
             self.face_workflow.snaps_enabled = snaps_enabled;
-            self.hover_snap = None;
+            self.hover.snap = None;
             self.digest = self.catalog.text(if snaps_enabled {
                 "digest-face-workflow-snaps-on"
             } else {
@@ -208,27 +208,28 @@ impl KetchupApp {
             })
             .map(ExactBodyPackage::from)
             .map(Arc::new)?;
-        if let Some(task) = self.exact_task.take() {
+        if let Some(task) = self.exact.task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
-        self.exact_results =
+        self.exact.results =
             ExactResultRegistry::accept(&snapshot, [package]).map_err(|error| error.to_string())?;
-        self.exact_worker_attempted = true;
-        self.exact_worker_path = None;
-        self.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+        self.exact.worker_attempted = true;
+        self.exact.worker_path = None;
+        self.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));
         Ok(())
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn headless_face_workflow_exact_output_stamp(&self) -> u64 {
-        self.exact_results.contents_stamp()
+        self.exact.results.contents_stamp()
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn headless_face_workflow_exact_output_fingerprints(&self) -> Vec<String> {
-        self.exact_results
+        self.exact
+            .results
             .values()
             .map(|package| package.result_key().result_fingerprint)
             .collect()
