@@ -7,8 +7,8 @@
 //! copy of a component changes, while pulling out leaves a part of its own.
 //! The drawn shape is used up in the same Undo step.
 use super::*;
-use ketchup_core::document::{Occurrence, RuleProgramSource};
-use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
+use ketchup_model::document::{Occurrence, RuleProgramSource};
+use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 
 /// Distance within which the drawn shape counts as lying on a face.
 const ON_FACE_MM: f64 = APPROXIMATION;

@@ -92,8 +92,8 @@ fn headless_open_exposes_recovery_and_requires_an_explicit_save_target() {
     let requested = base.with_extension("ketchup");
     let recovery = requested.with_extension("ketchup.recovery");
     let destination = base.with_extension("recovered.ketchup");
-    let document = ketchup_core::document::DocumentStore::new();
-    ketchup_core::persistence::save_atomic(&requested, &document.current()).unwrap();
+    let document = ketchup_model::document::DocumentStore::new();
+    ketchup_model::persistence::save_atomic(&requested, &document.current()).unwrap();
     std::fs::copy(&requested, &recovery).unwrap();
     std::fs::write(&requested, b"corrupt primary").unwrap();
 
@@ -127,7 +127,7 @@ fn headless_protocol_recovers_unsaved_work_after_process_loss() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("crashed.ketchup");
     let recovered_copy = directory.path().join("recovered.ketchup");
-    let work_recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let work_recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let mut crashed = Client::new();
     let (entities, constraints) = polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]);
     let created = crashed.call(

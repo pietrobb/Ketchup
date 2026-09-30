@@ -7,7 +7,7 @@ use crate::diagnostics::{
     AssistantRejection, assistant_canonical_rejection, assistant_planning_rejection,
 };
 use crate::sketch::assistant_sketch_entities;
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, ChamferMode, DefinitionId,
     Dimension, EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind, LoftContinuity,
     LoftSection, ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection,

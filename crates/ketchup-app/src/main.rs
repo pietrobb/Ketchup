@@ -5,7 +5,7 @@ use ketchup_app::{
     verify_public_assistant_runtime,
 };
 use ketchup_assistant::sidecar::AssistantDistribution;
-use ketchup_core::persistence::{self, LoadOutcome};
+use ketchup_model::persistence::{self, LoadOutcome};
 
 fn bootstrap_failed() -> ! {
     eprintln!("live bridge bootstrap failed");

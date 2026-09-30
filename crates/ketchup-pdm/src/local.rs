@@ -6,9 +6,9 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use ketchup_core::document::{Snapshot, UnitSystem};
-use ketchup_core::graph::sha256_hex;
-use ketchup_core::persistence::{self, ContainerData, PersistenceError};
+use ketchup_model::document::{Snapshot, UnitSystem};
+use ketchup_model::graph::sha256_hex;
+use ketchup_model::persistence::{self, ContainerData, PersistenceError};
 
 pub const LOCAL_PDM_RELEASE_SCHEMA_V1: &str = "ketchup.local-pdm.release.v1";
 pub const MAX_RELEASE_DEPENDENCIES: usize = 256;

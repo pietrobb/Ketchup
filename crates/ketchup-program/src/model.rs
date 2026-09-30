@@ -7,7 +7,7 @@
 //! operations, where they are drilled.
 
 use crate::frame::{self, Mat3, Obb};
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

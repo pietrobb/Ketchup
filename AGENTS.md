@@ -67,7 +67,7 @@ reproduced failure that they catch, or explicit approval by the owner.
 
 - When a new path replaces an old one, remove the old one in the same change. No parallel
   "legacy" paths.
-- Do not grow `crates/ketchup-app/src/lib.rs` or `crates/ketchup-core/src/document.rs`. Put new
+- Do not grow `crates/ketchup-app/src/lib.rs` or `crates/ketchup-model/src/document.rs`. Put new
   code in new modules.
 - New code: functions under ~150 lines, files under ~3000 lines.
 - Integration tests build as one binary per crate: add `tests/<name>.rs` as `mod <name>;` in

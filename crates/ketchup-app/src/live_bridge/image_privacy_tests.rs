@@ -641,11 +641,11 @@ fn native_scene_callback_hidpi_source_crop_and_samples_are_consistent() {
 #[test]
 fn pending_native_capture_rejects_exact_registry_replacement_without_document_mutation() {
     let _gpu = gpu_test_guard();
-    use ketchup_core::exact_brep_graph::ExactBRepGraph;
-    use ketchup_core::exact_product::{
+    use ketchup_model::exact_brep_graph::ExactBRepGraph;
+    use ketchup_model::exact_product::{
         ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage,
     };
-    use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
+    use ketchup_model::import::{StepImportMesh, StepMeshTriangle};
 
     let mut h = native_harness(1.0);
     let snapshot = h.state().document.current();

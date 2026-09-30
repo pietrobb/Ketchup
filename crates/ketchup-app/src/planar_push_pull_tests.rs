@@ -132,7 +132,7 @@ fn select(app: &mut KetchupApp, ordinal: u32) {
 fn program_push_pull_updates_source_and_survives_save_open_with_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("program-push-pull.ketchup");
-    let source = ketchup_core::document::RuleProgramSource {
+    let source = ketchup_model::document::RuleProgramSource {
         file_name: "program-push-pull.star".to_owned(),
         source: "H = param(\"height\", 18)\npart = extrude(\"board\", profile=[[\"front\", [0, 0], [100, 0]], [\"right\", [100, 0], [100, 50]], [\"back\", [100, 50], [0, 50]], [\"left\", [0, 50], [0, 0]]], distance=H)".to_owned(),
         overrides: BTreeMap::new(),
@@ -157,7 +157,7 @@ fn program_push_pull_updates_source_and_survives_save_open_with_identity() {
     let snapshot = app.document.current();
     let definition_id = snapshot.occurrence(occurrence_id).unwrap().definition_id();
     let definition = snapshot.definition(definition_id).unwrap();
-    let graph = ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+    let graph = ketchup_model::exact_brep_graph::ExactBRepGraph::from_snapshot(
         &snapshot,
         definition_id,
         *definition.feature_ids().last().unwrap(),
@@ -661,12 +661,12 @@ fn every_polygon_face_supports_signed_offset_and_repeated_edit_with_exact_undo()
                 wait_preview(&mut app);
                 assert!(app.confirm_preview());
                 assert!(volume(&app) > result_volume);
-                let saved = ketchup_core::persistence::save_document_store(
+                let saved = ketchup_model::persistence::save_document_store(
                     &app.document,
                     &app.file.container_data,
                 )
                 .unwrap();
-                let reopened = ketchup_core::persistence::load(&saved)
+                let reopened = ketchup_model::persistence::load(&saved)
                     .unwrap()
                     .into_editable()
                     .ok()

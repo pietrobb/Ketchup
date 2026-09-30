@@ -2,7 +2,7 @@ use ketchup_assistant::sidecar::{
     AssistantApiDiagnostics, AssistantCadEditProgram, AssistantCapability, AssistantChatResult,
     AssistantDistribution, AssistantFeaReviewRequest, AssistantHandshake, AssistantModelIntent,
 };
-use ketchup_core::graph::sha256_hex;
+use ketchup_model::graph::sha256_hex;
 #[cfg(windows)]
 use process_wrap::std::JobObject;
 use process_wrap::std::{ChildWrapper, CommandWrap};

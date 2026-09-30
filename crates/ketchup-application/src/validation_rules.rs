@@ -7,8 +7,8 @@
 //! and travel into every report, so a result always names the rule values it
 //! was judged against.
 
-use ketchup_core::document::{OccurrenceId, Snapshot};
-use ketchup_core::validation::MATERIAL_DIMENSION_V1;
+use ketchup_model::document::{OccurrenceId, Snapshot};
+use ketchup_model::validation::MATERIAL_DIMENSION_V1;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;

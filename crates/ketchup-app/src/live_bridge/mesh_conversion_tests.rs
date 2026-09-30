@@ -1,7 +1,7 @@
 use super::*;
 use egui_kittest::kittest::Queryable;
 use ketchup_application::evaluation::exact_worker_candidates;
-use ketchup_core::document::{DocumentStore, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec};
+use ketchup_model::document::{DocumentStore, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec};
 
 fn mesh_wire() -> Wire {
     let mut wire = Wire::new();

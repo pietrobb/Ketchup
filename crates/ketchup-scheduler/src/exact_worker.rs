@@ -13,9 +13,9 @@ use crate::{
     WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence, WorkerExactBRepGraphResult,
     WorkerExactVolumeBoundaryTriangle, WorkerExactVolumeMesh,
 };
-use ketchup_core::cam::CAM_SIMULATION_SCHEMA_V1;
-use ketchup_core::document::Transform;
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
+use ketchup_model::document::Transform;
+use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection, ExactBRepOperation,
     ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
@@ -24,13 +24,13 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepTopologyKind, ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy,
     ExactBRepWeldmentJointPrimary, exact_brep_planar_rectangle_bounds,
 };
-use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
-use ketchup_core::graph::sha256_hex;
-use ketchup_core::import::{
+use ketchup_model::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
+use ketchup_model::graph::sha256_hex;
+use ketchup_model::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
-use ketchup_core::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM};
-use ketchup_core::topology::{
+use ketchup_model::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM};
+use ketchup_model::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
 };
 use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
@@ -1678,7 +1678,7 @@ fn durable_edge_ordinal(output: &ExactOpOutput, reference: &TopologicalElementRe
 
 fn exact_brep_topology_ordinals_preserving_order(
     graph: &ExactBRepGraph,
-    target: ketchup_core::exact_brep_graph::ExactBRepNodeId,
+    target: ketchup_model::exact_brep_graph::ExactBRepNodeId,
     target_output: &ExactOpOutput,
     selectors: &[ExactBRepTopologySelector],
     expected_kind: ExactBRepTopologyKind,
@@ -1776,7 +1776,7 @@ fn exact_brep_topology_ordinals_preserving_order(
 
 fn exact_brep_topology_ordinals(
     graph: &ExactBRepGraph,
-    target: ketchup_core::exact_brep_graph::ExactBRepNodeId,
+    target: ketchup_model::exact_brep_graph::ExactBRepNodeId,
     target_output: &ExactOpOutput,
     selectors: &[ExactBRepTopologySelector],
     expected_kind: ExactBRepTopologyKind,
@@ -1800,7 +1800,7 @@ fn exact_brep_topology_ordinals(
 
 fn exact_brep_chamfer_ordinal_pairs(
     graph: &ExactBRepGraph,
-    target: ketchup_core::exact_brep_graph::ExactBRepNodeId,
+    target: ketchup_model::exact_brep_graph::ExactBRepNodeId,
     target_output: &ExactOpOutput,
     edge_selectors: &[ExactBRepTopologySelector],
     face_selectors: &[ExactBRepTopologySelector],
@@ -3766,7 +3766,7 @@ mod tests {
             collisions
         };
         assert!(collisions_at(graph.tolerance.linear_mm()).is_empty());
-        graph.tolerance = ketchup_core::tolerance::TolerancePolicy::new(0.01).unwrap();
+        graph.tolerance = ketchup_model::tolerance::TolerancePolicy::new(0.01).unwrap();
         let touching = collisions_at(graph.tolerance.linear_mm());
         assert_eq!(touching.len(), 1);
         assert!((touching[0].distance_mm - 0.001).abs() < 1.0e-9);

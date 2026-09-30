@@ -11,7 +11,7 @@ mod program;
 mod relations;
 mod sweep_loft;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

@@ -2,12 +2,12 @@ use std::fs;
 #[cfg(windows)]
 use std::process::Command;
 
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     OccurrenceId, Transform,
 };
-use ketchup_core::import::{ImportLengthUnit, StepImportEvidence, plan_step_import};
-use ketchup_core::persistence;
+use ketchup_model::import::{ImportLengthUnit, StepImportEvidence, plan_step_import};
+use ketchup_model::persistence;
 use ketchup_pdm::local::{
     DependencyChange, DependencyChangeKind, LocalPdmError, ReleaseAudit, ReleaseConflictVerdict,
     ReleaseDependencyInput, ReleaseRelationship, compare_releases, create_child_release,
@@ -69,7 +69,7 @@ fn create_directory_link(target: &std::path::Path, link: &std::path::Path) {
     assert!(status.success(), "directory junction creation failed");
 }
 
-fn editable_copy(snapshot: &ketchup_core::document::Snapshot) -> DocumentStore {
+fn editable_copy(snapshot: &ketchup_model::document::Snapshot) -> DocumentStore {
     match persistence::load(&persistence::save(snapshot))
         .unwrap()
         .into_editable()
@@ -147,11 +147,11 @@ fn release_with_imported_exact_geometry_reopens_with_its_source_blob() {
     let repository = directory.path().join("pdm");
     let source = b"ISO-10303-21; imported release source";
     let evidence = StepImportEvidence {
-        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_sha256: ketchup_model::graph::sha256_bytes(source),
         source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "0123456789abcdef".to_owned(),
-        body_kind: ketchup_core::document::BodyKind::Solid,
+        body_kind: ketchup_model::document::BodyKind::Solid,
         solid_count: 1,
         topology_counts: [8, 12, 6, 1, 1],
         area_mm2: 600.0,

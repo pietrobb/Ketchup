@@ -1,0 +1,1901 @@
+use ketchup_model::document::{
+    BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
+    Dimension, DocumentStore, EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind,
+    LoftContinuity, LoftSection, ProfileSegment, SpatialPathSegment, Transform,
+    is_valid_spatial_sweep_path,
+};
+use ketchup_model::exact_brep_graph::{
+    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
+    EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
+    EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind,
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepNodeId, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfileId,
+    ExactBRepSpatialPathSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
+    MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
+};
+use ketchup_model::exact_product::ExactFaceRole;
+use ketchup_model::persistence;
+use ketchup_model::testing::box_package;
+use ketchup_model::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, TolerancePolicy};
+use ketchup_model::topology::{
+    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
+};
+use ketchup_exact::{
+    MAX_PLANAR_LOOP_SEGMENTS, MAX_PLANAR_REGION_HOLES, MAX_PLANAR_REGION_SEGMENTS,
+};
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
+};
+
+const DEFINITION: DefinitionId = DefinitionId(1);
+const BASE_PROFILE: FeatureId = FeatureId(10);
+const BASE_EXTRUSION: FeatureId = FeatureId(11);
+const TOOL_PROFILE: FeatureId = FeatureId(20);
+const TOOL_EXTRUSION: FeatureId = FeatureId(21);
+const BOOLEAN: FeatureId = FeatureId(30);
+
+fn dimension(value: f64) -> Dimension {
+    Dimension::new(value.to_string(), value).unwrap()
+}
+
+fn topology_reference(
+    snapshot: &ketchup_model::document::Snapshot,
+    producer: FeatureId,
+    kind: TopologicalElementKind,
+    ordinal: u32,
+) -> TopologicalElementRef {
+    TopologicalElementRef::new(
+        snapshot.document_id(),
+        DEFINITION,
+        producer,
+        producer,
+        kind,
+        format!("generated-source/{}/{ordinal}", kind.token()),
+        format!("generated-result/{}/{ordinal}", kind.token()),
+        TopologicalReferenceStability::Guaranteed,
+        "ketchup.exact-brep-graph-evaluator.v1",
+        "occt.v1",
+        "1e-7-mm",
+        format!("result-{}", producer.0),
+        format!("geometry-{}-{ordinal}", kind.token()),
+    )
+    .unwrap()
+}
+
+fn arbitrary_boolean_document() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Arbitrary graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_PROFILE,
+                definition_id: DEFINITION,
+                name: "Base pentagon".into(),
+                kind: FeatureKind::polygon(&[
+                    [-12.0, -8.0],
+                    [18.0, -6.0],
+                    [24.0, 9.0],
+                    [3.0, 20.0],
+                    [-17.0, 7.0],
+                ]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE_EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Unequal base".into(),
+                kind: FeatureKind::extrusion(BASE_PROFILE, dimension(13.0)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: TOOL_PROFILE,
+                definition_id: DEFINITION,
+                name: "Slanted tool".into(),
+                kind: FeatureKind::polygon(&[[-3.0, -15.0], [27.0, 4.0], [5.0, 24.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: TOOL_EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Unequal tool".into(),
+                kind: FeatureKind::extrusion(TOOL_PROFILE, dimension(19.0)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOOLEAN,
+                definition_id: DEFINITION,
+                name: "Generic intersection".into(),
+                kind: FeatureKind::Boolean {
+                    operation: BooleanOperation::Intersect,
+                    target: BASE_EXTRUSION,
+                    tool: TOOL_EXTRUSION,
+                },
+            },
+        ]))
+        .unwrap();
+    document
+}
+
+#[test]
+fn stepped_profile_revolves_through_the_general_graph() {
+    let definition = DefinitionId(6);
+    let profile = FeatureId(500);
+    let revolve = FeatureId(501);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Axisymmetric part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Stepped profile".into(),
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [30.0, 0.0],
+                    [30.0, 110.0],
+                    [12.0, 130.0],
+                    [12.0, 145.0],
+                    [0.0, 145.0],
+                ]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: definition,
+                name: "Full revolve".into(),
+                kind: FeatureKind::full_revolve(profile),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, revolve).unwrap();
+    assert_eq!(graph.nodes.len(), 1);
+    assert!(matches!(
+        graph.nodes[0].operation,
+        ExactBRepOperation::Revolve {
+            profile: ExactBRepProfileId(0),
+            angle_degrees_bits,
+            ..
+        } if f64::from_bits(angle_degrees_bits) == 360.0
+    ));
+    assert_eq!(graph.profiles[0].source_feature_id, profile.0);
+}
+
+#[test]
+fn compiler_preserves_arbitrary_unequal_extrusions_as_a_topological_graph() {
+    let mut document = arbitrary_boolean_document();
+    let before = document.current();
+
+    let graph = ExactBRepGraph::from_snapshot(&before, DEFINITION, BOOLEAN).unwrap();
+    assert_eq!(graph.profiles.len(), 2);
+    assert_eq!(graph.nodes.len(), 3);
+    assert_eq!(graph.nodes[0].source_feature_id, BASE_EXTRUSION.0);
+    assert_eq!(graph.nodes[1].source_feature_id, TOOL_EXTRUSION.0);
+    assert_eq!(graph.nodes[2].source_feature_id, BOOLEAN.0);
+    assert!(matches!(
+        graph.nodes[2].operation,
+        ExactBRepOperation::Boolean {
+            operation: ExactBRepBooleanOperation::Intersect,
+            target,
+            tool,
+            ..
+        } if target.0 == 0 && tool.0 == 1
+    ));
+    assert!(graph.profiles.iter().all(|profile| matches!(
+        &profile.geometry,
+        ExactBRepPlanarGeometry::Boundary { closed: true, segments }
+            if segments.len() >= 3
+    )));
+
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+    let reopened = persistence::load(&persistence::save(&before)).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), DEFINITION, BOOLEAN).unwrap(),
+        graph
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(40),
+                definition_id: DEFINITION,
+                name: "Unrelated branch profile".into(),
+                kind: FeatureKind::polygon(&[[100.0, 100.0], [110.0, 100.0], [105.0, 109.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(41),
+                definition_id: DEFINITION,
+                name: "Unrelated branch body".into(),
+                kind: FeatureKind::extrusion(FeatureId(40), dimension(7.0)),
+            },
+        ]))
+        .unwrap();
+    let with_unrelated_branch =
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    assert_eq!(with_unrelated_branch.graph_digest, graph.graph_digest);
+}
+
+#[test]
+fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
+    let mut document = arbitrary_boolean_document();
+    let face = topology_reference(
+        &document.current(),
+        BOOLEAN,
+        TopologicalElementKind::Face,
+        3,
+    );
+    let shell = FeatureId(40);
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: shell,
+            definition_id: DEFINITION,
+            name: "Topology shell".into(),
+            kind: FeatureKind::Shell {
+                target: BOOLEAN,
+                removed_faces: vec![FaceRef::from(face.clone())],
+                thickness: dimension(2.5),
+                direction: ketchup_model::document::ShellDirection::Inward,
+            },
+        }]))
+        .unwrap();
+    let edge = topology_reference(&document.current(), shell, TopologicalElementKind::Edge, 7);
+    let finish = FeatureId(41);
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: finish,
+            definition_id: DEFINITION,
+            name: "Topology chamfer".into(),
+            kind: FeatureKind::EdgeFinish {
+                target: shell,
+                edges: vec![EdgeRef::from(edge.clone())],
+                kind: EdgeFinishKind::Chamfer,
+                amount: dimension(1.25),
+                fillet_radius_stations: Vec::new(),
+                chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
+                chamfer_edge_sides: Vec::new(),
+            },
+        }]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, finish).unwrap();
+    assert_eq!(graph.nodes.len(), 5);
+    let ExactBRepOperation::Shell {
+        target,
+        removed_faces,
+        thickness_bits,
+        direction: ketchup_model::exact_brep_graph::ExactBRepShellDirection::Inward,
+        ..
+    } = &graph.nodes[3].operation
+    else {
+        panic!("fourth node must be a topology shell");
+    };
+    assert_eq!(target.0, 2);
+    assert_eq!(removed_faces.len(), 1);
+    assert_eq!(removed_faces[0].kind, ExactBRepTopologyKind::Face);
+    assert_eq!(removed_faces[0].reference().unwrap(), face);
+    assert_eq!(f64::from_bits(*thickness_bits), 2.5);
+
+    let ExactBRepOperation::EdgeFinish {
+        target,
+        edges,
+        profile_edges,
+        kind,
+        amount_bits,
+        fillet_radius_stations,
+        chamfer_mode,
+        chamfer_edge_sides,
+    } = &graph.nodes[4].operation
+    else {
+        panic!("last node must be a topology edge finish");
+    };
+    assert_eq!(target.0, 3);
+    assert_eq!(*kind, ExactBRepEdgeFinishKind::Chamfer);
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].kind, ExactBRepTopologyKind::Edge);
+    assert_eq!(edges[0].reference().unwrap(), edge);
+    assert!(profile_edges.is_empty());
+    assert_eq!(f64::from_bits(*amount_bits), 1.25);
+    assert!(fillet_radius_stations.is_empty());
+    assert_eq!(
+        *chamfer_mode,
+        ketchup_model::exact_brep_graph::ExactBRepChamferMode::Symmetric
+    );
+    assert!(chamfer_edge_sides.is_empty());
+
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), DEFINITION, finish).unwrap(),
+        graph
+    );
+
+    let mut tampered = graph;
+    let ExactBRepOperation::Shell { removed_faces, .. } = &mut tampered.nodes[3].operation else {
+        unreachable!();
+    };
+    removed_faces[0].reference_bytes[0] ^= 1;
+    assert_eq!(tampered.validate(), Err(ExactBRepGraphError::InvalidGraph));
+}
+
+#[test]
+fn topology_face_offset_compiles_and_round_trips_with_signed_distance() {
+    let mut document = arbitrary_boolean_document();
+    let face = topology_reference(
+        &document.current(),
+        BOOLEAN,
+        TopologicalElementKind::Face,
+        2,
+    );
+    let offset = FeatureId(40);
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: offset,
+            definition_id: DEFINITION,
+            name: "Topology face offset".into(),
+            kind: FeatureKind::FaceOffset {
+                target: BOOLEAN,
+                face: FaceRef::from(face.clone()),
+                distance: dimension(-3.5),
+            },
+        }]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, offset).unwrap();
+    assert_eq!(graph.nodes.len(), 4);
+    let ExactBRepOperation::FaceOffset {
+        target,
+        face: Some(selector),
+        profile_face: None,
+        distance_bits,
+    } = &graph.nodes[3].operation
+    else {
+        panic!("last node must be a topology face offset");
+    };
+    assert_eq!(target.0, 2);
+    assert_eq!(selector.kind, ExactBRepTopologyKind::Face);
+    assert_eq!(selector.reference().unwrap(), face);
+    assert_eq!(f64::from_bits(*distance_bits), -3.5);
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&graph.to_bytes().unwrap()).unwrap(),
+        graph
+    );
+
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), DEFINITION, offset).unwrap(),
+        graph
+    );
+}
+
+#[test]
+fn graph_digest_and_payload_tampering_fail_closed() {
+    let graph =
+        ExactBRepGraph::from_snapshot(&arbitrary_boolean_document().current(), DEFINITION, BOOLEAN)
+            .unwrap();
+
+    let mut tampered = graph.clone();
+    let ExactBRepOperation::Extrude {
+        distance_bits,
+        interval,
+        ..
+    } = &mut tampered.nodes[0].operation
+    else {
+        panic!("first node must be an extrusion");
+    };
+    *distance_bits = 14.0_f64.to_bits();
+    interval.end_bits = 14.0_f64.to_bits();
+    assert_eq!(
+        tampered.validate(),
+        Err(ExactBRepGraphError::DigestMismatch)
+    );
+    assert_eq!(
+        tampered.to_bytes(),
+        Err(ExactBRepGraphError::DigestMismatch)
+    );
+
+    let mut value: serde_json::Value = serde_json::from_slice(&graph.to_bytes().unwrap()).unwrap();
+    value["graph_digest"] = serde_json::Value::String("00".repeat(32));
+    let bytes = serde_json::to_vec(&value).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&bytes),
+        Err(ExactBRepGraphError::DigestMismatch)
+    );
+}
+
+#[test]
+fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
+    let mut document = DocumentStore::new();
+    let pad_definition = DefinitionId(2);
+    let workplane = FeatureId(100);
+    let sketch = FeatureId(101);
+    let pad = FeatureId(102);
+    let line_arc_sketch = SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [20.0, 0.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: [0.0, 0.0],
+                end_mm: [20.0, 0.0],
+                center_mm: [10.0, 0.0],
+                clockwise: true,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let region = line_arc_sketch.solved_regions().unwrap()[0].id;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: pad_definition,
+                name: "Pad graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: pad_definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch,
+                definition_id: pad_definition,
+                name: "Line arc".into(),
+                kind: FeatureKind::Sketch(line_arc_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: pad_definition,
+                name: "Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion { sketch, region },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(dimension(8.0)),
+                    operation: PadOperation::NewBody,
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let revolve_definition = DefinitionId(3);
+    let revolve_workplane = FeatureId(199);
+    let revolve_profile = FeatureId(200);
+    let revolve = FeatureId(201);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: revolve_definition,
+                name: "Revolve graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve_workplane,
+                definition_id: revolve_definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve_profile,
+                definition_id: revolve_definition,
+                name: "Revolve sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: revolve_workplane,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [10.0, 0.0],
+                        radius_mm: 2.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: revolve_definition,
+                name: "Revolve".into(),
+                kind: FeatureKind::Revolve {
+                    profile: revolve_profile,
+                    axis_start_mm: [0.0, 0.0],
+                    axis_end_mm: [0.0, 1.0],
+                    angle_degrees: 275.0,
+                },
+            },
+        ]))
+        .unwrap();
+
+    let sweep_definition = DefinitionId(4);
+    let sweep_profile = FeatureId(300);
+    let sweep_path = FeatureId(301);
+    let sweep = FeatureId(302);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: sweep_definition,
+                name: "Sweep graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep_profile,
+                definition_id: sweep_definition,
+                name: "Sweep rectangle".into(),
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [3.0, -1.0], [3.0, 4.0], [-2.0, 4.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep_path,
+                definition_id: sweep_definition,
+                name: "Straight path".into(),
+                kind: FeatureKind::Profile {
+                    segments: vec![ketchup_model::document::ProfileSegment::Line {
+                        start_mm: [0.0, 0.0],
+                        end_mm: [15.0, 8.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: sweep_definition,
+                name: "Sweep".into(),
+                kind: FeatureKind::Sweep {
+                    profile: sweep_profile,
+                    path: sweep_path,
+                },
+            },
+        ]))
+        .unwrap();
+
+    let loft_definition = DefinitionId(5);
+    let lower = FeatureId(400);
+    let upper = FeatureId(401);
+    let loft = FeatureId(402);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: loft_definition,
+                name: "Loft graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: lower,
+                definition_id: loft_definition,
+                name: "Lower spline".into(),
+                kind: FeatureKind::closed_spline(&[
+                    [-8.0, -4.0],
+                    [9.0, -3.0],
+                    [7.0, 6.0],
+                    [-6.0, 5.0],
+                ]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: upper,
+                definition_id: loft_definition,
+                name: "Upper spline".into(),
+                kind: FeatureKind::closed_spline(&[
+                    [-4.0, -2.0],
+                    [5.0, -2.0],
+                    [4.0, 3.0],
+                    [-3.0, 4.0],
+                ]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: loft,
+                definition_id: loft_definition,
+                name: "Loft".into(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: lower,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: upper,
+                            elevation_mm: 35.0,
+                        },
+                    ],
+                    guide: None,
+                    continuity: LoftContinuity::Position,
+                },
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let pad_graph = ExactBRepGraph::from_snapshot(&snapshot, pad_definition, pad).unwrap();
+    let revolve_graph =
+        ExactBRepGraph::from_snapshot(&snapshot, revolve_definition, revolve).unwrap();
+    let sweep_graph = ExactBRepGraph::from_snapshot(&snapshot, sweep_definition, sweep).unwrap();
+    let loft_graph = ExactBRepGraph::from_snapshot(&snapshot, loft_definition, loft).unwrap();
+
+    assert_eq!(sweep_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
+    assert!(matches!(
+        pad_graph.nodes[0].operation,
+        ExactBRepOperation::Extrude { .. }
+    ));
+    assert!(matches!(
+        revolve_graph.nodes[0].operation,
+        ExactBRepOperation::Revolve { .. }
+    ));
+    assert_eq!(
+        revolve_graph.profiles[0].source_feature_id,
+        revolve_profile.0
+    );
+    assert!(revolve_graph.profiles[0].region_id.is_some());
+    assert!(matches!(
+        revolve_graph.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Circle { .. }
+    ));
+    assert!(matches!(
+        sweep_graph.nodes[0].operation,
+        ExactBRepOperation::Sweep { .. }
+    ));
+    assert!(matches!(
+        loft_graph.nodes[0].operation,
+        ExactBRepOperation::Loft { .. }
+    ));
+    assert!(matches!(
+        &pad_graph.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments
+        } if segments.len() == 2
+    ));
+    assert!(matches!(
+        &sweep_graph.profiles[1].geometry,
+        ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments
+        } if segments.len() == 1
+    ));
+    for graph in [pad_graph, revolve_graph, sweep_graph, loft_graph] {
+        let bytes = graph.to_bytes().unwrap();
+        assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+    }
+}
+
+#[test]
+fn tangent_line_arc_sweep_uses_v9_and_round_trips() {
+    let definition = DefinitionId(6);
+    let profile = FeatureId(500);
+    let path = FeatureId(501);
+    let sweep = FeatureId(502);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Curved sweep graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Sweep section".into(),
+                kind: FeatureKind::polygon(&[[-2.0, -1.0], [3.0, -1.0], [3.0, 4.0], [-2.0, 4.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Tangent line-arc path".into(),
+                kind: FeatureKind::Profile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [50.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [50.0, 0.0],
+                            end_mm: [75.0, 25.0],
+                            center_mm: [50.0, 25.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "Curved sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V9);
+    assert!(matches!(
+        &graph.profiles[1].geometry,
+        ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments
+        } if segments.len() == 2
+    ));
+    assert!(graph.producer_bounds_mm().unwrap().is_some());
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V8.into();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+}
+
+#[test]
+fn graph_is_deterministic_across_recompile_save_open_and_undo_redo() {
+    let mut document = arbitrary_boolean_document();
+    let initial = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap(),
+        initial
+    );
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN)
+            .unwrap()
+            .to_bytes()
+            .unwrap(),
+        initial.to_bytes().unwrap()
+    );
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), DEFINITION, BOOLEAN).unwrap(),
+        initial
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: BASE_EXTRUSION,
+                dimension: dimension(17.0),
+            },
+        ]))
+        .unwrap();
+    let changed = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    assert_ne!(changed.graph_digest, initial.graph_digest);
+    assert_ne!(
+        changed.canonical_input_digest,
+        initial.canonical_input_digest
+    );
+
+    let undone = document.undo().unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&undone, DEFINITION, BOOLEAN).unwrap(),
+        initial
+    );
+    let redone = document.redo().unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&redone, DEFINITION, BOOLEAN).unwrap(),
+        changed
+    );
+}
+
+#[test]
+fn missing_unsupported_and_suppressed_inputs_fail_closed() {
+    let mut document = arbitrary_boolean_document();
+    let before = document.current();
+    let before_digest = before.canonical_digest();
+
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&before, DEFINITION, FeatureId(999)),
+        Err(ExactBRepGraphError::FeatureNotFound(FeatureId(999)))
+    );
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&before, DEFINITION, BASE_PROFILE),
+        Err(ExactBRepGraphError::UnsupportedFeature(BASE_PROFILE))
+    );
+    assert_eq!(document.current().canonical_digest(), before_digest);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetBodyFeatureSuppression {
+                definition_id: DEFINITION,
+                body_id: BodyId(1),
+                suppressed_feature_ids: vec![BOOLEAN],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN),
+        Err(ExactBRepGraphError::SuppressedFeature(BOOLEAN))
+    );
+}
+
+#[test]
+fn canonical_cycle_is_rejected_without_changing_the_valid_graph() {
+    let mut document = arbitrary_boolean_document();
+    let before = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&before, DEFINITION, BOOLEAN).unwrap();
+    let revision_count = document.revision_count();
+    let undo_steps = document.visible_undo_steps();
+    let first = FeatureId(50);
+    let second = FeatureId(51);
+    let shell = |target| FeatureKind::RigidTransform {
+        target,
+        transform: Transform::identity(),
+    };
+
+    let error = match document.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::CreateFeature {
+            id: first,
+            definition_id: DEFINITION,
+            name: "Cycle first".into(),
+            kind: shell(second),
+        },
+        CanonicalCommand::CreateFeature {
+            id: second,
+            definition_id: DEFINITION,
+            name: "Cycle second".into(),
+            kind: shell(first),
+        },
+    ])) {
+        Ok(_) => panic!("dependency cycle was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(error, CanonicalError::FeatureDependencyCycle(first));
+    assert_eq!(
+        document.current().canonical_digest(),
+        before.canonical_digest()
+    );
+    assert_eq!(document.revision_count(), revision_count);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap(),
+        graph
+    );
+}
+
+#[test]
+fn byte_and_segment_resource_limits_fail_without_mutating_the_document() {
+    assert_eq!(
+        MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+        MAX_PLANAR_LOOP_SEGMENTS
+    );
+    assert_eq!(MAX_EXACT_BREP_REGION_HOLES, MAX_PLANAR_REGION_HOLES);
+    assert_eq!(MAX_EXACT_BREP_REGION_SEGMENTS, MAX_PLANAR_REGION_SEGMENTS);
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&vec![0; MAX_EXACT_BREP_GRAPH_BYTES + 1]),
+        Err(ExactBRepGraphError::ResourceLimit)
+    );
+
+    let mut document = DocumentStore::new();
+    let segment_count_per_profile = MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS;
+    let profile_count = MAX_EXACT_BREP_GRAPH_SEGMENTS / segment_count_per_profile + 1;
+    let mut commands = vec![CanonicalCommand::CreateDefinition {
+        id: DEFINITION,
+        name: "Resource bounded graph".into(),
+    }];
+    let mut producers = Vec::with_capacity(profile_count);
+    for profile_index in 0..profile_count {
+        let profile = FeatureId(600 + profile_index as u64 * 2);
+        let extrusion = FeatureId(profile.0 + 1);
+        let center_x = profile_index as f64 * 30.0;
+        let points_mm: Vec<[f64; 2]> = (0..segment_count_per_profile)
+            .map(|point_index| {
+                let angle =
+                    std::f64::consts::TAU * point_index as f64 / segment_count_per_profile as f64;
+                [center_x + 10.0 * angle.cos(), 10.0 * angle.sin()]
+            })
+            .collect();
+        commands.push(CanonicalCommand::CreateFeature {
+            id: profile,
+            definition_id: DEFINITION,
+            name: format!("Bounded profile {profile_index}"),
+            kind: FeatureKind::polygon(&points_mm),
+        });
+        commands.push(CanonicalCommand::CreateFeature {
+            id: extrusion,
+            definition_id: DEFINITION,
+            name: format!("Bounded extrusion {profile_index}"),
+            kind: FeatureKind::extrusion(profile, dimension(2.0)),
+        });
+        producers.push(extrusion);
+    }
+    let mut next_boolean_id = 10_000;
+    while producers.len() > 1 {
+        let mut next_level = Vec::with_capacity(producers.len().div_ceil(2));
+        for pair in producers.chunks(2) {
+            if let [target, tool] = pair {
+                let boolean = FeatureId(next_boolean_id);
+                next_boolean_id += 1;
+                commands.push(CanonicalCommand::CreateFeature {
+                    id: boolean,
+                    definition_id: DEFINITION,
+                    name: format!("Balanced aggregate union {}", boolean.0),
+                    kind: FeatureKind::Boolean {
+                        operation: BooleanOperation::Union,
+                        target: *target,
+                        tool: *tool,
+                    },
+                });
+                next_level.push(boolean);
+            } else {
+                next_level.push(pair[0]);
+            }
+        }
+        producers = next_level;
+    }
+    let producer = producers[0];
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let before = document.current();
+    let revision_count = document.revision_count();
+    let undo_steps = document.visible_undo_steps();
+
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&before, DEFINITION, producer),
+        Err(ExactBRepGraphError::ResourceLimit)
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        before.canonical_digest()
+    );
+    assert_eq!(document.revision_count(), revision_count);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+}
+
+#[test]
+fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
+    let target_sketch_id = FeatureId(700);
+    let target = FeatureId(701);
+    let base_plane = FeatureId(702);
+    let pad_sketch_id = FeatureId(703);
+    let top_plane = FeatureId(704);
+    let pocket_sketch_id = FeatureId(705);
+    let pad = FeatureId(706);
+    let pocket = FeatureId(707);
+    let rectangle = |workplane, min, max| SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [min, min],
+                end_mm: [max, min],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [max, min],
+                end_mm: [max, max],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [max, max],
+                end_mm: [min, max],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [min, max],
+                end_mm: [min, min],
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let target_sketch = rectangle(base_plane, 0.0, 20.0);
+    let pad_sketch = rectangle(base_plane, 2.0, 8.0);
+    let pocket_sketch = rectangle(top_plane, 2.0, 8.0);
+    let target_region = target_sketch.solved_regions().unwrap()[0].id;
+    let region = pad_sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Generalized extents".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: base_plane,
+                definition_id: DEFINITION,
+                name: "Base plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: target_sketch_id,
+                definition_id: DEFINITION,
+                name: "Target sketch".into(),
+                kind: FeatureKind::Sketch(target_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pad_sketch_id,
+                definition_id: DEFINITION,
+                name: "Pad sketch".into(),
+                kind: FeatureKind::Sketch(pad_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: target,
+                definition_id: DEFINITION,
+                name: "Exact target".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: target_sketch_id,
+                        region: target_region,
+                    },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(dimension(10.0)),
+                    operation: PadOperation::NewBody,
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let target_snapshot = document.current();
+    let package = box_package(
+        &target_snapshot,
+        DEFINITION,
+        target,
+        "extent-resolution-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::LinearSide,
+        ],
+    )
+    .unwrap();
+    let top = package.reference(ExactFaceRole::Top).unwrap().clone();
+    document
+        .register_exact_reference_evidence(top.clone())
+        .unwrap();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: top_plane,
+                definition_id: DEFINITION,
+                name: "Top face plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace {
+                        reference: Box::new(top.clone()),
+                        health: WorkplaneSupportHealth::Resolved,
+                    },
+                    frame: WorkplaneFrame::principal(PrincipalPlane::Xy).offset(10.0),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pocket_sketch_id,
+                definition_id: DEFINITION,
+                name: "Pocket sketch".into(),
+                kind: FeatureKind::Sketch(pocket_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: DEFINITION,
+                name: "Oblique bounded Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: pad_sketch_id,
+                        region,
+                    },
+                    direction: FeatureDirection::Vector([1.0, 0.0, 1.0]),
+                    extent: FeatureExtent::Bidirectional {
+                        along: FeatureExtentEnd::UpToFace(Box::new(top.clone())),
+                        opposite: FeatureExtentEnd::Blind(dimension(3.0)),
+                    },
+                    operation: PadOperation::NewBody,
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pocket,
+                definition_id: DEFINITION,
+                name: "Bounded Through All Pocket".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: pocket_sketch_id,
+                        region,
+                    },
+                    direction: FeatureDirection::OppositeNormal,
+                    extent: FeatureExtent::ThroughAll,
+                    operation: PadOperation::Cut {
+                        target,
+                        start: CutStart::Support(Box::new(top.clone())),
+                    },
+                }),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+
+    let pad_graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, pad).unwrap();
+    let ExactBRepOperation::Extrude { interval, .. } = pad_graph.nodes[0].operation else {
+        panic!("Pad must compile to one interval extrusion");
+    };
+    let inverse_sqrt_two = 1.0 / 2.0_f64.sqrt();
+    assert_eq!(
+        interval.direction(),
+        [inverse_sqrt_two, 0.0, inverse_sqrt_two]
+    );
+    assert_eq!(interval.start_mm(), -3.0);
+    assert!((interval.end_mm() - 10.0 * 2.0_f64.sqrt()).abs() < 1.0e-12);
+
+    let pocket_graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, pocket).unwrap();
+    let ExactBRepOperation::ProfileCut { interval, .. } = pocket_graph.nodes[1].operation else {
+        panic!("Pocket must compile after its target");
+    };
+    assert_eq!(interval.direction(), [0.0, 0.0, -1.0]);
+    assert_eq!(interval.start_mm(), -1.0);
+    assert_eq!(interval.end_mm(), 11.0);
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&pocket_graph.to_bytes().unwrap()).unwrap(),
+        pocket_graph
+    );
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), DEFINITION, pad).unwrap(),
+        pad_graph
+    );
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), DEFINITION, pocket).unwrap(),
+        pocket_graph
+    );
+
+    let mut off_face = persistence::load(&persistence::save(&snapshot))
+        .unwrap()
+        .into_editable()
+        .unwrap_or_else(|_| panic!("current schema must remain editable"));
+    off_face
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: pad },
+            CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: DEFINITION,
+                name: "Off-face Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: pad_sketch_id,
+                        region,
+                    },
+                    direction: FeatureDirection::Vector([10.0, 0.0, 1.0]),
+                    extent: FeatureExtent::UpToFace(Box::new(top.clone())),
+                    operation: PadOperation::NewBody,
+                }),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&off_face.current(), DEFINITION, pad),
+        Err(ExactBRepGraphError::UnresolvedExtent)
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: target,
+                dimension: dimension(12.0),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, pad),
+        Err(ExactBRepGraphError::UnresolvedExtent)
+    );
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, pocket),
+        Err(ExactBRepGraphError::UnresolvedExtent)
+    );
+}
+
+#[test]
+fn mixed_line_cubic_region_compiles_to_v4_and_is_deterministic() {
+    let definition = DefinitionId(6);
+    let workplane = FeatureId(500);
+    let sketch_id = FeatureId(501);
+    let pad = FeatureId(502);
+    let sketch = SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [-20.0, -15.0],
+                end_mm: [20.0, -15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [20.0, -15.0],
+                end_mm: [20.0, 15.0],
+            },
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(3),
+                start_mm: [20.0, 15.0],
+                control_1_mm: [10.0, 25.0],
+                control_2_mm: [-10.0, 25.0],
+                end_mm: [-20.0, 15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [-20.0, 15.0],
+                end_mm: [-20.0, -15.0],
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(5),
+                center_mm: [0.0, 0.0],
+                radius_mm: 5.0,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let regions = sketch.solved_regions().unwrap();
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].holes.len(), 1);
+    let region = regions[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Compound region graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch_id,
+                definition_id: definition,
+                name: "Line-cubic profile with centered hole".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: definition,
+                name: "Compound Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: sketch_id,
+                        region,
+                    },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(dimension(12.0)),
+                    operation: PadOperation::NewBody,
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let initial = ExactBRepGraph::from_snapshot(&snapshot, definition, pad).unwrap();
+    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
+    assert_eq!(initial.profiles.len(), 1);
+    assert_eq!(initial.nodes.len(), 1);
+    let ExactBRepPlanarGeometry::Region { outer, holes } = &initial.profiles[0].geometry else {
+        panic!("compound sketch must compile to a planar region");
+    };
+    let ExactBRepPlanarLoop::Boundary { segments } = outer else {
+        panic!("mixed outer loop must remain an exact segment boundary");
+    };
+    assert_eq!(segments.len(), 4);
+    assert!(matches!(
+        segments.iter().find(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
+        Some(ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        }) if start_bits.map(f64::from_bits) == [20.0, 15.0]
+            && control_1_bits.map(f64::from_bits) == [10.0, 25.0]
+            && control_2_bits.map(f64::from_bits) == [-10.0, 25.0]
+            && end_bits.map(f64::from_bits) == [-20.0, 15.0]
+    ));
+    assert!(matches!(
+        holes.as_slice(),
+        [ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        }] if center_bits.map(f64::from_bits) == [0.0, 0.0]
+            && f64::from_bits(*radius_bits) == 5.0
+    ));
+
+    let initial_bytes = initial.to_bytes().unwrap();
+    let initial_digest = initial.graph_digest.clone();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&snapshot, definition, pad)
+            .unwrap()
+            .to_bytes()
+            .unwrap(),
+        initial_bytes
+    );
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), definition, pad).unwrap();
+    assert_eq!(reopened_graph.graph_digest, initial_digest);
+    assert_eq!(reopened_graph.to_bytes().unwrap(), initial_bytes);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: pad,
+                dimension: dimension(15.0),
+            },
+        ]))
+        .unwrap();
+    let changed = ExactBRepGraph::from_snapshot(&document.current(), definition, pad).unwrap();
+    assert_ne!(changed.graph_digest, initial_digest);
+    assert_ne!(changed.to_bytes().unwrap(), initial_bytes);
+
+    let undone = ExactBRepGraph::from_snapshot(&document.undo().unwrap(), definition, pad).unwrap();
+    assert_eq!(undone.graph_digest, initial_digest);
+    assert_eq!(undone.to_bytes().unwrap(), initial_bytes);
+    let redone = ExactBRepGraph::from_snapshot(&document.redo().unwrap(), definition, pad).unwrap();
+    assert_eq!(redone, changed);
+}
+
+#[test]
+fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
+    let definition = DefinitionId(95);
+    let profile = FeatureId(950);
+    let offset = FeatureId(951);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Planar offset graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Line-arc capsule".into(),
+                kind: FeatureKind::Profile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [20.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [20.0, 0.0],
+                            end_mm: [0.0, 0.0],
+                            center_mm: [10.0, 0.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: offset,
+                definition_id: definition,
+                name: "Offset face".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile,
+                    distance: dimension(2.0),
+                },
+            },
+        ]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, offset).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
+    assert!(graph.terminal_is_planar_offset());
+    assert!(graph.producer_bounds_mm().unwrap().is_some());
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+
+    let mut open = graph.clone();
+    let ExactBRepPlanarGeometry::Boundary { closed, .. } = &mut open.profiles[0].geometry else {
+        panic!("fixture must compile as a boundary");
+    };
+    *closed = false;
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&open).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut cubic = graph.clone();
+    let ExactBRepPlanarGeometry::Boundary { segments, .. } = &mut cubic.profiles[0].geometry else {
+        panic!("fixture must compile as a boundary");
+    };
+    let ExactBRepPlanarSegment::CircularArc {
+        start_bits,
+        end_bits,
+        ..
+    } = segments[1]
+    else {
+        panic!("fixture must contain an arc");
+    };
+    segments[1] = ExactBRepPlanarSegment::CubicBezier {
+        start_bits,
+        control_1_bits: [15.0, 5.0].map(f64::to_bits),
+        control_2_bits: [5.0, 5.0].map(f64::to_bits),
+        end_bits,
+    };
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&cubic).unwrap()),
+        Err(ExactBRepGraphError::DigestMismatch)
+    );
+    cubic.schema = EXACT_BREP_GRAPH_SCHEMA_V6.to_owned();
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&cubic).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    for distance in [0.0, f64::NAN, 1_000_001.0] {
+        let mut tampered = graph.clone();
+        let ExactBRepOperation::PlanarOffset { distance_bits, .. } =
+            &mut tampered.nodes[0].operation
+        else {
+            panic!("fixture must compile as a planar offset");
+        };
+        *distance_bits = distance.to_bits();
+        assert_eq!(
+            ExactBRepGraph::from_bytes(&serde_json::to_vec(&tampered).unwrap()),
+            Err(ExactBRepGraphError::InvalidGraph)
+        );
+    }
+
+    let edge_definition = DefinitionId(97);
+    let edge_profile = FeatureId(970);
+    let edge_offset = FeatureId(971);
+    let mut edge_document = DocumentStore::new();
+    edge_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: edge_definition,
+                name: "Near-envelope inward offset".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: edge_profile,
+                definition_id: edge_definition,
+                name: "Near-envelope profile".into(),
+                kind: FeatureKind::Profile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [999_979.0, 0.0],
+                            end_mm: [999_999.0, 0.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [999_999.0, 0.0],
+                            end_mm: [999_999.0, 20.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [999_999.0, 20.0],
+                            end_mm: [999_979.0, 20.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [999_979.0, 20.0],
+                            end_mm: [999_979.0, 0.0],
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: edge_offset,
+                definition_id: edge_definition,
+                name: "Inward offset".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: edge_profile,
+                    distance: dimension(-2.0),
+                },
+            },
+        ]))
+        .unwrap();
+    let inward =
+        ExactBRepGraph::from_snapshot(&edge_document.current(), edge_definition, edge_offset)
+            .unwrap();
+    assert_eq!(
+        inward.producer_bounds_mm().unwrap(),
+        Some([[999_981.0, 2.0, 0.0], [999_997.0, 18.0, 0.0]])
+    );
+}
+
+#[test]
+fn compound_planar_offset_graph_rejects_collision_and_schema_downgrade() {
+    let definition = DefinitionId(98);
+    let workplane = FeatureId(980);
+    let sketch = FeatureId(981);
+    let offset = FeatureId(982);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Compound offset graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch,
+                definition_id: definition,
+                name: "Region with close holes".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [-20.0, -20.0],
+                            end_mm: [20.0, -20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(2),
+                            start_mm: [20.0, -20.0],
+                            end_mm: [20.0, 20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(3),
+                            start_mm: [20.0, 20.0],
+                            end_mm: [-20.0, 20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(4),
+                            start_mm: [-20.0, 20.0],
+                            end_mm: [-20.0, -20.0],
+                        },
+                        SketchEntity::Circle {
+                            id: SketchEntityId(5),
+                            center_mm: [-3.0, 0.0],
+                            radius_mm: 2.0,
+                        },
+                        SketchEntity::Circle {
+                            id: SketchEntityId(6),
+                            center_mm: [3.0, 0.0],
+                            radius_mm: 2.0,
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: offset,
+                definition_id: definition,
+                name: "Compound offset".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: sketch,
+                    distance: dimension(1.0),
+                },
+            },
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, offset).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
+    assert!(matches!(
+        graph.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Region { .. }
+    ));
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&graph.to_bytes().unwrap()).unwrap(),
+        graph
+    );
+
+    let mut colliding = graph.clone();
+    let ExactBRepOperation::PlanarOffset { distance_bits, .. } = &mut colliding.nodes[0].operation
+    else {
+        panic!("fixture must compile as a planar offset");
+    };
+    *distance_bits = (-1.0_f64).to_bits();
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&colliding).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V7.to_owned();
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&downgraded).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+}
+
+#[test]
+fn cubic_sweep_selects_v11_round_trips_and_rejects_v10_downgrade() {
+    let definition = DefinitionId(800);
+    let profile = FeatureId(801);
+    let path = FeatureId(802);
+    let sweep = FeatureId(803);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V11 cubic sweep graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Small rectangle".into(),
+                kind: FeatureKind::polygon(&[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Line-cubic-line C1 path".into(),
+                kind: FeatureKind::Profile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [25.0, 0.0],
+                        },
+                        ProfileSegment::CubicBezier {
+                            start_mm: [25.0, 0.0],
+                            control_1_mm: [35.0, 0.0],
+                            control_2_mm: [45.0, 10.0],
+                            end_mm: [45.0, 20.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [45.0, 20.0],
+                            end_mm: [45.0, 45.0],
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "V11 sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V11);
+    assert_eq!(
+        graph.producer_bounds_mm().unwrap(),
+        Some([[-1.0, -1.0, -1.0], [46.0, 46.0, 1.0]])
+    );
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+    assert_eq!(graph.to_bytes().unwrap(), bytes);
+
+    let mut self_intersecting = graph.clone();
+    self_intersecting
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.source_feature_id == path.0)
+        .unwrap()
+        .geometry = ExactBRepPlanarGeometry::Boundary {
+        closed: false,
+        segments: vec![
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits: [0.0_f64.to_bits(), 0.0_f64.to_bits()],
+                control_1_bits: [10.0_f64.to_bits(), (-5.0_f64).to_bits()],
+                control_2_bits: [9.0_f64.to_bits(), 10.0_f64.to_bits()],
+                end_bits: [10.0_f64.to_bits(), 10.0_f64.to_bits()],
+            },
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits: [10.0_f64.to_bits(), 10.0_f64.to_bits()],
+                control_1_bits: [11.0_f64.to_bits(), 10.0_f64.to_bits()],
+                control_2_bits: [(-10.0_f64).to_bits(), (-20.0_f64).to_bits()],
+                end_bits: [20.0_f64.to_bits(), 0.0_f64.to_bits()],
+            },
+        ],
+    };
+    assert_eq!(
+        self_intersecting.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V10.to_owned();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+}
+
+#[test]
+fn closed_spatial_path_requires_a_c1_periodic_seam() {
+    let tolerance_mm = DEFAULT_LINEAR_TOLERANCE_MM;
+    let quarter = |start_mm, end_mm| SpatialPathSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        clockwise: false,
+    };
+    let mut path = vec![
+        quarter([20.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+        quarter([0.0, 20.0, 0.0], [-20.0, 0.0, 0.0]),
+        quarter([-20.0, 0.0, 0.0], [0.0, -20.0, 0.0]),
+        quarter([0.0, -20.0, 0.0], [20.0, 0.0, 0.0]),
+    ];
+    assert!(is_valid_spatial_sweep_path(&path, tolerance_mm));
+
+    path[3] = SpatialPathSegment::CubicBezier {
+        start_mm: [0.0, -20.0, 0.0],
+        control_1_mm: [5.0, -20.0, 0.0],
+        control_2_mm: [19.0, 0.0, 0.0],
+        end_mm: [20.0, 0.0, 0.0],
+    };
+    assert!(!is_valid_spatial_sweep_path(&path, tolerance_mm));
+}
+
+fn spatial_sweep_v12_graph() -> ExactBRepGraph {
+    let definition = DefinitionId(900);
+    let profile = FeatureId(901);
+    let path = FeatureId(902);
+    let sweep = FeatureId(903);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V12 spatial sweep graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Small rectangle".into(),
+                kind: FeatureKind::polygon(&[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Non-coplanar line-arc-cubic path".into(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![
+                        SpatialPathSegment::Line {
+                            start_mm: [0.0, 0.0, 0.0],
+                            end_mm: [10.0, 0.0, 0.0],
+                        },
+                        SpatialPathSegment::CircularArc {
+                            start_mm: [10.0, 0.0, 0.0],
+                            end_mm: [20.0, 10.0, 0.0],
+                            center_mm: [10.0, 10.0, 0.0],
+                            normal: [0.0, 0.0, 1.0],
+                            clockwise: false,
+                        },
+                        SpatialPathSegment::CubicBezier {
+                            start_mm: [20.0, 10.0, 0.0],
+                            control_1_mm: [20.0, 15.0, 0.0],
+                            control_2_mm: [20.0, 20.0, 5.0],
+                            end_mm: [20.0, 20.0, 10.0],
+                        },
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "V12 spatial sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+    ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap()
+}
+
+#[test]
+fn non_coplanar_mixed_spatial_sweep_selects_v12_with_exact_stable_payload() {
+    let graph = spatial_sweep_v12_graph();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V12);
+    assert_eq!(
+        graph.profiles.len(),
+        1,
+        "the spatial path is embedded in the operation"
+    );
+    let ExactBRepOperation::SpatialSweep { profile, path } = &graph.nodes[0].operation else {
+        panic!("fixture must compile as a V12 spatial sweep");
+    };
+    assert_eq!(*profile, ExactBRepProfileId(0));
+    assert_eq!(path.source_feature_id, 902);
+    assert_eq!(
+        path.segments,
+        vec![
+            ExactBRepSpatialPathSegment::Line {
+                start_bits: [0.0, 0.0, 0.0].map(f64::to_bits),
+                end_bits: [10.0, 0.0, 0.0].map(f64::to_bits),
+            },
+            ExactBRepSpatialPathSegment::CircularArc {
+                start_bits: [10.0, 0.0, 0.0].map(f64::to_bits),
+                end_bits: [20.0, 10.0, 0.0].map(f64::to_bits),
+                center_bits: [10.0, 10.0, 0.0].map(f64::to_bits),
+                normal_bits: [0.0, 0.0, 1.0].map(f64::to_bits),
+                clockwise: false,
+            },
+            ExactBRepSpatialPathSegment::CubicBezier {
+                start_bits: [20.0, 10.0, 0.0].map(f64::to_bits),
+                control_1_bits: [20.0, 15.0, 0.0].map(f64::to_bits),
+                control_2_bits: [20.0, 20.0, 5.0].map(f64::to_bits),
+                end_bits: [20.0, 20.0, 10.0].map(f64::to_bits),
+            },
+        ]
+    );
+
+    let section_radius = 2.0_f64.sqrt();
+    let bounds = graph.producer_bounds_mm().unwrap().unwrap();
+    assert_eq!(
+        bounds,
+        [
+            [-section_radius, -section_radius, -10.0 - section_radius],
+            [
+                20.0 + section_radius,
+                20.0 + section_radius,
+                10.0 + section_radius
+            ],
+        ]
+    );
+    assert!(bounds.into_iter().flatten().all(f64::is_finite));
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+    assert_eq!(graph.to_bytes().unwrap(), bytes);
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V11.to_owned();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+}
+
+#[test]
+fn spatial_sweep_paths_count_toward_the_graph_wide_segment_limit() {
+    let mut graph = spatial_sweep_v12_graph();
+    let path_segments = (0..64)
+        .map(|index| ExactBRepSpatialPathSegment::Line {
+            start_bits: [index as f64, 0.0, 0.0].map(f64::to_bits),
+            end_bits: [index as f64 + 1.0, 0.0, 0.0].map(f64::to_bits),
+        })
+        .collect::<Vec<_>>();
+    let template = graph.nodes[0].clone();
+    let node_count = MAX_EXACT_BREP_GRAPH_SEGMENTS / path_segments.len() + 1;
+    graph.nodes = (0..node_count)
+        .map(|index| {
+            let mut node = template.clone();
+            node.id = ExactBRepNodeId(index as u32);
+            node.source_feature_id = 10_000 + index as u64;
+            let ExactBRepOperation::SpatialSweep { path, .. } = &mut node.operation else {
+                unreachable!();
+            };
+            path.source_feature_id = 20_000 + index as u64;
+            path.segments.clone_from(&path_segments);
+            node
+        })
+        .collect();
+    graph.producer_feature_id = graph.nodes.last().unwrap().source_feature_id;
+
+    assert_eq!(graph.to_bytes(), Err(ExactBRepGraphError::ResourceLimit));
+}
+
+#[test]
+fn the_document_tolerance_reaches_the_graph_and_its_digest() {
+    let mut document = arbitrary_boolean_document();
+    let default_graph =
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    assert!(default_graph.tolerance.is_default());
+
+    let custom = TolerancePolicy::with_angular(0.001, 1.0e-9).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetTolerance {
+            tolerance: custom,
+        }]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    assert_eq!(graph.tolerance, custom);
+    assert_eq!(graph.nodes, default_graph.nodes);
+    assert_ne!(graph.graph_digest, default_graph.graph_digest);
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&graph.to_bytes().unwrap()).unwrap(),
+        graph
+    );
+}
+
+#[test]
+fn a_path_segment_within_the_linear_tolerance_is_degenerate() {
+    let path = [
+        SpatialPathSegment::Line {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [100.0, 0.0, 0.0],
+        },
+        SpatialPathSegment::Line {
+            start_mm: [100.0, 0.0, 0.0],
+            end_mm: [100.0005, 0.0, 0.0],
+        },
+    ];
+    assert!(is_valid_spatial_sweep_path(
+        &path,
+        DEFAULT_LINEAR_TOLERANCE_MM
+    ));
+    assert!(!is_valid_spatial_sweep_path(&path, 0.001));
+}

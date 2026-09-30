@@ -11,7 +11,7 @@ fn open_table(directory: &std::path::Path) -> KetchupApp {
         ketchup_application::DocumentSession::new(ketchup_application::SessionSettings::default());
     session
         .apply_rule_program(
-            ketchup_core::document::RuleProgramSource {
+            ketchup_model::document::RuleProgramSource {
                 file_name: "table.star".to_owned(),
                 source: TABLE.to_owned(),
                 overrides: BTreeMap::new(),

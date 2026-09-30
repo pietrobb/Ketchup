@@ -18,24 +18,24 @@ use ketchup_app::{
     RectangularPatternSpec, ViewFlag,
 };
 use ketchup_assistant::intent::WorkflowIntent;
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
     EdgeFinishKind, EvaluationIdentity, FaceRef, FeatureId, FeatureKind, FeatureParameterBinding,
     FeatureParameterRecomputeScope, FeatureParameterTarget, InstancePath, NodeId, OccurrenceId,
     ParameterValueType, PortSpec, RuleOutput, SlotPath, SlotSegment, TagId, Transform,
 };
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarSegment,
 };
-use ketchup_core::exact_product::{
+use ketchup_model::exact_product::{
     EXACT_BREP_GRAPH_EVALUATOR_V1, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
     ExactBodyPackage,
 };
-use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
-use ketchup_core::import::{ImportFormat, StepImportMesh, StepMeshTriangle};
-use ketchup_core::persistence;
-use ketchup_core::topology::TopologicalElementKind;
+use ketchup_model::graph::{EvaluationStatus, EvaluatorNodeKind};
+use ketchup_model::import::{ImportFormat, StepImportMesh, StepMeshTriangle};
+use ketchup_model::persistence;
+use ketchup_model::topology::TopologicalElementKind;
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Side, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
     mesh_projection::MeshInteractionProjection,
@@ -9431,7 +9431,7 @@ fn localized_typed_push_pull_of_a_drawn_circle_mills_the_part_in_one_step() {
                 .unwrap()
                 .kind(),
             FeatureKind::Boolean {
-                operation: ketchup_core::document::BooleanOperation::Cut,
+                operation: ketchup_model::document::BooleanOperation::Cut,
                 ..
             }
         ),
@@ -9595,7 +9595,7 @@ fn circle_through_hole_moves_by_dragging_its_inner_wall() {
                 && segments.iter().all(|segment| {
                     matches!(
                         segment,
-                        ketchup_core::document::ProfileSegment::CircularArc { .. }
+                        ketchup_model::document::ProfileSegment::CircularArc { .. }
                     )
                 }) =>
             {
@@ -9642,7 +9642,7 @@ fn circle_through_hole_moves_by_dragging_its_inner_wall() {
     };
     assert!(segments.iter().all(|segment| matches!(
         segment,
-        ketchup_core::document::ProfileSegment::CircularArc { center_mm, .. }
+        ketchup_model::document::ProfileSegment::CircularArc { center_mm, .. }
             if *center_mm == [5.0, 0.0]
     )));
 

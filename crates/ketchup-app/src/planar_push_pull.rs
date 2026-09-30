@@ -2,7 +2,7 @@ use super::*;
 use ketchup_application::evaluation::{
     ProducerKey, publish_exact_products, start_exact_evaluation_scoped,
 };
-use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, SCREEN_ROUNDING_PX};
+use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, SCREEN_ROUNDING_PX};
 use ketchup_interaction::exact_projection::ExactSurfaceHit;
 #[cfg(test)]
 #[path = "planar_push_pull_tests.rs"]
@@ -170,7 +170,7 @@ impl KetchupApp {
         &self,
         source: &PushPullSourcePlan,
         distance_mm: f64,
-    ) -> Result<Option<ketchup_core::document::RuleProgramSource>, String> {
+    ) -> Result<Option<ketchup_model::document::RuleProgramSource>, String> {
         let Some(program) = self.document.current_rule_program() else {
             return Ok(None);
         };
@@ -408,9 +408,9 @@ impl KetchupApp {
             return;
         }
         let Some(document) =
-            ketchup_core::persistence::save_container(&snapshot, &self.file.container_data)
+            ketchup_model::persistence::save_container(&snapshot, &self.file.container_data)
                 .ok()
-                .and_then(|bytes| ketchup_core::persistence::load(&bytes).ok())
+                .and_then(|bytes| ketchup_model::persistence::load(&bytes).ok())
                 .and_then(|loaded| loaded.into_editable().ok())
         else {
             return;

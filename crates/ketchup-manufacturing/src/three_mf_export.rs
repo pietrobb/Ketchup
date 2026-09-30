@@ -1,8 +1,8 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     DefinitionId, FeatureId, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
     SceneOccurrence, Snapshot, Transform,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
+use ketchup_model::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 

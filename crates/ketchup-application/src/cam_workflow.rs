@@ -1,8 +1,8 @@
-use ketchup_core::cam::{
+use ketchup_model::cam::{
     CamFixture, CamOperation, CamPlanId, CamPostprocessorDialect, CamPostprocessorOutput,
     CamSimulationEvidence, CamToolpath,
 };
-use ketchup_core::document::{DocumentId, Snapshot};
+use ketchup_model::document::{DocumentId, Snapshot};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{VecDeque, hash_map::RandomState};
 use std::hash::BuildHasher;

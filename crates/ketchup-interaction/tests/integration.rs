@@ -8,7 +8,7 @@ mod push_pull_gesture;
 mod rectangle_face_authoring;
 mod spatial_m16;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

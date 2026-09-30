@@ -16,7 +16,7 @@ private-oauth = ["ketchup-assistant/private-oauth"]
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-assistant = { path = "../ketchup-assistant" }
 ciborium = "0.2"
-ketchup-core = { path = "../ketchup-core" }
+ketchup-model = { path = "../ketchup-model" }
 ketchup-exact = { path = "../ketchup-exact" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 serde = { version = "1.0", features = ["derive"] }
@@ -27,7 +27,7 @@ process-wrap = { version = "10.0.0", default-features = false, features = ["std"
 
 [dev-dependencies]
 ed25519-dalek = "2.2.0"
-ketchup-core = { path = "../ketchup-core", features = ["testing"] }
+ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-manufacturing = { path = "../ketchup-manufacturing" }
 

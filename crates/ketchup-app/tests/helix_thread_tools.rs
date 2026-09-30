@@ -3,7 +3,7 @@ use crate::harness;
 use eframe::egui::Key;
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
-use ketchup_core::document::FeatureKind;
+use ketchup_model::document::FeatureKind;
 use ketchup_interaction::Vec3;
 use std::{path::PathBuf, time::Duration};
 

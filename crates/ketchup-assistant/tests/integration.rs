@@ -5,7 +5,7 @@ mod assistant_sidecar;
 mod gate_d;
 mod workplane_frame_schema;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

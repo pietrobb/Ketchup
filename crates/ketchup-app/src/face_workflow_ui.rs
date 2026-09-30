@@ -190,7 +190,7 @@ impl KetchupApp {
         exact_worker: &Path,
     ) -> Result<(), String> {
         let snapshot = self.document.current();
-        let graphs = ketchup_core::exact_product::terminal_body_exact_graphs(
+        let graphs = ketchup_model::exact_product::terminal_body_exact_graphs(
             &snapshot,
             INITIAL_BOX_DEFINITION,
         )

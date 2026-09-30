@@ -31,7 +31,7 @@ use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantInstancePath, AssistantRejectionDiagnostic,
 };
-use ketchup_core::{
+use ketchup_model::{
     document::{
         CommandBatch, DocumentStore, OccurrenceId, Proposal, Snapshot, VerifiedProposalCommit,
     },
@@ -402,8 +402,8 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
 fn program_edit_result(
     edit: crate::program_edit::ProgramEdit,
     report: &ketchup_program::Report,
-    before: &ketchup_core::document::Snapshot,
-    after: &ketchup_core::document::Snapshot,
+    before: &ketchup_model::document::Snapshot,
+    after: &ketchup_model::document::Snapshot,
     stamp: &Stamp,
     undo_steps: usize,
     exact: Option<Value>,
@@ -1025,9 +1025,9 @@ impl LiveBridge {
             .map(|path| {
                 json!({"root_occurrence_id":path.root_occurrence().0,
                 "steps":path.steps().iter().map(|step| match step {
-                    ketchup_core::document::InstancePathStep::Group(id) =>
+                    ketchup_model::document::InstancePathStep::Group(id) =>
                         json!({"kind":"group","local_id":id.0}),
-                    ketchup_core::document::InstancePathStep::Occurrence(id) =>
+                    ketchup_model::document::InstancePathStep::Occurrence(id) =>
                         json!({"kind":"occurrence","local_id":id.0}),
                 }).collect::<Vec<_>>()})
             })
@@ -1068,10 +1068,10 @@ impl LiveBridge {
                     .edge_evidence()
                     .iter()
                     .filter(|edge| match (reference.kind, ordinal) {
-                        (ketchup_core::topology::TopologicalElementKind::Edge, Some(index)) => {
+                        (ketchup_model::topology::TopologicalElementKind::Edge, Some(index)) => {
                             edge.edge_ordinal == index as u32
                         }
-                        (ketchup_core::topology::TopologicalElementKind::Face, Some(index)) => {
+                        (ketchup_model::topology::TopologicalElementKind::Face, Some(index)) => {
                             edge.adjacent_face_ordinals.contains(&(index as u32))
                         }
                         _ => false,
@@ -1085,7 +1085,7 @@ impl LiveBridge {
             .filter_map(|joint| {
                 let bindings = joint.physical_hole_pairs.as_ref()?;
                 let projection =
-                    ketchup_core::pin_joint::project_pin_joint_contract(&snapshot, joint).ok()?;
+                    ketchup_model::pin_joint::project_pin_joint_contract(&snapshot, joint).ok()?;
                 Some(
                     bindings
                         .iter()
@@ -1150,9 +1150,9 @@ impl LiveBridge {
                 "source_feature_id":reference.source_feature_id.0,
                 "producer_feature_id":reference.producer_feature_id.0,
                 "kind":match reference.kind {
-                    ketchup_core::topology::TopologicalElementKind::Face => "face",
-                    ketchup_core::topology::TopologicalElementKind::Edge => "edge",
-                    ketchup_core::topology::TopologicalElementKind::Vertex => "vertex",
+                    ketchup_model::topology::TopologicalElementKind::Face => "face",
+                    ketchup_model::topology::TopologicalElementKind::Edge => "edge",
+                    ketchup_model::topology::TopologicalElementKind::Vertex => "vertex",
                 }},
             "program":program_pick::describe(app, &snapshot, &target.instance_path, reference),
             "pin_pair":if matches.len() == 1 {matches.into_iter().next()} else {None}})
@@ -1328,7 +1328,7 @@ impl LiveBridge {
     #[allow(clippy::too_many_arguments)]
     fn evaluate_apply_and_verify_candidate(
         candidate: &Snapshot,
-        container_data: &ketchup_core::persistence::ContainerData,
+        container_data: &ketchup_model::persistence::ContainerData,
         render: &ExactResultRegistry,
         topology: &ExactResultRegistry,
         worker_path: Option<PathBuf>,

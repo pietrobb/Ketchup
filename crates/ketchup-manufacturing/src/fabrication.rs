@@ -1,20 +1,20 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, InstancePathStep, OccurrenceId,
     Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
 };
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepNode,
     ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
-use ketchup_core::exact_validation::{
+use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
+use ketchup_model::exact_validation::{
     GENERAL_BODY_VALIDATOR_CONTRACT_V1, GENERAL_BODY_VALIDATOR_INPUT_V1, GeneralBodyParticipant,
     GeneralBodySource, GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
 };
-use ketchup_core::graph::{DerivedIdentity, sha256_hex};
-use ketchup_core::pin_joint::{PinHole, project_pin_joint_contract};
-use ketchup_core::tolerance::{ROUNDING, TolerancePolicy};
-use ketchup_core::validation::{
+use ketchup_model::graph::{DerivedIdentity, sha256_hex};
+use ketchup_model::pin_joint::{PinHole, project_pin_joint_contract};
+use ketchup_model::tolerance::{ROUNDING, TolerancePolicy};
+use ketchup_model::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
     ValidationState,
 };
@@ -469,7 +469,7 @@ pub struct GeneralManufacturingOperation {
     pub frame: &'static str,
     pub bounds: PieceDimensions,
     pub machining: GeneralMachiningGeometry,
-    pub source: ketchup_core::exact_product::ExactResultKey,
+    pub source: ketchup_model::exact_product::ExactResultKey,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2422,7 +2422,7 @@ fn weldment_distance(left: [f64; 3], right: [f64; 3]) -> f64 {
 fn weldment_joint_member_cut(
     snapshot: &Snapshot,
     member_id: FeatureId,
-    joint: &ketchup_core::document::WeldmentJointSpec,
+    joint: &ketchup_model::document::WeldmentJointSpec,
 ) -> Result<Option<(bool, WeldmentEndCut)>, GeneralFabricationError> {
     if joint.first_member != member_id && joint.second_member != member_id {
         return Ok(None);
@@ -2908,7 +2908,7 @@ pub fn project_general_fabrication(
 
 fn graph_manufacturing_operations(
     row: &GeneralBomRow,
-    source: &ketchup_core::exact_product::ExactResultKey,
+    source: &ketchup_model::exact_product::ExactResultKey,
     graph: &ExactBRepGraph,
 ) -> Option<Vec<GeneralManufacturingOperation>> {
     let stock = graph.nodes.first()?;

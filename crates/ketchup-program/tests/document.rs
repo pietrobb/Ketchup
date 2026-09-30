@@ -1,5 +1,5 @@
-use ketchup_core::document::{CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId};
-use ketchup_core::persistence::{self, ContainerData};
+use ketchup_model::document::{CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId};
+use ketchup_model::persistence::{self, ContainerData};
 use ketchup_program::document::{PartChanges, ProgramDocument, ProgramSource, UNDO_LIMIT};
 use std::collections::BTreeMap;
 

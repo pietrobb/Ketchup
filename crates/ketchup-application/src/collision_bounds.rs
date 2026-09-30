@@ -1,5 +1,5 @@
 //! Certified canonical envelopes for rejection only; never collision evidence.
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
     ExactBRepPlanarSegment,
 };
@@ -219,9 +219,9 @@ impl Bounds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ketchup_core::document::*;
-    use ketchup_core::exact_brep_graph::{ExactBRepNodeId, ExactBRepProfileId};
-    use ketchup_core::tolerance::TolerancePolicy;
+    use ketchup_model::document::*;
+    use ketchup_model::exact_brep_graph::{ExactBRepNodeId, ExactBRepProfileId};
+    use ketchup_model::tolerance::TolerancePolicy;
 
     fn graph(points: Vec<[f64; 2]>) -> ExactBRepGraph {
         let mut document = DocumentStore::new();
@@ -292,7 +292,7 @@ mod tests {
                 target: ExactBRepNodeId(0),
                 removed_faces: vec![],
                 thickness_bits: 1.0_f64.to_bits(),
-                direction: ketchup_core::exact_brep_graph::ExactBRepShellDirection::Inward,
+                direction: ketchup_model::exact_brep_graph::ExactBRepShellDirection::Inward,
                 profile_faces: Vec::new(),
                 name: None,
             },

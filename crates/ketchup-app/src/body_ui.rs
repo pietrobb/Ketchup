@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_core::document::{BodyId, MultiBodyBooleanPlan, NewBodyFeaturePlan, ToolBodyPolicy};
+use ketchup_model::document::{BodyId, MultiBodyBooleanPlan, NewBodyFeaturePlan, ToolBodyPolicy};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum BodyBooleanChoice {

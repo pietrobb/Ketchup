@@ -1,9 +1,9 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, OccurrenceId, Transform,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactProductError};
-use ketchup_core::testing::box_package;
+use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactProductError};
+use ketchup_model::testing::box_package;
 use ketchup_manufacturing::three_mf_export::{
     ExactThreeMfInstance, MAX_THREE_MF_EXPORT_INSTANCES, exact_model_three_mf_export,
 };
@@ -76,7 +76,7 @@ fn seeded_document_with_definition_name(definition_name: &str) -> DocumentStore 
     document
 }
 
-fn current_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
+fn current_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPackage {
     box_package(
         snapshot,
         DEFINITION,

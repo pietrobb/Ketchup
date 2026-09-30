@@ -7,7 +7,7 @@ use ketchup_application::{
     model_query::{EntityKind, PageRequest},
 };
 use ketchup_assistant::sidecar::*;
-use ketchup_core::document::{CommandBatch, DocumentStore};
+use ketchup_model::document::{CommandBatch, DocumentStore};
 use std::{
     io::{Read, Write},
     net::TcpStream,
@@ -247,7 +247,7 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
 fn live_commit_rolls_back_when_work_recovery_checkpoint_fails() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("live-transactional-commit.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(primary.clone()));
     shell.click_menu_command("menu-file", AppCommand::Save);
     let mut client = Client::connect(&mut shell);
@@ -285,7 +285,7 @@ fn live_commit_rolls_back_when_work_recovery_checkpoint_fails() {
 fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("live-transactional-batch.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(primary.clone()));
     shell.click_menu_command("menu-file", AppCommand::Save);
     let mut client = Client::connect(&mut shell);
@@ -731,8 +731,8 @@ fn central_epoch_is_not_revision_state_and_failed_operations_are_observational()
     assert!(store.redo().is_none());
     assert_eq!(store.mutation_epoch(), initial);
     let batch = CommandBatch::new(vec![
-        ketchup_core::document::CanonicalCommand::CreateDefinition {
-            id: ketchup_core::document::DefinitionId(1),
+        ketchup_model::document::CanonicalCommand::CreateDefinition {
+            id: ketchup_model::document::DefinitionId(1),
             name: "epoch".into(),
         },
     ]);

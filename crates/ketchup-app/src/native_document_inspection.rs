@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, path::Path};
 
-use ketchup_core::document::FeatureKind;
+use ketchup_model::document::FeatureKind;
 use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,12 +39,12 @@ impl NativeDocumentInspection {
 }
 
 pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, String> {
-    let loaded_file = ketchup_core::persistence::load_file_with_source(path)
+    let loaded_file = ketchup_model::persistence::load_file_with_source(path)
         .map_err(|error| error.to_string())?;
-    let container_sha256 = ketchup_core::graph::sha256_hex(loaded_file.source_bytes());
+    let container_sha256 = ketchup_model::graph::sha256_hex(loaded_file.source_bytes());
     let loaded = loaded_file.outcome();
-    if loaded.source_schema() != ketchup_core::persistence::CURRENT_SCHEMA
-        || loaded.disposition() != ketchup_core::persistence::LoadDisposition::EditableLossless
+    if loaded.source_schema() != ketchup_model::persistence::CURRENT_SCHEMA
+        || loaded.disposition() != ketchup_model::persistence::LoadDisposition::EditableLossless
     {
         return Err("document is not a lossless current-schema document".to_owned());
     }

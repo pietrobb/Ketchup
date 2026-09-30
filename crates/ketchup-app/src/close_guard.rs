@@ -1,6 +1,6 @@
 use crate::{KetchupApp, assistant_conversation_digest};
 use eframe::egui;
-use ketchup_core::document::DocumentId;
+use ketchup_model::document::DocumentId;
 
 #[derive(Default)]
 pub(crate) struct CloseGuard {

@@ -4,7 +4,7 @@
 use crate::{Evaluated, ProgramError, ProgramModel, Report, run};
 use std::collections::{BTreeMap, VecDeque};
 
-pub use ketchup_core::document::RuleProgramSource as ProgramSource;
+pub use ketchup_model::document::RuleProgramSource as ProgramSource;
 
 pub const UNDO_LIMIT: usize = 10;
 

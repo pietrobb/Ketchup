@@ -1,8 +1,8 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     OccurrenceId, ProfileSegment, Transform,
 };
-use ketchup_core::import::{DxfImportOptions, inspect_dxf, plan_dxf_import};
+use ketchup_model::import::{DxfImportOptions, inspect_dxf, plan_dxf_import};
 use ketchup_geometry::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,

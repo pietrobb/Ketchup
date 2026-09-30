@@ -2,7 +2,7 @@
 //! its outward normal in the part's frame, so a face or edge picked in the
 //! window can be used directly in `on`, `hole`, `push_pull` or `fillet`.
 use crate::model::{Part, ProgramPartBody, ProgramProfileSegment};
-use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
+use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 use std::f64::consts::TAU;
 
 const AXES: [char; 3] = ['x', 'y', 'z'];

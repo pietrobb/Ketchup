@@ -9,13 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
     FeatureKind, MeshBodySpec, Snapshot, Transform,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError};
-use ketchup_core::exact_product::ExactBRepGraphPackage;
-use ketchup_core::mesh_recognition::{
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError};
+use ketchup_model::exact_product::ExactBRepGraphPackage;
+use ketchup_model::mesh_recognition::{
     CylinderRecognition, MeshRecognition, MeshRecognitionCandidate, MeshRecognitionResiduals,
     recognize_mesh_body_cancellable,
 };

@@ -2,7 +2,7 @@ use crate::{AssistantTransport, AssistantTransportResponse};
 use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
 };
-use ketchup_core::graph::sha256_hex;
+use ketchup_model::graph::sha256_hex;
 use ketchup_scheduler::assistant::{
     AssistantCancellation, AssistantProcessClient, AssistantProcessLaunch,
 };

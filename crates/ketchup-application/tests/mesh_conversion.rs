@@ -6,12 +6,12 @@ use ketchup_application::mesh_conversion::{
     MeshConversionError, MeshConversionTaskEvent, commit_mesh_conversion, prepare_mesh_conversion,
     start_mesh_conversion, verify_mesh_conversion,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind,
     MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Transform,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::persistence;
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::persistence;
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 const DEFINITION: DefinitionId = DefinitionId(1);

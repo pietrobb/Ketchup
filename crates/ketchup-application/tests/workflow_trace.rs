@@ -4,15 +4,15 @@ use ketchup_application::evaluation::{
 use ketchup_application::workflow_trace::{
     AssemblyWorkflowTraceRecorder, WorkflowEvidenceKind, WorkflowPhase, WorkflowRunProfile,
 };
-use ketchup_core::assembly_recipe::{
+use ketchup_model::assembly_recipe::{
     AssemblyRecipe, RecipeEditScope, RecipeKey, RecipePartAdoption, RecipePartMobility,
     RecognizedRecipeFeatureKind,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, OccurrenceId, Transform,
 };
-use ketchup_core::{graph::sha256_hex, persistence};
+use ketchup_model::{graph::sha256_hex, persistence};
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -340,11 +340,11 @@ fn original_v8_rear_sketch_resizes_without_replacing_the_panel() {
 }
 
 fn assert_original_rear_sketch_resizes(fixture: &str) {
-    use ketchup_core::assembly_recipe::{
+    use ketchup_model::assembly_recipe::{
         RecipeDimensionAnchor, RecipeParameter, RecipeParameterUnit, RecipePatchNode,
         RecipeSemanticChange, RecipeSemanticPatch, compile_assembly_recipe_patch,
     };
-    use ketchup_core::document::{FeatureParameterTarget, ParameterValueType};
+    use ketchup_model::document::{FeatureParameterTarget, ParameterValueType};
 
     let mut document = persistence::load_file(fixture_directory().join(fixture))
         .unwrap()
@@ -360,7 +360,7 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
     let context = ketchup_application::model_query::ModelQuery::default()
         .edit_context(
             &before,
-            &ketchup_core::exact_product::ExactResultRegistry::default(),
+            &ketchup_model::exact_product::ExactResultRegistry::default(),
             0,
             &ketchup_application::model_query::EditContextRequest {
                 targets: vec![ketchup_assistant::sidecar::AssistantInstancePath {
@@ -436,14 +436,14 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
                 features: features(1, "top"),
             },
         ],
-        vec![ketchup_core::assembly_recipe::RecipeRelation {
+        vec![ketchup_model::assembly_recipe::RecipeRelation {
             key: key("rear-top"),
-            kind: ketchup_core::assembly_recipe::RecipeRelationKind::Contact,
-            first: ketchup_core::assembly_recipe::RecipeFaceRef {
+            kind: ketchup_model::assembly_recipe::RecipeRelationKind::Contact,
+            first: ketchup_model::assembly_recipe::RecipeFaceRef {
                 part: key("rear"),
                 role: "bounds.y.maximum".into(),
             },
-            second: ketchup_core::assembly_recipe::RecipeFaceRef {
+            second: ketchup_model::assembly_recipe::RecipeFaceRef {
                 part: key("top"),
                 role: "bounds.z.minimum".into(),
             },
@@ -559,7 +559,7 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
     }
     for joint in snapshot.pin_joints() {
         let projection =
-            ketchup_core::pin_joint::project_pin_joint_contract(&snapshot, joint).unwrap();
+            ketchup_model::pin_joint::project_pin_joint_contract(&snapshot, joint).unwrap();
         assert_eq!(projection.pairs.len(), 3);
         for pair in projection.pairs {
             assert!(
@@ -593,8 +593,8 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
         AssistantPinJointFace,
     };
-    use ketchup_core::exact_product::ExactResultRegistry;
-    use ketchup_core::pin_joint::project_pin_joint_contract;
+    use ketchup_model::exact_product::ExactResultRegistry;
+    use ketchup_model::pin_joint::project_pin_joint_contract;
     use std::collections::BTreeSet;
 
     let path = fixture_directory().join("nightstand_v9_retention.ketchup");
@@ -750,7 +750,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
         ),
     ] {
         let joint = after
-            .pin_joint(ketchup_core::pin_joint::PinJointId(id))
+            .pin_joint(ketchup_model::pin_joint::PinJointId(id))
             .unwrap();
         let projected = project_pin_joint_contract(&after, joint).unwrap();
         assert_eq!(projected.pairs.len(), 3);
@@ -853,9 +853,9 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
 
 #[test]
 fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
-    use ketchup_core::assembly_recipe::{RecipeParameter, RecipeParameterUnit};
-    use ketchup_core::document::{FeatureParameterTarget, ParameterValueType};
-    use ketchup_core::pin_joint::project_pin_joint_contract;
+    use ketchup_model::assembly_recipe::{RecipeParameter, RecipeParameterUnit};
+    use ketchup_model::document::{FeatureParameterTarget, ParameterValueType};
+    use ketchup_model::pin_joint::project_pin_joint_contract;
 
     for fixture in [
         "nightstand_v8_full_probe.ketchup",
@@ -941,7 +941,7 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
             let proposal = document
                 .prepare_proposal(CommandBatch::new(vec![
                     CanonicalCommand::CloneDefinitionAndRepoint(
-                        ketchup_core::document::CloneDefinitionPlan::new(
+                        ketchup_model::document::CloneDefinitionPlan::new(
                             occurrence_id,
                             source_id,
                             DefinitionId(next_definition),
@@ -956,7 +956,7 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                     ),
                 ]))
                 .unwrap();
-            use ketchup_core::document::AuthoritativeDependency;
+            use ketchup_model::document::AuthoritativeDependency;
             assert!(
                 proposal
                     .authoritative_dependencies()
@@ -994,7 +994,7 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                 })
                 .unwrap()
                 .clone();
-            added_joint.id = ketchup_core::pin_joint::PinJointId(
+            added_joint.id = ketchup_model::pin_joint::PinJointId(
                 before.pin_joints().map(|joint| joint.id.0).max().unwrap() + 1,
             );
             added_joint.name = "Concurrent joint".into();
@@ -1006,7 +1006,7 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
             let concurrent = document.current();
             assert!(matches!(
                 document.commit_proposal(&proposal),
-                Err(ketchup_core::document::ProposalCommitError::Stale(_))
+                Err(ketchup_model::document::ProposalCommitError::Stale(_))
             ));
             assert_eq!(
                 document.current().canonical_digest(),
@@ -1384,8 +1384,8 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
         AssistantPinJointFace,
     };
-    use ketchup_core::exact_product::ExactResultRegistry;
-    use ketchup_core::pin_joint::project_pin_joint_contract;
+    use ketchup_model::exact_product::ExactResultRegistry;
+    use ketchup_model::pin_joint::project_pin_joint_contract;
     use std::collections::BTreeSet;
 
     let mut document = deterministic_large_panel_fixture();

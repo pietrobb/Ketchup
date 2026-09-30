@@ -1,10 +1,10 @@
 use crate::{DocumentSession, SessionError};
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, EdgeFinishKind,
     FeatureKind, FeatureParameterTarget, OccurrenceId, ParameterValueType, RuleProgramSource,
     Snapshot, Transform,
 };
-use ketchup_core::tolerance::ACCUMULATED_ROUNDING;
+use ketchup_model::tolerance::ACCUMULATED_ROUNDING;
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_program::model::ProgramOperation;
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
@@ -710,12 +710,12 @@ mod tests {
     fn exact_graph_of(
         session: &DocumentSession,
         occurrence_index: usize,
-    ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
+    ) -> ketchup_model::exact_brep_graph::ExactBRepGraph {
         let snapshot = session.snapshot();
         let occurrence = snapshot.occurrences().nth(occurrence_index).unwrap();
         let definition = snapshot.definition(occurrence.definition_id()).unwrap();
         let producer = *definition.feature_ids().last().unwrap();
-        ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+        ketchup_model::exact_brep_graph::ExactBRepGraph::from_snapshot(
             &snapshot,
             occurrence.definition_id(),
             producer,
@@ -725,7 +725,7 @@ mod tests {
 
     fn exact_signature(
         session: &DocumentSession,
-    ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
+    ) -> ketchup_model::exact_brep_graph::ExactBRepGraph {
         exact_signature_of(session, 0)
     }
 
@@ -733,7 +733,7 @@ mod tests {
     fn exact_signature_of(
         session: &DocumentSession,
         occurrence_index: usize,
-    ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
+    ) -> ketchup_model::exact_brep_graph::ExactBRepGraph {
         let mut graph = exact_graph_of(session, occurrence_index);
         graph.document_id = 0;
         graph.source_revision = 0;
@@ -747,7 +747,7 @@ mod tests {
         }
         for node in &mut graph.nodes {
             node.source_feature_id = 0;
-            if let ketchup_core::exact_brep_graph::ExactBRepOperation::SpatialSweep {
+            if let ketchup_model::exact_brep_graph::ExactBRepOperation::SpatialSweep {
                 path, ..
             } = &mut node.operation
             {
@@ -901,7 +901,7 @@ mod tests {
                 .definition(occurrence.definition_id())
                 .unwrap();
             let producer = *definition.feature_ids().last().unwrap();
-            ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+            ketchup_model::exact_brep_graph::ExactBRepGraph::from_snapshot(
                 &first.snapshot,
                 occurrence.definition_id(),
                 producer,
@@ -937,7 +937,7 @@ mod tests {
             for occurrence in snapshot.occurrences() {
                 let definition = snapshot.definition(occurrence.definition_id()).unwrap();
                 let producer = *definition.feature_ids().last().unwrap();
-                ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+                ketchup_model::exact_brep_graph::ExactBRepGraph::from_snapshot(
                     snapshot,
                     occurrence.definition_id(),
                     producer,

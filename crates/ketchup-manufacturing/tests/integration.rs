@@ -6,7 +6,7 @@ mod dxf_export;
 mod three_mf_export;
 mod validation_m17;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

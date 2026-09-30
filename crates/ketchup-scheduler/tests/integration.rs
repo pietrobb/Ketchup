@@ -14,7 +14,7 @@ mod validator_hosting_m7c;
 mod weldment_joint;
 mod weldment_member;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

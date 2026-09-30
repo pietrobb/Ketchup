@@ -6,15 +6,15 @@ use super::*;
 /// The open file: where it lives, what was saved, and the recovery and
 /// migration reviews around opening it.
 pub(crate) struct FileState {
-    pub(crate) container_data: ketchup_core::persistence::ContainerData,
-    pub(crate) review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
+    pub(crate) container_data: ketchup_model::persistence::ContainerData,
+    pub(crate) review_candidate: Option<ketchup_model::persistence::LoadOutcome>,
     pub(crate) migration_review_plan: Option<MigrationReviewPlan>,
     pub(crate) recovery_open: Option<RecoveryOpenState>,
     pub(crate) path: Option<PathBuf>,
-    pub(crate) identity: Option<ketchup_core::persistence::FileIdentity>,
-    pub(crate) work_recovery_identity: Option<ketchup_core::persistence::FileIdentity>,
+    pub(crate) identity: Option<ketchup_model::persistence::FileIdentity>,
+    pub(crate) work_recovery_identity: Option<ketchup_model::persistence::FileIdentity>,
     pub(crate) pending_work_recovery_cleanup:
-        Option<(PathBuf, ketchup_core::persistence::FileIdentity)>,
+        Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,
     pub(crate) saved_digest: String,
 }

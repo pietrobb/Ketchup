@@ -2,7 +2,7 @@ use ketchup_assistant::intent::{
     IntentCapability, IntentError, IntentGrant, IntentRequest, RequestingPrincipal, WorkflowIntent,
     propose_intent,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     AuthenticatedApprover, AuthoritativeDependency, CanonicalCommand, CollectionId, CommandBatch,
     DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentStore,
     EvaluatorNodeKind, FeatureId, FeatureKind, FeatureParameterTarget, GroupId, HighRiskClass,
@@ -13,11 +13,11 @@ use ketchup_core::document::{
     ProposalPrincipal, ProposalRisk, ProposalValue, RuleOutput, SlotPath, SlotResolution,
     SlotSegment, TagId, Transform, TrustedConfirmationSurface,
 };
-use ketchup_core::space::{
+use ketchup_model::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceId,
 };
-use ketchup_core::tolerance::TolerancePolicy;
+use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId};
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 
@@ -226,7 +226,7 @@ fn gate_d_evaluator_rename_is_observational_and_commits_exact_text_once() {
     assert_eq!(proposal.goal(), ProposalGoal::RenameEvaluatorNode(RULE));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::EvaluatorNode(RULE)
         )]
     );
@@ -346,10 +346,10 @@ fn gate_d_evaluator_expression_is_observational_and_commits_exact_text_once() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(EXPRESSION),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(EXPRESSION_INPUT),
             ),
         ]
@@ -502,7 +502,7 @@ fn gate_d_profile_points_are_observational_typed_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::SetProfilePoints(PROFILE));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Feature(PROFILE)
         )]
     );
@@ -658,7 +658,7 @@ fn gate_d_definition_rename_is_observational_and_commits_exact_text_once() {
     assert_eq!(proposal.goal(), ProposalGoal::RenameDefinition(DEFINITION));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Definition(DEFINITION)
         )]
     );
@@ -713,7 +713,7 @@ fn gate_d_occurrence_visibility_intent_is_observational_then_commits_one_verifie
     assert_eq!(proposal.authoritative_diff().len(), 1);
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Occurrence(OCCURRENCE)
         )]
     );
@@ -752,7 +752,7 @@ fn gate_d_tag_visibility_is_observational_and_commits_one_verified_batch() {
     assert_eq!(proposal.goal(), ProposalGoal::SetTagVisibility(TAG));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Tag(TAG)
         )]
     );
@@ -794,10 +794,10 @@ fn gate_d_occurrence_tag_is_observational_and_commits_one_verified_batch() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Occurrence(OCCURRENCE),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(AuthoritativeDependency::Tag(
+            ketchup_model::document::ProposalAssumption::TargetExists(AuthoritativeDependency::Tag(
                 TAG
             ),),
         ]
@@ -852,10 +852,10 @@ fn gate_d_occurrence_repoint_is_observational_and_commits_one_verified_batch() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Occurrence(OCCURRENCE),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Definition(SECOND_DEFINITION),
             ),
         ]
@@ -1239,10 +1239,10 @@ fn gate_d_occurrence_parent_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Occurrence(OCCURRENCE),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Group(GROUP),
             ),
         ]
@@ -1298,7 +1298,7 @@ fn gate_d_occurrence_parent_is_typed_observational_and_undoable() {
     .unwrap();
     assert_eq!(
         removal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Occurrence(OCCURRENCE),
         )]
     );
@@ -1419,10 +1419,10 @@ fn gate_d_group_parent_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Group(GROUP),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Group(parent),
             ),
         ]
@@ -1470,7 +1470,7 @@ fn gate_d_group_parent_is_typed_observational_and_undoable() {
     .unwrap();
     assert_eq!(
         removal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Group(GROUP),
         )]
     );
@@ -1620,7 +1620,7 @@ fn gate_d_group_translation_is_observational_and_commits_exact_transform_once() 
     assert_eq!(proposal.goal(), ProposalGoal::SetGroupTranslation(GROUP));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Group(GROUP)
         )]
     );
@@ -1752,10 +1752,10 @@ fn gate_d_collection_membership_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Collection(COLLECTION),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Occurrence(OCCURRENCE),
             ),
         ]
@@ -1827,7 +1827,7 @@ fn gate_d_occurrence_translation_is_observational_and_commits_exact_transform_on
     );
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Occurrence(OCCURRENCE)
         )]
     );
@@ -2344,7 +2344,7 @@ fn gate_d_side_effect_receipt_is_payload_bound_one_use_and_non_canonical() {
     assert_eq!(store.visible_undo_steps(), undo_before);
     assert_eq!(
         store.authorize_high_risk_side_effect(&proposal, &approval, 20_500),
-        Err(ketchup_core::document::SideEffectAuthorizationError::Replayed)
+        Err(ketchup_model::document::SideEffectAuthorizationError::Replayed)
     );
 }
 
@@ -2383,7 +2383,7 @@ fn gate_d_side_effect_authorization_rejects_payload_substitution_and_stale_snaps
         .unwrap();
     assert_eq!(
         store.authorize_high_risk_side_effect(&substituted, &approval, 30_500),
-        Err(ketchup_core::document::SideEffectAuthorizationError::Invalid)
+        Err(ketchup_model::document::SideEffectAuthorizationError::Invalid)
     );
 
     store
@@ -2396,7 +2396,7 @@ fn gate_d_side_effect_authorization_rejects_payload_substitution_and_stale_snaps
         .unwrap();
     assert_eq!(
         store.authorize_high_risk_side_effect(&original, &approval, 30_500),
-        Err(ketchup_core::document::SideEffectAuthorizationError::Invalid)
+        Err(ketchup_model::document::SideEffectAuthorizationError::Invalid)
     );
 }
 
@@ -2419,7 +2419,7 @@ fn gate_d_rule_outputs_are_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::SetRuleOutputs(RULE_OUTPUTS));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::EvaluatorNode(RULE_OUTPUTS)
         )]
     );
@@ -2550,7 +2550,7 @@ fn gate_d_create_tag_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::CreateTag(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetMissing(
+        &[ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Tag(target)
         )]
     );
@@ -2674,7 +2674,7 @@ fn gate_d_delete_tag_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteTag(TAG));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Tag(TAG)
         )]
     );
@@ -2791,7 +2791,7 @@ fn gate_d_delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
     assert!(matches!(
         concurrent_store.commit_verified_proposal(&proposal),
         Err(ProposalCommitError::Preparation(
-            ProposalPrepareError::Canonical(ketchup_core::document::CanonicalError::TagInUse(TAG))
+            ProposalPrepareError::Canonical(ketchup_model::document::CanonicalError::TagInUse(TAG))
         ))
     ));
     assert_eq!(
@@ -2828,7 +2828,7 @@ fn gate_d_create_collection_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::CreateCollection(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetMissing(
+        &[ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Collection(target)
         )]
     );
@@ -2955,7 +2955,7 @@ fn gate_d_delete_collection_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteCollection(COLLECTION));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Collection(COLLECTION)
         )]
     );
@@ -3068,7 +3068,7 @@ fn gate_d_delete_group_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteGroup(GROUP));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Group(GROUP)
         )]
     );
@@ -3197,7 +3197,7 @@ fn gate_d_create_definition_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::CreateDefinition(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetMissing(
+        &[ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Definition(target)
         )]
     );
@@ -3320,7 +3320,7 @@ fn gate_d_create_group_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::CreateGroup(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetMissing(
+        &[ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Group(target)
         )]
     );
@@ -3448,10 +3448,10 @@ fn gate_d_create_occurrence_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::Occurrence(target),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Definition(SECOND_DEFINITION),
             ),
         ]
@@ -3605,10 +3605,10 @@ fn gate_d_create_profile_feature_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::Feature(target),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Definition(SECOND_DEFINITION),
             ),
         ]
@@ -3822,7 +3822,7 @@ fn gate_d_delete_occurrence_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteOccurrence(OCCURRENCE));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Occurrence(OCCURRENCE)
         )]
     );
@@ -3974,7 +3974,7 @@ fn gate_d_delete_profile_feature_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteProfileFeature(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Feature(target)
         )]
     );
@@ -4077,7 +4077,7 @@ fn gate_d_delete_profile_feature_rejects_denied_missing_used_and_stale_definitio
             IntentRequest::m7a(WorkflowIntent::DeleteProfileFeature { target: EXTRUSION })
         ),
         Err(IntentError::Canonical(
-            ketchup_core::document::CanonicalError::FeatureIsNotProfile(EXTRUSION)
+            ketchup_model::document::CanonicalError::FeatureIsNotProfile(EXTRUSION)
         ))
     );
     assert!(matches!(
@@ -4150,7 +4150,7 @@ fn gate_d_create_evaluator_input_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::CreateEvaluatorInput(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetMissing(
+        &[ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::EvaluatorNode(target)
         )]
     );
@@ -4304,13 +4304,13 @@ fn gate_d_create_evaluator_expression_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::EvaluatorNode(target),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(RULE),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(EXPRESSION_INPUT),
             ),
         ]
@@ -4480,7 +4480,7 @@ fn gate_d_create_rule_override_is_typed_observational_and_undoable() {
     )
     .unwrap();
 
-    let identity = ketchup_core::document::DerivedIdentity::new(
+    let identity = ketchup_model::document::DerivedIdentity::new(
         rule,
         SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
     )
@@ -4607,14 +4607,14 @@ fn gate_d_create_rule_override_rejects_denied_invalid_existing_and_stale_rule() 
         )
         .is_err()
     );
-    let identity = ketchup_core::document::DerivedIdentity::new(
+    let identity = ketchup_model::document::DerivedIdentity::new(
         rule,
         SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
     )
     .unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertOverride(
-            ketchup_core::document::CanonicalOverride::new(
+            ketchup_model::document::CanonicalOverride::new(
                 31,
                 identity,
                 "offset",
@@ -4649,7 +4649,7 @@ fn gate_d_delete_rule_override_is_typed_observational_and_undoable() {
     let mut store = seed();
     let rule = NodeId(30);
     let target = 31;
-    let identity = ketchup_core::document::DerivedIdentity::new(
+    let identity = ketchup_model::document::DerivedIdentity::new(
         rule,
         SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
     )
@@ -4672,7 +4672,7 @@ fn gate_d_delete_rule_override_is_typed_observational_and_undoable() {
                 override_parameters: vec![OverrideParameterSpec::replace("offset").unwrap()],
             },
             CanonicalCommand::UpsertOverride(
-                ketchup_core::document::CanonicalOverride::new(
+                ketchup_model::document::CanonicalOverride::new(
                     target,
                     identity.clone(),
                     "offset",
@@ -4696,7 +4696,7 @@ fn gate_d_delete_rule_override_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteRuleOverride(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Override(target),
         )]
     );
@@ -4737,7 +4737,7 @@ fn gate_d_delete_rule_override_rejects_denied_missing_and_stale_override() {
     let mut store = seed();
     let rule = NodeId(30);
     let target = 31;
-    let identity = ketchup_core::document::DerivedIdentity::new(
+    let identity = ketchup_model::document::DerivedIdentity::new(
         rule,
         SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
     )
@@ -4760,7 +4760,7 @@ fn gate_d_delete_rule_override_rejects_denied_missing_and_stale_override() {
                 override_parameters: vec![OverrideParameterSpec::replace("offset").unwrap()],
             },
             CanonicalCommand::UpsertOverride(
-                ketchup_core::document::CanonicalOverride::new(
+                ketchup_model::document::CanonicalOverride::new(
                     target,
                     identity.clone(),
                     "offset",
@@ -4803,7 +4803,7 @@ fn gate_d_delete_rule_override_rejects_denied_missing_and_stale_override() {
     .unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertOverride(
-            ketchup_core::document::CanonicalOverride::new(
+            ketchup_model::document::CanonicalOverride::new(
                 target,
                 identity,
                 "offset",
@@ -4823,7 +4823,7 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
             .unwrap();
-    let derived_from = ketchup_core::document::DerivedIdentity::new(
+    let derived_from = ketchup_model::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
             SlotSegment::new(RULE_OUTPUTS, "result", "left").unwrap(),
@@ -4853,13 +4853,13 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::FeatureParameterBinding(target.clone()),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Feature(EXTRUSION),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(RULE_OUTPUTS),
             ),
         ]
@@ -4988,9 +4988,9 @@ fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_s
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: target.clone(),
-                    derived_from: ketchup_core::document::DerivedIdentity::new(
+                    derived_from: ketchup_model::document::DerivedIdentity::new(
                         RULE_OUTPUTS,
                         SlotPath::new(vec![
                             SlotSegment::new(RULE_OUTPUTS, "result", "left").unwrap(),
@@ -5013,7 +5013,7 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
             .unwrap();
-    let derived_from = ketchup_core::document::DerivedIdentity::new(
+    let derived_from = ketchup_model::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
             SlotSegment::new(RULE_OUTPUTS, "result", "left").unwrap(),
@@ -5024,7 +5024,7 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: target.clone(),
                     derived_from: derived_from.clone(),
                 },
@@ -5049,7 +5049,7 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
     );
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::FeatureParameterBinding(target.clone()),
         )]
     );
@@ -5094,7 +5094,7 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
             .unwrap();
-    let derived_from = ketchup_core::document::DerivedIdentity::new(
+    let derived_from = ketchup_model::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
             SlotSegment::new(RULE_OUTPUTS, "result", "left").unwrap(),
@@ -5105,7 +5105,7 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: target.clone(),
                     derived_from,
                 },
@@ -5151,7 +5151,7 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
 
     let proposal = propose_intent(&store, IntentRequest::m7a(intent())).unwrap();
     let replacement_rule = NodeId(999);
-    let replacement_identity = ketchup_core::document::DerivedIdentity::new(
+    let replacement_identity = ketchup_model::document::DerivedIdentity::new(
         replacement_rule,
         SlotPath::new(vec![
             SlotSegment::new(replacement_rule, "result", "replacement").unwrap(),
@@ -5177,7 +5177,7 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
                 override_parameters: Vec::new(),
             },
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: target.clone(),
                     derived_from: replacement_identity.clone(),
                 },
@@ -5225,9 +5225,9 @@ fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: target.clone(),
-                    derived_from: ketchup_core::document::DerivedIdentity::new(
+                    derived_from: ketchup_model::document::DerivedIdentity::new(
                         RULE_OUTPUTS,
                         SlotPath::new(vec![
                             SlotSegment::new(RULE_OUTPUTS, "result", "left").unwrap(),
@@ -5257,7 +5257,7 @@ fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
     );
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Feature(EXTRUSION),
         )]
     );
@@ -5322,9 +5322,9 @@ fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale(
     assert!(propose_intent(&store, IntentRequest::m7a(intent())).is_err());
     assert_eq!(store.current().canonical_digest(), digest_before);
 
-    let binding = |target| ketchup_core::document::FeatureParameterBinding {
+    let binding = |target| ketchup_model::document::FeatureParameterBinding {
         target,
-        derived_from: ketchup_core::document::DerivedIdentity::new(
+        derived_from: ketchup_model::document::DerivedIdentity::new(
             RULE_OUTPUTS,
             SlotPath::new(vec![
                 SlotSegment::new(RULE_OUTPUTS, "result", "left").unwrap(),
@@ -5402,13 +5402,13 @@ fn gate_d_create_evaluator_rule_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::EvaluatorNode(target),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(RULE),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(EXPRESSION_INPUT),
             ),
         ]
@@ -5564,7 +5564,7 @@ fn gate_d_delete_definition_is_typed_observational_and_undoable() {
     );
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Definition(SECOND_DEFINITION)
         )]
     );
@@ -5645,7 +5645,7 @@ fn gate_d_delete_definition_rejects_denied_missing_nonempty_used_and_stale_users
             IntentRequest::m7a(WorkflowIntent::DeleteDefinition { target: DEFINITION })
         ),
         Err(IntentError::Canonical(
-            ketchup_core::document::CanonicalError::DefinitionNotEmpty(DEFINITION)
+            ketchup_model::document::CanonicalError::DefinitionNotEmpty(DEFINITION)
         ))
     );
     assert_eq!(store.current().canonical_digest(), digest_before);
@@ -5761,27 +5761,27 @@ fn gate_d_clone_profile_definition_is_typed_observational_and_undoable() {
     );
     assert_eq!(proposal.cost().write_targets, 3);
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetExists(
+        &ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Occurrence(occurrence),
         )
     ));
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetExists(
+        &ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Definition(SECOND_DEFINITION),
         )
     ));
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetExists(
+        &ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Feature(source_feature),
         )
     ));
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetMissing(
+        &ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Definition(new_definition),
         )
     ));
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetMissing(
+        &ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Feature(new_feature),
         )
     ));
@@ -5961,7 +5961,7 @@ fn gate_d_clone_profile_definition_rejects_denied_unsupported_stale_and_claimed(
 
     let mut binding_store = seed_clone();
     let binding_proposal = propose_intent(&binding_store, IntentRequest::m7a(intent())).unwrap();
-    let derived_from = ketchup_core::document::DerivedIdentity::new(
+    let derived_from = ketchup_model::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
             SlotSegment::new(RULE_OUTPUTS, "result", "left").unwrap(),
@@ -5972,7 +5972,7 @@ fn gate_d_clone_profile_definition_rejects_denied_unsupported_stale_and_claimed(
     binding_store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: FeatureParameterTarget::new(
                         FeatureId(90),
                         "bounds.width",
@@ -6050,17 +6050,17 @@ fn gate_d_convert_empty_group_is_typed_observational_and_undoable() {
     );
     assert_eq!(proposal.cost().write_targets, 3);
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetExists(
+        &ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::GroupSubtree(GROUP),
         )
     ));
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetMissing(
+        &ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Definition(new_definition),
         )
     ));
     assert!(proposal.assumptions().contains(
-        &ketchup_core::document::ProposalAssumption::TargetMissing(
+        &ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Occurrence(new_occurrence),
         )
     ));
@@ -6203,7 +6203,7 @@ fn gate_d_convert_empty_group_rejects_denied_nonempty_stale_and_claimed() {
 
 fn reviewed_joint(id: JointId, max_x: f64) -> CanonicalJoint {
     let participant = |key| {
-        ketchup_core::document::DerivedIdentity::new(
+        ketchup_model::document::DerivedIdentity::new(
             RULE_OUTPUTS,
             SlotPath::new(vec![SlotSegment::new(RULE_OUTPUTS, "result", key).unwrap()]).unwrap(),
         )
@@ -6229,7 +6229,7 @@ fn gate_d_create_joint_is_typed_observational_and_undoable() {
         .unwrap();
     let target = JointId(98);
     let participant = |key| {
-        ketchup_core::document::DerivedIdentity::new(
+        ketchup_model::document::DerivedIdentity::new(
             RULE_OUTPUTS,
             SlotPath::new(vec![SlotSegment::new(RULE_OUTPUTS, "result", key).unwrap()]).unwrap(),
         )
@@ -6257,10 +6257,10 @@ fn gate_d_create_joint_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::Joint(target),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::EvaluatorNode(RULE_OUTPUTS),
             ),
         ]
@@ -6311,7 +6311,7 @@ fn gate_d_create_joint_rejects_denied_invalid_unresolved_reuse_and_stale_claim()
         .unwrap();
     let target = JointId(99);
     let participant = |key| {
-        ketchup_core::document::DerivedIdentity::new(
+        ketchup_model::document::DerivedIdentity::new(
             RULE_OUTPUTS,
             SlotPath::new(vec![SlotSegment::new(RULE_OUTPUTS, "result", key).unwrap()]).unwrap(),
         )
@@ -6434,7 +6434,7 @@ fn gate_d_delete_joint_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteJoint(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Joint(target),
         )]
     );
@@ -6555,7 +6555,7 @@ fn gate_d_create_space_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::CreateSpace(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetMissing(
+        &[ketchup_model::document::ProposalAssumption::TargetMissing(
             AuthoritativeDependency::Space(target),
         )]
     );
@@ -6690,7 +6690,7 @@ fn gate_d_delete_space_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteSpace(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::Space(target),
         )]
     );
@@ -6829,10 +6829,10 @@ fn gate_d_create_clearance_volume_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::ClearanceVolume(target),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Space(owner),
             ),
         ]
@@ -7026,7 +7026,7 @@ fn gate_d_delete_clearance_volume_is_typed_observational_and_undoable() {
     assert_eq!(proposal.goal(), ProposalGoal::DeleteClearanceVolume(target));
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::ClearanceVolume(target),
         )]
     );
@@ -7160,7 +7160,7 @@ fn gate_d_delete_persistent_dimension_is_typed_observational_and_undoable() {
     );
     assert_eq!(
         proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
+        &[ketchup_model::document::ProposalAssumption::TargetExists(
             AuthoritativeDependency::PersistentDimension(target),
         )]
     );
@@ -7302,10 +7302,10 @@ fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.assumptions(),
         &[
-            ketchup_core::document::ProposalAssumption::TargetMissing(
+            ketchup_model::document::ProposalAssumption::TargetMissing(
                 AuthoritativeDependency::PersistentDimension(target),
             ),
-            ketchup_core::document::ProposalAssumption::TargetExists(
+            ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Feature(EXTRUSION),
             ),
         ]

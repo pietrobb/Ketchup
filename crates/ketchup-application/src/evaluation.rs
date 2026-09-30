@@ -1,18 +1,18 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     DefinitionId, DocumentStore, FeatureId, FeatureKind, OccurrenceId, SceneOccurrence, Snapshot,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
-use ketchup_core::exact_product::{
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
+use ketchup_model::exact_product::{
     ExactBodyPackage, ExactProducerCompilation, ExactProducerEvidenceContext, ExactProducerPlan,
     ExactResultRegistry, ImportedExactPackage, exact_body_terminal_features,
 };
-use ketchup_core::graph::sha256_bytes;
-use ketchup_core::import::{
+use ketchup_model::graph::sha256_bytes;
+use ketchup_model::import::{
     IGES_PARSER_ID, IGES_PARSER_VERSION, IGES_XDE_PARSER_VERSION, ImportFormat,
     ImportUnitAuthority, STEP_PARSER_ID, STEP_PARSER_VERSION, STEP_XDE_PARSER_VERSION,
     StepImportEvidence,
 };
-use ketchup_core::persistence::ContainerData;
+use ketchup_model::persistence::ContainerData;
 use ketchup_geometry::sketch::{WorkplaneSpec, WorkplaneSupport};
 use ketchup_scheduler::{
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
@@ -864,7 +864,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     .write_all(&source)
                     .and_then(|_| temporary.flush())
                     .map_err(|error| error.to_string())?;
-                let source_sha256 = ketchup_core::graph::sha256_hex(&source);
+                let source_sha256 = ketchup_model::graph::sha256_hex(&source);
                 let actual = match receipt.format() {
                     ImportFormat::Step => match spec.source_part_index {
                         Some(index) => worker.inspect_step_xde_part_with_cancellation(
@@ -913,7 +913,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 if spec.topology_counts.is_none() {
                     expected.topology_counts = actual.topology_counts;
                 }
-                if spec.schema != ketchup_core::document::IMPORTED_EXACT_BODY_SCHEMA_V3 {
+                if spec.schema != ketchup_model::document::IMPORTED_EXACT_BODY_SCHEMA_V3 {
                     expected.area_mm2 = actual.area_mm2;
                 }
                 if actual != expected {
@@ -1055,7 +1055,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
 #[cfg(test)]
 mod incremental_scope_tests {
     use super::*;
-    use ketchup_core::document::{
+    use ketchup_model::document::{
         CanonicalCommand, CommandBatch, Dimension, GroupId, OccurrenceId, Transform,
     };
 

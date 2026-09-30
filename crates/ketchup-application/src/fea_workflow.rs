@@ -1,8 +1,8 @@
 use ketchup_analysis::fea::FeaSolveSettings;
-use ketchup_core::document::{DefinitionId, FeatureId, Snapshot};
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::graph::sha256_bytes;
-use ketchup_core::tolerance::NEGLIGIBLE;
+use ketchup_model::document::{DefinitionId, FeatureId, Snapshot};
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::graph::sha256_bytes;
+use ketchup_model::tolerance::NEGLIGIBLE;
 use ketchup_scheduler::ExactWorkerSupervisor;
 pub use ketchup_scheduler::{ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions};
 use std::path::PathBuf;

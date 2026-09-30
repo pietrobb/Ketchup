@@ -249,12 +249,12 @@ pub fn publish_exact_products(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ketchup_core::document::{
+    use ketchup_model::document::{
         CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
         FeatureKind, OccurrenceId, Transform,
     };
-    use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
-    use ketchup_core::testing::box_package;
+    use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
+    use ketchup_model::testing::box_package;
     use ketchup_geometry::sketch::{
         PrincipalPlane, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
     };

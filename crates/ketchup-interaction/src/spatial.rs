@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
 use crate::{Ray, Vec3};
-use ketchup_core::document::{DocumentId, Snapshot, Transform};
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::document::{DocumentId, Snapshot, Transform};
+use ketchup_model::tolerance::ROUNDING;
 use std::{
     collections::BTreeSet,
     fmt,

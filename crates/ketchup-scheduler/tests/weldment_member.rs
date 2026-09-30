@@ -1,13 +1,13 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     FeatureParameterTarget, ParameterPath, ParameterValueType, SpatialPathSegment,
     WeldmentMemberSpec,
 };
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarSegment,
 };
-use ketchup_core::persistence::{self, ContainerData};
+use ketchup_model::persistence::{self, ContainerData};
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 fn dimension(value: f64) -> Dimension {

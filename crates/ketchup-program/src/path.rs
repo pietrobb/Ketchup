@@ -9,7 +9,7 @@
 //! the axis of each arc.
 
 use crate::model::{ProgramPathArc, ProgramPathSegment, ProgramProfileSegment};
-use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
+use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 use std::f64::consts::TAU;
 
 /// The exact kernel's limits: joins must be tangent to within this angle

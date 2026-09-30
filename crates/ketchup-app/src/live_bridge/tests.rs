@@ -10,7 +10,7 @@ mod idle_retry;
 mod mesh_conversion;
 #[path = "topology_recovery_tests.rs"]
 mod topology_recovery;
-use ketchup_core::{
+use ketchup_model::{
     assembly_recipe::{
         AssemblyRecipe, RecipeEditScope, RecipeKey, RecipePartAdoption, RecipePartMobility,
         RecognizedRecipeFeatureKind,
@@ -1277,7 +1277,7 @@ fn apply_and_verify_save_io_failure_preserves_last_good_file_and_dirty_gui_state
     assert_eq!(app.file.identity, file_identity);
     assert_eq!(app.file.path.as_deref(), Some(path.as_path()));
     assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-    let disk = ketchup_core::persistence::load(&original_bytes)
+    let disk = ketchup_model::persistence::load(&original_bytes)
         .unwrap()
         .into_editable()
         .ok()
@@ -1882,7 +1882,7 @@ fn review_only_history_and_focused_editor_reject_mutations() {
     let steps = (app.undo_step_count(), app.redo_step_count());
     // Presence of a review candidate is the GUI's read-only boundary.
     app.file.review_candidate = Some(
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&app.document.current()))
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&app.document.current()))
             .unwrap(),
     );
     let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();

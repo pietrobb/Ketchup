@@ -6,7 +6,7 @@ use ketchup_application::{
     scoped_static_load_report,
 };
 use ketchup_assistant::sidecar::*;
-use ketchup_core::{
+use ketchup_model::{
     document::*,
     exact_product::{ExactBodyPackage, ExactResultRegistry},
     persistence::{self, ContainerData},
@@ -1145,7 +1145,7 @@ fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation()
     assert!(session.topology_results().values().any(|package| {
         matches!(
             package.as_ref(),
-            ketchup_core::exact_product::ExactBodyPackage::Graph(graph)
+            ketchup_model::exact_product::ExactBodyPackage::Graph(graph)
                 if graph.identity.producer_feature_id == FeatureId(4)
                     && graph.volume_mm3 > 0.0
         )
@@ -1419,7 +1419,7 @@ fn real_worker_face_supported_pocket_keeps_intermediate_and_roundtrips() {
     assert!(document.evaluate().unwrap().complete);
     let package = document.exact_results().values().next().unwrap();
     let top = package
-        .reference(ketchup_core::exact_product::ExactFaceRole::Top)
+        .reference(ketchup_model::exact_product::ExactFaceRole::Top)
         .unwrap()
         .clone();
     let pocket_sketch = rectangle_sketch(face_plane, [30.0, 20.0], [50.0, 35.0]);

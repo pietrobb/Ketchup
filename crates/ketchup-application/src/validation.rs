@@ -1,13 +1,13 @@
 pub use crate::part_role::{PartRole, RoleFrame, RoleFunction};
 use crate::validation_rules::{ValidationRules, occurrence_materials};
-use ketchup_core::assembly_joint::AssemblyJointKind;
-use ketchup_core::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
-use ketchup_core::document::{InstancePath, OccurrenceId, Snapshot};
-use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_core::exact_validation::*;
-use ketchup_core::pin_joint::project_pin_joint_contract;
-use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, TolerancePolicy};
-use ketchup_core::validation::{
+use ketchup_model::assembly_joint::AssemblyJointKind;
+use ketchup_model::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
+use ketchup_model::document::{InstancePath, OccurrenceId, Snapshot};
+use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::exact_validation::*;
+use ketchup_model::pin_joint::project_pin_joint_contract;
+use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, TolerancePolicy};
+use ketchup_model::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, MATERIAL_DIMENSION_V1,
     VALIDATOR_ROLE_DIMENSION_V1, ValidationExecution, ValidationInvocation, ValidationState,
     ValidatorRoleError, ValidatorRoleIndex,

@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_core::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
+use ketchup_model::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 
 pub(super) fn point_in_frame(point: Vec3, frame: WorkplaneFrame) -> bool {
     let origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);

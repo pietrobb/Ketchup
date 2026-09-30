@@ -9,14 +9,14 @@ use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
     AssistantCadLoftContinuity, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     BooleanOperation, CanonicalError, ChamferEdgeSide, ChamferMode, DefinitionId, Dimension,
     FeatureId, FeatureKind, FilletRadiusStation, LoftContinuity, LoftSection, ShellDirection,
     Snapshot, SurfaceBodySpec, WeldmentJointSpec, WeldmentMemberSpec, is_valid_spatial_sweep_path,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
-use ketchup_core::topology::TopologicalElementKind;
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
+use ketchup_model::topology::TopologicalElementKind;
 use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
 };

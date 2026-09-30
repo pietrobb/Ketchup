@@ -1,19 +1,19 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, MeshAuthority, OccurrenceId, Transform,
 };
-use ketchup_core::exact_product::{
+use ketchup_model::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactProductError, MAX_STL_EXPORT_INSTANCES,
     exact_model_stl_export,
 };
-use ketchup_core::import::{
+use ketchup_model::import::{
     GlbImportError, ImportFormat, ImportLengthUnit, inspect_glb, plan_glb_import,
 };
-use ketchup_core::mesh_recognition::{
+use ketchup_model::mesh_recognition::{
     MeshRecognition, MeshRecognitionCandidate, recognize_mesh_body,
 };
-use ketchup_core::persistence;
-use ketchup_core::testing::box_package;
+use ketchup_model::persistence;
+use ketchup_model::testing::box_package;
 use ketchup_manufacturing::blender_export::{
     ExactGlbInstance, MAX_GLB_EXPORT_INSTANCES, exact_model_glb_export,
 };
@@ -79,7 +79,7 @@ fn seeded_document(first_color: Option<[u8; 3]>, second_color: Option<[u8; 3]>) 
     document
 }
 
-fn current_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
+fn current_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPackage {
     box_package(
         snapshot,
         DEFINITION,
@@ -252,9 +252,9 @@ fn model_exports_bind_nested_instances_and_inherited_appearance() {
             .find(|item| item.definition_id == DEFINITION && !item.instance_path.steps().is_empty())
             .unwrap();
         let export_errors =
-            |snapshot: &ketchup_core::document::Snapshot,
+            |snapshot: &ketchup_model::document::Snapshot,
              package: &ExactBodyPackage,
-             occurrence: &ketchup_core::document::SceneOccurrence| {
+             occurrence: &ketchup_model::document::SceneOccurrence| {
                 (
                     exact_model_glb_export(
                         snapshot,

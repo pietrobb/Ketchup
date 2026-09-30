@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn edit_context_is_guarded_and_read_only_for_duplicate_names() {
-        use ketchup_core::document::{DefinitionId, Transform};
+        use ketchup_model::document::{DefinitionId, Transform};
 
         let mut server = Server::new(SessionSettings::default());
         let seed = server
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn batch_jobs_are_cancellable_bounded_and_publish_compact_verified_receipts() {
-        use ketchup_core::document::{DefinitionId, Transform};
+        use ketchup_model::document::{DefinitionId, Transform};
 
         let mut server = Server::new(SessionSettings::default());
         let seed = server

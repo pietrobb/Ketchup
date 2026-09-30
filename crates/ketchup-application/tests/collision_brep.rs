@@ -4,7 +4,7 @@ use ketchup_application::validation::{
     fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
 };
 use ketchup_application::{AssistantValidationSelection, DocumentSession, SessionSettings};
-use ketchup_core::{
+use ketchup_model::{
     document::*,
     exact_product::ExactResultRegistry,
     persistence::{self, ContainerData},
@@ -119,7 +119,7 @@ fn fabrication_collision_is_complete_order_independent_and_native() {
     let participants = [3, 1, 2]
         .into_iter()
         .map(|id| {
-            ketchup_core::exact_validation::GeneralBodyParticipant::accept(
+            ketchup_model::exact_validation::GeneralBodyParticipant::accept(
                 &snapshot,
                 &registry,
                 InstancePath::root(OccurrenceId(id)),
@@ -566,7 +566,7 @@ fn regression_hidden_overlapping_body_is_not_reported() {
         &selection(),
     );
     assert_eq!(before["collision"]["issue_count"], 1, "{before}");
-    let body_id = *ketchup_core::exact_product::exact_body_terminal_features(
+    let body_id = *ketchup_model::exact_product::exact_body_terminal_features(
         &document.current(),
         DefinitionId(2),
     )
@@ -635,7 +635,7 @@ fn regression_empty_container_checks_projected_child_solid_completely() {
         })
         .unwrap();
     assert!(
-        ketchup_core::exact_product::exact_body_terminal_features(
+        ketchup_model::exact_product::exact_body_terminal_features(
             &snapshot,
             container.definition_id,
         )

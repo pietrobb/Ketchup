@@ -1,4 +1,4 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     AuthoritativeDependency, CanonicalCommand, CanonicalOverride, CloneDefinitionPlan,
     CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, DerivedIdentity, Dimension,
     DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
@@ -7,7 +7,7 @@ use ketchup_core::document::{
     ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, SlotPath,
     SlotResolution, SlotSegment, TagId, Transform,
 };
-use ketchup_core::graph::ExpressionAst;
+use ketchup_model::graph::ExpressionAst;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -199,25 +199,25 @@ pub enum WorkflowIntent {
         target: FeatureParameterTarget,
     },
     CreatePersistentDimension {
-        target: ketchup_core::document::PersistentDimensionId,
+        target: ketchup_model::document::PersistentDimensionId,
         name: String,
         dimension_target: FeatureParameterTarget,
-        presentation: ketchup_core::document::DimensionPresentation,
+        presentation: ketchup_model::document::DimensionPresentation,
     },
     CreateSpace {
-        target: ketchup_core::space::SpaceId,
+        target: ketchup_model::space::SpaceId,
         purpose: String,
         volume_min: [f64; 3],
         volume_max: [f64; 3],
     },
     CreateClearanceVolume {
-        target: ketchup_core::space::ClearanceVolumeId,
-        owner: ketchup_core::space::SpaceId,
+        target: ketchup_model::space::ClearanceVolumeId,
+        owner: ketchup_model::space::SpaceId,
         reason: String,
         volume_min: [f64; 3],
         volume_max: [f64; 3],
         tolerance_mm: f64,
-        severity: ketchup_core::space::ClearanceSeverity,
+        severity: ketchup_model::space::ClearanceSeverity,
     },
     CreateJoint {
         target: ketchup_geometry::prismatic::JointId,
@@ -233,13 +233,13 @@ pub enum WorkflowIntent {
         target: ketchup_geometry::prismatic::JointId,
     },
     DeleteSpace {
-        target: ketchup_core::space::SpaceId,
+        target: ketchup_model::space::SpaceId,
     },
     DeleteClearanceVolume {
-        target: ketchup_core::space::ClearanceVolumeId,
+        target: ketchup_model::space::ClearanceVolumeId,
     },
     DeletePersistentDimension {
-        target: ketchup_core::document::PersistentDimensionId,
+        target: ketchup_model::document::PersistentDimensionId,
     },
     SetRuleDimension {
         target: NodeId,
@@ -255,7 +255,7 @@ pub enum WorkflowIntent {
     },
     SetRuleOutputs {
         target: NodeId,
-        outputs: Vec<ketchup_core::document::RuleOutput>,
+        outputs: Vec<ketchup_model::document::RuleOutput>,
     },
     SetFeatureDimension {
         target: FeatureId,
@@ -492,12 +492,12 @@ pub fn propose_intent(
             value
                 .trim()
                 .parse::<f64>()
-                .map_err(|_| ketchup_core::document::CanonicalError::InvalidTransform)
+                .map_err(|_| ketchup_model::document::CanonicalError::InvalidTransform)
         };
         let snapshot = store.current();
         let mut matrix = *snapshot
             .occurrence(*target)
-            .ok_or(ketchup_core::document::CanonicalError::OccurrenceNotFound(
+            .ok_or(ketchup_model::document::CanonicalError::OccurrenceNotFound(
                 *target,
             ))?
             .transform()
@@ -675,8 +675,8 @@ pub fn propose_intent(
                 expression,
                 input_ports: Vec::new(),
                 output_ports: vec![
-                    ketchup_core::document::PortSpec::number("result")
-                        .map_err(ketchup_core::document::CanonicalError::from)?,
+                    ketchup_model::document::PortSpec::number("result")
+                        .map_err(ketchup_model::document::CanonicalError::from)?,
                 ],
                 outputs: Vec::new(),
                 override_parameters: Vec::new(),
@@ -692,21 +692,21 @@ pub fn propose_intent(
         } => {
             if store.current().override_by_id(target).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::OverrideAlreadyExists(target).into(),
+                    ketchup_model::document::CanonicalError::OverrideAlreadyExists(target).into(),
                 );
             }
             let identity = DerivedIdentity::new(
                 rule,
                 SlotPath::new(vec![
                     SlotSegment::new(rule, output_port, semantic_key)
-                        .map_err(ketchup_core::document::CanonicalError::from)?,
+                        .map_err(ketchup_model::document::CanonicalError::from)?,
                 ])
-                .map_err(ketchup_core::document::CanonicalError::from)?,
+                .map_err(ketchup_model::document::CanonicalError::from)?,
             )
-            .map_err(ketchup_core::document::CanonicalError::from)?;
+            .map_err(ketchup_model::document::CanonicalError::from)?;
             let snapshot = store.current();
             if snapshot.resolve_slot(&identity) != SlotResolution::Resolved {
-                return Err(ketchup_core::document::CanonicalError::UnresolvedDerivedOutput.into());
+                return Err(ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into());
             }
             if !snapshot.evaluator_node(rule).is_some_and(|node| {
                 node.allowed_parameters()
@@ -714,12 +714,12 @@ pub fn propose_intent(
                     .any(|spec| spec.name() == parameter)
             }) {
                 return Err(
-                    ketchup_core::document::CanonicalError::UndeclaredOverrideParameter.into(),
+                    ketchup_model::document::CanonicalError::UndeclaredOverrideParameter.into(),
                 );
             }
             let value = value_text.parse::<f64>().map_err(|_| {
-                ketchup_core::document::CanonicalError::Graph(
-                    ketchup_core::document::GraphError::NonFiniteOverride,
+                ketchup_model::document::CanonicalError::Graph(
+                    ketchup_model::document::GraphError::NonFiniteOverride,
                 )
             })?;
             let value = CanonicalOverride::new(
@@ -729,7 +729,7 @@ pub fn propose_intent(
                 value,
                 SlotResolution::Resolved,
             )
-            .map_err(ketchup_core::document::CanonicalError::from)?;
+            .map_err(ketchup_model::document::CanonicalError::from)?;
             (
                 ProposalGoal::CreateRuleOverride(target),
                 AuthoritativeDependency::Override(target),
@@ -749,7 +749,7 @@ pub fn propose_intent(
         } => {
             if store.current().feature_parameter_binding(&target).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::InvalidFeatureParameterBinding(target)
+                    ketchup_model::document::CanonicalError::InvalidFeatureParameterBinding(target)
                         .into(),
                 );
             }
@@ -757,11 +757,11 @@ pub fn propose_intent(
                 rule,
                 SlotPath::new(vec![
                     SlotSegment::new(rule, output_port, semantic_key)
-                        .map_err(ketchup_core::document::CanonicalError::from)?,
+                        .map_err(ketchup_model::document::CanonicalError::from)?,
                 ])
-                .map_err(ketchup_core::document::CanonicalError::from)?,
+                .map_err(ketchup_model::document::CanonicalError::from)?,
             )
-            .map_err(ketchup_core::document::CanonicalError::from)?;
+            .map_err(ketchup_model::document::CanonicalError::from)?;
             (
                 ProposalGoal::CreateFeatureParameterBinding(target.clone()),
                 AuthoritativeDependency::FeatureParameterBinding(target.clone()),
@@ -785,7 +785,7 @@ pub fn propose_intent(
             let snapshot = store.current();
             if snapshot.persistent_dimension(target).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::PersistentDimensionAlreadyExists(
+                    ketchup_model::document::CanonicalError::PersistentDimensionAlreadyExists(
                         target,
                     )
                     .into(),
@@ -793,7 +793,7 @@ pub fn propose_intent(
             }
             if !snapshot.has_feature_parameter(&dimension_target) {
                 return Err(
-                    ketchup_core::document::CanonicalError::InvalidPersistentDimensionTarget.into(),
+                    ketchup_model::document::CanonicalError::InvalidPersistentDimensionTarget.into(),
                 );
             }
             (
@@ -815,22 +815,22 @@ pub fn propose_intent(
         } => {
             if store.current().space(target).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::SpaceAlreadyExists(target).into(),
+                    ketchup_model::document::CanonicalError::SpaceAlreadyExists(target).into(),
                 );
             }
             (
                 ProposalGoal::CreateSpace(target),
                 AuthoritativeDependency::Space(target),
                 CanonicalCommand::UpsertSpace(
-                    ketchup_core::space::CanonicalSpace::new(
+                    ketchup_model::space::CanonicalSpace::new(
                         target,
                         purpose,
                         ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
-                            .map_err(ketchup_core::document::CanonicalError::from)?,
+                            .map_err(ketchup_model::document::CanonicalError::from)?,
                         Vec::new(),
                         Vec::new(),
                     )
-                    .map_err(ketchup_core::document::CanonicalError::from)?,
+                    .map_err(ketchup_model::document::CanonicalError::from)?,
                 ),
             )
         }
@@ -846,29 +846,29 @@ pub fn propose_intent(
             let snapshot = store.current();
             if snapshot.clearance_volume(target).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::ClearanceVolumeAlreadyExists(target)
+                    ketchup_model::document::CanonicalError::ClearanceVolumeAlreadyExists(target)
                         .into(),
                 );
             }
             if snapshot.space(owner).is_none() {
-                return Err(ketchup_core::document::CanonicalError::SpaceNotFound(owner).into());
+                return Err(ketchup_model::document::CanonicalError::SpaceNotFound(owner).into());
             }
             (
                 ProposalGoal::CreateClearanceVolume(target),
                 AuthoritativeDependency::ClearanceVolume(target),
                 CanonicalCommand::UpsertClearanceVolume(
-                    ketchup_core::space::CanonicalClearanceVolume::new(
+                    ketchup_model::space::CanonicalClearanceVolume::new(
                         target,
-                        ketchup_core::space::ClearanceOwner::Space(owner),
+                        ketchup_model::space::ClearanceOwner::Space(owner),
                         reason,
                         ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
-                            .map_err(ketchup_core::document::CanonicalError::from)?,
-                        ketchup_core::tolerance::TolerancePolicy::new(tolerance_mm)
-                            .map_err(ketchup_core::document::CanonicalError::from)?,
+                            .map_err(ketchup_model::document::CanonicalError::from)?,
+                        ketchup_model::tolerance::TolerancePolicy::new(tolerance_mm)
+                            .map_err(ketchup_model::document::CanonicalError::from)?,
                         severity,
                         None,
                     )
-                    .map_err(ketchup_core::document::CanonicalError::from)?,
+                    .map_err(ketchup_model::document::CanonicalError::from)?,
                 ),
             )
         }
@@ -882,13 +882,13 @@ pub fn propose_intent(
             let snapshot = store.current();
             if snapshot.joint(target).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::JointAlreadyExists(target).into(),
+                    ketchup_model::document::CanonicalError::JointAlreadyExists(target).into(),
                 );
             }
             if snapshot.resolve_slot(&participant_a) != SlotResolution::Resolved
                 || snapshot.resolve_slot(&participant_b) != SlotResolution::Resolved
             {
-                return Err(ketchup_core::document::CanonicalError::UnresolvedDerivedOutput.into());
+                return Err(ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into());
             }
             (
                 ProposalGoal::CreateJoint(target),
@@ -899,9 +899,9 @@ pub fn propose_intent(
                         participant_a,
                         participant_b,
                         ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
-                            .map_err(ketchup_core::document::CanonicalError::from)?,
+                            .map_err(ketchup_model::document::CanonicalError::from)?,
                     )
-                    .map_err(ketchup_core::document::CanonicalError::from)?,
+                    .map_err(ketchup_model::document::CanonicalError::from)?,
                 ),
             )
         }
@@ -930,13 +930,13 @@ pub fn propose_intent(
             let mut bindings = snapshot.feature_parameter_bindings();
             let Some(binding) = bindings.next() else {
                 return Err(
-                    ketchup_core::document::CanonicalError::FeatureParameterBindingNotFound(target)
+                    ketchup_model::document::CanonicalError::FeatureParameterBindingNotFound(target)
                         .into(),
                 );
             };
             if binding.target != target || bindings.next().is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::InvalidFeatureParameterBinding(target)
+                    ketchup_model::document::CanonicalError::InvalidFeatureParameterBinding(target)
                         .into(),
                 );
             }
@@ -945,7 +945,7 @@ pub fn propose_intent(
                 AuthoritativeDependency::Feature(target.feature_id),
                 CanonicalCommand::RecomputeFeatureParameters {
                     identity: EvaluationIdentity::default(),
-                    scope: ketchup_core::document::FeatureParameterRecomputeScope::All,
+                    scope: ketchup_model::document::FeatureParameterRecomputeScope::All,
                 },
             )
         }
@@ -1130,7 +1130,7 @@ pub fn propose_intent(
                 })
             {
                 return Err(
-                    ketchup_core::document::CanonicalError::DefinitionNotEmpty(target).into(),
+                    ketchup_model::document::CanonicalError::DefinitionNotEmpty(target).into(),
                 );
             }
             (
@@ -1161,7 +1161,7 @@ pub fn propose_intent(
                 .is_some_and(|feature| !matches!(feature.kind(), FeatureKind::Profile { .. }))
             {
                 return Err(
-                    ketchup_core::document::CanonicalError::FeatureIsNotProfile(target).into(),
+                    ketchup_model::document::CanonicalError::FeatureIsNotProfile(target).into(),
                 );
             }
             (
@@ -1207,15 +1207,15 @@ pub fn propose_intent(
         } => {
             let snapshot = store.current();
             let occurrence = snapshot.occurrence(target).ok_or(
-                ketchup_core::document::CanonicalError::OccurrenceNotFound(target),
+                ketchup_model::document::CanonicalError::OccurrenceNotFound(target),
             )?;
             if occurrence.definition_id() != source_definition {
                 return Err(
-                    ketchup_core::document::CanonicalError::OccurrenceDefinitionMismatch.into(),
+                    ketchup_model::document::CanonicalError::OccurrenceDefinitionMismatch.into(),
                 );
             }
             let definition = snapshot.definition(source_definition).ok_or(
-                ketchup_core::document::CanonicalError::DefinitionNotFound(source_definition),
+                ketchup_model::document::CanonicalError::DefinitionNotFound(source_definition),
             )?;
             if definition.feature_ids() != [source_feature]
                 || !definition.local_occurrence_ids().is_empty()
@@ -1224,26 +1224,26 @@ pub fn propose_intent(
                     .feature_parameter_bindings()
                     .any(|binding| binding.target.feature_id == source_feature)
             {
-                return Err(ketchup_core::document::CanonicalError::InvalidFeatureMap.into());
+                return Err(ketchup_model::document::CanonicalError::InvalidFeatureMap.into());
             }
             let feature = snapshot.feature(source_feature).ok_or(
-                ketchup_core::document::CanonicalError::FeatureNotFound(source_feature),
+                ketchup_model::document::CanonicalError::FeatureNotFound(source_feature),
             )?;
             if !matches!(feature.kind(), FeatureKind::Profile { .. }) {
-                return Err(ketchup_core::document::CanonicalError::FeatureIsNotProfile(
+                return Err(ketchup_model::document::CanonicalError::FeatureIsNotProfile(
                     source_feature,
                 )
                 .into());
             }
             if snapshot.definition(new_definition).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::DefinitionAlreadyExists(new_definition)
+                    ketchup_model::document::CanonicalError::DefinitionAlreadyExists(new_definition)
                         .into(),
                 );
             }
             if snapshot.feature(new_feature).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::FeatureAlreadyExists(new_feature)
+                    ketchup_model::document::CanonicalError::FeatureAlreadyExists(new_feature)
                         .into(),
                 );
             }
@@ -1268,7 +1268,7 @@ pub fn propose_intent(
             let snapshot = store.current();
             snapshot
                 .group(target)
-                .ok_or(ketchup_core::document::CanonicalError::GroupNotFound(
+                .ok_or(ketchup_model::document::CanonicalError::GroupNotFound(
                     target,
                 ))?;
             if snapshot
@@ -1278,17 +1278,17 @@ pub fn propose_intent(
                     .occurrences()
                     .any(|occurrence| occurrence.parent() == Some(target))
             {
-                return Err(ketchup_core::document::CanonicalError::InvalidLocalGraph.into());
+                return Err(ketchup_model::document::CanonicalError::InvalidLocalGraph.into());
             }
             if snapshot.definition(new_definition).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::DefinitionAlreadyExists(new_definition)
+                    ketchup_model::document::CanonicalError::DefinitionAlreadyExists(new_definition)
                         .into(),
                 );
             }
             if snapshot.occurrence(new_occurrence).is_some() {
                 return Err(
-                    ketchup_core::document::CanonicalError::OccurrenceAlreadyExists(new_occurrence)
+                    ketchup_model::document::CanonicalError::OccurrenceAlreadyExists(new_occurrence)
                         .into(),
                 );
             }
@@ -1313,7 +1313,7 @@ pub fn propose_intent(
                 value
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| ketchup_core::document::CanonicalError::InvalidTransform)
+                    .map_err(|_| ketchup_model::document::CanonicalError::InvalidTransform)
             };
             let x_mm = parse(x_mm_text)?;
             let y_mm = parse(y_mm_text)?;
@@ -1321,7 +1321,7 @@ pub fn propose_intent(
             let snapshot = store.current();
             let mut matrix = *snapshot
                 .group(target)
-                .ok_or(ketchup_core::document::CanonicalError::GroupNotFound(
+                .ok_or(ketchup_model::document::CanonicalError::GroupNotFound(
                     target,
                 ))?
                 .transform()
@@ -1350,7 +1350,7 @@ pub fn propose_intent(
                 value
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| ketchup_core::document::CanonicalError::InvalidTransform)
+                    .map_err(|_| ketchup_model::document::CanonicalError::InvalidTransform)
             };
             let x_mm = parse(x_mm_text)?;
             let y_mm = parse(y_mm_text)?;
@@ -1358,7 +1358,7 @@ pub fn propose_intent(
             let snapshot = store.current();
             let mut matrix = *snapshot
                 .occurrence(target)
-                .ok_or(ketchup_core::document::CanonicalError::OccurrenceNotFound(
+                .ok_or(ketchup_model::document::CanonicalError::OccurrenceNotFound(
                     target,
                 ))?
                 .transform()
@@ -1467,7 +1467,7 @@ pub fn propose_intent(
 #[derive(Debug, PartialEq)]
 pub enum IntentError {
     CapabilityDenied(IntentCapability),
-    Canonical(ketchup_core::document::CanonicalError),
+    Canonical(ketchup_model::document::CanonicalError),
     Proposal(ProposalPrepareError),
 }
 
@@ -1494,8 +1494,8 @@ impl From<ketchup_geometry::dimension::DimensionError> for IntentError {
     }
 }
 
-impl From<ketchup_core::document::CanonicalError> for IntentError {
-    fn from(error: ketchup_core::document::CanonicalError) -> Self {
+impl From<ketchup_model::document::CanonicalError> for IntentError {
+    fn from(error: ketchup_model::document::CanonicalError) -> Self {
         Self::Canonical(error)
     }
 }

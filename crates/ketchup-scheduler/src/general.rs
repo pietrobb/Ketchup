@@ -2,7 +2,7 @@ use crate::{
     AcceptanceIdentity, CacheStats, DerivedResult, EvaluationScheduler, InsertOutcome, JobToken,
     SchedulerError,
 };
-use ketchup_core::document::NodeId;
+use ketchup_model::document::NodeId;
 use std::collections::BTreeMap;
 use std::fmt;
 

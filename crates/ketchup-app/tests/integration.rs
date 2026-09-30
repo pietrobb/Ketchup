@@ -38,7 +38,7 @@ mod timber_frame_house;
 mod validator_panel_ui;
 mod viewport_shell;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

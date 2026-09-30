@@ -1,8 +1,8 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, InstancePath, OccurrenceId, ProfileSegment, Transform,
 };
-use ketchup_core::state_view::encode_semantic_state;
+use ketchup_model::state_view::encode_semantic_state;
 use ketchup_interaction::projection::{
     CanonicalInteractionProjection, INTERACTION_PROJECTION_V1, PROXY_BACKEND_V1,
     PROXY_EVALUATOR_V1, ProjectionStatus,

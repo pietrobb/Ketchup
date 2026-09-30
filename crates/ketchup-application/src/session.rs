@@ -7,12 +7,12 @@ use crate::{
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantRejectionDiagnostic,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DocumentStore, OccurrenceId, Proposal,
     ProposalCommitError, ProposalContext, ProposalPrepareError, Snapshot, VerifiedProposalCommit,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_core::persistence::{self, ContainerData};
+use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::persistence::{self, ContainerData};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -250,7 +250,7 @@ impl DocumentSession {
     pub fn snapshot(&self) -> Snapshot {
         self.document.current()
     }
-    pub fn rule_program(&self) -> Option<&ketchup_core::document::RuleProgramSource> {
+    pub fn rule_program(&self) -> Option<&ketchup_model::document::RuleProgramSource> {
         self.document.current_rule_program()
     }
     pub(crate) fn document_store(&self) -> &DocumentStore {
@@ -415,7 +415,7 @@ impl DocumentSession {
     pub fn apply_panels_with_source(
         &mut self,
         panels: &[AssistantCadEditOperation],
-        source: ketchup_core::document::RuleProgramSource,
+        source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
         let batch = crate::planner::plan_panel_batch(&self.document, panels)
             .map_err(SessionError::Planning)?;
@@ -425,7 +425,7 @@ impl DocumentSession {
     pub(crate) fn replace_with_rule_parts(
         &mut self,
         parts: &[ketchup_program::model::Part],
-        source: ketchup_core::document::RuleProgramSource,
+        source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
         let mut replacement = Self::new(self.settings.clone());
         let batch = crate::planner::plan_rule_part_batch(&replacement.document, parts)
@@ -440,7 +440,7 @@ impl DocumentSession {
         &mut self,
         batch: CommandBatch,
         panels: &[AssistantCadEditOperation],
-        source: ketchup_core::document::RuleProgramSource,
+        source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
         let batch = if panels.is_empty() {
             batch
@@ -480,7 +480,7 @@ impl DocumentSession {
         replacements: &[(OccurrenceId, AssistantCadEditOperation)],
         added_panels: &[AssistantCadEditOperation],
         other_commands: CommandBatch,
-        source: ketchup_core::document::RuleProgramSource,
+        source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
         let snapshot = self.snapshot();
         let panels = replacements
@@ -556,7 +556,7 @@ impl DocumentSession {
     /// Publishes a source-only edit in the existing document's undo history.
     pub fn replace_rule_program_source(
         &mut self,
-        source: ketchup_core::document::RuleProgramSource,
+        source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
         if self.rule_program() == Some(&source) {
             return Ok(self.snapshot());

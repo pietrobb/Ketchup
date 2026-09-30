@@ -1,5 +1,5 @@
 use super::{Transform, Vec3, cross, dot, vector_length};
-use ketchup_core::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
+use ketchup_model::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 
 /// Represent coplanar world points in a rigid local XY frame, without flattening them.
 pub(super) fn planar_points(points: &[Vec3]) -> Option<(Transform, Vec<Vec3>)> {

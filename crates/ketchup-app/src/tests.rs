@@ -2,11 +2,11 @@ use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_assistant::sidecar::AssistantCadLoftSection;
-use ketchup_core::document::{
+use ketchup_model::document::{
     EdgeRef, FaceRef, InstancePathStep, ProposalGoal, SpatialPathSegment,
 };
-use ketchup_core::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepOperation};
-use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+use ketchup_model::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepOperation};
+use ketchup_model::graph::{EvaluatorNodeKind, PortSpec};
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 #[path = "planning_topology_tests.rs"]
 mod planning_topology;
@@ -886,7 +886,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
                 target: FeatureId(2),
                 removed_faces,
                 thickness,
-                direction: ketchup_core::document::ShellDirection::Inward,
+                direction: ketchup_model::document::ShellDirection::Inward,
                 ..
             },
             ..
@@ -2057,7 +2057,7 @@ fn export_rollback_preserves_concurrent_destination_and_original_backup() {
         &target,
         Some(&backup_path),
         Some(&original_sha256),
-        &ketchup_core::graph::sha256_hex(b"intended export"),
+        &ketchup_model::graph::sha256_hex(b"intended export"),
     )
     .unwrap_err();
 
@@ -2077,7 +2077,7 @@ fn export_rollback_replaces_only_its_own_published_artifact() {
     move_export_target_to_backup(&target, Some(&original_sha256), Some(&backup_path)).unwrap();
     let published = b"ketchup export";
     std::fs::write(&target, published).unwrap();
-    let published_sha256 = ketchup_core::graph::sha256_hex(published);
+    let published_sha256 = ketchup_model::graph::sha256_hex(published);
 
     recover_export_target(
         &target,
@@ -2406,7 +2406,7 @@ fn install_graph_result(
             tolerance: "1e-7-mm".into(),
             faces: Vec::new(),
             edges: vec![
-                ketchup_core::exact_product::ExactBRepGraphEdgeEvidence {
+                ketchup_model::exact_product::ExactBRepGraphEdgeEvidence {
                     edge_ordinal: 0,
                     curve_kind: "line".into(),
                     length_mm: size.x,
@@ -2421,7 +2421,7 @@ fn install_graph_result(
                     unit_axis_direction: Some([1.0, 0.0, 0.0]),
                     adjacent_face_ordinals: vec![0, 2],
                 },
-                ketchup_core::exact_product::ExactBRepGraphEdgeEvidence {
+                ketchup_model::exact_product::ExactBRepGraphEdgeEvidence {
                     edge_ordinal: 1,
                     curve_kind: "line".into(),
                     length_mm: size.y,
@@ -2503,7 +2503,7 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
 
 #[test]
 fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent() {
-    use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+    use ketchup_model::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 
     let directory = tempfile::tempdir().unwrap();
     let flat_pattern = directory.path().join("bracket.dxf");
@@ -3175,7 +3175,7 @@ fn assistant_context_exposes_bounded_identified_read_only_agent_state_view() {
     assert_eq!(state_view["byte_length"], content.len());
     assert_eq!(
         state_view["sha256"],
-        ketchup_core::graph::sha256_hex(content.as_bytes())
+        ketchup_model::graph::sha256_hex(content.as_bytes())
     );
     assert!(content.starts_with(&format!("schema={AGENT_STATE_VIEW}\n")));
     assert!(content.contains(&format!(
@@ -3198,7 +3198,7 @@ fn assistant_context_exposes_bounded_identified_read_only_agent_state_view() {
     assert_eq!(bounded["byte_length"], oversized.len());
     assert_eq!(
         bounded["sha256"],
-        ketchup_core::graph::sha256_hex(oversized.as_bytes())
+        ketchup_model::graph::sha256_hex(oversized.as_bytes())
     );
     assert!(bounded_content.len() <= MAX_ASSISTANT_STATE_VIEW_BYTES);
     assert!(bounded_content.ends_with('\n'));
@@ -3576,7 +3576,7 @@ fn assistant_project_memory_persists_in_its_document_and_rejects_foreign_scope()
 
     let document_id = reopened.document.current().document_id().0;
     let foreign = AssistantProjectMemory::empty(document_id + 1);
-    let entry = ketchup_core::persistence::ExtensionEntry::new(
+    let entry = ketchup_model::persistence::ExtensionEntry::new(
         ASSISTANT_CHAT_NAMESPACE,
         ASSISTANT_MEMORY_PATH,
         false,
@@ -4214,7 +4214,7 @@ fn exact_worker_executable() -> PathBuf {
 }
 
 fn current_box_package(app: &KetchupApp) -> ExactBodyPackage {
-    ketchup_core::testing::box_package(
+    ketchup_model::testing::box_package(
         &app.document.current(),
         INITIAL_BOX_DEFINITION,
         FeatureId(2),
@@ -4266,10 +4266,10 @@ fn staged_export_restart_journal(
         report_temporary_name: ".ketchup-export-report-restart".to_owned(),
         primary_backup_name: Some(".ketchup-export-backup-primary-restart".to_owned()),
         report_backup_name: Some(".ketchup-export-backup-report-restart".to_owned()),
-        original_primary_sha256: Some(ketchup_core::graph::sha256_hex(original_primary)),
-        original_report_sha256: Some(ketchup_core::graph::sha256_hex(original_report)),
-        published_primary_sha256: ketchup_core::graph::sha256_hex(published_primary),
-        published_report_sha256: ketchup_core::graph::sha256_hex(published_report),
+        original_primary_sha256: Some(ketchup_model::graph::sha256_hex(original_primary)),
+        original_report_sha256: Some(ketchup_model::graph::sha256_hex(original_report)),
+        published_primary_sha256: ketchup_model::graph::sha256_hex(published_primary),
+        published_report_sha256: ketchup_model::graph::sha256_hex(published_report),
     }
 }
 
@@ -5092,7 +5092,7 @@ fn imported_dxf_profiles_remain_projected_and_pickable_after_persistence() {
 
     let committed = app.document.current();
     let reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed)).unwrap();
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&committed)).unwrap();
     let snapshot = reopened.snapshot();
     let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
     let scene = projection.scene().unwrap();
@@ -5409,7 +5409,7 @@ fn gui_exact_publication_rolls_back_when_work_recovery_finalization_fails() {
     let primary = directory
         .path()
         .join("transactional-exact-publication.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let mut app = KetchupApp::new();
     app.document = through_cut_document();
     app.reset_document_presentation();
@@ -6854,7 +6854,7 @@ fn assistant_create_profile_feature_review_is_typed_observational_and_undoable()
         .authoritative_diff()
         .iter()
         .find(|entry| {
-            entry.target == ketchup_core::document::AuthoritativeDependency::Feature(feature)
+            entry.target == ketchup_model::document::AuthoritativeDependency::Feature(feature)
         })
         .unwrap();
     assert_eq!(feature_diff.before, ProposalValue::Missing);
@@ -6871,7 +6871,7 @@ fn assistant_create_profile_feature_review_is_typed_observational_and_undoable()
         .iter()
         .find(|entry| {
             entry.target
-                == ketchup_core::document::AuthoritativeDependency::Definition(
+                == ketchup_model::document::AuthoritativeDependency::Definition(
                     INITIAL_BOX_DEFINITION,
                 )
         })
@@ -6947,7 +6947,7 @@ fn assistant_delete_profile_feature_review_is_typed_observational_and_undoable()
         .authoritative_diff()
         .iter()
         .find(|entry| {
-            entry.target == ketchup_core::document::AuthoritativeDependency::Feature(feature)
+            entry.target == ketchup_model::document::AuthoritativeDependency::Feature(feature)
         })
         .unwrap();
     assert_eq!(
@@ -6964,7 +6964,7 @@ fn assistant_delete_profile_feature_review_is_typed_observational_and_undoable()
         .iter()
         .find(|entry| {
             entry.target
-                == ketchup_core::document::AuthoritativeDependency::Definition(
+                == ketchup_model::document::AuthoritativeDependency::Definition(
                     INITIAL_BOX_DEFINITION,
                 )
         })
@@ -7149,7 +7149,7 @@ fn assistant_create_evaluator_rule_review_is_typed_observational_and_undoable() 
             expression: "$1 * 2".to_owned(),
             dependencies: vec![NodeId(1)],
             input_ports: Vec::new(),
-            output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+            output_ports: vec![ketchup_model::document::PortSpec::number("result").unwrap()],
             outputs: Vec::new(),
             override_parameters: Vec::new(),
         }
@@ -7167,7 +7167,7 @@ fn assistant_create_evaluator_rule_review_is_typed_observational_and_undoable() 
     assert!(created.input_ports().is_empty());
     assert_eq!(
         created.output_ports(),
-        &[ketchup_core::document::PortSpec::number("result").unwrap()]
+        &[ketchup_model::document::PortSpec::number("result").unwrap()]
     );
     assert!(created.allowed_parameters().is_empty());
     assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
@@ -7186,7 +7186,7 @@ fn assistant_create_rule_override_review_is_typed_observational_and_undoable() {
             name: "Reviewed override source".to_owned(),
             expression: "1".to_owned(),
             input_ports: Vec::new(),
-            output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+            output_ports: vec![ketchup_model::document::PortSpec::number("result").unwrap()],
             outputs: vec![
                 RuleOutput::new(
                     SlotSegment::new(rule, "result", "left").unwrap(),
@@ -7284,7 +7284,7 @@ fn assistant_create_feature_parameter_binding_is_typed_observational_and_undoabl
                 name: "Binding source".to_owned(),
                 expression: "1".to_owned(),
                 input_ports: Vec::new(),
-                output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                output_ports: vec![ketchup_model::document::PortSpec::number("result").unwrap()],
                 outputs: vec![
                     RuleOutput::new(
                         SlotSegment::new(rule, "result", "left").unwrap(),
@@ -7386,7 +7386,7 @@ fn assistant_delete_feature_parameter_binding_is_typed_observational_and_undoabl
                 name: "Binding deletion source".to_owned(),
                 expression: "1".to_owned(),
                 input_ports: Vec::new(),
-                output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                output_ports: vec![ketchup_model::document::PortSpec::number("result").unwrap()],
                 outputs: vec![
                     RuleOutput::new(
                         SlotSegment::new(rule, "result", "left").unwrap(),
@@ -7397,7 +7397,7 @@ fn assistant_delete_feature_parameter_binding_is_typed_observational_and_undoabl
                 override_parameters: Vec::new(),
             },
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: target.clone(),
                     derived_from: derived_from.clone(),
                 },
@@ -7494,7 +7494,7 @@ fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
                 name: "Recompute source".to_owned(),
                 expression: "42".to_owned(),
                 input_ports: Vec::new(),
-                output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                output_ports: vec![ketchup_model::document::PortSpec::number("result").unwrap()],
                 outputs: vec![
                     RuleOutput::new(
                         SlotSegment::new(rule, "result", "height").unwrap(),
@@ -7505,7 +7505,7 @@ fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
                 override_parameters: Vec::new(),
             },
             CanonicalCommand::UpsertFeatureParameterBinding(
-                ketchup_core::document::FeatureParameterBinding {
+                ketchup_model::document::FeatureParameterBinding {
                     target: target.clone(),
                     derived_from,
                 },
@@ -7614,7 +7614,7 @@ fn assistant_clone_profile_definition_is_typed_observational_and_undoable() {
         .authoritative_diff()
         .iter()
         .find(|entry| {
-            entry.target == ketchup_core::document::AuthoritativeDependency::Feature(new_feature)
+            entry.target == ketchup_model::document::AuthoritativeDependency::Feature(new_feature)
         })
         .unwrap();
     assert_eq!(feature_diff.before, ProposalValue::Missing);
@@ -7696,7 +7696,7 @@ fn assistant_convert_empty_group_is_typed_observational_and_undoable() {
         .authoritative_diff()
         .iter()
         .find(|entry| {
-            entry.target == ketchup_core::document::AuthoritativeDependency::GroupSubtree(group)
+            entry.target == ketchup_model::document::AuthoritativeDependency::GroupSubtree(group)
         })
         .unwrap();
     assert!(matches!(
@@ -7892,7 +7892,7 @@ fn assistant_create_space_is_typed_observational_and_undoable() {
     assert_eq!(app.document.visible_undo_steps(), undo_before);
 
     assert!(app.confirm_assistant_proposal());
-    let space = ketchup_core::space::CanonicalSpace::new(
+    let space = ketchup_model::space::CanonicalSpace::new(
         target,
         "maintenance access",
         ketchup_geometry::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
@@ -7912,7 +7912,7 @@ fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
     let mut app = KetchupApp::new();
     let owner = SpaceId(220);
     let target = ClearanceVolumeId(221);
-    let space = ketchup_core::space::CanonicalSpace::new(
+    let space = ketchup_model::space::CanonicalSpace::new(
         owner,
         "equipment",
         ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0])
@@ -7951,7 +7951,7 @@ fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
             reason: "maintenance envelope".to_owned(),
             volume_min: [1.0, 2.0, 3.0],
             volume_max: [4.0, 5.0, 6.0],
-            coordinate_frame: ketchup_core::space::ClearanceCoordinateFrame::World,
+            coordinate_frame: ketchup_model::space::ClearanceCoordinateFrame::World,
             tolerance_mm: 0.01,
             severity: ClearanceSeverity::Required,
             derived_from: None,
@@ -7962,7 +7962,7 @@ fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
     assert_eq!(app.document.visible_undo_steps(), undo_before);
 
     assert!(app.confirm_assistant_proposal());
-    let clearance = ketchup_core::space::CanonicalClearanceVolume::new(
+    let clearance = ketchup_model::space::CanonicalClearanceVolume::new(
         target,
         ClearanceOwner::Space(owner),
         "maintenance envelope",
@@ -7986,7 +7986,7 @@ fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
 fn assistant_delete_space_is_typed_observational_and_undoable() {
     let mut app = KetchupApp::new();
     let target = SpaceId(214);
-    let space = ketchup_core::space::CanonicalSpace::new(
+    let space = ketchup_model::space::CanonicalSpace::new(
         target,
         "maintenance access",
         ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
@@ -8040,7 +8040,7 @@ fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
     let mut app = KetchupApp::new();
     let owner = SpaceId(215);
     let target = ClearanceVolumeId(216);
-    let space = ketchup_core::space::CanonicalSpace::new(
+    let space = ketchup_model::space::CanonicalSpace::new(
         owner,
         "equipment",
         ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0])
@@ -8049,14 +8049,14 @@ fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
         Vec::new(),
     )
     .unwrap();
-    let clearance = ketchup_core::space::CanonicalClearanceVolume::new(
+    let clearance = ketchup_model::space::CanonicalClearanceVolume::new(
         target,
-        ketchup_core::space::ClearanceOwner::Space(owner),
+        ketchup_model::space::ClearanceOwner::Space(owner),
         "maintenance envelope",
         ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
             .unwrap(),
-        ketchup_core::tolerance::TolerancePolicy::new(0.01).unwrap(),
-        ketchup_core::space::ClearanceSeverity::Required,
+        ketchup_model::tolerance::TolerancePolicy::new(0.01).unwrap(),
+        ketchup_model::space::ClearanceSeverity::Required,
         None,
     )
     .unwrap();
@@ -8079,13 +8079,13 @@ fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
     assert_eq!(
         proposal.authoritative_diff()[0].before,
         ProposalValue::ClearanceVolumeState {
-            owner: ketchup_core::space::ClearanceOwner::Space(owner),
+            owner: ketchup_model::space::ClearanceOwner::Space(owner),
             reason: "maintenance envelope".to_owned(),
             volume_min: [0.0, 0.0, 0.0],
             volume_max: [1.0, 2.0, 3.0],
-            coordinate_frame: ketchup_core::space::ClearanceCoordinateFrame::World,
+            coordinate_frame: ketchup_model::space::ClearanceCoordinateFrame::World,
             tolerance_mm: 0.01,
-            severity: ketchup_core::space::ClearanceSeverity::Required,
+            severity: ketchup_model::space::ClearanceSeverity::Required,
             derived_from: None,
         }
     );
@@ -8252,7 +8252,7 @@ fn assistant_delete_rule_override_review_is_typed_observational_and_undoable() {
                 name: "Reviewed override source".to_owned(),
                 expression: "1".to_owned(),
                 input_ports: Vec::new(),
-                output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                output_ports: vec![ketchup_model::document::PortSpec::number("result").unwrap()],
                 outputs: vec![
                     RuleOutput::new(
                         SlotSegment::new(rule, "result", "left").unwrap(),
@@ -8263,7 +8263,7 @@ fn assistant_delete_rule_override_review_is_typed_observational_and_undoable() {
                 override_parameters: vec![OverrideParameterSpec::replace("offset").unwrap()],
             },
             CanonicalCommand::UpsertOverride(
-                ketchup_core::document::CanonicalOverride::new(
+                ketchup_model::document::CanonicalOverride::new(
                     target,
                     identity.clone(),
                     "offset",
@@ -9138,12 +9138,12 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     assert!(graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Union,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Union,
             ..
         }
     )));
     let committed_digest = committed.canonical_digest();
-    let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed))
+    let reopened = ketchup_model::persistence::load(&ketchup_model::persistence::save(&committed))
         .unwrap()
         .snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
@@ -9259,12 +9259,12 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     assert!(intersect_graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
             ..
         }
     )));
     let intersect_digest = intersected.canonical_digest();
-    let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&intersected))
+    let reopened = ketchup_model::persistence::load(&ketchup_model::persistence::save(&intersected))
         .unwrap()
         .snapshot();
     assert_eq!(reopened.canonical_digest(), intersect_digest);
@@ -9379,13 +9379,13 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     assert!(split_graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Split,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Split,
             ..
         }
     )));
     let split_digest = split_snapshot.canonical_digest();
     let reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&split_snapshot))
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&split_snapshot))
             .unwrap()
             .snapshot();
     assert_eq!(reopened.canonical_digest(), split_digest);
@@ -9523,7 +9523,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     );
     assert_eq!(
         subtract.push_pull_preview_exact_evaluator(),
-        Some(ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
+        Some(ketchup_model::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     subtract.clear_ephemeral_edit_state();
     assert!(!subtract.has_occurrence_operation_preview());
@@ -9547,13 +9547,13 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert!(subtract_graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Cut,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Cut,
             ..
         }
     )));
     let subtract_digest = subtract_committed.canonical_digest();
     let subtract_reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&subtract_committed))
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&subtract_committed))
             .unwrap()
             .snapshot();
     assert_eq!(subtract_reopened.canonical_digest(), subtract_digest);
@@ -9609,13 +9609,13 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert!(union_graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Union,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Union,
             ..
         }
     )));
     let union_digest = union_committed.canonical_digest();
     let union_reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&union_committed))
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&union_committed))
             .unwrap()
             .snapshot();
     assert_eq!(union_reopened.canonical_digest(), union_digest);
@@ -9676,12 +9676,12 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert!(result_graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
             ..
         }
     )));
     let committed_digest = committed.canonical_digest();
-    let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed))
+    let reopened = ketchup_model::persistence::load(&ketchup_model::persistence::save(&committed))
         .unwrap()
         .snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
@@ -9724,13 +9724,13 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     assert!(split_graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Split,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Split,
             ..
         }
     )));
     let split_digest = split_committed.canonical_digest();
     let split_reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&split_committed))
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&split_committed))
             .unwrap()
             .snapshot();
     assert_eq!(split_reopened.canonical_digest(), split_digest);
@@ -9772,11 +9772,11 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     ];
     let evidences = [
         StepImportEvidence {
-            source_sha256: ketchup_core::graph::sha256_bytes(sources[0]),
+            source_sha256: ketchup_model::graph::sha256_bytes(sources[0]),
             source_byte_len: sources[0].len() as u64,
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "target-exact-result".into(),
-            body_kind: ketchup_core::document::BodyKind::Solid,
+            body_kind: ketchup_model::document::BodyKind::Solid,
             solid_count: 1,
             topology_counts: [8, 12, 6, 1, 1],
             area_mm2: 1.0,
@@ -9786,11 +9786,11 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
             tolerance: "1e-7-mm".into(),
         },
         StepImportEvidence {
-            source_sha256: ketchup_core::graph::sha256_bytes(sources[1]),
+            source_sha256: ketchup_model::graph::sha256_bytes(sources[1]),
             source_byte_len: sources[1].len() as u64,
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "tool-exact-result".into(),
-            body_kind: ketchup_core::document::BodyKind::Solid,
+            body_kind: ketchup_model::document::BodyKind::Solid,
             solid_count: 1,
             topology_counts: [8, 12, 6, 1, 1],
             area_mm2: 1.0,
@@ -9927,7 +9927,7 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     assert!(graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
             ..
         }
     )));
@@ -9958,11 +9958,11 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     let mut app = KetchupApp::new();
     let source = b"mixed imported exact body";
     let evidence = StepImportEvidence {
-        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_sha256: ketchup_model::graph::sha256_bytes(source),
         source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "mixed-imported-exact-result".into(),
-        body_kind: ketchup_core::document::BodyKind::Solid,
+        body_kind: ketchup_model::document::BodyKind::Solid,
         solid_count: 1,
         topology_counts: [8, 12, 6, 1, 1],
         area_mm2: 1.0,
@@ -10114,12 +10114,12 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     assert!(graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Union,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Union,
             ..
         }
     )));
-    let reopened = ketchup_core::persistence::load(
-        &ketchup_core::persistence::save_container(&committed, &app.file.container_data).unwrap(),
+    let reopened = ketchup_model::persistence::load(
+        &ketchup_model::persistence::save_container(&committed, &app.file.container_data).unwrap(),
     )
     .unwrap()
     .snapshot();
@@ -10190,7 +10190,7 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     assert!(matches!(
         nested_graph.nodes.last().unwrap().operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Cut,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Cut,
             ..
         }
     ));
@@ -10270,7 +10270,7 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     assert!(reverse_graph.nodes.iter().any(|node| matches!(
         node.operation,
         ExactBRepOperation::Boolean {
-            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            operation: ketchup_model::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
             ..
         }
     )));
@@ -11436,7 +11436,7 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     assert!((app.active_boxes().into_iter().next().unwrap().size_mm.y - 65.0).abs() < 1.0e-5);
     let committed_digest = app.canonical_digest();
     let reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&app.document.current()))
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&app.document.current()))
             .unwrap()
             .snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
@@ -15590,7 +15590,7 @@ fn grounded_repeated_nested_instances_create_associative_drawing_with_roundtrip_
     let stale_path = instance_paths[0]
         .clone()
         .with_step(InstancePathStep::Occurrence(
-            ketchup_core::document::LocalOccurrenceId(u64::MAX),
+            ketchup_model::document::LocalOccurrenceId(u64::MAX),
         ));
     app.clear_selection();
     app.selection.occurrences.insert(stale_path);
@@ -15621,7 +15621,7 @@ fn grounded_repeated_nested_instances_create_associative_drawing_with_roundtrip_
     let sheet = committed.drawing_sheets().next().unwrap();
     assert_eq!(
         sheet.source(),
-        &ketchup_core::drawing::DrawingSource::RigidAssemblyInstances {
+        &ketchup_model::drawing::DrawingSource::RigidAssemblyInstances {
             instance_paths: instance_paths.clone()
         }
     );
@@ -15641,11 +15641,11 @@ fn grounded_repeated_nested_instances_create_associative_drawing_with_roundtrip_
         instance_paths
     );
     let committed_digest = committed.canonical_digest();
-    let bytes = ketchup_core::persistence::save(&committed);
-    let reopened = ketchup_core::persistence::load(&bytes).unwrap();
+    let bytes = ketchup_model::persistence::save(&committed);
+    let reopened = ketchup_model::persistence::load(&bytes).unwrap();
     assert_eq!(
         reopened.source_schema(),
-        ketchup_core::persistence::CURRENT_SCHEMA
+        ketchup_model::persistence::CURRENT_SCHEMA
     );
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
@@ -17758,7 +17758,7 @@ fn organized_component_hierarchy_round_trips_with_stable_identity() {
     assert!(app.make_unique());
 
     let expected = app.document.current();
-    let loaded = ketchup_core::persistence::load(&ketchup_core::persistence::save(&expected))
+    let loaded = ketchup_model::persistence::load(&ketchup_model::persistence::save(&expected))
         .unwrap()
         .snapshot();
     assert_eq!(loaded.canonical_digest(), expected.canonical_digest());
@@ -17785,7 +17785,7 @@ fn review_only_open_preserves_the_active_document_and_its_history() {
 
     let mut app = KetchupApp::new();
     assert!(app.save_document_to(&active_path));
-    let node_id = ketchup_core::document::NodeId(900);
+    let node_id = ketchup_model::document::NodeId(900);
     let active_revision = app
         .document
         .apply_batch(&CommandBatch::new(vec![
@@ -17817,7 +17817,7 @@ fn review_only_open_preserves_the_active_document_and_its_history() {
     let before_document_id = before.document_id();
     let before_revision = before.revision_id();
     let before_digest = before.canonical_digest();
-    let before_canonical_bytes = ketchup_core::persistence::save(&before);
+    let before_canonical_bytes = ketchup_model::persistence::save(&before);
     let before_evaluation = before.evaluate(&Default::default()).unwrap();
     let before_path = app.file.path.clone();
     let before_dirty = app.is_dirty();
@@ -17835,7 +17835,7 @@ fn review_only_open_preserves_the_active_document_and_its_history() {
     assert_eq!(after.revision_id(), before_revision);
     assert_eq!(after.canonical_digest(), before_digest);
     assert_eq!(
-        ketchup_core::persistence::save(&after),
+        ketchup_model::persistence::save(&after),
         before_canonical_bytes
     );
     assert_eq!(
@@ -17870,7 +17870,7 @@ fn migration_confirmation_rejects_review_candidate_tamper_atomically() {
     let value_start = alternate_source.len() - 12;
     alternate_source[value_start..value_start + 8]
         .copy_from_slice(&4.5_f64.to_bits().to_le_bytes());
-    app.file.review_candidate = Some(ketchup_core::persistence::load(&alternate_source).unwrap());
+    app.file.review_candidate = Some(ketchup_model::persistence::load(&alternate_source).unwrap());
 
     assert!(!app.confirm_review_candidate_migration_to(&destination));
     assert!(!destination.exists());
@@ -17893,7 +17893,7 @@ fn lossless_open_replaces_the_document_preserves_history_and_clears_review() {
     assert!(source.create_box());
     let expected = source.document.current();
     let expected_undo_steps = source.document.visible_undo_steps();
-    let expected_bytes = ketchup_core::persistence::save(&expected);
+    let expected_bytes = ketchup_model::persistence::save(&expected);
     assert!(source.save_document_to(&lossless_path));
 
     let mut app = KetchupApp::new();
@@ -17910,7 +17910,7 @@ fn lossless_open_replaces_the_document_preserves_history_and_clears_review() {
     assert_eq!(opened.document_id(), expected.document_id());
     assert_eq!(opened.revision_id(), expected.revision_id());
     assert_eq!(opened.canonical_digest(), expected.canonical_digest());
-    assert_eq!(ketchup_core::persistence::save(&opened), expected_bytes);
+    assert_eq!(ketchup_model::persistence::save(&opened), expected_bytes);
     assert_eq!(app.file.path.as_deref(), Some(lossless_path.as_path()));
     assert!(!app.is_dirty());
     assert_eq!(app.document.visible_undo_steps(), expected_undo_steps);
@@ -17974,7 +17974,7 @@ fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
     assert!(reopened.redo());
     assert!(reopened.is_dirty());
     assert!(reopened.save_document_to(&path));
-    let saved_again = ketchup_core::persistence::load_file(&path)
+    let saved_again = ketchup_model::persistence::load_file(&path)
         .unwrap()
         .snapshot();
     assert_eq!(

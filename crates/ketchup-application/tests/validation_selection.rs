@@ -13,7 +13,7 @@ use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
     AssistantPinJointFace,
 };
-use ketchup_core::{
+use ketchup_model::{
     assembly_joint::{
         AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
     },

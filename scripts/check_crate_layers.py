@@ -13,7 +13,7 @@ from pathlib import Path
 LAYERS = {
     "ketchup-tolerance": 0,
     "ketchup-geometry": 1,
-    "ketchup-core": 2,
+    "ketchup-model": 2,
     "ketchup-exact": 2,
     "ketchup-interaction": 3,
     "ketchup-assistant": 3,

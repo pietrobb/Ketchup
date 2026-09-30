@@ -4,7 +4,7 @@
 //! Run: cargo test -p ketchup-app --test garden_studio_source_parity -- --ignored --nocapture
 
 use ketchup_application::{DocumentSession, SessionSettings};
-use ketchup_core::exact_product::ExactBodyPackage;
+use ketchup_model::exact_product::ExactBodyPackage;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;

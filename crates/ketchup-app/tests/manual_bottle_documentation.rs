@@ -3,7 +3,7 @@ use crate::harness;
 use eframe::egui::Key;
 use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
-use ketchup_core::document::{OccurrenceId, ProfileSegment, SpatialPathSegment};
+use ketchup_model::document::{OccurrenceId, ProfileSegment, SpatialPathSegment};
 use std::{
     path::{Path, PathBuf},
     time::Duration,

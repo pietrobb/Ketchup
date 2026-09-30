@@ -1,0 +1,36 @@
+[package]
+name = "ketchup-model"
+description = "The Ketchup document model: canonical document, commands, revisions, evaluator graph and persistence"
+version.workspace = true
+edition.workspace = true
+autotests = false
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Test doubles for exact evaluation results; see `src/testing.rs`.
+testing = []
+
+[dependencies]
+ciborium = "0.2"
+ed25519-dalek = "2.2.0"
+ketchup-geometry = { path = "../ketchup-geometry" }
+ketchup-tolerance = { path = "../ketchup-tolerance" }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+sha2 = "0.10.9"
+tempfile = "3.23.0"
+
+[dev-dependencies]
+ketchup-model = { path = ".", features = ["testing"] }
+ketchup-exact = { path = "../ketchup-exact" }
+resvg = { version = "0.48.1", default-features = false, features = ["system-fonts", "text"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

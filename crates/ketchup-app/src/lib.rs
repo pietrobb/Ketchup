@@ -41,8 +41,8 @@ use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadLoftContinuity,
 };
-use ketchup_core::cam::{CamPlanId, CamPostprocessorDialect};
-use ketchup_core::document::{
+use ketchup_model::cam::{CamPlanId, CamPostprocessorDialect};
+use ketchup_model::document::{
     AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand,
     CanonicalError, ClassificationCategoryId, ClassificationDimensionId, CloneDefinitionPlan,
     CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, Dimension, DimensionDisplayUnit,
@@ -57,26 +57,26 @@ use ketchup_core::document::{
     Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
-use ketchup_core::document::{
+use ketchup_model::document::{
     OverrideParameterSpec, ParameterValueType, PersistentDimension, PersistentDimensionTarget,
     SlotResolution,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole, ExactMeshExport,
     ExactResultRegistry, ExactStlExport, MeshExportBody, MeshExportSource,
     exact_body_terminal_features, model_stl_export,
 };
 #[cfg(test)]
-use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
-use ketchup_core::exact_validation::{
+use ketchup_model::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
+use ketchup_model::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
 };
-use ketchup_core::graph::{
+use ketchup_model::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
     sha256_reader_hex,
 };
-use ketchup_core::import::{
+use ketchup_model::import::{
     DxfImportOptions, IgesXdeImportEvidence, ImportDiagnosticSeverity, ImportFormat,
     ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES,
     MAX_GLB_SOURCE_BYTES, MAX_IGES_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES,
@@ -86,24 +86,24 @@ use ketchup_core::import::{
     plan_step_xde_import, plan_stl_import,
 };
 #[cfg(test)]
-use ketchup_core::import::{
+use ketchup_model::import::{
     StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
 };
-use ketchup_core::persistence::ContainerData;
-use ketchup_core::sheet_metal::{
+use ketchup_model::persistence::ContainerData;
+use ketchup_model::sheet_metal::{
     SheetMetalManufacturingProjection, project_sheet_metal_manufacturing,
 };
 #[cfg(test)]
-use ketchup_core::space::ClearanceOwner;
-use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
-use ketchup_core::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
-use ketchup_core::tolerance::TolerancePolicy;
-use ketchup_core::tolerance::{
+use ketchup_model::space::ClearanceOwner;
+use ketchup_model::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
+use ketchup_model::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
+use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM,
     NEGLIGIBLE, ROUNDING, SCREEN_ROUNDING_PX,
 };
-use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
-use ketchup_core::validation::ValidatorRoleIndex;
+use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
+use ketchup_model::validation::ValidatorRoleIndex;
 use ketchup_geometry::prismatic::JointId;
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
@@ -3173,14 +3173,14 @@ fn assistant_memory_tokens(text: &str) -> BTreeSet<String> {
 }
 
 fn assistant_memory_entry_sha256(entry: &AssistantMemoryEntry) -> String {
-    ketchup_core::graph::sha256_hex(
+    ketchup_model::graph::sha256_hex(
         format!("{}\n{}\n{}", entry.sequence, entry.user, entry.assistant).as_bytes(),
     )
 }
 
 fn assistant_conversation_digest(messages: &[AssistantChatMessage]) -> String {
     let bytes = serde_json::to_vec(messages).expect("assistant messages are serializable");
-    ketchup_core::graph::sha256_hex(&bytes)
+    ketchup_model::graph::sha256_hex(&bytes)
 }
 
 fn bounded_assistant_state_view(content: &str) -> serde_json::Value {
@@ -3199,7 +3199,7 @@ fn bounded_assistant_state_view(content: &str) -> serde_json::Value {
         "format": AGENT_STATE_VIEW,
         "complete": complete,
         "byte_length": content.len(),
-        "sha256": ketchup_core::graph::sha256_hex(content.as_bytes()),
+        "sha256": ketchup_model::graph::sha256_hex(content.as_bytes()),
         "content": bounded,
     })
 }
@@ -4127,12 +4127,12 @@ fn assistant_proposal_prepare_rejection(
 }
 
 fn assistant_feature_edit_rejection(
-    error: ketchup_core::feature_history::BodyParameterEditError,
+    error: ketchup_model::feature_history::BodyParameterEditError,
     operation: &str,
     target: &str,
 ) -> AssistantRejection {
     match error {
-        ketchup_core::feature_history::BodyParameterEditError::Proposal(error) => {
+        ketchup_model::feature_history::BodyParameterEditError::Proposal(error) => {
             assistant_proposal_prepare_rejection(error, operation, target)
         }
         error => assistant_planning_rejection(
@@ -4928,7 +4928,7 @@ struct MigrationReviewIdentity {
     document_id: DocumentId,
     revision_id: u64,
     canonical_digest: String,
-    audit: ketchup_core::persistence::LoadAudit,
+    audit: ketchup_model::persistence::LoadAudit,
     container_sha256: [u8; 32],
 }
 
@@ -4989,7 +4989,7 @@ enum MutationReadiness {
 
 enum WorkRecoveryMutationError<E> {
     Mutation(E),
-    Recovery(ketchup_core::persistence::FilePersistenceError),
+    Recovery(ketchup_model::persistence::FilePersistenceError),
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for WorkRecoveryMutationError<E> {
@@ -5115,7 +5115,7 @@ impl KetchupApp {
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
-                container_data: ketchup_core::persistence::ContainerData::default(),
+                container_data: ketchup_model::persistence::ContainerData::default(),
                 review_candidate: None,
                 migration_review_plan: None,
                 recovery_open: None,
@@ -5506,7 +5506,7 @@ impl KetchupApp {
     }
 
     fn migration_review_identity(
-        outcome: &ketchup_core::persistence::LoadOutcome,
+        outcome: &ketchup_model::persistence::LoadOutcome,
     ) -> Result<MigrationReviewIdentity, String> {
         let candidate = outcome
             .review_candidate()
@@ -5515,7 +5515,7 @@ impl KetchupApp {
         let mut audit = candidate.audit().clone();
         audit.recovered_from_backup = false;
         let container =
-            ketchup_core::persistence::save_container(snapshot, candidate.container_data())
+            ketchup_model::persistence::save_container(snapshot, candidate.container_data())
                 .map_err(|error| error.to_string())?;
         Ok(MigrationReviewIdentity {
             document_id: snapshot.document_id(),
@@ -5531,10 +5531,10 @@ impl KetchupApp {
         path: &Path,
         effective_path: PathBuf,
         source: Vec<u8>,
-        outcome: &ketchup_core::persistence::LoadOutcome,
+        outcome: &ketchup_model::persistence::LoadOutcome,
     ) -> Result<MigrationReviewPlan, String> {
         let rederived =
-            ketchup_core::persistence::load(&source).map_err(|error| error.to_string())?;
+            ketchup_model::persistence::load(&source).map_err(|error| error.to_string())?;
         let review = Self::migration_review_identity(outcome)?;
         if Self::migration_review_identity(&rederived)? != review {
             return Err("migration review does not match the exact loaded source bytes".to_owned());
@@ -5557,7 +5557,7 @@ impl KetchupApp {
 
     fn open_document_from(&mut self, path: &Path) -> bool {
         self.cancel_pending_assistant_work();
-        match ketchup_core::persistence::load_file_with_source(path) {
+        match ketchup_model::persistence::load_file_with_source(path) {
             Ok(loaded_file) => {
                 let (outcome, effective_path, source, work_recovery_identity) =
                     loaded_file.into_parts();
@@ -5597,7 +5597,7 @@ impl KetchupApp {
                     return false;
                 }
                 let file_identity = (effective_path == path)
-                    .then(|| ketchup_core::persistence::FileIdentity::from_bytes(&source));
+                    .then(|| ketchup_model::persistence::FileIdentity::from_bytes(&source));
                 let recovery_open = (effective_path != path).then(|| RecoveryOpenState {
                     requested_path: path.to_owned(),
                     source_path: effective_path,
@@ -5726,7 +5726,7 @@ impl KetchupApp {
         let Some((path, identity)) = self.file.pending_work_recovery_cleanup.clone() else {
             return Ok(());
         };
-        ketchup_core::persistence::clear_work_recovery(&path, Some(identity))
+        ketchup_model::persistence::clear_work_recovery(&path, Some(identity))
             .map_err(|error| error.to_string())?;
         self.file.pending_work_recovery_cleanup = None;
         Ok(())
@@ -5741,7 +5741,7 @@ impl KetchupApp {
         );
         if !self.is_dirty() {
             if let Some(path) = self.file.path.as_deref()
-                && ketchup_core::persistence::clear_work_recovery(
+                && ketchup_model::persistence::clear_work_recovery(
                     path,
                     self.file.work_recovery_identity,
                 )
@@ -5762,7 +5762,7 @@ impl KetchupApp {
         self.store_assistant_conversation();
         self.store_assistant_memory();
         if let Ok(checkpoint_identity) =
-            ketchup_core::persistence::save_work_recovery_document_store_with_container(
+            ketchup_model::persistence::save_work_recovery_document_store_with_container(
                 &path,
                 &self.document,
                 &self.file.container_data,
@@ -5805,13 +5805,13 @@ impl KetchupApp {
         }
         self.store_assistant_conversation();
         self.store_assistant_memory();
-        let (prepared, truncate_history) = match ketchup_core::persistence::save_document_store(
+        let (prepared, truncate_history) = match ketchup_model::persistence::save_document_store(
             &self.document,
             &self.file.container_data,
         ) {
             Ok(bytes) => (bytes, false),
-            Err(ketchup_core::persistence::PersistenceError::ResourceLimit) => {
-                let bytes = match ketchup_core::persistence::save_document_store_current_snapshot(
+            Err(ketchup_model::persistence::PersistenceError::ResourceLimit) => {
+                let bytes = match ketchup_model::persistence::save_document_store_current_snapshot(
                     &self.document,
                     &self.file.container_data,
                 ) {
@@ -5867,14 +5867,14 @@ impl KetchupApp {
                 return false;
             }
         };
-        let saved_identity = ketchup_core::persistence::FileIdentity::from_bytes(&prepared);
+        let saved_identity = ketchup_model::persistence::FileIdentity::from_bytes(&prepared);
         let owned_identity = (self.file.path.as_deref() == Some(path))
             .then_some(self.file.identity)
             .flatten();
-        let expected_identity = match ketchup_core::persistence::read_native_document_identity(path)
+        let expected_identity = match ketchup_model::persistence::read_native_document_identity(path)
         {
             Ok(identity) => Some(identity),
-            Err(ketchup_core::persistence::FilePersistenceError::Io(error))
+            Err(ketchup_model::persistence::FilePersistenceError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
                 None
@@ -5897,7 +5897,7 @@ impl KetchupApp {
                     ("path", path.display().to_string()),
                     (
                         "reason",
-                        ketchup_core::persistence::FilePersistenceError::ExternalConflict
+                        ketchup_model::persistence::FilePersistenceError::ExternalConflict
                             .to_string(),
                     ),
                 ]),
@@ -5920,27 +5920,27 @@ impl KetchupApp {
             return false;
         }
         let result = match (truncate_history, expected_identity) {
-            (true, Some(expected)) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
+            (true, Some(expected)) => ketchup_model::persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
                 path,
                 &self.document,
                 &self.file.container_data,
                 expected,
             )
             .map(|_| ()),
-            (false, Some(expected)) => ketchup_core::persistence::save_atomic_document_store_with_container_if_unchanged(
+            (false, Some(expected)) => ketchup_model::persistence::save_atomic_document_store_with_container_if_unchanged(
                 path,
                 &self.document,
                 &self.file.container_data,
                 expected,
             )
             .map(|_| ()),
-            (true, None) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container_if_absent(
+            (true, None) => ketchup_model::persistence::save_atomic_document_store_current_snapshot_with_container_if_absent(
                 path,
                 &self.document,
                 &self.file.container_data,
             )
             .map(|_| ()),
-            (false, None) => ketchup_core::persistence::save_atomic_document_store_with_container_if_absent(
+            (false, None) => ketchup_model::persistence::save_atomic_document_store_with_container_if_absent(
                 path,
                 &self.document,
                 &self.file.container_data,
@@ -5961,7 +5961,7 @@ impl KetchupApp {
                 });
                 if let (Some(recovery_path), Some(recovery_identity)) =
                     (owned_recovery_path, self.file.work_recovery_identity)
-                    && ketchup_core::persistence::clear_work_recovery(
+                    && ketchup_model::persistence::clear_work_recovery(
                         &recovery_path,
                         Some(recovery_identity),
                     )
@@ -6486,7 +6486,7 @@ impl KetchupApp {
         let blob_hash = staged_container
             .insert_import_blob(source.source.clone())
             .map_err(|error| error.to_string())?;
-        if blob_hash != ketchup_core::graph::sha256_hex(&source.source) {
+        if blob_hash != ketchup_model::graph::sha256_hex(&source.source) {
             return Err("STEP content-addressed blob identity mismatch".to_owned());
         }
         Ok(StepImportPreviewPlan {
@@ -7941,7 +7941,7 @@ impl KetchupApp {
                     &AtomicBool::new(false),
                 )
                 .map_err(|error| error.to_string())?;
-            let iges_sha256 = ketchup_core::graph::sha256_hex(&iges);
+            let iges_sha256 = ketchup_model::graph::sha256_hex(&iges);
             let exported_evidence = worker
                 .inspect_iges_xde_import_with_cancellation(
                     &prepared_iges,
@@ -8036,7 +8036,7 @@ impl KetchupApp {
                             .is_some_and(|recovery| recovery.requested_path == path);
                     if reopening_active {
                         if let Some(identity) = self.file.work_recovery_identity
-                            && let Err(error) = ketchup_core::persistence::clear_work_recovery(
+                            && let Err(error) = ketchup_model::persistence::clear_work_recovery(
                                 &path,
                                 Some(identity),
                             )
@@ -8466,7 +8466,7 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub fn revision_catalog(&self) -> Vec<ketchup_core::document::RevisionCatalogEntry> {
+    pub fn revision_catalog(&self) -> Vec<ketchup_model::document::RevisionCatalogEntry> {
         self.document.revision_catalog()
     }
 
@@ -8633,7 +8633,7 @@ impl KetchupApp {
                 return Err("sealed migration source identity does not match its bytes".to_owned());
             }
             let current_source =
-                ketchup_core::persistence::read_native_document_file(&plan.source.effective_path)
+                ketchup_model::persistence::read_native_document_file(&plan.source.effective_path)
                     .map_err(|error| error.to_string())?;
             if current_source != plan.source.source
                 || current_source.len() as u64 != plan.source.source_byte_len
@@ -8642,7 +8642,7 @@ impl KetchupApp {
                 return Err("migration source changed after review".to_owned());
             }
 
-            let rederived = ketchup_core::persistence::load(&current_source)
+            let rederived = ketchup_model::persistence::load(&current_source)
                 .map_err(|error| error.to_string())?;
             if Self::migration_review_identity(&rederived)? != plan.review {
                 return Err(
@@ -8656,7 +8656,7 @@ impl KetchupApp {
                 .map_err(|error| error.to_string())?;
             let (document, container_data) = confirmed.into_parts();
             let snapshot = document.current();
-            let bytes = ketchup_core::persistence::save_container(&snapshot, &container_data)
+            let bytes = ketchup_model::persistence::save_container(&snapshot, &container_data)
                 .map_err(|error| error.to_string())?;
             let parent = destination.parent().unwrap_or_else(|| Path::new("."));
             let mut temporary =
@@ -8668,7 +8668,7 @@ impl KetchupApp {
             temporary
                 .persist_noclobber(destination)
                 .map_err(|error| error.error.to_string())?;
-            let file_identity = ketchup_core::persistence::FileIdentity::from_bytes(&bytes);
+            let file_identity = ketchup_model::persistence::FileIdentity::from_bytes(&bytes);
             Ok((document, container_data, file_identity))
         })();
         let (mut document, container_data, file_identity) = match result {
@@ -9098,10 +9098,10 @@ impl KetchupApp {
         let mut label = path.root_occurrence().0.to_string();
         for step in path.steps() {
             match step {
-                ketchup_core::document::InstancePathStep::Group(id) => {
+                ketchup_model::document::InstancePathStep::Group(id) => {
                     label.push_str(&format!(" / G{}", id.0));
                 }
-                ketchup_core::document::InstancePathStep::Occurrence(id) => {
+                ketchup_model::document::InstancePathStep::Occurrence(id) => {
                     label.push_str(&format!(" / O{}", id.0));
                 }
             }
@@ -9124,10 +9124,10 @@ impl KetchupApp {
             .map(|step| {
                 let step_owner_definition_id = owner_definition_id;
                 let (kind, local_id) = match step {
-                    ketchup_core::document::InstancePathStep::Group(id) => ("group", id.0),
-                    ketchup_core::document::InstancePathStep::Occurrence(id) => {
+                    ketchup_model::document::InstancePathStep::Group(id) => ("group", id.0),
+                    ketchup_model::document::InstancePathStep::Occurrence(id) => {
                         owner_definition_id = snapshot
-                            .local_occurrence(ketchup_core::document::LocalOccurrenceKey {
+                            .local_occurrence(ketchup_model::document::LocalOccurrenceKey {
                                 definition_id: step_owner_definition_id,
                                 local_id: *id,
                             })
@@ -9338,16 +9338,16 @@ impl KetchupApp {
                 health,
             } => {
                 let health = match health {
-                    ketchup_core::graph::SlotResolution::Resolved => {
+                    ketchup_model::graph::SlotResolution::Resolved => {
                         self.catalog.text("assistant-health-resolved")
                     }
-                    ketchup_core::graph::SlotResolution::Ambiguous { segment_index } => {
+                    ketchup_model::graph::SlotResolution::Ambiguous { segment_index } => {
                         self.catalog.format(
                             "assistant-health-ambiguous",
                             &BTreeMap::from([("segment", segment_index.to_string())]),
                         )
                     }
-                    ketchup_core::graph::SlotResolution::Lost { segment_index } => {
+                    ketchup_model::graph::SlotResolution::Lost { segment_index } => {
                         self.catalog.format(
                             "assistant-health-lost",
                             &BTreeMap::from([("segment", segment_index.to_string())]),
@@ -9450,10 +9450,10 @@ impl KetchupApp {
                 derived_from,
             } => {
                 let owner = match owner {
-                    ketchup_core::space::ClearanceOwner::Occurrence(path) => {
+                    ketchup_model::space::ClearanceOwner::Occurrence(path) => {
                         Self::assistant_instance_path_label(path)
                     }
-                    ketchup_core::space::ClearanceOwner::Space(id) => id.0.to_string(),
+                    ketchup_model::space::ClearanceOwner::Space(id) => id.0.to_string(),
                 };
                 let severity = match severity {
                     ClearanceSeverity::Advisory => "assistant-severity-advisory",
@@ -9491,13 +9491,13 @@ impl KetchupApp {
                 presentation,
             } => {
                 let target = match target {
-                    ketchup_core::document::PersistentDimensionTarget::FeatureParameter(target) => {
+                    ketchup_model::document::PersistentDimensionTarget::FeatureParameter(target) => {
                         format!("{}:{}", target.feature_id.0, target.path.as_str())
                     }
-                    ketchup_core::document::PersistentDimensionTarget::DerivedOutput(identity) => {
+                    ketchup_model::document::PersistentDimensionTarget::DerivedOutput(identity) => {
                         Self::assistant_derived_identity_label(identity)
                     }
-                    ketchup_core::document::PersistentDimensionTarget::ExactFeatureParameter {
+                    ketchup_model::document::PersistentDimensionTarget::ExactFeatureParameter {
                         definition_id,
                         producer_feature_id,
                         semantic_role,
@@ -9764,7 +9764,7 @@ impl KetchupApp {
         let Ok(bytes) = serde_json::to_vec(&conversation) else {
             return;
         };
-        let Ok(entry) = ketchup_core::persistence::ExtensionEntry::new(
+        let Ok(entry) = ketchup_model::persistence::ExtensionEntry::new(
             ASSISTANT_CHAT_NAMESPACE,
             ASSISTANT_CHAT_PATH,
             false,
@@ -9782,7 +9782,7 @@ impl KetchupApp {
         if bytes.len() > MAX_ASSISTANT_MEMORY_STORAGE_BYTES {
             return;
         }
-        let Ok(entry) = ketchup_core::persistence::ExtensionEntry::new(
+        let Ok(entry) = ketchup_model::persistence::ExtensionEntry::new(
             ASSISTANT_CHAT_NAMESPACE,
             ASSISTANT_MEMORY_PATH,
             false,
@@ -10000,13 +10000,13 @@ impl KetchupApp {
         let selected_parameter_edit_target = self.assistant_parameter_edit_target().map(
             |(definition_id, body_id, target, name, current_value_mm)| {
                 let (feature_id, constraint_id, parameter_path) = match target {
-                    ketchup_core::feature_history::ExactParameterEditTarget::FeatureDimension(
+                    ketchup_model::feature_history::ExactParameterEditTarget::FeatureDimension(
                         feature_id,
                     ) => (feature_id, None, None),
-                    ketchup_core::feature_history::ExactParameterEditTarget::FeatureParameter(
+                    ketchup_model::feature_history::ExactParameterEditTarget::FeatureParameter(
                         target,
                     ) => (target.feature_id, None, Some(target.path.as_str().to_owned())),
-                    ketchup_core::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
+                    ketchup_model::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
                         sketch_id,
                         constraint_id,
                     } => (sketch_id, Some(constraint_id.0), None),
@@ -10126,13 +10126,13 @@ impl KetchupApp {
             .assistant_parameter_edit_target()
             .map(|(definition_id, body_id, target, name, current_value_mm)| {
                 let (feature_id, constraint_id, parameter_path) = match target {
-                    ketchup_core::feature_history::ExactParameterEditTarget::FeatureDimension(
+                    ketchup_model::feature_history::ExactParameterEditTarget::FeatureDimension(
                         feature_id,
                     ) => (feature_id, None, None),
-                    ketchup_core::feature_history::ExactParameterEditTarget::FeatureParameter(
+                    ketchup_model::feature_history::ExactParameterEditTarget::FeatureParameter(
                         target,
                     ) => (target.feature_id, None, Some(target.path.as_str().to_owned())),
-                    ketchup_core::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
+                    ketchup_model::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
                         sketch_id,
                         constraint_id,
                     } => (sketch_id, Some(constraint_id.0), None),
@@ -10388,11 +10388,11 @@ impl KetchupApp {
         }
         if let [edit] = intent.parameter_edits.as_slice() {
             let target = match edit.constraint_id {
-                Some(constraint_id) => ketchup_core::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
+                Some(constraint_id) => ketchup_model::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
                     sketch_id: FeatureId(edit.feature_id),
                     constraint_id: ketchup_geometry::sketch::SketchConstraintId(constraint_id),
                 },
-                None => ketchup_core::feature_history::ExactParameterEditTarget::FeatureDimension(
+                None => ketchup_model::feature_history::ExactParameterEditTarget::FeatureDimension(
                     FeatureId(edit.feature_id),
                 ),
             };
@@ -10423,12 +10423,12 @@ impl KetchupApp {
                 Dimension::new(edit.value_mm.to_string(), edit.value_mm).map_err(|error| {
                     assistant_canonical_rejection(error.into(), "edit_parameter", &edit_target)
                 })?;
-            return ketchup_core::feature_history::prepare_body_parameter_edit(
+            return ketchup_model::feature_history::prepare_body_parameter_edit(
                 &self.document,
-                ketchup_core::feature_history::BodyParameterEditRequest {
+                ketchup_model::feature_history::BodyParameterEditRequest {
                     definition_id,
                     body_id,
-                    edits: vec![ketchup_core::feature_history::ExactParameterEdit {
+                    edits: vec![ketchup_model::feature_history::ExactParameterEdit {
                         target,
                         dimension,
                     }],
@@ -10442,9 +10442,9 @@ impl KetchupApp {
         }
         if let [translation] = intent.profile_translations.as_slice() {
             let profile_target = format!("feature:{}", translation.profile_id);
-            return ketchup_core::feature_history::prepare_body_profile_translation(
+            return ketchup_model::feature_history::prepare_body_profile_translation(
                 &self.document,
-                ketchup_core::feature_history::BodyProfileTranslationRequest {
+                ketchup_model::feature_history::BodyProfileTranslationRequest {
                     definition_id: DefinitionId(translation.definition_id),
                     body_id: BodyId(translation.body_id),
                     profile_id: FeatureId(translation.profile_id),
@@ -19163,9 +19163,9 @@ impl KetchupApp {
             if distance_mm < 0.01 {
                 return false;
             }
-            let preview = match ketchup_core::feature_history::prepare_body_profile_translation(
+            let preview = match ketchup_model::feature_history::prepare_body_profile_translation(
                 &self.document,
-                ketchup_core::feature_history::BodyProfileTranslationRequest {
+                ketchup_model::feature_history::BodyProfileTranslationRequest {
                     definition_id: target.definition_id,
                     body_id: target.body_id,
                     profile_id: target.profile_id,
@@ -23151,7 +23151,7 @@ impl KetchupApp {
             exact_solid_tool_feature_id(&snapshot, definition_id)?,
         )
         .ok()
-        .map(|_| ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
+        .map(|_| ketchup_model::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
     }
 
     #[must_use]
@@ -23328,7 +23328,7 @@ impl KetchupApp {
                     || conversation_digest != saved_conversation_digest;
                 if !dirty {
                     if let Some(path) = document_path.as_deref() {
-                        ketchup_core::persistence::clear_work_recovery(
+                        ketchup_model::persistence::clear_work_recovery(
                             path,
                             work_recovery_identity,
                         )
@@ -23341,7 +23341,7 @@ impl KetchupApp {
                     return Ok(());
                 };
                 next_work_recovery_identity = Some(
-                    ketchup_core::persistence::save_work_recovery_document_store_with_container(
+                    ketchup_model::persistence::save_work_recovery_document_store_with_container(
                         path,
                         document,
                         container_data,
@@ -23365,7 +23365,7 @@ impl KetchupApp {
             Err(WorkRecoveryMutationError::Recovery(error)) => {
                 let path = document_path
                     .as_deref()
-                    .map(ketchup_core::persistence::work_recovery_path)
+                    .map(ketchup_model::persistence::work_recovery_path)
                     .unwrap_or_default();
                 self.digest = self.catalog.format(
                     "error-save-document",
@@ -23483,7 +23483,7 @@ impl KetchupApp {
         &mut self,
         proposal: &Proposal,
     ) -> Result<
-        ketchup_core::document::VerifiedProposalCommit,
+        ketchup_model::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
         self.complete_mutation_with_work_recovery(|document| {
@@ -23496,7 +23496,7 @@ impl KetchupApp {
         proposal: &Proposal,
         staged_container: ContainerData,
     ) -> Result<
-        ketchup_core::document::VerifiedProposalCommit,
+        ketchup_model::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
         let previous_container = std::mem::replace(&mut self.file.container_data, staged_container);
@@ -36602,7 +36602,7 @@ fn export_path_identity_sha256(path: &Path) -> String {
     };
     #[cfg(not(any(unix, windows)))]
     let bytes = path.to_string_lossy().as_bytes().to_vec();
-    ketchup_core::graph::sha256_hex(&bytes)
+    ketchup_model::graph::sha256_hex(&bytes)
 }
 
 fn export_bundle_journal_path(primary_path: &Path) -> Result<PathBuf, String> {
@@ -37120,8 +37120,8 @@ fn write_export_bundle(
             .transpose()?,
         original_primary_sha256: precondition.primary_sha256.clone(),
         original_report_sha256: precondition.report_sha256.clone(),
-        published_primary_sha256: ketchup_core::graph::sha256_hex(primary),
-        published_report_sha256: ketchup_core::graph::sha256_hex(report),
+        published_primary_sha256: ketchup_model::graph::sha256_hex(primary),
+        published_report_sha256: ketchup_model::graph::sha256_hex(report),
     };
     persist_export_journal(primary_path, &journal)?;
 

@@ -19,7 +19,7 @@ mod rule_program_split_union;
 mod validation_selection;
 mod workflow_trace;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

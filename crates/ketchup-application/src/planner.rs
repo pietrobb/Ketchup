@@ -21,35 +21,35 @@ use ketchup_assistant::sidecar::{
     AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
     AssistantWorkplaneSpec, validated_spatial_path_segments,
 };
-use ketchup_core::assembly_joint::{
+use ketchup_model::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
     preview_assembly_joint_drag,
 };
-use ketchup_core::cam::{
+use ketchup_model::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
     CloneDefinitionPlan, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind, FeatureParameterTarget, InstancePath, InstancePathStep, LocalGroupId,
     LocalOccurrenceId, NodeId, OccurrenceId, ParameterPath, ParameterValueType, ProfileSegment,
     Snapshot, SpatialPathSegment, TagId, Transform,
 };
-use ketchup_core::drawing::{
+use ketchup_model::drawing::{
     DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins, DrawingPageOrientation,
     DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSheet, DrawingSheetId,
     DrawingSource, DrawingTitleBlock, OrthographicViewKind, project_orthographic_drawing,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_product::{
     ExactBodyPackage, ExactResultRegistry, ExactSnapshotPreparation,
 };
-use ketchup_core::pin_joint::{
+use ketchup_model::pin_joint::{
     PinHole, PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair,
     project_pin_joint_contract,
 };
-use ketchup_core::tolerance::ROUNDING;
-use ketchup_core::topology::TopologicalElementKind;
+use ketchup_model::tolerance::ROUNDING;
+use ketchup_model::topology::TopologicalElementKind;
 use ketchup_geometry::sketch::{
     PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
 };
@@ -2031,7 +2031,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         }
                         CanonicalCommand::CreateFeature {
                             id,
-                            kind: ketchup_core::document::FeatureKind::Sketch(_),
+                            kind: ketchup_model::document::FeatureKind::Sketch(_),
                             ..
                         } => {
                             staged_planning.record_output(
@@ -2045,8 +2045,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                 AssistantCadEditOperation::CreatePart { .. }
                             ) && !matches!(
                                 kind,
-                                ketchup_core::document::FeatureKind::Workplane(_)
-                                    | ketchup_core::document::FeatureKind::Sketch(_)
+                                ketchup_model::document::FeatureKind::Workplane(_)
+                                    | ketchup_model::document::FeatureKind::Sketch(_)
                             ) =>
                         {
                             staged_planning.record_output(
@@ -2416,7 +2416,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 let sketch_id = creation_commands.iter().find_map(|command| match command {
                     CanonicalCommand::CreateFeature {
                         id,
-                        kind: ketchup_core::document::FeatureKind::Sketch(_),
+                        kind: ketchup_model::document::FeatureKind::Sketch(_),
                         ..
                     } => Some(*id),
                     _ => None,

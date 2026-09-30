@@ -1,6 +1,6 @@
 use crate::model_query::{ModelQuery, QueryError};
 use crate::{DocumentSession, SessionError};
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DocumentStore, OccurrenceId, Proposal, ProposalBudget,
     ProposalContext, Snapshot, VerifiedProposalCommit,
 };

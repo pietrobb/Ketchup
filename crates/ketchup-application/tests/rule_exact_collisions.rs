@@ -1,7 +1,7 @@
 //! Box overlaps a rule program cannot decide are settled by the exact solids.
 use ketchup_application::{DocumentSession, SessionSettings, verify_rule_program_exact};
-use ketchup_core::document::RuleProgramSource;
-use ketchup_core::persistence::ContainerData;
+use ketchup_model::document::RuleProgramSource;
+use ketchup_model::persistence::ContainerData;
 use ketchup_program::COLLISION_UNVERIFIED;
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;

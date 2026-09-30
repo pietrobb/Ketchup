@@ -27,9 +27,9 @@ EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 # Readers of old file formats must name the old fields and role categories they convert;
 # they are the one exception.
 OLD_FORMAT_READERS = {
-    "crates/ketchup-core/src/document/digest_v3.rs",
-    "crates/ketchup-core/src/persistence/legacy.rs",
-    "crates/ketchup-core/src/persistence/snapshot_codec.rs",
+    "crates/ketchup-model/src/document/digest_v3.rs",
+    "crates/ketchup-model/src/persistence/legacy.rs",
+    "crates/ketchup-model/src/persistence/snapshot_codec.rs",
 }
 WORDS = [
     "bottle", "teapot", "balloon_text", "balloon_glyph", "gable_roof", "staircase",

@@ -22,7 +22,7 @@ use ketchup_app::ValidatorPanelReport;
 use ketchup_assistant::sidecar::{
     AssistantBoxIntent, AssistantModelIntent, AssistantTranslationIntent,
 };
-use ketchup_core::document::OccurrenceId;
+use ketchup_model::document::OccurrenceId;
 use std::collections::BTreeMap;
 
 const FOUNDATION_TOP_MM: f64 = 300.0;

@@ -44,11 +44,11 @@ def test_assistant_pdm_and_analysis_are_never_below_the_model():
     layers = checker.LAYERS
     graph = checker.workspace_dependencies(ROOT)
     for crate in ["ketchup-assistant", "ketchup-pdm", "ketchup-analysis"]:
-        assert layers[crate] > layers["ketchup-core"]
-        assert crate not in graph["ketchup-core"]
+        assert layers[crate] > layers["ketchup-model"]
+        assert crate not in graph["ketchup-model"]
 
 
 def test_geometry_depends_on_nothing_but_the_tolerances():
     graph = checker.workspace_dependencies(ROOT)
     assert graph["ketchup-geometry"] == ["ketchup-tolerance"]
-    assert checker.LAYERS["ketchup-geometry"] < checker.LAYERS["ketchup-core"]
+    assert checker.LAYERS["ketchup-geometry"] < checker.LAYERS["ketchup-model"]

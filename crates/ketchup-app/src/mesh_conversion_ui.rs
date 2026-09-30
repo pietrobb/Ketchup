@@ -256,13 +256,13 @@ impl KetchupApp {
             return;
         };
         let kind_key = match pending.plan.candidate().kind() {
-            ketchup_core::mesh_recognition::RecognizedMeshKind::Box => {
+            ketchup_model::mesh_recognition::RecognizedMeshKind::Box => {
                 "dialog-mesh-conversion-kind-box"
             }
-            ketchup_core::mesh_recognition::RecognizedMeshKind::Cylinder => {
+            ketchup_model::mesh_recognition::RecognizedMeshKind::Cylinder => {
                 "dialog-mesh-conversion-kind-cylinder"
             }
-            ketchup_core::mesh_recognition::RecognizedMeshKind::LinearExtrusion => {
+            ketchup_model::mesh_recognition::RecognizedMeshKind::LinearExtrusion => {
                 "dialog-mesh-conversion-kind-extrusion"
             }
         };

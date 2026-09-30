@@ -1,13 +1,13 @@
 use super::*;
-use ketchup_core::document::FeatureParameterTarget;
-use ketchup_core::exact_product::body_exact_graph;
-use ketchup_core::feature_history::{
+use ketchup_model::document::FeatureParameterTarget;
+use ketchup_model::exact_product::body_exact_graph;
+use ketchup_model::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationRequest, BodyProfileTranslationRequest,
     ExactParameterEdit, ExactParameterEditTarget, FeatureHistoryProjection, FeatureHistoryQuery,
     FeatureHistoryState, RollbackPreviewRequest, prepare_body_history_mutation,
     prepare_body_parameter_edit, prepare_body_profile_translation, project_feature_history,
 };
-use ketchup_core::shared_change::{
+use ketchup_model::shared_change::{
     ComponentReplacementImpactProjection, ComponentReplacementImpactRequest,
     OccurrenceForkChangeRequest, OccurrenceForkImpactProjection, SharedChangeExportEligibility,
     SharedChangeExportFormat, SharedChangeImpactError, SharedChangeImpactProjection,
@@ -15,7 +15,7 @@ use ketchup_core::shared_change::{
     commit_shared_definition_change, project_component_replacement_impact,
     project_occurrence_fork_impact, project_shared_change_impact,
 };
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 use ketchup_geometry::sketch::{
     MAX_SKETCH_CONSTRAINTS, PadOperation, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity,
@@ -90,7 +90,7 @@ enum FeatureHistoryPreviewSource {
     ExactEdit {
         source_revision: u64,
         source_digest: String,
-        request: ketchup_core::feature_history::BodyParameterEditRequest,
+        request: ketchup_model::feature_history::BodyParameterEditRequest,
         fork: Option<(OccurrenceId, String)>,
     },
     ProfileTranslation {
@@ -147,7 +147,7 @@ pub(super) struct FeatureHistoryUiState {
     rollback_revision: Option<u64>,
     checkpoint_input: String,
     definition: Option<DefinitionId>,
-    selected_body: Option<ketchup_core::document::BodyId>,
+    selected_body: Option<ketchup_model::document::BodyId>,
     selected_feature: Option<FeatureId>,
     selected_sketch_entity: Option<SketchEntityId>,
     selected_sketch_constraint: Option<SketchConstraintId>,
@@ -162,7 +162,7 @@ pub(super) struct FeatureHistoryUiState {
 
 enum FeatureHistoryUiAction {
     SelectDefinition(DefinitionId),
-    SelectBody(ketchup_core::document::BodyId),
+    SelectBody(ketchup_model::document::BodyId),
     SelectFeature(FeatureId),
     SelectSketchEntity(SketchEntityId),
     SelectSketchConstraint(SketchConstraintId),
@@ -217,7 +217,7 @@ fn sketch_constraint_ids(values: &[SketchConstraintId]) -> String {
     }
 }
 
-fn body_ids(values: &[ketchup_core::document::BodyId]) -> String {
+fn body_ids(values: &[ketchup_model::document::BodyId]) -> String {
     if values.is_empty() {
         "—".to_owned()
     } else {
@@ -349,7 +349,7 @@ impl KetchupApp {
         &self,
         definition_id: DefinitionId,
         feature_id: FeatureId,
-    ) -> Option<ketchup_core::exact_product::BodySubshapeRef> {
+    ) -> Option<ketchup_model::exact_product::BodySubshapeRef> {
         let selection = self.selection.primary.as_ref()?;
         if selection.definition_id != definition_id {
             return None;
@@ -1071,7 +1071,7 @@ impl KetchupApp {
             self.feature_history_error(self.catalog.text("feature-history-error-invalid-value"));
             return false;
         };
-        let request = ketchup_core::feature_history::BodyParameterEditRequest {
+        let request = ketchup_model::feature_history::BodyParameterEditRequest {
             definition_id,
             body_id,
             edits: vec![ExactParameterEdit { target, dimension }],
@@ -1540,25 +1540,25 @@ impl KetchupApp {
             .iter()
             .map(|view| {
                 let kind = self.catalog.text(match view.view {
-                    ketchup_core::drawing::OrthographicViewKind::Front => {
+                    ketchup_model::drawing::OrthographicViewKind::Front => {
                         "feature-history-shared-impact-view-front"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Top => {
+                    ketchup_model::drawing::OrthographicViewKind::Top => {
                         "feature-history-shared-impact-view-top"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Right => {
+                    ketchup_model::drawing::OrthographicViewKind::Right => {
                         "feature-history-shared-impact-view-right"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Isometric => {
+                    ketchup_model::drawing::OrthographicViewKind::Isometric => {
                         "feature-history-shared-impact-view-isometric"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Auxiliary(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Auxiliary(_) => {
                         "feature-history-shared-impact-view-auxiliary"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Section(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Section(_) => {
                         "feature-history-shared-impact-view-section"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Detail(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Detail(_) => {
                         "feature-history-shared-impact-view-detail"
                     }
                 });
@@ -1707,25 +1707,25 @@ impl KetchupApp {
             .iter()
             .map(|view| {
                 let kind = self.catalog.text(match view.view {
-                    ketchup_core::drawing::OrthographicViewKind::Front => {
+                    ketchup_model::drawing::OrthographicViewKind::Front => {
                         "feature-history-shared-impact-view-front"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Top => {
+                    ketchup_model::drawing::OrthographicViewKind::Top => {
                         "feature-history-shared-impact-view-top"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Right => {
+                    ketchup_model::drawing::OrthographicViewKind::Right => {
                         "feature-history-shared-impact-view-right"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Isometric => {
+                    ketchup_model::drawing::OrthographicViewKind::Isometric => {
                         "feature-history-shared-impact-view-isometric"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Auxiliary(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Auxiliary(_) => {
                         "feature-history-shared-impact-view-auxiliary"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Section(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Section(_) => {
                         "feature-history-shared-impact-view-section"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Detail(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Detail(_) => {
                         "feature-history-shared-impact-view-detail"
                     }
                 });
@@ -1907,25 +1907,25 @@ impl KetchupApp {
             .iter()
             .map(|view| {
                 let kind = self.catalog.text(match view.view {
-                    ketchup_core::drawing::OrthographicViewKind::Front => {
+                    ketchup_model::drawing::OrthographicViewKind::Front => {
                         "feature-history-shared-impact-view-front"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Top => {
+                    ketchup_model::drawing::OrthographicViewKind::Top => {
                         "feature-history-shared-impact-view-top"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Right => {
+                    ketchup_model::drawing::OrthographicViewKind::Right => {
                         "feature-history-shared-impact-view-right"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Isometric => {
+                    ketchup_model::drawing::OrthographicViewKind::Isometric => {
                         "feature-history-shared-impact-view-isometric"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Auxiliary(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Auxiliary(_) => {
                         "feature-history-shared-impact-view-auxiliary"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Section(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Section(_) => {
                         "feature-history-shared-impact-view-section"
                     }
-                    ketchup_core::drawing::OrthographicViewKind::Detail(_) => {
+                    ketchup_model::drawing::OrthographicViewKind::Detail(_) => {
                         "feature-history-shared-impact-view-detail"
                     }
                 });
@@ -2063,22 +2063,22 @@ impl KetchupApp {
 
         for entry in &catalog {
             let principal = match entry.origin {
-                ketchup_core::document::RevisionOrigin::Initial => {
+                ketchup_model::document::RevisionOrigin::Initial => {
                     self.catalog.text("revision-history-origin-initial")
                 }
-                ketchup_core::document::RevisionOrigin::Principal(
+                ketchup_model::document::RevisionOrigin::Principal(
                     ProposalPrincipal::ManualClient,
                 ) => self.catalog.text("revision-history-origin-manual"),
-                ketchup_core::document::RevisionOrigin::Principal(
+                ketchup_model::document::RevisionOrigin::Principal(
                     ProposalPrincipal::LocalAssistant,
                 ) => self.catalog.text("revision-history-origin-assistant"),
-                ketchup_core::document::RevisionOrigin::Principal(ProposalPrincipal::Human(id)) => {
+                ketchup_model::document::RevisionOrigin::Principal(ProposalPrincipal::Human(id)) => {
                     format!(
                         "{} {id}",
                         self.catalog.text("revision-history-origin-human")
                     )
                 }
-                ketchup_core::document::RevisionOrigin::Principal(ProposalPrincipal::Plugin(
+                ketchup_model::document::RevisionOrigin::Principal(ProposalPrincipal::Plugin(
                     id,
                 )) => {
                     format!(
@@ -2086,7 +2086,7 @@ impl KetchupApp {
                         self.catalog.text("revision-history-origin-plugin")
                     )
                 }
-                ketchup_core::document::RevisionOrigin::Rollback {
+                ketchup_model::document::RevisionOrigin::Rollback {
                     target_revision, ..
                 } => self.catalog.format(
                     "revision-history-origin-rollback",
@@ -2921,7 +2921,7 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub fn feature_history_selected_body_id(&self) -> Option<ketchup_core::document::BodyId> {
+    pub fn feature_history_selected_body_id(&self) -> Option<ketchup_model::document::BodyId> {
         self.feature_history.selected_body
     }
 
@@ -2931,7 +2931,7 @@ impl KetchupApp {
         &self,
     ) -> (
         Option<DefinitionId>,
-        Option<ketchup_core::document::BodyId>,
+        Option<ketchup_model::document::BodyId>,
         Option<DefinitionId>,
     ) {
         (
@@ -2969,14 +2969,14 @@ impl KetchupApp {
                         .filter(|endpoint| endpoint.reference().definition_id == definition_id)
                         .all(|endpoint| {
                             endpoint.health()
-                                == ketchup_core::assembly::AssemblyReferenceHealth::Resolved
+                                == ketchup_model::assembly::AssemblyReferenceHealth::Resolved
                                 && endpoint.reference().result_fingerprint == *fingerprint
                         })
             })
             .count();
         let mut drawing_view_count = 0;
         for sheet in snapshot.drawing_sheets() {
-            drawing_view_count += ketchup_core::drawing::project_orthographic_drawing(
+            drawing_view_count += ketchup_model::drawing::project_orthographic_drawing(
                 &snapshot,
                 &self.exact.results,
                 sheet,
@@ -3087,7 +3087,7 @@ mod tests {
             source_digest: snapshot.canonical_digest().to_owned(),
             request: BodyHistoryMutationRequest {
                 definition_id: DefinitionId(1),
-                body_id: ketchup_core::document::BodyId(1),
+                body_id: ketchup_model::document::BodyId(1),
                 mutation: BodyHistoryMutation::SuppressFrom(boundary),
             },
             fork: None,

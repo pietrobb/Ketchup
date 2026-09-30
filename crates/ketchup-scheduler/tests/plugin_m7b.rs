@@ -1,7 +1,7 @@
 use ketchup_assistant::extension::{
     PluginCapability, PluginGatewayError, PluginGrant, PluginLimits,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     ProposalCommitError, ProposalPrincipal,
 };
@@ -85,7 +85,7 @@ fn host_max_store() -> DocumentStore {
             },
         ]))
         .unwrap();
-    let baseline_bytes = ketchup_core::state_view::encode_semantic_state(&baseline.current())
+    let baseline_bytes = ketchup_model::state_view::encode_semantic_state(&baseline.current())
         .agent()
         .len();
     let target_bytes = PluginLimits::HOST_MAX.max_query_bytes;
@@ -100,7 +100,7 @@ fn host_max_store() -> DocumentStore {
         ]))
         .unwrap();
     assert_eq!(
-        ketchup_core::state_view::encode_semantic_state(&store.current())
+        ketchup_model::state_view::encode_semantic_state(&store.current())
             .agent()
             .len(),
         target_bytes

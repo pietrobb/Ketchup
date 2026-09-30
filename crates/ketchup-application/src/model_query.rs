@@ -2,19 +2,19 @@
 //! Occurrences are document/root records (including group members), not expanded
 //! definition-local instances. Definitions/features are the full canonical catalogs.
 use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantInstancePathStep};
-use ketchup_core::assembly::{AssemblyMateKind, AssemblyReferenceHealth};
-use ketchup_core::assembly_joint::AssemblyJointKind;
-use ketchup_core::document::{
+use ketchup_model::assembly::{AssemblyMateKind, AssemblyReferenceHealth};
+use ketchup_model::assembly_joint::AssemblyJointKind;
+use ketchup_model::document::{
     ClassificationCategoryId, ClassificationDimensionId, DefinitionId, FeatureId, FeatureKind,
     InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,
     LocalOccurrenceKey, OccurrenceId, ParameterValueType, SceneQueryBudgetExceeded,
     SceneQueryBudgetKind, Snapshot, TagId,
 };
-use ketchup_core::exact_product::{
+use ketchup_model::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBodyPackage, ExactResultRegistry,
 };
-use ketchup_core::pin_joint::project_pin_joint_contract;
-use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
+use ketchup_model::pin_joint::project_pin_joint_contract;
+use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_interaction::Vec3;
 use ketchup_interaction::projection::{
     CanonicalInteractionProjection, InteractionProjection, ProjectedOccurrence,
@@ -1441,9 +1441,9 @@ fn topology_reference_value(reference: &TopologicalElementRef) -> Value {
         "source_element_id":reference.source_element_id,
         "producer_element_id":reference.producer_element_id,
         "stability":match reference.stability {
-            ketchup_core::topology::TopologicalReferenceStability::Guaranteed => "guaranteed",
-            ketchup_core::topology::TopologicalReferenceStability::BestEffort => "best_effort",
-            ketchup_core::topology::TopologicalReferenceStability::Ephemeral => "ephemeral",
+            ketchup_model::topology::TopologicalReferenceStability::Guaranteed => "guaranteed",
+            ketchup_model::topology::TopologicalReferenceStability::BestEffort => "best_effort",
+            ketchup_model::topology::TopologicalReferenceStability::Ephemeral => "ephemeral",
         },
         "evaluator":reference.evaluator,"backend":reference.backend,
         "tolerance":reference.tolerance})
@@ -2096,7 +2096,7 @@ fn construction_geometry(kind: &FeatureKind) -> Value {
 
 fn feature_kind(kind: &FeatureKind) -> &'static str {
     // Only the variant tag is read, so a huge payload is never formatted.
-    ketchup_core::state_view::variant_name(kind).expect("a feature kind is an enum")
+    ketchup_model::state_view::variant_name(kind).expect("a feature kind is an enum")
 }
 
 #[cfg(test)]

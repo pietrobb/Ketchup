@@ -4,7 +4,7 @@ use eframe::egui::{Key, accesskit::Role};
 use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_application::transforms::world_axis_rotation_transform;
-use ketchup_core::{
+use ketchup_model::{
     document::{
         CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
         FeatureKind, GroupId, OccurrenceId, Transform,

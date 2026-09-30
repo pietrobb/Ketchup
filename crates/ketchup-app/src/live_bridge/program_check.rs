@@ -87,7 +87,7 @@ impl LiveBridge {
         let before_stamp = app.live_bridge_stamp();
         let (edit, report, model) = app
             .apply_program_source(
-                ketchup_core::document::RuleProgramSource {
+                ketchup_model::document::RuleProgramSource {
                     file_name,
                     source,
                     overrides,

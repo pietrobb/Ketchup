@@ -17,7 +17,7 @@ use crate::model::{
     ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment, ProgramProfileSegment,
     ProgramShell, profile_bounds,
 };
-use ketchup_core::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
+use ketchup_model::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;

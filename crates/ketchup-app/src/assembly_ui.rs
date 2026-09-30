@@ -1,10 +1,10 @@
 use super::*;
-use ketchup_core::assembly::{
+use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
     AssemblyRecomputePublishError, AssemblyRecomputeStatus, AssemblySolveResult,
     AssemblySolveStatus, AssemblySolverPolicy, recompute_rigid_assembly, solve_rigid_assembly,
 };
-use ketchup_core::assembly_joint::{
+use ketchup_model::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
     AssemblyKinematicPublishError, AssemblyKinematicSolution, AssemblyKinematicSolveError,
     AssemblyKinematicSolveStatus, AssemblyMotionClearanceAnalysis, AssemblyMotionCollisionBody,
@@ -12,17 +12,17 @@ use ketchup_core::assembly_joint::{
     preview_assembly_joint_drag_clearance, solve_assembly_joint_kinematics_with_drivers,
     solve_assembly_joint_kinematics_with_kind_overrides, solve_assembly_motion_study,
 };
-use ketchup_core::drawing::project_orthographic_drawing;
-use ketchup_core::drawing::{
+use ketchup_model::drawing::project_orthographic_drawing;
+use ketchup_model::drawing::{
     DrawingBomBalloon, DrawingBomBalloonId, DrawingSheet, DrawingSheetId, DrawingSource,
     OrthographicViewKind, prepare_create_drawing_sheet,
 };
-use ketchup_core::exact_product::BodySubshapeRef;
-use ketchup_core::mechanical_coupling::{
+use ketchup_model::exact_product::BodySubshapeRef;
+use ketchup_model::mechanical_coupling::{
     AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
     AssemblyTransmissionKind, CoupledJointKind, GearMeshKind, ScrewHandedness,
 };
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 use ketchup_geometry::prismatic::Aabb;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 
@@ -3193,9 +3193,9 @@ impl KetchupApp {
         else {
             return Vec::new();
         };
-        let encoded = ketchup_core::persistence::save(&snapshot);
+        let encoded = ketchup_model::persistence::save(&snapshot);
         let clone_document = || {
-            let mut document = ketchup_core::persistence::load(&encoded)
+            let mut document = ketchup_model::persistence::load(&encoded)
                 .ok()?
                 .into_editable()
                 .ok()?;

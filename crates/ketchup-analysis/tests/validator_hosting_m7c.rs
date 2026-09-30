@@ -4,9 +4,9 @@ use ketchup_analysis::validator_hosting::{
     ValidatorHostingError, ValidatorLicense, ValidatorPackageHost, ValidatorPackageManifest,
     ValidatorRuntime, validator_descriptor_digest,
 };
-use ketchup_core::document::{CanonicalCommand, CommandBatch, DefinitionId, DocumentStore};
-use ketchup_core::graph::sha256_hex;
-use ketchup_core::validation::{
+use ketchup_model::document::{CanonicalCommand, CommandBatch, DefinitionId, DocumentStore};
+use ketchup_model::graph::sha256_hex;
+use ketchup_model::validation::{
     EvidenceClass, PolicyRequirement, PolicySeverity, ReadScope, ResourceLimits, ValidationClass,
     ValidationInvocation, ValidationPolicyRef, ValidationState, ValidatorDescriptor,
 };

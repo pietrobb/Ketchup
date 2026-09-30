@@ -25,13 +25,13 @@ use ketchup_application::{
     SessionError, SessionSettings, verify_rule_program_exact,
 };
 use ketchup_assistant::sidecar::AssistantCadEditProgram;
-use ketchup_core::cam::{
+use ketchup_model::cam::{
     CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId, CamPostprocessorDialect,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, InstancePath, OccurrenceId, Snapshot,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
+use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_pdm::local::{
     DependencyChangeKind, LocalPdmError, ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison,
     ReleaseConflictVerdict, ReleaseDependencyInput, ReleaseManifest, ReleaseRelationship,
@@ -542,7 +542,7 @@ impl Server {
     /// cannot, exactly as `program_apply` and the window do.
     fn exact_program_check(
         &self,
-        source: &ketchup_core::document::RuleProgramSource,
+        source: &ketchup_model::document::RuleProgramSource,
         model: &ketchup_program::ProgramModel,
         report: &mut ketchup_program::Report,
     ) -> Option<Value> {
@@ -1226,7 +1226,7 @@ const PROGRAM_EXACT_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 fn parse_program_source(
     p: &Map<String, Value>,
-) -> Result<ketchup_core::document::RuleProgramSource> {
+) -> Result<ketchup_model::document::RuleProgramSource> {
     let source = string(p, "source")?;
     let file_name = p.get("file_name").map_or(Ok("program.star"), |value| {
         value
@@ -1246,7 +1246,7 @@ fn parse_program_source(
             overrides.insert(name.clone(), value);
         }
     }
-    Ok(ketchup_core::document::RuleProgramSource {
+    Ok(ketchup_model::document::RuleProgramSource {
         file_name: file_name.to_owned(),
         source: source.to_owned(),
         overrides,
@@ -1254,7 +1254,7 @@ fn parse_program_source(
 }
 
 fn evaluate_program_source(
-    source: &ketchup_core::document::RuleProgramSource,
+    source: &ketchup_model::document::RuleProgramSource,
 ) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
     ketchup_program::run(&source.file_name, &source.source, &source.overrides).map_err(|error| {
         Error {
@@ -2277,7 +2277,7 @@ mod tests {
     fn oversized_open_response_reports_possible_replacement_and_recovers_compactly() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("large-state.ketchup");
-        let mut document = ketchup_core::document::DocumentStore::new();
+        let mut document = ketchup_model::document::DocumentStore::new();
         let mut commands = vec![CanonicalCommand::CreateDefinition {
             id: DefinitionId(1),
             name: "Part".to_owned(),
@@ -2287,7 +2287,7 @@ mod tests {
                 id: OccurrenceId(id),
                 definition_id: DefinitionId(1),
                 name: "Instance".to_owned(),
-                transform: ketchup_core::document::Transform::from_translation(
+                transform: ketchup_model::document::Transform::from_translation(
                     id as f64 + 0.123456789,
                     0.123456789,
                     0.123456789,
@@ -2299,7 +2299,7 @@ mod tests {
             }
         }));
         document.apply_batch(&CommandBatch::new(commands)).unwrap();
-        std::fs::write(&path, ketchup_core::persistence::save(&document.current())).unwrap();
+        std::fs::write(&path, ketchup_model::persistence::save(&document.current())).unwrap();
         let author = DocumentSession::open(&path, SessionSettings::default()).unwrap();
         let mut expected = Server::new(SessionSettings::default());
         expected.session = author;
@@ -2360,10 +2360,10 @@ mod tests {
 
     #[test]
     fn reviewed_cam_export_is_exact_guarded_confirmed_and_no_clobber() {
-        use ketchup_core::cam::{
+        use ketchup_model::cam::{
             CamCutParameters, CamPlan, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
         };
-        use ketchup_core::document::{Dimension, FeatureKind};
+        use ketchup_model::document::{Dimension, FeatureKind};
 
         let worker_path = exact_worker_candidates()
             .into_iter()
@@ -2619,7 +2619,7 @@ mod tests {
 
     #[test]
     fn exact_fea_review_refines_solves_and_preserves_document_state() {
-        use ketchup_core::document::{Dimension, FeatureKind, ProfileSegment, Transform};
+        use ketchup_model::document::{Dimension, FeatureKind, ProfileSegment, Transform};
 
         let worker_path = exact_worker_candidates()
             .into_iter()
@@ -2756,7 +2756,7 @@ mod tests {
 
     #[test]
     fn local_pdm_release_lineage_is_guarded_verified_and_non_mutating() {
-        use ketchup_core::document::{Dimension, FeatureKind};
+        use ketchup_model::document::{Dimension, FeatureKind};
 
         let directory = tempfile::tempdir().unwrap();
         let repository = directory.path().join("repository");

@@ -16,11 +16,11 @@ fn ai_house_schema_36_fixture_opens_from_file_menu() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory.path().join("ai_house_orbit.ketchup");
     std::fs::write(&fixture, include_bytes!("fixtures/ai_house_orbit.ketchup")).unwrap();
-    let loaded = ketchup_core::persistence::load_file(&fixture).unwrap();
+    let loaded = ketchup_model::persistence::load_file(&fixture).unwrap();
     assert_eq!(loaded.source_schema(), 36);
     assert_eq!(
         loaded.disposition(),
-        ketchup_core::persistence::LoadDisposition::EditableLossless
+        ketchup_model::persistence::LoadDisposition::EditableLossless
     );
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&fixture)

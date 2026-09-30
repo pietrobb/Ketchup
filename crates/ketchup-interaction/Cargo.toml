@@ -9,14 +9,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ketchup-core = { path = "../ketchup-core" }
+ketchup-model = { path = "../ketchup-model" }
 ketchup-geometry = { path = "../ketchup-geometry" }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-ketchup-core = { path = "../ketchup-core", features = ["testing"] }
+ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 
 [[test]]
 name = "integration"

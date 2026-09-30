@@ -1,18 +1,18 @@
 use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
-use ketchup_core::cam::{
+use ketchup_model::cam::{
     CamCollisionParticipant, CamCollisionTarget, CamCutParameters, CamFixture, CamMotionKind,
     CamOperation, CamPath2d, CamPathSegment2d, CamPlan, CamPlanId, CamPostprocessorDialect,
     CamPostprocessorError, CamPostprocessorOutput, CamSetup, CamStock, CamTool, CamToolKind,
     CamToolpath, CamWorkOffset,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyKind, BooleanOperation, CanonicalCommand, CanonicalError, ChamferEdgeSide, ChamferMode,
     CommandBatch, DefinitionId, Dimension, DocumentStore, EdgeFinishKind, EdgeRef, FaceRef,
     FeatureId, FeatureKind, FeatureParameterTarget, FilletRadiusStation, InstancePath,
     LoftContinuity, LoftSection, NodeId, OccurrenceId, ParameterValueType, ProfileSegment,
     ShellDirection, Snapshot, SolidToolPlan, SpatialPathSegment, SurfaceBodySpec, Transform,
 };
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10,
     EXACT_BREP_GRAPH_SCHEMA_V11, EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V14,
     EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V17, EXACT_BREP_GRAPH_SCHEMA_V18,
@@ -21,14 +21,14 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     MAX_EXACT_BREP_GRAPH_PROFILES,
 };
-use ketchup_core::exact_product::{
+use ketchup_model::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
     ExactProductError, ExactResultRegistry,
 };
-use ketchup_core::graph::sha256_hex;
-use ketchup_core::import::{StepImportMesh, StepMeshTriangle, plan_iges_import, plan_step_import};
-use ketchup_core::persistence;
-use ketchup_core::topology::{
+use ketchup_model::graph::sha256_hex;
+use ketchup_model::import::{StepImportMesh, StepMeshTriangle, plan_iges_import, plan_step_import};
+use ketchup_model::persistence;
+use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
 use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
@@ -290,12 +290,12 @@ fn exact_worker_converts_verified_step_to_iges_and_reinspects_exact_evidence() {
 
     assert_eq!(
         evidence.source_sha256,
-        ketchup_core::graph::sha256_bytes(&bytes)
+        ketchup_model::graph::sha256_bytes(&bytes)
     );
     assert_eq!(evidence.source_byte_len, bytes.len() as u64);
     assert_eq!(
         evidence.source_unit,
-        ketchup_core::import::ImportLengthUnit::Millimetre
+        ketchup_model::import::ImportLengthUnit::Millimetre
     );
     assert_eq!(evidence.solid_count, 1);
     assert!((evidence.volume_mm3 - 6_000.0).abs() <= 1.0e-7);
@@ -1304,7 +1304,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
         ExactBRepGraph::from_snapshot(&imported_snapshot, result_definition, producer).unwrap();
     assert!(graph.nodes.iter().any(|node| matches!(
         &node.operation,
-        ketchup_core::exact_brep_graph::ExactBRepOperation::RigidTransform { matrix_bits, .. }
+        ketchup_model::exact_brep_graph::ExactBRepOperation::RigidTransform { matrix_bits, .. }
             if *matrix_bits == tool_transform.matrix().map(f64::to_bits)
     )));
     assert_ne!(target_definition, result_definition);
@@ -1405,7 +1405,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
         .unwrap();
         assert!(operation_graph.nodes.iter().any(|node| matches!(
             node.operation,
-            ketchup_core::exact_brep_graph::ExactBRepOperation::Boolean {
+            ketchup_model::exact_brep_graph::ExactBRepOperation::Boolean {
                 operation: graph_operation,
                 ..
             } if graph_operation == operation.into()
@@ -1509,7 +1509,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
             "malformed.step",
             &evidences[0],
         ),
-        Err(ketchup_core::import::StepImportPlanError::InvalidWorkerEvidence)
+        Err(ketchup_model::import::StepImportPlanError::InvalidWorkerEvidence)
     );
     assert_eq!(
         malformed_document.current().canonical_digest(),
@@ -3109,7 +3109,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
         &graph.nodes[0].operation,
         ExactBRepOperation::Loft {
             guide: Some(path),
-            continuity: ketchup_core::exact_brep_graph::ExactBRepLoftContinuity::Tangent,
+            continuity: ketchup_model::exact_brep_graph::ExactBRepLoftContinuity::Tangent,
             ..
         } if path.source_feature_id == guide.0 && path.segments.len() == 1
     ));
@@ -4164,7 +4164,7 @@ fn surface_thicken_round_trips_and_real_worker_preserves_associative_identity() 
         graph.nodes.last().unwrap().operation,
         ExactBRepOperation::SurfaceThicken {
             thickness_bits,
-            direction: ketchup_core::exact_brep_graph::ExactBRepShellDirection::Outward,
+            direction: ketchup_model::exact_brep_graph::ExactBRepShellDirection::Outward,
             ..
         } if f64::from_bits(thickness_bits) == 2.0
     ));
@@ -5401,32 +5401,32 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
     let cases = [
         (
             FeatureId(1_802),
-            ketchup_core::document::ShellDirection::Inward,
+            ketchup_model::document::ShellDirection::Inward,
             true,
         ),
         (
             FeatureId(1_803),
-            ketchup_core::document::ShellDirection::Outward,
+            ketchup_model::document::ShellDirection::Outward,
             true,
         ),
         (
             FeatureId(1_804),
-            ketchup_core::document::ShellDirection::Symmetric,
+            ketchup_model::document::ShellDirection::Symmetric,
             true,
         ),
         (
             FeatureId(1_805),
-            ketchup_core::document::ShellDirection::Inward,
+            ketchup_model::document::ShellDirection::Inward,
             false,
         ),
         (
             FeatureId(1_806),
-            ketchup_core::document::ShellDirection::Outward,
+            ketchup_model::document::ShellDirection::Outward,
             false,
         ),
         (
             FeatureId(1_807),
-            ketchup_core::document::ShellDirection::Symmetric,
+            ketchup_model::document::ShellDirection::Symmetric,
             false,
         ),
     ];
@@ -5499,7 +5499,7 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
         if index > 0 {
             assert_eq!(
                 graph.schema,
-                ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
+                ketchup_model::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
             );
         }
         let package = supervisor
@@ -5559,7 +5559,7 @@ fn worker_evaluates_open_and_closed_shell_directions_atomically() {
                     target: base,
                     removed_faces: Vec::new(),
                     thickness: dimension(0.0),
-                    direction: ketchup_core::document::ShellDirection::Outward,
+                    direction: ketchup_model::document::ShellDirection::Outward,
                 },
             }]))
             .is_err()
@@ -5627,7 +5627,7 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.5),
                     fillet_radius_stations: Vec::new(),
-                    chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                    chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                     chamfer_edge_sides: Vec::new(),
                 },
             },
@@ -5650,7 +5650,7 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                             radius: dimension(1.2),
                         },
                     ],
-                    chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                    chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                     chamfer_edge_sides: Vec::new(),
                 },
             },
@@ -5736,7 +5736,7 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                     position: 0.75,
                     radius: dimension(1.0),
                 }],
-                chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                 chamfer_edge_sides: Vec::new(),
             },
         }])),
@@ -6063,7 +6063,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                     target: base,
                     removed_faces: faces.clone().into_iter().map(FaceRef::from).collect(),
                     thickness: dimension(1.5),
-                    direction: ketchup_core::document::ShellDirection::Inward,
+                    direction: ketchup_model::document::ShellDirection::Inward,
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -6076,7 +6076,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.75),
                     fillet_radius_stations: Vec::new(),
-                    chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                    chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                     chamfer_edge_sides: Vec::new(),
                 },
             },
@@ -6090,7 +6090,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                     kind: EdgeFinishKind::Chamfer,
                     amount: dimension(0.75),
                     fillet_radius_stations: Vec::new(),
-                    chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                    chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                     chamfer_edge_sides: Vec::new(),
                 },
             },
@@ -6170,7 +6170,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 target: base,
                 removed_faces: reversed_faces.into_iter().map(FaceRef::from).collect(),
                 thickness: dimension(1.5),
-                direction: ketchup_core::document::ShellDirection::Inward,
+                direction: ketchup_model::document::ShellDirection::Inward,
             },
         }])),
         Err(CanonicalError::InvalidTopologicalFeatureReference)
@@ -6189,7 +6189,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
-                chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                 chamfer_edge_sides: Vec::new(),
             },
         }])),
@@ -6209,7 +6209,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
-                chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                 chamfer_edge_sides: Vec::new(),
             },
         }])),
@@ -6340,7 +6340,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 kind: EdgeFinishKind::Fillet,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
-                chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                chamfer_mode: ketchup_model::document::ChamferMode::Symmetric,
                 chamfer_edge_sides: Vec::new(),
             },
         }]))

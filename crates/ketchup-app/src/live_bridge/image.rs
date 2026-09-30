@@ -2,7 +2,7 @@
 use super::*;
 use crate::{CameraViewState, ProjectedEdge, ProjectedFace, RenderBox, ViewFlag};
 use egui::{ColorImage, Rect, Shape};
-use ketchup_core::{
+use ketchup_model::{
     document::{InstancePath, OccurrenceId},
     exact_product::ExactBodyPackage,
     topology::TopologicalElementKind,

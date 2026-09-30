@@ -1,6 +1,6 @@
 use super::*;
-use ketchup_core::document::{InstancePathStep, LocalGroupId, LocalOccurrenceId};
-use ketchup_core::exact_validation::GeneralBodyParticipant;
+use ketchup_model::document::{InstancePathStep, LocalGroupId, LocalOccurrenceId};
+use ketchup_model::exact_validation::GeneralBodyParticipant;
 use ketchup_manufacturing::fabrication::production::{
     HomagWoodwopAdapter, ProductionAdapter, instance_path_value,
 };

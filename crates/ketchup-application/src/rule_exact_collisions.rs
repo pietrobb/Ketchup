@@ -8,8 +8,8 @@
 //! those answers.
 
 use crate::collision::{CollisionScope, ExactPairFacts, scoped_exact_pairs_with_worker};
-use ketchup_core::document::{OccurrenceId, Snapshot};
-use ketchup_core::persistence::ContainerData;
+use ketchup_model::document::{OccurrenceId, Snapshot};
+use ketchup_model::persistence::ContainerData;
 use ketchup_program::{
     COLLISION_UNVERIFIED, ExactPair, ExactShapes, ProgramModel, Report, exact_candidates,
 };

@@ -4,7 +4,7 @@ use ketchup_application::batch_task::{
     OccurrenceBatchState,
 };
 use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest, QueryError};
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, OccurrenceId, Transform,
 };
 use std::cell::Cell;

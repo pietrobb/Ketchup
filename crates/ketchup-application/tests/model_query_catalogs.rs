@@ -1,5 +1,5 @@
 use ketchup_application::model_query::*;
-use ketchup_core::document::*;
+use ketchup_model::document::*;
 
 #[test]
 fn definition_and_feature_catalogs_page_and_definition_detail_caps_feature_ids() {

@@ -13,12 +13,12 @@ use crate::spatial::{
     SPATIAL_INDEX_V1, SnapshotBinding, SpatialBounds, SpatialIndex, SpatialQueryError,
     SpatialQueryStats,
 };
-use ketchup_core::adapters::{AdapterError, UiAction, UiAdapter};
-use ketchup_core::document::{
+use ketchup_model::adapters::{AdapterError, UiAction, UiAdapter};
+use ketchup_model::document::{
     DefinitionId, DocumentStore, FeatureId, FeatureKind, InstancePath, Proposal,
     ProposalCommitError, ProposalPrepareError, Revision, Snapshot,
 };
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
@@ -153,11 +153,11 @@ pub enum ElementId {
     },
     TopologicalFace(u32),
     TopologicalEdge {
-        feature_id: ketchup_core::document::FeatureId,
+        feature_id: ketchup_model::document::FeatureId,
         ordinal: u32,
     },
     Snap {
-        feature_id: ketchup_core::document::FeatureId,
+        feature_id: ketchup_model::document::FeatureId,
         index: u32,
     },
     Edge(u8),

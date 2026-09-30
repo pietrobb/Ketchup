@@ -7,11 +7,11 @@ use ketchup_assistant::sidecar::{
     AssistantPrincipalPlane, AssistantSketchConstraint, AssistantSketchEntity,
     AssistantWorkplaneSpec,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, FeatureId, FeatureKind,
     MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
+use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -112,14 +112,14 @@ fn assert_timeout_unchanged(session: &mut DocumentSession, timeout: Duration) {
 #[test]
 fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence() {
     use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantPin, AssistantPinJointFace};
-    use ketchup_core::assembly_recipe::*;
-    use ketchup_core::document::{
+    use ketchup_model::assembly_recipe::*;
+    use ketchup_model::document::{
         ClassificationCategoryId, ClassificationDimensionId, FeatureParameterTarget, InstancePath,
         ParameterValueType,
     };
-    use ketchup_core::exact_validation::GeneralBodyParticipant;
-    use ketchup_core::pin_joint::{PinJointId, project_pin_joint_contract};
-    use ketchup_core::tolerance::TolerancePolicy;
+    use ketchup_model::exact_validation::GeneralBodyParticipant;
+    use ketchup_model::pin_joint::{PinJointId, project_pin_joint_contract};
+    use ketchup_model::tolerance::TolerancePolicy;
     use ketchup_manufacturing::fabrication::{
         FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
     };
@@ -430,7 +430,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
             .unwrap();
         assert_eq!(
             validation.report.state,
-            ketchup_core::validation::ValidationState::Passed
+            ketchup_model::validation::ValidationState::Passed
         );
         let fabrication = project_general_fabrication(
             &snapshot,

@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_core::tolerance::APPROXIMATION;
+use ketchup_model::tolerance::APPROXIMATION;
 
 const HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(24, 94, 120, 120);
 const SELECTED_FILL: Color32 = Color32::from_rgba_premultiplied(128, 66, 18, 140);

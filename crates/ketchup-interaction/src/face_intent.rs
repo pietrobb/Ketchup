@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 
 use crate::spatial::SnapshotBinding;
-use ketchup_core::document::{BodyId, DefinitionId, Snapshot};
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::BodySubshapeRef;
+use ketchup_model::document::{BodyId, DefinitionId, Snapshot};
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_product::BodySubshapeRef;
 use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
 use std::cmp::Ordering;
 use std::fmt;

@@ -23,21 +23,21 @@ use ketchup_assistant::sidecar::{
     AssistantCadRotation, AssistantChatResult, AssistantDistribution, AssistantPrincipalPlane,
     AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, InstancePath, Snapshot,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_product::{
     ExactBodyPackage, ExactResultRegistry, terminal_body_exact_graphs,
 };
-use ketchup_core::exact_validation::{
+use ketchup_model::exact_validation::{
     BuiltinGeneralBodyValidator, BuiltinGravitySupportValidator, GeneralBodyParticipant,
     GeneralClearanceCase, GravitySupportInput, GravitySupportParticipant, general_body_input_bytes,
     general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
-use ketchup_core::persistence::{self, ContainerData};
-use ketchup_core::tolerance::TolerancePolicy;
-use ketchup_core::validation::{
+use ketchup_model::persistence::{self, ContainerData};
+use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
     ValidationState,
 };
@@ -1789,7 +1789,7 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
     let imported = worker
         .inspect_step_import_with_cancellation(
             &step_path,
-            &ketchup_core::graph::sha256_hex(&step_bytes),
+            &ketchup_model::graph::sha256_hex(&step_bytes),
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();

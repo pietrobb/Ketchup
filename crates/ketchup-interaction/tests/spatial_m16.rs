@@ -1,9 +1,9 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Transform,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
-use ketchup_core::testing::box_package;
+use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
+use ketchup_model::testing::box_package;
 use ketchup_interaction::exact_projection::ExactInteractionProjection;
 use ketchup_interaction::mesh_projection::MeshInteractionProjection;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
@@ -75,7 +75,7 @@ fn assert_sublinear(stats: ketchup_interaction::spatial::SpatialQueryStats) {
     assert!(stats.bounds_tested < OCCURRENCES / 8, "{stats:?}");
 }
 
-fn exact_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
+fn exact_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPackage {
     box_package(
         snapshot,
         DEFINITION,

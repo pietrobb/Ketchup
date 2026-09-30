@@ -19,7 +19,7 @@ getrandom = "0.3.4"
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-application = { path = "../ketchup-application" }
 ketchup-assistant = { path = "../ketchup-assistant" }
-ketchup-core = { path = "../ketchup-core" }
+ketchup-model = { path = "../ketchup-model" }
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-manufacturing = { path = "../ketchup-manufacturing" }
@@ -37,7 +37,7 @@ wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 winreg = "0.56.0"
 
 [dev-dependencies]
-ketchup-core = { path = "../ketchup-core", features = ["testing"] }
+ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 egui_kittest = { version = "0.32.0", features = ["wgpu"] }
 pollster = "0.4.0"
 

@@ -1,4 +1,4 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
 use ketchup_exact::GeometryErrorCode;

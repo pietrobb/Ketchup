@@ -1,8 +1,8 @@
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use ketchup_core::document::{
+use ketchup_model::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot, Transform,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
+use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -1233,8 +1233,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::{extrude_planar_profile_mesh, feature_edges};
-    use ketchup_core::document::ProfileSegment;
-    use ketchup_core::exact_product::ExactFaceRole;
+    use ketchup_model::document::ProfileSegment;
+    use ketchup_model::exact_product::ExactFaceRole;
     use ketchup_interaction::mesh_projection::segment_profile_mesh;
     use std::collections::BTreeSet;
 

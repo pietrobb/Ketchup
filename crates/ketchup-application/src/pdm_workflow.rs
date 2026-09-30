@@ -1,5 +1,5 @@
-use ketchup_core::document::Snapshot;
-use ketchup_core::persistence::ContainerData;
+use ketchup_model::document::Snapshot;
+use ketchup_model::persistence::ContainerData;
 use ketchup_pdm::local::{
     LocalPdmError, ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseDependencyInput,
     ReleaseManifest, VerifiedRelease, compare_releases, create_child_release_with_container,
@@ -216,11 +216,11 @@ fn ensure_not_cancelled(cancelled: &AtomicBool) -> Result<(), PdmWorkflowError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ketchup_core::document::DocumentStore;
+    use ketchup_model::document::DocumentStore;
 
     #[test]
     fn undo_aba_cannot_revive_reviewed_release_authority() {
-        use ketchup_core::document::{CanonicalCommand, CommandBatch, DefinitionId};
+        use ketchup_model::document::{CanonicalCommand, CommandBatch, DefinitionId};
 
         let mut document = DocumentStore::new();
         document

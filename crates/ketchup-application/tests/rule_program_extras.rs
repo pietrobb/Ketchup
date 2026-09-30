@@ -4,7 +4,7 @@
 
 use crate::operations_support;
 
-use ketchup_core::persistence;
+use ketchup_model::persistence;
 use ketchup_program::run;
 use operations_support::*;
 use std::collections::BTreeMap;

@@ -248,7 +248,7 @@ fn main() {
     let schema = json!({
         "$schema":"https://json-schema.org/draft/2020-12/schema",
         "$ref":"#/$defs/AssistantCadEditProgram", "$defs":generator.definitions,
-        "description":"Complete serde wire shape generated from ketchup-core AssistantCadEditProgram. Semantic CAD bounds, references and exact admission are additionally enforced by the application planner."
+        "description":"Complete serde wire shape generated from ketchup-model AssistantCadEditProgram. Semantic CAD bounds, references and exact admission are additionally enforced by the application planner."
     });
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("cad-program-schema.json"),

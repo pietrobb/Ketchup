@@ -1,6 +1,6 @@
 use super::*;
-use ketchup_core::document::ProfileSegment;
-use ketchup_core::topology::TopologicalElementKind;
+use ketchup_model::document::ProfileSegment;
+use ketchup_model::topology::TopologicalElementKind;
 
 const TABLE: &str = include_str!("../../../../examples/programs/table.star");
 const APRON: &str = "\napron = board(\"table/apron-front\", (WIDTH - 2 * (INSET + LEG), 20, 80), at = (INSET + LEG, INSET + 25, HEIGHT - 100))\ndowels(legs[0], apron, dowel = \"8x30\", margin = 15)\n";
@@ -448,7 +448,7 @@ fn exact_volume(app: &KetchupApp, name: &str) -> f64 {
         .topology_results
         .get_render(&snapshot, occurrence.definition_id())
         .unwrap();
-    let ketchup_core::exact_product::ExactBodyPackage::Graph(graph) = package.as_ref() else {
+    let ketchup_model::exact_product::ExactBodyPackage::Graph(graph) = package.as_ref() else {
         panic!("{name}: an exact graph is required")
     };
     assert_eq!(graph.topology_counts[3..], [1, 1], "{name}");

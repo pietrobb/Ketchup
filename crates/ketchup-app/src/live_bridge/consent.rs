@@ -32,7 +32,7 @@ pub(crate) struct ConsentBroker {
     address: SocketAddr,
     instance_id: String,
     registry_path: PathBuf,
-    registry_identity: ketchup_core::persistence::FileIdentity,
+    registry_identity: ketchup_model::persistence::FileIdentity,
     discovery: Arc<Mutex<DiscoveryState>>,
     stopped: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -320,7 +320,7 @@ fn publish_registry_entry(
     root: &Path,
     instance_id: &str,
     address: SocketAddr,
-) -> io::Result<(PathBuf, ketchup_core::persistence::FileIdentity)> {
+) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
     publish_registry_entry_before_publish(root, instance_id, address, || {})
 }
 
@@ -329,7 +329,7 @@ fn publish_registry_entry_before_publish(
     instance_id: &str,
     address: SocketAddr,
     before_publish: impl FnOnce(),
-) -> io::Result<(PathBuf, ketchup_core::persistence::FileIdentity)> {
+) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
     prepare_discovery_root(root)?;
     let path = root.join(format!("{instance_id}.json"));
     let bytes = serde_json::to_vec(&RegistryEntry {
@@ -350,15 +350,15 @@ fn publish_registry_entry_before_publish(
     temporary
         .persist_noclobber(&path)
         .map_err(|error| error.error)?;
-    let identity = ketchup_core::persistence::FileIdentity::from_bytes(&bytes);
+    let identity = ketchup_model::persistence::FileIdentity::from_bytes(&bytes);
     Ok((path, identity))
 }
 
 fn remove_registry_entry_if_unchanged(
     path: &Path,
-    expected: ketchup_core::persistence::FileIdentity,
+    expected: ketchup_model::persistence::FileIdentity,
 ) -> io::Result<bool> {
-    ketchup_core::persistence::remove_regular_file_if_unchanged(
+    ketchup_model::persistence::remove_regular_file_if_unchanged(
         path,
         expected,
         MAX_CONSENT_BYTES as u64,

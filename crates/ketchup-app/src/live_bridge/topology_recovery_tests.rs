@@ -2,7 +2,7 @@ use super::*;
 use ketchup_application::evaluation::{
     EvidenceStatus, exact_worker_candidates, publish_exact_products, start_exact_evaluation,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, producer_exact_graph};
+use ketchup_model::exact_product::{ExactBodyPackage, producer_exact_graph};
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 #[test]

@@ -1,9 +1,9 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     FeatureParameterTarget, ParameterPath, ParameterValueType,
 };
-use ketchup_core::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V19, ExactBRepGraph};
-use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+use ketchup_model::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V19, ExactBRepGraph};
+use ketchup_model::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 fn dimension(value: f64) -> Dimension {

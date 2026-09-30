@@ -1,5 +1,5 @@
-use ketchup_core::document::{CanonicalError, GroupId, Snapshot, Transform};
-use ketchup_core::tolerance::NEGLIGIBLE;
+use ketchup_model::document::{CanonicalError, GroupId, Snapshot, Transform};
+use ketchup_model::tolerance::NEGLIGIBLE;
 use ketchup_interaction::Vec3;
 
 pub fn translated_transform(

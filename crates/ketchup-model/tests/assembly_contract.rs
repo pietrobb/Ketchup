@@ -1,0 +1,2092 @@
+use ketchup_model::assembly::{
+    AssemblyDofStatus, AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+    AssemblyRecomputePublishError, AssemblyRecomputeStatus, AssemblyReferenceHealth,
+    AssemblySolvePublishError, AssemblySolveStatus, AssemblySolverPolicy, AxialAttachment,
+    AxialAttachmentKind, PlanarFaceAttachment, recompute_rigid_assembly, solve_rigid_assembly,
+};
+use ketchup_model::document::{
+    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentId,
+    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProfileSegment,
+    ProposalCommitError, ProposalPrepareError, TagId, Transform,
+};
+use ketchup_model::exact_product::{
+    ExactBRepGraphPackage, ExactBodyPackage, ExactFaceRole, ExactResultRegistry,
+    canonical_reference_lineage_digest,
+};
+use ketchup_model::persistence;
+use ketchup_model::state_view::encode_semantic_state;
+use ketchup_model::testing::box_package;
+use std::sync::Arc;
+
+const DEFINITION: DefinitionId = DefinitionId(1);
+const PROFILE: FeatureId = FeatureId(2);
+const EXTRUSION: FeatureId = FeatureId(3);
+const FIRST: OccurrenceId = OccurrenceId(10);
+const SECOND: OccurrenceId = OccurrenceId(11);
+const MATE: AssemblyMateId = AssemblyMateId(20);
+
+#[derive(Debug, Eq, PartialEq)]
+struct StoreStamp {
+    revision_id: u64,
+    digest: String,
+    revision_count: usize,
+    undo_steps: usize,
+    redo_steps: usize,
+}
+
+fn store_stamp(document: &DocumentStore) -> StoreStamp {
+    StoreStamp {
+        revision_id: document.current().revision_id(),
+        digest: document.current().canonical_digest(),
+        revision_count: document.revision_count(),
+        undo_steps: document.visible_undo_steps(),
+        redo_steps: document.visible_redo_steps(),
+    }
+}
+
+fn graph_package(
+    snapshot: &ketchup_model::document::Snapshot,
+    fingerprint: &str,
+    faces: &[ExactFaceRole],
+) -> ExactBRepGraphPackage {
+    let ExactBodyPackage::Graph(package) =
+        box_package(snapshot, DEFINITION, EXTRUSION, fingerprint, faces).unwrap()
+    else {
+        panic!("box fixture is a graph package");
+    };
+    package
+}
+
+fn current_exact_package(
+    snapshot: &ketchup_model::document::Snapshot,
+    fingerprint: &str,
+) -> Arc<ExactBodyPackage> {
+    Arc::new(
+        box_package(
+            snapshot,
+            DEFINITION,
+            EXTRUSION,
+            fingerprint,
+            &[
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::LinearSide,
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+fn current_exact_package_without_attachments(
+    snapshot: &ketchup_model::document::Snapshot,
+    fingerprint: &str,
+) -> Arc<ExactBodyPackage> {
+    let mut package = graph_package(
+        snapshot,
+        fingerprint,
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::LinearSide,
+        ],
+    );
+    package.planar_face_attachments.clear();
+    Arc::new(ExactBodyPackage::Graph(package))
+}
+
+/// The cylinder result: its planar caps plus the side face, with the side's
+/// axis when the evaluator reported one.
+fn cylinder_package(
+    snapshot: &ketchup_model::document::Snapshot,
+    fingerprint: &str,
+    axis: Option<([f64; 3], [f64; 3])>,
+) -> Arc<ExactBodyPackage> {
+    let mut package = graph_package(
+        snapshot,
+        fingerprint,
+        &[ExactFaceRole::Top, ExactFaceRole::Bottom],
+    );
+    let side = cylindrical_reference(package.references[0].clone());
+    package
+        .axial_attachments
+        .extend(axis.map(|(origin, direction)| {
+            AxialAttachment::cylindrical_face(side.clone(), origin, direction).unwrap()
+        }));
+    package.references.push(side);
+    Arc::new(ExactBodyPackage::Graph(package))
+}
+
+fn seeded_circle_document() -> (DocumentStore, ketchup_model::exact_product::BodySubshapeRef) {
+    let center = [5.0, 5.0];
+    let radius = 5.0;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Assembly cylinder".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Circle profile".into(),
+                kind: FeatureKind::Profile {
+                    segments: vec![
+                        ProfileSegment::CircularArc {
+                            start_mm: [center[0] + radius, center[1]],
+                            end_mm: [center[0] - radius, center[1]],
+                            center_mm: center,
+                            clockwise: false,
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [center[0] - radius, center[1]],
+                            end_mm: [center[0] + radius, center[1]],
+                            center_mm: center,
+                            clockwise: false,
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Cylinder".into(),
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: FIRST,
+                definition_id: DEFINITION,
+                name: "Cylinder A".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: SECOND,
+                definition_id: DEFINITION,
+                name: "Cylinder B".into(),
+                transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let package = cylinder_package(
+        &snapshot,
+        "initial-axis",
+        Some(([center[0], center[1], 0.0], [0.0, 0.0, 1.0])),
+    );
+    (
+        document,
+        package
+            .reference(ExactFaceRole::CircleSide)
+            .unwrap()
+            .clone(),
+    )
+}
+
+fn seeded_document() -> (
+    DocumentStore,
+    ketchup_model::exact_product::BodySubshapeRef,
+    ketchup_model::exact_product::BodySubshapeRef,
+    ketchup_model::exact_product::BodySubshapeRef,
+) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Assembly part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Profile".into(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Extrusion".into(),
+                kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("10").unwrap()),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: FIRST,
+                definition_id: DEFINITION,
+                name: "Part A".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: SECOND,
+                definition_id: DEFINITION,
+                name: "Part B".into(),
+                transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let package = current_exact_package(&document.current(), "result");
+    (
+        document,
+        package.reference(ExactFaceRole::Top).unwrap().clone(),
+        package.reference(ExactFaceRole::Bottom).unwrap().clone(),
+        package
+            .reference(ExactFaceRole::LinearSide)
+            .unwrap()
+            .clone(),
+    )
+}
+
+fn canonical_planar_endpoint(
+    occurrence_id: OccurrenceId,
+    reference: ketchup_model::exact_product::BodySubshapeRef,
+) -> AssemblyMateEndpoint {
+    let geometry = match reference.role() {
+        Some(ExactFaceRole::Top) => Some(([0.0; 3], [0.0, 0.0, 1.0])),
+        Some(ExactFaceRole::Bottom) => Some(([0.0; 3], [0.0, 0.0, -1.0])),
+        Some(ExactFaceRole::LinearSide) => Some(([0.0; 3], [1.0, 0.0, 0.0])),
+        _ => None,
+    };
+    match geometry
+        .and_then(|(origin, normal)| PlanarFaceAttachment::new(reference.clone(), origin, normal))
+    {
+        Some(attachment) => AssemblyMateEndpoint::resolved_planar_face(occurrence_id, attachment),
+        None => AssemblyMateEndpoint::resolved(occurrence_id, reference),
+    }
+}
+
+fn cylindrical_reference(
+    mut reference: ketchup_model::exact_product::BodySubshapeRef,
+) -> ketchup_model::exact_product::BodySubshapeRef {
+    let role = ExactFaceRole::CircleSide;
+    reference.semantic_role = role.semantic_role().to_owned();
+    reference.source_element_id = role.source_element_id().to_owned();
+    reference.expected_type = role.expected_type().to_owned();
+    reference.lineage_digest = canonical_reference_lineage_digest(
+        reference.document_id,
+        reference.producer_feature_id,
+        &reference.semantic_role,
+        &reference.source_element_id,
+        &reference.expected_type,
+    );
+    reference
+}
+
+fn coincident_mate(
+    id: AssemblyMateId,
+    a: AssemblyMateEndpoint,
+    b: AssemblyMateEndpoint,
+) -> AssemblyMate {
+    AssemblyMate::new(
+        id,
+        a,
+        b,
+        AssemblyMateKind::CoincidentPlanar {
+            offset_mm: 0.0,
+            reversed: false,
+        },
+    )
+}
+
+fn planar_endpoint(
+    occurrence_id: OccurrenceId,
+    reference: ketchup_model::exact_product::BodySubshapeRef,
+    local_origin_mm: [f64; 3],
+    local_unit_normal: [f64; 3],
+) -> AssemblyMateEndpoint {
+    AssemblyMateEndpoint::resolved_planar_face(
+        occurrence_id,
+        PlanarFaceAttachment::new(reference, local_origin_mm, local_unit_normal).unwrap(),
+    )
+}
+
+#[test]
+fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
+    let (mut document, top, bottom, _east) = seeded_document();
+    let before_digest = document.current().canonical_digest();
+    let origin_a = [1.25, -0.0, 3.5];
+    let normal_a = [0.0, -1.0, 0.0];
+    let origin_b = [-2.5, 4.0, 10.0];
+    let normal_b = [0.0, 1.0, 0.0];
+    let mate = coincident_mate(
+        MATE,
+        planar_endpoint(FIRST, top, origin_a, normal_a),
+        planar_endpoint(SECOND, bottom, origin_b, normal_b),
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_ne!(committed_digest, before_digest);
+    let committed_mate = committed.assembly_mate(MATE).unwrap();
+    let attachment_a = committed_mate
+        .endpoint_a()
+        .planar_face_attachment()
+        .unwrap();
+    let attachment_b = committed_mate
+        .endpoint_b()
+        .planar_face_attachment()
+        .unwrap();
+    assert_eq!(
+        attachment_a.local_origin_mm().map(f64::to_bits),
+        origin_a.map(f64::to_bits)
+    );
+    assert_eq!(
+        attachment_a.local_unit_normal().map(f64::to_bits),
+        normal_a.map(f64::to_bits)
+    );
+    assert_eq!(
+        attachment_b.local_origin_mm().map(f64::to_bits),
+        origin_b.map(f64::to_bits)
+    );
+    assert_eq!(
+        attachment_b.local_unit_normal().map(f64::to_bits),
+        normal_b.map(f64::to_bits)
+    );
+
+    let state = encode_semantic_state(&committed).complete().to_owned();
+    for line in [
+        "assembly_mates.20.endpoint_a.attachment.PlanarFace.local_origin_mm=[1.25,-0.0,3.5]",
+        "assembly_mates.20.endpoint_a.attachment.PlanarFace.local_unit_normal=[0.0,-1.0,0.0]",
+        "assembly_mates.20.endpoint_b.attachment.PlanarFace.local_origin_mm=[-2.5,4.0,10.0]",
+        "assembly_mates.20.endpoint_b.attachment.PlanarFace.local_unit_normal=[0.0,1.0,0.0]",
+    ] {
+        assert!(state.contains(line), "missing {line}");
+    }
+
+    let reopened = persistence::load(&persistence::save(&committed)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
+    assert_eq!(
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        state
+    );
+    assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before_digest);
+    assert!(document.current().assembly_mate(MATE).is_none());
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+    assert_eq!(document.current().assembly_mate(MATE), Some(&mate));
+    assert_eq!(encode_semantic_state(&document.current()).complete(), state);
+}
+
+#[test]
+fn typed_axial_endpoints_are_bit_exact_ignore_labels_transform_origins_and_round_trip() {
+    let (mut document, top, bottom, _east) = seeded_document();
+    let top = cylindrical_reference(top);
+    let bottom = cylindrical_reference(bottom);
+    let origin_a = [2.0, -0.0, 4.0];
+    let origin_b = [1.0, 2.0, 5.0];
+    let direction_a = [1.0, 0.0, 0.0];
+    let direction_b = [0.0, 1.0, 0.0];
+    let mate = AssemblyMate::new(
+        MATE,
+        AssemblyMateEndpoint::resolved_axial(
+            FIRST,
+            AxialAttachment::new(
+                top,
+                AxialAttachmentKind::CylindricalFace,
+                origin_a,
+                direction_a,
+            )
+            .unwrap(),
+        ),
+        AssemblyMateEndpoint::resolved_axial(
+            SECOND,
+            AxialAttachment::new(
+                bottom,
+                AxialAttachmentKind::CylindricalFace,
+                origin_b,
+                direction_b,
+            )
+            .unwrap(),
+        ),
+        AssemblyMateKind::ConcentricAxial { reversed: true },
+    );
+    let before = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: SECOND,
+                transform: Transform::from_matrix([
+                    0.0, -1.0, 0.0, 20.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 7.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+    let committed = document.current();
+    let digest = committed.canonical_digest();
+    assert_ne!(digest, before);
+    let state = encode_semantic_state(&committed).complete().to_owned();
+    for line in [
+        "endpoint_a.attachment.Axial.kind=\"CylindricalFace\"",
+        "endpoint_a.attachment.Axial.local_origin_mm=[2.0,-0.0,4.0]",
+        "endpoint_b.attachment.Axial.local_unit_direction=[0.0,1.0,0.0]",
+    ] {
+        assert!(state.contains(line), "missing {line}");
+    }
+    let solved = solve_rigid_assembly(&committed, AssemblySolverPolicy::default()).unwrap();
+    let solved_transform = solved.occurrence(SECOND).unwrap().transform();
+    let m = solved_transform.matrix();
+    let world_b_origin = [
+        m[0] * origin_b[0] + m[1] * origin_b[1] + m[2] * origin_b[2] + m[3],
+        m[4] * origin_b[0] + m[5] * origin_b[1] + m[6] * origin_b[2] + m[7],
+        m[8] * origin_b[0] + m[9] * origin_b[1] + m[10] * origin_b[2] + m[11],
+    ];
+    let world_b_direction = [
+        m[0] * direction_b[0] + m[1] * direction_b[1] + m[2] * direction_b[2],
+        m[4] * direction_b[0] + m[5] * direction_b[1] + m[6] * direction_b[2],
+        m[8] * direction_b[0] + m[9] * direction_b[1] + m[10] * direction_b[2],
+    ];
+    assert_near(world_b_origin[1], origin_a[1]);
+    assert_near(world_b_origin[2], origin_a[2]);
+    for axis in 0..3 {
+        assert_near(world_b_direction[axis], -direction_a[axis]);
+    }
+    let reopened = persistence::load(&persistence::save(&committed)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), digest);
+    assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
+    assert_eq!(
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        state
+    );
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), digest);
+}
+
+#[test]
+fn repeated_component_mate_endpoints_keep_full_instance_paths_through_solve_and_persistence() {
+    const COMPONENT_GROUP: GroupId = GroupId(70);
+    const COPY: OccurrenceId = OccurrenceId(13);
+    let (mut document, top, bottom, _east) = seeded_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: COMPONENT_GROUP,
+                name: "Reusable mate component".into(),
+                transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: FIRST,
+                parent: Some(COMPONENT_GROUP),
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: SECOND,
+                parent: Some(COMPONENT_GROUP),
+            },
+        ]))
+        .unwrap();
+    let converted = document
+        .convert_group_to_component(COMPONENT_GROUP, "Reusable mate component")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: COPY,
+                definition_id: converted.component_definition_id,
+                name: "Reusable mate component copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 50.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let first_path = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == converted.component_occurrence_id
+                && !item.instance_path.is_root()
+        })
+        .unwrap()
+        .instance_path;
+    let copy_path = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == COPY
+                && item.instance_path.steps() == first_path.steps()
+        })
+        .unwrap()
+        .instance_path;
+    assert_ne!(first_path, copy_path);
+    assert_eq!(first_path.steps(), copy_path.steps());
+    drop(snapshot);
+
+    let mate = AssemblyMate::new(
+        MATE,
+        AssemblyMateEndpoint::resolved_planar_face_at_path(
+            first_path.clone(),
+            PlanarFaceAttachment::new(top, [0.0; 3], [0.0, 0.0, 1.0]).unwrap(),
+        ),
+        AssemblyMateEndpoint::resolved_planar_face_at_path(
+            copy_path.clone(),
+            PlanarFaceAttachment::new(bottom, [0.0; 3], [0.0, 0.0, -1.0]).unwrap(),
+        ),
+        AssemblyMateKind::CoincidentPlanar {
+            offset_mm: 0.0,
+            reversed: false,
+        },
+    );
+    let before_mate = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: converted.component_occurrence_id,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+    let committed_digest = document.current().canonical_digest();
+    assert_ne!(committed_digest, before_mate);
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .instance_path(),
+        &first_path
+    );
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_b()
+            .instance_path(),
+        &copy_path
+    );
+
+    let mut recompute_document = persistence::load(&persistence::save(&document.current()))
+        .unwrap()
+        .into_editable()
+        .unwrap_or_else(|_| panic!("current schema must remain editable"));
+    let recompute_source = recompute_document.current();
+    let registry = ExactResultRegistry::accept(
+        &recompute_source,
+        [current_exact_package(&recompute_source, "nested-recompute")],
+    )
+    .unwrap();
+    let recomputed = recompute_rigid_assembly(
+        &recompute_document,
+        &registry,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    let expected_nested_transform = recomputed
+        .solve()
+        .unwrap()
+        .occurrence_at_path(&copy_path)
+        .unwrap()
+        .transform();
+    let expected_root_transform = recomputed
+        .solve()
+        .unwrap()
+        .occurrence(copy_path.root_occurrence())
+        .unwrap()
+        .transform();
+    let before_recompute = store_stamp(&recompute_document);
+    let proposal = recomputed.prepare_publication(&recompute_document).unwrap();
+    recompute_document.commit_proposal(&proposal).unwrap();
+    let recompute_published = recompute_document.current();
+    let recompute_digest = recompute_published.canonical_digest();
+    assert_eq!(
+        recompute_published
+            .occurrence(copy_path.root_occurrence())
+            .unwrap()
+            .transform(),
+        expected_root_transform
+    );
+    assert_eq!(
+        recompute_published
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        expected_nested_transform
+    );
+    assert_eq!(
+        recompute_document.visible_undo_steps(),
+        before_recompute.undo_steps + 1
+    );
+    let reopened_recompute = persistence::load(&persistence::save(&recompute_published)).unwrap();
+    assert_eq!(
+        reopened_recompute
+            .snapshot()
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        expected_nested_transform
+    );
+    assert_eq!(
+        recompute_document.undo().unwrap().canonical_digest(),
+        before_recompute.digest
+    );
+    assert_eq!(
+        recompute_document.redo().unwrap().canonical_digest(),
+        recompute_digest
+    );
+
+    let solved =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    assert!(matches!(
+        solved.status(),
+        AssemblySolveStatus::UnderConstrained | AssemblySolveStatus::FullyConstrained
+    ));
+    assert!(solved.maximum_residual() <= AssemblySolverPolicy::default().linear_tolerance_mm);
+    assert!(solved.occurrence_at_path(&first_path).unwrap().grounded());
+    assert!(!solved.occurrence_at_path(&copy_path).unwrap().grounded());
+    assert!(
+        solved
+            .occurrence(first_path.root_occurrence())
+            .unwrap()
+            .instance_path()
+            .is_root()
+    );
+    let proposal = solved.prepare_publication(&document).unwrap();
+    let before_publication = store_stamp(&document);
+    assert_eq!(store_stamp(&document), before_publication);
+    document.commit_proposal(&proposal).unwrap();
+    let published = document.current();
+    let published_digest = published.canonical_digest();
+    assert_ne!(published_digest, committed_digest);
+    assert_eq!(
+        document.visible_undo_steps(),
+        before_publication.undo_steps + 1
+    );
+    assert_eq!(
+        published
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        solved.occurrence_at_path(&copy_path).unwrap().transform()
+    );
+    assert_eq!(
+        published
+            .resolve_instance_path(&first_path)
+            .unwrap()
+            .local_transform,
+        solved.occurrence_at_path(&first_path).unwrap().transform()
+    );
+
+    let reopened = persistence::load(&persistence::save(&published)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), published_digest);
+    assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
+    assert_eq!(
+        reopened
+            .snapshot()
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        solved.occurrence_at_path(&copy_path).unwrap().transform()
+    );
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        committed_digest
+    );
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        published_digest
+    );
+}
+
+#[test]
+fn typed_planar_solver_transforms_local_frames_and_ignores_semantic_role_text() {
+    let (mut document, mut top, mut bottom, _east) = seeded_document();
+    top.semantic_role = ExactFaceRole::Bottom.semantic_role().to_owned();
+    top.lineage_digest = canonical_reference_lineage_digest(
+        top.document_id,
+        top.producer_feature_id,
+        &top.semantic_role,
+        &top.source_element_id,
+        &top.expected_type,
+    );
+    bottom.semantic_role = ExactFaceRole::Top.semantic_role().to_owned();
+    bottom.lineage_digest = canonical_reference_lineage_digest(
+        bottom.document_id,
+        bottom.producer_feature_id,
+        &bottom.semantic_role,
+        &bottom.source_element_id,
+        &bottom.expected_type,
+    );
+    let quarter_turn = Transform::from_matrix([
+        0.0, -1.0, 0.0, 20.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: SECOND,
+                transform: quarter_turn,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(coincident_mate(
+                MATE,
+                planar_endpoint(FIRST, top, [2.0, 3.0, 4.0], [1.0, 0.0, 0.0]),
+                planar_endpoint(SECOND, bottom, [0.0, 1.0, 2.0], [0.0, 1.0, 0.0]),
+            )),
+        ]))
+        .unwrap();
+
+    let solved =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(solved.status(), AssemblySolveStatus::UnderConstrained);
+    assert!(solved.maximum_residual() <= AssemblySolverPolicy::default().linear_tolerance_mm);
+    let solved_transform = solved.occurrence(SECOND).unwrap().transform();
+    let matrix = solved_transform.matrix();
+    for (actual, expected) in matrix.iter().copied().zip([
+        0.0, -1.0, 0.0, 3.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+    ]) {
+        assert_near(actual, expected);
+    }
+    let world_origin_a = [2.0, 3.0, 4.0];
+    let world_origin_b = [matrix[3] - 1.0, matrix[7], matrix[11] + 2.0];
+    assert_near(world_origin_b[0], world_origin_a[0]);
+    let world_normal_a = [1.0, 0.0, 0.0];
+    let world_normal_b = [-1.0, 0.0, 0.0];
+    for axis in 0..3 {
+        assert_near(world_normal_b[axis], -world_normal_a[axis]);
+    }
+}
+
+#[test]
+fn recompute_refreshes_identity_bound_typed_attachments_and_fails_closed_without_evidence() {
+    let (mut document, top, bottom, _east) = seeded_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(coincident_mate(
+                MATE,
+                planar_endpoint(FIRST, top, [5.0, 5.0, 10.0], [0.0, 0.0, 1.0]),
+                planar_endpoint(SECOND, bottom, [5.0, 5.0, 0.0], [0.0, 0.0, -1.0]),
+            )),
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("12").unwrap(),
+            },
+        ]))
+        .unwrap();
+
+    let source = document.current();
+    let package = current_exact_package(&source, "attachment-refresh");
+    let ExactBodyPackage::Graph(graph) = package.as_ref() else {
+        panic!("box fixture is a graph package");
+    };
+    let refreshed_attachment = |role| {
+        let reference = package.reference(role).unwrap();
+        graph
+            .planar_face_attachments
+            .iter()
+            .find(|attachment| attachment.reference() == reference)
+            .unwrap()
+            .clone()
+    };
+    let refreshed_top = refreshed_attachment(ExactFaceRole::Top);
+    let refreshed_bottom = refreshed_attachment(ExactFaceRole::Bottom);
+    // The top face moved with the new height; the mate follows it.
+    assert_eq!(refreshed_top.local_origin_mm(), [5.0, 5.0, 12.0]);
+    let registry = ExactResultRegistry::accept(&source, [Arc::clone(&package)]).unwrap();
+    let recomputed =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    let refreshed_mate = &recomputed.mates()[0];
+    let refreshed_a = refreshed_mate
+        .endpoint_a()
+        .planar_face_attachment()
+        .unwrap();
+    let refreshed_b = refreshed_mate
+        .endpoint_b()
+        .planar_face_attachment()
+        .unwrap();
+    assert_eq!(
+        refreshed_a.local_origin_mm().map(f64::to_bits),
+        refreshed_top.local_origin_mm().map(f64::to_bits)
+    );
+    assert_eq!(
+        refreshed_a.local_unit_normal().map(f64::to_bits),
+        refreshed_top.local_unit_normal().map(f64::to_bits)
+    );
+    assert_eq!(
+        refreshed_b.local_origin_mm().map(f64::to_bits),
+        refreshed_bottom.local_origin_mm().map(f64::to_bits)
+    );
+    assert_eq!(
+        refreshed_b.local_unit_normal().map(f64::to_bits),
+        refreshed_bottom.local_unit_normal().map(f64::to_bits)
+    );
+    document
+        .commit_proposal(&recomputed.prepare_publication(&document).unwrap())
+        .unwrap();
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .planar_face_attachment()
+            .unwrap()
+            .local_origin_mm()
+            .map(f64::to_bits),
+        refreshed_top.local_origin_mm().map(f64::to_bits)
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("14").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let current = document.current();
+    let registry_without_attachments = ExactResultRegistry::accept(
+        &current,
+        [current_exact_package_without_attachments(
+            &current,
+            "attachment-evidence-missing",
+        )],
+    )
+    .unwrap();
+    let broken = recompute_rigid_assembly(
+        &document,
+        &registry_without_attachments,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(broken.status(), AssemblyRecomputeStatus::Broken);
+    assert!(broken.solve().is_none());
+    assert_eq!(
+        broken.mates()[0].endpoint_a().health(),
+        AssemblyReferenceHealth::Broken
+    );
+    assert!(
+        broken.mates()[0]
+            .endpoint_a()
+            .planar_face_attachment()
+            .is_none()
+    );
+}
+
+#[test]
+fn recompute_refreshes_typed_axial_geometry_and_breaks_without_axis_evidence() {
+    let (mut document, circle_side) = seeded_circle_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                MATE,
+                AssemblyMateEndpoint::resolved_axial(
+                    FIRST,
+                    AxialAttachment::cylindrical_face(
+                        circle_side.clone(),
+                        [1.0, 2.0, 3.0],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
+                ),
+                AssemblyMateEndpoint::resolved_axial(
+                    SECOND,
+                    AxialAttachment::cylindrical_face(
+                        circle_side,
+                        [4.0, 5.0, 6.0],
+                        [0.0, 1.0, 0.0],
+                    )
+                    .unwrap(),
+                ),
+                AssemblyMateKind::ConcentricAxial { reversed: false },
+            )),
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("12").unwrap(),
+            },
+        ]))
+        .unwrap();
+
+    let source = document.current();
+    let refreshed_origin = [5.0, 5.0, 0.0];
+    let refreshed_direction = [0.0, 0.0, 1.0];
+    let registry = ExactResultRegistry::accept(
+        &source,
+        [cylinder_package(
+            &source,
+            "axial-attachment-refresh",
+            Some((refreshed_origin, refreshed_direction)),
+        )],
+    )
+    .unwrap();
+    let recomputed =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    for endpoint in [
+        recomputed.mates()[0].endpoint_a(),
+        recomputed.mates()[0].endpoint_b(),
+    ] {
+        let attachment = endpoint.axial_attachment().unwrap();
+        assert_eq!(
+            attachment.local_origin_mm().map(f64::to_bits),
+            refreshed_origin.map(f64::to_bits)
+        );
+        assert_eq!(
+            attachment.local_unit_direction().map(f64::to_bits),
+            refreshed_direction.map(f64::to_bits)
+        );
+    }
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("14").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let current = document.current();
+    let registry_without_axis = ExactResultRegistry::accept(
+        &current,
+        [cylinder_package(&current, "axial-attachment-missing", None)],
+    )
+    .unwrap();
+    let broken = recompute_rigid_assembly(
+        &document,
+        &registry_without_axis,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(broken.status(), AssemblyRecomputeStatus::Broken);
+    assert!(broken.solve().is_none());
+    assert_eq!(
+        broken.mates()[0].endpoint_a().health(),
+        AssemblyReferenceHealth::Broken
+    );
+    assert!(broken.mates()[0].endpoint_a().axial_attachment().is_none());
+}
+
+#[test]
+fn assembly_contract_is_reviewed_atomic_undoable_and_losslessly_persistent() {
+    let (mut document, top, bottom, _east) = seeded_document();
+    let before = document.current();
+    let before_digest = before.canonical_digest();
+    let before_undo = document.visible_undo_steps();
+    let mate = coincident_mate(
+        MATE,
+        canonical_planar_endpoint(FIRST, top),
+        canonical_planar_endpoint(SECOND, bottom),
+    );
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), before_digest);
+    document.commit_proposal(&proposal).unwrap();
+
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_ne!(committed_digest, before_digest);
+    assert_eq!(document.visible_undo_steps(), before_undo + 1);
+    assert!(committed.occurrence_is_grounded(FIRST));
+    assert_eq!(committed.assembly_mate(MATE), Some(&mate));
+    let grounded_dof = committed.assembly_dof_diagnostic(FIRST).unwrap();
+    assert_eq!(grounded_dof.status(), AssemblyDofStatus::Grounded);
+    assert_eq!(grounded_dof.remaining_dof(), Some(0));
+    assert_eq!(grounded_dof.incident_mate_ids(), &[MATE]);
+    let pending_dof = committed.assembly_dof_diagnostic(SECOND).unwrap();
+    assert_eq!(pending_dof.status(), AssemblyDofStatus::PendingSolve);
+    assert_eq!(pending_dof.remaining_dof(), None);
+    assert_eq!(pending_dof.incident_mate_ids(), &[MATE]);
+    let state = encode_semantic_state(&committed);
+    for line in [
+        "\ngrounded_occurrences=[10]\n",
+        "analysis.occurrence_dof.10.status=\"Grounded\"",
+        "analysis.occurrence_dof.10.remaining_dof=0",
+        "analysis.occurrence_dof.10.incident_mate_ids=[20]",
+        "analysis.occurrence_dof.11.status=\"PendingSolve\"",
+        "analysis.occurrence_dof.11.remaining_dof=none",
+        "analysis.occurrence_dof.11.incident_mate_ids=[20]",
+        "assembly_mates.20.kind.CoincidentPlanar.",
+    ] {
+        assert!(state.complete().contains(line), "missing {line}");
+    }
+
+    let reopened = persistence::load(&persistence::save(&committed)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
+    assert_eq!(
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        state.complete()
+    );
+    assert!(reopened.snapshot().occurrence_is_grounded(FIRST));
+    assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
+    assert_eq!(document.undo().unwrap().canonical_digest(), before_digest);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+}
+
+#[test]
+fn stale_unresolved_duplicate_and_in_use_requests_fail_without_partial_state() {
+    let (mut document, top, bottom, _east) = seeded_document();
+    let mate = coincident_mate(
+        MATE,
+        canonical_planar_endpoint(FIRST, top.clone()),
+        canonical_planar_endpoint(SECOND, bottom.clone()),
+    );
+    let stale_delete = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::DeleteOccurrence { id: FIRST },
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+    let before_stale_delete = store_stamp(&document);
+    assert!(matches!(
+        document.commit_proposal(&stale_delete),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(store_stamp(&document), before_stale_delete);
+
+    let stale = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetAssemblyMateKind {
+                id: MATE,
+                kind: AssemblyMateKind::Distance { distance_mm: 5.0 },
+            },
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: SECOND,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GroupId(30),
+                name: "Assembly root".into(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(31),
+                name: "Assembly child".into(),
+                transform: Transform::identity(),
+                parent: Some(GroupId(30)),
+            },
+        ]))
+        .unwrap();
+    let before_stale_edit = store_stamp(&document);
+    assert!(matches!(
+        document.commit_proposal(&stale),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(store_stamp(&document), before_stale_edit);
+
+    let mut wrong_owner = top.clone();
+    wrong_owner.definition_id = DefinitionId(999);
+    let mut wrong_document = top.clone();
+    wrong_document.document_id = DocumentId(999);
+    let invalid = [
+        coincident_mate(
+            AssemblyMateId(21),
+            AssemblyMateEndpoint::lost(FIRST, top.clone()),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
+        ),
+        coincident_mate(
+            AssemblyMateId(22),
+            AssemblyMateEndpoint::ambiguous(FIRST, top.clone(), 2),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
+        ),
+        coincident_mate(
+            AssemblyMateId(23),
+            canonical_planar_endpoint(FIRST, wrong_owner),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
+        ),
+        coincident_mate(
+            AssemblyMateId(24),
+            canonical_planar_endpoint(FIRST, wrong_document),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
+        ),
+    ];
+    for candidate in invalid {
+        let before = store_stamp(&document);
+        assert!(matches!(
+            document.apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceGrounded {
+                    id: FIRST,
+                    grounded: true,
+                },
+                CanonicalCommand::CreateAssemblyMate(candidate.clone()),
+            ])),
+            Err(CanonicalError::InvalidAssemblyMate(id)) if id == candidate.id()
+        ));
+        assert_eq!(store_stamp(&document), before);
+        assert!(!document.current().occurrence_is_grounded(FIRST));
+    }
+    let before_duplicate = store_stamp(&document);
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate),
+        ])),
+        Err(CanonicalError::AssemblyMateAlreadyExists(MATE))
+    ));
+    assert_eq!(store_stamp(&document), before_duplicate);
+    assert!(!document.current().occurrence_is_grounded(FIRST));
+    let before_in_use = store_stamp(&document);
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteOccurrence { id: FIRST }
+        ])),
+        Err(CanonicalError::OccurrenceInAssemblyMate(FIRST))
+    ));
+    assert_eq!(store_stamp(&document), before_in_use);
+    let before_cycle = store_stamp(&document);
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::SetGroupParent {
+                id: GroupId(30),
+                parent: Some(GroupId(31)),
+            },
+        ])),
+        Err(CanonicalError::GroupCycle(GroupId(30)))
+    ));
+    assert_eq!(store_stamp(&document), before_cycle);
+    assert!(!document.current().occurrence_is_grounded(FIRST));
+}
+
+fn assert_near(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() <= 1.0e-5,
+        "expected {expected}, got {actual}"
+    );
+}
+
+#[test]
+fn rigid_solver_covers_supported_mates_with_fixed_policy_and_explicit_dof() {
+    let cases = [
+        (
+            AssemblyMateKind::CoincidentPlanar {
+                offset_mm: 0.0,
+                reversed: false,
+            },
+            Transform::from_translation(20.0, 0.0, 7.0).unwrap(),
+            0_u8,
+        ),
+        (
+            AssemblyMateKind::ConcentricAxial { reversed: false },
+            Transform::from_translation(20.0, 8.0, 7.0).unwrap(),
+            1_u8,
+        ),
+        (
+            AssemblyMateKind::Distance { distance_mm: 5.0 },
+            Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+            2_u8,
+        ),
+        (
+            AssemblyMateKind::Angle {
+                angle_degrees: 60.0,
+            },
+            Transform::identity(),
+            3_u8,
+        ),
+    ];
+
+    for (kind, initial, case) in cases {
+        let (mut document, top, bottom, east) = seeded_document();
+        let endpoint_b_reference = match case {
+            0 => bottom,
+            3 => east,
+            _ => top.clone(),
+        };
+        let (endpoint_a, endpoint_b) = if case == 1 {
+            (
+                AssemblyMateEndpoint::resolved_axial(
+                    FIRST,
+                    AxialAttachment::new(
+                        cylindrical_reference(top),
+                        AxialAttachmentKind::CylindricalFace,
+                        [0.0; 3],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
+                ),
+                AssemblyMateEndpoint::resolved_axial(
+                    SECOND,
+                    AxialAttachment::new(
+                        cylindrical_reference(endpoint_b_reference),
+                        AxialAttachmentKind::CylindricalFace,
+                        [0.0; 3],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
+                ),
+            )
+        } else {
+            (
+                canonical_planar_endpoint(FIRST, top),
+                canonical_planar_endpoint(SECOND, endpoint_b_reference),
+            )
+        };
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: SECOND,
+                    transform: initial,
+                },
+                CanonicalCommand::SetOccurrenceGrounded {
+                    id: FIRST,
+                    grounded: true,
+                },
+                CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                    MATE, endpoint_a, endpoint_b, kind,
+                )),
+            ]))
+            .unwrap();
+        let source = document.current();
+        let policy = AssemblySolverPolicy::default();
+        let solved = solve_rigid_assembly(&source, policy).unwrap();
+        assert_eq!(solved.schema(), "ketchup.rigid-assembly-solver.v1");
+        assert_eq!(solved.iterations(), policy.max_iterations);
+        assert_eq!(solved.status(), AssemblySolveStatus::UnderConstrained);
+        assert!(solved.maximum_residual() <= policy.linear_tolerance_mm);
+        assert!(solved.remaining_dof() > 0);
+        assert_eq!(solved.occurrence(FIRST).unwrap().remaining_dof(), 0);
+        assert!(solved.occurrence(FIRST).unwrap().grounded());
+        assert_eq!(
+            solved.occurrence(FIRST).unwrap().transform(),
+            source.occurrence(FIRST).unwrap().transform()
+        );
+        let solved_transform = solved.occurrence(SECOND).unwrap().transform();
+        let matrix = solved_transform.matrix();
+        match case {
+            0 => assert_near(matrix[11], 0.0),
+            1 => {
+                assert_near(matrix[3], 0.0);
+                assert_near(matrix[7], 0.0);
+                assert_near(matrix[11], 7.0);
+            }
+            2 => assert_near(matrix[3], 5.0),
+            3 => assert_near(matrix[8], 60.0_f64.to_radians().cos()),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn rigid_solver_is_fully_constrained_and_publication_is_reviewed_and_stale_safe() {
+    let (mut document, top, bottom, east) = seeded_document();
+    let quarter_turn = Transform::from_matrix([
+        0.0, -1.0, 0.0, 20.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: SECOND,
+                transform: quarter_turn,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(coincident_mate(
+                AssemblyMateId(20),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, bottom),
+            )),
+            CanonicalCommand::CreateAssemblyMate(coincident_mate(
+                AssemblyMateId(21),
+                canonical_planar_endpoint(FIRST, east.clone()),
+                canonical_planar_endpoint(SECOND, east),
+            )),
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                AssemblyMateId(22),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
+                AssemblyMateKind::Distance { distance_mm: 5.0 },
+            )),
+        ]))
+        .unwrap();
+
+    let source = document.current();
+    let solved = solve_rigid_assembly(&source, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(
+        solved.status(),
+        AssemblySolveStatus::FullyConstrained,
+        "{solved:#?}"
+    );
+    assert_eq!(solved.remaining_dof(), 0);
+    assert!(solved.conflicting_mate_ids().is_empty());
+    let stale_proposal = solved.prepare_publication(&document).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateTag {
+            id: TagId(99),
+            name: "Unrelated edit".into(),
+            visible: true,
+        }]))
+        .unwrap();
+    let before_stale_commit = store_stamp(&document);
+    assert!(document.commit_proposal(&stale_proposal).is_err());
+    assert_eq!(store_stamp(&document), before_stale_commit);
+    assert!(matches!(
+        solved.prepare_publication(&document),
+        Err(AssemblySolvePublishError::Stale)
+    ));
+
+    let current_solve =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    let proposal = current_solve.prepare_publication(&document).unwrap();
+    let before_publish_undo = document.visible_undo_steps();
+    document.commit_proposal(&proposal).unwrap();
+    assert_eq!(document.visible_undo_steps(), before_publish_undo + 1);
+}
+
+#[test]
+fn conflicting_and_redundant_mates_are_deterministic_and_never_publish_failure() {
+    let (mut document, top, _bottom, _east) = seeded_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                AssemblyMateId(20),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top.clone()),
+                AssemblyMateKind::Distance { distance_mm: 5.0 },
+            )),
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                AssemblyMateId(21),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
+                AssemblyMateKind::Distance { distance_mm: 10.0 },
+            )),
+        ]))
+        .unwrap();
+    let source = document.current();
+    let before = store_stamp(&document);
+    let failed = solve_rigid_assembly(&source, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(failed.status(), AssemblySolveStatus::OverConstrained);
+    assert_eq!(
+        failed.conflicting_mate_ids(),
+        &[AssemblyMateId(20), AssemblyMateId(21)]
+    );
+    assert!(matches!(
+        failed.publication_batch(&source),
+        Err(AssemblySolvePublishError::SolveNotConverged(
+            AssemblySolveStatus::OverConstrained
+        ))
+    ));
+    assert_eq!(store_stamp(&document), before);
+    let registry = ExactResultRegistry::accept(
+        &source,
+        [current_exact_package(&source, "over-constrained")],
+    )
+    .unwrap();
+    let failed_recompute =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(
+        failed_recompute.status(),
+        AssemblyRecomputeStatus::OverConstrained
+    );
+    assert!(matches!(
+        failed_recompute.prepare_publication(&document),
+        Err(AssemblyRecomputePublishError::SolveNotPublishable(
+            AssemblyRecomputeStatus::OverConstrained
+        ))
+    ));
+    assert_eq!(store_stamp(&document), before);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetAssemblyMateKind {
+                id: AssemblyMateId(21),
+                kind: AssemblyMateKind::Distance { distance_mm: 5.0 },
+            },
+        ]))
+        .unwrap();
+    let redundant =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(redundant.status(), AssemblySolveStatus::UnderConstrained);
+    assert_eq!(redundant.redundant_mate_ids(), &[AssemblyMateId(21)]);
+}
+
+#[test]
+fn three_occurrence_chain_is_permutation_deterministic_bounded_and_branch_safe() {
+    let third = OccurrenceId(12);
+    let unrelated = OccurrenceId(13);
+    let unrelated_transform = Transform::from_translation(0.0, 30.0, 0.0).unwrap();
+    let mut baseline = None;
+
+    for reverse_mates in [false, true] {
+        let (mut document, top, _bottom, _east) = seeded_document();
+        let mut mates = [
+            AssemblyMate::new(
+                AssemblyMateId(20),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top.clone()),
+                AssemblyMateKind::Distance { distance_mm: 5.0 },
+            ),
+            AssemblyMate::new(
+                AssemblyMateId(21),
+                canonical_planar_endpoint(SECOND, top.clone()),
+                canonical_planar_endpoint(third, top),
+                AssemblyMateKind::Distance { distance_mm: 7.0 },
+            ),
+        ];
+        if reverse_mates {
+            mates.reverse();
+        }
+        let mut commands = vec![
+            CanonicalCommand::CreateOccurrence {
+                id: third,
+                definition_id: DEFINITION,
+                name: "Part C".into(),
+                transform: Transform::from_translation(40.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: unrelated,
+                definition_id: DEFINITION,
+                name: "Unrelated branch".into(),
+                transform: unrelated_transform,
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+        ];
+        commands.extend(mates.into_iter().map(CanonicalCommand::CreateAssemblyMate));
+        document.apply_batch(&CommandBatch::new(commands)).unwrap();
+
+        let source = document.current();
+        let bounded = solve_rigid_assembly(
+            &source,
+            AssemblySolverPolicy {
+                max_iterations: 1,
+                ..AssemblySolverPolicy::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(bounded.iterations(), 1);
+
+        let solved = solve_rigid_assembly(&source, AssemblySolverPolicy::default()).unwrap();
+        assert_eq!(solved.status(), AssemblySolveStatus::UnderConstrained);
+        assert_eq!(
+            solved.iterations(),
+            AssemblySolverPolicy::default().max_iterations
+        );
+        assert_eq!(solved.remaining_dof(), 16);
+        assert!(source.occurrence_is_grounded(FIRST));
+        assert_eq!(
+            solved
+                .occurrences()
+                .iter()
+                .map(|occurrence| (
+                    occurrence.occurrence_id(),
+                    occurrence.remaining_dof(),
+                    occurrence.grounded(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (FIRST, 0, true),
+                (SECOND, 5, false),
+                (third, 5, false),
+                (unrelated, 6, false),
+            ]
+        );
+        assert_eq!(solved.occurrence(FIRST).unwrap().remaining_dof(), 0);
+        assert_eq!(solved.occurrence(SECOND).unwrap().remaining_dof(), 5);
+        assert_eq!(solved.occurrence(third).unwrap().remaining_dof(), 5);
+        assert_eq!(solved.occurrence(unrelated).unwrap().remaining_dof(), 6);
+
+        let second_transform = solved.occurrence(SECOND).unwrap().transform();
+        let second_matrix = second_transform.matrix();
+        assert_near(second_matrix[3], 5.0);
+        assert_near(second_matrix[7], 0.0);
+        assert_near(second_matrix[11], 0.0);
+        let third_transform = solved.occurrence(third).unwrap().transform();
+        let third_matrix = third_transform.matrix();
+        assert_near(third_matrix[3], 12.0);
+        assert_near(third_matrix[7], 0.0);
+        assert_near(third_matrix[11], 0.0);
+        assert_eq!(
+            solved.occurrence(unrelated).unwrap().transform(),
+            unrelated_transform
+        );
+
+        let outcome = solved
+            .occurrences()
+            .iter()
+            .map(|occurrence| {
+                (
+                    occurrence.occurrence_id(),
+                    occurrence.transform(),
+                    occurrence.remaining_dof(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(expected) = &baseline {
+            assert_eq!(&outcome, expected);
+        } else {
+            baseline = Some(outcome);
+        }
+
+        let proposal = solved.prepare_publication(&document).unwrap();
+        let undo_before = document.visible_undo_steps();
+        document.commit_proposal(&proposal).unwrap();
+        assert_eq!(document.visible_undo_steps(), undo_before + 1);
+        assert_eq!(
+            document
+                .current()
+                .occurrence(unrelated)
+                .unwrap()
+                .transform(),
+            unrelated_transform
+        );
+    }
+}
+
+#[test]
+fn assembly_recompute_rebinds_current_topology_and_persists_fail_closed_diagnostics() {
+    let unrelated = OccurrenceId(12);
+    let unrelated_transform = Transform::from_translation(0.0, 30.0, 0.0).unwrap();
+    let (mut document, top, _bottom, _east) = seeded_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: unrelated,
+                definition_id: DEFINITION,
+                name: "Unrelated".into(),
+                transform: unrelated_transform,
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                MATE,
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
+                AssemblyMateKind::Distance { distance_mm: 5.0 },
+            )),
+        ]))
+        .unwrap();
+    let initial =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    let proposal = initial.prepare_publication(&document).unwrap();
+    document.commit_proposal(&proposal).unwrap();
+    let solved_transform = document.current().occurrence(SECOND).unwrap().transform();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("12").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let source = document.current();
+    let old_lineage = source
+        .assembly_mate(MATE)
+        .unwrap()
+        .endpoint_a()
+        .reference()
+        .lineage_digest
+        .clone();
+    let registry = ExactResultRegistry::accept(
+        &source,
+        [current_exact_package(&source, "after-height-edit")],
+    )
+    .unwrap();
+    let recomputed =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    assert_eq!(recomputed.source_revision(), source.revision_id());
+    assert_eq!(recomputed.source_digest(), source.canonical_digest());
+    assert_eq!(
+        recomputed.mates()[0]
+            .endpoint_a()
+            .reference()
+            .lineage_digest,
+        old_lineage
+    );
+    assert_ne!(
+        recomputed.mates()[0]
+            .endpoint_a()
+            .reference()
+            .canonical_input_digest,
+        source
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .reference()
+            .canonical_input_digest
+    );
+    let undo_before = document.visible_undo_steps();
+    let proposal = recomputed.prepare_publication(&document).unwrap();
+    document.commit_proposal(&proposal).unwrap();
+    assert_eq!(document.visible_undo_steps(), undo_before + 1);
+    assert_eq!(
+        document
+            .current()
+            .occurrence(unrelated)
+            .unwrap()
+            .transform(),
+        unrelated_transform
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("14").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let before_lost_transform = document.current().occurrence(SECOND).unwrap().transform();
+    let lost = recompute_rigid_assembly(
+        &document,
+        &ExactResultRegistry::default(),
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(lost.status(), AssemblyRecomputeStatus::Lost);
+    assert!(lost.solve().is_none());
+    let proposal = lost.prepare_publication(&document).unwrap();
+    document.commit_proposal(&proposal).unwrap();
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .health(),
+        AssemblyReferenceHealth::Lost
+    );
+    assert_eq!(
+        document.current().occurrence(SECOND).unwrap().transform(),
+        before_lost_transform
+    );
+
+    let source = document.current();
+    let mut ambiguous_registry = ExactResultRegistry::default();
+    ambiguous_registry
+        .insert_current(&source, current_exact_package(&source, "candidate-a"))
+        .unwrap();
+    ambiguous_registry
+        .insert_current(&source, current_exact_package(&source, "candidate-b"))
+        .unwrap();
+    let ambiguous = recompute_rigid_assembly(
+        &document,
+        &ambiguous_registry,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(ambiguous.status(), AssemblyRecomputeStatus::Ambiguous);
+    let proposal = ambiguous.prepare_publication(&document).unwrap();
+    document.commit_proposal(&proposal).unwrap();
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .health(),
+        AssemblyReferenceHealth::Ambiguous { candidate_count: 2 }
+    );
+
+    let current_mate = document.current().assembly_mate(MATE).unwrap().clone();
+    let mut incompatible = current_mate.endpoint_a().reference().clone();
+    incompatible.evaluator = "incompatible-evaluator".into();
+    let broken_anchor = AssemblyMate::new(
+        MATE,
+        canonical_planar_endpoint(FIRST, incompatible),
+        current_mate.endpoint_b().clone(),
+        current_mate.kind(),
+    );
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::RebindAssemblyMate(broken_anchor),
+        ]))
+        .unwrap();
+    document.commit_proposal(&proposal).unwrap();
+    let source = document.current();
+    let registry =
+        ExactResultRegistry::accept(&source, [current_exact_package(&source, "broken-envelope")])
+            .unwrap();
+    let broken =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(broken.status(), AssemblyRecomputeStatus::Broken);
+    let proposal = broken.prepare_publication(&document).unwrap();
+    document.commit_proposal(&proposal).unwrap();
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .health(),
+        AssemblyReferenceHealth::Broken
+    );
+    assert_eq!(
+        document.current().occurrence(SECOND).unwrap().transform(),
+        solved_transform
+    );
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(
+        reopened
+            .snapshot()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .health(),
+        AssemblyReferenceHealth::Broken
+    );
+    assert!(
+        encode_semantic_state(&reopened.snapshot())
+            .complete()
+            .contains("assembly_mates.20.endpoint_a.health=\"Broken\"")
+    );
+
+    let source = document.current();
+    let registry =
+        ExactResultRegistry::accept(&source, [current_exact_package(&source, "stale-result")])
+            .unwrap();
+    let stale =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    let stale_proposal = stale.prepare_publication(&document).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateTag {
+            id: TagId(100),
+            name: "Unrelated edit".into(),
+            visible: true,
+        }]))
+        .unwrap();
+    let before_stale = store_stamp(&document);
+    let stale_error = match document.commit_proposal(&stale_proposal) {
+        Ok(_) => panic!("stale assembly recompute unexpectedly committed"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            stale_error,
+            ProposalCommitError::Stale(_)
+                | ProposalCommitError::Canonical(CanonicalError::StaleAssemblySolve)
+                | ProposalCommitError::Preparation(ProposalPrepareError::Canonical(
+                    CanonicalError::StaleAssemblySolve
+                ))
+        ),
+        "unexpected stale error: {stale_error:?}"
+    );
+    assert_eq!(store_stamp(&document), before_stale);
+    assert!(matches!(
+        stale.publication_batch(&document.current()),
+        Err(AssemblyRecomputePublishError::Stale)
+    ));
+    assert_eq!(
+        document
+            .current()
+            .occurrence(unrelated)
+            .unwrap()
+            .transform(),
+        unrelated_transform
+    );
+}
+
+#[test]
+fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
+    let unrelated = OccurrenceId(12);
+    let unrelated_transform = Transform::from_translation(0.0, 30.0, 0.0).unwrap();
+    let (mut document, top, _bottom, _east) = seeded_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: unrelated,
+                definition_id: DEFINITION,
+                name: "Unrelated".into(),
+                transform: unrelated_transform,
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                MATE,
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
+                AssemblyMateKind::Distance { distance_mm: 5.0 },
+            )),
+        ]))
+        .unwrap();
+    let initial =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    document
+        .commit_proposal(&initial.prepare_publication(&document).unwrap())
+        .unwrap();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("12").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let before_rebind = document.current();
+    let before_rebind_state = encode_semantic_state(&before_rebind).complete().to_owned();
+    let before_rebind_digest = before_rebind.canonical_digest();
+    let before_rebind_reference = before_rebind
+        .assembly_mate(MATE)
+        .unwrap()
+        .endpoint_a()
+        .reference()
+        .clone();
+    let registry = ExactResultRegistry::accept(
+        &before_rebind,
+        [current_exact_package(&before_rebind, "verify-rebind")],
+    )
+    .unwrap();
+    let recomputed =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    assert_eq!(recomputed.source_revision(), before_rebind.revision_id());
+    assert_eq!(recomputed.source_digest(), before_rebind_digest);
+
+    let undo_before = document.visible_undo_steps();
+    document
+        .commit_proposal(&recomputed.prepare_publication(&document).unwrap())
+        .unwrap();
+    let rebound = document.current();
+    let rebound_digest = rebound.canonical_digest();
+    let rebound_state = encode_semantic_state(&rebound).complete().to_owned();
+    let rebound_reference = rebound
+        .assembly_mate(MATE)
+        .unwrap()
+        .endpoint_a()
+        .reference();
+    assert_eq!(document.visible_undo_steps(), undo_before + 1);
+    assert_eq!(
+        rebound_reference.lineage_digest,
+        before_rebind_reference.lineage_digest
+    );
+    assert_ne!(
+        rebound_reference.canonical_input_digest,
+        before_rebind_reference.canonical_input_digest
+    );
+    assert_eq!(
+        rebound.occurrence(unrelated).unwrap().transform(),
+        unrelated_transform
+    );
+    let reopened = persistence::load(&persistence::save(&rebound)).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), rebound_digest);
+    assert_eq!(
+        encode_semantic_state(&reopened.snapshot()).complete(),
+        rebound_state
+    );
+
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        before_rebind_digest
+    );
+    assert_eq!(
+        encode_semantic_state(&document.current()).complete(),
+        before_rebind_state
+    );
+    assert_eq!(document.redo().unwrap().canonical_digest(), rebound_digest);
+    assert_eq!(
+        encode_semantic_state(&document.current()).complete(),
+        rebound_state
+    );
+
+    let mut reopened_document = match reopened.into_editable() {
+        Ok(document) => document,
+        Err(_) => panic!("assembly recompute save/open unexpectedly requires review"),
+    };
+    let reopened_snapshot = reopened_document.current();
+    let reopened_registry = ExactResultRegistry::accept(
+        &reopened_snapshot,
+        [current_exact_package(&reopened_snapshot, "verify-rebind")],
+    )
+    .unwrap();
+    let reopened_recompute = recompute_rigid_assembly(
+        &reopened_document,
+        &reopened_registry,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(reopened_recompute.status(), AssemblyRecomputeStatus::Solved);
+    assert!(matches!(
+        reopened_recompute.publication_batch(&reopened_snapshot),
+        Err(AssemblyRecomputePublishError::NoCanonicalChanges)
+    ));
+
+    let dimension_edit = reopened_document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("14").unwrap(),
+            },
+        ]))
+        .unwrap();
+    reopened_document.commit_proposal(&dimension_edit).unwrap();
+    let before_topology_change = reopened_document.current();
+    let current_mate = before_topology_change.assembly_mate(MATE).unwrap().clone();
+    // A rectangle has no arc, so its result never names this face.
+    let removed_role = ExactFaceRole::ArcSide;
+    let mut removed_reference = current_mate.endpoint_a().reference().clone();
+    removed_reference.semantic_role = removed_role.semantic_role().into();
+    removed_reference.source_element_id = removed_role.source_element_id().into();
+    removed_reference.expected_type = removed_role.expected_type().into();
+    removed_reference.lineage_digest = canonical_reference_lineage_digest(
+        before_topology_change.document_id(),
+        EXTRUSION,
+        removed_role.semantic_role(),
+        removed_role.source_element_id(),
+        removed_role.expected_type(),
+    );
+    let topology_edit = reopened_document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::RebindAssemblyMate(AssemblyMate::new(
+                MATE,
+                canonical_planar_endpoint(FIRST, removed_reference),
+                current_mate.endpoint_b().clone(),
+                current_mate.kind(),
+            )),
+        ]))
+        .unwrap();
+    reopened_document.commit_proposal(&topology_edit).unwrap();
+    let topology_changed = reopened_document.current();
+    let topology_changed_digest = topology_changed.canonical_digest();
+    let retained_transform = topology_changed.occurrence(SECOND).unwrap().transform();
+    let topology_registry = ExactResultRegistry::accept(
+        &topology_changed,
+        [current_exact_package(&topology_changed, "top-role-removed")],
+    )
+    .unwrap();
+    let lost = recompute_rigid_assembly(
+        &reopened_document,
+        &topology_registry,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(lost.status(), AssemblyRecomputeStatus::Lost);
+    assert!(lost.solve().is_none());
+    let lost_undo_before = reopened_document.visible_undo_steps();
+    reopened_document
+        .commit_proposal(&lost.prepare_publication(&reopened_document).unwrap())
+        .unwrap();
+    let lost_snapshot = reopened_document.current();
+    let lost_digest = lost_snapshot.canonical_digest();
+    assert_eq!(reopened_document.visible_undo_steps(), lost_undo_before + 1);
+    assert_eq!(
+        lost_snapshot
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .health(),
+        AssemblyReferenceHealth::Lost
+    );
+    assert_eq!(
+        lost_snapshot.occurrence(SECOND).unwrap().transform(),
+        retained_transform
+    );
+    assert_eq!(
+        lost_snapshot.occurrence(unrelated).unwrap().transform(),
+        unrelated_transform
+    );
+    let reopened_lost = persistence::load(&persistence::save(&lost_snapshot)).unwrap();
+    assert_eq!(reopened_lost.snapshot().canonical_digest(), lost_digest);
+    assert_eq!(
+        reopened_document.undo().unwrap().canonical_digest(),
+        topology_changed_digest
+    );
+    assert_eq!(
+        reopened_document.redo().unwrap().canonical_digest(),
+        lost_digest
+    );
+}

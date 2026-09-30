@@ -1,19 +1,19 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
     DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, FeatureParameterTarget,
     OccurrenceId, ParameterPath, ParameterValueType, Snapshot, SpatialPathSegment, Transform,
     WeldmentJointPolicy, WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
 };
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V19, ExactBRepGraph, ExactBRepOperation,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_core::exact_validation::{
+use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::exact_validation::{
     BuiltinGeneralBodyValidator, general_body_input_bytes, general_body_validation_policy,
 };
-use ketchup_core::persistence::{self, ContainerData};
-use ketchup_core::tolerance::TolerancePolicy;
-use ketchup_core::validation::{
+use ketchup_model::persistence::{self, ContainerData};
+use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationState,
 };
 use ketchup_manufacturing::fabrication::{
@@ -106,7 +106,7 @@ fn add_joint(
     document: &mut DocumentStore,
     policy: WeldmentJointPolicy,
     primary: WeldmentJointPrimary,
-) -> Result<(), ketchup_core::document::CanonicalError> {
+) -> Result<(), ketchup_model::document::CanonicalError> {
     document
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
             id: FeatureId(6),

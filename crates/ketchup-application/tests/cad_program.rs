@@ -7,22 +7,22 @@ use ketchup_application::{
     plan_assistant_cad_edit_program_with_outputs as plan_with_outputs,
 };
 use ketchup_assistant::sidecar::*;
-use ketchup_core::assembly::{
+use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyKind, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension,
     DocumentStore, FeatureId, FeatureKind, GroupId, InstancePath, InstancePathStep, OccurrenceId,
     Snapshot, SpatialPathSegment, SurfaceBodySpec, Transform,
 };
-use ketchup_core::drawing::{DrawingSource, project_orthographic_drawing};
-use ketchup_core::drawing_export::export_drawing;
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::drawing::{DrawingSource, project_orthographic_drawing};
+use ketchup_model::drawing_export::export_drawing;
+use ketchup_model::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V14, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
-use ketchup_core::persistence::{ContainerData, LoadOutcome, load, save, save_document_store};
-use ketchup_core::testing::box_package;
+use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
+use ketchup_model::persistence::{ContainerData, LoadOutcome, load, save, save_document_store};
+use ketchup_model::testing::box_package;
 use ketchup_geometry::sketch::{
     PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
@@ -434,7 +434,7 @@ fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
     assert_eq!(
         document
             .current()
-            .assembly_joint(ketchup_core::assembly_joint::AssemblyJointId(1))
+            .assembly_joint(ketchup_model::assembly_joint::AssemblyJointId(1))
             .unwrap()
             .child_instance_path(),
         &child_path
@@ -2167,7 +2167,7 @@ fn same_program_set_dimension_updates_existing_boolean_inputs_atomically() {
     assert!(matches!(
         candidate.feature(FeatureId(4)).unwrap().kind(),
         FeatureKind::Boolean {
-            operation: ketchup_core::document::BooleanOperation::Intersect,
+            operation: ketchup_model::document::BooleanOperation::Intersect,
             target: FeatureId(2),
             tool: FeatureId(3),
         }
@@ -2504,10 +2504,10 @@ fn one_pin_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_pa
     .unwrap();
     document.apply_batch(&batch).unwrap();
     let snapshot = document.current();
-    let projection = ketchup_core::pin_joint::project_pin_joint_contract(
+    let projection = ketchup_model::pin_joint::project_pin_joint_contract(
         &snapshot,
         snapshot
-            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+            .pin_joint(ketchup_model::pin_joint::PinJointId(1))
             .unwrap(),
     )
     .unwrap();
@@ -2585,7 +2585,7 @@ fn physical_pin_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
     assert_eq!(joint.pin.first_insertion_mm, 20.0);
     assert_eq!(joint.pin.second_insertion_mm, 10.0);
     let projection =
-        ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
+        ketchup_model::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
     assert_eq!(projection.pairs.len(), 2);
     assert!(projection.pairs.iter().all(|pair| {
         pair.first.depth_mm == 21.0
@@ -2689,7 +2689,7 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
     let committed = document.current();
     let committed_digest = committed.canonical_digest();
     let joint = committed
-        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+        .pin_joint(ketchup_model::pin_joint::PinJointId(1))
         .unwrap();
     let bindings = joint.physical_hole_pairs.as_ref().unwrap();
     assert_eq!(bindings.len(), 3);
@@ -2719,7 +2719,7 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
         )
     }));
     let projection =
-        ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
+        ketchup_model::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
     assert_eq!(projection.pairs.len(), 3);
     assert!(projection.pairs.iter().all(|pair| {
         pair.physical_probe_coincidence
@@ -2803,11 +2803,11 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
             .all(|feature| updated.feature(feature.id()).is_some())
     );
     let updated_joint = updated
-        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+        .pin_joint(ketchup_model::pin_joint::PinJointId(1))
         .unwrap();
     assert_eq!(updated_joint.physical_hole_pairs.as_ref().unwrap().len(), 2);
     let updated_projection =
-        ketchup_core::pin_joint::project_pin_joint_contract(&updated, updated_joint).unwrap();
+        ketchup_model::pin_joint::project_pin_joint_contract(&updated, updated_joint).unwrap();
     assert!(updated_projection.pairs.iter().all(|pair| {
         pair.physical_probe_coincidence
             .as_ref()
@@ -2840,7 +2840,7 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
     let deleted = document.current();
     assert!(
         deleted
-            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+            .pin_joint(ketchup_model::pin_joint::PinJointId(1))
             .is_none()
     );
     assert_eq!(deleted.features().count(), baseline.features().count());
@@ -2853,7 +2853,7 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
     document.undo().unwrap();
     let restored = document.current();
     let owned_pocket = restored
-        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+        .pin_joint(ketchup_model::pin_joint::PinJointId(1))
         .unwrap()
         .physical_hole_pairs
         .as_ref()
@@ -3063,7 +3063,7 @@ fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
     shallow.apply_batch(&create).unwrap();
     let committed = shallow.current();
     let first_pocket = committed
-        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+        .pin_joint(ketchup_model::pin_joint::PinJointId(1))
         .unwrap()
         .physical_hole_pairs
         .as_ref()
@@ -3281,7 +3281,7 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
     document.apply_batch(&top_batch).unwrap();
     let before_sides = document.current();
     let preserved_joint = before_sides
-        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+        .pin_joint(ketchup_model::pin_joint::PinJointId(1))
         .unwrap()
         .clone();
     let hardware_feature_id = before_sides
@@ -3354,7 +3354,7 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
     assert_eq!(committed.pin_joints().count(), 3);
     assert_eq!(
         committed
-            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+            .pin_joint(ketchup_model::pin_joint::PinJointId(1))
             .unwrap(),
         &preserved_joint
     );
@@ -3388,10 +3388,10 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
         ),
     ] {
         let joint = committed
-            .pin_joint(ketchup_core::pin_joint::PinJointId(joint_id))
+            .pin_joint(ketchup_model::pin_joint::PinJointId(joint_id))
             .unwrap();
         let projection =
-            ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
+            ketchup_model::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
         assert_eq!(projection.pairs.len(), 2);
         assert_eq!(
             projection
@@ -3553,11 +3553,11 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
     document.apply_batch(&planned.batch).unwrap();
     let committed = document.current();
     let joint = committed
-        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+        .pin_joint(ketchup_model::pin_joint::PinJointId(1))
         .unwrap();
     assert_eq!(joint.physical_hole_pairs.as_ref().unwrap().len(), 1);
     let projection =
-        ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
+        ketchup_model::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
     assert_eq!(
         projection.pairs[0]
             .physical_probe_coincidence
@@ -3795,7 +3795,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     assert_eq!(
         reopened
             .snapshot()
-            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+            .pin_joint(ketchup_model::pin_joint::PinJointId(1))
             .unwrap()
             .physical_hole_pairs
             .as_ref()
@@ -3888,7 +3888,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     document.apply_batch(&batch).unwrap();
     let moved = document.current();
     let joint = moved
-        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
+        .pin_joint(ketchup_model::pin_joint::PinJointId(1))
         .unwrap();
     assert_eq!(
         joint.physical_hole_pairs.as_ref().unwrap()[1].first_pocket_feature_id,
@@ -3898,7 +3898,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         joint.physical_hole_pairs.as_ref().unwrap()[1].second_pocket_feature_id,
         second_pockets[1]
     );
-    let projected = ketchup_core::pin_joint::project_pin_joint_contract(&moved, joint).unwrap();
+    let projected = ketchup_model::pin_joint::project_pin_joint_contract(&moved, joint).unwrap();
     assert_eq!(
         projected
             .pairs
@@ -4684,7 +4684,7 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
     assert!(matches!(
         &graph.profiles[0].geometry,
         ExactBRepPlanarGeometry::Region { outer, holes }
-            if matches!(outer, ketchup_core::exact_brep_graph::ExactBRepPlanarLoop::Boundary { segments } if segments.len() == 4)
+            if matches!(outer, ketchup_model::exact_brep_graph::ExactBRepPlanarLoop::Boundary { segments } if segments.len() == 4)
                 && holes.len() == 1
     ));
 
@@ -5025,7 +5025,7 @@ fn public_assistant_cam_setup_is_exact_bound_atomic_undoable_and_fail_closed() {
     assert_eq!(document.visible_undo_steps(), before_undo + 1);
     let committed = document.current();
     let cam = committed
-        .cam_plan(ketchup_core::cam::CamPlanId(1))
+        .cam_plan(ketchup_model::cam::CamPlanId(1))
         .expect("Assistant setup must publish one canonical CAM plan")
         .clone();
     assert_eq!(cam.name(), "Reviewed top setup");
@@ -5034,14 +5034,14 @@ fn public_assistant_cam_setup_is_exact_bound_atomic_undoable_and_fail_closed() {
     assert_eq!(cam.tool().spindle_rpm, 12_000);
     assert_eq!(
         cam.setup().work_offset,
-        ketchup_core::cam::CamWorkOffset::G54
+        ketchup_model::cam::CamWorkOffset::G54
     );
 
     assert_eq!(document.undo().unwrap().canonical_digest(), before_digest);
     assert!(
         document
             .current()
-            .cam_plan(ketchup_core::cam::CamPlanId(1))
+            .cam_plan(ketchup_model::cam::CamPlanId(1))
             .is_none()
     );
     document.redo().unwrap();
@@ -5060,7 +5060,7 @@ fn public_assistant_cam_setup_is_exact_bound_atomic_undoable_and_fail_closed() {
         .is_err()
     );
     assert_eq!(
-        document.current().cam_plan(ketchup_core::cam::CamPlanId(1)),
+        document.current().cam_plan(ketchup_model::cam::CamPlanId(1)),
         Some(&cam)
     );
 }

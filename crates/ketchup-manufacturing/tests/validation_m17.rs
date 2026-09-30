@@ -1,29 +1,29 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
     CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId,
     InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId,
     ProfileSegment, Snapshot, Transform,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
     ExactResultRegistry,
 };
-use ketchup_core::exact_validation::{
+use ketchup_model::exact_validation::{
     BuiltinGeneralBodyValidator, GeneralBodyParticipant, GeneralBodySource,
     GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
     general_body_validation_policy,
 };
-use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
-use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
-use ketchup_core::persistence;
-use ketchup_core::space::{
+use ketchup_model::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
+use ketchup_model::import::{StepImportMesh, StepMeshTriangle};
+use ketchup_model::persistence;
+use ketchup_model::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceOwner, ClearanceSeverity,
     ClearanceValidationError, ClearanceVolumeId, SpaceId, validate_clearance_occupancy,
 };
-use ketchup_core::testing::box_package;
-use ketchup_core::tolerance::TolerancePolicy;
-use ketchup_core::validation::{
+use ketchup_model::testing::box_package;
+use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::validation::{
     EvidenceClass, EvidenceCounts, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
     ValidatorRoleIndex,
@@ -1892,10 +1892,10 @@ fn exact_document_fabrication_projection(
 }
 
 fn general_report(
-    snapshot: &ketchup_core::document::Snapshot,
+    snapshot: &ketchup_model::document::Snapshot,
     cases: &[GeneralClearanceCase],
     tolerance: TolerancePolicy,
-) -> ketchup_core::validation::ValidationReport {
+) -> ketchup_model::validation::ValidationReport {
     let validator = BuiltinGeneralBodyValidator::new(tolerance);
     let policy = general_body_validation_policy();
     let input = general_body_input_bytes(cases);
@@ -2574,7 +2574,7 @@ fn occurrence(id: OccurrenceId, definition_id: DefinitionId, x_mm: f64) -> Canon
     }
 }
 
-fn exact_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
+fn exact_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPackage {
     box_package(
         snapshot,
         EXACT_DEFINITION,

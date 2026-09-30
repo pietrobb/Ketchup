@@ -2,11 +2,11 @@ use ketchup_app::renderer::{
     DerivedRenderCache, GpuFrameDescriptor, GpuInstancedRenderer, InstancedRenderPlan,
     RENDER_BACKEND_WGPU_V1, RENDER_EVALUATOR_V1, RENDER_PLAN_SCHEMA_V1,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
     FeatureId, FeatureKind, InstancePath, NodeId, OccurrenceId, SlotPath, SlotSegment, Transform,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
+use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{Ray, Vec3};
 use ketchup_scheduler::AcceptanceIdentity;
@@ -66,7 +66,7 @@ fn product_document() -> DocumentStore {
 
 #[test]
 fn component_render_instances_preserve_child_colors_and_reset_root_override() {
-    use ketchup_core::document::GroupId;
+    use ketchup_model::document::GroupId;
     let mut store = product_document();
     let group = GroupId(1);
     store
@@ -162,7 +162,7 @@ fn component_render_instances_preserve_child_colors_and_reset_root_override() {
     ));
 }
 
-fn mesh_acceptance(snapshot: &ketchup_core::document::Snapshot) -> AcceptanceIdentity {
+fn mesh_acceptance(snapshot: &ketchup_model::document::Snapshot) -> AcceptanceIdentity {
     let node_id = NodeId(BODY.0);
     let slot_path = SlotPath::new(vec![
         SlotSegment::new(node_id, "mesh", "instanced-render").unwrap(),
@@ -175,7 +175,7 @@ fn mesh_acceptance(snapshot: &ketchup_core::document::Snapshot) -> AcceptanceIde
         evaluator: RENDER_EVALUATOR_V1.to_owned(),
         backend: Some(RENDER_BACKEND_WGPU_V1.to_owned()),
         schema: RENDER_PLAN_SCHEMA_V1.to_owned(),
-        tolerance: ketchup_core::document::TOLERANCE_PROFILE_V1.to_owned(),
+        tolerance: ketchup_model::document::TOLERANCE_PROFILE_V1.to_owned(),
     }
 }
 

@@ -6,16 +6,16 @@ use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_assistant::intent::WorkflowIntent;
-use ketchup_core::assembly::{
+use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension,
     DocumentStore, FeatureId, FeatureKind, OccurrenceId, Snapshot, Transform,
 };
-use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
-use ketchup_core::persistence;
+use ketchup_model::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
+use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
+use ketchup_model::persistence;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1017,7 +1017,7 @@ fn component_replacement_invalid_dependency_paths_fail_closed_through_accesskit(
             let mate = snapshot.assembly_mate(REPLACEMENT_PLANAR_MATE).unwrap();
             assert_eq!(
                 mate.endpoint_a().health(),
-                ketchup_core::assembly::AssemblyReferenceHealth::Lost
+                ketchup_model::assembly::AssemblyReferenceHealth::Lost
             );
         } else {
             assert_eq!(mate_fingerprints(&shell), mates, "{name}");

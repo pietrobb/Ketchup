@@ -5,7 +5,7 @@ use crate::eval::TOLERANCE_MM;
 use crate::faces::{FaceFrame, FaceKind, PANEL_FACES};
 use crate::frame;
 use crate::model::Part;
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 
 /// A shared face patch of positive area between two parts.
 #[derive(Clone, Debug, PartialEq)]

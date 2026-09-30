@@ -9,14 +9,14 @@ use ketchup_app::{
     dialogs::ScriptedFileDialogs,
     renderer::{DerivedRenderCache, InstancedRenderPlan},
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, OccurrenceId, ProfileSegment, Snapshot,
 };
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarSegment,
 };
-use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactResultRegistry};
+use ketchup_model::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactResultRegistry};
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneSupport};
 use ketchup_interaction::{ElementId, SnapKind, Vec3};

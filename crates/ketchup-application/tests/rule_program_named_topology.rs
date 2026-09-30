@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use ketchup_application::evaluation::exact_worker_candidates;
 use ketchup_application::{DocumentSession, SessionSettings};
-use ketchup_core::document::RuleProgramSource;
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::document::RuleProgramSource;
+use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepOperation, ExactBRepProfileFaceReference,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;

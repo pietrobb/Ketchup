@@ -1,9 +1,9 @@
-#[path = "../../ketchup-core/tests/support/generic_sketch_pocket.rs"]
+#[path = "../../ketchup-model/tests/support/generic_sketch_pocket.rs"]
 mod fixture;
 use fixture::*;
-use ketchup_core::document::{CanonicalCommand, CommandBatch};
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{ExactProductError, ExactResultRegistry};
+use ketchup_model::document::{CanonicalCommand, CommandBatch};
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_product::{ExactProductError, ExactResultRegistry};
 use ketchup_geometry::sketch::PrincipalPlane;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::sync::Arc;

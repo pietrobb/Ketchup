@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_core::tolerance::{
+use ketchup_model::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING,
 };
 
@@ -115,7 +115,7 @@ impl SceneSnapGeometry {
         positions: &[[f64; 3]],
         triangles: &[[u32; 3]],
         groups: &[Option<u32>],
-        evidence: &[ketchup_core::exact_product::ExactBRepGraphEdgeEvidence],
+        evidence: &[ketchup_model::exact_product::ExactBRepGraphEdgeEvidence],
     ) {
         let positions_f32: Vec<_> = positions.iter().map(|p| p.map(|v| v as f32)).collect();
         let mut boundaries = BTreeMap::<Option<u32>, Vec<[u32; 2]>>::new();

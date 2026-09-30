@@ -78,7 +78,7 @@ fn absolute_python() -> PathBuf {
 }
 
 fn python_sha256() -> String {
-    ketchup_core::graph::sha256_hex(&fs::read(absolute_python()).unwrap())
+    ketchup_model::graph::sha256_hex(&fs::read(absolute_python()).unwrap())
 }
 
 fn complete_isolated_handshake(launch: &AssistantProcessLaunch, handshake: AssistantHandshake) {
@@ -270,6 +270,6 @@ fn private_oauth_launch_rejects_relative_executables_and_pins_identity() {
     assert_eq!(launch.executable, executable);
     assert_eq!(
         launch.executable_sha256,
-        ketchup_core::graph::sha256_hex(&fs::read(&launch.executable).unwrap())
+        ketchup_model::graph::sha256_hex(&fs::read(&launch.executable).unwrap())
     );
 }

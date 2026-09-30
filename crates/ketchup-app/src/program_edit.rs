@@ -2,7 +2,7 @@
 //! through the same reconciliation path as the headless session.
 use super::*;
 use ketchup_application::{RuleProgramApplyError, RuleProgramChange, SessionError};
-use ketchup_core::document::RuleProgramSource;
+use ketchup_model::document::RuleProgramSource;
 
 /// How a program edit changed the window's document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

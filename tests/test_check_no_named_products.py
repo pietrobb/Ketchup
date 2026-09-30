@@ -25,7 +25,7 @@ def test_counts_domain_words_in_production_source_only(tmp_path):
     )
     write(tmp_path, "crates/a/src/view_tests.rs", "// dowel\n")
     write(tmp_path, "crates/a/tests/it.rs", "// dowel\n")
-    write(tmp_path, "crates/ketchup-core/src/persistence/legacy.rs", "// dowel_joints\n")
+    write(tmp_path, "crates/ketchup-model/src/persistence/legacy.rs", "// dowel_joints\n")
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs:dowel": 1,
         "crates/a/src/lib.rs:hinge": 1,
@@ -40,5 +40,5 @@ def test_core_and_application_crates_name_no_product_domain():
     assert [
         key
         for key in checker.current_counts()
-        if key.startswith(("crates/ketchup-core/", "crates/ketchup-application/"))
+        if key.startswith(("crates/ketchup-model/", "crates/ketchup-application/"))
     ] == []

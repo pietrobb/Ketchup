@@ -12,21 +12,21 @@ use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_assistant::intent::WorkflowIntent;
-use ketchup_core::assembly::{AssemblyMateKind, AssemblySolveStatus};
-use ketchup_core::assembly_joint::{
+use ketchup_model::assembly::{AssemblyMateKind, AssemblySolveStatus};
+use ketchup_model::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
     AssemblyMotionDriver, AssemblyMotionStudy, AssemblyMotionStudyId,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     OccurrenceId, TagId, Transform,
 };
-use ketchup_core::drawing::{DrawingSheetId, DrawingSource};
-use ketchup_core::mechanical_coupling::{
+use ketchup_model::drawing::{DrawingSheetId, DrawingSource};
+use ketchup_model::mechanical_coupling::{
     AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
     AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
-use ketchup_core::persistence;
+use ketchup_model::persistence;
 use ketchup_interaction::LocaleCatalog;
 
 fn exact_worker_path() -> PathBuf {
@@ -2069,7 +2069,7 @@ fn selection_drawing_rejects_drift_and_non_rigid_sources_then_round_trips_exactl
     let sheet_id = DrawingSheetId(1);
     let instance_paths = occurrences
         .iter()
-        .map(|(id, _)| ketchup_core::document::InstancePath::root(*id))
+        .map(|(id, _)| ketchup_model::document::InstancePath::root(*id))
         .collect::<Vec<_>>();
     let snapshot = shell.app().document_snapshot();
     let sheet = snapshot.drawing_sheet(sheet_id).unwrap();

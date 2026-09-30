@@ -10,28 +10,28 @@ pub mod protocol;
 pub use pair_query::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation};
 pub mod validator_runtime;
 mod worker_client;
-use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING};
+use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING};
 use worker_client::{WorkerResponse, WorkerWriteRequest};
 
 use ketchup_analysis::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaElement, FeaElementKind, FeaLoad, FeaMaterial, FeaModel,
     FeaNode,
 };
-use ketchup_core::cam::{
+use ketchup_model::cam::{
     CAM_SIMULATION_SCHEMA_V1, CamCollisionEvidence, CamCollisionParticipant, CamCollisionTarget,
     CamFixture, CamMotionKind, CamMotionPath, CamPlan, CamSimulationEvidence, CamToolpath,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyKind, DerivedIdentity, GroupId, InstancePath, InstancePathStep, LocalGroupKey,
     LocalOccurrenceKey, NodeId, SceneOccurrence, SlotPath, SlotSegment, Snapshot, Transform,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
-use ketchup_core::exact_product::{
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
+use ketchup_model::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBRepGraphPackage,
     ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactProductError,
 };
-use ketchup_core::graph::sha256_hex;
-use ketchup_core::import::{
+use ketchup_model::graph::sha256_hex;
+use ketchup_model::import::{
     IgesImportEvidence, IgesXdeImportEvidence, IgesXdeNodeEvidence, IgesXdePartEvidence,
     ImportLengthUnit, MAX_STEP_MESH_TRIANGLES, MAX_STEP_MESH_VERTICES, MAX_STEP_SOURCE_BYTES,
     STEP_MESH_MAGIC, StepImportEvidence, StepImportMesh, StepXdeImportEvidence,
@@ -196,10 +196,10 @@ impl EvaluationScheduler {
             )
             .map_err(|_| SchedulerError::InvalidAcceptanceIdentity)?,
             input_digest,
-            evaluator: ketchup_core::graph::EVALUATOR_ID_V1.to_owned(),
-            backend: Some(ketchup_core::graph::DEFAULT_BACKEND_ID.to_owned()),
-            schema: ketchup_core::graph::GRAPH_SCHEMA_ID_V1.to_owned(),
-            tolerance: ketchup_core::document::TOLERANCE_PROFILE_V1.to_owned(),
+            evaluator: ketchup_model::graph::EVALUATOR_ID_V1.to_owned(),
+            backend: Some(ketchup_model::graph::DEFAULT_BACKEND_ID.to_owned()),
+            schema: ketchup_model::graph::GRAPH_SCHEMA_ID_V1.to_owned(),
+            tolerance: ketchup_model::document::TOLERANCE_PROFILE_V1.to_owned(),
         };
         self.schedule_with_identity(node_id, identity)
     }
@@ -2577,7 +2577,7 @@ fn build_step_assembly_nodes(
         let root_key = format!("occurrence:{}", root_id.0);
         let root_is_assembly = nested_roots.contains_key(&root_id.0)
             || path_body_counts
-                .get(&ketchup_core::document::InstancePath::root(root_id))
+                .get(&ketchup_model::document::InstancePath::root(root_id))
                 .copied()
                 .unwrap_or(0)
                 > 1;

@@ -1,4 +1,4 @@
-use ketchup_core::document::{DerivedIdentity, NodeId, SlotPath, SlotSegment};
+use ketchup_model::document::{DerivedIdentity, NodeId, SlotPath, SlotSegment};
 use ketchup_scheduler::{
     AcceptanceIdentity, DerivedResult, EvaluationScheduler, InsertOutcome, JobToken, SchedulerError,
 };

@@ -14,7 +14,7 @@ default = []
 [dependencies]
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-assistant = { path = "../ketchup-assistant" }
-ketchup-core = { path = "../ketchup-core" }
+ketchup-model = { path = "../ketchup-model" }
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-pdm = { path = "../ketchup-pdm" }
@@ -29,7 +29,7 @@ workspace = true
 
 [dev-dependencies]
 ketchup-manufacturing = { path = "../ketchup-manufacturing" }
-ketchup-core = { path = "../ketchup-core", features = ["testing"] }
+ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 
 [[test]]
 name = "integration"

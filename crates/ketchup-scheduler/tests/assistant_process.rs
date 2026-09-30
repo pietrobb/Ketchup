@@ -208,7 +208,7 @@ fn assistant_process_isolated_launch_uses_explicit_cwd_and_minimal_environment()
     }
     let executable = absolute_python();
     let launch = AssistantProcessLaunch {
-        executable_sha256: ketchup_core::graph::sha256_hex(&fs::read(&executable).unwrap()),
+        executable_sha256: ketchup_model::graph::sha256_hex(&fs::read(&executable).unwrap()),
         executable,
         arguments: vec![script.into_os_string(), OsString::from("isolated")],
         working_directory,
@@ -266,7 +266,7 @@ fn isolated_launch_keeps_environment_files_until_client_drop() {
         environment.push((OsString::from("SYSTEMROOT"), system_root));
     }
     let launch = AssistantProcessLaunch {
-        executable_sha256: ketchup_core::graph::sha256_hex(&fs::read(&executable).unwrap()),
+        executable_sha256: ketchup_model::graph::sha256_hex(&fs::read(&executable).unwrap()),
         executable,
         arguments: vec![script.into_os_string(), OsString::from("isolated")],
         working_directory,

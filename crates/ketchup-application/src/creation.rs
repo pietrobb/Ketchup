@@ -10,11 +10,11 @@ use crate::transforms::{
 use ketchup_assistant::sidecar::{
     AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantWorkplaneSpec,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CanonicalError, DefinitionId, Dimension, FeatureId, FeatureKind,
     OccurrenceId, Snapshot, Transform,
 };
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchSpec, WorkplaneSpec,
     WorkplaneSupport,

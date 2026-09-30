@@ -1,11 +1,11 @@
 use ketchup_application::model_query::*;
 use ketchup_application::{DocumentSession, SessionSettings};
 use ketchup_assistant::sidecar::AssistantInstancePath;
-use ketchup_core::assembly::{
+use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
-use ketchup_core::document::*;
-use ketchup_core::exact_product::{
+use ketchup_model::document::*;
+use ketchup_model::exact_product::{
     BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ExactResultRegistry,
     ReferenceStability, canonical_reference_lineage_digest,
 };

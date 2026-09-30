@@ -1,7 +1,7 @@
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use ketchup_core::document::Snapshot;
-use ketchup_core::graph::sha256_hex;
-use ketchup_core::validation::{
+use ketchup_model::document::Snapshot;
+use ketchup_model::graph::sha256_hex;
+use ketchup_model::validation::{
     EvidenceClass, ReadScope, ValidationClass, ValidationInvocation, ValidationReport,
     ValidatorDescriptor,
 };

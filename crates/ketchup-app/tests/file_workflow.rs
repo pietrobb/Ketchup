@@ -21,17 +21,17 @@ use ketchup_assistant::sidecar::{
     AssistantCadWeldmentJointPolicy, AssistantCadWeldmentJointPrimary, AssistantCamToolKind,
     AssistantCamWorkOffset, AssistantChatResult, AssistantFeaReviewRequest,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
     DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId, OccurrenceId,
     ProfileSegment, SpatialPathSegment, Transform,
 };
-use ketchup_core::graph::sha256_bytes;
-use ketchup_core::import::{
+use ketchup_model::graph::sha256_bytes;
+use ketchup_model::import::{
     DxfImportOptions, ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
     MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, inspect_dxf,
 };
-use ketchup_core::mesh_recognition::{MeshRecognition, recognize_mesh_body};
+use ketchup_model::mesh_recognition::{MeshRecognition, recognize_mesh_body};
 use ketchup_interaction::Vec3;
 use ketchup_scheduler::ExactWorkerSupervisor;
 
@@ -155,7 +155,7 @@ fn imported_exact_feature_id(shell: &Shell) -> FeatureId {
         .document_snapshot()
         .features()
         .find(|feature| matches!(feature.kind(), FeatureKind::ImportedExactBody(_)))
-        .map(ketchup_core::document::Feature::id)
+        .map(ketchup_model::document::Feature::id)
         .expect("the confirmed STEP import must create one imported exact body feature")
 }
 
@@ -395,7 +395,7 @@ fn assert_persisted_stl(
     unit: ImportLengthUnit,
     encoding_diagnostic: &str,
 ) {
-    let loaded = ketchup_core::persistence::load_file(document_path).unwrap();
+    let loaded = ketchup_model::persistence::load_file(document_path).unwrap();
     let snapshot = loaded.snapshot();
     let receipt = snapshot.import_receipts().next().unwrap();
     assert_eq!(receipt.source_sha256(), &sha256_bytes(source));
@@ -456,9 +456,9 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
         .unwrap();
     std::fs::write(
         &source,
-        ketchup_core::persistence::save_document_store(
+        ketchup_model::persistence::save_document_store(
             &fixture,
-            &ketchup_core::persistence::ContainerData::default(),
+            &ketchup_model::persistence::ContainerData::default(),
         )
         .unwrap(),
     )
@@ -520,7 +520,7 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
         .document_snapshot()
         .features()
         .find(|feature| matches!(feature.kind(), FeatureKind::SheetMetal(_)))
-        .map(ketchup_core::document::Feature::id)
+        .map(ketchup_model::document::Feature::id)
         .expect("the applied Assistant program must create one canonical sheet-metal feature");
     wait_for_current_exact_body(&mut shell);
     assert_eq!(shell.app().exact_current_producer_ids(), [feature_id]);
@@ -576,9 +576,9 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
         .unwrap();
     std::fs::write(
         &source,
-        ketchup_core::persistence::save_document_store(
+        ketchup_model::persistence::save_document_store(
             &fixture,
-            &ketchup_core::persistence::ContainerData::default(),
+            &ketchup_model::persistence::ContainerData::default(),
         )
         .unwrap(),
     )
@@ -640,7 +640,7 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
         shell
             .app()
             .document_snapshot()
-            .cam_plan(ketchup_core::cam::CamPlanId(95))
+            .cam_plan(ketchup_model::cam::CamPlanId(95))
             .is_some()
     );
     let setup_state = canonical_state(&shell);
@@ -671,7 +671,7 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
         shell
             .app()
             .document_snapshot()
-            .cam_plan(ketchup_core::cam::CamPlanId(95))
+            .cam_plan(ketchup_model::cam::CamPlanId(95))
             .is_none()
     );
 }
@@ -735,9 +735,9 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
         .unwrap();
     std::fs::write(
         &source,
-        ketchup_core::persistence::save_document_store(
+        ketchup_model::persistence::save_document_store(
             &fixture,
-            &ketchup_core::persistence::ContainerData::default(),
+            &ketchup_model::persistence::ContainerData::default(),
         )
         .unwrap(),
     )
@@ -847,9 +847,9 @@ fn local_pdm_root_child_and_verified_open_run_through_offscreen_accesskit() {
         .unwrap();
     std::fs::write(
         &source,
-        ketchup_core::persistence::save_document_store(
+        ketchup_model::persistence::save_document_store(
             &fixture,
-            &ketchup_core::persistence::ContainerData::default(),
+            &ketchup_model::persistence::ContainerData::default(),
         )
         .unwrap(),
     )
@@ -1008,9 +1008,9 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
         .unwrap();
     std::fs::write(
         &source,
-        ketchup_core::persistence::save_document_store(
+        ketchup_model::persistence::save_document_store(
             &fixture,
-            &ketchup_core::persistence::ContainerData::default(),
+            &ketchup_model::persistence::ContainerData::default(),
         )
         .unwrap(),
     )
@@ -1128,7 +1128,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
         .document_snapshot()
         .features()
         .find(|feature| matches!(feature.kind(), FeatureKind::WeldmentJoint(_)))
-        .map(ketchup_core::document::Feature::id)
+        .map(ketchup_model::document::Feature::id)
         .unwrap();
     assert_eq!(shell.app().exact_current_producer_ids(), [joint_id]);
     let before = shell
@@ -1207,7 +1207,7 @@ fn save_as_then_new_then_open_restores_the_same_canonical_document() {
     let inspection = ketchup_app::inspect_native_document(&path).unwrap();
     assert_eq!(
         inspection.schema_version,
-        ketchup_core::persistence::CURRENT_SCHEMA
+        ketchup_model::persistence::CURRENT_SCHEMA
     );
     assert_eq!(inspection.definitions, 1);
     assert_eq!(inspection.root_occurrences, 2);
@@ -1218,7 +1218,7 @@ fn save_as_then_new_then_open_restores_the_same_canonical_document() {
     assert_eq!(inspection.canonical_digest, composed_digest);
     assert_eq!(
         inspection.container_sha256,
-        ketchup_core::graph::sha256_hex(&std::fs::read(&path).unwrap())
+        ketchup_model::graph::sha256_hex(&std::fs::read(&path).unwrap())
     );
     assert!(!shell.app().is_dirty(), "a saved document must be clean");
     assert_eq!(shell.app().document_path(), Some(path.as_path()));
@@ -1371,7 +1371,7 @@ fn recovered_open_warns_with_the_actual_source_and_requires_save_as() {
     assert!(!recovered.app().is_dirty());
     assert_eq!(std::fs::read(&requested).unwrap(), b"corrupt primary");
     assert_eq!(
-        ketchup_core::persistence::load_file(&destination)
+        ketchup_model::persistence::load_file(&destination)
             .unwrap()
             .snapshot()
             .canonical_digest(),
@@ -1402,7 +1402,7 @@ fn native_document_inspection_rejects_an_oversized_sparse_file() {
     let path = directory.path().join("oversized-inspection.ketchup");
     std::fs::File::create(&path)
         .unwrap()
-        .set_len(ketchup_core::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .set_len(ketchup_model::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
         .unwrap();
 
     let error = ketchup_app::inspect_native_document(&path).unwrap_err();
@@ -1428,7 +1428,7 @@ fn native_document_inspection_hashes_the_recovered_source() {
     let inspection = ketchup_app::inspect_native_document(&path).unwrap();
     assert_eq!(
         inspection.container_sha256,
-        ketchup_core::graph::sha256_hex(&recovery_bytes)
+        ketchup_model::graph::sha256_hex(&recovery_bytes)
     );
 }
 
@@ -1483,7 +1483,7 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
 
     std::fs::File::create(&source)
         .unwrap()
-        .set_len(ketchup_core::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .set_len(ketchup_model::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
         .unwrap();
     assert!(
         !shell
@@ -1526,16 +1526,16 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
     assert!(!shell.app().is_dirty());
     assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
     assert_eq!(
-        ketchup_core::persistence::load_file(&source)
+        ketchup_model::persistence::load_file(&source)
             .unwrap()
             .disposition(),
-        ketchup_core::persistence::LoadDisposition::ReviewOnly
+        ketchup_model::persistence::LoadDisposition::ReviewOnly
     );
     assert_eq!(
-        ketchup_core::persistence::load_file(&destination)
+        ketchup_model::persistence::load_file(&destination)
             .unwrap()
             .disposition(),
-        ketchup_core::persistence::LoadDisposition::EditableLossless
+        ketchup_model::persistence::LoadDisposition::EditableLossless
     );
 }
 
@@ -1556,7 +1556,7 @@ fn recovered_migration_review_revalidates_the_recovery_source() {
     assert!(shell.app().has_review_candidate());
     std::fs::File::create(&recovery)
         .unwrap()
-        .set_len(ketchup_core::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .set_len(ketchup_model::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
         .unwrap();
 
     assert!(
@@ -1606,13 +1606,13 @@ fn optional_unknown_extension_survives_app_open_edit_and_save() {
     let mut shell = Shell::with_dialogs(script);
     shell.click_menu_command("menu-file", AppCommand::Save);
 
-    let snapshot = ketchup_core::persistence::load_file(&path)
+    let snapshot = ketchup_model::persistence::load_file(&path)
         .unwrap()
         .snapshot();
-    let mut sidecars = ketchup_core::persistence::ContainerData::default();
+    let mut sidecars = ketchup_model::persistence::ContainerData::default();
     sidecars
         .insert_extension(
-            ketchup_core::persistence::ExtensionEntry::new(
+            ketchup_model::persistence::ExtensionEntry::new(
                 "org.example.optional",
                 "opaque.bin",
                 false,
@@ -1623,7 +1623,7 @@ fn optional_unknown_extension_survives_app_open_edit_and_save() {
         .unwrap();
     std::fs::write(
         &path,
-        ketchup_core::persistence::save_container(&snapshot, &sidecars).unwrap(),
+        ketchup_model::persistence::save_container(&snapshot, &sidecars).unwrap(),
     )
     .unwrap();
 
@@ -1633,7 +1633,7 @@ fn optional_unknown_extension_survives_app_open_edit_and_save() {
     assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
     shell.click_menu_command("menu-file", AppCommand::Save);
 
-    let reopened = ketchup_core::persistence::load_file(&path).unwrap();
+    let reopened = ketchup_model::persistence::load_file(&path).unwrap();
     let extension = reopened.container_data().extensions().next().unwrap();
     assert_eq!(extension.namespace(), "org.example.optional");
     assert_eq!(extension.path(), "opaque.bin");
@@ -1665,7 +1665,7 @@ fn save_writes_to_the_known_path_without_asking_again() {
         1,
         "a document with a path must be saved without a second dialog"
     );
-    let on_disk = ketchup_core::persistence::load_file(&path)
+    let on_disk = ketchup_model::persistence::load_file(&path)
         .expect("the saved document reloads")
         .snapshot()
         .canonical_digest();
@@ -1691,7 +1691,7 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
     crashed.settle();
     let dirty_digest = crashed.app().canonical_digest();
     let dirty_undo = crashed.app().undo_step_count();
-    assert!(ketchup_core::persistence::work_recovery_path(&primary).is_file());
+    assert!(ketchup_model::persistence::work_recovery_path(&primary).is_file());
     drop(crashed);
 
     let dialogs = ScriptedFileDialogs::new()
@@ -1705,10 +1705,10 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
     assert!(recovered.app().is_dirty());
     assert_eq!(
         recovered.app().recovery_source_path(),
-        Some(ketchup_core::persistence::work_recovery_path(&primary).as_path())
+        Some(ketchup_model::persistence::work_recovery_path(&primary).as_path())
     );
     assert_eq!(
-        ketchup_core::persistence::load(&std::fs::read(&primary).unwrap())
+        ketchup_model::persistence::load(&std::fs::read(&primary).unwrap())
             .unwrap()
             .snapshot()
             .canonical_digest(),
@@ -1721,14 +1721,14 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
         Some(recovered_copy.as_path())
     );
     assert!(!recovered.app().is_dirty());
-    assert!(!ketchup_core::persistence::work_recovery_path(&primary).exists());
+    assert!(!ketchup_model::persistence::work_recovery_path(&primary).exists());
 }
 
 #[test]
 fn gui_retries_failed_post_save_work_recovery_cleanup() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("retry-save-cleanup.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let mut shell = Shell::with_dialogs(
         ScriptedFileDialogs::new()
             .queue_save(&primary)
@@ -1754,7 +1754,7 @@ fn gui_retries_failed_post_save_work_recovery_cleanup() {
 fn gui_undo_and_redo_roll_back_when_work_recovery_checkpoint_fails() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("transactional-undo.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
     shell.click_menu_command("menu-file", AppCommand::Save);
     assert!(shell.app_mut().create_box());
@@ -1774,7 +1774,7 @@ fn gui_undo_and_redo_roll_back_when_work_recovery_checkpoint_fails() {
     assert!(recovery.is_file());
     let undone = canonical_state(&shell);
     assert_eq!(
-        ketchup_core::persistence::load_file(&primary)
+        ketchup_model::persistence::load_file(&primary)
             .unwrap()
             .snapshot()
             .canonical_digest(),
@@ -1791,7 +1791,7 @@ fn gui_undo_and_redo_roll_back_when_work_recovery_checkpoint_fails() {
 fn gui_canonical_edit_rolls_back_when_work_recovery_checkpoint_fails() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("transactional-edit.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
     shell.click_menu_command("menu-file", AppCommand::Save);
     let before = canonical_state(&shell);
@@ -1813,7 +1813,7 @@ fn step_import_publishes_its_blob_in_the_same_work_recovery_transaction() {
         .join("../../corpora/r0/step/self-authored-box.step");
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("step-import-recovery.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let recovery = ketchup_model::persistence::work_recovery_path(&primary);
     let dialogs = ScriptedFileDialogs::new()
         .queue_save(&primary)
         .queue_import(ImportFormat::Step, &source)
@@ -1837,7 +1837,7 @@ fn step_import_publishes_its_blob_in_the_same_work_recovery_transaction() {
 
     assert_eq!(shell.app().import_receipt_count(), 1);
     assert!(recovery.is_file());
-    let recovered = ketchup_core::persistence::load_file_with_source(&primary).unwrap();
+    let recovered = ketchup_model::persistence::load_file_with_source(&primary).unwrap();
     assert_eq!(recovered.source_path(), recovery);
     assert_eq!(recovered.outcome().snapshot().import_receipts().count(), 1);
 }
@@ -1847,7 +1847,7 @@ fn gui_save_as_cleanup_preserves_another_windows_newer_checkpoint() {
     let directory = tempfile::tempdir().unwrap();
     let shared = directory.path().join("shared-recovery.ketchup");
     let alternate = directory.path().join("first-copy.ketchup");
-    let recovery = ketchup_core::persistence::work_recovery_path(&shared);
+    let recovery = ketchup_model::persistence::work_recovery_path(&shared);
     let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&shared));
     author.click_menu_command("menu-file", AppCommand::Save);
 
@@ -1871,7 +1871,7 @@ fn gui_save_as_cleanup_preserves_another_windows_newer_checkpoint() {
 
     assert_eq!(first.app().document_path(), Some(alternate.as_path()));
     assert_eq!(std::fs::read(&recovery).unwrap(), newer_checkpoint);
-    let recovered = ketchup_core::persistence::load_file_with_source(&shared).unwrap();
+    let recovered = ketchup_model::persistence::load_file_with_source(&shared).unwrap();
     assert_eq!(recovered.source_path(), recovery);
     assert_eq!(
         recovered.outcome().snapshot().canonical_digest(),
@@ -1930,14 +1930,14 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
     second.click_menu_command("menu-file", AppCommand::Save);
     let independent_digest = second.app().canonical_digest();
     assert_eq!(
-        ketchup_core::persistence::load_file(&shared)
+        ketchup_model::persistence::load_file(&shared)
             .unwrap()
             .snapshot()
             .canonical_digest(),
         first_digest
     );
     assert_eq!(
-        ketchup_core::persistence::load_file(&alternate)
+        ketchup_model::persistence::load_file(&alternate)
             .unwrap()
             .snapshot()
             .canonical_digest(),
@@ -1972,10 +1972,10 @@ fn save_as_requires_explicit_consent_before_preserving_current_revision_without_
             .unwrap();
     }
     assert_eq!(document.revision_count(), 4_096);
-    ketchup_core::persistence::save_atomic_document_store_with_container(
+    ketchup_model::persistence::save_atomic_document_store_with_container(
         &boundary,
         &document,
-        &ketchup_core::persistence::ContainerData::default(),
+        &ketchup_model::persistence::ContainerData::default(),
     )
     .unwrap();
 
@@ -2066,7 +2066,7 @@ fn overwrite_save_requires_payload_bound_human_receipt_before_disk_write() {
     assert_eq!(script.high_risk_prompts().len(), 2);
     assert!(script.high_risk_prompts()[0].contains("Payload SHA-256:"));
     assert_eq!(
-        ketchup_core::persistence::load_file(&path)
+        ketchup_model::persistence::load_file(&path)
             .unwrap()
             .snapshot()
             .canonical_digest(),
@@ -2093,7 +2093,7 @@ fn saving_the_opened_document_again_asks_nothing() {
     assert!(!shell.app().is_dirty(), "{}", shell.app().action_digest());
     assert!(script.high_risk_prompts().is_empty());
     assert_eq!(
-        ketchup_core::persistence::load_file(&path)
+        ketchup_model::persistence::load_file(&path)
             .unwrap()
             .snapshot()
             .canonical_digest(),
@@ -2487,10 +2487,10 @@ fn file_menu_round_trips_mixed_exact_and_imported_mesh_scene_to_stl_glb_and_thre
     assert!(stl_report.contains("color_loss=STL does not preserve occurrence colors"));
 
     let glb_bytes = std::fs::read(&glb).unwrap();
-    let glb_scene = ketchup_core::import::inspect_glb(&glb_bytes).unwrap();
+    let glb_scene = ketchup_model::import::inspect_glb(&glb_bytes).unwrap();
     assert_eq!(glb_scene.instance_count(), 142);
     let mut round_trip = DocumentStore::new();
-    let batch = ketchup_core::import::plan_glb_import(
+    let batch = ketchup_model::import::plan_glb_import(
         &round_trip.current(),
         &glb_bytes,
         "mixed-round-trip.glb",
@@ -2498,9 +2498,9 @@ fn file_menu_round_trips_mixed_exact_and_imported_mesh_scene_to_stl_glb_and_thre
     .unwrap();
     round_trip.apply_batch(&batch).unwrap();
     let round_trip_digest = round_trip.current().canonical_digest();
-    let persisted = ketchup_core::persistence::save(&round_trip.current());
+    let persisted = ketchup_model::persistence::save(&round_trip.current());
     assert_eq!(
-        ketchup_core::persistence::load(&persisted)
+        ketchup_model::persistence::load(&persisted)
             .unwrap()
             .snapshot()
             .canonical_digest(),
@@ -2608,7 +2608,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
     let source_evidence = inspector
         .inspect_iges_import_with_cancellation(
             &import_source,
-            &ketchup_core::graph::sha256_hex(&source_bytes),
+            &ketchup_model::graph::sha256_hex(&source_bytes),
             &cancelled,
         )
         .unwrap();
@@ -2694,7 +2694,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
     let exported_evidence = inspector
         .inspect_iges_import_with_cancellation(
             &exported,
-            &ketchup_core::graph::sha256_hex(&exported_bytes),
+            &ketchup_model::graph::sha256_hex(&exported_bytes),
             &cancelled,
         )
         .unwrap();
@@ -2824,7 +2824,7 @@ fn file_import_sketchup_scene_preserves_shared_instances_offscreen() {
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), imported_digest);
 
-    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded = ketchup_model::persistence::load_file(&document_path).unwrap();
     let snapshot = loaded.snapshot();
     let receipt = snapshot.import_receipts().next().unwrap();
     assert_eq!(receipt.format(), ImportFormat::SketchupScene);
@@ -2842,7 +2842,7 @@ fn file_import_sketchup_scene_preserves_shared_instances_offscreen() {
             FeatureKind::MeshBody(mesh)
                 if matches!(
                     mesh.authority,
-                    ketchup_core::document::MeshAuthority::ImportedSketchupScene { .. }
+                    ketchup_model::document::MeshAuthority::ImportedSketchupScene { .. }
                 ) =>
             {
                 Some(mesh)
@@ -2858,7 +2858,7 @@ fn file_import_blender_glb_reviews_and_commits_one_mesh_scene_offscreen() {
     let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../artifacts/blender/garden-studio-colored.glb");
     let source = std::fs::read(&source_path).unwrap();
-    let review = ketchup_core::import::inspect_glb(&source).unwrap();
+    let review = ketchup_model::import::inspect_glb(&source).unwrap();
     let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Glb, &source_path);
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
@@ -3225,13 +3225,13 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), imported_digest);
 
-    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded = ketchup_model::persistence::load_file(&document_path).unwrap();
     let loaded_snapshot = loaded.snapshot();
     let receipt = loaded_snapshot.import_receipts().next().unwrap();
     assert_eq!(receipt.format(), ImportFormat::Dxf);
     assert_eq!(
         receipt.parser_version(),
-        ketchup_core::import::DXF_PARSER_VERSION
+        ketchup_model::import::DXF_PARSER_VERSION
     );
     assert_eq!(receipt.outputs().len(), 24 * 3);
     assert_eq!(receipt.source_sha256(), &sha256_bytes(valid_dxf_subset()));
@@ -3792,7 +3792,7 @@ fn exact_worker_derives_step_units_from_representation_context() {
         let evidence = inspector
             .inspect_step_import_with_cancellation(
                 &path,
-                &ketchup_core::graph::sha256_hex(source.as_bytes()),
+                &ketchup_model::graph::sha256_hex(source.as_bytes()),
                 &AtomicBool::new(false),
             )
             .unwrap();
@@ -3805,7 +3805,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpora/r0/step/self-authored-box.step");
     let source = std::fs::read(&source_path).unwrap();
-    let source_hash = ketchup_core::graph::sha256_hex(&source);
+    let source_hash = ketchup_model::graph::sha256_hex(&source);
     let mut inspector = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let source_evidence = inspector
         .inspect_step_import_with_cancellation(&source_path, &source_hash, &AtomicBool::new(false))
@@ -3928,7 +3928,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     let exported_evidence = inspector
         .inspect_step_import_with_cancellation(
             &exported_path,
-            &ketchup_core::graph::sha256_hex(&exported),
+            &ketchup_model::graph::sha256_hex(&exported),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -3946,7 +3946,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         );
     }
 
-    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded = ketchup_model::persistence::load_file(&document_path).unwrap();
     let snapshot = loaded.snapshot();
     let receipt = snapshot
         .import_receipts()
@@ -3959,10 +3959,10 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         receipt.units().authority(),
         ImportUnitAuthority::FileDeclared
     );
-    assert_eq!(receipt.parser_id(), ketchup_core::import::STEP_PARSER_ID);
+    assert_eq!(receipt.parser_id(), ketchup_model::import::STEP_PARSER_ID);
     assert_eq!(
         receipt.parser_version(),
-        ketchup_core::import::STEP_XDE_PARSER_VERSION
+        ketchup_model::import::STEP_XDE_PARSER_VERSION
     );
     let spec = snapshot
         .features()
@@ -3974,7 +3974,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     assert_eq!(spec.source_sha256, sha256_bytes(&source));
     assert_eq!(spec.source_byte_len, source.len() as u64);
     assert_eq!(spec.source_part_index, Some(0));
-    let hash = ketchup_core::graph::sha256_hex(&source);
+    let hash = ketchup_model::graph::sha256_hex(&source);
     assert_eq!(loaded.container_data().blobs().get(&hash), Some(&source));
     assert_eq!(std::fs::read(&source_path).unwrap(), source);
 }
@@ -3984,7 +3984,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpora/r0/step/independent-xde-assembly.step");
     let source = std::fs::read(&source_path).unwrap();
-    let source_hash = ketchup_core::graph::sha256_hex(&source);
+    let source_hash = ketchup_model::graph::sha256_hex(&source);
     let mut inspector = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let evidence = inspector
         .inspect_step_xde_import_with_cancellation(
@@ -4173,7 +4173,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     );
     assert_eq!(
         assistant_state,
-        ketchup_core::state_view::encode_semantic_state(&shell.app().document_snapshot()).agent()
+        ketchup_model::state_view::encode_semantic_state(&shell.app().document_snapshot()).agent()
     );
 
     let before_assistant = canonical_state(&shell);
@@ -4215,7 +4215,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     assert_eq!(shell.app().undo_step_count(), before_assistant.undo_steps);
     assert_eq!(shell.app().redo_step_count(), before_assistant.redo_steps);
 
-    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded = ketchup_model::persistence::load_file(&document_path).unwrap();
     let loaded_snapshot = loaded.snapshot();
     let loaded_receipt = loaded_snapshot
         .import_receipts()
@@ -4260,7 +4260,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
         shell.app().action_digest()
     );
     let exported = std::fs::read(&exported_path).unwrap();
-    let exported_hash = ketchup_core::graph::sha256_hex(&exported);
+    let exported_hash = ketchup_model::graph::sha256_hex(&exported);
     let roundtrip = inspector
         .inspect_step_xde_import_with_cancellation(
             &exported_path,
@@ -4353,7 +4353,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     let iges_roundtrip = inspector
         .inspect_iges_xde_import_with_cancellation(
             &exported_iges_path,
-            &ketchup_core::graph::sha256_hex(&exported_iges),
+            &ketchup_model::graph::sha256_hex(&exported_iges),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -4680,7 +4680,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     let source_evidence = inspector
         .inspect_step_import_with_cancellation(
             &source_path,
-            &ketchup_core::graph::sha256_hex(&source),
+            &ketchup_model::graph::sha256_hex(&source),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -4690,7 +4690,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     let source_xde_evidence = inspector
         .inspect_step_xde_import_with_cancellation(
             &source_path,
-            &ketchup_core::graph::sha256_hex(&source),
+            &ketchup_model::graph::sha256_hex(&source),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -4730,7 +4730,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
         .document_snapshot()
         .features()
         .filter(|feature| matches!(feature.kind(), FeatureKind::ImportedExactBody(_)))
-        .map(ketchup_core::document::Feature::id)
+        .map(ketchup_model::document::Feature::id)
         .collect::<Vec<_>>();
     imported_feature_ids.sort_unstable();
     assert_eq!(imported_feature_ids.len(), 1);
@@ -4795,7 +4795,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     let exported_evidence = inspector
         .inspect_step_import_with_cancellation(
             &exported_path,
-            &ketchup_core::graph::sha256_hex(&exported),
+            &ketchup_model::graph::sha256_hex(&exported),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -4813,7 +4813,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
         );
     }
 
-    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded = ketchup_model::persistence::load_file(&document_path).unwrap();
     let loaded_snapshot = loaded.snapshot();
     let receipt = loaded_snapshot
         .import_receipts()
@@ -4984,7 +4984,7 @@ fn file_import_unitless_dxf_requires_and_persists_explicit_user_units() {
     assert_eq!(shell.app().import_receipt_count(), 1);
     shell.click_menu_command("menu-file", AppCommand::Save);
 
-    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded = ketchup_model::persistence::load_file(&document_path).unwrap();
     let loaded_snapshot = loaded.snapshot();
     let receipt = loaded_snapshot.import_receipts().next().unwrap();
     assert_eq!(receipt.source_sha256(), &sha256_bytes(&source));

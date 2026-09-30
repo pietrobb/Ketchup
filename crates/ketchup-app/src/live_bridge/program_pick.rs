@@ -3,10 +3,10 @@
 //! point and outward normal in the part's frame and in the world, so the AI
 //! can use the pick directly in `on`, `hole`, `push_pull` or `fillet`.
 use super::*;
-use ketchup_core::document::InstancePath;
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole};
-use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
-use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
+use ketchup_model::document::InstancePath;
+use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole};
+use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
+use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_program::{frame, model::Part};
 
 const HINT: &str = "face is the program's name for it (box: x-..z+; profile part: start, end or a \

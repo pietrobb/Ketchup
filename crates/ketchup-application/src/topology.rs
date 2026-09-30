@@ -1,9 +1,9 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     ChamferEdgeSide, ChamferMode, Dimension, EdgeFinishKind, EdgeRef, FaceRef, FeatureId,
     FeatureKind, FilletRadiusStation, ShellDirection, Snapshot,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
+use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeneralFinishKind {

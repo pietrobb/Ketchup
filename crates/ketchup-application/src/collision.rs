@@ -4,20 +4,20 @@ mod bounds;
 #[path = "collision_hull.rs"]
 mod hull;
 use crate::validation::{AssistantValidationSelection, assistant_validation_context_base};
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyId, DefinitionId, FeatureId, InstancePath, InstancePathStep, OccurrenceId, SceneOccurrence,
     Snapshot,
 };
-use ketchup_core::exact_brep_graph::ExactBRepOperation;
-use ketchup_core::exact_product::{ExactResultRegistry, ExactSnapshotPreparation};
-use ketchup_core::exact_validation::{
+use ketchup_model::exact_brep_graph::ExactBRepOperation;
+use ketchup_model::exact_product::{ExactResultRegistry, ExactSnapshotPreparation};
+use ketchup_model::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, GeneralClearanceCase,
     GravitySupportContact, general_body_input_bytes, general_body_narrow_phase,
     general_body_validation_policy, general_body_validator_descriptor,
 };
-use ketchup_core::persistence::ContainerData;
-use ketchup_core::tolerance::TolerancePolicy;
-use ketchup_core::validation::{
+use ketchup_model::persistence::ContainerData;
+use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     ValidationDiagnostic, ValidationInvocation, ValidationReport, ValidationState,
 };
@@ -816,7 +816,7 @@ fn collision_report(
                             return Err("imported_source_resource_limit".into());
                         }
                         if source.len() as u64 != *source_byte_len
-                            || ketchup_core::graph::sha256_bytes(source) != *source_sha256
+                            || ketchup_model::graph::sha256_bytes(source) != *source_sha256
                         {
                             return Err("invalid_imported_source_blob".into());
                         }

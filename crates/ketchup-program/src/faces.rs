@@ -12,7 +12,7 @@ use crate::model::{
     Part, ProgramArc, ProgramBoolean, ProgramBooleanKind, ProgramOperation, ProgramPartBody,
     ProgramProfileSegment, profile_bounds,
 };
-use ketchup_core::tolerance::APPROXIMATION;
+use ketchup_model::tolerance::APPROXIMATION;
 use serde::Serialize;
 use std::f64::consts::TAU;
 

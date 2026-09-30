@@ -5,7 +5,7 @@ mod backend;
 mod naming;
 mod pair_query;
 
-#[path = "../../ketchup-core/tests/support/integration_support.rs"]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
 #[test]

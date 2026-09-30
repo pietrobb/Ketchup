@@ -1,5 +1,5 @@
 use ketchup_assistant::sidecar::{AssistantRejectionDiagnostic, AssistantRejectionPhase};
-use ketchup_core::document::CanonicalError;
+use ketchup_model::document::CanonicalError;
 
 pub type AssistantRejection = Box<AssistantRejectionDiagnostic>;
 pub type AssistantPlanningResult<T> = Result<T, AssistantRejection>;

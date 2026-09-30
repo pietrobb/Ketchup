@@ -6,8 +6,8 @@ pub use ketchup_assistant::sidecar::{
     AssistantThreadParameters as ThreadToolParameters, AssistantThreadProfile as ThreadProfile,
 };
 use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
-use ketchup_core::document::SpatialPathSegment;
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::document::SpatialPathSegment;
+use ketchup_model::tolerance::ROUNDING;
 use ketchup_interaction::{ElementId, Vec3};
 use std::collections::BTreeMap;
 

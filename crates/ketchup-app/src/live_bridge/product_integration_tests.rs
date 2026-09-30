@@ -8,8 +8,8 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         AssistantCadEditOperation as Op, AssistantCadParameterValueType, AssistantInstancePath,
         AssistantPin, AssistantPinJointFace,
     };
-    use ketchup_core::document::FeatureParameterTarget;
-    use ketchup_core::pin_joint::project_pin_joint_contract;
+    use ketchup_model::document::FeatureParameterTarget;
+    use ketchup_model::pin_joint::project_pin_joint_contract;
 
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
         "../ketchup-application/tests/fixtures/fast_assembly/nightstand_v9_retention.ketchup",
@@ -174,7 +174,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     let target = FeatureParameterTarget::new(
         FeatureId(95),
         "bounds.height",
-        ketchup_core::document::ParameterValueType::Length,
+        ketchup_model::document::ParameterValueType::Length,
     )
     .unwrap();
     assert_eq!(repaired.feature_parameter_value(&target), Some(218.0));
@@ -235,7 +235,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         ketchup_interaction::exact_projection::TopologicalPickLocator {
             instance_path: path,
             producer_feature_id: package.producer_feature_id(),
-            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            kind: ketchup_model::topology::TopologicalElementKind::Edge,
             ordinal,
         }
     ));
@@ -274,7 +274,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             ketchup_interaction::exact_projection::TopologicalPickLocator {
                 instance_path: joint.first.instance_path.clone(),
                 producer_feature_id: package.producer_feature_id(),
-                kind: ketchup_core::topology::TopologicalElementKind::Edge,
+                kind: ketchup_model::topology::TopologicalElementKind::Edge,
                 ordinal,
             }
         ));
@@ -315,7 +315,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         ketchup_interaction::exact_projection::TopologicalPickLocator {
             instance_path: second.instance_path.clone(),
             producer_feature_id: second_package.producer_feature_id(),
-            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            kind: ketchup_model::topology::TopologicalElementKind::Edge,
             ordinal: second_edge.edge_ordinal,
         }
     ));
@@ -334,7 +334,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         ketchup_interaction::exact_projection::TopologicalPickLocator {
             instance_path: joint.first.instance_path.clone(),
             producer_feature_id: package.producer_feature_id(),
-            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            kind: ketchup_model::topology::TopologicalElementKind::Edge,
             ordinal,
         }
     ));
@@ -343,7 +343,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             ketchup_interaction::exact_projection::TopologicalPickLocator {
                 instance_path: joint.first.instance_path.clone(),
                 producer_feature_id: package.producer_feature_id(),
-                kind: ketchup_core::topology::TopologicalElementKind::Edge,
+                kind: ketchup_model::topology::TopologicalElementKind::Edge,
                 ordinal: edges
                     .iter()
                     .find(|edge| {
@@ -378,7 +378,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         ketchup_interaction::exact_projection::TopologicalPickLocator {
             instance_path: joint.first.instance_path.clone(),
             producer_feature_id: package.producer_feature_id(),
-            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            kind: ketchup_model::topology::TopologicalElementKind::Edge,
             ordinal: other.edge_ordinal,
         }
     ));

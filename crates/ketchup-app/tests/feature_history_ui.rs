@@ -5,17 +5,17 @@ use crate::harness;
 use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
-use ketchup_core::assembly::{
+use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind, OccurrenceId, ProfileSegment, ProposalPrincipal, RevisionOrigin, Snapshot,
     Transform,
 };
-use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
-use ketchup_core::persistence;
+use ketchup_model::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
+use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
+use ketchup_model::persistence;
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
@@ -1350,13 +1350,13 @@ fn make_unique_choice_previews_selected_fork_and_commits_one_undo_step() {
     assert_eq!(
         shell
             .app()
-            .occurrence_definition_id(ketchup_core::document::OccurrenceId(1)),
+            .occurrence_definition_id(ketchup_model::document::OccurrenceId(1)),
         Some(DEFINITION)
     );
     assert_eq!(
         shell
             .app()
-            .occurrence_definition_id(ketchup_core::document::OccurrenceId(2)),
+            .occurrence_definition_id(ketchup_model::document::OccurrenceId(2)),
         Some(DefinitionId(2))
     );
     assert!(matches!(
@@ -1373,7 +1373,7 @@ fn make_unique_choice_previews_selected_fork_and_commits_one_undo_step() {
     assert_eq!(
         shell
             .app()
-            .occurrence_definition_id(ketchup_core::document::OccurrenceId(2)),
+            .occurrence_definition_id(ketchup_model::document::OccurrenceId(2)),
         Some(DEFINITION)
     );
 }

@@ -1,7 +1,7 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 #[test]

@@ -1,7 +1,7 @@
 //! Canonical profile surfaces shared by viewport rendering and picking.
 use crate::mesh_projection::{CanonicalPlanarProfileMesh, canonical_profile_feature_mesh};
-use ketchup_core::document::{DefinitionId, FeatureKind, Snapshot};
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::document::{DefinitionId, FeatureKind, Snapshot};
+use ketchup_model::tolerance::ROUNDING;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 
@@ -107,7 +107,7 @@ mod tests {
     fn picking_uses_transformed_prism_faces_and_misses_empty_bounding_box_corners() {
         use crate::mesh_projection::MeshInteractionProjection;
         use crate::{Ray, Vec3};
-        use ketchup_core::document::{
+        use ketchup_model::document::{
             CanonicalCommand as C, CommandBatch, Dimension, DocumentStore, FeatureId, OccurrenceId,
             ProfileSegment, Transform,
         };

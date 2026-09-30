@@ -4,7 +4,7 @@
 //! rotation stored row-major; its columns are the part's local x, y and z axes
 //! expressed in world coordinates.
 
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 
 pub type Mat3 = [[f64; 3]; 3];
 

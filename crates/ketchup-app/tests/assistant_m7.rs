@@ -24,22 +24,22 @@ use ketchup_assistant::sidecar::{
     AssistantSketchPointRef, AssistantSubtractionIntent, AssistantTranslationIntent,
     AssistantWorkplaneSpec,
 };
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode,
     ClassificationCategoryId, ClassificationDimensionId, CommandBatch, DefinitionId, Dimension,
     DocumentStore, EdgeFinishKind, EdgeRef, FeatureId, FeatureKind, GroupId, InstancePath,
     InstancePathStep, LoftSection, NodeId, OccurrenceId, ProfileSegment, ProposalGoal,
     ProposalValue, SpatialPathSegment, TagId, Transform,
 };
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V17,
     EXACT_BREP_GRAPH_SCHEMA_V18, ExactBRepGraph, ExactBRepLoftContinuity, ExactBRepOperation,
 };
-use ketchup_core::exact_product::ExactBodyPackage;
-use ketchup_core::persistence;
-use ketchup_core::state_view::encode_semantic_state;
-use ketchup_core::topology::{TopologicalElementKind, TopologicalReferenceStability};
-use ketchup_core::validation::VALIDATOR_ROLE_DIMENSION_V1;
+use ketchup_model::exact_product::ExactBodyPackage;
+use ketchup_model::persistence;
+use ketchup_model::state_view::encode_semantic_state;
+use ketchup_model::topology::{TopologicalElementKind, TopologicalReferenceStability};
+use ketchup_model::validation::VALIDATOR_ROLE_DIMENSION_V1;
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
@@ -2619,7 +2619,7 @@ fn scripted_append_guided_loft_json_is_exact_persistent_and_one_step() {
         FeatureKind::Loft {
             sections,
             guide: Some(FeatureId(3)),
-            continuity: ketchup_core::document::LoftContinuity::Tangent,
+            continuity: ketchup_model::document::LoftContinuity::Tangent,
         } if sections == &vec![
             LoftSection { profile: FeatureId(1), elevation_mm: 0.0 },
             LoftSection { profile: FeatureId(2), elevation_mm: 35.0 },
@@ -2732,20 +2732,20 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
             target: FeatureId(2),
             removed_faces,
             thickness,
-            direction: ketchup_core::document::ShellDirection::Symmetric,
+            direction: ketchup_model::document::ShellDirection::Symmetric,
             ..
         } if removed_faces.is_empty() && thickness.millimetres() == 2.0
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
     assert_eq!(
         graph.schema,
-        ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
+        ketchup_model::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
     );
     assert!(graph.nodes.iter().any(|node| matches!(
         &node.operation,
         ExactBRepOperation::Shell {
             removed_faces,
-            direction: ketchup_core::exact_brep_graph::ExactBRepShellDirection::Symmetric,
+            direction: ketchup_model::exact_brep_graph::ExactBRepShellDirection::Symmetric,
             ..
         } if removed_faces.is_empty()
     )));
@@ -2764,7 +2764,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
         reopened.feature(FeatureId(3)).unwrap().kind(),
         FeatureKind::Shell {
             removed_faces,
-            direction: ketchup_core::document::ShellDirection::Symmetric,
+            direction: ketchup_model::document::ShellDirection::Symmetric,
             ..
         } if removed_faces.is_empty()
     ));
@@ -3149,7 +3149,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         ExactBRepGraph::from_snapshot(&shell_snapshot, DefinitionId(1), FeatureId(3)).unwrap();
     assert_eq!(
         shell_graph.schema,
-        ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
+        ketchup_model::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
     );
     let shell_package = worker.evaluate_exact_brep_graph(&shell_graph).unwrap();
     let fillet_edge_reference_id = shell_package
@@ -4068,7 +4068,7 @@ fn scripted_surface_program_applies_as_one_undoable_step() {
         committed.feature(FeatureId(4)).unwrap().kind(),
         FeatureKind::SurfaceThicken {
             target: FeatureId(3),
-            direction: ketchup_core::document::ShellDirection::Symmetric,
+            direction: ketchup_model::document::ShellDirection::Symmetric,
             ..
         }
     ));
@@ -6333,7 +6333,7 @@ fn assistant_definition_rename_review_is_textual_observational_and_undoable() {
         shell
             .app_mut()
             .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
-                target: ketchup_core::document::DefinitionId(1),
+                target: ketchup_model::document::DefinitionId(1),
                 name: "Housing".to_owned(),
             })
     );
@@ -6341,7 +6341,7 @@ fn assistant_definition_rename_review_is_textual_observational_and_undoable() {
     let original_name = proposal.authoritative_diff()[0].before.clone();
     assert_eq!(
         proposal.goal(),
-        ProposalGoal::RenameDefinition(ketchup_core::document::DefinitionId(1))
+        ProposalGoal::RenameDefinition(ketchup_model::document::DefinitionId(1))
     );
     assert_eq!(
         proposal.authoritative_diff()[0].after,
@@ -6358,7 +6358,7 @@ fn assistant_definition_rename_review_is_textual_observational_and_undoable() {
         shell
             .app_mut()
             .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
-                target: ketchup_core::document::DefinitionId(1),
+                target: ketchup_model::document::DefinitionId(1),
                 name: "Housing".to_owned(),
             })
     );
@@ -6369,7 +6369,7 @@ fn assistant_definition_rename_review_is_textual_observational_and_undoable() {
         shell
             .app_mut()
             .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
-                target: ketchup_core::document::DefinitionId(1),
+                target: ketchup_model::document::DefinitionId(1),
                 name: "Housing".to_owned(),
             })
     );
@@ -6537,7 +6537,7 @@ fn assistant_replacement_review_hides_internal_digests_and_describes_removals() 
         .iter()
         .find(|entry| {
             entry.target
-                == ketchup_core::document::AuthoritativeDependency::Definition(DefinitionId(1))
+                == ketchup_model::document::AuthoritativeDependency::Definition(DefinitionId(1))
         })
         .unwrap();
     let ProposalValue::Digest(digest) = &removed.before else {

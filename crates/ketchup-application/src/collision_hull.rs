@@ -1,11 +1,11 @@
 //! Analytic panel hulls: a rectangle extrusion, optionally reduced by cuts, is
 //! always contained in its rectangular box. Two such boxes that do not
 //! penetrate prove the solids do not penetrate either, at any rotation.
-use ketchup_core::exact_brep_graph::{
+use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
-use ketchup_core::tolerance::ROUNDING;
+use ketchup_model::tolerance::ROUNDING;
 
 /// Same slab as the native pair query: an apparent overlap up to this many linear
 /// tolerances is shared faces within the contact tolerance, never common volume.

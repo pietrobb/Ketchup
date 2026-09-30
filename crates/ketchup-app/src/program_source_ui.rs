@@ -1,6 +1,6 @@
 use super::*;
 use ketchup_application::SourceLines;
-use ketchup_core::document::RuleProgramSource;
+use ketchup_model::document::RuleProgramSource;
 
 /// Program evaluated once per source revision, so selecting parts stays cheap.
 #[derive(Clone)]

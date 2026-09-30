@@ -1,12 +1,12 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore,
     FeatureEvaluationState, FeatureId, FeatureKind,
 };
-use ketchup_core::exact_product::{
+use ketchup_model::exact_product::{
     BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactProductError, ExactResultRegistry,
 };
-use ketchup_core::persistence;
-use ketchup_core::testing::box_package;
+use ketchup_model::persistence;
+use ketchup_model::testing::box_package;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
 use ketchup_interaction::face_intent::{
@@ -28,7 +28,7 @@ const OTHER_PROFILE: FeatureId = FeatureId(20);
 const OTHER_EXTRUSION: FeatureId = FeatureId(21);
 
 fn exact_package(
-    snapshot: &ketchup_core::document::Snapshot,
+    snapshot: &ketchup_model::document::Snapshot,
     producer: FeatureId,
 ) -> ExactBodyPackage {
     box_package(

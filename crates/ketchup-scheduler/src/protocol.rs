@@ -8,8 +8,8 @@ use crate::{
     CamSimulationWireEvidence, CamSimulationWireRequest, ExactVolumeMeshWireOptions,
     StepAssemblyManifest, StepXdeWorkerEvidence, WorkerExactBRepGraphResult,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
-use ketchup_core::graph::sha256_hex;
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_BYTES};
+use ketchup_model::graph::sha256_hex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};

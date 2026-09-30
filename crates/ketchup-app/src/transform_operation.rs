@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ketchup_application::transforms::world_edit_in_parent_space;
-use ketchup_core::document::{
+use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DocumentId, GroupId, InstancePath, OccurrenceId,
     Snapshot, Transform,
 };

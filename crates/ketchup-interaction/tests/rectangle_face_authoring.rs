@@ -1,10 +1,10 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind,
 };
-use ketchup_core::exact_product::{ExactFaceRole, ExactResultRegistry};
-use ketchup_core::persistence;
-use ketchup_core::testing::box_package;
+use ketchup_model::exact_product::{ExactFaceRole, ExactResultRegistry};
+use ketchup_model::persistence;
+use ketchup_model::testing::box_package;
 use ketchup_geometry::sketch::{
     PrincipalPlane, SketchSolveStatus, WorkplaneFrame, WorkplaneSupport, WorkplaneSupportHealth,
 };

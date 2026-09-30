@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 
-use ketchup_core::tolerance::{MAX_COORDINATE_MM, ROUNDING};
+use ketchup_model::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
-use ketchup_core::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
-use ketchup_core::import::{DxfImportOptions, inspect_dxf};
+use ketchup_model::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
+use ketchup_model::import::{DxfImportOptions, inspect_dxf};
 use ketchup_geometry::sketch::{
     SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };

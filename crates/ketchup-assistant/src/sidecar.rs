@@ -1,11 +1,11 @@
-use ketchup_core::document::{
+use ketchup_model::document::{
     Dimension, ProfileSegment, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
 };
-use ketchup_core::exact_product::EXACT_MIN_LENGTH_MM;
-use ketchup_core::pin_joint::PinSpec;
-use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
-use ketchup_core::tolerance::{
+use ketchup_model::exact_product::EXACT_MIN_LENGTH_MM;
+use ketchup_model::pin_joint::PinSpec;
+use ketchup_model::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+use ketchup_model::tolerance::{
     APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
 };
 use serde::{Deserialize, Serialize};

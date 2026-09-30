@@ -1,7 +1,7 @@
 //! Push/Pull of a drawn shape on a plain (not program) part, through the same
 //! app calls the Push/Pull tool and Enter make, checked on the exact solids.
 use super::*;
-use ketchup_core::exact_product::ExactBodyPackage;
+use ketchup_model::exact_product::ExactBodyPackage;
 use std::time::Duration;
 
 const SIZE: [f64; 3] = [100.0, 60.0, 40.0];

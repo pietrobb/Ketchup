@@ -10,9 +10,9 @@ use ketchup_assistant::sidecar::{
     AssistantCadPartFeature, AssistantCadRotation, AssistantPrincipalPlane, AssistantSketchEntity,
     AssistantWorkplaneSpec,
 };
-use ketchup_core::document::{DocumentStore, OccurrenceId};
-use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_core::persistence::{self, LoadOutcome};
+use ketchup_model::document::{DocumentStore, OccurrenceId};
+use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::persistence::{self, LoadOutcome};
 
 fn same_document(shell: &Shell) -> DocumentStore {
     match persistence::load(&persistence::save(&shell.app().document_snapshot())).unwrap() {

@@ -5,14 +5,14 @@ use crate::spatial::{
     SpatialQueryStats,
 };
 use crate::{Ray, Vec3};
-use ketchup_core::document::{
+use ketchup_model::document::{
     CommandBatch, DefinitionId, DocumentStore, FeatureId, InstancePath, Proposal,
     ProposalCommitError, ProposalContext, ProposalDiffEntry, ProposalPrepareError, Revision,
     Snapshot, Transform,
 };
-use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
-use ketchup_core::tolerance::ROUNDING;
-use ketchup_core::topology::{
+use ketchup_model::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
+use ketchup_model::tolerance::ROUNDING;
+use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceQuarantineReason,
     TopologicalReferenceResolution,
 };
@@ -620,20 +620,20 @@ fn cross(left: Vec3, right: Vec3) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ketchup_core::document::{
+    use ketchup_model::document::{
         CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind,
         OccurrenceId, Transform,
     };
-    use ketchup_core::exact_brep_graph::ExactBRepGraph;
-    use ketchup_core::exact_product::{
+    use ketchup_model::exact_brep_graph::ExactBRepGraph;
+    use ketchup_model::exact_product::{
         ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactFaceRole, ExactProductError,
         ImportedExactPackage,
     };
-    use ketchup_core::import::{
+    use ketchup_model::import::{
         ImportLengthUnit, StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
     };
-    use ketchup_core::persistence;
-    use ketchup_core::testing::box_package;
+    use ketchup_model::persistence;
+    use ketchup_model::testing::box_package;
 
     const DEFINITION: DefinitionId = DefinitionId(1);
     const EXTRUSION: FeatureId = FeatureId(2);
@@ -1020,11 +1020,11 @@ mod tests {
     fn imported_face_edge_vertex_picks_are_snapshot_bound_for_manual_and_proposal_flows() {
         let source = b"headless topological selection fixture";
         let evidence = StepImportEvidence {
-            source_sha256: ketchup_core::graph::sha256_bytes(source),
+            source_sha256: ketchup_model::graph::sha256_bytes(source),
             source_byte_len: source.len() as u64,
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "headless-selection-result".into(),
-            body_kind: ketchup_core::document::BodyKind::Solid,
+            body_kind: ketchup_model::document::BodyKind::Solid,
             solid_count: 1,
             topology_counts: [4, 6, 4, 1, 1],
             area_mm2: 6.0,

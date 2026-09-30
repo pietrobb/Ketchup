@@ -11,8 +11,8 @@ use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_assistant::intent::WorkflowIntent;
-use ketchup_core::document::{BodyId, BooleanOperation, DefinitionId, FeatureId, FeatureKind};
-use ketchup_core::exact_product::producer_exact_graph;
+use ketchup_model::document::{BodyId, BooleanOperation, DefinitionId, FeatureId, FeatureKind};
+use ketchup_model::exact_product::producer_exact_graph;
 
 fn open_body_editor(shell: &mut Shell) {
     let title = shell.catalog().text("body-title");

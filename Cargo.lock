@@ -2246,7 +2246,7 @@ name = "ketchup-analysis"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
- "ketchup-core",
+ "ketchup-model",
  "serde",
  "serde_json",
  "sha2",
@@ -2262,10 +2262,10 @@ dependencies = [
  "ketchup-analysis",
  "ketchup-application",
  "ketchup-assistant",
- "ketchup-core",
  "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
+ "ketchup-model",
  "ketchup-pdm",
  "ketchup-program",
  "ketchup-scheduler",
@@ -2285,10 +2285,10 @@ version = "0.1.0"
 dependencies = [
  "ketchup-analysis",
  "ketchup-assistant",
- "ketchup-core",
  "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
+ "ketchup-model",
  "ketchup-pdm",
  "ketchup-program",
  "ketchup-scheduler",
@@ -2301,28 +2301,11 @@ dependencies = [
 name = "ketchup-assistant"
 version = "0.1.0"
 dependencies = [
- "ketchup-core",
  "ketchup-geometry",
+ "ketchup-model",
  "serde",
  "serde_json",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "ketchup-core"
-version = "0.1.0"
-dependencies = [
- "ciborium",
- "ed25519-dalek",
- "ketchup-core",
- "ketchup-exact",
- "ketchup-geometry",
- "ketchup-tolerance",
- "resvg",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
 ]
 
 [[package]]
@@ -2349,8 +2332,8 @@ dependencies = [
  "ketchup-analysis",
  "ketchup-application",
  "ketchup-assistant",
- "ketchup-core",
  "ketchup-manufacturing",
+ "ketchup-model",
  "ketchup-pdm",
  "ketchup-program",
  "serde",
@@ -2362,25 +2345,42 @@ dependencies = [
 name = "ketchup-interaction"
 version = "0.1.0"
 dependencies = [
- "ketchup-core",
  "ketchup-geometry",
+ "ketchup-model",
 ]
 
 [[package]]
 name = "ketchup-manufacturing"
 version = "0.1.0"
 dependencies = [
- "ketchup-core",
  "ketchup-geometry",
+ "ketchup-model",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "ketchup-model"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "ed25519-dalek",
+ "ketchup-exact",
+ "ketchup-geometry",
+ "ketchup-model",
+ "ketchup-tolerance",
+ "resvg",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
 name = "ketchup-pdm"
 version = "0.1.0"
 dependencies = [
- "ketchup-core",
+ "ketchup-model",
  "serde",
  "serde_json",
  "tempfile",
@@ -2393,7 +2393,7 @@ dependencies = [
  "allocative",
  "anyhow",
  "ketchup-assistant",
- "ketchup-core",
+ "ketchup-model",
  "serde",
  "serde_json",
  "starlark",
@@ -2407,11 +2407,11 @@ dependencies = [
  "ed25519-dalek",
  "ketchup-analysis",
  "ketchup-assistant",
- "ketchup-core",
  "ketchup-exact",
  "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
+ "ketchup-model",
  "process-wrap",
  "serde",
  "serde_json",
