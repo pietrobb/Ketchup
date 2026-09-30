@@ -1,6 +1,6 @@
 //! CAD-only readback. The GUI framebuffer is never an image source.
 use super::*;
-use crate::{CameraViewState, ProjectedEdge, ProjectedFace, RenderBox};
+use crate::{CameraViewState, ProjectedEdge, ProjectedFace, RenderBox, ViewFlag};
 use egui::{ColorImage, Rect, Shape};
 use ketchup_core::{
     document::{InstancePath, OccurrenceId},
@@ -389,7 +389,7 @@ impl KetchupApp {
                     let painter =
                         egui::Painter::new(ctx.clone(), egui::LayerId::background(), rect);
                     let palette = self.palette();
-                    let (inner, outer) = if self.white_background_visible {
+                    let (inner, outer) = if self.view.contains(ViewFlag::WhiteBackground) {
                         (egui::Color32::WHITE, egui::Color32::WHITE)
                     } else {
                         (palette.viewport_inner, palette.viewport_outer)

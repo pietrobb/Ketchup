@@ -13765,8 +13765,8 @@ fn gpu_scene_is_painted_after_the_ground_grid() {
 #[test]
 fn shadows_are_painted_under_the_gpu_scene_without_grid_dependency() {
     let mut app = KetchupApp::new();
-    app.grid_axes_visible = false;
-    app.toggle_shadows();
+    app.view.set(ViewFlag::GridAxes, false);
+    app.toggle_view(ViewFlag::Shadows);
     let boxes = app.active_boxes();
     let snapshot = app.document.current();
     let plan = Arc::new(InstancedRenderPlan::from_snapshot(
@@ -13795,7 +13795,7 @@ fn shadows_are_painted_under_the_gpu_scene_without_grid_dependency() {
 #[test]
 fn fog_is_painted_over_the_gpu_scene_as_a_depth_gradient() {
     let mut app = KetchupApp::new();
-    app.toggle_fog();
+    app.toggle_view(ViewFlag::Fog);
     let snapshot = app.document.current();
     let plan = Arc::new(InstancedRenderPlan::from_snapshot(
         &snapshot,
@@ -13830,7 +13830,7 @@ fn fog_is_painted_over_the_gpu_scene_as_a_depth_gradient() {
 #[test]
 fn xray_projected_faces_use_translucent_fill() {
     let mut app = KetchupApp::new();
-    app.toggle_xray();
+    app.toggle_view(ViewFlag::Xray);
     let faces = [ProjectedFace {
         selection: SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
@@ -13869,7 +13869,7 @@ fn xray_projected_faces_use_translucent_fill() {
 #[test]
 fn wireframe_projected_faces_emit_no_fill_shapes() {
     let mut app = KetchupApp::new();
-    app.toggle_wireframe();
+    app.toggle_view(ViewFlag::Wireframe);
     let faces = [ProjectedFace {
         selection: SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
@@ -13904,7 +13904,7 @@ fn wireframe_projected_faces_emit_no_fill_shapes() {
 #[test]
 fn hidden_edges_emit_no_edge_shapes_but_keep_shaded_face_fills() {
     let mut app = KetchupApp::new();
-    app.toggle_edges();
+    app.toggle_view(ViewFlag::Edges);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -13968,7 +13968,7 @@ fn profiles_use_a_wider_edge_stroke_without_changing_edge_count() {
             &edges,
         );
     });
-    app.toggle_profiles();
+    app.toggle_view(ViewFlag::Profiles);
     let emphasized = context.run(egui::RawInput::default(), |context| {
         app.paint_projected_edges(
             &context.layer_painter(egui::LayerId::new(
@@ -13997,7 +13997,7 @@ fn profiles_use_a_wider_edge_stroke_without_changing_edge_count() {
 #[test]
 fn halos_underpaint_each_edge_with_fixed_screen_space_width_and_compose_with_dashes() {
     let mut app = KetchupApp::new();
-    app.toggle_halos();
+    app.toggle_view(ViewFlag::Halos);
     let edge = ProjectedEdge {
         selection: SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
@@ -14035,8 +14035,8 @@ fn halos_underpaint_each_edge_with_fixed_screen_space_width_and_compose_with_das
                 && stroke.color == Color32::from_rgb(182, 192, 207)
     ));
 
-    app.toggle_dashes();
-    app.toggle_color_by_axis();
+    app.toggle_view(ViewFlag::Dashes);
+    app.toggle_view(ViewFlag::ColorByAxis);
     let dashed = context.run(egui::RawInput::default(), |context| {
         app.paint_projected_edges(
             &context.layer_painter(egui::LayerId::new(
@@ -14063,7 +14063,7 @@ fn halos_underpaint_each_edge_with_fixed_screen_space_width_and_compose_with_das
 #[test]
 fn depth_cue_weights_near_edges_more_than_far_edges_without_reordering() {
     let mut app = KetchupApp::new();
-    app.toggle_depth_cue();
+    app.toggle_view(ViewFlag::DepthCue);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14121,8 +14121,8 @@ fn depth_cue_weights_near_edges_more_than_far_edges_without_reordering() {
 #[test]
 fn distant_edge_fade_blends_far_axis_color_into_current_background() {
     let mut app = KetchupApp::new();
-    app.toggle_fade_distant_edges();
-    app.toggle_color_by_axis();
+    app.toggle_view(ViewFlag::FadeDistantEdges);
+    app.toggle_view(ViewFlag::ColorByAxis);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14164,7 +14164,7 @@ fn distant_edge_fade_blends_far_axis_color_into_current_background() {
             if stroke.color == Color32::from_rgb(94, 48, 44)
     ));
 
-    app.toggle_white_background();
+    app.toggle_view(ViewFlag::WhiteBackground);
     let white = paint(&app, "white-distant-edge-fade");
     assert_eq!(white.shapes.len(), 2);
     assert!(matches!(
@@ -14177,9 +14177,9 @@ fn distant_edge_fade_blends_far_axis_color_into_current_background() {
 #[test]
 fn high_contrast_edges_override_axis_color_and_fade_into_each_background() {
     let mut app = KetchupApp::new();
-    app.toggle_high_contrast_edges();
-    app.toggle_color_by_axis();
-    app.toggle_fade_distant_edges();
+    app.toggle_view(ViewFlag::HighContrastEdges);
+    app.toggle_view(ViewFlag::ColorByAxis);
+    app.toggle_view(ViewFlag::FadeDistantEdges);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14221,7 +14221,7 @@ fn high_contrast_edges_override_axis_color_and_fade_into_each_background() {
             if stroke.color == Color32::from_rgb(104, 107, 112)
     ));
 
-    app.toggle_white_background();
+    app.toggle_view(ViewFlag::WhiteBackground);
     let white = paint(&app, "white-high-contrast-edges");
     assert_eq!(white.shapes.len(), 2);
     assert!(matches!(
@@ -14268,7 +14268,7 @@ fn selection_halo_underpaints_selected_edges_with_background_contrast() {
             if stroke.width == 1.8 && stroke.color == Color32::from_rgb(240, 78, 35)
     ));
 
-    app.toggle_selection_halo();
+    app.toggle_view(ViewFlag::SelectionHalo);
     let dark = paint(&app, "dark-selection-halo");
     assert_eq!(dark.shapes.len(), 2);
     assert!(matches!(
@@ -14282,7 +14282,7 @@ fn selection_halo_underpaints_selected_edges_with_background_contrast() {
             if stroke.width == 1.8 && stroke.color == Color32::from_rgb(240, 78, 35)
     ));
 
-    app.toggle_white_background();
+    app.toggle_view(ViewFlag::WhiteBackground);
     let white = paint(&app, "white-selection-halo");
     assert_eq!(white.shapes.len(), 2);
     assert!(matches!(
@@ -14295,7 +14295,7 @@ fn selection_halo_underpaints_selected_edges_with_background_contrast() {
 #[test]
 fn endpoints_follow_all_edge_strokes_with_exactly_two_markers_per_edge() {
     let mut app = KetchupApp::new();
-    app.toggle_endpoints();
+    app.toggle_view(ViewFlag::Endpoints);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14355,9 +14355,9 @@ fn endpoints_follow_all_edge_strokes_with_exactly_two_markers_per_edge() {
 #[test]
 fn midpoints_follow_jittered_edges_once_and_compose_with_endpoints_and_dashes() {
     let mut app = KetchupApp::new();
-    app.toggle_midpoints();
-    app.toggle_jitter();
-    app.toggle_endpoints();
+    app.toggle_view(ViewFlag::Midpoints);
+    app.toggle_view(ViewFlag::Jitter);
+    app.toggle_view(ViewFlag::Endpoints);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14406,10 +14406,10 @@ fn midpoints_follow_jittered_edges_once_and_compose_with_endpoints_and_dashes() 
             .all(|shape| matches!(shape.shape, egui::Shape::Circle(_)))
     );
 
-    app.toggle_jitter();
-    app.toggle_endpoints();
-    app.toggle_dashes();
-    app.toggle_color_by_axis();
+    app.toggle_view(ViewFlag::Jitter);
+    app.toggle_view(ViewFlag::Endpoints);
+    app.toggle_view(ViewFlag::Dashes);
+    app.toggle_view(ViewFlag::ColorByAxis);
     let dashed = context.run(egui::RawInput::default(), |context| {
         app.paint_projected_edges(
             &context.layer_painter(egui::LayerId::new(
@@ -14440,7 +14440,7 @@ fn midpoints_follow_jittered_edges_once_and_compose_with_endpoints_and_dashes() 
 #[test]
 fn extensions_follow_all_edge_strokes_with_fixed_screen_space_overhangs() {
     let mut app = KetchupApp::new();
-    app.toggle_extensions();
+    app.toggle_view(ViewFlag::Extensions);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14498,7 +14498,7 @@ fn extensions_follow_all_edge_strokes_with_fixed_screen_space_overhangs() {
 #[test]
 fn jitter_offsets_edge_strokes_deterministically_without_reordering() {
     let mut app = KetchupApp::new();
-    app.toggle_jitter();
+    app.toggle_view(ViewFlag::Jitter);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14545,7 +14545,7 @@ fn jitter_offsets_edge_strokes_deterministically_without_reordering() {
 #[test]
 fn dashes_split_each_edge_with_fixed_screen_space_rhythm_without_reordering() {
     let mut app = KetchupApp::new();
-    app.toggle_dashes();
+    app.toggle_view(ViewFlag::Dashes);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14609,8 +14609,8 @@ fn color_by_axis_classifies_world_edges_and_colors_strokes_and_extensions() {
     assert_eq!(dominant_edge_axis([Vec3::ZERO, Vec3::ZERO]), None);
 
     let mut app = KetchupApp::new();
-    app.toggle_color_by_axis();
-    app.toggle_extensions();
+    app.toggle_view(ViewFlag::ColorByAxis);
+    app.toggle_view(ViewFlag::Extensions);
     let selection = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -14662,8 +14662,8 @@ fn color_by_axis_classifies_world_edges_and_colors_strokes_and_extensions() {
         ]
     );
 
-    app.toggle_extensions();
-    app.toggle_dashes();
+    app.toggle_view(ViewFlag::Extensions);
+    app.toggle_view(ViewFlag::Dashes);
     let dashed = context.run(egui::RawInput::default(), |context| {
         app.paint_projected_edges(
             &context.layer_painter(egui::LayerId::new(
@@ -14683,7 +14683,7 @@ fn color_by_axis_classifies_world_edges_and_colors_strokes_and_extensions() {
 #[test]
 fn monochrome_projected_faces_are_grayscale_but_selection_feedback_stays_colored() {
     let mut app = KetchupApp::new();
-    app.toggle_monochrome();
+    app.toggle_view(ViewFlag::Monochrome);
     let faces = [ProjectedFace {
         selection: SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
@@ -14740,7 +14740,7 @@ fn monochrome_projected_faces_are_grayscale_but_selection_feedback_stays_colored
 #[test]
 fn hidden_line_projected_faces_are_flat_neutral_but_selection_feedback_stays_colored() {
     let mut app = KetchupApp::new();
-    app.toggle_hidden_line();
+    app.toggle_view(ViewFlag::HiddenLine);
     let faces = [
         ProjectedFace {
             selection: SelectionId {
@@ -18038,4 +18038,47 @@ fn zoom_fit_before_first_layout_is_applied_on_the_first_frame() {
         !app.zoom_fit_pending,
         "an explicit later view choice supersedes a pending fit"
     );
+}
+
+#[test]
+fn every_view_switch_is_one_command_with_a_label_and_both_reports() {
+    let catalog = ketchup_interaction::LocaleCatalog::english();
+    let mut app = KetchupApp::new();
+    // Hidden objects is offered only while something is hidden.
+    app.selection.clear();
+    app.selection
+        .occurrences
+        .insert(InstancePath::root(OccurrenceId(1)));
+    assert!(app.set_selection_visibility(false));
+    for flag in ViewFlag::ALL {
+        assert!(app.command_enabled(AppCommand::View(flag)), "{flag:?}");
+        let spec = CommandRegistry::spec(AppCommand::View(flag));
+        assert!(
+            catalog.contains(spec.label_key),
+            "{flag:?}: {}",
+            spec.label_key
+        );
+        let name = spec.label_key.trim_start_matches("view-");
+        for state in ["shown", "hidden"] {
+            let key = format!("digest-{name}-{state}");
+            assert!(catalog.contains(&key), "{flag:?}: {key}");
+        }
+        let before = app.view_visible(flag);
+        app.dispatch_command(AppCommand::View(flag));
+        assert_eq!(app.view_visible(flag), !before, "{flag:?}");
+        assert_eq!(
+            app.digest,
+            catalog.text(&format!(
+                "digest-{name}-{}",
+                if before { "hidden" } else { "shown" }
+            ))
+        );
+        // Previous View restores every switch together with the camera.
+        app.previous_view();
+        assert_eq!(
+            app.view_visible(flag),
+            before,
+            "{flag:?} after Previous View"
+        );
+    }
 }

@@ -174,7 +174,7 @@ mod tests {
             );
             let revision = app.document_revision();
             for xray in [false, true] {
-                app.xray_visible = xray;
+                app.view.set(ViewFlag::Xray, xray);
                 let expected = Color32::from_rgba_unmultiplied(
                     expected_rgb[0],
                     expected_rgb[1],
@@ -244,7 +244,7 @@ mod tests {
         let context = egui::Context::default();
         for xray in [false, true] {
             if xray {
-                app.toggle_xray();
+                app.toggle_view(ViewFlag::Xray);
             }
             let expected =
                 Color32::from_rgba_unmultiplied(12, 70, 220, if xray { 72 } else { 255 });

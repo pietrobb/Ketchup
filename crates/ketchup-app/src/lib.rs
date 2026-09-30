@@ -135,6 +135,7 @@ use ketchup_interaction::{
     },
 };
 use ketchup_scheduler::{ExactWorkerSupervisor, assistant::AssistantCancellation};
+pub use view_settings::{ViewFlag, ViewSettings};
 mod assembly_ui;
 mod assistant_runtime;
 mod body_ui;
@@ -154,6 +155,7 @@ mod program_edit;
 mod program_source_ui;
 mod transform_operation;
 mod validator_ui;
+mod view_settings;
 mod viewport_feedback;
 use assistant_runtime::ProcessAssistantTransport;
 pub use assistant_runtime::{
@@ -1879,29 +1881,8 @@ pub enum AppCommand {
     ViewBack,
     ViewRight,
     ViewLeft,
-    ViewGridAxes,
-    ViewWhiteBackground,
-    ViewShadows,
-    ViewFog,
-    ViewHiddenObjects,
-    ViewXray,
+    View(ViewFlag),
     ViewShaded,
-    ViewWireframe,
-    ViewMonochrome,
-    ViewHiddenLine,
-    ViewEdges,
-    ViewProfiles,
-    ViewHalos,
-    ViewDepthCue,
-    ViewFadeDistantEdges,
-    ViewHighContrastEdges,
-    ViewSelectionHalo,
-    ViewEndpoints,
-    ViewMidpoints,
-    ViewExtensions,
-    ViewJitter,
-    ViewDashes,
-    ViewColorByAxis,
     ViewProjection,
     ZoomFit,
     ZoomSelection,
@@ -1930,28 +1911,7 @@ struct CameraViewState {
     target_z: f64,
     zoom: f32,
     pan: Vec2,
-    grid_axes_visible: bool,
-    white_background_visible: bool,
-    shadows_visible: bool,
-    fog_visible: bool,
-    hidden_objects_visible: bool,
-    xray_visible: bool,
-    wireframe_visible: bool,
-    monochrome_visible: bool,
-    hidden_line_visible: bool,
-    edges_visible: bool,
-    profiles_visible: bool,
-    halos_visible: bool,
-    depth_cue_visible: bool,
-    fade_distant_edges_visible: bool,
-    high_contrast_edges_visible: bool,
-    selection_halo_visible: bool,
-    endpoints_visible: bool,
-    midpoints_visible: bool,
-    extensions_visible: bool,
-    jitter_visible: bool,
-    dashes_visible: bool,
-    color_by_axis_visible: bool,
+    view: ViewSettings,
 }
 
 impl ProjectionMode {
@@ -2621,42 +2581,42 @@ impl CommandRegistry {
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewGridAxes,
+            id: AppCommand::View(ViewFlag::GridAxes),
             label_key: "view-grid-axes",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewWhiteBackground,
+            id: AppCommand::View(ViewFlag::WhiteBackground),
             label_key: "view-white-background",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewShadows,
+            id: AppCommand::View(ViewFlag::Shadows),
             label_key: "view-shadows",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewFog,
+            id: AppCommand::View(ViewFlag::Fog),
             label_key: "view-fog",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewHiddenObjects,
+            id: AppCommand::View(ViewFlag::HiddenObjects),
             label_key: "view-hidden-objects",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewXray,
+            id: AppCommand::View(ViewFlag::Xray),
             label_key: "view-xray",
             shortcut_key: "shortcut-none",
             tool: None,
@@ -2670,112 +2630,112 @@ impl CommandRegistry {
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewWireframe,
+            id: AppCommand::View(ViewFlag::Wireframe),
             label_key: "view-wireframe",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewMonochrome,
+            id: AppCommand::View(ViewFlag::Monochrome),
             label_key: "view-monochrome",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewHiddenLine,
+            id: AppCommand::View(ViewFlag::HiddenLine),
             label_key: "view-hidden-line",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewEdges,
+            id: AppCommand::View(ViewFlag::Edges),
             label_key: "view-edges",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewProfiles,
+            id: AppCommand::View(ViewFlag::Profiles),
             label_key: "view-profiles",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewHalos,
+            id: AppCommand::View(ViewFlag::Halos),
             label_key: "view-halos",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewDepthCue,
+            id: AppCommand::View(ViewFlag::DepthCue),
             label_key: "view-depth-cue",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewFadeDistantEdges,
+            id: AppCommand::View(ViewFlag::FadeDistantEdges),
             label_key: "view-fade-distant-edges",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewHighContrastEdges,
+            id: AppCommand::View(ViewFlag::HighContrastEdges),
             label_key: "view-high-contrast-edges",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewSelectionHalo,
+            id: AppCommand::View(ViewFlag::SelectionHalo),
             label_key: "view-selection-halo",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewEndpoints,
+            id: AppCommand::View(ViewFlag::Endpoints),
             label_key: "view-endpoints",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewMidpoints,
+            id: AppCommand::View(ViewFlag::Midpoints),
             label_key: "view-midpoints",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewExtensions,
+            id: AppCommand::View(ViewFlag::Extensions),
             label_key: "view-extensions",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewJitter,
+            id: AppCommand::View(ViewFlag::Jitter),
             label_key: "view-jitter",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewDashes,
+            id: AppCommand::View(ViewFlag::Dashes),
             label_key: "view-dashes",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
-            id: AppCommand::ViewColorByAxis,
+            id: AppCommand::View(ViewFlag::ColorByAxis),
             label_key: "view-color-by-axis",
             shortcut_key: "shortcut-none",
             tool: None,
@@ -5218,28 +5178,7 @@ pub struct KetchupApp {
     camera_target_z: f64,
     zoom: f32,
     pan: Vec2,
-    grid_axes_visible: bool,
-    white_background_visible: bool,
-    shadows_visible: bool,
-    fog_visible: bool,
-    hidden_objects_visible: bool,
-    xray_visible: bool,
-    wireframe_visible: bool,
-    monochrome_visible: bool,
-    hidden_line_visible: bool,
-    edges_visible: bool,
-    profiles_visible: bool,
-    halos_visible: bool,
-    depth_cue_visible: bool,
-    fade_distant_edges_visible: bool,
-    high_contrast_edges_visible: bool,
-    selection_halo_visible: bool,
-    endpoints_visible: bool,
-    midpoints_visible: bool,
-    extensions_visible: bool,
-    jitter_visible: bool,
-    dashes_visible: bool,
-    color_by_axis_visible: bool,
+    view: ViewSettings,
     previous_camera_view: Option<CameraViewState>,
     camera_drag_active: bool,
     camera_wheel_active: bool,
@@ -5494,28 +5433,7 @@ impl KetchupApp {
             camera_target_z: 10.0,
             zoom: 2.8,
             pan: Vec2::ZERO,
-            grid_axes_visible: true,
-            white_background_visible: false,
-            shadows_visible: false,
-            fog_visible: false,
-            hidden_objects_visible: false,
-            xray_visible: false,
-            wireframe_visible: false,
-            monochrome_visible: false,
-            hidden_line_visible: false,
-            edges_visible: true,
-            profiles_visible: false,
-            halos_visible: false,
-            depth_cue_visible: false,
-            fade_distant_edges_visible: false,
-            high_contrast_edges_visible: false,
-            selection_halo_visible: false,
-            endpoints_visible: false,
-            midpoints_visible: false,
-            extensions_visible: false,
-            jitter_visible: false,
-            dashes_visible: false,
-            color_by_axis_visible: false,
+            view: ViewSettings::default(),
             previous_camera_view: None,
             camera_drag_active: false,
             camera_wheel_active: false,
@@ -15583,11 +15501,14 @@ impl KetchupApp {
                 AppCommand::HideOthers => self.hide_others_source_plan().is_some(),
                 AppCommand::Unhide => self.selection_visibility_source_plan(true).is_some(),
                 AppCommand::UnhideAll => self.unhide_all_source_plan().is_some(),
-                AppCommand::ViewHiddenObjects => {
-                    self.hidden_objects_visible || self.hidden_occurrence_count() > 0
+                AppCommand::View(ViewFlag::HiddenObjects) => {
+                    self.view.contains(ViewFlag::HiddenObjects)
+                        || self.hidden_occurrence_count() > 0
                 }
                 AppCommand::ViewShaded => {
-                    self.wireframe_visible || self.monochrome_visible || self.hidden_line_visible
+                    self.view.contains(ViewFlag::Wireframe)
+                        || self.view.contains(ViewFlag::Monochrome)
+                        || self.view.contains(ViewFlag::HiddenLine)
                 }
                 AppCommand::PreviousView => self.previous_camera_view.is_some(),
                 AppCommand::ZoomSelection | AppCommand::CenterSelection => {
@@ -15721,29 +15642,8 @@ impl KetchupApp {
                 | AppCommand::ViewBack
                 | AppCommand::ViewRight
                 | AppCommand::ViewLeft
-                | AppCommand::ViewGridAxes
-                | AppCommand::ViewWhiteBackground
-                | AppCommand::ViewShadows
-                | AppCommand::ViewFog
-                | AppCommand::ViewHiddenObjects
-                | AppCommand::ViewXray
+                | AppCommand::View(_)
                 | AppCommand::ViewShaded
-                | AppCommand::ViewWireframe
-                | AppCommand::ViewMonochrome
-                | AppCommand::ViewHiddenLine
-                | AppCommand::ViewEdges
-                | AppCommand::ViewProfiles
-                | AppCommand::ViewHalos
-                | AppCommand::ViewDepthCue
-                | AppCommand::ViewFadeDistantEdges
-                | AppCommand::ViewHighContrastEdges
-                | AppCommand::ViewSelectionHalo
-                | AppCommand::ViewEndpoints
-                | AppCommand::ViewMidpoints
-                | AppCommand::ViewExtensions
-                | AppCommand::ViewJitter
-                | AppCommand::ViewDashes
-                | AppCommand::ViewColorByAxis
                 | AppCommand::ViewProjection
                 | AppCommand::ZoomFit
                 | AppCommand::ZoomSelection
@@ -15902,29 +15802,8 @@ impl KetchupApp {
                 -std::f32::consts::FRAC_PI_2,
                 "view-left",
             ),
-            AppCommand::ViewGridAxes => self.toggle_grid_axes(),
-            AppCommand::ViewWhiteBackground => self.toggle_white_background(),
-            AppCommand::ViewShadows => self.toggle_shadows(),
-            AppCommand::ViewFog => self.toggle_fog(),
-            AppCommand::ViewHiddenObjects => self.toggle_hidden_objects(),
-            AppCommand::ViewXray => self.toggle_xray(),
+            AppCommand::View(flag) => self.toggle_view(flag),
             AppCommand::ViewShaded => self.restore_shaded(),
-            AppCommand::ViewWireframe => self.toggle_wireframe(),
-            AppCommand::ViewMonochrome => self.toggle_monochrome(),
-            AppCommand::ViewHiddenLine => self.toggle_hidden_line(),
-            AppCommand::ViewEdges => self.toggle_edges(),
-            AppCommand::ViewProfiles => self.toggle_profiles(),
-            AppCommand::ViewHalos => self.toggle_halos(),
-            AppCommand::ViewDepthCue => self.toggle_depth_cue(),
-            AppCommand::ViewFadeDistantEdges => self.toggle_fade_distant_edges(),
-            AppCommand::ViewHighContrastEdges => self.toggle_high_contrast_edges(),
-            AppCommand::ViewSelectionHalo => self.toggle_selection_halo(),
-            AppCommand::ViewEndpoints => self.toggle_endpoints(),
-            AppCommand::ViewMidpoints => self.toggle_midpoints(),
-            AppCommand::ViewExtensions => self.toggle_extensions(),
-            AppCommand::ViewJitter => self.toggle_jitter(),
-            AppCommand::ViewDashes => self.toggle_dashes(),
-            AppCommand::ViewColorByAxis => self.toggle_color_by_axis(),
             AppCommand::ViewProjection => self.toggle_projection_mode(),
             AppCommand::ZoomFit => self.zoom_fit(),
             AppCommand::ZoomSelection => self.zoom_selection(),
@@ -18202,142 +18081,16 @@ impl KetchupApp {
             .count()
     }
 
-    /// Whether the adaptive construction grid and world axes are painted.
+    /// Whether the viewport presentation switch `flag` is on.
     #[must_use]
-    pub const fn grid_axes_visible(&self) -> bool {
-        self.grid_axes_visible
-    }
-
-    /// Whether the viewport is painted on a clean white presentation background.
-    #[must_use]
-    pub const fn white_background_visible(&self) -> bool {
-        self.white_background_visible
-    }
-
-    /// Whether visible model bounds cast deterministic non-interactive ground shadows.
-    #[must_use]
-    pub const fn shadows_visible(&self) -> bool {
-        self.shadows_visible
-    }
-
-    /// Whether deterministic non-interactive depth haze is painted over the viewport scene.
-    #[must_use]
-    pub const fn fog_visible(&self) -> bool {
-        self.fog_visible
-    }
-
-    /// Whether canonical hidden occurrences are outlined as non-interactive ghosts.
-    #[must_use]
-    pub const fn hidden_objects_visible(&self) -> bool {
-        self.hidden_objects_visible
-    }
-
-    /// Whether visible geometry is painted translucently without changing interaction authority.
-    #[must_use]
-    pub const fn xray_visible(&self) -> bool {
-        self.xray_visible
-    }
-
-    /// Whether visible geometry is painted as edges without face fills.
-    #[must_use]
-    pub const fn wireframe_visible(&self) -> bool {
-        self.wireframe_visible
-    }
-
-    /// Whether ordinary face colors are painted as neutral grayscale.
-    #[must_use]
-    pub const fn monochrome_visible(&self) -> bool {
-        self.monochrome_visible
-    }
-
-    /// Whether ordinary faces are painted with one flat neutral color.
-    #[must_use]
-    pub const fn hidden_line_visible(&self) -> bool {
-        self.hidden_line_visible
-    }
-
-    /// Whether ordinary feature-edge outlines are painted.
-    #[must_use]
-    pub const fn edges_visible(&self) -> bool {
-        self.edges_visible
-    }
-
-    /// Whether visible model profiles use an emphasized presentation stroke.
-    #[must_use]
-    pub const fn profiles_visible(&self) -> bool {
-        self.profiles_visible
-    }
-
-    /// Whether visible CPU edges receive a fixed screen-space background under-stroke.
-    #[must_use]
-    pub const fn halos_visible(&self) -> bool {
-        self.halos_visible
-    }
-
-    /// Whether edge strokes are weighted by deterministic camera depth.
-    #[must_use]
-    pub const fn depth_cue_visible(&self) -> bool {
-        self.depth_cue_visible
-    }
-
-    /// Whether distant CPU edge colors fade toward the current viewport background.
-    #[must_use]
-    pub const fn fade_distant_edges_visible(&self) -> bool {
-        self.fade_distant_edges_visible
-    }
-
-    /// Whether visible CPU edges use maximum contrast against the viewport background.
-    #[must_use]
-    pub const fn high_contrast_edges_visible(&self) -> bool {
-        self.high_contrast_edges_visible
-    }
-
-    /// Whether selected CPU edges receive a background-aware screen-space under-stroke.
-    #[must_use]
-    pub const fn selection_halo_visible(&self) -> bool {
-        self.selection_halo_visible
-    }
-
-    /// Whether visible CPU edge endpoints are marked after the edge stroke pass.
-    #[must_use]
-    pub const fn endpoints_visible(&self) -> bool {
-        self.endpoints_visible
-    }
-
-    /// Whether visible CPU edge midpoints are marked after the edge stroke pass.
-    #[must_use]
-    pub const fn midpoints_visible(&self) -> bool {
-        self.midpoints_visible
-    }
-
-    /// Whether visible CPU edges receive fixed screen-space extensions at both ends.
-    #[must_use]
-    pub const fn extensions_visible(&self) -> bool {
-        self.extensions_visible
-    }
-
-    /// Whether CPU edge strokes receive deterministic screen-space jitter.
-    #[must_use]
-    pub const fn jitter_visible(&self) -> bool {
-        self.jitter_visible
-    }
-
-    /// Whether CPU edge strokes use a deterministic fixed screen-space dash rhythm.
-    #[must_use]
-    pub const fn dashes_visible(&self) -> bool {
-        self.dashes_visible
-    }
-
-    /// Whether CPU edge strokes use their dominant world-axis color.
-    #[must_use]
-    pub const fn color_by_axis_visible(&self) -> bool {
-        self.color_by_axis_visible
+    pub const fn view_visible(&self, flag: ViewFlag) -> bool {
+        self.view.contains(flag)
     }
 
     /// Number of hidden occurrence bounds currently exposed by the ghost overlay.
     #[must_use]
     pub fn hidden_ghost_count(&self) -> usize {
-        if !self.hidden_objects_visible {
+        if !self.view.contains(ViewFlag::HiddenObjects) {
             return 0;
         }
         let snapshot = self.document.current();
@@ -18353,28 +18106,7 @@ impl KetchupApp {
             target_z: self.camera_target_z,
             zoom: self.zoom,
             pan: self.pan,
-            grid_axes_visible: self.grid_axes_visible,
-            white_background_visible: self.white_background_visible,
-            shadows_visible: self.shadows_visible,
-            fog_visible: self.fog_visible,
-            hidden_objects_visible: self.hidden_objects_visible,
-            xray_visible: self.xray_visible,
-            wireframe_visible: self.wireframe_visible,
-            monochrome_visible: self.monochrome_visible,
-            hidden_line_visible: self.hidden_line_visible,
-            edges_visible: self.edges_visible,
-            profiles_visible: self.profiles_visible,
-            halos_visible: self.halos_visible,
-            depth_cue_visible: self.depth_cue_visible,
-            fade_distant_edges_visible: self.fade_distant_edges_visible,
-            high_contrast_edges_visible: self.high_contrast_edges_visible,
-            selection_halo_visible: self.selection_halo_visible,
-            endpoints_visible: self.endpoints_visible,
-            midpoints_visible: self.midpoints_visible,
-            extensions_visible: self.extensions_visible,
-            jitter_visible: self.jitter_visible,
-            dashes_visible: self.dashes_visible,
-            color_by_axis_visible: self.color_by_axis_visible,
+            view: self.view,
         }
     }
 
@@ -18397,259 +18129,31 @@ impl KetchupApp {
         self.camera_target_z = previous.target_z;
         self.zoom = previous.zoom;
         self.pan = previous.pan;
-        self.grid_axes_visible = previous.grid_axes_visible;
-        self.white_background_visible = previous.white_background_visible;
-        self.shadows_visible = previous.shadows_visible;
-        self.fog_visible = previous.fog_visible;
-        self.hidden_objects_visible = previous.hidden_objects_visible;
-        self.xray_visible = previous.xray_visible;
-        self.wireframe_visible = previous.wireframe_visible;
-        self.monochrome_visible = previous.monochrome_visible;
-        self.hidden_line_visible = previous.hidden_line_visible;
-        self.edges_visible = previous.edges_visible;
-        self.profiles_visible = previous.profiles_visible;
-        self.halos_visible = previous.halos_visible;
-        self.depth_cue_visible = previous.depth_cue_visible;
-        self.fade_distant_edges_visible = previous.fade_distant_edges_visible;
-        self.high_contrast_edges_visible = previous.high_contrast_edges_visible;
-        self.selection_halo_visible = previous.selection_halo_visible;
-        self.endpoints_visible = previous.endpoints_visible;
-        self.midpoints_visible = previous.midpoints_visible;
-        self.extensions_visible = previous.extensions_visible;
-        self.jitter_visible = previous.jitter_visible;
-        self.dashes_visible = previous.dashes_visible;
-        self.color_by_axis_visible = previous.color_by_axis_visible;
+        self.view = previous.view;
         self.refresh_camera_distance();
         self.previous_camera_view = Some(current);
         self.digest = self.catalog.text("digest-previous-view");
     }
 
-    /// Toggle the adaptive construction grid and world axes together.
-    pub fn toggle_grid_axes(&mut self) {
-        self.grid_axes_visible = !self.grid_axes_visible;
-        self.digest = self.catalog.text(if self.grid_axes_visible {
-            "digest-grid-axes-shown"
-        } else {
-            "digest-grid-axes-hidden"
-        });
-    }
-
-    /// Toggle a clean white viewport background for technical presentation.
-    pub fn toggle_white_background(&mut self) {
-        self.white_background_visible = !self.white_background_visible;
-        self.digest = self.catalog.text(if self.white_background_visible {
-            "digest-white-background-shown"
-        } else {
-            "digest-white-background-hidden"
-        });
-    }
-
-    /// Toggle deterministic ground shadows without changing canonical or interaction authority.
-    pub fn toggle_shadows(&mut self) {
-        self.shadows_visible = !self.shadows_visible;
-        self.digest = self.catalog.text(if self.shadows_visible {
-            "digest-shadows-shown"
-        } else {
-            "digest-shadows-hidden"
-        });
-    }
-
-    /// Toggle deterministic depth haze without changing canonical or interaction authority.
-    pub fn toggle_fog(&mut self) {
-        self.fog_visible = !self.fog_visible;
-        self.digest = self.catalog.text(if self.fog_visible {
-            "digest-fog-shown"
-        } else {
-            "digest-fog-hidden"
-        });
-    }
-
-    /// Toggle non-interactive outlines for canonical hidden occurrences.
-    pub fn toggle_hidden_objects(&mut self) {
-        self.hidden_objects_visible = !self.hidden_objects_visible;
-        self.digest = self.catalog.text(if self.hidden_objects_visible {
-            "digest-hidden-objects-shown"
-        } else {
-            "digest-hidden-objects-hidden"
-        });
-    }
-
-    /// Toggle translucent face painting while preserving canonical and interaction authority.
-    pub fn toggle_xray(&mut self) {
-        self.xray_visible = !self.xray_visible;
-        self.digest = self.catalog.text(if self.xray_visible {
-            "digest-xray-shown"
-        } else {
-            "digest-xray-hidden"
-        });
+    /// Flip a viewport presentation switch; the document and what can be
+    /// picked stay as they are.
+    pub fn toggle_view(&mut self, flag: ViewFlag) {
+        let shown = self.view.toggle(flag);
+        let name = CommandRegistry::spec(AppCommand::View(flag))
+            .label_key
+            .trim_start_matches("view-");
+        self.digest = self.catalog.text(&format!(
+            "digest-{name}-{}",
+            if shown { "shown" } else { "hidden" }
+        ));
     }
 
     /// Restore ordinary material and tonal face painting without changing independent overlays.
     pub fn restore_shaded(&mut self) {
-        self.wireframe_visible = false;
-        self.monochrome_visible = false;
-        self.hidden_line_visible = false;
+        self.view.set(ViewFlag::Wireframe, false);
+        self.view.set(ViewFlag::Monochrome, false);
+        self.view.set(ViewFlag::HiddenLine, false);
         self.digest = self.catalog.text("digest-shaded-restored");
-    }
-
-    /// Toggle edge-only painting while preserving canonical and interaction authority.
-    pub fn toggle_wireframe(&mut self) {
-        self.wireframe_visible = !self.wireframe_visible;
-        self.digest = self.catalog.text(if self.wireframe_visible {
-            "digest-wireframe-shown"
-        } else {
-            "digest-wireframe-hidden"
-        });
-    }
-
-    /// Toggle neutral grayscale face painting while preserving interaction feedback.
-    pub fn toggle_monochrome(&mut self) {
-        self.monochrome_visible = !self.monochrome_visible;
-        self.digest = self.catalog.text(if self.monochrome_visible {
-            "digest-monochrome-shown"
-        } else {
-            "digest-monochrome-hidden"
-        });
-    }
-
-    /// Toggle flat neutral face painting while preserving interaction feedback.
-    pub fn toggle_hidden_line(&mut self) {
-        self.hidden_line_visible = !self.hidden_line_visible;
-        self.digest = self.catalog.text(if self.hidden_line_visible {
-            "digest-hidden-line-shown"
-        } else {
-            "digest-hidden-line-hidden"
-        });
-    }
-
-    /// Toggle ordinary feature-edge painting while preserving interaction feedback.
-    pub fn toggle_edges(&mut self) {
-        self.edges_visible = !self.edges_visible;
-        self.digest = self.catalog.text(if self.edges_visible {
-            "digest-edges-shown"
-        } else {
-            "digest-edges-hidden"
-        });
-    }
-
-    /// Toggle emphasized model profiles without changing interaction authority.
-    pub fn toggle_profiles(&mut self) {
-        self.profiles_visible = !self.profiles_visible;
-        self.digest = self.catalog.text(if self.profiles_visible {
-            "digest-profiles-shown"
-        } else {
-            "digest-profiles-hidden"
-        });
-    }
-
-    /// Toggle fixed screen-space edge halos without changing interaction authority.
-    pub fn toggle_halos(&mut self) {
-        self.halos_visible = !self.halos_visible;
-        self.digest = self.catalog.text(if self.halos_visible {
-            "digest-halos-shown"
-        } else {
-            "digest-halos-hidden"
-        });
-    }
-
-    /// Toggle deterministic near/far edge weighting without changing interaction authority.
-    pub fn toggle_depth_cue(&mut self) {
-        self.depth_cue_visible = !self.depth_cue_visible;
-        self.digest = self.catalog.text(if self.depth_cue_visible {
-            "digest-depth-cue-shown"
-        } else {
-            "digest-depth-cue-hidden"
-        });
-    }
-
-    /// Toggle deterministic distant-edge color fading without changing interaction authority.
-    pub fn toggle_fade_distant_edges(&mut self) {
-        self.fade_distant_edges_visible = !self.fade_distant_edges_visible;
-        self.digest = self.catalog.text(if self.fade_distant_edges_visible {
-            "digest-fade-distant-edges-shown"
-        } else {
-            "digest-fade-distant-edges-hidden"
-        });
-    }
-
-    /// Toggle maximum-contrast CPU edge colors without changing interaction authority.
-    pub fn toggle_high_contrast_edges(&mut self) {
-        self.high_contrast_edges_visible = !self.high_contrast_edges_visible;
-        self.digest = self.catalog.text(if self.high_contrast_edges_visible {
-            "digest-high-contrast-edges-shown"
-        } else {
-            "digest-high-contrast-edges-hidden"
-        });
-    }
-
-    /// Toggle a background-aware under-stroke below selected CPU edges.
-    pub fn toggle_selection_halo(&mut self) {
-        self.selection_halo_visible = !self.selection_halo_visible;
-        self.digest = self.catalog.text(if self.selection_halo_visible {
-            "digest-selection-halo-shown"
-        } else {
-            "digest-selection-halo-hidden"
-        });
-    }
-
-    /// Toggle deterministic CPU edge endpoint markers without changing interaction authority.
-    pub fn toggle_endpoints(&mut self) {
-        self.endpoints_visible = !self.endpoints_visible;
-        self.digest = self.catalog.text(if self.endpoints_visible {
-            "digest-endpoints-shown"
-        } else {
-            "digest-endpoints-hidden"
-        });
-    }
-
-    /// Toggle deterministic CPU edge midpoint markers without changing interaction authority.
-    pub fn toggle_midpoints(&mut self) {
-        self.midpoints_visible = !self.midpoints_visible;
-        self.digest = self.catalog.text(if self.midpoints_visible {
-            "digest-midpoints-shown"
-        } else {
-            "digest-midpoints-hidden"
-        });
-    }
-
-    /// Toggle fixed screen-space CPU edge extensions without changing interaction authority.
-    pub fn toggle_extensions(&mut self) {
-        self.extensions_visible = !self.extensions_visible;
-        self.digest = self.catalog.text(if self.extensions_visible {
-            "digest-extensions-shown"
-        } else {
-            "digest-extensions-hidden"
-        });
-    }
-
-    /// Toggle deterministic screen-space edge jitter without changing interaction authority.
-    pub fn toggle_jitter(&mut self) {
-        self.jitter_visible = !self.jitter_visible;
-        self.digest = self.catalog.text(if self.jitter_visible {
-            "digest-jitter-shown"
-        } else {
-            "digest-jitter-hidden"
-        });
-    }
-
-    /// Toggle fixed screen-space edge dashes without changing interaction authority.
-    pub fn toggle_dashes(&mut self) {
-        self.dashes_visible = !self.dashes_visible;
-        self.digest = self.catalog.text(if self.dashes_visible {
-            "digest-dashes-shown"
-        } else {
-            "digest-dashes-hidden"
-        });
-    }
-
-    /// Toggle dominant world-axis edge colors without changing interaction authority.
-    pub fn toggle_color_by_axis(&mut self) {
-        self.color_by_axis_visible = !self.color_by_axis_visible;
-        self.digest = self.catalog.text(if self.color_by_axis_visible {
-            "digest-color-by-axis-shown"
-        } else {
-            "digest-color-by-axis-hidden"
-        });
     }
 
     /// Restore the isometric home orientation and frame every visible occurrence.
@@ -27792,7 +27296,7 @@ impl KetchupApp {
             self.refresh_camera_distance();
         }
         let palette = self.palette();
-        let (viewport_inner, viewport_outer) = if self.white_background_visible {
+        let (viewport_inner, viewport_outer) = if self.view.contains(ViewFlag::WhiteBackground) {
             (Color32::WHITE, Color32::WHITE)
         } else {
             (palette.viewport_inner, palette.viewport_outer)
@@ -28448,10 +27952,10 @@ impl KetchupApp {
         let use_wgpu_scene = self.face_offset_evaluation.is_none()
             && self.wgpu_target_format.is_some()
             && !self.has_occurrence_operation_preview()
-            && !(self.xray_visible || self.face_workflow.xray_preview())
-            && !self.wireframe_visible
-            && !self.monochrome_visible
-            && !self.hidden_line_visible;
+            && !(self.view.contains(ViewFlag::Xray) || self.face_workflow.xray_preview())
+            && !self.view.contains(ViewFlag::Wireframe)
+            && !self.view.contains(ViewFlag::Monochrome)
+            && !self.view.contains(ViewFlag::HiddenLine);
         let scene_plan = if use_wgpu_scene {
             let preview_active = !move_transform_overrides.is_empty();
             if preview_active
@@ -29021,7 +28525,7 @@ impl KetchupApp {
                 });
             }
         }
-        let hidden_ghost_corners = if self.hidden_objects_visible {
+        let hidden_ghost_corners = if self.view.contains(ViewFlag::HiddenObjects) {
             self.hidden_ghost_corners(
                 &snapshot,
                 &interaction_projection_cache
@@ -29402,35 +28906,35 @@ impl KetchupApp {
         }
         ui.separator();
         ui.horizontal(|ui| {
-            self.menu_command(ui, AppCommand::ViewGridAxes);
-            self.menu_command(ui, AppCommand::ViewWhiteBackground);
-            self.menu_command(ui, AppCommand::ViewShadows);
-            self.menu_command(ui, AppCommand::ViewFog);
+            self.menu_command(ui, AppCommand::View(ViewFlag::GridAxes));
+            self.menu_command(ui, AppCommand::View(ViewFlag::WhiteBackground));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Shadows));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Fog));
         });
         ui.horizontal(|ui| {
-            self.menu_command(ui, AppCommand::ViewHiddenObjects);
-            self.menu_command(ui, AppCommand::ViewXray);
+            self.menu_command(ui, AppCommand::View(ViewFlag::HiddenObjects));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Xray));
             self.menu_command(ui, AppCommand::ViewShaded);
-            self.menu_command(ui, AppCommand::ViewWireframe);
-            self.menu_command(ui, AppCommand::ViewMonochrome);
-            self.menu_command(ui, AppCommand::ViewHiddenLine);
-            self.menu_command(ui, AppCommand::ViewEdges);
-            self.menu_command(ui, AppCommand::ViewProfiles);
-            self.menu_command(ui, AppCommand::ViewDepthCue);
+            self.menu_command(ui, AppCommand::View(ViewFlag::Wireframe));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Monochrome));
+            self.menu_command(ui, AppCommand::View(ViewFlag::HiddenLine));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Edges));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Profiles));
+            self.menu_command(ui, AppCommand::View(ViewFlag::DepthCue));
         });
         ui.horizontal(|ui| {
-            self.menu_command(ui, AppCommand::ViewFadeDistantEdges);
-            self.menu_command(ui, AppCommand::ViewHighContrastEdges);
-            self.menu_command(ui, AppCommand::ViewSelectionHalo);
+            self.menu_command(ui, AppCommand::View(ViewFlag::FadeDistantEdges));
+            self.menu_command(ui, AppCommand::View(ViewFlag::HighContrastEdges));
+            self.menu_command(ui, AppCommand::View(ViewFlag::SelectionHalo));
         });
         ui.horizontal(|ui| {
-            self.menu_command(ui, AppCommand::ViewEndpoints);
-            self.menu_command(ui, AppCommand::ViewMidpoints);
-            self.menu_command(ui, AppCommand::ViewExtensions);
-            self.menu_command(ui, AppCommand::ViewJitter);
-            self.menu_command(ui, AppCommand::ViewDashes);
-            self.menu_command(ui, AppCommand::ViewColorByAxis);
-            self.menu_command(ui, AppCommand::ViewHalos);
+            self.menu_command(ui, AppCommand::View(ViewFlag::Endpoints));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Midpoints));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Extensions));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Jitter));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Dashes));
+            self.menu_command(ui, AppCommand::View(ViewFlag::ColorByAxis));
+            self.menu_command(ui, AppCommand::View(ViewFlag::Halos));
             self.menu_command(ui, AppCommand::PreviousView);
             self.menu_command(ui, AppCommand::HomeView);
         });
@@ -30885,43 +30389,43 @@ impl KetchupApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     self.menu_command(ui, AppCommand::ViewProjection);
-                    self.menu_command(ui, AppCommand::ViewGridAxes);
-                    self.menu_command(ui, AppCommand::ViewWhiteBackground);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::GridAxes));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::WhiteBackground));
                 });
                 ui.horizontal(|ui| {
-                    self.menu_command(ui, AppCommand::ViewShadows);
-                    self.menu_command(ui, AppCommand::ViewFog);
-                    self.menu_command(ui, AppCommand::ViewHiddenObjects);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Shadows));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Fog));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::HiddenObjects));
                 });
                 ui.horizontal(|ui| {
-                    self.menu_command(ui, AppCommand::ViewXray);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Xray));
                     self.menu_command(ui, AppCommand::ViewShaded);
-                    self.menu_command(ui, AppCommand::ViewWireframe);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Wireframe));
                 });
                 ui.horizontal(|ui| {
-                    self.menu_command(ui, AppCommand::ViewMonochrome);
-                    self.menu_command(ui, AppCommand::ViewHiddenLine);
-                    self.menu_command(ui, AppCommand::ViewEdges);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Monochrome));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::HiddenLine));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Edges));
                 });
                 ui.horizontal(|ui| {
-                    self.menu_command(ui, AppCommand::ViewProfiles);
-                    self.menu_command(ui, AppCommand::ViewDepthCue);
-                    self.menu_command(ui, AppCommand::ViewEndpoints);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Profiles));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::DepthCue));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Endpoints));
                 });
                 ui.horizontal(|ui| {
-                    self.menu_command(ui, AppCommand::ViewFadeDistantEdges);
-                    self.menu_command(ui, AppCommand::ViewHighContrastEdges);
-                    self.menu_command(ui, AppCommand::ViewSelectionHalo);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::FadeDistantEdges));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::HighContrastEdges));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::SelectionHalo));
                 });
                 ui.horizontal(|ui| {
-                    self.menu_command(ui, AppCommand::ViewMidpoints);
-                    self.menu_command(ui, AppCommand::ViewExtensions);
-                    self.menu_command(ui, AppCommand::ViewJitter);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Midpoints));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Extensions));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Jitter));
                 });
                 ui.horizontal(|ui| {
-                    self.menu_command(ui, AppCommand::ViewDashes);
-                    self.menu_command(ui, AppCommand::ViewColorByAxis);
-                    self.menu_command(ui, AppCommand::ViewHalos);
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Dashes));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::ColorByAxis));
+                    self.menu_command(ui, AppCommand::View(ViewFlag::Halos));
                 });
                 ui.separator();
                 self.menu_command(ui, AppCommand::Hide);
@@ -31080,10 +30584,10 @@ impl KetchupApp {
     }
 
     fn paint_projected_shadows(&self, painter: &egui::Painter, rect: Rect, boxes: &[RenderBox]) {
-        if !self.shadows_visible {
+        if !self.view.contains(ViewFlag::Shadows) {
             return;
         }
-        let fill = if self.white_background_visible {
+        let fill = if self.view.contains(ViewFlag::WhiteBackground) {
             Color32::from_rgba_unmultiplied(30, 36, 44, 34)
         } else {
             Color32::from_rgba_unmultiplied(8, 12, 18, 48)
@@ -31129,10 +30633,10 @@ impl KetchupApp {
     }
 
     fn paint_viewport_fog(&self, painter: &egui::Painter, rect: Rect) {
-        if !self.fog_visible {
+        if !self.view.contains(ViewFlag::Fog) {
             return;
         }
-        let [red, green, blue] = if self.white_background_visible {
+        let [red, green, blue] = if self.view.contains(ViewFlag::WhiteBackground) {
             [244, 247, 250]
         } else {
             [192, 204, 218]
@@ -31166,7 +30670,7 @@ impl KetchupApp {
         let selection_stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
         let halo_stroke = Stroke::new(
             4.8_f32,
-            if self.white_background_visible {
+            if self.view.contains(ViewFlag::WhiteBackground) {
                 Color32::BLACK
             } else {
                 Color32::WHITE
@@ -31187,7 +30691,7 @@ impl KetchupApp {
                 self.selection.contains(&edge.selection.instance_path)
             }
         }) {
-            if self.selection_halo_visible {
+            if self.view.contains(ViewFlag::SelectionHalo) {
                 painter.line_segment(edge.points, halo_stroke);
             }
             painter.line_segment(edge.points, selection_stroke);
@@ -31199,7 +30703,7 @@ impl KetchupApp {
     fn paint_selected_topological_edges(&self, painter: &egui::Painter, rect: Rect) {
         let halo = Stroke::new(
             5.0_f32,
-            if self.white_background_visible {
+            if self.view.contains(ViewFlag::WhiteBackground) {
                 Color32::BLACK
             } else {
                 Color32::WHITE
@@ -31217,10 +30721,10 @@ impl KetchupApp {
     }
 
     fn paint_projected_edges(&self, painter: &egui::Painter, edges: &[ProjectedEdge]) {
-        if !self.edges_visible {
+        if !self.view.contains(ViewFlag::Edges) {
             return;
         }
-        let base_width = if self.profiles_visible {
+        let base_width = if self.view.contains(ViewFlag::Profiles) {
             2.75_f32
         } else {
             1.25_f32
@@ -31231,7 +30735,7 @@ impl KetchupApp {
         );
         let depth_span = maximum_depth - minimum_depth;
         let painted_points = |index: usize, points: [Pos2; 2]| {
-            if !self.jitter_visible {
+            if !self.view.contains(ViewFlag::Jitter) {
                 return points;
             }
             let offset = match index % 4 {
@@ -31243,31 +30747,31 @@ impl KetchupApp {
             points.map(|point| point + offset)
         };
         let paint_edge_segment = |points: [Pos2; 2], stroke: Stroke| {
-            if self.dashes_visible {
+            if self.view.contains(ViewFlag::Dashes) {
                 paint_dashed_segment(painter, points, stroke);
             } else {
                 painter.line_segment(points, stroke);
             }
         };
-        let background_color = if self.white_background_visible {
+        let background_color = if self.view.contains(ViewFlag::WhiteBackground) {
             Color32::from_rgb(244, 247, 250)
         } else {
             Color32::from_rgb(24, 28, 35)
         };
         let edge_color = |edge: &ProjectedEdge| {
-            let source = if self.high_contrast_edges_visible {
-                if self.white_background_visible {
+            let source = if self.view.contains(ViewFlag::HighContrastEdges) {
+                if self.view.contains(ViewFlag::WhiteBackground) {
                     Color32::BLACK
                 } else {
                     Color32::WHITE
                 }
-            } else if self.color_by_axis_visible {
+            } else if self.view.contains(ViewFlag::ColorByAxis) {
                 edge.dominant_axis
                     .map_or(Color32::from_rgb(182, 192, 207), axis_color)
             } else {
                 Color32::from_rgb(182, 192, 207)
             };
-            if !self.fade_distant_edges_visible || depth_span <= f64::EPSILON {
+            if !self.view.contains(ViewFlag::FadeDistantEdges) || depth_span <= f64::EPSILON {
                 return source;
             }
             let proximity = ((maximum_depth - edge.depth) / depth_span).clamp(0.0, 1.0);
@@ -31285,19 +30789,19 @@ impl KetchupApp {
         };
         let halo_color = background_color;
         for (index, edge) in edges.iter().enumerate() {
-            let width = if self.depth_cue_visible && depth_span > f64::EPSILON {
+            let width = if self.view.contains(ViewFlag::DepthCue) && depth_span > f64::EPSILON {
                 let proximity = ((maximum_depth - edge.depth) / depth_span).clamp(0.0, 1.0);
                 base_width * (0.72_f32 + 0.56_f32 * proximity as f32)
             } else {
                 base_width
             };
             let points = painted_points(index, edge.points);
-            if self.halos_visible {
+            if self.view.contains(ViewFlag::Halos) {
                 paint_edge_segment(points, Stroke::new(width + 3.0, halo_color));
             }
             paint_edge_segment(points, Stroke::new(width, edge_color(edge)));
         }
-        if self.extensions_visible {
+        if self.view.contains(ViewFlag::Extensions) {
             for (index, edge) in edges.iter().enumerate() {
                 let points = painted_points(index, edge.points);
                 let direction = points[1] - points[0];
@@ -31306,7 +30810,7 @@ impl KetchupApp {
                     continue;
                 }
                 let extension = direction * (7.0 / length);
-                let width = if self.depth_cue_visible && depth_span > f64::EPSILON {
+                let width = if self.view.contains(ViewFlag::DepthCue) && depth_span > f64::EPSILON {
                     let proximity = ((maximum_depth - edge.depth) / depth_span).clamp(0.0, 1.0);
                     base_width * (0.72_f32 + 0.56_f32 * proximity as f32)
                 } else {
@@ -31317,7 +30821,7 @@ impl KetchupApp {
                 paint_edge_segment([points[1], points[1] + extension], stroke);
             }
         }
-        if self.midpoints_visible {
+        if self.view.contains(ViewFlag::Midpoints) {
             for (index, edge) in edges.iter().enumerate() {
                 let points = painted_points(index, edge.points);
                 painter.circle_filled(
@@ -31327,7 +30831,7 @@ impl KetchupApp {
                 );
             }
         }
-        if self.endpoints_visible {
+        if self.view.contains(ViewFlag::Endpoints) {
             for (index, edge) in edges.iter().enumerate() {
                 for point in painted_points(index, edge.points) {
                     painter.circle_filled(point, 3.25, Color32::from_rgb(232, 158, 72));
@@ -31337,7 +30841,7 @@ impl KetchupApp {
     }
 
     fn paint_projected_faces(&self, painter: &egui::Painter, faces: &[ProjectedFace]) {
-        if self.wireframe_visible {
+        if self.view.contains(ViewFlag::Wireframe) {
             return;
         }
         let mut mesh = egui::Mesh::default();
@@ -31355,9 +30859,9 @@ impl KetchupApp {
                 Color32::from_rgb(76, 111, 158)
             } else if face.previewed {
                 Color32::from_rgb(58, 126, 174)
-            } else if self.hidden_line_visible {
+            } else if self.view.contains(ViewFlag::HiddenLine) {
                 Color32::from_rgb(214, 218, 224)
-            } else if self.monochrome_visible {
+            } else if self.view.contains(ViewFlag::Monochrome) {
                 let tone = ((u16::from(face.color.r())
                     + u16::from(face.color.g())
                     + u16::from(face.color.b()))
@@ -31366,7 +30870,7 @@ impl KetchupApp {
             } else {
                 face.color
             };
-            let color = if self.xray_visible || self.face_workflow.xray_preview() {
+            let color = if self.view.contains(ViewFlag::Xray) || self.face_workflow.xray_preview() {
                 Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 72)
             } else {
                 color
@@ -31386,7 +30890,7 @@ impl KetchupApp {
         rect: Rect,
         scene_plan: Option<Arc<InstancedRenderPlan>>,
     ) {
-        if self.grid_axes_visible {
+        if self.view.contains(ViewFlag::GridAxes) {
             self.paint_ground_plane(painter, rect);
         }
         if let Some(plan) = scene_plan {
@@ -36106,7 +35610,7 @@ impl KetchupApp {
                 } else {
                     "status-snap-off"
                 }),
-                if self.grid_axes_visible {
+                if self.view.contains(ViewFlag::GridAxes) {
                     self.catalog
                         .format("status-grid", &BTreeMap::from([("step", "10".to_owned())]))
                 } else {

@@ -3,7 +3,7 @@
 //! cargo test -p ketchup-app --release --test exact_house_xray -- --ignored --nocapture
 
 use eframe::egui::{Event, Modifiers, PointerButton, Vec2, epaint::Primitive};
-use ketchup_app::{KetchupApp, dialogs::ScriptedFileDialogs};
+use ketchup_app::{KetchupApp, ViewFlag, dialogs::ScriptedFileDialogs};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -174,11 +174,11 @@ fn exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
     // Edges-off is diagnostic, not a workaround: default edges-on is guarded too.
     for edges in [true, false] {
         if !edges {
-            ui.state_mut().app.toggle_edges();
+            ui.state_mut().app.toggle_view(ViewFlag::Edges);
         }
         for mode in ["shaded", "xray"] {
             if mode == "xray" {
-                ui.state_mut().app.toggle_xray();
+                ui.state_mut().app.toggle_view(ViewFlag::Xray);
             }
             for _ in 0..3 {
                 step(&mut ui);
@@ -237,11 +237,11 @@ fn exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
             assert_eq!(ui.state().app.document_revision(), revision);
             assert!(!ui.state().app.is_dirty());
             if mode == "xray" {
-                ui.state_mut().app.toggle_xray();
+                ui.state_mut().app.toggle_view(ViewFlag::Xray);
             }
         }
     }
-    ui.state_mut().app.toggle_edges();
+    ui.state_mut().app.toggle_view(ViewFlag::Edges);
     step(&mut ui);
     assert_eq!(ui.state().app.canonical_digest(), digest);
     assert_eq!(ui.state().app.document_revision(), revision);

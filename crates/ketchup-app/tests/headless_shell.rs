@@ -15,7 +15,7 @@ use harness::{Shell, ctrl, shift};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{
     AlignMode, AppCommand, AssistantWorkspaceMode, DistributionMode, GeneralFinishKind, KetchupApp,
-    RectangularPatternSpec,
+    RectangularPatternSpec, ViewFlag,
 };
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
@@ -465,10 +465,12 @@ fn grid_axes_toggle_is_localized_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewGridAxes),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::GridAxes)),
             shell.catalog().text("view-grid-axes")
         );
-        assert!(shell.app().grid_axes_visible());
+        assert!(shell.app().view_visible(ViewFlag::GridAxes));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let revision = shell.app().document_revision();
@@ -476,9 +478,9 @@ fn grid_axes_toggle_is_localized_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(shell.top_face_centre(1));
-        assert!(shell.offers(AppCommand::ViewGridAxes));
-        shell.click_command(AppCommand::ViewGridAxes);
-        assert!(!shell.app().grid_axes_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::GridAxes)));
+        shell.click_command(AppCommand::View(ViewFlag::GridAxes));
+        assert!(!shell.app().view_visible(ViewFlag::GridAxes));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-grid-axes-hidden")
@@ -486,16 +488,16 @@ fn grid_axes_toggle_is_localized_reversible_and_document_preserving() {
         assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(shell.app().grid_axes_visible());
+        assert!(shell.app().view_visible(ViewFlag::GridAxes));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-previous-view")
         );
 
-        shell.click_menu_command("menu-view", AppCommand::ViewGridAxes);
-        assert!(!shell.app().grid_axes_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewGridAxes);
-        assert!(shell.app().grid_axes_visible());
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::GridAxes));
+        assert!(!shell.app().view_visible(ViewFlag::GridAxes));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::GridAxes));
+        assert!(shell.app().view_visible(ViewFlag::GridAxes));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-grid-axes-shown")
@@ -515,10 +517,10 @@ fn xray_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewXray),
+            shell.app().command_label(AppCommand::View(ViewFlag::Xray)),
             shell.catalog().text("view-xray")
         );
-        assert!(!shell.app().xray_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Xray));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -529,9 +531,9 @@ fn xray_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewXray));
-        shell.click_command(AppCommand::ViewXray);
-        assert!(shell.app().xray_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Xray)));
+        shell.click_command(AppCommand::View(ViewFlag::Xray));
+        assert!(shell.app().view_visible(ViewFlag::Xray));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-xray-shown")
@@ -543,11 +545,11 @@ fn xray_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().xray_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewXray);
-        assert!(shell.app().xray_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewXray);
-        assert!(!shell.app().xray_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Xray));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Xray));
+        assert!(shell.app().view_visible(ViewFlag::Xray));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Xray));
+        assert!(!shell.app().view_visible(ViewFlag::Xray));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-xray-hidden")
@@ -567,10 +569,12 @@ fn white_background_toggle_is_localized_pickable_reversible_and_document_preserv
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewWhiteBackground),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::WhiteBackground)),
             shell.catalog().text("view-white-background")
         );
-        assert!(!shell.app().white_background_visible());
+        assert!(!shell.app().view_visible(ViewFlag::WhiteBackground));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -581,9 +585,9 @@ fn white_background_toggle_is_localized_pickable_reversible_and_document_preserv
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewWhiteBackground));
-        shell.click_command(AppCommand::ViewWhiteBackground);
-        assert!(shell.app().white_background_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::WhiteBackground)));
+        shell.click_command(AppCommand::View(ViewFlag::WhiteBackground));
+        assert!(shell.app().view_visible(ViewFlag::WhiteBackground));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-white-background-shown")
@@ -595,11 +599,11 @@ fn white_background_toggle_is_localized_pickable_reversible_and_document_preserv
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().white_background_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewWhiteBackground);
-        assert!(shell.app().white_background_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewWhiteBackground);
-        assert!(!shell.app().white_background_visible());
+        assert!(!shell.app().view_visible(ViewFlag::WhiteBackground));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::WhiteBackground));
+        assert!(shell.app().view_visible(ViewFlag::WhiteBackground));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::WhiteBackground));
+        assert!(!shell.app().view_visible(ViewFlag::WhiteBackground));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-white-background-hidden")
@@ -619,10 +623,12 @@ fn shadows_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewShadows),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Shadows)),
             shell.catalog().text("view-shadows")
         );
-        assert!(!shell.app().shadows_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Shadows));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -633,9 +639,9 @@ fn shadows_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewShadows));
-        shell.click_command(AppCommand::ViewShadows);
-        assert!(shell.app().shadows_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Shadows)));
+        shell.click_command(AppCommand::View(ViewFlag::Shadows));
+        assert!(shell.app().view_visible(ViewFlag::Shadows));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-shadows-shown")
@@ -647,11 +653,11 @@ fn shadows_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().shadows_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewShadows);
-        assert!(shell.app().shadows_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewShadows);
-        assert!(!shell.app().shadows_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Shadows));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Shadows));
+        assert!(shell.app().view_visible(ViewFlag::Shadows));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Shadows));
+        assert!(!shell.app().view_visible(ViewFlag::Shadows));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-shadows-hidden")
@@ -671,10 +677,10 @@ fn fog_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewFog),
+            shell.app().command_label(AppCommand::View(ViewFlag::Fog)),
             shell.catalog().text("view-fog")
         );
-        assert!(!shell.app().fog_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Fog));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -685,9 +691,9 @@ fn fog_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewFog));
-        shell.click_command(AppCommand::ViewFog);
-        assert!(shell.app().fog_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Fog)));
+        shell.click_command(AppCommand::View(ViewFlag::Fog));
+        assert!(shell.app().view_visible(ViewFlag::Fog));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-fog-shown")
@@ -699,11 +705,11 @@ fn fog_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().fog_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewFog);
-        assert!(shell.app().fog_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewFog);
-        assert!(!shell.app().fog_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Fog));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Fog));
+        assert!(shell.app().view_visible(ViewFlag::Fog));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Fog));
+        assert!(!shell.app().view_visible(ViewFlag::Fog));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-fog-hidden")
@@ -735,25 +741,25 @@ fn shaded_command_is_localized_pickable_reversible_and_document_preserving() {
         let digest = shell.app().canonical_digest();
         let undo_steps = shell.app().undo_step_count();
 
-        shell.click_menu_command("menu-view", AppCommand::ViewXray);
-        shell.click_menu_command("menu-view", AppCommand::ViewEdges);
-        shell.click_menu_command("menu-view", AppCommand::ViewWireframe);
-        shell.click_menu_command("menu-view", AppCommand::ViewMonochrome);
-        shell.click_menu_command("menu-view", AppCommand::ViewHiddenLine);
-        assert!(shell.app().xray_visible());
-        assert!(!shell.app().edges_visible());
-        assert!(shell.app().wireframe_visible());
-        assert!(shell.app().monochrome_visible());
-        assert!(shell.app().hidden_line_visible());
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Xray));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Edges));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Wireframe));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Monochrome));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::HiddenLine));
+        assert!(shell.app().view_visible(ViewFlag::Xray));
+        assert!(!shell.app().view_visible(ViewFlag::Edges));
+        assert!(shell.app().view_visible(ViewFlag::Wireframe));
+        assert!(shell.app().view_visible(ViewFlag::Monochrome));
+        assert!(shell.app().view_visible(ViewFlag::HiddenLine));
 
         shell.secondary_click_at(pick_point);
         assert!(shell.offers(AppCommand::ViewShaded));
         shell.click_command(AppCommand::ViewShaded);
-        assert!(!shell.app().wireframe_visible());
-        assert!(!shell.app().monochrome_visible());
-        assert!(!shell.app().hidden_line_visible());
-        assert!(shell.app().xray_visible());
-        assert!(!shell.app().edges_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Wireframe));
+        assert!(!shell.app().view_visible(ViewFlag::Monochrome));
+        assert!(!shell.app().view_visible(ViewFlag::HiddenLine));
+        assert!(shell.app().view_visible(ViewFlag::Xray));
+        assert!(!shell.app().view_visible(ViewFlag::Edges));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-shaded-restored")
@@ -765,15 +771,15 @@ fn shaded_command_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(shell.app().wireframe_visible());
-        assert!(shell.app().monochrome_visible());
-        assert!(shell.app().hidden_line_visible());
-        assert!(shell.app().xray_visible());
-        assert!(!shell.app().edges_visible());
+        assert!(shell.app().view_visible(ViewFlag::Wireframe));
+        assert!(shell.app().view_visible(ViewFlag::Monochrome));
+        assert!(shell.app().view_visible(ViewFlag::HiddenLine));
+        assert!(shell.app().view_visible(ViewFlag::Xray));
+        assert!(!shell.app().view_visible(ViewFlag::Edges));
         shell.click_menu_command("menu-view", AppCommand::ViewShaded);
-        assert!(!shell.app().wireframe_visible());
-        assert!(!shell.app().monochrome_visible());
-        assert!(!shell.app().hidden_line_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Wireframe));
+        assert!(!shell.app().view_visible(ViewFlag::Monochrome));
+        assert!(!shell.app().view_visible(ViewFlag::HiddenLine));
         assert_eq!(shell.app().document_revision(), revision);
         assert_eq!(shell.app().canonical_digest(), digest);
         assert_eq!(shell.app().undo_step_count(), undo_steps);
@@ -789,10 +795,12 @@ fn wireframe_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewWireframe),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Wireframe)),
             shell.catalog().text("view-wireframe")
         );
-        assert!(!shell.app().wireframe_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Wireframe));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -803,9 +811,9 @@ fn wireframe_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewWireframe));
-        shell.click_command(AppCommand::ViewWireframe);
-        assert!(shell.app().wireframe_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Wireframe)));
+        shell.click_command(AppCommand::View(ViewFlag::Wireframe));
+        assert!(shell.app().view_visible(ViewFlag::Wireframe));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-wireframe-shown")
@@ -817,11 +825,11 @@ fn wireframe_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().wireframe_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewWireframe);
-        assert!(shell.app().wireframe_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewWireframe);
-        assert!(!shell.app().wireframe_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Wireframe));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Wireframe));
+        assert!(shell.app().view_visible(ViewFlag::Wireframe));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Wireframe));
+        assert!(!shell.app().view_visible(ViewFlag::Wireframe));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-wireframe-hidden")
@@ -841,10 +849,12 @@ fn monochrome_toggle_is_localized_pickable_reversible_and_document_preserving() 
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewMonochrome),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Monochrome)),
             shell.catalog().text("view-monochrome")
         );
-        assert!(!shell.app().monochrome_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Monochrome));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -855,9 +865,9 @@ fn monochrome_toggle_is_localized_pickable_reversible_and_document_preserving() 
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewMonochrome));
-        shell.click_command(AppCommand::ViewMonochrome);
-        assert!(shell.app().monochrome_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Monochrome)));
+        shell.click_command(AppCommand::View(ViewFlag::Monochrome));
+        assert!(shell.app().view_visible(ViewFlag::Monochrome));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-monochrome-shown")
@@ -869,11 +879,11 @@ fn monochrome_toggle_is_localized_pickable_reversible_and_document_preserving() 
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().monochrome_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewMonochrome);
-        assert!(shell.app().monochrome_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewMonochrome);
-        assert!(!shell.app().monochrome_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Monochrome));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Monochrome));
+        assert!(shell.app().view_visible(ViewFlag::Monochrome));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Monochrome));
+        assert!(!shell.app().view_visible(ViewFlag::Monochrome));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-monochrome-hidden")
@@ -893,10 +903,12 @@ fn hidden_line_toggle_is_localized_pickable_reversible_and_document_preserving()
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewHiddenLine),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::HiddenLine)),
             shell.catalog().text("view-hidden-line")
         );
-        assert!(!shell.app().hidden_line_visible());
+        assert!(!shell.app().view_visible(ViewFlag::HiddenLine));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -907,9 +919,9 @@ fn hidden_line_toggle_is_localized_pickable_reversible_and_document_preserving()
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewHiddenLine));
-        shell.click_command(AppCommand::ViewHiddenLine);
-        assert!(shell.app().hidden_line_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::HiddenLine)));
+        shell.click_command(AppCommand::View(ViewFlag::HiddenLine));
+        assert!(shell.app().view_visible(ViewFlag::HiddenLine));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-hidden-line-shown")
@@ -921,11 +933,11 @@ fn hidden_line_toggle_is_localized_pickable_reversible_and_document_preserving()
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().hidden_line_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewHiddenLine);
-        assert!(shell.app().hidden_line_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewHiddenLine);
-        assert!(!shell.app().hidden_line_visible());
+        assert!(!shell.app().view_visible(ViewFlag::HiddenLine));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::HiddenLine));
+        assert!(shell.app().view_visible(ViewFlag::HiddenLine));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::HiddenLine));
+        assert!(!shell.app().view_visible(ViewFlag::HiddenLine));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-hidden-line-hidden")
@@ -945,10 +957,10 @@ fn edges_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewEdges),
+            shell.app().command_label(AppCommand::View(ViewFlag::Edges)),
             shell.catalog().text("view-edges")
         );
-        assert!(shell.app().edges_visible());
+        assert!(shell.app().view_visible(ViewFlag::Edges));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -959,9 +971,9 @@ fn edges_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewEdges));
-        shell.click_command(AppCommand::ViewEdges);
-        assert!(!shell.app().edges_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Edges)));
+        shell.click_command(AppCommand::View(ViewFlag::Edges));
+        assert!(!shell.app().view_visible(ViewFlag::Edges));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-edges-hidden")
@@ -973,11 +985,11 @@ fn edges_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(shell.app().edges_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewEdges);
-        assert!(!shell.app().edges_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewEdges);
-        assert!(shell.app().edges_visible());
+        assert!(shell.app().view_visible(ViewFlag::Edges));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Edges));
+        assert!(!shell.app().view_visible(ViewFlag::Edges));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Edges));
+        assert!(shell.app().view_visible(ViewFlag::Edges));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-edges-shown")
@@ -997,10 +1009,12 @@ fn profiles_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewProfiles),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Profiles)),
             shell.catalog().text("view-profiles")
         );
-        assert!(!shell.app().profiles_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Profiles));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1011,9 +1025,9 @@ fn profiles_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewProfiles));
-        shell.click_command(AppCommand::ViewProfiles);
-        assert!(shell.app().profiles_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Profiles)));
+        shell.click_command(AppCommand::View(ViewFlag::Profiles));
+        assert!(shell.app().view_visible(ViewFlag::Profiles));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-profiles-shown")
@@ -1025,11 +1039,11 @@ fn profiles_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().profiles_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewProfiles);
-        assert!(shell.app().profiles_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewProfiles);
-        assert!(!shell.app().profiles_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Profiles));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Profiles));
+        assert!(shell.app().view_visible(ViewFlag::Profiles));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Profiles));
+        assert!(!shell.app().view_visible(ViewFlag::Profiles));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-profiles-hidden")
@@ -1049,10 +1063,10 @@ fn halos_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewHalos),
+            shell.app().command_label(AppCommand::View(ViewFlag::Halos)),
             shell.catalog().text("view-halos")
         );
-        assert!(!shell.app().halos_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Halos));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1063,9 +1077,9 @@ fn halos_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewHalos));
-        shell.click_command(AppCommand::ViewHalos);
-        assert!(shell.app().halos_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Halos)));
+        shell.click_command(AppCommand::View(ViewFlag::Halos));
+        assert!(shell.app().view_visible(ViewFlag::Halos));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-halos-shown")
@@ -1077,11 +1091,11 @@ fn halos_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().halos_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewHalos);
-        assert!(shell.app().halos_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewHalos);
-        assert!(!shell.app().halos_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Halos));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Halos));
+        assert!(shell.app().view_visible(ViewFlag::Halos));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Halos));
+        assert!(!shell.app().view_visible(ViewFlag::Halos));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-halos-hidden")
@@ -1101,10 +1115,12 @@ fn depth_cue_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewDepthCue),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::DepthCue)),
             shell.catalog().text("view-depth-cue")
         );
-        assert!(!shell.app().depth_cue_visible());
+        assert!(!shell.app().view_visible(ViewFlag::DepthCue));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1115,9 +1131,9 @@ fn depth_cue_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewDepthCue));
-        shell.click_command(AppCommand::ViewDepthCue);
-        assert!(shell.app().depth_cue_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::DepthCue)));
+        shell.click_command(AppCommand::View(ViewFlag::DepthCue));
+        assert!(shell.app().view_visible(ViewFlag::DepthCue));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-depth-cue-shown")
@@ -1129,11 +1145,11 @@ fn depth_cue_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().depth_cue_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewDepthCue);
-        assert!(shell.app().depth_cue_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewDepthCue);
-        assert!(!shell.app().depth_cue_visible());
+        assert!(!shell.app().view_visible(ViewFlag::DepthCue));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::DepthCue));
+        assert!(shell.app().view_visible(ViewFlag::DepthCue));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::DepthCue));
+        assert!(!shell.app().view_visible(ViewFlag::DepthCue));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-depth-cue-hidden")
@@ -1153,10 +1169,12 @@ fn fade_distant_edges_toggle_is_localized_pickable_reversible_and_document_prese
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewFadeDistantEdges),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::FadeDistantEdges)),
             shell.catalog().text("view-fade-distant-edges")
         );
-        assert!(!shell.app().fade_distant_edges_visible());
+        assert!(!shell.app().view_visible(ViewFlag::FadeDistantEdges));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1167,9 +1185,9 @@ fn fade_distant_edges_toggle_is_localized_pickable_reversible_and_document_prese
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewFadeDistantEdges));
-        shell.click_command(AppCommand::ViewFadeDistantEdges);
-        assert!(shell.app().fade_distant_edges_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::FadeDistantEdges)));
+        shell.click_command(AppCommand::View(ViewFlag::FadeDistantEdges));
+        assert!(shell.app().view_visible(ViewFlag::FadeDistantEdges));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-fade-distant-edges-shown")
@@ -1181,11 +1199,11 @@ fn fade_distant_edges_toggle_is_localized_pickable_reversible_and_document_prese
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().fade_distant_edges_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewFadeDistantEdges);
-        assert!(shell.app().fade_distant_edges_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewFadeDistantEdges);
-        assert!(!shell.app().fade_distant_edges_visible());
+        assert!(!shell.app().view_visible(ViewFlag::FadeDistantEdges));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::FadeDistantEdges));
+        assert!(shell.app().view_visible(ViewFlag::FadeDistantEdges));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::FadeDistantEdges));
+        assert!(!shell.app().view_visible(ViewFlag::FadeDistantEdges));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-fade-distant-edges-hidden")
@@ -1205,10 +1223,12 @@ fn high_contrast_edges_toggle_is_localized_pickable_reversible_and_document_pres
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewHighContrastEdges),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::HighContrastEdges)),
             shell.catalog().text("view-high-contrast-edges")
         );
-        assert!(!shell.app().high_contrast_edges_visible());
+        assert!(!shell.app().view_visible(ViewFlag::HighContrastEdges));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1219,9 +1239,9 @@ fn high_contrast_edges_toggle_is_localized_pickable_reversible_and_document_pres
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewHighContrastEdges));
-        shell.click_command(AppCommand::ViewHighContrastEdges);
-        assert!(shell.app().high_contrast_edges_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::HighContrastEdges)));
+        shell.click_command(AppCommand::View(ViewFlag::HighContrastEdges));
+        assert!(shell.app().view_visible(ViewFlag::HighContrastEdges));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-high-contrast-edges-shown")
@@ -1233,11 +1253,11 @@ fn high_contrast_edges_toggle_is_localized_pickable_reversible_and_document_pres
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().high_contrast_edges_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewHighContrastEdges);
-        assert!(shell.app().high_contrast_edges_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewHighContrastEdges);
-        assert!(!shell.app().high_contrast_edges_visible());
+        assert!(!shell.app().view_visible(ViewFlag::HighContrastEdges));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::HighContrastEdges));
+        assert!(shell.app().view_visible(ViewFlag::HighContrastEdges));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::HighContrastEdges));
+        assert!(!shell.app().view_visible(ViewFlag::HighContrastEdges));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-high-contrast-edges-hidden")
@@ -1257,10 +1277,12 @@ fn selection_halo_toggle_is_localized_pickable_reversible_and_document_preservin
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewSelectionHalo),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::SelectionHalo)),
             shell.catalog().text("view-selection-halo")
         );
-        assert!(!shell.app().selection_halo_visible());
+        assert!(!shell.app().view_visible(ViewFlag::SelectionHalo));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1271,9 +1293,9 @@ fn selection_halo_toggle_is_localized_pickable_reversible_and_document_preservin
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewSelectionHalo));
-        shell.click_command(AppCommand::ViewSelectionHalo);
-        assert!(shell.app().selection_halo_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::SelectionHalo)));
+        shell.click_command(AppCommand::View(ViewFlag::SelectionHalo));
+        assert!(shell.app().view_visible(ViewFlag::SelectionHalo));
         assert_eq!(shell.app().selected_occurrence_count(), 1);
         assert_eq!(
             shell.app().action_digest(),
@@ -1282,11 +1304,11 @@ fn selection_halo_toggle_is_localized_pickable_reversible_and_document_preservin
         assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().selection_halo_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewSelectionHalo);
-        assert!(shell.app().selection_halo_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewSelectionHalo);
-        assert!(!shell.app().selection_halo_visible());
+        assert!(!shell.app().view_visible(ViewFlag::SelectionHalo));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::SelectionHalo));
+        assert!(shell.app().view_visible(ViewFlag::SelectionHalo));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::SelectionHalo));
+        assert!(!shell.app().view_visible(ViewFlag::SelectionHalo));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-selection-halo-hidden")
@@ -1307,10 +1329,12 @@ fn endpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewEndpoints),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Endpoints)),
             shell.catalog().text("view-endpoints")
         );
-        assert!(!shell.app().endpoints_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Endpoints));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1321,9 +1345,9 @@ fn endpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewEndpoints));
-        shell.click_command(AppCommand::ViewEndpoints);
-        assert!(shell.app().endpoints_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Endpoints)));
+        shell.click_command(AppCommand::View(ViewFlag::Endpoints));
+        assert!(shell.app().view_visible(ViewFlag::Endpoints));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-endpoints-shown")
@@ -1335,11 +1359,11 @@ fn endpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().endpoints_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewEndpoints);
-        assert!(shell.app().endpoints_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewEndpoints);
-        assert!(!shell.app().endpoints_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Endpoints));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Endpoints));
+        assert!(shell.app().view_visible(ViewFlag::Endpoints));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Endpoints));
+        assert!(!shell.app().view_visible(ViewFlag::Endpoints));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-endpoints-hidden")
@@ -1359,10 +1383,12 @@ fn midpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewMidpoints),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Midpoints)),
             shell.catalog().text("view-midpoints")
         );
-        assert!(!shell.app().midpoints_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Midpoints));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1373,9 +1399,9 @@ fn midpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewMidpoints));
-        shell.click_command(AppCommand::ViewMidpoints);
-        assert!(shell.app().midpoints_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Midpoints)));
+        shell.click_command(AppCommand::View(ViewFlag::Midpoints));
+        assert!(shell.app().view_visible(ViewFlag::Midpoints));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-midpoints-shown")
@@ -1387,11 +1413,11 @@ fn midpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().midpoints_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewMidpoints);
-        assert!(shell.app().midpoints_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewMidpoints);
-        assert!(!shell.app().midpoints_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Midpoints));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Midpoints));
+        assert!(shell.app().view_visible(ViewFlag::Midpoints));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Midpoints));
+        assert!(!shell.app().view_visible(ViewFlag::Midpoints));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-midpoints-hidden")
@@ -1411,10 +1437,12 @@ fn extensions_toggle_is_localized_pickable_reversible_and_document_preserving() 
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewExtensions),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Extensions)),
             shell.catalog().text("view-extensions")
         );
-        assert!(!shell.app().extensions_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Extensions));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1425,9 +1453,9 @@ fn extensions_toggle_is_localized_pickable_reversible_and_document_preserving() 
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewExtensions));
-        shell.click_command(AppCommand::ViewExtensions);
-        assert!(shell.app().extensions_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Extensions)));
+        shell.click_command(AppCommand::View(ViewFlag::Extensions));
+        assert!(shell.app().view_visible(ViewFlag::Extensions));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-extensions-shown")
@@ -1439,11 +1467,11 @@ fn extensions_toggle_is_localized_pickable_reversible_and_document_preserving() 
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().extensions_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewExtensions);
-        assert!(shell.app().extensions_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewExtensions);
-        assert!(!shell.app().extensions_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Extensions));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Extensions));
+        assert!(shell.app().view_visible(ViewFlag::Extensions));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Extensions));
+        assert!(!shell.app().view_visible(ViewFlag::Extensions));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-extensions-hidden")
@@ -1463,10 +1491,12 @@ fn jitter_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewJitter),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Jitter)),
             shell.catalog().text("view-jitter")
         );
-        assert!(!shell.app().jitter_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Jitter));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1477,9 +1507,9 @@ fn jitter_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewJitter));
-        shell.click_command(AppCommand::ViewJitter);
-        assert!(shell.app().jitter_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Jitter)));
+        shell.click_command(AppCommand::View(ViewFlag::Jitter));
+        assert!(shell.app().view_visible(ViewFlag::Jitter));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-jitter-shown")
@@ -1491,11 +1521,11 @@ fn jitter_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().jitter_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewJitter);
-        assert!(shell.app().jitter_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewJitter);
-        assert!(!shell.app().jitter_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Jitter));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Jitter));
+        assert!(shell.app().view_visible(ViewFlag::Jitter));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Jitter));
+        assert!(!shell.app().view_visible(ViewFlag::Jitter));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-jitter-hidden")
@@ -1515,10 +1545,12 @@ fn dashes_toggle_is_localized_pickable_reversible_and_document_preserving() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewDashes),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::Dashes)),
             shell.catalog().text("view-dashes")
         );
-        assert!(!shell.app().dashes_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Dashes));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1529,9 +1561,9 @@ fn dashes_toggle_is_localized_pickable_reversible_and_document_preserving() {
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewDashes));
-        shell.click_command(AppCommand::ViewDashes);
-        assert!(shell.app().dashes_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::Dashes)));
+        shell.click_command(AppCommand::View(ViewFlag::Dashes));
+        assert!(shell.app().view_visible(ViewFlag::Dashes));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-dashes-shown")
@@ -1543,11 +1575,11 @@ fn dashes_toggle_is_localized_pickable_reversible_and_document_preserving() {
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().dashes_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewDashes);
-        assert!(shell.app().dashes_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewDashes);
-        assert!(!shell.app().dashes_visible());
+        assert!(!shell.app().view_visible(ViewFlag::Dashes));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Dashes));
+        assert!(shell.app().view_visible(ViewFlag::Dashes));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Dashes));
+        assert!(!shell.app().view_visible(ViewFlag::Dashes));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-dashes-hidden")
@@ -1567,10 +1599,12 @@ fn color_by_axis_toggle_is_localized_pickable_reversible_and_document_preserving
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewColorByAxis),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::ColorByAxis)),
             shell.catalog().text("view-color-by-axis")
         );
-        assert!(!shell.app().color_by_axis_visible());
+        assert!(!shell.app().view_visible(ViewFlag::ColorByAxis));
         assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
 
         let pick_point = shell.top_face_centre(1);
@@ -1581,9 +1615,9 @@ fn color_by_axis_toggle_is_localized_pickable_reversible_and_document_preserving
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(pick_point);
-        assert!(shell.offers(AppCommand::ViewColorByAxis));
-        shell.click_command(AppCommand::ViewColorByAxis);
-        assert!(shell.app().color_by_axis_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::ColorByAxis)));
+        shell.click_command(AppCommand::View(ViewFlag::ColorByAxis));
+        assert!(shell.app().view_visible(ViewFlag::ColorByAxis));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-color-by-axis-shown")
@@ -1595,11 +1629,11 @@ fn color_by_axis_toggle_is_localized_pickable_reversible_and_document_preserving
         assert_eq!(shell.app().selected_occurrence_count(), 1);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().color_by_axis_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewColorByAxis);
-        assert!(shell.app().color_by_axis_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewColorByAxis);
-        assert!(!shell.app().color_by_axis_visible());
+        assert!(!shell.app().view_visible(ViewFlag::ColorByAxis));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::ColorByAxis));
+        assert!(shell.app().view_visible(ViewFlag::ColorByAxis));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::ColorByAxis));
+        assert!(!shell.app().view_visible(ViewFlag::ColorByAxis));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-color-by-axis-hidden")
@@ -1619,15 +1653,17 @@ fn hidden_objects_toggle_is_localized_non_interactive_reversible_and_document_pr
     ] {
         let mut shell = Shell::with_catalog(catalog);
         assert_eq!(
-            shell.app().command_label(AppCommand::ViewHiddenObjects),
+            shell
+                .app()
+                .command_label(AppCommand::View(ViewFlag::HiddenObjects)),
             shell.catalog().text("view-hidden-objects")
         );
-        assert!(!shell.app().hidden_objects_visible());
+        assert!(!shell.app().view_visible(ViewFlag::HiddenObjects));
         assert_eq!(shell.app().hidden_ghost_count(), 0);
         assert!(
             !shell
                 .app()
-                .command_is_enabled(AppCommand::ViewHiddenObjects)
+                .command_is_enabled(AppCommand::View(ViewFlag::HiddenObjects))
         );
 
         let hidden_point = shell.top_face_centre(1);
@@ -1642,7 +1678,7 @@ fn hidden_objects_toggle_is_localized_non_interactive_reversible_and_document_pr
         assert!(
             shell
                 .app()
-                .command_is_enabled(AppCommand::ViewHiddenObjects)
+                .command_is_enabled(AppCommand::View(ViewFlag::HiddenObjects))
         );
 
         let revision = shell.app().document_revision();
@@ -1650,9 +1686,9 @@ fn hidden_objects_toggle_is_localized_non_interactive_reversible_and_document_pr
         let undo_steps = shell.app().undo_step_count();
 
         shell.secondary_click_at(hidden_point);
-        assert!(shell.offers(AppCommand::ViewHiddenObjects));
-        shell.click_command(AppCommand::ViewHiddenObjects);
-        assert!(shell.app().hidden_objects_visible());
+        assert!(shell.offers(AppCommand::View(ViewFlag::HiddenObjects)));
+        shell.click_command(AppCommand::View(ViewFlag::HiddenObjects));
+        assert!(shell.app().view_visible(ViewFlag::HiddenObjects));
         assert_eq!(shell.app().hidden_ghost_count(), 2);
         assert_eq!(
             shell.app().action_digest(),
@@ -1664,13 +1700,13 @@ fn hidden_objects_toggle_is_localized_non_interactive_reversible_and_document_pr
         assert_eq!(shell.app().selected_occurrence_count(), 0);
 
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
-        assert!(!shell.app().hidden_objects_visible());
+        assert!(!shell.app().view_visible(ViewFlag::HiddenObjects));
         assert_eq!(shell.app().hidden_ghost_count(), 0);
 
-        shell.click_menu_command("menu-view", AppCommand::ViewHiddenObjects);
-        assert!(shell.app().hidden_objects_visible());
-        shell.click_menu_command("menu-view", AppCommand::ViewHiddenObjects);
-        assert!(!shell.app().hidden_objects_visible());
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::HiddenObjects));
+        assert!(shell.app().view_visible(ViewFlag::HiddenObjects));
+        shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::HiddenObjects));
+        assert!(!shell.app().view_visible(ViewFlag::HiddenObjects));
         assert_eq!(
             shell.app().action_digest(),
             shell.catalog().text("digest-hidden-objects-hidden")

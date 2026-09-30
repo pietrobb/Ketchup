@@ -1,5 +1,6 @@
 //! Real offscreen GPU privacy proof; no Screenshot event supplies image pixels.
 use super::*;
+use crate::ViewFlag;
 use egui_kittest::Harness;
 use std::sync::atomic::AtomicUsize;
 
@@ -246,10 +247,10 @@ fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, Ketc
     // resources are installed in the outer harness renderer: only the private
     // production target creates them. No desktop window or input is involved.
     app.wgpu_target_format = Some(wgpu::TextureFormat::Rgba8Unorm);
-    app.grid_axes_visible = false;
-    app.white_background_visible = true;
-    app.shadows_visible = false;
-    app.fog_visible = false;
+    app.view.set(ViewFlag::GridAxes, false);
+    app.view.set(ViewFlag::WhiteBackground, true);
+    app.view.set(ViewFlag::Shadows, false);
+    app.view.set(ViewFlag::Fog, false);
     let mut h = Harness::builder()
         .with_size(size)
         .with_pixels_per_point(ppp)

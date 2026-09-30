@@ -1,7 +1,7 @@
 use crate::harness;
 
 use harness::Shell;
-use ketchup_app::AppCommand;
+use ketchup_app::{AppCommand, ViewFlag};
 
 #[test]
 fn gui_color_apply_reset_undo_and_xray_are_independent() {
@@ -25,8 +25,8 @@ fn gui_color_apply_reset_undo_and_xray_are_independent() {
     );
     let colored_digest = shell.app().canonical_digest();
     let revision = shell.app().document_revision();
-    shell.click_menu_command("menu-view", AppCommand::ViewXray);
-    assert!(shell.app().xray_visible());
+    shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Xray));
+    assert!(shell.app().view_visible(ViewFlag::Xray));
     assert_eq!(shell.app().canonical_digest(), colored_digest);
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().undo_step_count(), undo + 1);
@@ -45,7 +45,7 @@ fn gui_color_apply_reset_undo_and_xray_are_independent() {
             .all(|o| o.color().is_none())
     );
     assert_eq!(shell.app().undo_step_count(), undo + 2);
-    assert!(shell.app().xray_visible());
+    assert!(shell.app().view_visible(ViewFlag::Xray));
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert!(
         shell
@@ -54,9 +54,9 @@ fn gui_color_apply_reset_undo_and_xray_are_independent() {
             .occurrences()
             .all(|o| o.color() == Some([140, 160, 180]))
     );
-    assert!(shell.app().xray_visible());
-    shell.click_menu_command("menu-view", AppCommand::ViewXray);
-    assert!(!shell.app().xray_visible());
+    assert!(shell.app().view_visible(ViewFlag::Xray));
+    shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Xray));
+    assert!(!shell.app().view_visible(ViewFlag::Xray));
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert!(
         shell

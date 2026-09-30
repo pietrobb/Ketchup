@@ -470,7 +470,7 @@ mod tests {
         assert_ne!(app.hovered, before);
         assert!(app.face_workflow.xray_preview());
         assert!(
-            !app.xray_visible,
+            !app.view.contains(ViewFlag::Xray),
             "Alt must not change the persistent view setting"
         );
         assert!(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AppCommand, Ray, Vec3};
+use crate::{AppCommand, Ray, Vec3, ViewFlag};
 use egui_kittest::{Harness, kittest::Queryable as _};
 
 #[test]
@@ -540,8 +540,8 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
     app.zoom = 3.1;
     app.pan = egui::vec2(12.0, -18.0);
     app.camera_target_z = 15.0;
-    app.grid_axes_visible = false;
-    app.profiles_visible = false;
+    app.view.set(ViewFlag::GridAxes, false);
+    app.view.set(ViewFlag::Profiles, false);
     app.dimensions_visible = false;
     app.tags_visible = true;
     let camera = app.camera_view_state();
