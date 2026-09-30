@@ -434,11 +434,11 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreatePanel { .. }
-            | AssistantCadEditOperation::CreateDowelJoint { .. }
-            | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
-            | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
-            | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
-            | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
+            | AssistantCadEditOperation::CreatePinJoint { .. }
+            | AssistantCadEditOperation::CreateProgramPinJoint { .. }
+            | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
+            | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
+            | AssistantCadEditOperation::MovePhysicalPinPair { .. }
             | AssistantCadEditOperation::CreateTag { .. }
             | AssistantCadEditOperation::SetOccurrenceTag { .. }
             | AssistantCadEditOperation::SetTagVisibility { .. }
@@ -9300,7 +9300,7 @@ impl KetchupApp {
                 Some(("assistant-entity-clearance", id.0))
             }
             AuthoritativeDependency::CamPlan(id) => Some(("assistant-entity-cam-plan", id.0)),
-            AuthoritativeDependency::DowelJoint(id) => Some(("assistant-entity-joint", id.0)),
+            AuthoritativeDependency::PinJoint(id) => Some(("assistant-entity-joint", id.0)),
             AuthoritativeDependency::PersistentDimension(id) => {
                 Some(("assistant-entity-persistent-dimension", id.0))
             }

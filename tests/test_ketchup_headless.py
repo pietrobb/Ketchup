@@ -171,10 +171,10 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(SessionClosedError):
             doc.undo()
 
-    def test_panel_and_dowel_helpers_emit_one_high_level_operation_each(self):
+    def test_panel_and_pin_helpers_emit_one_high_level_operation_each(self):
         process = FakeProcess()
         doc = self.session(process).new_document()
-        hole = {"id": "dowel-1", "entry_local_mm": [20, 10, 0],
+        hole = {"id": "pin-1", "entry_local_mm": [20, 10, 0],
                 "inward_unit_local": [0, 0, 1], "diameter_mm": 8, "depth_mm": 16}
         doc.panel("Side", [100, 50, 18], [hole])
         self.assertEqual(process.requests[-1]["params"]["program"]["operations"], [{
@@ -184,12 +184,12 @@ class ClientTests(unittest.TestCase):
         face = {"instance_path": {"root_occurrence_id": 1, "steps": []},
                 "face_origin_local_mm": [0, 0, 18], "inward_unit_local": [0, 0, -1],
                 "bounds_min_local_mm": [0, 0, 0], "bounds_max_local_mm": [100, 50, 18]}
-        doc.dowel_joint("Row", face, {**face, "instance_path": {
+        doc.pin_joint("Row", face, {**face, "instance_path": {
             "root_occurrence_id": 2, "steps": []}, "face_origin_local_mm": [0, 0, 0],
             "inward_unit_local": [0, 0, 1]}, [20, 10, 18], [1, 0, 0], 3, 25,
             pin={"diameter_mm": 8, "length_mm": 30, "hole_clearance_mm": 1})
         operation = process.requests[-1]["params"]["program"]["operations"][0]
-        self.assertEqual(operation["operation"], "create_dowel_joint")
+        self.assertEqual(operation["operation"], "create_pin_joint")
         self.assertEqual(operation["pin"],
                          {"diameter_mm": 8, "length_mm": 30, "hole_clearance_mm": 1})
         self.assertEqual(operation["count"], 3)

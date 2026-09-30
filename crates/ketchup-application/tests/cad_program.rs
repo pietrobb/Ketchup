@@ -2385,7 +2385,7 @@ fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one
         name: "Side panel".into(),
         dimensions_mm: [100.0, 50.0, 18.0],
         holes: vec![AssistantPanelHole {
-            id: "dowel-1".into(),
+            id: "pin-1".into(),
             entry_local_mm: [20.0, 20.0, 0.0],
             inward_unit_local: [0.0, 0.0, 1.0],
             diameter_mm: 8.0,
@@ -2408,11 +2408,11 @@ fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one
     assert_eq!(before_move.features().count(), 6);
     assert_eq!(
         before_move.feature(FeatureId(5)).unwrap().name(),
-        "Side panel hole dowel-1"
+        "Side panel hole pin-1"
     );
     assert_eq!(
         before_move.feature(FeatureId(6)).unwrap().name(),
-        "Side panel hole dowel-1 pocket"
+        "Side panel hole pin-1 pocket"
     );
     ExactBRepGraph::from_snapshot(&before_move, DefinitionId(1), FeatureId(6)).unwrap();
 
@@ -2449,7 +2449,7 @@ fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one
 }
 
 #[test]
-fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_panels() {
+fn one_pin_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_panels() {
     let mut document = DocumentStore::new();
     let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
         name: name.into(),
@@ -2471,7 +2471,7 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
     .unwrap();
     document.apply_batch(&batch).unwrap();
 
-    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
@@ -2485,7 +2485,7 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
         &document,
         &BTreeSet::new(),
         &ExactResultRegistry::default(),
-        &program(vec![AssistantCadEditOperation::CreateDowelJoint {
+        &program(vec![AssistantCadEditOperation::CreatePinJoint {
             name: "Shelf row".into(),
             first: face(1, 18.0, [0.0, 0.0, -1.0]),
             second: face(2, 0.0, [0.0, 0.0, 1.0]),
@@ -2504,10 +2504,10 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
     .unwrap();
     document.apply_batch(&batch).unwrap();
     let snapshot = document.current();
-    let projection = ketchup_core::joinery::project_dowel_joint_contract(
+    let projection = ketchup_core::pin_joint::project_pin_joint_contract(
         &snapshot,
         snapshot
-            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
             .unwrap(),
     )
     .unwrap();
@@ -2521,8 +2521,8 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
 }
 
 #[test]
-fn physical_dowel_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
-    let face = |occurrence_id, origin, inward, maximum| AssistantDowelJointFace {
+fn physical_pin_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
+    let face = |occurrence_id, origin, inward, maximum| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
@@ -2550,7 +2550,7 @@ fn physical_dowel_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
                 translation_mm: [0.0, 15.0, 0.0],
                 rotation: None,
             },
-            AssistantCadEditOperation::CreatePhysicalDowelJoint {
+            AssistantCadEditOperation::CreatePhysicalPinJoint {
                 joint_id: None,
                 name: "Corner".into(),
                 first: face(2, [0.0; 3], [0.0, 1.0, 0.0], [15.0, 50.0, 60.0]),
@@ -2571,7 +2571,7 @@ fn physical_dowel_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
     let mut document = DocumentStore::new();
     let empty = BTreeSet::new();
     let exact = ExactResultRegistry::default();
-    // Half of a 30 mm dowel plus clearance would drill through the 15 mm face.
+    // Half of a 30 mm pin plus clearance would drill through the 15 mm face.
     assert!(plan(&document, &empty, &exact, &corner(None)).is_err());
     assert!(plan(&document, &empty, &exact, &corner(Some(30.0))).is_err());
 
@@ -2581,11 +2581,11 @@ fn physical_dowel_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
     document.apply_batch(&batch).unwrap();
     assert_eq!(document.visible_undo_steps(), 1);
     let committed = document.current();
-    let joint = committed.dowel_joints().next().unwrap();
-    assert_eq!(joint.dowel.first_insertion_mm, 20.0);
-    assert_eq!(joint.dowel.second_insertion_mm, 10.0);
+    let joint = committed.pin_joints().next().unwrap();
+    assert_eq!(joint.pin.first_insertion_mm, 20.0);
+    assert_eq!(joint.pin.second_insertion_mm, 10.0);
     let projection =
-        ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+        ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
     assert_eq!(projection.pairs.len(), 2);
     assert!(projection.pairs.iter().all(|pair| {
         pair.first.depth_mm == 21.0
@@ -2598,7 +2598,7 @@ fn physical_dowel_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
 }
 
 #[test]
-fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
+fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
     let mut document = DocumentStore::new();
     let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
         name: name.into(),
@@ -2621,7 +2621,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
     document.apply_batch(&panels).unwrap();
     let baseline = document.current();
     let undo_before = document.visible_undo_steps();
-    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
@@ -2631,7 +2631,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let input = program(vec![AssistantCadEditOperation::CreatePhysicalDowelJoint {
+    let input = program(vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
         joint_id: None,
         name: "Physical shelf row".into(),
         first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -2679,7 +2679,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         batch
             .commands()
             .iter()
-            .filter(|command| matches!(command, CanonicalCommand::UpsertDowelJoint(_)))
+            .filter(|command| matches!(command, CanonicalCommand::UpsertPinJoint(_)))
             .count(),
         1
     );
@@ -2689,7 +2689,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
     let committed = document.current();
     let committed_digest = committed.canonical_digest();
     let joint = committed
-        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
         .unwrap();
     let bindings = joint.physical_hole_pairs.as_ref().unwrap();
     assert_eq!(bindings.len(), 3);
@@ -2719,7 +2719,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         )
     }));
     let projection =
-        ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+        ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
     assert_eq!(projection.pairs.len(), 3);
     assert!(projection.pairs.iter().all(|pair| {
         pair.physical_probe_coincidence
@@ -2735,7 +2735,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
     document.redo().unwrap();
     assert_eq!(document.current().canonical_digest(), committed_digest);
 
-    let update = program(vec![AssistantCadEditOperation::CreatePhysicalDowelJoint {
+    let update = program(vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
         joint_id: Some(1),
         name: "Physical shelf row".into(),
         first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -2762,7 +2762,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         update_batch
             .commands()
             .iter()
-            .filter(|command| matches!(command, CanonicalCommand::DeleteDowelJoint { .. }))
+            .filter(|command| matches!(command, CanonicalCommand::DeletePinJoint { .. }))
             .count(),
         1
     );
@@ -2803,11 +2803,11 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
             .all(|feature| updated.feature(feature.id()).is_some())
     );
     let updated_joint = updated
-        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
         .unwrap();
     assert_eq!(updated_joint.physical_hole_pairs.as_ref().unwrap().len(), 2);
     let updated_projection =
-        ketchup_core::joinery::project_dowel_joint_contract(&updated, updated_joint).unwrap();
+        ketchup_core::pin_joint::project_pin_joint_contract(&updated, updated_joint).unwrap();
     assert!(updated_projection.pairs.iter().all(|pair| {
         pair.physical_probe_coincidence
             .as_ref()
@@ -2831,7 +2831,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         &document,
         &BTreeSet::new(),
         &ExactResultRegistry::default(),
-        &program(vec![AssistantCadEditOperation::DeletePhysicalDowelJoint {
+        &program(vec![AssistantCadEditOperation::DeletePhysicalPinJoint {
             joint_id: 1,
         }]),
     )
@@ -2840,7 +2840,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
     let deleted = document.current();
     assert!(
         deleted
-            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
             .is_none()
     );
     assert_eq!(deleted.features().count(), baseline.features().count());
@@ -2853,7 +2853,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
     document.undo().unwrap();
     let restored = document.current();
     let owned_pocket = restored
-        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
         .unwrap()
         .physical_hole_pairs
         .as_ref()
@@ -2887,7 +2887,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
             &document,
             &BTreeSet::new(),
             &ExactResultRegistry::default(),
-            &program(vec![AssistantCadEditOperation::DeletePhysicalDowelJoint {
+            &program(vec![AssistantCadEditOperation::DeletePhysicalPinJoint {
                 joint_id: 1,
             }]),
         )
@@ -2898,7 +2898,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
 }
 
 #[test]
-fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
+fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
     let seed = |lower_holes: Vec<AssistantPanelHole>, upper_z: f64| {
         let mut document = DocumentStore::new();
         let panel = |name: &str, translation_mm, holes| AssistantCadEditOperation::CreatePanel {
@@ -2922,7 +2922,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
         document.apply_batch(&batch).unwrap();
         document
     };
-    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
@@ -2932,8 +2932,8 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let joint = |second_normal, count, spacing_mm, pin| {
-        AssistantCadEditOperation::CreatePhysicalDowelJoint {
+    let joint =
+        |second_normal, count, spacing_mm, pin| AssistantCadEditOperation::CreatePhysicalPinJoint {
             joint_id: None,
             name: "Guarded physical row".into(),
             first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -2944,8 +2944,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
             spacing_mm,
             pin,
             first_insertion_mm: None,
-        }
-    };
+        };
     let assert_rejected_without_mutation =
         |document: &DocumentStore, operation: AssistantCadEditOperation| {
             let before = document.current();
@@ -3064,7 +3063,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
     shallow.apply_batch(&create).unwrap();
     let committed = shallow.current();
     let first_pocket = committed
-        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
         .unwrap()
         .physical_hole_pairs
         .as_ref()
@@ -3090,7 +3089,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
 }
 
 #[test]
-fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutation() {
+fn physical_pin_joint_refuses_shared_root_and_nested_definitions_without_mutation() {
     for nested in [false, true] {
         for shared_id in [1, 2] {
             let mut document = DocumentStore::new();
@@ -3152,7 +3151,7 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
                 })
                 .expect("the shared sibling must actually exist");
             assert!(!sibling.visible);
-            let face = |id, z, inward_unit_local| AssistantDowelJointFace {
+            let face = |id, z, inward_unit_local| AssistantPinJointFace {
                 instance_path: AssistantInstancePath {
                     root_occurrence_id: id,
                     steps: vec![],
@@ -3166,7 +3165,7 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
                 &document,
                 &BTreeSet::new(),
                 &ExactResultRegistry::default(),
-                &program(vec![AssistantCadEditOperation::CreatePhysicalDowelJoint {
+                &program(vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
                     joint_id: None,
                     name: "Must not drill sibling".into(),
                     first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -3184,7 +3183,7 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
                 }]),
             )
             .unwrap_err();
-            assert_eq!(rejection.code, "planning.physical_dowel_shared_definition");
+            assert_eq!(rejection.code, "planning.physical_pin_shared_definition");
             assert_eq!(
                 document.current().canonical_digest(),
                 before.canonical_digest()
@@ -3193,13 +3192,13 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
             assert_eq!(document.mutation_epoch(), epoch);
             assert_eq!(document.visible_undo_steps(), undo);
             assert_eq!(document.visible_redo_steps(), redo);
-            assert_eq!(document.current().dowel_joints().count(), 0);
+            assert_eq!(document.current().pin_joints().count(), 0);
         }
     }
 }
 
 #[test]
-fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work() {
+fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() {
     let mut document = DocumentStore::new();
     let panel = |name: &str, translation_mm, rotation: Option<AssistantCadRotation>, holes| {
         AssistantCadEditOperation::CreatePanel {
@@ -3246,7 +3245,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
     )
     .unwrap();
     document.apply_batch(&panels).unwrap();
-    let face = |occurrence_id, face_origin_local_mm, inward_unit_local| AssistantDowelJointFace {
+    let face = |occurrence_id, face_origin_local_mm, inward_unit_local| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
@@ -3256,7 +3255,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let top_joint = AssistantCadEditOperation::CreatePhysicalDowelJoint {
+    let top_joint = AssistantCadEditOperation::CreatePhysicalPinJoint {
         joint_id: None,
         name: "Existing top row".into(),
         first: face(1, [0.0, 0.0, 18.0], [0.0, 0.0, -1.0]),
@@ -3282,7 +3281,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
     document.apply_batch(&top_batch).unwrap();
     let before_sides = document.current();
     let preserved_joint = before_sides
-        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
         .unwrap()
         .clone();
     let hardware_feature_id = before_sides
@@ -3291,7 +3290,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
         .unwrap()
         .id();
     let side_joint = |name: &str, first, second, first_center_local_mm| {
-        AssistantCadEditOperation::CreatePhysicalDowelJoint {
+        AssistantCadEditOperation::CreatePhysicalPinJoint {
             joint_id: None,
             name: name.into(),
             first,
@@ -3352,10 +3351,10 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
     document.apply_batch(&side_batch).unwrap();
     assert_eq!(document.visible_undo_steps(), undo_before_sides + 1);
     let committed = document.current();
-    assert_eq!(committed.dowel_joints().count(), 3);
+    assert_eq!(committed.pin_joints().count(), 3);
     assert_eq!(
         committed
-            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
             .unwrap(),
         &preserved_joint
     );
@@ -3389,10 +3388,10 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
         ),
     ] {
         let joint = committed
-            .dowel_joint(ketchup_core::joinery::DowelJointId(joint_id))
+            .pin_joint(ketchup_core::pin_joint::PinJointId(joint_id))
             .unwrap();
         let projection =
-            ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+            ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
         assert_eq!(projection.pairs.len(), 2);
         assert_eq!(
             projection
@@ -3436,7 +3435,7 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
             name: name.into(),
             dimensions_mm: [100.0, 50.0, 18.0],
             holes: vec![AssistantPanelHole {
-                id: "dowel-1".into(),
+                id: "pin-1".into(),
                 entry_local_mm: [20.0, 20.0, entry_z],
                 inward_unit_local,
                 diameter_mm: 8.0,
@@ -3458,7 +3457,7 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
         name: name.into(),
         output,
     };
-    let face = |name: &str, face_z, inward_unit_local| AssistantProgramDowelJointFace {
+    let face = |name: &str, face_z, inward_unit_local| AssistantProgramPinJointFace {
         occurrence: named(name, AssistantCadProgramFeatureOutput::Occurrence),
         face_origin_local_mm: [0.0, 0.0, face_z],
         inward_unit_local,
@@ -3480,7 +3479,7 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
             3,
             AssistantCadProgramFeatureOutput::BodyFeature,
         ),
-        AssistantCadEditOperation::CreateProgramDowelJoint {
+        AssistantCadEditOperation::CreateProgramPinJoint {
             name: "Bound row".into(),
             first: face("lower", 18.0, [0.0, 0.0, -1.0]),
             second: face("upper", 0.0, [0.0, 0.0, 1.0]),
@@ -3493,7 +3492,7 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
                 length_mm: 30.0,
                 hole_clearance_mm: 1.0,
             },
-            physical_hole_pairs: vec![AssistantProgramDowelPhysicalHolePair {
+            physical_hole_pairs: vec![AssistantProgramPinPhysicalHolePair {
                 first_pocket_feature: named(
                     "lower-hole",
                     AssistantCadProgramFeatureOutput::BodyFeature,
@@ -3504,7 +3503,7 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
                 ),
             }],
         },
-        bind("joint", 6, AssistantCadProgramFeatureOutput::DowelJoint),
+        bind("joint", 6, AssistantCadProgramFeatureOutput::PinJoint),
     ]);
     let input: AssistantCadEditProgram =
         serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
@@ -3548,17 +3547,17 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
     ));
     assert_eq!(
         planned.outputs.get("joint"),
-        Some(&AssistantCadResolvedProgramOutput::DowelJoint(1))
+        Some(&AssistantCadResolvedProgramOutput::PinJoint(1))
     );
 
     document.apply_batch(&planned.batch).unwrap();
     let committed = document.current();
     let joint = committed
-        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
         .unwrap();
     assert_eq!(joint.physical_hole_pairs.as_ref().unwrap().len(), 1);
     let projection =
-        ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+        ketchup_core::pin_joint::project_pin_joint_contract(&committed, joint).unwrap();
     assert_eq!(
         projection.pairs[0]
             .physical_probe_coincidence
@@ -3603,11 +3602,7 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
 
     let wrong_type = program(vec![
         part(),
-        bind(
-            "not-a-joint",
-            0,
-            AssistantCadProgramFeatureOutput::DowelJoint,
-        ),
+        bind("not-a-joint", 0, AssistantCadProgramFeatureOutput::PinJoint),
     ]);
     assert!(
         plan(
@@ -3645,7 +3640,7 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
     let missing_or_forward: AssistantCadEditProgram = serde_json::from_value(serde_json::json!({
         "operations": [
             {
-                "operation": "create_program_dowel_joint",
+                "operation": "create_program_pin_joint",
                 "name": "Invalid",
                 "first": {
                     "occurrence": {"name": "later", "output": "occurrence"},
@@ -3694,14 +3689,14 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
 }
 
 #[test]
-fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
+fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     let mut document = DocumentStore::new();
     let holes = |entry_z, inward_unit_local| {
         [20.0, 45.0, 70.0]
             .into_iter()
             .enumerate()
             .map(|(index, x)| AssistantPanelHole {
-                id: format!("dowel-{}", index + 1),
+                id: format!("pin-{}", index + 1),
                 entry_local_mm: [x, 20.0, entry_z],
                 inward_unit_local,
                 diameter_mm: 8.0,
@@ -3755,7 +3750,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     let second_pockets = pocket_ids(&before_joint, DefinitionId(2));
     assert_eq!(first_pockets.len(), 3);
     assert_eq!(second_pockets.len(), 3);
-    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
@@ -3768,7 +3763,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     let physical_hole_pairs = first_pockets
         .iter()
         .zip(&second_pockets)
-        .map(|(first, second)| AssistantDowelPhysicalHolePair {
+        .map(|(first, second)| AssistantPinPhysicalHolePair {
             first_pocket_feature_id: first.0,
             second_pocket_feature_id: second.0,
         })
@@ -3777,7 +3772,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         &document,
         &BTreeSet::new(),
         &ExactResultRegistry::default(),
-        &program(vec![AssistantCadEditOperation::CreateDowelJoint {
+        &program(vec![AssistantCadEditOperation::CreatePinJoint {
             name: "Bound shelf row".into(),
             first: face(1, 18.0, [0.0, 0.0, -1.0]),
             second: face(2, 0.0, [0.0, 0.0, 1.0]),
@@ -3800,7 +3795,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     assert_eq!(
         reopened
             .snapshot()
-            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .pin_joint(ketchup_core::pin_joint::PinJointId(1))
             .unwrap()
             .physical_hole_pairs
             .as_ref()
@@ -3814,7 +3809,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
             &PageRequest {
                 kind: EntityKind::Relations,
                 limit: 10,
-                search: "dowel_joint".into(),
+                search: "pin_joint".into(),
                 definition_id: None,
                 tag_id: None,
                 classification_dimension_id: None,
@@ -3859,7 +3854,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         revision_before_invalid_move
     );
     for offset in [[25.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
-        let invalid = program(vec![AssistantCadEditOperation::MovePhysicalDowelPair {
+        let invalid = program(vec![AssistantCadEditOperation::MovePhysicalPinPair {
             joint_id: 1,
             pair_index: 1,
             offset_first_local_mm: offset,
@@ -3878,7 +3873,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
             bound.canonical_digest()
         );
     }
-    let move_pair = program(vec![AssistantCadEditOperation::MovePhysicalDowelPair {
+    let move_pair = program(vec![AssistantCadEditOperation::MovePhysicalPinPair {
         joint_id: 1,
         pair_index: 1,
         offset_first_local_mm: [50.0, 0.0, 0.0],
@@ -3893,7 +3888,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     document.apply_batch(&batch).unwrap();
     let moved = document.current();
     let joint = moved
-        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .pin_joint(ketchup_core::pin_joint::PinJointId(1))
         .unwrap();
     assert_eq!(
         joint.physical_hole_pairs.as_ref().unwrap()[1].first_pocket_feature_id,
@@ -3903,7 +3898,7 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         joint.physical_hole_pairs.as_ref().unwrap()[1].second_pocket_feature_id,
         second_pockets[1]
     );
-    let projected = ketchup_core::joinery::project_dowel_joint_contract(&moved, joint).unwrap();
+    let projected = ketchup_core::pin_joint::project_pin_joint_contract(&moved, joint).unwrap();
     assert_eq!(
         projected
             .pairs

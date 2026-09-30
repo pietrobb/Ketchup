@@ -3,7 +3,7 @@ use crate::document::{
     is_valid_spatial_sweep_path,
 };
 use crate::exact_product::EXACT_MIN_LENGTH_MM;
-use crate::joinery::DowelSpec;
+use crate::pin_joint::PinSpec;
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use crate::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING};
 use serde::{Deserialize, Serialize};
@@ -767,7 +767,7 @@ impl AssistantPanelPocket {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantDowelJointFace {
+pub struct AssistantPinJointFace {
     pub instance_path: AssistantInstancePath,
     pub face_origin_local_mm: [f64; 3],
     pub inward_unit_local: [f64; 3],
@@ -777,13 +777,13 @@ pub struct AssistantDowelJointFace {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantDowelPhysicalHolePair {
+pub struct AssistantPinPhysicalHolePair {
     pub first_pocket_feature_id: u64,
     pub second_pocket_feature_id: u64,
 }
 
 /// A cylindrical pin: its size and how much longer than the pin end each
-/// drilled hole is. Named sizes (such as the 8x30 dowel) are data in the
+/// drilled hole is. Named sizes (such as the 8x30 pin) are data in the
 /// program library, not a closed list here.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -796,8 +796,8 @@ pub struct AssistantPin {
 impl AssistantPin {
     /// The pin split half and half between both parts.
     #[must_use]
-    pub fn spec(self) -> DowelSpec {
-        DowelSpec::symmetric(self.diameter_mm, self.length_mm, self.hole_clearance_mm)
+    pub fn spec(self) -> PinSpec {
+        PinSpec::symmetric(self.diameter_mm, self.length_mm, self.hole_clearance_mm)
     }
 }
 
@@ -836,7 +836,7 @@ pub enum AssistantCadProgramFeatureOutput {
     ConstructionFeature,
     BodyFeature,
     AssemblyJoint,
-    DowelJoint,
+    PinJoint,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq, Serialize)]
@@ -910,11 +910,11 @@ impl AssistantCadProgramFeatureReference {
                 producer,
                 AssistantCadEditOperation::CreateAssemblyJoint { .. }
             ),
-            AssistantCadProgramFeatureOutput::DowelJoint => matches!(
+            AssistantCadProgramFeatureOutput::PinJoint => matches!(
                 producer,
-                AssistantCadEditOperation::CreateDowelJoint { .. }
-                    | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
-                    | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
+                AssistantCadEditOperation::CreatePinJoint { .. }
+                    | AssistantCadEditOperation::CreateProgramPinJoint { .. }
+                    | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
             ),
         };
         if available {
@@ -960,7 +960,7 @@ impl AssistantCadNamedProgramOutputReference {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantProgramDowelJointFace {
+pub struct AssistantProgramPinJointFace {
     pub occurrence: AssistantCadNamedProgramOutputReference,
     pub face_origin_local_mm: [f64; 3],
     pub inward_unit_local: [f64; 3],
@@ -970,7 +970,7 @@ pub struct AssistantProgramDowelJointFace {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantProgramDowelPhysicalHolePair {
+pub struct AssistantProgramPinPhysicalHolePair {
     pub first_pocket_feature: AssistantCadNamedProgramOutputReference,
     pub second_pocket_feature: AssistantCadNamedProgramOutputReference,
 }
@@ -2031,50 +2031,50 @@ pub enum AssistantCadEditOperation {
         child_instance_path: AssistantInstancePath,
         kind: AssistantAssemblyJointKind,
     },
-    CreateDowelJoint {
+    CreatePinJoint {
         name: String,
-        first: AssistantDowelJointFace,
-        second: AssistantDowelJointFace,
+        first: AssistantPinJointFace,
+        second: AssistantPinJointFace,
         first_center_local_mm: [f64; 3],
         row_unit_first_local: [f64; 3],
         count: u32,
         spacing_mm: f64,
         pin: AssistantPin,
         #[serde(default)]
-        physical_hole_pairs: Vec<AssistantDowelPhysicalHolePair>,
+        physical_hole_pairs: Vec<AssistantPinPhysicalHolePair>,
     },
-    CreateProgramDowelJoint {
+    CreateProgramPinJoint {
         name: String,
-        first: AssistantProgramDowelJointFace,
-        second: AssistantProgramDowelJointFace,
+        first: AssistantProgramPinJointFace,
+        second: AssistantProgramPinJointFace,
         first_center_local_mm: [f64; 3],
         row_unit_first_local: [f64; 3],
         count: u32,
         spacing_mm: f64,
         pin: AssistantPin,
-        physical_hole_pairs: Vec<AssistantProgramDowelPhysicalHolePair>,
+        physical_hole_pairs: Vec<AssistantProgramPinPhysicalHolePair>,
     },
-    CreatePhysicalDowelJoint {
+    CreatePhysicalPinJoint {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         joint_id: Option<u64>,
         name: String,
-        first: AssistantDowelJointFace,
-        second: AssistantDowelJointFace,
+        first: AssistantPinJointFace,
+        second: AssistantPinJointFace,
         first_center_local_mm: [f64; 3],
         row_unit_first_local: [f64; 3],
         count: u32,
         spacing_mm: f64,
         pin: AssistantPin,
-        /// Dowel length inserted into the first part; the rest goes into the
+        /// Pin length inserted into the first part; the rest goes into the
         /// second. Omitted means half each. Lets a pin go shallow into a thin
         /// board face and deep into the mating board's end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         first_insertion_mm: Option<f64>,
     },
-    DeletePhysicalDowelJoint {
+    DeletePhysicalPinJoint {
         joint_id: u64,
     },
-    MovePhysicalDowelPair {
+    MovePhysicalPinPair {
         joint_id: u64,
         pair_index: u32,
         offset_first_local_mm: [f64; 3],
@@ -2903,11 +2903,11 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::SetFeatureParameter { .. }
                 | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
                 | AssistantCadEditOperation::CreateAssemblyJoint { .. }
-                | AssistantCadEditOperation::CreateDowelJoint { .. }
-                | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
-                | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
-                | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
-                | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
+                | AssistantCadEditOperation::CreatePinJoint { .. }
+                | AssistantCadEditOperation::CreateProgramPinJoint { .. }
+                | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
+                | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
+                | AssistantCadEditOperation::MovePhysicalPinPair { .. }
                 | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
                 | AssistantCadEditOperation::CreateDrawing { .. }
                 | AssistantCadEditOperation::UpsertCamPlan { .. }
@@ -3346,7 +3346,7 @@ impl AssistantCadEditProgram {
                     }
                     0
                 }
-                AssistantCadEditOperation::CreateDowelJoint {
+                AssistantCadEditOperation::CreatePinJoint {
                     name,
                     first,
                     second,
@@ -3393,11 +3393,11 @@ impl AssistantCadEditProgram {
                         || first_holes.len() != physical_hole_pairs.len()
                         || second_holes.len() != physical_hole_pairs.len()
                     {
-                        return Err("assistant dowel joint creation is invalid".to_owned());
+                        return Err("assistant pin joint creation is invalid".to_owned());
                     }
                     0
                 }
-                AssistantCadEditOperation::CreatePhysicalDowelJoint {
+                AssistantCadEditOperation::CreatePhysicalPinJoint {
                     joint_id,
                     name,
                     first,
@@ -3433,27 +3433,27 @@ impl AssistantCadEditProgram {
                         || !spacing_mm.is_finite()
                         || *spacing_mm < 0.0
                     {
-                        return Err("assistant physical dowel joint creation is invalid".to_owned());
+                        return Err("assistant physical pin joint creation is invalid".to_owned());
                     }
                     0
                 }
-                AssistantCadEditOperation::DeletePhysicalDowelJoint { joint_id } => {
+                AssistantCadEditOperation::DeletePhysicalPinJoint { joint_id } => {
                     if *joint_id == 0 {
-                        return Err("assistant physical dowel joint deletion is invalid".to_owned());
+                        return Err("assistant physical pin joint deletion is invalid".to_owned());
                     }
                     0
                 }
-                AssistantCadEditOperation::MovePhysicalDowelPair {
+                AssistantCadEditOperation::MovePhysicalPinPair {
                     joint_id,
                     offset_first_local_mm,
                     ..
                 } => {
                     if *joint_id == 0 || !assistant_cad_vector_is_bounded(*offset_first_local_mm) {
-                        return Err("assistant physical dowel pair move is invalid".to_owned());
+                        return Err("assistant physical pin pair move is invalid".to_owned());
                     }
                     0
                 }
-                AssistantCadEditOperation::CreateProgramDowelJoint {
+                AssistantCadEditOperation::CreateProgramPinJoint {
                     name,
                     first,
                     second,
@@ -3518,7 +3518,7 @@ impl AssistantCadEditProgram {
                         })
                     {
                         return Err(
-                            "assistant named-output dowel joint creation is invalid".to_owned()
+                            "assistant named-output pin joint creation is invalid".to_owned()
                         );
                     }
                     0

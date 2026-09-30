@@ -1065,18 +1065,18 @@ impl LiveBridge {
             return json!({"state":if app.selection.selected_group.is_some() {"group_only"}
                 else if paths.is_empty() {"empty"} else {"part_only"},
                 "instance_paths":selected_paths,"selected_group_id":app.selection.selected_group.map(|id|id.0),
-                "dowel_pair":Value::Null});
+                "pin_pair":Value::Null});
         }
         if app.selection.topological.len() != 1 || paths.len() != 1 {
             return json!({"state":"multiple_topological_elements",
-                "instance_paths":selected_paths,"dowel_pair":Value::Null});
+                "instance_paths":selected_paths,"pin_pair":Value::Null});
         }
         let target = app.selection.topological[0]
             .1
             .resolve_current(&snapshot, &app.topology_results);
         let Ok(target) = target else {
             return json!({"state":"stale_topology","instance_paths":selected_paths,
-                "dowel_pair":Value::Null});
+                "pin_pair":Value::Null});
         };
         let reference = &target.reference;
         let edges = snapshot
@@ -1109,11 +1109,11 @@ impl LiveBridge {
             })
             .unwrap_or_default();
         let matches = snapshot
-            .dowel_joints()
+            .pin_joints()
             .filter_map(|joint| {
                 let bindings = joint.physical_hole_pairs.as_ref()?;
                 let projection =
-                    ketchup_core::joinery::project_dowel_joint_contract(&snapshot, joint).ok()?;
+                    ketchup_core::pin_joint::project_pin_joint_contract(&snapshot, joint).ok()?;
                 Some(
                     bindings
                         .iter()
@@ -1171,8 +1171,8 @@ impl LiveBridge {
             .flatten()
             .take(2)
             .collect::<Vec<_>>();
-        json!({"state":if matches.len() == 1 {"dowel_pair"}
-            else if matches.is_empty() {"topological_element"} else {"ambiguous_dowel_pair"},
+        json!({"state":if matches.len() == 1 {"pin_pair"}
+            else if matches.is_empty() {"topological_element"} else {"ambiguous_pin_pair"},
             "instance_paths":selected_paths,
             "topology":{"definition_id":reference.definition_id.0,
                 "source_feature_id":reference.source_feature_id.0,
@@ -1183,7 +1183,7 @@ impl LiveBridge {
                     ketchup_core::topology::TopologicalElementKind::Vertex => "vertex",
                 }},
             "program":program_pick::describe(app, &snapshot, &target.instance_path, reference),
-            "dowel_pair":if matches.len() == 1 {matches.into_iter().next()} else {None}})
+            "pin_pair":if matches.len() == 1 {matches.into_iter().next()} else {None}})
     }
 
     fn selection(app: &KetchupApp) -> Result<Vec<u64>, &'static str> {
@@ -1246,11 +1246,11 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CreateProgramSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::CreatePanel { .. }
-                | AssistantCadEditOperation::CreateDowelJoint { .. }
-                | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
-                | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
-                | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
-                | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
+                | AssistantCadEditOperation::CreatePinJoint { .. }
+                | AssistantCadEditOperation::CreateProgramPinJoint { .. }
+                | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
+                | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
+                | AssistantCadEditOperation::MovePhysicalPinPair { .. }
                 | AssistantCadEditOperation::CreateTag { .. }
                 | AssistantCadEditOperation::SetOccurrenceTag { .. }
                 | AssistantCadEditOperation::SetTagVisibility { .. }

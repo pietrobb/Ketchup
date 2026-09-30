@@ -1428,7 +1428,7 @@ fn edit_context_identifies_the_v9_rear_panel_in_one_bounded_call() {
             .any(|feature| !feature["parameters"].as_array().unwrap().is_empty())
     );
     let joinery = targets[0]["joinery"]["items"].as_array().unwrap();
-    assert!(joinery.iter().any(|item| item["type"] == "dowel_joint"));
+    assert!(joinery.iter().any(|item| item["type"] == "pin_joint"));
     for target in targets {
         assert_eq!(target["stable_faces"]["status"], "supported");
         assert_eq!(target["stable_faces"]["complete"], true);

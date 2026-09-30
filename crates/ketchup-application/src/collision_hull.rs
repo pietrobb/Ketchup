@@ -31,9 +31,9 @@ pub(super) enum HullRelation {
     /// Farther apart than the contact tolerance.
     Separated,
     /// No common volume; `area_mm2` is the shared outer face area. Cuts can only
-    /// remove material, so for cut panels it is an upper bound (e.g. dowel holes).
+    /// remove material, so for cut panels it is an upper bound (e.g. pin holes).
     Touching { area_mm2: f64 },
-    /// Hulls penetrate; only exact geometry can decide (e.g. dowel in its hole).
+    /// Hulls penetrate; only exact geometry can decide (e.g. pin in its hole).
     Overlapping,
 }
 

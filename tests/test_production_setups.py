@@ -59,7 +59,7 @@ def test_native_physical_identity_is_independent_of_program_code_and_saved_manif
         setup, = part["machining_setups"]
         assert setup == {"id": "A", "code": "PANEL-42",
                          "operation_ids": [part["operations"][1]["operation_id"]],
-                         "dowel_hole_ids": []}
+                         "pin_hole_ids": []}
         # Missing setup cannot be invented merely by assigning a code.
         with pytest.raises(ManufacturingError, match="unknown setup"):
             doc.export_production(tmp_path / "invented", [], confirmed=True,

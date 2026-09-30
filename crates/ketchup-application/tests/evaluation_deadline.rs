@@ -113,7 +113,7 @@ fn assert_timeout_unchanged(session: &mut DocumentSession, timeout: Duration) {
 fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence() {
     use ketchup_core::assembly_recipe::*;
     use ketchup_core::assistant_sidecar::{
-        AssistantDowelJointFace, AssistantInstancePath, AssistantPin,
+        AssistantInstancePath, AssistantPin, AssistantPinJointFace,
     };
     use ketchup_core::document::{
         ClassificationCategoryId, ClassificationDimensionId, FeatureParameterTarget, InstancePath,
@@ -123,7 +123,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
     use ketchup_core::fabrication::{
         FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
     };
-    use ketchup_core::joinery::{DowelJointId, project_dowel_joint_contract};
+    use ketchup_core::pin_joint::{PinJointId, project_pin_joint_contract};
     use ketchup_core::tolerance::TolerancePolicy;
 
     let key = |name: &str| RecipeKey::new(name).unwrap();
@@ -176,7 +176,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
     }
     let proposal = session.plan_commands(CommandBatch::new(commands)).unwrap();
     session.apply_proposal(&proposal).unwrap();
-    let face = |id, z, normal| AssistantDowelJointFace {
+    let face = |id, z, normal| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
@@ -189,7 +189,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
     session
         .apply_cad_program(
             &AssistantCadEditProgram {
-                operations: vec![AssistantCadEditOperation::CreatePhysicalDowelJoint {
+                operations: vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
                     joint_id: None,
                     name: "row".into(),
                     first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -291,7 +291,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
             key: key("row"),
             first_part: key("lower"),
             second_part: key("upper"),
-            dowel_joint_id: DowelJointId(1),
+            pin_joint_id: PinJointId(1),
         }],
     )
     .unwrap();
@@ -364,12 +364,11 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
             "{stage}"
         );
         assert_eq!(
-            actual.dowel_joint(DowelJointId(1)),
-            expected.dowel_joint(DowelJointId(1))
+            actual.pin_joint(PinJointId(1)),
+            expected.pin_joint(PinJointId(1))
         );
         let projection =
-            project_dowel_joint_contract(&actual, actual.dowel_joint(DowelJointId(1)).unwrap())
-                .unwrap();
+            project_pin_joint_contract(&actual, actual.pin_joint(PinJointId(1)).unwrap()).unwrap();
         assert_eq!(projection.pairs.len(), 2);
         for pair in projection.pairs {
             assert_eq!(pair.first.depth_mm, 16.0);
@@ -482,7 +481,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                 serde_json::json!([100.0, 50.0, if lower { expected_height } else { 18.0 }])
             );
             assert_eq!(part["code"].as_str().unwrap().len(), 12);
-            let holes = part["dowel_holes"].as_array().unwrap();
+            let holes = part["pin_holes"].as_array().unwrap();
             assert_eq!(holes.len(), 2);
             for (hole, x) in holes.iter().zip([20.0, 52.0]) {
                 assert_eq!(hole["diameter_mm"], 8.0);

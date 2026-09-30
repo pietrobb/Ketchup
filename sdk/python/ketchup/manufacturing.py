@@ -66,16 +66,16 @@ def _ids(values, label):
 
 
 def _validate_setups(part, program_codes):
-    operations, holes = part.get("operations"), part.get("dowel_holes")
+    operations, holes = part.get("operations"), part.get("pin_holes")
     if (not isinstance(operations, list) or not operations
             or any(not isinstance(op, dict) or not isinstance(op.get("kind"), str)
                    or not op["kind"].strip() for op in operations)
             or operations[0]["kind"] != "stock"
             or any(op["kind"] == "stock" for op in operations[1:])
             or not isinstance(holes, list) or any(not isinstance(h, dict) for h in holes)):
-        raise ManufacturingError("production job requires explicit stock, operations and dowel_holes")
+        raise ManufacturingError("production job requires explicit stock, operations and pin_holes")
     operation_ids = _ids([op.get("operation_id") for op in operations[1:]], "operation IDs")
-    hole_ids = _ids([hole.get("hole_id") for hole in holes], "dowel hole IDs")
+    hole_ids = _ids([hole.get("hole_id") for hole in holes], "pin hole IDs")
     setups = part.get("machining_setups")
     if not isinstance(setups, list):
         raise ManufacturingError("machining_setups must be an explicit list")
@@ -94,14 +94,14 @@ def _validate_setups(part, program_codes):
             raise ManufacturingError(f"duplicate setup program code: {code}")
         program_codes.add(code)
         ops = _ids(setup.get("operation_ids"), "setup operation IDs")
-        dowels = _ids(setup.get("dowel_hole_ids"), "setup dowel hole IDs")
-        if (not (ops or dowels) or not ops <= operation_ids or not dowels <= hole_ids
-                or ops & assigned_ops or dowels & assigned_holes):
+        pins = _ids(setup.get("pin_hole_ids"), "setup pin hole IDs")
+        if (not (ops or pins) or not ops <= operation_ids or not pins <= hole_ids
+                or ops & assigned_ops or pins & assigned_holes):
             raise ManufacturingError("setup partition has empty, unknown or repeated machining")
         assigned_ops.update(ops)
-        assigned_holes.update(dowels)
+        assigned_holes.update(pins)
     if assigned_ops != operation_ids or assigned_holes != hole_ids:
-        raise ManufacturingError("machining setups must cover every operation and dowel hole exactly once")
+        raise ManufacturingError("machining setups must cover every operation and pin hole exactly once")
 
 
 def _validate_job(job):

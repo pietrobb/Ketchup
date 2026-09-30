@@ -1992,11 +1992,11 @@ mod tests {
                 .unwrap();
         assert_eq!(variants.len(), 42);
         for operation in [
-            "move_physical_dowel_pair",
+            "move_physical_pin_pair",
             "append_feature",
             "create_panel",
-            "create_dowel_joint",
-            "create_program_dowel_joint",
+            "create_pin_joint",
+            "create_program_pin_joint",
             "bind_program_output",
             "create_tag",
             "set_occurrence_tag",
@@ -2058,7 +2058,7 @@ mod tests {
                 "construction_feature",
                 "body_feature",
                 "assembly_joint",
-                "dowel_joint"
+                "pin_joint"
             ]
         );
     }

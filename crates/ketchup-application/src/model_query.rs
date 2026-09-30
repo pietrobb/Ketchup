@@ -13,7 +13,7 @@ use ketchup_core::document::{
 use ketchup_core::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBodyPackage, ExactResultRegistry,
 };
-use ketchup_core::joinery::project_dowel_joint_contract;
+use ketchup_core::pin_joint::project_pin_joint_contract;
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_interaction::Vec3;
 use ketchup_interaction::projection::{
@@ -925,8 +925,8 @@ impl ModelQuery {
                 )?;
             }
         }
-        for joint in snapshot.dowel_joints() {
-            let Ok(projection) = project_dowel_joint_contract(snapshot, joint) else {
+        for joint in snapshot.pin_joints() {
+            let Ok(projection) = project_pin_joint_contract(snapshot, joint) else {
                 continue;
             };
             let Some((first_path, _, first_definition_id)) = qualified_path(
@@ -962,10 +962,10 @@ impl ModelQuery {
                         "shared_center_world_mm":pair.first.shared_center_world_mm,
                         "probe_first_to_second":{"entry_local_mm":pair.first.entry_local_mm,
                             "inward_unit_local":pair.first.inward_unit_local,
-                            "length_mm":joint.dowel.length_mm},
+                            "length_mm":joint.pin.length_mm},
                         "probe_second_to_first":{"entry_local_mm":pair.second.entry_local_mm,
                             "inward_unit_local":pair.second.inward_unit_local,
-                            "length_mm":joint.dowel.length_mm},
+                            "length_mm":joint.pin.length_mm},
                         "first_pocket_feature_id":binding.map(|binding|binding.first_pocket_feature_id.0),
                         "second_pocket_feature_id":binding.map(|binding|binding.second_pocket_feature_id.0),
                         "physical_probe_coincidence":coincidence})
@@ -973,14 +973,14 @@ impl ModelQuery {
                 .collect::<Vec<_>>();
             page.consider(
                 request,
-                "dowel_joint",
+                "pin_joint",
                 &[first_definition_id.0, second_definition_id.0],
                 || {
-                    json!({"id":format!("dowel_joint:{}", joint.id.0),
-                    "relation_type":"dowel_joint","direction":"bidirectional",
+                    json!({"id":format!("pin_joint:{}", joint.id.0),
+                    "relation_type":"pin_joint","direction":"bidirectional",
                     "source":{"kind":"instance","instance_path":first_path},
                     "target":{"kind":"instance","instance_path":second_path},
-                    "origin":{"kind":"canonical_dowel_joint","id":joint.id.0},
+                    "origin":{"kind":"canonical_pin_joint","id":joint.id.0},
                     "name":bounded_text(&joint.name),"pair_count":projection.pairs.len(),
                     "physical_holes_bound":joint.physical_hole_pairs.is_some(),"pairs":pairs})
                 },
@@ -1712,7 +1712,7 @@ pub fn created_receipt(before: &Snapshot, after: &Snapshot) -> Value {
     json!({"definition_ids":bounded_ids(after.definitions().filter(|d|before.definition(d.id()).is_none()).map(|d|d.id().0)),
         "occurrence_ids":bounded_ids(after.occurrences().filter(|o|before.occurrence(o.id()).is_none()).map(|o|o.id().0)),
         "feature_ids":bounded_ids(after.features().filter(|f|before.feature(f.id()).is_none()).map(|f|f.id().0)),
-        "dowel_joint_ids":bounded_ids(after.dowel_joints().filter(|j|before.dowel_joint(j.id).is_none()).map(|j|j.id.0))})
+        "pin_joint_ids":bounded_ids(after.pin_joints().filter(|j|before.pin_joint(j.id).is_none()).map(|j|j.id.0))})
 }
 fn instance_item_size(item: &Value) -> Result<usize, QueryError> {
     let size = serde_json::to_vec(item).expect("bounded projection").len() + 1;
@@ -1806,7 +1806,7 @@ fn edit_feature_value(snapshot: &Snapshot, id: FeatureId) -> Result<Value, Query
 
 fn edit_joinery_value(snapshot: &Snapshot, path: &InstancePath) -> Value {
     let mut items = Vec::new();
-    for joint in snapshot.dowel_joints() {
+    for joint in snapshot.pin_joints() {
         let (role, peer) = if joint.first.instance_path == *path {
             ("first", &joint.second.instance_path)
         } else if joint.second.instance_path == *path {
@@ -1817,10 +1817,10 @@ fn edit_joinery_value(snapshot: &Snapshot, path: &InstancePath) -> Value {
         let Some((peer_path, _, _)) = qualified_path(snapshot, peer, peer.steps().len()) else {
             continue;
         };
-        let pair_count = project_dowel_joint_contract(snapshot, joint)
+        let pair_count = project_pin_joint_contract(snapshot, joint)
             .map(|projection| projection.pairs.len())
             .unwrap_or(0);
-        items.push(json!({"type": "dowel_joint", "id": joint.id.0,
+        items.push(json!({"type": "pin_joint", "id": joint.id.0,
             "name": bounded_text(&joint.name), "role": role, "peer_instance_path": peer_path,
             "pair_count": pair_count, "physical_holes_bound": joint.physical_hole_pairs.is_some()}));
     }

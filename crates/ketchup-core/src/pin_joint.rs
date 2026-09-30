@@ -3,17 +3,17 @@ use crate::sketch::{PadOperation, PadProfile, PadSpec, SketchEntity};
 use crate::tolerance::ACCUMULATED_ROUNDING;
 use std::fmt;
 
-pub const DOWEL_JOINERY_PROJECTION_V1: &str = "ketchup.dowel-joinery-projection.v1";
+pub const PIN_JOINERY_PROJECTION_V1: &str = "ketchup.pin-joinery-projection.v1";
 const GEOMETRY_TOLERANCE: f64 = ACCUMULATED_ROUNDING;
-const MAX_DOWELS_PER_JOINT: u32 = 128;
+const MAX_PINS_PER_JOINT: u32 = 128;
 
 #[derive(
     Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
 )]
-pub struct DowelJointId(pub u64);
+pub struct PinJointId(pub u64);
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DowelJointFace {
+pub struct PinJointFace {
     pub instance_path: InstancePath,
     pub face_origin_local_mm: [f64; 3],
     pub inward_unit_local: [f64; 3],
@@ -22,28 +22,28 @@ pub struct DowelJointFace {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DowelJointContract {
-    pub id: DowelJointId,
+pub struct PinJointContract {
+    pub id: PinJointId,
     pub name: String,
-    pub first: DowelJointFace,
-    pub second: DowelJointFace,
+    pub first: PinJointFace,
+    pub second: PinJointFace,
     pub first_center_local_mm: [f64; 3],
     pub row_unit_first_local: [f64; 3],
     pub count: u32,
     pub spacing_mm: f64,
-    pub dowel: DowelSpec,
+    pub pin: PinSpec,
     pub pair_offsets_first_local_mm: Vec<[f64; 3]>,
-    pub physical_hole_pairs: Option<Vec<DowelPhysicalHolePair>>,
+    pub physical_hole_pairs: Option<Vec<PinPhysicalHolePair>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DowelPhysicalHolePair {
+pub struct PinPhysicalHolePair {
     pub first_pocket_feature_id: FeatureId,
     pub second_pocket_feature_id: FeatureId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DowelSpec {
+pub struct PinSpec {
     pub diameter_mm: f64,
     pub length_mm: f64,
     pub first_insertion_mm: f64,
@@ -51,7 +51,7 @@ pub struct DowelSpec {
     pub bottom_clearance_mm: f64,
 }
 
-impl DowelSpec {
+impl PinSpec {
     /// A pin inserted half into each part, each hole `hole_clearance_mm`
     /// deeper than the pin end.
     #[must_use]
@@ -65,7 +65,7 @@ impl DowelSpec {
         }
     }
 
-    fn validate(self) -> Result<(), DowelJointError> {
+    fn validate(self) -> Result<(), PinJointError> {
         if [
             self.diameter_mm,
             self.length_mm,
@@ -83,7 +83,7 @@ impl DowelSpec {
             || (self.first_insertion_mm + self.second_insertion_mm - self.length_mm).abs()
                 > GEOMETRY_TOLERANCE
         {
-            return Err(DowelJointError::InvalidDowel);
+            return Err(PinJointError::InvalidPin);
         }
         Ok(())
     }
@@ -100,7 +100,7 @@ impl DowelSpec {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DowelJointSide {
+pub struct PinJointSide {
     pub instance_path: InstancePath,
     pub world_from_local: Transform,
     pub face_origin_local_mm: [f64; 3],
@@ -110,19 +110,19 @@ pub struct DowelJointSide {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DowelJointRequest {
+pub struct PinJointRequest {
     pub stable_joint_id: String,
-    pub first: DowelJointSide,
-    pub second: DowelJointSide,
+    pub first: PinJointSide,
+    pub second: PinJointSide,
     pub first_center_world_mm: [f64; 3],
     pub row_unit_world: [f64; 3],
     pub count: u32,
     pub spacing_mm: f64,
-    pub dowel: DowelSpec,
+    pub pin: PinSpec,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DowelHole {
+pub struct PinHole {
     pub stable_hole_id: String,
     pub instance_path: InstancePath,
     pub entry_local_mm: [f64; 3],
@@ -133,32 +133,32 @@ pub struct DowelHole {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DowelPair {
+pub struct PinPair {
     pub index: u32,
-    pub first: DowelHole,
-    pub second: DowelHole,
-    pub physical_probe_coincidence: Option<DowelProbeCoincidence>,
+    pub first: PinHole,
+    pub second: PinHole,
+    pub physical_probe_coincidence: Option<PinProbeCoincidence>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DowelProbeCoincidence {
+pub struct PinProbeCoincidence {
     pub first_probe_endpoints_world_mm: [[f64; 3]; 2],
     pub second_probe_endpoints_world_mm: [[f64; 3]; 2],
     pub maximum_endpoint_error_mm: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DowelJointProjection {
+pub struct PinJointProjection {
     pub schema: &'static str,
     pub stable_joint_id: String,
-    pub pairs: Vec<DowelPair>,
+    pub pairs: Vec<PinPair>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DowelJointError {
+pub enum PinJointError {
     InvalidJointId,
     SameParticipant,
-    InvalidDowel,
+    InvalidPin,
     InvalidRow,
     NonRigidTransform,
     InvalidParticipantGeometry,
@@ -166,40 +166,40 @@ pub enum DowelJointError {
     HoleOutsidePart,
     InvalidPhysicalHoleBinding,
     PhysicalHoleGeometryMismatch,
-    PhysicalDowelProbesDoNotCoincide,
+    PhysicalPinProbesDoNotCoincide,
 }
 
-impl fmt::Display for DowelJointError {
+impl fmt::Display for PinJointError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Self::InvalidJointId => "dowel joint ID is invalid",
-            Self::SameParticipant => "dowel joint requires two different part instances",
-            Self::InvalidDowel => "dowel dimensions or insertion depths are invalid",
-            Self::InvalidRow => "dowel row direction, count, or spacing is invalid",
-            Self::NonRigidTransform => "dowel participants require rigid instance transforms",
-            Self::InvalidParticipantGeometry => "dowel participant face or bounds are invalid",
-            Self::FacesDoNotMate => "dowel participant faces are not coincident and opposed",
-            Self::HoleOutsidePart => "a derived dowel hole leaves its host part",
+            Self::InvalidJointId => "pin joint ID is invalid",
+            Self::SameParticipant => "pin joint requires two different part instances",
+            Self::InvalidPin => "pin dimensions or insertion depths are invalid",
+            Self::InvalidRow => "pin row direction, count, or spacing is invalid",
+            Self::NonRigidTransform => "pin participants require rigid instance transforms",
+            Self::InvalidParticipantGeometry => "pin participant face or bounds are invalid",
+            Self::FacesDoNotMate => "pin participant faces are not coincident and opposed",
+            Self::HoleOutsidePart => "a derived pin hole leaves its host part",
             Self::InvalidPhysicalHoleBinding => {
-                "dowel physical-hole bindings are missing, duplicated, or reference another part"
+                "pin physical-hole bindings are missing, duplicated, or reference another part"
             }
             Self::PhysicalHoleGeometryMismatch => {
-                "a bound physical hole does not match the dowel pair axis, diameter, or depth"
+                "a bound physical hole does not match the pin pair axis, diameter, or depth"
             }
-            Self::PhysicalDowelProbesDoNotCoincide => {
-                "the full dowel probes independently derived from both physical holes do not coincide"
+            Self::PhysicalPinProbesDoNotCoincide => {
+                "the full pin probes independently derived from both physical holes do not coincide"
             }
         };
         formatter.write_str(message)
     }
 }
 
-impl std::error::Error for DowelJointError {}
+impl std::error::Error for PinJointError {}
 
-pub fn project_dowel_joint_contract(
+pub fn project_pin_joint_contract(
     snapshot: &Snapshot,
-    contract: &DowelJointContract,
-) -> Result<DowelJointProjection, DowelJointError> {
+    contract: &PinJointContract,
+) -> Result<PinJointProjection, PinJointError> {
     if contract.id.0 == 0
         || contract.name.trim().is_empty()
         || contract.name.len() > 128
@@ -208,14 +208,14 @@ pub fn project_dowel_joint_contract(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b' ' | b'-' | b'_' | b'/'))
     {
-        return Err(DowelJointError::InvalidJointId);
+        return Err(PinJointError::InvalidJointId);
     }
     let first_resolved = snapshot
         .resolve_instance_path(&contract.first.instance_path)
-        .map_err(|_| DowelJointError::InvalidParticipantGeometry)?;
+        .map_err(|_| PinJointError::InvalidParticipantGeometry)?;
     let second_resolved = snapshot
         .resolve_instance_path(&contract.second.instance_path)
-        .map_err(|_| DowelJointError::InvalidParticipantGeometry)?;
+        .map_err(|_| PinJointError::InvalidParticipantGeometry)?;
     let first_center_world_mm = transform_point(
         first_resolved.world_transform,
         contract.first_center_local_mm,
@@ -224,9 +224,9 @@ pub fn project_dowel_joint_contract(
         first_resolved.world_transform,
         contract.row_unit_first_local,
     );
-    let mut projection = project_dowel_joint(&DowelJointRequest {
-        stable_joint_id: format!("dowel-{:016x}", contract.id.0),
-        first: DowelJointSide {
+    let mut projection = project_pin_joint(&PinJointRequest {
+        stable_joint_id: format!("pin-{:016x}", contract.id.0),
+        first: PinJointSide {
             instance_path: contract.first.instance_path.clone(),
             world_from_local: first_resolved.world_transform,
             face_origin_local_mm: contract.first.face_origin_local_mm,
@@ -234,7 +234,7 @@ pub fn project_dowel_joint_contract(
             bounds_min_local_mm: contract.first.bounds_min_local_mm,
             bounds_max_local_mm: contract.first.bounds_max_local_mm,
         },
-        second: DowelJointSide {
+        second: PinJointSide {
             instance_path: contract.second.instance_path.clone(),
             world_from_local: second_resolved.world_transform,
             face_origin_local_mm: contract.second.face_origin_local_mm,
@@ -246,13 +246,13 @@ pub fn project_dowel_joint_contract(
         row_unit_world,
         count: contract.count,
         spacing_mm: contract.spacing_mm,
-        dowel: contract.dowel,
+        pin: contract.pin,
     })?;
     if !contract.pair_offsets_first_local_mm.is_empty() {
         if contract.pair_offsets_first_local_mm.len() != projection.pairs.len() {
-            return Err(DowelJointError::InvalidRow);
+            return Err(PinJointError::InvalidRow);
         }
-        let first_side = DowelJointSide {
+        let first_side = PinJointSide {
             instance_path: contract.first.instance_path.clone(),
             world_from_local: first_resolved.world_transform,
             face_origin_local_mm: contract.first.face_origin_local_mm,
@@ -260,7 +260,7 @@ pub fn project_dowel_joint_contract(
             bounds_min_local_mm: contract.first.bounds_min_local_mm,
             bounds_max_local_mm: contract.first.bounds_max_local_mm,
         };
-        let second_side = DowelJointSide {
+        let second_side = PinJointSide {
             instance_path: contract.second.instance_path.clone(),
             world_from_local: second_resolved.world_transform,
             face_origin_local_mm: contract.second.face_origin_local_mm,
@@ -276,7 +276,7 @@ pub fn project_dowel_joint_contract(
             if offset.iter().any(|value| !value.is_finite())
                 || dot(*offset, contract.first.inward_unit_local).abs() > GEOMETRY_TOLERANCE
             {
-                return Err(DowelJointError::InvalidRow);
+                return Err(PinJointError::InvalidRow);
             }
             let center = transform_point(
                 first_resolved.world_transform,
@@ -290,10 +290,10 @@ pub fn project_dowel_joint_contract(
                 first_resolved
                     .world_transform
                     .rigid_inverse()
-                    .ok_or(DowelJointError::NonRigidTransform)?,
+                    .ok_or(PinJointError::NonRigidTransform)?,
                 center,
-                contract.dowel.diameter_mm,
-                contract.dowel.first_hole_depth_mm(),
+                contract.pin.diameter_mm,
+                contract.pin.first_hole_depth_mm(),
             )?;
             pair.second = derive_hole(
                 &projection.stable_joint_id,
@@ -303,10 +303,10 @@ pub fn project_dowel_joint_contract(
                 second_resolved
                     .world_transform
                     .rigid_inverse()
-                    .ok_or(DowelJointError::NonRigidTransform)?,
+                    .ok_or(PinJointError::NonRigidTransform)?,
                 center,
-                contract.dowel.diameter_mm,
-                contract.dowel.second_hole_depth_mm(),
+                contract.pin.diameter_mm,
+                contract.pin.second_hole_depth_mm(),
             )?;
         }
         for (index, pair) in projection.pairs.iter().enumerate() {
@@ -314,9 +314,9 @@ pub fn project_dowel_joint_contract(
                 distance(
                     pair.first.shared_center_world_mm,
                     other.first.shared_center_world_mm,
-                ) < contract.dowel.diameter_mm - GEOMETRY_TOLERANCE
+                ) < contract.pin.diameter_mm - GEOMETRY_TOLERANCE
             }) {
-                return Err(DowelJointError::InvalidRow);
+                return Err(PinJointError::InvalidRow);
             }
         }
     }
@@ -329,9 +329,7 @@ pub fn project_dowel_joint_contract(
     Ok(projection)
 }
 
-pub fn project_dowel_joint(
-    request: &DowelJointRequest,
-) -> Result<DowelJointProjection, DowelJointError> {
+pub fn project_pin_joint(request: &PinJointRequest) -> Result<PinJointProjection, PinJointError> {
     if request.stable_joint_id.trim().is_empty()
         || request.stable_joint_id.len() > 128
         || !request
@@ -339,24 +337,24 @@ pub fn project_dowel_joint(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'/'))
     {
-        return Err(DowelJointError::InvalidJointId);
+        return Err(PinJointError::InvalidJointId);
     }
     if request.first.instance_path == request.second.instance_path {
-        return Err(DowelJointError::SameParticipant);
+        return Err(PinJointError::SameParticipant);
     }
-    request.dowel.validate()?;
+    request.pin.validate()?;
     if request.count == 0
-        || request.count > MAX_DOWELS_PER_JOINT
+        || request.count > MAX_PINS_PER_JOINT
         || !request.spacing_mm.is_finite()
         || request.spacing_mm < 0.0
-        || (request.count > 1 && request.spacing_mm < request.dowel.diameter_mm)
+        || (request.count > 1 && request.spacing_mm < request.pin.diameter_mm)
         || request
             .first_center_world_mm
             .iter()
             .any(|value| !value.is_finite())
         || !is_unit(request.row_unit_world)
     {
-        return Err(DowelJointError::InvalidRow);
+        return Err(PinJointError::InvalidRow);
     }
 
     let first_inverse = validate_side(&request.first)?;
@@ -375,7 +373,7 @@ pub fn project_dowel_joint(
         || dot(first_inward_world, request.row_unit_world).abs() > GEOMETRY_TOLERANCE
         || dot(second_inward_world, request.row_unit_world).abs() > GEOMETRY_TOLERANCE
     {
-        return Err(DowelJointError::FacesDoNotMate);
+        return Err(PinJointError::FacesDoNotMate);
     }
     let first_face_world = transform_point(
         request.first.world_from_local,
@@ -402,7 +400,7 @@ pub fn project_dowel_joint(
         || distance_along(first_face_world, second_face_world, first_inward_world).abs()
             > GEOMETRY_TOLERANCE
     {
-        return Err(DowelJointError::FacesDoNotMate);
+        return Err(PinJointError::FacesDoNotMate);
     }
 
     let mut pairs = Vec::with_capacity(request.count as usize);
@@ -421,8 +419,8 @@ pub fn project_dowel_joint(
             &request.first,
             first_inverse,
             center_world_mm,
-            request.dowel.diameter_mm,
-            request.dowel.first_hole_depth_mm(),
+            request.pin.diameter_mm,
+            request.pin.first_hole_depth_mm(),
         )?;
         let second = derive_hole(
             &request.stable_joint_id,
@@ -431,28 +429,28 @@ pub fn project_dowel_joint(
             &request.second,
             second_inverse,
             center_world_mm,
-            request.dowel.diameter_mm,
-            request.dowel.second_hole_depth_mm(),
+            request.pin.diameter_mm,
+            request.pin.second_hole_depth_mm(),
         )?;
-        pairs.push(DowelPair {
+        pairs.push(PinPair {
             index,
             first,
             second,
             physical_probe_coincidence: None,
         });
     }
-    Ok(DowelJointProjection {
-        schema: DOWEL_JOINERY_PROJECTION_V1,
+    Ok(PinJointProjection {
+        schema: PIN_JOINERY_PROJECTION_V1,
         stable_joint_id: request.stable_joint_id.clone(),
         pairs,
     })
 }
 
-fn validate_side(side: &DowelJointSide) -> Result<Transform, DowelJointError> {
+fn validate_side(side: &PinJointSide) -> Result<Transform, PinJointError> {
     let inverse = side
         .world_from_local
         .rigid_inverse()
-        .ok_or(DowelJointError::NonRigidTransform)?;
+        .ok_or(PinJointError::NonRigidTransform)?;
     if side
         .face_origin_local_mm
         .iter()
@@ -469,7 +467,7 @@ fn validate_side(side: &DowelJointSide) -> Result<Transform, DowelJointError> {
                     > side.bounds_max_local_mm[axis] + GEOMETRY_TOLERANCE
         })
     {
-        return Err(DowelJointError::InvalidParticipantGeometry);
+        return Err(PinJointError::InvalidParticipantGeometry);
     }
     Ok(inverse)
 }
@@ -479,12 +477,12 @@ fn derive_hole(
     joint_id: &str,
     index: u32,
     side_name: &str,
-    side: &DowelJointSide,
+    side: &PinJointSide,
     local_from_world: Transform,
     center_world_mm: [f64; 3],
     diameter_mm: f64,
     depth_mm: f64,
-) -> Result<DowelHole, DowelJointError> {
+) -> Result<PinHole, PinJointError> {
     let entry_local_mm = transform_point(local_from_world, center_world_mm);
     let end_local_mm = add(entry_local_mm, scale(side.inward_unit_local, depth_mm));
     let radius = diameter_mm / 2.0;
@@ -495,11 +493,11 @@ fn derive_hole(
             if coordinate < side.bounds_min_local_mm[axis] + margin - GEOMETRY_TOLERANCE
                 || coordinate > side.bounds_max_local_mm[axis] - margin + GEOMETRY_TOLERANCE
             {
-                return Err(DowelJointError::HoleOutsidePart);
+                return Err(PinJointError::HoleOutsidePart);
             }
         }
     }
-    Ok(DowelHole {
+    Ok(PinHole {
         stable_hole_id: format!("{joint_id}/{index}/{side_name}"),
         instance_path: side.instance_path.clone(),
         entry_local_mm,
@@ -520,20 +518,20 @@ struct ObservedPhysicalHole {
 
 fn validate_physical_hole_pairs(
     snapshot: &Snapshot,
-    contract: &DowelJointContract,
-    projection: &DowelJointProjection,
-    bindings: &[DowelPhysicalHolePair],
-) -> Result<Vec<DowelProbeCoincidence>, DowelJointError> {
+    contract: &PinJointContract,
+    projection: &PinJointProjection,
+    bindings: &[PinPhysicalHolePair],
+) -> Result<Vec<PinProbeCoincidence>, PinJointError> {
     if bindings.len() != projection.pairs.len() {
-        return Err(DowelJointError::InvalidPhysicalHoleBinding);
+        return Err(PinJointError::InvalidPhysicalHoleBinding);
     }
     let first_world_from_local = snapshot
         .resolve_instance_path(&contract.first.instance_path)
-        .map_err(|_| DowelJointError::InvalidPhysicalHoleBinding)?
+        .map_err(|_| PinJointError::InvalidPhysicalHoleBinding)?
         .world_transform;
     let second_world_from_local = snapshot
         .resolve_instance_path(&contract.second.instance_path)
-        .map_err(|_| DowelJointError::InvalidPhysicalHoleBinding)?
+        .map_err(|_| PinJointError::InvalidPhysicalHoleBinding)?
         .world_transform;
     let first_expected_inward_world =
         transform_vector(first_world_from_local, contract.first.inward_unit_local);
@@ -546,7 +544,7 @@ fn validate_physical_hole_pairs(
         if !first_features.insert(binding.first_pocket_feature_id)
             || !second_features.insert(binding.second_pocket_feature_id)
         {
-            return Err(DowelJointError::InvalidPhysicalHoleBinding);
+            return Err(PinJointError::InvalidPhysicalHoleBinding);
         }
         let first = observe_physical_hole(
             snapshot,
@@ -558,7 +556,7 @@ fn validate_physical_hole_pairs(
             &contract.second.instance_path,
             binding.second_pocket_feature_id,
         )?;
-        diagnostics.push(validate_probe_coincidence(first, second, contract.dowel)?);
+        diagnostics.push(validate_probe_coincidence(first, second, contract.pin)?);
         validate_physical_hole(first, &pair.first, first_expected_inward_world)?;
         validate_physical_hole(second, &pair.second, second_expected_inward_world)?;
     }
@@ -569,15 +567,15 @@ fn observe_physical_hole(
     snapshot: &Snapshot,
     instance_path: &InstancePath,
     pocket_feature_id: FeatureId,
-) -> Result<ObservedPhysicalHole, DowelJointError> {
+) -> Result<ObservedPhysicalHole, PinJointError> {
     let participant = snapshot
         .resolve_instance_path(instance_path)
-        .map_err(|_| DowelJointError::InvalidPhysicalHoleBinding)?;
+        .map_err(|_| PinJointError::InvalidPhysicalHoleBinding)?;
     let pocket = snapshot
         .feature(pocket_feature_id)
-        .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+        .ok_or(PinJointError::InvalidPhysicalHoleBinding)?;
     if pocket.definition_id() != participant.definition_id {
-        return Err(DowelJointError::InvalidPhysicalHoleBinding);
+        return Err(PinJointError::InvalidPhysicalHoleBinding);
     }
     let (profile_feature_id, depth_mm) = match pocket.kind() {
         FeatureKind::Pad(
@@ -589,18 +587,18 @@ fn observe_physical_hole(
         ) => {
             let (profile, depth) = pad
                 .blind_along_normal()
-                .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+                .ok_or(PinJointError::InvalidPhysicalHoleBinding)?;
             (profile, depth.millimetres())
         }
-        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+        _ => return Err(PinJointError::InvalidPhysicalHoleBinding),
     };
     let profile = snapshot
         .feature(profile_feature_id)
         .filter(|feature| feature.definition_id() == participant.definition_id)
-        .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+        .ok_or(PinJointError::InvalidPhysicalHoleBinding)?;
     let sketch = match profile.kind() {
         FeatureKind::Sketch(sketch) => sketch,
-        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+        _ => return Err(PinJointError::InvalidPhysicalHoleBinding),
     };
     let (center_mm, radius_mm) = match sketch.entities.as_slice() {
         [
@@ -610,15 +608,15 @@ fn observe_physical_hole(
                 ..
             },
         ] => (*center_mm, *radius_mm),
-        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+        _ => return Err(PinJointError::InvalidPhysicalHoleBinding),
     };
     let workplane = snapshot
         .feature(sketch.workplane)
         .filter(|feature| feature.definition_id() == participant.definition_id)
-        .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+        .ok_or(PinJointError::InvalidPhysicalHoleBinding)?;
     let frame = match workplane.kind() {
         FeatureKind::Workplane(spec) => spec.frame,
-        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+        _ => return Err(PinJointError::InvalidPhysicalHoleBinding),
     };
     let entry_local_mm = add(
         frame.origin_mm,
@@ -637,16 +635,16 @@ fn observe_physical_hole(
 
 fn validate_physical_hole(
     observed: ObservedPhysicalHole,
-    expected: &DowelHole,
+    expected: &PinHole,
     expected_inward_unit_world: [f64; 3],
-) -> Result<(), DowelJointError> {
+) -> Result<(), PinJointError> {
     let expected_participant_entry_world_mm = expected.shared_center_world_mm;
     if distance(observed.entry_world_mm, expected_participant_entry_world_mm) > GEOMETRY_TOLERANCE
         || distance(observed.inward_unit_world, expected_inward_unit_world) > GEOMETRY_TOLERANCE
         || (observed.diameter_mm - expected.diameter_mm).abs() > GEOMETRY_TOLERANCE
         || (observed.depth_mm - expected.depth_mm).abs() > GEOMETRY_TOLERANCE
     {
-        return Err(DowelJointError::PhysicalHoleGeometryMismatch);
+        return Err(PinJointError::PhysicalHoleGeometryMismatch);
     }
     Ok(())
 }
@@ -654,26 +652,26 @@ fn validate_physical_hole(
 fn validate_probe_coincidence(
     first: ObservedPhysicalHole,
     second: ObservedPhysicalHole,
-    dowel: DowelSpec,
-) -> Result<DowelProbeCoincidence, DowelJointError> {
+    pin: PinSpec,
+) -> Result<PinProbeCoincidence, PinJointError> {
     let first_probe_endpoints_world_mm = [
         add(
             first.entry_world_mm,
-            scale(first.inward_unit_world, dowel.first_insertion_mm),
+            scale(first.inward_unit_world, pin.first_insertion_mm),
         ),
         add(
             first.entry_world_mm,
-            scale(first.inward_unit_world, -dowel.second_insertion_mm),
+            scale(first.inward_unit_world, -pin.second_insertion_mm),
         ),
     ];
     let second_probe_endpoints_world_mm = [
         add(
             second.entry_world_mm,
-            scale(second.inward_unit_world, -dowel.first_insertion_mm),
+            scale(second.inward_unit_world, -pin.first_insertion_mm),
         ),
         add(
             second.entry_world_mm,
-            scale(second.inward_unit_world, dowel.second_insertion_mm),
+            scale(second.inward_unit_world, pin.second_insertion_mm),
         ),
     ];
     let maximum_endpoint_error_mm = distance(
@@ -689,9 +687,9 @@ fn validate_probe_coincidence(
         || (first.diameter_mm - second.diameter_mm).abs() > GEOMETRY_TOLERANCE
         || maximum_endpoint_error_mm > GEOMETRY_TOLERANCE
     {
-        return Err(DowelJointError::PhysicalDowelProbesDoNotCoincide);
+        return Err(PinJointError::PhysicalPinProbesDoNotCoincide);
     }
-    Ok(DowelProbeCoincidence {
+    Ok(PinProbeCoincidence {
         first_probe_endpoints_world_mm,
         second_probe_endpoints_world_mm,
         maximum_endpoint_error_mm,
@@ -764,8 +762,8 @@ mod tests {
         inward_unit_local: [f64; 3],
         bounds_min_local_mm: [f64; 3],
         bounds_max_local_mm: [f64; 3],
-    ) -> DowelJointSide {
-        DowelJointSide {
+    ) -> PinJointSide {
+        PinJointSide {
             instance_path: InstancePath::root(OccurrenceId(occurrence)),
             world_from_local: Transform::identity(),
             face_origin_local_mm: [0.0, 0.0, 0.0],
@@ -775,23 +773,23 @@ mod tests {
         }
     }
 
-    fn valid_request() -> DowelJointRequest {
-        DowelJointRequest {
-            stable_joint_id: "cabinet/left-row".to_owned(),
+    fn valid_request() -> PinJointRequest {
+        PinJointRequest {
+            stable_joint_id: "assembly/left-row".to_owned(),
             first: side(1, [0.0, 0.0, -1.0], [0.0, 0.0, -19.0], [600.0, 400.0, 0.0]),
             second: side(2, [0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [600.0, 400.0, 19.0]),
             first_center_world_mm: [50.0, 20.0, 0.0],
             row_unit_world: [1.0, 0.0, 0.0],
             count: 3,
             spacing_mm: 32.0,
-            dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
+            pin: PinSpec::symmetric(8.0, 30.0, 1.0),
         }
     }
 
     #[test]
     fn one_joint_derives_coaxial_holes_for_both_parts() {
-        let projection = project_dowel_joint(&valid_request()).unwrap();
-        assert_eq!(projection.schema, DOWEL_JOINERY_PROJECTION_V1);
+        let projection = project_pin_joint(&valid_request()).unwrap();
+        assert_eq!(projection.schema, PIN_JOINERY_PROJECTION_V1);
         assert_eq!(projection.pairs.len(), 3);
         for (expected_index, pair) in projection.pairs.iter().enumerate() {
             assert_eq!(pair.index, expected_index as u32);
@@ -819,7 +817,7 @@ mod tests {
         request.second.bounds_min_local_mm = [-10.0, 0.0, 0.0];
         request.second.bounds_max_local_mm = [590.0, 400.0, 19.0];
 
-        let projection = project_dowel_joint(&request).unwrap();
+        let projection = project_pin_joint(&request).unwrap();
         assert_eq!(projection.pairs[0].first.entry_local_mm, [50.0, 20.0, 0.0]);
         assert_eq!(projection.pairs[0].second.entry_local_mm, [40.0, 20.0, 0.0]);
         assert_eq!(
@@ -833,15 +831,15 @@ mod tests {
         let mut not_opposed = valid_request();
         not_opposed.second.inward_unit_local = [0.0, 0.0, -1.0];
         assert_eq!(
-            project_dowel_joint(&not_opposed),
-            Err(DowelJointError::FacesDoNotMate)
+            project_pin_joint(&not_opposed),
+            Err(PinJointError::FacesDoNotMate)
         );
 
         let mut outside = valid_request();
         outside.first_center_world_mm = [2.0, 20.0, 0.0];
         assert_eq!(
-            project_dowel_joint(&outside),
-            Err(DowelJointError::HoleOutsidePart)
+            project_pin_joint(&outside),
+            Err(PinJointError::HoleOutsidePart)
         );
     }
 
@@ -859,12 +857,9 @@ mod tests {
             diameter_mm: 8.0,
             depth_mm: 16.0,
         };
-        let diagnostic = validate_probe_coincidence(
-            first,
-            matching_second,
-            DowelSpec::symmetric(8.0, 30.0, 1.0),
-        )
-        .unwrap();
+        let diagnostic =
+            validate_probe_coincidence(first, matching_second, PinSpec::symmetric(8.0, 30.0, 1.0))
+                .unwrap();
         assert_eq!(diagnostic.maximum_endpoint_error_mm, 0.0);
 
         let offset_second = ObservedPhysicalHole {
@@ -872,14 +867,14 @@ mod tests {
             ..matching_second
         };
         assert_eq!(
-            validate_probe_coincidence(first, offset_second, DowelSpec::symmetric(8.0, 30.0, 1.0),),
-            Err(DowelJointError::PhysicalDowelProbesDoNotCoincide)
+            validate_probe_coincidence(first, offset_second, PinSpec::symmetric(8.0, 30.0, 1.0),),
+            Err(PinJointError::PhysicalPinProbesDoNotCoincide)
         );
     }
 
     #[test]
     fn observed_physical_hole_must_follow_the_declared_face_normal() {
-        let expected = DowelHole {
+        let expected = PinHole {
             stable_hole_id: "joint/0/first".into(),
             instance_path: InstancePath::root(OccurrenceId(1)),
             entry_local_mm: [20.0, 20.0, 18.0],
@@ -896,25 +891,25 @@ mod tests {
         };
         assert_eq!(
             validate_physical_hole(sideways, &expected, [0.0, 0.0, -1.0]),
-            Err(DowelJointError::PhysicalHoleGeometryMismatch)
+            Err(PinJointError::PhysicalHoleGeometryMismatch)
         );
     }
 
     #[test]
     fn symmetric_pin_splits_length_and_rejects_invalid_sizes() {
-        let spec = DowelSpec::symmetric(10.0, 40.0, 1.5);
+        let spec = PinSpec::symmetric(10.0, 40.0, 1.5);
         spec.validate().unwrap();
         assert_eq!(spec.first_insertion_mm, 20.0);
         assert_eq!(spec.second_insertion_mm, 20.0);
         assert_eq!(spec.first_hole_depth_mm(), 21.5);
         assert_eq!(spec.second_hole_depth_mm(), 21.5);
         for invalid in [
-            DowelSpec::symmetric(0.0, 30.0, 1.0),
-            DowelSpec::symmetric(8.0, -30.0, 1.0),
-            DowelSpec::symmetric(8.0, 30.0, -1.0),
-            DowelSpec::symmetric(f64::NAN, 30.0, 1.0),
+            PinSpec::symmetric(0.0, 30.0, 1.0),
+            PinSpec::symmetric(8.0, -30.0, 1.0),
+            PinSpec::symmetric(8.0, 30.0, -1.0),
+            PinSpec::symmetric(f64::NAN, 30.0, 1.0),
         ] {
-            assert_eq!(invalid.validate(), Err(DowelJointError::InvalidDowel));
+            assert_eq!(invalid.validate(), Err(PinJointError::InvalidPin));
         }
     }
 
@@ -947,17 +942,17 @@ mod tests {
                 },
             ]))
             .unwrap();
-        let contract = DowelJointContract {
-            id: DowelJointId(7),
-            name: "Cabinet left row".to_owned(),
-            first: DowelJointFace {
+        let contract = PinJointContract {
+            id: PinJointId(7),
+            name: "Left row".to_owned(),
+            first: PinJointFace {
                 instance_path: InstancePath::root(OccurrenceId(1)),
                 face_origin_local_mm: [0.0, 0.0, 0.0],
                 inward_unit_local: [0.0, 0.0, -1.0],
                 bounds_min_local_mm: [0.0, 0.0, -19.0],
                 bounds_max_local_mm: [600.0, 400.0, 0.0],
             },
-            second: DowelJointFace {
+            second: PinJointFace {
                 instance_path: InstancePath::root(OccurrenceId(2)),
                 face_origin_local_mm: [0.0, 0.0, 0.0],
                 inward_unit_local: [0.0, 0.0, 1.0],
@@ -968,18 +963,18 @@ mod tests {
             row_unit_first_local: [1.0, 0.0, 0.0],
             count: 3,
             spacing_mm: 32.0,
-            dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
+            pin: PinSpec::symmetric(8.0, 30.0, 1.0),
             pair_offsets_first_local_mm: Vec::new(),
             physical_hole_pairs: None,
         };
         document
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::UpsertDowelJoint(contract.clone()),
-            ]))
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertPinJoint(
+                contract.clone(),
+            )]))
             .unwrap();
         let snapshot = document.current();
         assert_eq!(
-            project_dowel_joint_contract(&snapshot, snapshot.dowel_joint(contract.id).unwrap())
+            project_pin_joint_contract(&snapshot, snapshot.pin_joint(contract.id).unwrap())
                 .unwrap()
                 .pairs
                 .len(),
@@ -987,10 +982,7 @@ mod tests {
         );
 
         let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
-        assert_eq!(
-            reopened.snapshot().dowel_joint(contract.id),
-            Some(&contract)
-        );
+        assert_eq!(reopened.snapshot().pin_joint(contract.id), Some(&contract));
         assert_eq!(
             reopened.snapshot().canonical_digest(),
             snapshot.canonical_digest()
@@ -1004,7 +996,7 @@ mod tests {
                     }
                 ]))
                 .err(),
-            Some(CanonicalError::OccurrenceInDowelJoint(OccurrenceId(1)))
+            Some(CanonicalError::OccurrenceInPinJoint(OccurrenceId(1)))
         );
         assert_eq!(
             document
@@ -1015,7 +1007,7 @@ mod tests {
                     },
                 ]))
                 .err(),
-            Some(CanonicalError::DowelJoint(DowelJointError::FacesDoNotMate))
+            Some(CanonicalError::PinJoint(PinJointError::FacesDoNotMate))
         );
     }
 }

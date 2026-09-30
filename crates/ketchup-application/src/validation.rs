@@ -3,7 +3,7 @@ use ketchup_core::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
 use ketchup_core::document::{InstancePath, OccurrenceId, Snapshot};
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::*;
-use ketchup_core::joinery::project_dowel_joint_contract;
+use ketchup_core::pin_joint::project_pin_joint_contract;
 use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, TolerancePolicy};
 use ketchup_core::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
@@ -46,7 +46,7 @@ pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 10] = [
     ),
     (
         "assembly_retention",
-        "declared rigid assembly parts that are not connected into one retained component by verified physical dowels or fixed assembly joints",
+        "declared rigid assembly parts that are not connected into one retained component by verified physical pins or fixed assembly joints",
     ),
     (
         "gravity_support",
@@ -694,7 +694,7 @@ fn transform_validation_vector(matrix: &[f64; 16], vector: [f64; 3]) -> [f64; 3]
     ]
 }
 
-fn dowel_minimum_edge_distance_mm(
+fn pin_minimum_edge_distance_mm(
     entry_local_mm: [f64; 3],
     inward_unit_local: [f64; 3],
     bounds_min_local_mm: [f64; 3],
@@ -730,13 +730,13 @@ pub fn assistant_assembly_constraints_report(
         return serde_json::json!({
             "state": "skipped", "complete": false, "applicable_count": 0,
             "issue_count": 0, "unknown_count": 0, "issues_complete": true,
-            "contacts": [], "physical_dowel_joints": [], "issues": [], "not_evaluated": [],
+            "contacts": [], "physical_pin_joints": [], "issues": [], "not_evaluated": [],
         });
     }
     let tolerance = snapshot.tolerance();
     let epsilon_mm = tolerance.linear_mm();
     let mut contacts = Vec::new();
-    let mut physical_dowel_joints = Vec::new();
+    let mut physical_pin_joints = Vec::new();
     let mut issues = Vec::new();
     let mut not_evaluated = Vec::new();
     let mut relation_count = 0usize;
@@ -847,14 +847,14 @@ pub fn assistant_assembly_constraints_report(
     let mut verified_full_overlap_count = 0usize;
     let mut all_first_probes = Vec::<(u64, u32, [[f64; 3]; 2])>::new();
     let mut all_second_probes = Vec::<(u64, u32, [[f64; 3]; 2])>::new();
-    for joint in snapshot.dowel_joints() {
+    for joint in snapshot.pin_joints() {
         let first_transform = snapshot
             .resolve_instance_path(&joint.first.instance_path)
             .ok();
         let second_transform = snapshot
             .resolve_instance_path(&joint.second.instance_path)
             .ok();
-        match project_dowel_joint_contract(snapshot, joint) {
+        match project_pin_joint_contract(snapshot, joint) {
             Ok(projection) => {
                 let mut pairs = Vec::new();
                 let mut first_probes = Vec::new();
@@ -899,7 +899,7 @@ pub fn assistant_assembly_constraints_report(
                             "axis_world": first_axis_world,
                             "diameter_mm": pair.first.diameter_mm,
                             "depth_mm": pair.first.depth_mm,
-                            "minimum_edge_distance_mm": dowel_minimum_edge_distance_mm(
+                            "minimum_edge_distance_mm": pin_minimum_edge_distance_mm(
                                 pair.first.entry_local_mm,
                                 pair.first.inward_unit_local,
                                 joint.first.bounds_min_local_mm,
@@ -911,7 +911,7 @@ pub fn assistant_assembly_constraints_report(
                             "axis_world": second_axis_world,
                             "diameter_mm": pair.second.diameter_mm,
                             "depth_mm": pair.second.depth_mm,
-                            "minimum_edge_distance_mm": dowel_minimum_edge_distance_mm(
+                            "minimum_edge_distance_mm": pin_minimum_edge_distance_mm(
                                 pair.second.entry_local_mm,
                                 pair.second.inward_unit_local,
                                 joint.second.bounds_min_local_mm,
@@ -945,7 +945,7 @@ pub fn assistant_assembly_constraints_report(
                     && first_probes.len() == expected_overlap_count
                     && observed_overlap_count == expected_overlap_count
                     && joint_unexpected_overlap_count == 0;
-                physical_dowel_joints.push(serde_json::json!({
+                physical_pin_joints.push(serde_json::json!({
                     "joint_id": joint.id.0,
                     "name": joint.name,
                     "first_occurrence_id": joint.first.instance_path.root_occurrence().0,
@@ -960,7 +960,7 @@ pub fn assistant_assembly_constraints_report(
                 }));
                 if !joint_passed {
                     issues.push(serde_json::json!({
-                        "code": "assembly.physical_dowel_evidence_incomplete",
+                        "code": "assembly.physical_pin_evidence_incomplete",
                         "severity": "error",
                         "joint_id": joint.id.0,
                         "expected_complete_overlap_count": expected_overlap_count,
@@ -969,7 +969,7 @@ pub fn assistant_assembly_constraints_report(
                 }
             }
             Err(error) => issues.push(serde_json::json!({
-                "code": "assembly.physical_dowel_invalid",
+                "code": "assembly.physical_pin_invalid",
                 "severity": "error",
                 "joint_id": joint.id.0,
                 "detail": error.to_string(),
@@ -1001,7 +1001,7 @@ pub fn assistant_assembly_constraints_report(
             "overlaps": unexpected_full_overlaps,
         }));
     }
-    let applicable_count = relation_count + snapshot.dowel_joints().count();
+    let applicable_count = relation_count + snapshot.pin_joints().count();
     if applicable_count == 0 {
         return serde_json::json!({
             "schema": "ketchup.assembly-constraints.v1",
@@ -1010,7 +1010,7 @@ pub fn assistant_assembly_constraints_report(
             "canonical_digest": snapshot.canonical_digest(),
             "state": "skipped", "complete": true, "applicable_count": 0,
             "issue_count": 0, "unknown_count": 0, "issues_complete": true,
-            "contacts": [], "physical_dowel_joints": [], "issues": [], "not_evaluated": [],
+            "contacts": [], "physical_pin_joints": [], "issues": [], "not_evaluated": [],
         });
     }
     let issue_count = issues.len();
@@ -1030,8 +1030,8 @@ pub fn assistant_assembly_constraints_report(
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "scope": {
             "recipe_relation_count": relation_count,
-            "physical_dowel_joint_count": snapshot.dowel_joints().count(),
-            "physical_dowel_pair_count": physical_pair_count,
+            "physical_pin_joint_count": snapshot.pin_joints().count(),
+            "physical_pin_pair_count": physical_pair_count,
         },
         "full_probe_overlaps": {
             "expected_count": physical_pair_count,
@@ -1039,14 +1039,14 @@ pub fn assistant_assembly_constraints_report(
             "unexpected_count": unexpected_full_overlap_count,
         },
         "contacts": contacts,
-        "physical_dowel_joints": physical_dowel_joints,
+        "physical_pin_joints": physical_pin_joints,
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "assumptions": [
             "declared recipe face roles identify the intended contact surfaces",
             "contact requires coplanarity within tolerance, compatible normals, and positive overlapping area",
-            "physical dowel evidence requires bound holes and full endpoint coincidence for exactly the declared pairs",
-            "no collision is exempted merely because it belongs to a dowel joint",
+            "physical pin evidence requires bound holes and full endpoint coincidence for exactly the declared pairs",
+            "no collision is exempted merely because it belongs to a pin joint",
         ],
     })
 }
@@ -1234,9 +1234,9 @@ pub fn assistant_assembly_retention_report(
         }
     }
 
-    let mut physical_dowels = BTreeMap::<(OccurrenceId, OccurrenceId), Vec<(u64, [f64; 3])>>::new();
+    let mut physical_pins = BTreeMap::<(OccurrenceId, OccurrenceId), Vec<(u64, [f64; 3])>>::new();
     let mut ignored_connections = Vec::new();
-    for joint in snapshot.dowel_joints() {
+    for joint in snapshot.pin_joints() {
         let first = joint.first.instance_path.root_occurrence();
         let second = joint.second.instance_path.root_occurrence();
         if group_by_occurrence.get(&first) != group_by_occurrence.get(&second)
@@ -1251,7 +1251,7 @@ pub fn assistant_assembly_retention_report(
         };
         if joint.physical_hole_pairs.is_none() {
             ignored_connections.push(serde_json::json!({
-                "type": "dowel_joint",
+                "type": "pin_joint",
                 "joint_id": joint.id.0,
                 "first_occurrence_id": first.0,
                 "second_occurrence_id": second.0,
@@ -1259,14 +1259,14 @@ pub fn assistant_assembly_retention_report(
             }));
             continue;
         }
-        match project_dowel_joint_contract(snapshot, joint) {
+        match project_pin_joint_contract(snapshot, joint) {
             Ok(projection)
                 if projection
                     .pairs
                     .iter()
                     .all(|pair| pair.physical_probe_coincidence.is_some()) =>
             {
-                physical_dowels.entry(pair).or_default().extend(
+                physical_pins.entry(pair).or_default().extend(
                     projection
                         .pairs
                         .into_iter()
@@ -1274,25 +1274,25 @@ pub fn assistant_assembly_retention_report(
                 );
             }
             Ok(_) => ignored_connections.push(serde_json::json!({
-                "type": "dowel_joint",
+                "type": "pin_joint",
                 "joint_id": joint.id.0,
                 "first_occurrence_id": first.0,
                 "second_occurrence_id": second.0,
                 "reason": "physical_probe_evidence_missing",
             })),
             Err(error) => ignored_connections.push(serde_json::json!({
-                "type": "dowel_joint",
+                "type": "pin_joint",
                 "joint_id": joint.id.0,
                 "first_occurrence_id": first.0,
                 "second_occurrence_id": second.0,
-                "reason": "physical_dowel_validation_failed",
+                "reason": "physical_pin_validation_failed",
                 "detail": error.to_string(),
             })),
         }
     }
-    for ((first, second), dowels) in physical_dowels {
+    for ((first, second), pins) in physical_pins {
         let mut distinct_centers = Vec::<[f64; 3]>::new();
-        for (_, center) in &dowels {
+        for (_, center) in &pins {
             if distinct_centers.iter().all(|existing| {
                 existing
                     .iter()
@@ -1305,7 +1305,7 @@ pub fn assistant_assembly_retention_report(
                 distinct_centers.push(*center);
             }
         }
-        let joint_ids = dowels
+        let joint_ids = pins
             .iter()
             .map(|(joint_id, _)| *joint_id)
             .collect::<BTreeSet<_>>();
@@ -1319,23 +1319,23 @@ pub fn assistant_assembly_retention_report(
                 .expect("declared part exists")
                 .insert(first);
             let unproven_degrees_of_freedom = if distinct_centers.len() == 1 {
-                vec!["translation_along_dowel_axis", "rotation_about_dowel_axis"]
+                vec!["translation_along_pin_axis", "rotation_about_pin_axis"]
             } else {
-                vec!["translation_along_dowel_axis"]
+                vec!["translation_along_pin_axis"]
             };
             connections.push(serde_json::json!({
-                "type": "verified_physical_dowels",
+                "type": "verified_physical_pins",
                 "joint_ids": joint_ids,
                 "first_occurrence_id": first.0,
                 "second_occurrence_id": second.0,
-                "distinct_dowel_count": distinct_centers.len(),
+                "distinct_pin_count": distinct_centers.len(),
                 "connected": true,
                 "retained": false,
                 "unproven_degrees_of_freedom": unproven_degrees_of_freedom,
                 "reason": if distinct_centers.len() == 1 {
-                    "one_smooth_dowel_does_not_prevent_axial_pullout_or_rotation_about_its_axis"
+                    "one_smooth_pin_does_not_prevent_axial_pullout_or_rotation_about_its_axis"
                 } else {
-                    "smooth_dowel_geometry_does_not_prove_axial_pullout_retention_or_joint_strength"
+                    "smooth_pin_geometry_does_not_prove_axial_pullout_retention_or_joint_strength"
                 },
             }));
         }
@@ -1503,7 +1503,7 @@ pub fn assistant_assembly_retention_report(
             "only visible occurrences classified as part:<group> are retention participants",
             "grounded occurrences explicitly designate the retention base",
             "a fixed assembly joint explicitly constrains all six rigid-body degrees of freedom",
-            "verified smooth dowels establish connectivity but do not prove axial pullout retention or joint strength",
+            "verified smooth pins establish connectivity but do not prove axial pullout retention or joint strength",
             "non-fixed assembly joints retain only their declared kinematic degrees of freedom",
             "mere face contact, visual overlap, or six sampled translations is not proof of fixation",
             "static strength is not evaluated without material and load data",
@@ -3351,14 +3351,14 @@ pub use crate::collision::{
 };
 
 /// Connections through which a supported part carries another: verified
-/// physical dowel joints (board to board, and every dowel seated in the joint
+/// physical pin joints (board to board, and every pin seated in the joint
 /// to both boards) plus fixed and revolute assembly joints. Prismatic and
 /// helical joints are left out because they may move along gravity.
 fn gravity_rigid_connections(
     snapshot: &Snapshot,
     participants: &[GravitySupportParticipant],
 ) -> Vec<(InstancePath, InstancePath)> {
-    const DOWEL_SEAT_TOLERANCE_MM: f64 = 0.01;
+    const PIN_SEAT_TOLERANCE_MM: f64 = 0.01;
     let bodies_of = |occurrence: OccurrenceId| {
         participants
             .iter()
@@ -3381,12 +3381,12 @@ fn gravity_rigid_connections(
             connect_roots(joint.parent_occurrence_id(), joint.child_occurrence_id());
         }
     }
-    let mut dowel_seats = Vec::new();
-    for joint in snapshot.dowel_joints() {
+    let mut pin_seats = Vec::new();
+    for joint in snapshot.pin_joints() {
         if joint.physical_hole_pairs.is_none() {
             continue;
         }
-        let Ok(projection) = project_dowel_joint_contract(snapshot, joint) else {
+        let Ok(projection) = project_pin_joint_contract(snapshot, joint) else {
             continue;
         };
         if !projection
@@ -3400,27 +3400,27 @@ fn gravity_rigid_connections(
         let second = joint.second.instance_path.root_occurrence();
         connect_roots(first, second);
         for pair in &projection.pairs {
-            dowel_seats.push((
+            pin_seats.push((
                 pair.first.shared_center_world_mm,
-                joint.dowel.length_mm,
+                joint.pin.length_mm,
                 first,
                 second,
             ));
         }
     }
     for participant in participants {
-        let dowel = participant.body.instance_path();
-        for (center, length_mm, first, second) in &dowel_seats {
-            if dowel.root_occurrence() == *first
-                || dowel.root_occurrence() == *second
+        let pin = participant.body.instance_path();
+        for (center, length_mm, first, second) in &pin_seats {
+            if pin.root_occurrence() == *first
+                || pin.root_occurrence() == *second
                 || !participant
                     .body
-                    .is_fastener_at(*center, *length_mm, DOWEL_SEAT_TOLERANCE_MM)
+                    .is_fastener_at(*center, *length_mm, PIN_SEAT_TOLERANCE_MM)
             {
                 continue;
             }
             for board in bodies_of(*first).chain(bodies_of(*second)) {
-                connections.push((dowel.clone(), board.clone()));
+                connections.push((pin.clone(), board.clone()));
             }
         }
     }
@@ -3518,7 +3518,7 @@ pub(crate) fn assistant_validation_context_base(
                 "issue_count": 0,
                 "issues_complete": true,
                 "contacts": [],
-                "physical_dowel_joints": [],
+                "physical_pin_joints": [],
                 "issues": [],
             },
             "gravity_support": {

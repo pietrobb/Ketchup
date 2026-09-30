@@ -38,9 +38,14 @@ pub(crate) fn identity_form<R>(serialize: impl FnOnce() -> R) -> R {
 }
 
 pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
+    digest_product(snapshot.product.as_ref())
+}
+
+/// Document digest of `product`, the product model or a value with its serde form.
+pub(crate) fn digest_product(product: &impl Serialize) -> String {
     let mut digest = StableDigest::new();
     digest.bytes(b"ketchup.document.v4");
-    digest.value(snapshot.product.as_ref());
+    digest.value(product);
     digest.finish()
 }
 
@@ -97,7 +102,7 @@ impl StableDigest {
             D::Space(id) => self.value(&product.spaces.get(id)),
             D::ClearanceVolume(id) => self.value(&product.clearance_volumes.get(id)),
             D::CamPlan(id) => self.value(&product.cam_plans.get(id)),
-            D::DowelJoint(id) => self.value(&product.dowel_joints.get(id)),
+            D::PinJoint(id) => self.value(&product.pin_joints.get(id)),
             D::Tolerance => self.value(&product.tolerance),
             D::ProductionCodes => self.value(&product.production_codes),
             D::AssemblyRecipe => self.value(&product.assembly_recipe),
@@ -210,7 +215,7 @@ impl StableDigest {
                     })
                     .collect::<Vec<_>>(),
                 product
-                    .dowel_joints
+                    .pin_joints
                     .values()
                     .filter(|joint| {
                         joint.first.instance_path.root_occurrence() == *id

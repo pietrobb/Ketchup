@@ -10,10 +10,10 @@ use ketchup_core::document::{
     FeatureKind, FeatureParameterTarget, GroupId, InstancePath, OccurrenceId, ParameterValueType,
     TagId, Transform,
 };
-use ketchup_core::joinery::{
-    DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair, DowelSpec,
-};
 use ketchup_core::persistence;
+use ketchup_core::pin_joint::{
+    PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair, PinSpec,
+};
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::sketch::{
     SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
@@ -64,18 +64,18 @@ fn panel_commands(
     ]
 }
 
-fn dowel_joint() -> DowelJointContract {
-    DowelJointContract {
-        id: DowelJointId(7),
+fn pin_joint() -> PinJointContract {
+    PinJointContract {
+        id: PinJointId(7),
         name: "rear-top-row".to_owned(),
-        first: DowelJointFace {
+        first: PinJointFace {
             instance_path: InstancePath::root(OccurrenceId(1)),
             face_origin_local_mm: [0.0, 0.0, 0.0],
             inward_unit_local: [0.0, 0.0, -1.0],
             bounds_min_local_mm: [0.0, 0.0, -19.0],
             bounds_max_local_mm: [600.0, 400.0, 0.0],
         },
-        second: DowelJointFace {
+        second: PinJointFace {
             instance_path: InstancePath::root(OccurrenceId(2)),
             face_origin_local_mm: [0.0, 0.0, 0.0],
             inward_unit_local: [0.0, 0.0, 1.0],
@@ -86,7 +86,7 @@ fn dowel_joint() -> DowelJointContract {
         row_unit_first_local: [1.0, 0.0, 0.0],
         count: 3,
         spacing_mm: 32.0,
-        dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
+        pin: PinSpec::symmetric(8.0, 30.0, 1.0),
         pair_offsets_first_local_mm: Vec::new(),
         physical_hole_pairs: None,
     }
@@ -434,7 +434,7 @@ fn populated_document() -> ketchup_core::document::DocumentStore {
             id: OccurrenceId(1),
             color: Some([120, 80, 40]),
         },
-        CanonicalCommand::UpsertDowelJoint(dowel_joint()),
+        CanonicalCommand::UpsertPinJoint(pin_joint()),
     ]);
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
     document
@@ -489,7 +489,7 @@ fn adopt_recipe(snapshot: &ketchup_core::document::Snapshot) -> AssemblyRecipe {
             key: key("rear_top_dowels"),
             first_part: key("rear"),
             second_part: key("top"),
-            dowel_joint_id: DowelJointId(7),
+            pin_joint_id: PinJointId(7),
         }],
     )
     .unwrap()
@@ -525,7 +525,7 @@ fn recipe_round_trip_preserves_keys_geometry_appearance_joinery_and_history() {
         snapshot.occurrence(OccurrenceId(1)).unwrap().color(),
         Some([120, 80, 40])
     );
-    assert_eq!(snapshot.dowel_joint(DowelJointId(7)), Some(&dowel_joint()));
+    assert_eq!(snapshot.pin_joint(PinJointId(7)), Some(&pin_joint()));
     assert_eq!(
         snapshot.feature(FeatureId(2)).unwrap().kind(),
         &FeatureKind::extrusion(FeatureId(1), Dimension::new("19", 19.0).unwrap())
@@ -602,7 +602,7 @@ fn manual_owned_feature_change_fails_closed_but_atomic_recipe_update_succeeds() 
 fn make_unique_remaps_only_selected_recipe_part_and_does_not_bless_stale_ownership() {
     use ketchup_core::document::CloneDefinitionPlan;
     let mut document = populated_document();
-    let mut joint = dowel_joint();
+    let mut joint = pin_joint();
     joint.first.face_origin_local_mm = [0.0, 0.0, 19.0];
     joint.first.bounds_min_local_mm = [0.0, 0.0, 0.0];
     joint.first.bounds_max_local_mm = [600.0, 400.0, 19.0];
@@ -613,7 +613,7 @@ fn make_unique_remaps_only_selected_recipe_part_and_does_not_bless_stale_ownersh
                 id: OccurrenceId(1),
                 transform: Transform::from_translation(0.0, 0.0, -19.0).unwrap(),
             },
-            CanonicalCommand::UpsertDowelJoint(joint),
+            CanonicalCommand::UpsertPinJoint(joint),
         ]))
         .unwrap();
     let recipe = adopt_recipe(&document.current());
@@ -680,8 +680,8 @@ fn make_unique_remaps_only_selected_recipe_part_and_does_not_bless_stale_ownersh
         );
     }
     assert_eq!(
-        after.dowel_joint(DowelJointId(7)),
-        before.dowel_joint(DowelJointId(7))
+        after.pin_joint(PinJointId(7)),
+        before.pin_joint(PinJointId(7))
     );
     let compiled = compile_assembly_recipe_patch(
         &after,
@@ -895,7 +895,7 @@ fn adoption_rejects_a_joinery_id_whose_endpoints_do_not_match_declared_parts() {
             key: key("top_third"),
             first_part: key("top"),
             second_part: key("third"),
-            dowel_joint_id: DowelJointId(7),
+            pin_joint_id: PinJointId(7),
         }],
     );
     assert!(matches!(
@@ -1613,17 +1613,17 @@ fn dependent_joinery_document_with_physical_holes(
             physical_hole_pocket(10, 2, 4, 9, "Top hole pocket"),
         ]);
     }
-    commands.push(CanonicalCommand::UpsertDowelJoint(DowelJointContract {
-        id: DowelJointId(9),
+    commands.push(CanonicalCommand::UpsertPinJoint(PinJointContract {
+        id: PinJointId(9),
         name: "dependent-row".to_owned(),
-        first: DowelJointFace {
+        first: PinJointFace {
             instance_path: InstancePath::root(OccurrenceId(1)),
             face_origin_local_mm: [0.0, 0.0, 19.0],
             inward_unit_local: [0.0, 0.0, -1.0],
             bounds_min_local_mm: [0.0, 0.0, 0.0],
             bounds_max_local_mm: [600.0, 400.0, 19.0],
         },
-        second: DowelJointFace {
+        second: PinJointFace {
             instance_path: InstancePath::root(OccurrenceId(2)),
             face_origin_local_mm: [0.0, 0.0, 0.0],
             inward_unit_local: [0.0, 0.0, 1.0],
@@ -1634,10 +1634,10 @@ fn dependent_joinery_document_with_physical_holes(
         row_unit_first_local: [1.0, 0.0, 0.0],
         count: if physical_holes { 1 } else { 3 },
         spacing_mm: 32.0,
-        dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
+        pin: PinSpec::symmetric(8.0, 30.0, 1.0),
         pair_offsets_first_local_mm: Vec::new(),
         physical_hole_pairs: physical_holes.then(|| {
-            vec![DowelPhysicalHolePair {
+            vec![PinPhysicalHolePair {
                 first_pocket_feature_id: FeatureId(7),
                 second_pocket_feature_id: FeatureId(10),
             }]
@@ -1718,7 +1718,7 @@ fn dependent_joinery_document_with_physical_holes(
             key: key("rear_top_dowels"),
             first_part: key("rear"),
             second_part: key("top"),
-            dowel_joint_id: DowelJointId(9),
+            pin_joint_id: PinJointId(9),
         }],
     )
     .unwrap();
@@ -1768,7 +1768,7 @@ fn dependent_joinery_is_rebound_with_the_same_identity_in_one_undo_step() {
     document.apply_batch(&compilation.batch.unwrap()).unwrap();
     assert_eq!(document.visible_undo_steps(), 1);
     let snapshot = document.current();
-    let joint = snapshot.dowel_joint(DowelJointId(9)).unwrap();
+    let joint = snapshot.pin_joint(PinJointId(9)).unwrap();
     assert_eq!(joint.first.face_origin_local_mm[2], 29.0);
     assert_eq!(joint.first_center_local_mm[2], 29.0);
     assert_eq!(joint.first.bounds_max_local_mm[2], 29.0);
@@ -1792,14 +1792,14 @@ fn dependent_joinery_is_rebound_with_the_same_identity_in_one_undo_step() {
             .len(),
         2
     );
-    ketchup_core::joinery::project_dowel_joint_contract(&document.current(), joint).unwrap();
+    ketchup_core::pin_joint::project_pin_joint_contract(&document.current(), joint).unwrap();
 
     document.undo().unwrap();
     assert_eq!(document.current().canonical_digest(), original_digest);
     assert_eq!(
         document
             .current()
-            .dowel_joint(DowelJointId(9))
+            .pin_joint(PinJointId(9))
             .unwrap()
             .first_center_local_mm[2],
         19.0
@@ -1808,7 +1808,7 @@ fn dependent_joinery_is_rebound_with_the_same_identity_in_one_undo_step() {
     assert_eq!(
         document
             .current()
-            .dowel_joint(DowelJointId(9))
+            .pin_joint(PinJointId(9))
             .unwrap()
             .first_center_local_mm[2],
         29.0
@@ -1845,11 +1845,11 @@ fn dependent_physical_holes_follow_rebound_joinery_without_changing_identity() {
     document.apply_batch(&batch).unwrap();
     assert_eq!(document.visible_undo_steps(), 1);
     let snapshot = document.current();
-    let joint = snapshot.dowel_joint(DowelJointId(9)).unwrap();
-    assert_eq!(joint.id, DowelJointId(9));
+    let joint = snapshot.pin_joint(PinJointId(9)).unwrap();
+    assert_eq!(joint.id, PinJointId(9));
     assert_eq!(
         joint.physical_hole_pairs,
-        Some(vec![DowelPhysicalHolePair {
+        Some(vec![PinPhysicalHolePair {
             first_pocket_feature_id: FeatureId(7),
             second_pocket_feature_id: FeatureId(10),
         }])
@@ -1869,7 +1869,7 @@ fn dependent_physical_holes_follow_rebound_joinery_without_changing_identity() {
             snapshot.canonical_digest()
         );
         assert_eq!(document.current().revision_id(), snapshot.revision_id());
-        assert_eq!(document.current().dowel_joints().count(), 1);
+        assert_eq!(document.current().pin_joints().count(), 1);
         assert_eq!(
             document
                 .current()
@@ -1890,7 +1890,7 @@ fn dependent_physical_holes_follow_rebound_joinery_without_changing_identity() {
         );
         assert_eq!(document.visible_undo_steps(), 1);
     }
-    let projection = ketchup_core::joinery::project_dowel_joint_contract(&snapshot, joint).unwrap();
+    let projection = ketchup_core::pin_joint::project_pin_joint_contract(&snapshot, joint).unwrap();
     assert_eq!(projection.pairs.len(), 1);
     assert_eq!(
         projection.pairs[0]
@@ -1912,9 +1912,9 @@ fn dependent_physical_holes_follow_rebound_joinery_without_changing_identity() {
     assert_eq!(document.current().canonical_digest(), original_digest);
     document.redo().unwrap();
     let redone = document.current();
-    ketchup_core::joinery::project_dowel_joint_contract(
+    ketchup_core::pin_joint::project_pin_joint_contract(
         &redone,
-        redone.dowel_joint(DowelJointId(9)).unwrap(),
+        redone.pin_joint(PinJointId(9)).unwrap(),
     )
     .unwrap();
 }
@@ -1929,7 +1929,7 @@ fn physical_joinery_recipe_and_probe_evidence_survive_history_round_trip() {
     let after = document.current();
     let after_digest = after.canonical_digest();
     let expected_recipe = after.assembly_recipe().unwrap().clone();
-    let expected_joint = after.dowel_joint(DowelJointId(9)).unwrap().clone();
+    let expected_joint = after.pin_joint(PinJointId(9)).unwrap().clone();
 
     let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
         .unwrap();
@@ -1942,12 +1942,12 @@ fn physical_joinery_recipe_and_probe_evidence_survive_history_round_trip() {
     assert_eq!(reopened_snapshot.canonical_digest(), after_digest);
     assert_eq!(reopened_snapshot.assembly_recipe(), Some(&expected_recipe));
     assert_eq!(
-        reopened_snapshot.dowel_joint(DowelJointId(9)),
+        reopened_snapshot.pin_joint(PinJointId(9)),
         Some(&expected_joint)
     );
-    let projection = ketchup_core::joinery::project_dowel_joint_contract(
+    let projection = ketchup_core::pin_joint::project_pin_joint_contract(
         &reopened_snapshot,
-        reopened_snapshot.dowel_joint(DowelJointId(9)).unwrap(),
+        reopened_snapshot.pin_joint(PinJointId(9)).unwrap(),
     )
     .unwrap();
     assert_eq!(projection.pairs.len(), 1);
@@ -1964,9 +1964,9 @@ fn physical_joinery_recipe_and_probe_evidence_survive_history_round_trip() {
     assert_eq!(reopened.visible_redo_steps(), 1);
     assert_eq!(reopened.redo().unwrap().canonical_digest(), after_digest);
     let redone = reopened.current();
-    let redone_projection = ketchup_core::joinery::project_dowel_joint_contract(
+    let redone_projection = ketchup_core::pin_joint::project_pin_joint_contract(
         &redone,
-        redone.dowel_joint(DowelJointId(9)).unwrap(),
+        redone.pin_joint(PinJointId(9)).unwrap(),
     )
     .unwrap();
     assert!(
@@ -1974,6 +1974,46 @@ fn physical_joinery_recipe_and_probe_evidence_survive_history_round_trip() {
             .physical_probe_coincidence
             .is_some()
     );
+}
+
+#[test]
+fn format_98_joint_records_load_as_pin_joints_with_the_same_geometry() {
+    // Saved by the format-98 codec, which named pin joints `dowel_joints`; the
+    // document digest that codec computed for it.
+    const WRITER_DIGEST: &str = "8a7d075de81dcb1d";
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/persistence/legacy/joint-records-format98.bin"
+    ))
+    .unwrap();
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(loaded.source_schema(), 98);
+    let mut expected = dependent_joinery_document_with_physical_holes(true);
+    let compilation =
+        compile_assembly_recipe_patch(&expected.current(), &dependent_joinery_patch()).unwrap();
+    expected.apply_batch(&compilation.batch.unwrap()).unwrap();
+    let expected = expected.current();
+
+    let migrated = loaded.snapshot();
+    assert_eq!(migrated.assembly_recipe(), expected.assembly_recipe());
+    let joint = migrated.pin_joint(PinJointId(9)).unwrap();
+    assert_eq!(Some(joint), expected.pin_joint(PinJointId(9)));
+    assert_eq!(
+        ketchup_core::pin_joint::project_pin_joint_contract(&migrated, joint).unwrap(),
+        ketchup_core::pin_joint::project_pin_joint_contract(
+            &expected,
+            expected.pin_joint(PinJointId(9)).unwrap()
+        )
+        .unwrap()
+    );
+    // The digest the format-98 writer computed, so releases that recorded it still verify.
+    assert_eq!(loaded.audit().source_canonical_digest, WRITER_DIGEST);
+    assert_ne!(migrated.canonical_digest(), WRITER_DIGEST);
+
+    let mut history = loaded.into_editable().ok().unwrap();
+    assert_eq!(history.visible_undo_steps(), 1);
+    let before = history.undo().unwrap();
+    assert!(before.pin_joint(PinJointId(9)).is_some());
 }
 
 #[test]

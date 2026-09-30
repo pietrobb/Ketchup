@@ -385,11 +385,12 @@ fn schema_three_checks_checksum_before_payload_decode_and_rejects_envelopes() {
         load_error(&bytes[..checksum + 31]),
         PersistenceError::Truncated
     );
+    let newer = persistence::CURRENT_SCHEMA + 1;
     let mut unsupported = bytes;
-    unsupported[10..12].copy_from_slice(&99_u16.to_le_bytes());
+    unsupported[10..12].copy_from_slice(&newer.to_le_bytes());
     assert_eq!(
         load_error(&unsupported),
-        PersistenceError::UnsupportedSchema(99)
+        PersistenceError::UnsupportedSchema(newer)
     );
     assert_eq!(
         load_error(&vec![0; 32 * 1024 * 1024 + 1]),

@@ -65,9 +65,6 @@ use crate::import::{
     ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
     MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
 };
-use crate::joinery::{
-    DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair, DowelSpec,
-};
 use crate::mechanical_contract::{
     MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalAxisAlignment,
     MechanicalCondition, MechanicalConditionId, MechanicalConditionKind, MechanicalInterface,
@@ -77,6 +74,7 @@ use crate::mechanical_coupling::{
     ASSEMBLY_MOTION_COUPLING_SCHEMA_V1, AssemblyMotionCoupling, AssemblyMotionCouplingId,
     AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
+use crate::pin_joint::{PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair, PinSpec};
 use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use crate::sketch::{
@@ -2678,8 +2676,8 @@ fn read_dowel_joint(
     reader: &mut Reader<'_>,
     read_physical_hole_bindings: bool,
     read_pair_offsets: bool,
-) -> Result<DowelJointContract, PersistenceError> {
-    let id = DowelJointId(reader.u64()?);
+) -> Result<PinJointContract, PersistenceError> {
+    let id = PinJointId(reader.u64()?);
     let name = reader.string()?;
     let point3 = |reader: &mut Reader<'_>| -> Result<[f64; 3], PersistenceError> {
         Ok([
@@ -2688,8 +2686,8 @@ fn read_dowel_joint(
             f64::from_bits(reader.u64()?),
         ])
     };
-    let read_side = |reader: &mut Reader<'_>| -> Result<DowelJointFace, PersistenceError> {
-        Ok(DowelJointFace {
+    let read_side = |reader: &mut Reader<'_>| -> Result<PinJointFace, PersistenceError> {
+        Ok(PinJointFace {
             instance_path: read_instance_path(reader)?,
             face_origin_local_mm: point3(reader)?,
             inward_unit_local: point3(reader)?,
@@ -2703,7 +2701,7 @@ fn read_dowel_joint(
     let row_unit_first_local = point3(reader)?;
     let count = reader.u32()?;
     let spacing_mm = f64::from_bits(reader.u64()?);
-    let dowel = DowelSpec {
+    let dowel = PinSpec {
         diameter_mm: f64::from_bits(reader.u64()?),
         length_mm: f64::from_bits(reader.u64()?),
         first_insertion_mm: f64::from_bits(reader.u64()?),
@@ -2722,7 +2720,7 @@ fn read_dowel_joint(
         let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
         let mut bindings = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            bindings.push(DowelPhysicalHolePair {
+            bindings.push(PinPhysicalHolePair {
                 first_pocket_feature_id: FeatureId(reader.u64()?),
                 second_pocket_feature_id: FeatureId(reader.u64()?),
             });
@@ -2731,7 +2729,7 @@ fn read_dowel_joint(
     } else {
         None
     };
-    Ok(DowelJointContract {
+    Ok(PinJointContract {
         id,
         name,
         first,
@@ -2740,7 +2738,7 @@ fn read_dowel_joint(
         row_unit_first_local,
         count,
         spacing_mm,
-        dowel,
+        pin: dowel,
         pair_offsets_first_local_mm,
         physical_hole_pairs,
     })
@@ -2891,7 +2889,7 @@ fn read_assembly_recipe(reader: &mut Reader<'_>) -> Result<AssemblyRecipe, Persi
             key: joinery_key.clone(),
             first_part: read_recipe_key(reader)?,
             second_part: read_recipe_key(reader)?,
-            dowel_joint_id: DowelJointId(reader.u64()?),
+            pin_joint_id: PinJointId(reader.u64()?),
         };
         if joinery.insert(joinery_key.clone(), item).is_some() {
             return Err(PersistenceError::InvalidCanonicalData(
@@ -4307,12 +4305,12 @@ fn read_product(
                     capabilities.dowel_pair_offsets,
                 )?;
                 if product
-                    .dowel_joints
+                    .pin_joints
                     .insert(joint.id, Arc::new(joint))
                     .is_some()
                 {
                     return Err(PersistenceError::InvalidCanonicalData(
-                        CanonicalError::DowelJoint(crate::joinery::DowelJointError::InvalidJointId),
+                        CanonicalError::PinJoint(crate::pin_joint::PinJointError::InvalidJointId),
                     ));
                 }
             }

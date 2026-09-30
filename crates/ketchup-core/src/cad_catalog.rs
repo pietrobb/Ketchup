@@ -180,7 +180,7 @@ mod tests {
             .collect();
         for expected in [
             "create_panel",
-            "create_physical_dowel_joint",
+            "create_physical_pin_joint",
             "delete",
             "transform",
         ] {
@@ -195,8 +195,8 @@ mod tests {
         );
         assert!(panel["types"]["AssistantPanelHole"].is_string());
         assert!(panel["types"]["AssistantCadRotation"].is_string());
-        let dowel = cad_operation_catalog(Some("create_physical_dowel_joint")).unwrap();
-        assert!(dowel["field_notes"]["first_insertion_mm"].is_string());
+        let pin = cad_operation_catalog(Some("create_physical_pin_joint")).unwrap();
+        assert!(pin["field_notes"]["first_insertion_mm"].is_string());
         assert_eq!(
             cad_operation_catalog(Some("nope")),
             Err("unknown_operation")

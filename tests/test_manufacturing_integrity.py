@@ -45,13 +45,13 @@ def test_nested_paths_remain_distinct_and_preserved(tmp_path):
     assert not (tmp_path / "duplicate").exists()
 
 
-@pytest.mark.parametrize("dowel_only", [False, True])
-def test_missing_machining_program_never_publishes(tmp_path, dowel_only):
+@pytest.mark.parametrize("pin_only", [False, True])
+def test_missing_machining_program_never_publishes(tmp_path, pin_only):
     source = job()
-    if dowel_only:
+    if pin_only:
         source["parts"][0]["operations"] = [{"kind": "stock"}]
-        source["parts"][0]["dowel_holes"] = [{"kind": "dowel_drill", "hole_id": "dowel-1"}]
-        source["parts"][0]["machining_setups"][0].update(operation_ids=[], dowel_hole_ids=["dowel-1"])
+        source["parts"][0]["pin_holes"] = [{"kind": "pin_drill", "hole_id": "pin-1"}]
+        source["parts"][0]["machining_setups"][0].update(operation_ids=[], pin_hole_ids=["pin-1"])
     source["outputs"]["homag-woodwop4"] = []
     with pytest.raises(ManufacturingError, match="missing HOMAG programs"):
         export_job(source, tmp_path / "order", [HomagWoodwopAdapter()], confirmed=True)
@@ -82,7 +82,7 @@ def test_short_cut_only_code_does_not_inherit_machine_restrictions():
     ("operations", [{"kind": "circular-drill"}]),
     ("operations", [{"kind": "stock"}, {"kind": "stock"}]),
     ("operations", [{"kind": "stock"}, {"kind": ""}]),
-    ("dowel_holes", None), ("dowel_holes", ["not a hole"]),
+    ("pin_holes", None), ("pin_holes", ["not a hole"]),
 ])
 def test_missing_or_malformed_machining_metadata_fails_closed(field, value):
     source = job()

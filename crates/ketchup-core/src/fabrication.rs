@@ -12,7 +12,7 @@ use crate::exact_validation::{
     GeneralBodySource, GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
 };
 use crate::graph::{DerivedIdentity, sha256_hex};
-use crate::joinery::{DowelHole, project_dowel_joint_contract};
+use crate::pin_joint::{PinHole, project_pin_joint_contract};
 use crate::sketch::{PadOperation, PadSpec};
 use crate::tolerance::{ROUNDING, TolerancePolicy};
 use crate::validation::{
@@ -1005,8 +1005,8 @@ impl GeneralFabricationProjection {
             return Err(GeneralFabricationError::ExportBlocked);
         }
         let mut holes = Vec::new();
-        for joint in snapshot.dowel_joints() {
-            let projection = project_dowel_joint_contract(snapshot, joint)
+        for joint in snapshot.pin_joints() {
+            let projection = project_pin_joint_contract(snapshot, joint)
                 .map_err(|_| GeneralFabricationError::ExportBlocked)?;
             for pair in projection.pairs {
                 holes.push(pair.first);
@@ -1087,7 +1087,7 @@ impl GeneralFabricationProjection {
                 macros.extend(
                     instance_holes
                         .into_iter()
-                        .map(|hole| woodwop_dowel_macro(hole, stock_frame))
+                        .map(|hole| woodwop_pin_macro(hole, stock_frame))
                         .collect::<Option<Vec<_>>>()
                         .ok_or(GeneralFabricationError::ExportBlocked)?,
                 );
@@ -1874,7 +1874,7 @@ fn woodwop_mpr_output(
     Ok(output.into_bytes())
 }
 
-fn woodwop_dowel_macro(hole: &DowelHole, stock_frame: WoodwopStockFrame) -> Option<String> {
+fn woodwop_pin_macro(hole: &PinHole, stock_frame: WoodwopStockFrame) -> Option<String> {
     let normal = hole.inward_unit_local;
     let tolerance = ROUNDING;
     let (x_axis, y_axis) = if normal[0] >= 1.0 - tolerance
@@ -4524,15 +4524,15 @@ mod tests {
     }
 
     #[test]
-    fn homag_dowel_macro_and_code128_label_share_the_machine_program_identity() {
+    fn homag_pin_macro_and_code128_label_share_the_machine_program_identity() {
         let stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {
             length_mm: 600.0,
             width_mm: 400.0,
             height_mm: 19.0,
         }))
         .unwrap();
-        let hole = DowelHole {
-            stable_hole_id: "dowel-7/0/first".to_owned(),
+        let hole = PinHole {
+            stable_hole_id: "pin-7/0/first".to_owned(),
             instance_path: InstancePath::root(OccurrenceId(1)),
             entry_local_mm: [50.0, 20.0, 19.0],
             inward_unit_local: [0.0, 0.0, -1.0],
@@ -4540,7 +4540,7 @@ mod tests {
             depth_mm: 16.0,
             shared_center_world_mm: [50.0, 20.0, 19.0],
         };
-        let drilling = woodwop_dowel_macro(&hole, stock).unwrap();
+        let drilling = woodwop_pin_macro(&hole, stock).unwrap();
         assert!(drilling.starts_with(
             "<102 \\BohrVert\\\nXA=\"50\"\nYA=\"20\"\nBM=\"LS\"\nTI=\"16\"\nDU=\"8\"\n"
         ));

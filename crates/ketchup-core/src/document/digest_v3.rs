@@ -132,10 +132,10 @@ fn document_digest(product: &ProductModel, point_profiles: &BTreeSet<FeatureId>)
             digest.cam_plan(plan);
         }
     }
-    if !product.dowel_joints.is_empty() {
+    if !product.pin_joints.is_empty() {
         digest.bytes(b"canonical-dowel-joints.v1");
-        digest.u64(product.dowel_joints.len() as u64);
-        for joint in product.dowel_joints.values() {
+        digest.u64(product.pin_joints.len() as u64);
+        for joint in product.pin_joints.values() {
             digest.dowel_joint(joint);
         }
     }
@@ -516,7 +516,7 @@ impl DigestV3 {
         }
     }
 
-    fn dowel_joint(&mut self, joint: &crate::joinery::DowelJointContract) {
+    fn dowel_joint(&mut self, joint: &crate::pin_joint::PinJointContract) {
         self.u64(joint.id.0);
         self.bytes(joint.name.as_bytes());
         for side in [&joint.first, &joint.second] {
@@ -537,11 +537,11 @@ impl DigestV3 {
             .chain(joint.row_unit_first_local)
             .chain([
                 joint.spacing_mm,
-                joint.dowel.diameter_mm,
-                joint.dowel.length_mm,
-                joint.dowel.first_insertion_mm,
-                joint.dowel.second_insertion_mm,
-                joint.dowel.bottom_clearance_mm,
+                joint.pin.diameter_mm,
+                joint.pin.length_mm,
+                joint.pin.first_insertion_mm,
+                joint.pin.second_insertion_mm,
+                joint.pin.bottom_clearance_mm,
             ])
         {
             self.u64(value.to_bits());
@@ -635,7 +635,7 @@ impl DigestV3 {
             self.bytes(joinery.key.as_str().as_bytes());
             self.bytes(joinery.first_part.as_str().as_bytes());
             self.bytes(joinery.second_part.as_str().as_bytes());
-            self.u64(joinery.dowel_joint_id.0);
+            self.u64(joinery.pin_joint_id.0);
         }
         self.u64(recipe.owned_features.len() as u64);
         for owned in recipe.owned_features.values() {

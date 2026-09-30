@@ -2,8 +2,8 @@ use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, FeatureId, FeatureKind,
     FeatureParameterTarget, InstancePath, ParameterValueType, Snapshot, Transform,
 };
-use crate::joinery::{
-    DowelHole, DowelJointContract, DowelJointFace, DowelJointId, project_dowel_joint_contract,
+use crate::pin_joint::{
+    PinHole, PinJointContract, PinJointFace, PinJointId, project_pin_joint_contract,
 };
 use crate::sketch::{
     FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchEntity, WorkplaneFrame,
@@ -110,7 +110,7 @@ pub struct RecipeJoinery {
     pub key: RecipeKey,
     pub first_part: RecipeKey,
     pub second_part: RecipeKey,
-    pub dowel_joint_id: DowelJointId,
+    pub pin_joint_id: PinJointId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -356,7 +356,7 @@ impl AssemblyRecipe {
         }
         for item in self.joinery.values() {
             let joint = snapshot
-                .dowel_joint(item.dowel_joint_id)
+                .pin_joint(item.pin_joint_id)
                 .ok_or_else(|| AssemblyRecipeError::UnresolvedJoinery(item.key.clone()))?;
             let first = &self.parts[&item.first_part].instance_path;
             let second = &self.parts[&item.second_part].instance_path;
@@ -412,7 +412,7 @@ impl AssemblyRecipe {
                 || item.first_part == item.second_part
                 || !self.parts.contains_key(&item.first_part)
                 || !self.parts.contains_key(&item.second_part)
-                || !joinery_ids.insert(item.dowel_joint_id)
+                || !joinery_ids.insert(item.pin_joint_id)
             {
                 return Err(AssemblyRecipeError::InvalidJoinery(key.clone()));
             }
@@ -649,7 +649,7 @@ pub fn compile_assembly_recipe_patch(
 
     commands.insert(0, CanonicalCommand::ClearAssemblyRecipe);
     for (_, contract) in &joinery_updates {
-        commands.insert(1, CanonicalCommand::DeleteDowelJoint { id: contract.id });
+        commands.insert(1, CanonicalCommand::DeletePinJoint { id: contract.id });
     }
     if !path_transforms.is_empty() {
         let mut root_transforms = BTreeMap::new();
@@ -672,7 +672,7 @@ pub fn compile_assembly_recipe_patch(
     commands.extend(
         joinery_updates
             .into_iter()
-            .map(|(_, contract)| CanonicalCommand::UpsertDowelJoint(contract)),
+            .map(|(_, contract)| CanonicalCommand::UpsertPinJoint(contract)),
     );
 
     let candidate = snapshot
@@ -766,8 +766,8 @@ fn preview_recipe_geometry(
         recipe
             .joinery
             .values()
-            .map(|item| CanonicalCommand::DeleteDowelJoint {
-                id: item.dowel_joint_id,
+            .map(|item| CanonicalCommand::DeletePinJoint {
+                id: item.pin_joint_id,
             }),
     );
     preview.extend_from_slice(commands);
@@ -795,7 +795,7 @@ fn preview_recipe_geometry(
 
 struct JoineryRebind {
     physical_hole_commands: Vec<CanonicalCommand>,
-    updates: Vec<(RecipeKey, DowelJointContract)>,
+    updates: Vec<(RecipeKey, PinJointContract)>,
 }
 
 fn rebind_affected_joinery(
@@ -811,7 +811,7 @@ fn rebind_affected_joinery(
         {
             continue;
         }
-        let original = snapshot.dowel_joint(item.dowel_joint_id).ok_or_else(|| {
+        let original = snapshot.pin_joint(item.pin_joint_id).ok_or_else(|| {
             AssemblyRecipeCompileError::RecipeInvalid(AssemblyRecipeError::UnresolvedJoinery(
                 item.key.clone(),
             ))
@@ -851,7 +851,7 @@ fn rebind_affected_joinery(
             let mut geometric_contract = updated.clone();
             geometric_contract.physical_hole_pairs = None;
             let projection =
-                project_dowel_joint_contract(candidate, &geometric_contract).map_err(|_| {
+                project_pin_joint_contract(candidate, &geometric_contract).map_err(|_| {
                     AssemblyRecipeCompileError::UnsupportedDependentJoinery(item.key.clone())
                 })?;
             if bindings.len() != projection.pairs.len() {
@@ -905,7 +905,7 @@ fn collect_physical_hole_updates(
     recipe: &AssemblyRecipe,
     part: &RecipePart,
     pocket_feature_id: FeatureId,
-    expected: &DowelHole,
+    expected: &PinHole,
     joinery_key: &RecipeKey,
     parameters: &mut BTreeMap<FeatureParameterTarget, f64>,
 ) -> Result<(), AssemblyRecipeCompileError> {
@@ -983,7 +983,7 @@ fn collect_physical_hole_updates(
     Ok(())
 }
 
-fn rebind_joint_face(face: &mut DowelJointFace, bounds: SupportedPartBounds) -> Option<f64> {
+fn rebind_joint_face(face: &mut PinJointFace, bounds: SupportedPartBounds) -> Option<f64> {
     let axis = inward_axis(face.inward_unit_local)?;
     let old_coordinate = face.face_origin_local_mm[axis];
     let expected_old = if face.inward_unit_local[axis] > 0.0 {

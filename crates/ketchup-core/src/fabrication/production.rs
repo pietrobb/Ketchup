@@ -75,17 +75,16 @@ impl GeneralFabricationProjection {
         let mut paths = BTreeSet::new();
         let mut codes = BTreeSet::new();
         let mut matched_operations = BTreeSet::new();
-        let mut dowels = BTreeMap::<InstancePath, Vec<Value>>::new();
-        for joint in snapshot.dowel_joints() {
-            let projection = project_dowel_joint_contract(snapshot, joint)
+        let mut pins = BTreeMap::<InstancePath, Vec<Value>>::new();
+        for joint in snapshot.pin_joints() {
+            let projection = project_pin_joint_contract(snapshot, joint)
                 .map_err(|_| GeneralFabricationError::ExportBlocked)?;
             for pair in projection.pairs {
                 for hole in [pair.first, pair.second] {
-                    dowels
-                        .entry(hole.instance_path.clone())
+                    pins.entry(hole.instance_path.clone())
                         .or_default()
                         .push(json!({
-                            "kind": "dowel_drill", "joint_id": joint.id.0,
+                            "kind": "pin_drill", "joint_id": joint.id.0,
                             "hole_id": hole.stable_hole_id,
                             "entry_local_mm": hole.entry_local_mm,
                             "inward_unit_local": hole.inward_unit_local,
@@ -201,13 +200,13 @@ impl GeneralFabricationProjection {
                         })
                     })
                     .collect::<Vec<_>>();
-                let holes = dowels.remove(path).unwrap_or_default();
+                let holes = pins.remove(path).unwrap_or_default();
                 let setups = if operations.len() > 1 || !holes.is_empty() {
                     vec![json!({
                         "id": "A", "code": code,
                         "operation_ids": operations.iter().skip(1)
                             .map(|op| op["operation_id"].clone()).collect::<Vec<_>>(),
-                        "dowel_hole_ids": holes.iter()
+                        "pin_hole_ids": holes.iter()
                             .map(|hole| hole["hole_id"].clone()).collect::<Vec<_>>(),
                     })]
                 } else {
@@ -223,13 +222,13 @@ impl GeneralFabricationProjection {
                     "stock_shape": stock_shape,
                     "coordinate_frame": "definition_local_mm",
                     "operations": operations,
-                    "dowel_holes": holes,
+                    "pin_holes": holes,
                     "machining_setups": setups,
                 }));
             }
         }
         if parts.is_empty()
-            || !dowels.is_empty()
+            || !pins.is_empty()
             || matched_operations.len() != self.manufacturing.operations.len()
         {
             return Err(GeneralFabricationError::ExportBlocked);

@@ -17,12 +17,12 @@ use ketchup_core::{
         RecipePartMobility, RecipeRelation, RecipeRelationKind, RecognizedRecipeFeatureKind,
     },
     assistant_sidecar::{
-        AssistantCadEditOperation, AssistantCadEditProgram, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantPin,
+        AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
+        AssistantPinJointFace,
     },
     document::*,
     exact_product::ExactResultRegistry,
-    joinery::DowelJointId,
+    pin_joint::PinJointId,
     validation::ValidatorRoleIndex,
 };
 
@@ -609,7 +609,7 @@ fn all_ungrounded_parts_apart_from_the_base_are_reported_individually() {
     );
 }
 
-fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
+fn physical_pin_document(count: u32, duplicate_joint: bool) -> DocumentStore {
     let mut document = DocumentStore::new();
     let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
         name: name.into(),
@@ -626,13 +626,13 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         &AssistantCadEditProgram {
             operations: vec![
                 panel("Retention base", [0.0, 0.0, 0.0]),
-                panel("Dowel-connected panel", [0.0, 0.0, 18.0]),
+                panel("Pin-connected panel", [0.0, 0.0, 18.0]),
             ],
         },
     )
     .unwrap();
     document.apply_batch(&panels).unwrap();
-    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
@@ -642,7 +642,7 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let joint = |name: &str| AssistantCadEditOperation::CreatePhysicalDowelJoint {
+    let joint = |name: &str| AssistantCadEditOperation::CreatePhysicalPinJoint {
         joint_id: None,
         name: name.into(),
         first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -658,28 +658,24 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         },
         first_insertion_mm: None,
     };
-    let dowels = plan_assistant_cad_edit_program(
+    let pins = plan_assistant_cad_edit_program(
         &document,
         &BTreeSet::new(),
         &ExactResultRegistry::default(),
         &AssistantCadEditProgram {
-            operations: vec![joint("Smooth dowel row")],
+            operations: vec![joint("Smooth pin row")],
         },
     )
     .unwrap();
-    document.apply_batch(&dowels).unwrap();
+    document.apply_batch(&pins).unwrap();
     if duplicate_joint {
-        let mut duplicate = document
-            .current()
-            .dowel_joint(DowelJointId(1))
-            .unwrap()
-            .clone();
-        duplicate.id = DowelJointId(2);
-        duplicate.name = "Duplicate smooth dowel row".into();
+        let mut duplicate = document.current().pin_joint(PinJointId(1)).unwrap().clone();
+        duplicate.id = PinJointId(2);
+        duplicate.name = "Duplicate smooth pin row".into();
         document
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::UpsertDowelJoint(duplicate),
-            ]))
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertPinJoint(
+                duplicate,
+            )]))
             .unwrap();
     }
     document
@@ -687,7 +683,7 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
             CanonicalCommand::UpsertClassificationDimension {
                 id: ClassificationDimensionId(8),
                 name: "ketchup.assembly-retention-role.v1".into(),
-                categories: vec![(ClassificationCategoryId(10), "part:smooth-dowels".into())],
+                categories: vec![(ClassificationCategoryId(10), "part:smooth-pins".into())],
             },
             CanonicalCommand::SetOccurrenceClassification {
                 occurrence_id: OccurrenceId(1),
@@ -709,8 +705,8 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
 }
 
 #[test]
-fn verified_smooth_dowels_are_connected_but_do_not_claim_axial_retention() {
-    let document = physical_dowel_document(2, false);
+fn verified_smooth_pins_are_connected_but_do_not_claim_axial_retention() {
+    let document = physical_pin_document(2, false);
 
     let report = assistant_assembly_retention_report(&document.current(), true, true);
     assert_eq!(report["state"], "not_evaluated", "{report:#}");
@@ -721,7 +717,7 @@ fn verified_smooth_dowels_are_connected_but_do_not_claim_axial_retention() {
     assert_eq!(report["accepted_connections"][0]["retained"], false);
     assert_eq!(
         report["accepted_connections"][0]["unproven_degrees_of_freedom"],
-        serde_json::json!(["translation_along_dowel_axis"])
+        serde_json::json!(["translation_along_pin_axis"])
     );
     assert_eq!(report["evaluations"][1]["result"], "unknown");
     assert_eq!(
@@ -743,14 +739,14 @@ fn verified_smooth_dowels_are_connected_but_do_not_claim_axial_retention() {
         document.current().canonical_digest()
     );
     assert_eq!(constraints["assumptions"].as_array().unwrap().len(), 4);
-    assert_eq!(constraints["scope"]["physical_dowel_pair_count"], 2);
+    assert_eq!(constraints["scope"]["physical_pin_pair_count"], 2);
     assert_eq!(constraints["full_probe_overlaps"]["expected_count"], 2);
     assert_eq!(
         constraints["full_probe_overlaps"]["verified_expected_count"],
         2
     );
     assert_eq!(constraints["full_probe_overlaps"]["unexpected_count"], 0);
-    let first_pair = &constraints["physical_dowel_joints"][0]["pairs"][0];
+    let first_pair = &constraints["physical_pin_joints"][0]["pairs"][0];
     assert_eq!(first_pair["axis_dot"], -1.0);
     assert_eq!(first_pair["first"]["diameter_mm"], 8.0);
     assert_eq!(first_pair["first"]["depth_mm"], 16.0);
@@ -767,8 +763,8 @@ fn verified_smooth_dowels_are_connected_but_do_not_claim_axial_retention() {
 }
 
 #[test]
-fn physical_dowel_validation_is_invariant_under_global_rigid_motion() {
-    let baseline = physical_dowel_document(2, false);
+fn physical_pin_validation_is_invariant_under_global_rigid_motion() {
+    let baseline = physical_pin_document(2, false);
     let baseline_report = assistant_assembly_constraints_report(&baseline.current(), true, true);
     assert_eq!(baseline_report["state"], "passed");
     let angle = 37.0_f64.to_radians();
@@ -787,7 +783,7 @@ fn physical_dowel_validation_is_invariant_under_global_rigid_motion() {
             [133.0, -85.0, 212.0],
         ),
     ] {
-        let mut document = physical_dowel_document(2, false);
+        let mut document = physical_pin_document(2, false);
         let global = Transform::from_matrix([
             rotation[0][0],
             rotation[0][1],
@@ -824,11 +820,11 @@ fn physical_dowel_validation_is_invariant_under_global_rigid_motion() {
         assert_eq!(report["state"], "passed", "{report:#}");
         assert_eq!(report["complete"], true);
         assert_eq!(report["canonical_digest"], moved.canonical_digest());
-        assert_eq!(report["scope"]["physical_dowel_pair_count"], 2);
+        assert_eq!(report["scope"]["physical_pin_pair_count"], 2);
         assert_eq!(report["full_probe_overlaps"]["verified_expected_count"], 2);
         assert_eq!(report["full_probe_overlaps"]["unexpected_count"], 0);
         for index in 0..2 {
-            let pair = &report["physical_dowel_joints"][0]["pairs"][index];
+            let pair = &report["physical_pin_joints"][0]["pairs"][index];
             assert!((pair["axis_dot"].as_f64().unwrap() + 1.0).abs() < 1e-9);
             assert_eq!(pair["first"]["diameter_mm"], 8.0);
             assert_eq!(pair["first"]["depth_mm"], 16.0);
@@ -837,7 +833,7 @@ fn physical_dowel_validation_is_invariant_under_global_rigid_motion() {
                 pair["physical_probe_coincidence"]["full_length_coincident"],
                 true
             );
-            let original = &baseline_report["physical_dowel_joints"][0]["pairs"][index]["physical_probe_coincidence"]
+            let original = &baseline_report["physical_pin_joints"][0]["pairs"][index]["physical_probe_coincidence"]
                 ["first_probe_endpoints_world_mm"];
             for endpoint in 0..2 {
                 for axis in 0..3 {
@@ -871,14 +867,14 @@ fn physical_dowel_validation_is_invariant_under_global_rigid_motion() {
         assert_eq!(retention["accepted_connections"][0]["retained"], false);
         assert_eq!(
             retention["accepted_connections"][0]["unproven_degrees_of_freedom"],
-            serde_json::json!(["translation_along_dowel_axis"])
+            serde_json::json!(["translation_along_pin_axis"])
         );
     }
 }
 
 #[test]
-fn one_smooth_dowel_is_connected_but_leaves_axial_translation_and_rotation_unproven() {
-    let document = physical_dowel_document(1, false);
+fn one_smooth_pin_is_connected_but_leaves_axial_translation_and_rotation_unproven() {
+    let document = physical_pin_document(1, false);
     let retention = assistant_assembly_retention_report(&document.current(), true, true);
     assert_eq!(retention["state"], "not_evaluated", "{retention:#}");
     assert_eq!(retention["complete"], false, "{retention:#}");
@@ -888,11 +884,11 @@ fn one_smooth_dowel_is_connected_but_leaves_axial_translation_and_rotation_unpro
     assert_eq!(retention["accepted_connections"][0]["retained"], false);
     assert_eq!(
         retention["accepted_connections"][0]["unproven_degrees_of_freedom"],
-        serde_json::json!(["translation_along_dowel_axis", "rotation_about_dowel_axis"])
+        serde_json::json!(["translation_along_pin_axis", "rotation_about_pin_axis"])
     );
     assert_eq!(
         retention["accepted_connections"][0]["reason"],
-        "one_smooth_dowel_does_not_prevent_axial_pullout_or_rotation_about_its_axis"
+        "one_smooth_pin_does_not_prevent_axial_pullout_or_rotation_about_its_axis"
     );
     assert_eq!(retention["evaluations"][1]["connected_to_base"], true);
     assert_eq!(retention["evaluations"][1]["result"], "unknown");
@@ -909,8 +905,8 @@ fn one_smooth_dowel_is_connected_but_leaves_axial_translation_and_rotation_unpro
 }
 
 #[test]
-fn duplicate_cross_joint_probe_overlap_is_not_treated_as_a_dowel_exception() {
-    let document = physical_dowel_document(1, true);
+fn duplicate_cross_joint_probe_overlap_is_not_treated_as_a_pin_exception() {
+    let document = physical_pin_document(1, true);
     let report = assistant_assembly_constraints_report(&document.current(), true, true);
     assert_eq!(report["state"], "failed", "{report:#}");
     assert_eq!(report["complete"], true, "{report:#}");

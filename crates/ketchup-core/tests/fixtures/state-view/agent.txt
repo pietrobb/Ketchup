@@ -1,7 +1,7 @@
 schema=ketchup.state-view.agent.v2
 source.revision=1
 source.canonical_digest=<durable>
-summary.counts=evaluator_nodes:2,overrides:0,feature_parameter_bindings:0,feature_parameter_provenance:0,joints:0,spaces:0,clearance_volumes:0,cam_plans:0,dowel_joints:0,persistent_dimensions:0,tags:1,classification_dimensions:0,classification_assignments:0,collections:1,import_receipts:0,definitions:1,features:2,body_feature_suppression:0,occurrences:2,grounded_occurrences:0,assembly_mates:0,assembly_joints:0,assembly_motion_couplings:0,assembly_motion_studies:0,mechanical_interfaces:0,mechanical_conditions:0,drawing_sheets:0,groups:1,local_occurrences:0,local_groups:0,production_codes:0,instance_transform_overrides:0
+summary.counts=evaluator_nodes:2,overrides:0,feature_parameter_bindings:0,feature_parameter_provenance:0,joints:0,spaces:0,clearance_volumes:0,cam_plans:0,pin_joints:0,persistent_dimensions:0,tags:1,classification_dimensions:0,classification_assignments:0,collections:1,import_receipts:0,definitions:1,features:2,body_feature_suppression:0,occurrences:2,grounded_occurrences:0,assembly_mates:0,assembly_joints:0,assembly_motion_couplings:0,assembly_motion_studies:0,mechanical_interfaces:0,mechanical_conditions:0,drawing_sheets:0,groups:1,local_occurrences:0,local_groups:0,production_codes:0,instance_transform_overrides:0
 evaluation=not_supplied
 document_id=<durable>
 units="Millimetres"
@@ -14,7 +14,7 @@ joints={}
 spaces={}
 clearance_volumes={}
 cam_plans={}
-dowel_joints={}
+pin_joints={}
 assembly_recipe=none
 exact_reference_evidence=none
 persistent_dimensions={}

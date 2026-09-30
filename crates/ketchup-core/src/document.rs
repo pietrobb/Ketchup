@@ -40,9 +40,6 @@ use crate::import::{
     ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit, ImportOutputRef,
     ImportReceipt, ImportUnitAuthority,
 };
-use crate::joinery::{
-    DowelJointContract, DowelJointError, DowelJointId, project_dowel_joint_contract,
-};
 use crate::mechanical_contract::{
     MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalCondition,
     MechanicalConditionId, MechanicalConditionKind, MechanicalInterface, MechanicalInterfaceId,
@@ -51,6 +48,7 @@ use crate::mechanical_coupling::{
     ASSEMBLY_MOTION_COUPLING_SCHEMA_V1, AssemblyMotionCoupling, AssemblyMotionCouplingId,
     CoupledJointKind,
 };
+use crate::pin_joint::{PinJointContract, PinJointError, PinJointId, project_pin_joint_contract};
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sheet_metal::{SheetMetalError, SheetMetalSpec};
 use crate::sketch::{
@@ -130,7 +128,7 @@ pub struct LocalGroupKey {
 pub(crate) mod digest_v3;
 mod instance_path;
 mod stable_digest;
-pub(crate) use stable_digest::{derived, identity_form};
+pub(crate) use stable_digest::{derived, digest_product, identity_form};
 
 pub use instance_path::{InstancePath, InstancePathStep};
 use stable_digest::{StableDigest, digest_feature, digest_snapshot};
@@ -2250,7 +2248,7 @@ pub(crate) struct ProductModel {
     pub(crate) spaces: BTreeMap<SpaceId, Arc<CanonicalSpace>>,
     pub(crate) clearance_volumes: BTreeMap<ClearanceVolumeId, Arc<CanonicalClearanceVolume>>,
     pub(crate) cam_plans: BTreeMap<CamPlanId, Arc<CamPlan>>,
-    pub(crate) dowel_joints: BTreeMap<DowelJointId, Arc<DowelJointContract>>,
+    pub(crate) pin_joints: BTreeMap<PinJointId, Arc<PinJointContract>>,
     pub(crate) assembly_recipe: Option<Arc<AssemblyRecipe>>,
     #[serde(serialize_with = "derived")]
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
@@ -2333,7 +2331,7 @@ impl Default for ProductModel {
             spaces: BTreeMap::new(),
             clearance_volumes: BTreeMap::new(),
             cam_plans: BTreeMap::new(),
-            dowel_joints: BTreeMap::new(),
+            pin_joints: BTreeMap::new(),
             assembly_recipe: None,
             exact_reference_evidence: BTreeMap::new(),
             persistent_dimensions: BTreeMap::new(),
@@ -2756,9 +2754,9 @@ pub enum CanonicalCommand {
     DeleteCamPlan {
         id: CamPlanId,
     },
-    UpsertDowelJoint(DowelJointContract),
-    DeleteDowelJoint {
-        id: DowelJointId,
+    UpsertPinJoint(PinJointContract),
+    DeletePinJoint {
+        id: PinJointId,
     },
     SetAssemblyRecipe(AssemblyRecipe),
     ClearAssemblyRecipe,
@@ -3170,7 +3168,7 @@ pub enum AuthoritativeDependency {
     Space(SpaceId),
     ClearanceVolume(ClearanceVolumeId),
     CamPlan(CamPlanId),
-    DowelJoint(DowelJointId),
+    PinJoint(PinJointId),
     Tolerance,
     ProductionCodes,
     AssemblyRecipe,
@@ -3852,13 +3850,13 @@ impl Snapshot {
         self.product.cam_plans.get(&id).map(Arc::as_ref)
     }
 
-    pub fn dowel_joints(&self) -> impl Iterator<Item = &DowelJointContract> {
-        self.product.dowel_joints.values().map(Arc::as_ref)
+    pub fn pin_joints(&self) -> impl Iterator<Item = &PinJointContract> {
+        self.product.pin_joints.values().map(Arc::as_ref)
     }
 
     #[must_use]
-    pub fn dowel_joint(&self, id: DowelJointId) -> Option<&DowelJointContract> {
-        self.product.dowel_joints.get(&id).map(Arc::as_ref)
+    pub fn pin_joint(&self, id: PinJointId) -> Option<&PinJointContract> {
+        self.product.pin_joints.get(&id).map(Arc::as_ref)
     }
 
     #[must_use]
@@ -6076,20 +6074,18 @@ impl DocumentStore {
                         return Err(CanonicalError::CamPlanNotFound(*id));
                     }
                 }
-                CanonicalCommand::UpsertDowelJoint(joint) => {
+                CanonicalCommand::UpsertPinJoint(joint) => {
                     let candidate = Snapshot {
                         revision_id: current.revision_id(),
                         product: Arc::new(product.clone()),
                     };
-                    project_dowel_joint_contract(&candidate, joint)
-                        .map_err(CanonicalError::DowelJoint)?;
-                    product
-                        .dowel_joints
-                        .insert(joint.id, Arc::new(joint.clone()));
+                    project_pin_joint_contract(&candidate, joint)
+                        .map_err(CanonicalError::PinJoint)?;
+                    product.pin_joints.insert(joint.id, Arc::new(joint.clone()));
                 }
-                CanonicalCommand::DeleteDowelJoint { id } => {
-                    if product.dowel_joints.remove(id).is_none() {
-                        return Err(CanonicalError::DowelJointNotFound(*id));
+                CanonicalCommand::DeletePinJoint { id } => {
+                    if product.pin_joints.remove(id).is_none() {
+                        return Err(CanonicalError::PinJointNotFound(*id));
                     }
                 }
                 CanonicalCommand::SetAssemblyRecipe(recipe) => {
@@ -7241,11 +7237,11 @@ impl DocumentStore {
                     }) {
                         return Err(CanonicalError::OccurrenceInAssemblyJoint(*id));
                     }
-                    if product.dowel_joints.values().any(|joint| {
+                    if product.pin_joints.values().any(|joint| {
                         joint.first.instance_path.root_occurrence() == *id
                             || joint.second.instance_path.root_occurrence() == *id
                     }) {
-                        return Err(CanonicalError::OccurrenceInDowelJoint(*id));
+                        return Err(CanonicalError::OccurrenceInPinJoint(*id));
                     }
                     product
                         .occurrences
@@ -9706,9 +9702,9 @@ pub enum CanonicalError {
     OccurrenceNotFound(OccurrenceId),
     OccurrenceInAssemblyMate(OccurrenceId),
     OccurrenceInAssemblyJoint(OccurrenceId),
-    OccurrenceInDowelJoint(OccurrenceId),
-    DowelJointNotFound(DowelJointId),
-    DowelJoint(DowelJointError),
+    OccurrenceInPinJoint(OccurrenceId),
+    PinJointNotFound(PinJointId),
+    PinJoint(PinJointError),
     AssemblyRecipeNotFound,
     AssemblyRecipe(AssemblyRecipeError),
     AssemblyMateAlreadyExists(AssemblyMateId),
@@ -9861,9 +9857,9 @@ impl CanonicalError {
             Self::OccurrenceNotFound(..) => "canonical.occurrence_not_found",
             Self::OccurrenceInAssemblyMate(..) => "canonical.occurrence_in_assembly_mate",
             Self::OccurrenceInAssemblyJoint(..) => "canonical.occurrence_in_assembly_joint",
-            Self::OccurrenceInDowelJoint(..) => "canonical.occurrence_in_dowel_joint",
-            Self::DowelJointNotFound(..) => "canonical.dowel_joint_not_found",
-            Self::DowelJoint(..) => "canonical.dowel_joint",
+            Self::OccurrenceInPinJoint(..) => "canonical.occurrence_in_pin_joint",
+            Self::PinJointNotFound(..) => "canonical.pin_joint_not_found",
+            Self::PinJoint(..) => "canonical.pin_joint",
             Self::AssemblyRecipeNotFound => "canonical.assembly_recipe_not_found",
             Self::AssemblyRecipe(..) => "canonical.assembly_recipe",
             Self::AssemblyMateAlreadyExists(..) => "canonical.assembly_mate_already_exists",
@@ -10127,13 +10123,13 @@ impl fmt::Display for CanonicalError {
             Self::OccurrenceInAssemblyJoint(id) => {
                 write!(formatter, "occurrence {} is still used by an assembly joint", id.0)
             }
-            Self::OccurrenceInDowelJoint(id) => {
-                write!(formatter, "occurrence {} is still used by a dowel joint", id.0)
+            Self::OccurrenceInPinJoint(id) => {
+                write!(formatter, "occurrence {} is still used by a pin joint", id.0)
             }
-            Self::DowelJointNotFound(id) => {
-                write!(formatter, "dowel joint {} does not exist", id.0)
+            Self::PinJointNotFound(id) => {
+                write!(formatter, "pin joint {} does not exist", id.0)
             }
-            Self::DowelJoint(error) => write!(formatter, "invalid dowel joint: {error}"),
+            Self::PinJoint(error) => write!(formatter, "invalid pin joint: {error}"),
             Self::AssemblyRecipeNotFound => formatter.write_str("assembly recipe does not exist"),
             Self::AssemblyRecipe(error) => write!(formatter, "{error}"),
             Self::AssemblyMateAlreadyExists(id) => {
@@ -14418,7 +14414,7 @@ fn clone_definition_and_repoint(
         }),
     );
     let path = InstancePath::root(occurrence_id);
-    for joint in product.dowel_joints.values_mut() {
+    for joint in product.pin_joints.values_mut() {
         let first = joint.first.instance_path == path;
         let second = joint.second.instance_path == path;
         if (first || second) && joint.physical_hole_pairs.is_some() {
@@ -16597,11 +16593,11 @@ fn validate_product_with_drawing_sources(
         revision_id: 0,
         product: Arc::new(product.clone()),
     };
-    for (id, joint) in &product.dowel_joints {
+    for (id, joint) in &product.pin_joints {
         if *id != joint.id {
-            return Err(CanonicalError::DowelJoint(DowelJointError::InvalidJointId));
+            return Err(CanonicalError::PinJoint(PinJointError::InvalidJointId));
         }
-        project_dowel_joint_contract(&snapshot, joint).map_err(CanonicalError::DowelJoint)?;
+        project_pin_joint_contract(&snapshot, joint).map_err(CanonicalError::PinJoint)?;
     }
     if let Some(recipe) = product.assembly_recipe.as_deref() {
         recipe
@@ -18322,11 +18318,11 @@ fn authoritative_writes(
             CanonicalCommand::DeleteCamPlan { id } => {
                 writes.insert(AuthoritativeDependency::CamPlan(*id));
             }
-            CanonicalCommand::UpsertDowelJoint(joint) => {
-                writes.insert(AuthoritativeDependency::DowelJoint(joint.id));
+            CanonicalCommand::UpsertPinJoint(joint) => {
+                writes.insert(AuthoritativeDependency::PinJoint(joint.id));
             }
-            CanonicalCommand::DeleteDowelJoint { id } => {
-                writes.insert(AuthoritativeDependency::DowelJoint(*id));
+            CanonicalCommand::DeletePinJoint { id } => {
+                writes.insert(AuthoritativeDependency::PinJoint(*id));
             }
             CanonicalCommand::SetAssemblyRecipe(_) | CanonicalCommand::ClearAssemblyRecipe => {
                 writes.insert(AuthoritativeDependency::AssemblyRecipe);
@@ -18517,11 +18513,11 @@ fn authoritative_writes(
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
                 let path = InstancePath::root(plan.occurrence_id);
-                for joint in snapshot.dowel_joints().filter(|joint| {
+                for joint in snapshot.pin_joints().filter(|joint| {
                     joint.physical_hole_pairs.is_some()
                         && (joint.first.instance_path == path || joint.second.instance_path == path)
                 }) {
-                    writes.insert(AuthoritativeDependency::DowelJoint(joint.id));
+                    writes.insert(AuthoritativeDependency::PinJoint(joint.id));
                 }
                 if snapshot
                     .assembly_recipe()
@@ -19219,11 +19215,11 @@ fn authoritative_dependencies(
                 ));
                 dependencies.insert(AuthoritativeDependency::AssemblyRecipe);
                 let path = InstancePath::root(plan.occurrence_id);
-                for joint in snapshot.dowel_joints().filter(|joint| {
+                for joint in snapshot.pin_joints().filter(|joint| {
                     joint.physical_hole_pairs.is_some()
                         && (joint.first.instance_path == path || joint.second.instance_path == path)
                 }) {
-                    dependencies.insert(AuthoritativeDependency::DowelJoint(joint.id));
+                    dependencies.insert(AuthoritativeDependency::PinJoint(joint.id));
                 }
                 dependencies.insert(AuthoritativeDependency::Occurrence(plan.occurrence_id));
                 dependencies.insert(AuthoritativeDependency::Definition(
@@ -19417,8 +19413,8 @@ fn authoritative_dependencies(
             CanonicalCommand::DeleteCamPlan { id } => {
                 dependencies.insert(AuthoritativeDependency::CamPlan(*id));
             }
-            CanonicalCommand::UpsertDowelJoint(joint) => {
-                dependencies.insert(AuthoritativeDependency::DowelJoint(joint.id));
+            CanonicalCommand::UpsertPinJoint(joint) => {
+                dependencies.insert(AuthoritativeDependency::PinJoint(joint.id));
                 dependencies.insert(AuthoritativeDependency::Occurrence(
                     joint.first.instance_path.root_occurrence(),
                 ));
@@ -19426,8 +19422,8 @@ fn authoritative_dependencies(
                     joint.second.instance_path.root_occurrence(),
                 ));
             }
-            CanonicalCommand::DeleteDowelJoint { id } => {
-                dependencies.insert(AuthoritativeDependency::DowelJoint(*id));
+            CanonicalCommand::DeletePinJoint { id } => {
+                dependencies.insert(AuthoritativeDependency::PinJoint(*id));
             }
             CanonicalCommand::SetAssemblyRecipe(recipe) => {
                 dependencies.insert(AuthoritativeDependency::AssemblyRecipe);
@@ -19447,7 +19443,7 @@ fn authoritative_dependencies(
                     recipe
                         .joinery
                         .values()
-                        .map(|item| AuthoritativeDependency::DowelJoint(item.dowel_joint_id)),
+                        .map(|item| AuthoritativeDependency::PinJoint(item.pin_joint_id)),
                 );
             }
             CanonicalCommand::ClearAssemblyRecipe => {

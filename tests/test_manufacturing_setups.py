@@ -17,7 +17,7 @@ def two_setups():
     part["operations"].append({"kind": "circular-drill", "operation_id": "drill-B"})
     part["machining_setups"].append({
         "id": "B", "code": "000000000002", "operation_ids": ["drill-B"],
-        "dowel_hole_ids": [],
+        "pin_hole_ids": [],
     })
     source["outputs"]["homag-woodwop4"].append({
         "part_code": part["code"], "setup_id": "B", "code": "000000000002",
@@ -80,7 +80,7 @@ def test_cut_only_has_physical_id_but_no_program_barcode():
     lambda j: j["parts"][0]["machining_setups"][1].update(operation_ids=[]),
     lambda j: j["parts"][0]["machining_setups"][1].update(operation_ids=["UNKNOWN"]),
     lambda j: j["parts"][0]["machining_setups"][1].update(operation_ids=["drill-A", "drill-B"]),
-    lambda j: j["parts"][0]["machining_setups"][1].update(dowel_hole_ids=["UNKNOWN"]),
+    lambda j: j["parts"][0]["machining_setups"][1].update(pin_hole_ids=["UNKNOWN"]),
     lambda j: j["parts"][0].pop("machining_setups"),
     lambda j: j["parts"][0]["machining_setups"][1].update(code="../escape"),
     lambda j: j["parts"][0]["machining_setups"][1].update(code="=FORMULA"),
@@ -150,12 +150,12 @@ def test_short_program_name_requires_explicit_destination_length():
     assert list(HomagWoodwopAdapter(program_code_length=8).render(source)) == ["00107001.mpr"]
 
 
-def test_second_setup_dowel_coverage_cannot_be_silently_omitted():
+def test_second_setup_pin_coverage_cannot_be_silently_omitted():
     source = two_setups()
     part = source["parts"][0]
     part["operations"].pop()
-    part["dowel_holes"] = [{"kind": "dowel_drill", "hole_id": "joint-B-hole"}]
-    part["machining_setups"][1].update(operation_ids=[], dowel_hole_ids=["joint-B-hole"])
+    part["pin_holes"] = [{"kind": "pin_drill", "hole_id": "joint-B-hole"}]
+    part["machining_setups"][1].update(operation_ids=[], pin_hole_ids=["joint-B-hole"])
     assert len(HomagWoodwopAdapter().render(source)) == 2
     part["machining_setups"].pop()
     with pytest.raises(ManufacturingError, match="cover every"):
@@ -167,7 +167,7 @@ def test_setup_program_codes_are_globally_unique_not_just_per_part(tmp_path):
     other = source["parts"][1]
     other["operations"].append({"kind": "circular-drill", "operation_id": "other-drill"})
     other["machining_setups"] = [{"id": "A", "code": "000000000000",
-                                  "operation_ids": ["other-drill"], "dowel_hole_ids": []}]
+                                  "operation_ids": ["other-drill"], "pin_hole_ids": []}]
     with pytest.raises(ManufacturingError, match="duplicate.*program code"):
         export_job(source, tmp_path / "order", [], confirmed=True)
     assert not list(tmp_path.iterdir())

@@ -19,9 +19,9 @@ from ketchup.manufacturing import (
 
 def job(count=2):
     parts = [{"instance_path": {"root_occurrence_id": i + 1, "steps": []}, "code": f"{i:012d}",
-              "name": "=not_a_formula", "material_key": "oak", "dowel_holes": [], "stock_shape": "rectangular_prism",
+              "name": "=not_a_formula", "material_key": "oak", "pin_holes": [], "stock_shape": "rectangular_prism",
               "dimensions_mm": [600, 400, 18], "operations": [{"kind": "stock"}] + ([{"kind": "circular-drill", "operation_id": "drill-A"}] if i == 0 else []),
-              "machining_setups": [{"id": "A", "code": f"{i:012d}", "operation_ids": ["drill-A"], "dowel_hole_ids": []}] if i == 0 else []} for i in range(count)]
+              "machining_setups": [{"id": "A", "code": f"{i:012d}", "operation_ids": ["drill-A"], "pin_hole_ids": []}] if i == 0 else []} for i in range(count)]
     return {"schema": "ketchup.production-job.v2", "document_id": 1,
             "source_revision": 2, "source_digest": "source-hash", "parts": parts,
             "outputs": {"homag-woodwop4": [

@@ -384,7 +384,7 @@ mod tests {
             },
         };
         app.hovered = Some(selection.clone());
-        // A face with dowel holes tessellates into long slivers like this one.
+        // A face with pin holes tessellates into long slivers like this one.
         let sliver = [
             Pos2::new(300.0, 100.0),
             Pos2::new(300.4, 900.0),

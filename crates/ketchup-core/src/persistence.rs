@@ -1561,30 +1561,33 @@ fn load_document(
         .split_at_checked(2)
         .ok_or(PersistenceError::Truncated)?;
     let schema = u16::from_le_bytes([schema[0], schema[1]]);
-    let (revision_id, product, migration_losses, legacy_digest) = match schema.cmp(&CURRENT_SCHEMA)
-    {
-        std::cmp::Ordering::Equal => {
-            let (revision_id, product) = snapshot_codec::decode(body)?;
-            (revision_id, product, Vec::new(), None)
-        }
-        std::cmp::Ordering::Less => {
-            let decoded = legacy::decode(bytes)?;
-            let migrated = crate::document::digest_v3::migrate_stored_digests(
-                decoded.product,
-                &decoded.point_profiles,
-                migrated_digests,
-                |product| legacy::complete_old_records(product, &decoded.point_profiles),
-            )
-            .map_err(|error| PersistenceError::InvalidPayload(error.to_string()))?;
-            (
-                decoded.revision_id,
-                migrated.product,
-                decoded.migration_losses,
-                Some(migrated.source_digest),
-            )
-        }
-        std::cmp::Ordering::Greater => return Err(PersistenceError::UnsupportedSchema(schema)),
+    let (revision_id, product, migration_losses, legacy_digest) = if schema > CURRENT_SCHEMA {
+        return Err(PersistenceError::UnsupportedSchema(schema));
+    } else if schema >= snapshot_codec::FIRST_SNAPSHOT_FORMAT {
+        let decoded = snapshot_codec::decode(schema, body)?;
+        (
+            decoded.revision_id,
+            decoded.product,
+            Vec::new(),
+            decoded.writer_digest,
+        )
+    } else {
+        let decoded = legacy::decode(bytes)?;
+        let migrated = crate::document::digest_v3::migrate_stored_digests(
+            decoded.product,
+            &decoded.point_profiles,
+            migrated_digests,
+            |product| legacy::complete_old_records(product, &decoded.point_profiles),
+        )
+        .map_err(|error| PersistenceError::InvalidPayload(error.to_string()))?;
+        (
+            decoded.revision_id,
+            migrated.product,
+            decoded.migration_losses,
+            Some(migrated.source_digest),
+        )
     };
+
     let override_health = product
         .overrides
         .values()

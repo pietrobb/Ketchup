@@ -31,7 +31,7 @@ struct FixtureManifest {
 #[derive(Debug, Deserialize)]
 struct ReferenceRequest {
     target_part: TargetPart,
-    dowel: DowelSpec,
+    pin: PinSpec,
     rows: Vec<RowSpec>,
     expected: ExpectedResult,
 }
@@ -45,7 +45,7 @@ struct TargetPart {
 }
 
 #[derive(Debug, Deserialize)]
-struct DowelSpec {
+struct PinSpec {
     diameter_mm: f64,
     length_mm: f64,
     hole_depth_each_part_mm: f64,
@@ -62,10 +62,10 @@ struct RowSpec {
 #[derive(Debug, Deserialize)]
 struct ExpectedResult {
     rear_joint_rows: usize,
-    rear_dowels: usize,
-    new_rear_dowels: usize,
-    total_document_dowel_joints: usize,
-    total_document_dowels: usize,
+    rear_pins: usize,
+    new_rear_pins: usize,
+    total_document_pin_joints: usize,
+    total_document_pins: usize,
     replacement_part_allowed: bool,
     hidden_superseded_part_allowed: bool,
     undo_steps_added: usize,
@@ -87,7 +87,7 @@ struct FixtureEntry {
     definitions: usize,
     features: usize,
     instances: usize,
-    dowel_joints: usize,
+    pin_joints: usize,
     #[serde(default)]
     known_defects: Vec<String>,
 }
@@ -116,7 +116,7 @@ struct FixtureBaseline {
     definitions: usize,
     features: usize,
     occurrences: usize,
-    dowel_joints: usize,
+    pin_joints: usize,
 }
 
 #[derive(Serialize)]
@@ -173,7 +173,7 @@ fn nightstand_inputs_are_immutable_and_the_interrupted_result_is_not_an_oracle()
         assert_eq!(snapshot.definitions().count(), expected.definitions);
         assert_eq!(snapshot.features().count(), expected.features);
         assert_eq!(snapshot.occurrences().count(), expected.instances);
-        assert_eq!(snapshot.dowel_joints().count(), expected.dowel_joints);
+        assert_eq!(snapshot.pin_joints().count(), expected.pin_joints);
     }
 
     let interrupted = manifest
@@ -189,12 +189,12 @@ fn nightstand_inputs_are_immutable_and_the_interrupted_result_is_not_an_oracle()
     assert!(
         interrupted
             .known_defects
-            .contains(&"missing_left_side_dowel_row".to_owned())
+            .contains(&"missing_left_side_pin_row".to_owned())
     );
     assert!(
         interrupted
             .known_defects
-            .contains(&"missing_right_side_dowel_row".to_owned())
+            .contains(&"missing_right_side_pin_row".to_owned())
     );
 }
 
@@ -218,47 +218,47 @@ fn v9_rear_panel_adoption_preserves_the_existing_model_and_round_trips() {
         ("rear/body/sketch", 95, RecognizedRecipeFeatureKind::Sketch),
         ("rear/body/pad", 96, RecognizedRecipeFeatureKind::Pad),
         (
-            "rear/lower-dowel-1/workplane",
+            "rear/lower-pin-1/workplane",
             127,
             RecognizedRecipeFeatureKind::Workplane,
         ),
         (
-            "rear/lower-dowel-1/sketch",
+            "rear/lower-pin-1/sketch",
             128,
             RecognizedRecipeFeatureKind::Sketch,
         ),
         (
-            "rear/lower-dowel-1/pocket",
+            "rear/lower-pin-1/pocket",
             129,
             RecognizedRecipeFeatureKind::Pad,
         ),
         (
-            "rear/lower-dowel-2/workplane",
+            "rear/lower-pin-2/workplane",
             130,
             RecognizedRecipeFeatureKind::Workplane,
         ),
         (
-            "rear/lower-dowel-2/sketch",
+            "rear/lower-pin-2/sketch",
             131,
             RecognizedRecipeFeatureKind::Sketch,
         ),
         (
-            "rear/lower-dowel-2/pocket",
+            "rear/lower-pin-2/pocket",
             132,
             RecognizedRecipeFeatureKind::Pad,
         ),
         (
-            "rear/lower-dowel-3/workplane",
+            "rear/lower-pin-3/workplane",
             133,
             RecognizedRecipeFeatureKind::Workplane,
         ),
         (
-            "rear/lower-dowel-3/sketch",
+            "rear/lower-pin-3/sketch",
             134,
             RecognizedRecipeFeatureKind::Sketch,
         ),
         (
-            "rear/lower-dowel-3/pocket",
+            "rear/lower-pin-3/pocket",
             135,
             RecognizedRecipeFeatureKind::Pad,
         ),
@@ -301,7 +301,7 @@ fn v9_rear_panel_adoption_preserves_the_existing_model_and_round_trips() {
     assert_eq!(adopted.definitions().count(), 15);
     assert_eq!(adopted.features().count(), 144);
     assert_eq!(adopted.occurrences().count(), 53);
-    assert_eq!(adopted.dowel_joints().count(), 7);
+    assert_eq!(adopted.pin_joints().count(), 7);
     assert_eq!(
         adopted.occurrence(OccurrenceId(6)).unwrap().definition_id(),
         DefinitionId(5)
@@ -326,7 +326,7 @@ fn v9_rear_panel_adoption_preserves_the_existing_model_and_round_trips() {
     assert_eq!(round_tripped.definitions().count(), 15);
     assert_eq!(round_tripped.features().count(), 144);
     assert_eq!(round_tripped.occurrences().count(), 53);
-    assert_eq!(round_tripped.dowel_joints().count(), 7);
+    assert_eq!(round_tripped.pin_joints().count(), 7);
 }
 
 #[test]
@@ -512,8 +512,8 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
         before.occurrences().collect::<Vec<_>>()
     );
     assert_eq!(
-        after.dowel_joints().collect::<Vec<_>>(),
-        before.dowel_joints().collect::<Vec<_>>()
+        after.pin_joints().collect::<Vec<_>>(),
+        before.pin_joints().collect::<Vec<_>>()
     );
     for feature in before
         .features()
@@ -557,9 +557,9 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
             "exact rear bound {actual} != {expected}"
         );
     }
-    for joint in snapshot.dowel_joints() {
+    for joint in snapshot.pin_joints() {
         let projection =
-            ketchup_core::joinery::project_dowel_joint_contract(&snapshot, joint).unwrap();
+            ketchup_core::pin_joint::project_pin_joint_contract(&snapshot, joint).unwrap();
         assert_eq!(projection.pairs.len(), 3);
         for pair in projection.pairs {
             assert!(
@@ -590,11 +590,11 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
     use ketchup_application::plan_assistant_cad_edit_program;
     use ketchup_core::assistant_sidecar::AssistantCadParameterValueType;
     use ketchup_core::assistant_sidecar::{
-        AssistantCadEditOperation, AssistantCadEditProgram, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantPin,
+        AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
+        AssistantPinJointFace,
     };
     use ketchup_core::exact_product::ExactResultRegistry;
-    use ketchup_core::joinery::project_dowel_joint_contract;
+    use ketchup_core::pin_joint::project_pin_joint_contract;
     use std::collections::BTreeSet;
 
     let path = fixture_directory().join("nightstand_v9_retention.ketchup");
@@ -620,7 +620,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
         document.current().canonical_digest(),
         before.canonical_digest()
     );
-    let face = |id, origin, inward, maximum| AssistantDowelJointFace {
+    let face = |id, origin, inward, maximum| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
@@ -633,7 +633,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
     let rear = |origin, inward| face(6, origin, inward, [464.0, 218.0, 8.0]);
     let side = |id| face(id, [0.0; 3], [0.0, 0.0, 1.0], [350.0, 432.0, 18.0]);
     let row = |name: &str, first, second, center, direction, spacing| {
-        AssistantCadEditOperation::CreatePhysicalDowelJoint {
+        AssistantCadEditOperation::CreatePhysicalPinJoint {
             joint_id: None,
             name: name.into(),
             first,
@@ -701,7 +701,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
         after.occurrence(OccurrenceId(6)),
         before.occurrence(OccurrenceId(6))
     );
-    assert_eq!(after.dowel_joints().count(), 10);
+    assert_eq!(after.pin_joints().count(), 10);
     let repeated = plan_assistant_cad_edit_program(
         &document,
         &BTreeSet::new(),
@@ -717,7 +717,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
     assert!(repeated.commands().is_empty());
     assert_eq!(
         after
-            .dowel_joints()
+            .pin_joints()
             .map(|joint| joint.count as usize)
             .sum::<usize>(),
         30
@@ -750,9 +750,9 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
         ),
     ] {
         let joint = after
-            .dowel_joint(ketchup_core::joinery::DowelJointId(id))
+            .pin_joint(ketchup_core::pin_joint::PinJointId(id))
             .unwrap();
-        let projected = project_dowel_joint_contract(&after, joint).unwrap();
+        let projected = project_pin_joint_contract(&after, joint).unwrap();
         assert_eq!(projected.pairs.len(), 3);
         for (pair, center) in projected.pairs.iter().zip(centers) {
             for axis in 0..3 {
@@ -775,10 +775,9 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
             );
         }
     }
-    for joint in before.dowel_joints() {
-        let old = project_dowel_joint_contract(&before, joint).unwrap();
-        let new =
-            project_dowel_joint_contract(&after, after.dowel_joint(joint.id).unwrap()).unwrap();
+    for joint in before.pin_joints() {
+        let old = project_pin_joint_contract(&before, joint).unwrap();
+        let new = project_pin_joint_contract(&after, after.pin_joint(joint.id).unwrap()).unwrap();
         assert_eq!(old, new);
     }
     let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
@@ -828,8 +827,8 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
             1
         );
     }
-    for joint in reopened.dowel_joints() {
-        let projection = project_dowel_joint_contract(&reopened, joint).unwrap();
+    for joint in reopened.pin_joints() {
+        let projection = project_pin_joint_contract(&reopened, joint).unwrap();
         assert_eq!(projection.pairs.len(), 3);
         for pair in projection.pairs {
             assert!(
@@ -856,7 +855,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
 fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
     use ketchup_core::assembly_recipe::{RecipeParameter, RecipeParameterUnit};
     use ketchup_core::document::{FeatureParameterTarget, ParameterValueType};
-    use ketchup_core::joinery::project_dowel_joint_contract;
+    use ketchup_core::pin_joint::project_pin_joint_contract;
 
     for fixture in [
         "nightstand_v8_full_probe.ketchup",
@@ -968,19 +967,19 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                     .authoritative_writes()
                     .contains(&AuthoritativeDependency::AssemblyRecipe)
             );
-            for joint in before.dowel_joints().filter(|joint| {
+            for joint in before.pin_joints().filter(|joint| {
                 joint.first.instance_path == InstancePath::root(occurrence_id)
                     || joint.second.instance_path == InstancePath::root(occurrence_id)
             }) {
                 assert!(
                     proposal
                         .authoritative_dependencies()
-                        .contains(&AuthoritativeDependency::DowelJoint(joint.id))
+                        .contains(&AuthoritativeDependency::PinJoint(joint.id))
                 );
                 assert!(
                     proposal
                         .authoritative_writes()
-                        .contains(&AuthoritativeDependency::DowelJoint(joint.id))
+                        .contains(&AuthoritativeDependency::PinJoint(joint.id))
                 );
             }
             assert_eq!(
@@ -988,21 +987,21 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                 before.canonical_digest()
             );
             let mut added_joint = before
-                .dowel_joints()
+                .pin_joints()
                 .find(|joint| {
                     joint.first.instance_path == InstancePath::root(occurrence_id)
                         || joint.second.instance_path == InstancePath::root(occurrence_id)
                 })
                 .unwrap()
                 .clone();
-            added_joint.id = ketchup_core::joinery::DowelJointId(
-                before.dowel_joints().map(|joint| joint.id.0).max().unwrap() + 1,
+            added_joint.id = ketchup_core::pin_joint::PinJointId(
+                before.pin_joints().map(|joint| joint.id.0).max().unwrap() + 1,
             );
             added_joint.name = "Concurrent joint".into();
             document
-                .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::UpsertDowelJoint(added_joint),
-                ]))
+                .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertPinJoint(
+                    added_joint,
+                )]))
                 .unwrap();
             let concurrent = document.current();
             assert!(matches!(
@@ -1088,9 +1087,9 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                     .unwrap();
                 assert_eq!(owned.feature_id, mapping[&previous.feature_id]);
             }
-            assert_eq!(after.dowel_joints().count(), before.dowel_joints().count());
+            assert_eq!(after.pin_joints().count(), before.pin_joints().count());
             let mut remapped_sides = 0;
-            for joint in before.dowel_joints() {
+            for joint in before.pin_joints() {
                 let mut expected = joint.clone();
                 for pair in expected.physical_hole_pairs.as_mut().unwrap() {
                     if joint.first.instance_path == InstancePath::root(occurrence_id) {
@@ -1102,10 +1101,10 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                         remapped_sides += 1;
                     }
                 }
-                assert_eq!(after.dowel_joint(joint.id), Some(&expected));
+                assert_eq!(after.pin_joint(joint.id), Some(&expected));
                 assert_eq!(
-                    project_dowel_joint_contract(&after, &expected).unwrap(),
-                    project_dowel_joint_contract(&before, joint).unwrap()
+                    project_pin_joint_contract(&after, &expected).unwrap(),
+                    project_pin_joint_contract(&before, joint).unwrap()
                 );
             }
             assert!(remapped_sides > 0);
@@ -1147,8 +1146,8 @@ fn original_shared_side_make_unique_preserves_physical_holes_and_recipe() {
                 source_bodies[0].1.triangles(),
                 cloned_bodies[0].1.triangles()
             );
-            for joint in snapshot.dowel_joints() {
-                let projection = project_dowel_joint_contract(&snapshot, joint).unwrap();
+            for joint in snapshot.pin_joints() {
+                let projection = project_pin_joint_contract(&snapshot, joint).unwrap();
                 for pair in projection.pairs {
                     assert_eq!(pair.first.diameter_mm, 8.0);
                     assert_eq!(pair.second.diameter_mm, 8.0);
@@ -1200,10 +1199,10 @@ fn reference_request_freezes_geometry_joinery_tolerances_and_sla_before_implemen
     );
     assert_eq!(request.target_part.required_gap_mm, 0.0);
     assert_eq!(request.target_part.contact_tolerance_mm, 1.0e-6);
-    assert_eq!(request.dowel.diameter_mm, 8.0);
-    assert_eq!(request.dowel.length_mm, 30.0);
-    assert_eq!(request.dowel.hole_depth_each_part_mm, 16.0);
-    assert_eq!(request.dowel.probe_endpoint_tolerance_mm, 1.0e-6);
+    assert_eq!(request.pin.diameter_mm, 8.0);
+    assert_eq!(request.pin.length_mm, 30.0);
+    assert_eq!(request.pin.hole_depth_each_part_mm, 16.0);
+    assert_eq!(request.pin.probe_endpoint_tolerance_mm, 1.0e-6);
     assert_eq!(request.rows.len(), 4);
     assert!(
         request
@@ -1241,10 +1240,10 @@ fn reference_request_freezes_geometry_joinery_tolerances_and_sla_before_implemen
         ]
     );
     assert_eq!(request.expected.rear_joint_rows, 4);
-    assert_eq!(request.expected.rear_dowels, 12);
-    assert_eq!(request.expected.new_rear_dowels, 9);
-    assert_eq!(request.expected.total_document_dowel_joints, 10);
-    assert_eq!(request.expected.total_document_dowels, 30);
+    assert_eq!(request.expected.rear_pins, 12);
+    assert_eq!(request.expected.new_rear_pins, 9);
+    assert_eq!(request.expected.total_document_pin_joints, 10);
+    assert_eq!(request.expected.total_document_pins, 30);
     assert!(!request.expected.replacement_part_allowed);
     assert!(!request.expected.hidden_superseded_part_allowed);
     assert_eq!(request.expected.undo_steps_added, 1);
@@ -1382,11 +1381,11 @@ fn deterministic_large_panel_fixture() -> DocumentStore {
 fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
     use ketchup_application::plan_assistant_cad_edit_program;
     use ketchup_core::assistant_sidecar::{
-        AssistantCadEditOperation, AssistantCadEditProgram, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantPin,
+        AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
+        AssistantPinJointFace,
     };
     use ketchup_core::exact_product::ExactResultRegistry;
-    use ketchup_core::joinery::project_dowel_joint_contract;
+    use ketchup_core::pin_joint::project_pin_joint_contract;
     use std::collections::BTreeSet;
 
     let mut document = deterministic_large_panel_fixture();
@@ -1422,7 +1421,7 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
         .unwrap();
     let positioned = document.current();
     let history = document.visible_undo_steps();
-    let face = |id, z, inward, width, height| AssistantDowelJointFace {
+    let face = |id, z, inward, width, height| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
@@ -1435,24 +1434,22 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
     let program = AssistantCadEditProgram {
         operations: first_ids
             .iter()
-            .map(
-                |&first| AssistantCadEditOperation::CreatePhysicalDowelJoint {
-                    joint_id: None,
-                    name: format!("Cabinet {first} physical row"),
-                    first: face(first, 18.0, [0.0, 0.0, -1.0], 400.0, 300.0),
-                    second: face(first + 1, 0.0, [0.0, 0.0, 1.0], 425.0, 320.0),
-                    first_center_local_mm: [60.0, 60.0, 18.0],
-                    row_unit_first_local: [1.0, 0.0, 0.0],
-                    count: 3,
-                    spacing_mm: 100.0,
-                    pin: AssistantPin {
-                        diameter_mm: 8.0,
-                        length_mm: 30.0,
-                        hole_clearance_mm: 1.0,
-                    },
-                    first_insertion_mm: None,
+            .map(|&first| AssistantCadEditOperation::CreatePhysicalPinJoint {
+                joint_id: None,
+                name: format!("Cabinet {first} physical row"),
+                first: face(first, 18.0, [0.0, 0.0, -1.0], 400.0, 300.0),
+                second: face(first + 1, 0.0, [0.0, 0.0, 1.0], 425.0, 320.0),
+                first_center_local_mm: [60.0, 60.0, 18.0],
+                row_unit_first_local: [1.0, 0.0, 0.0],
+                count: 3,
+                spacing_mm: 100.0,
+                pin: AssistantPin {
+                    diameter_mm: 8.0,
+                    length_mm: 30.0,
+                    hole_clearance_mm: 1.0,
                 },
-            )
+                first_insertion_mm: None,
+            })
             .collect(),
     };
     let planned = plan_assistant_cad_edit_program(
@@ -1465,13 +1462,10 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
     document.apply_batch(&planned).unwrap();
     let after = document.current();
     assert_eq!(after.occurrences().count(), 278);
-    assert_eq!(after.dowel_joints().count(), 17);
-    assert_eq!(
-        after.dowel_joints().map(|joint| joint.count).sum::<u32>(),
-        51
-    );
+    assert_eq!(after.pin_joints().count(), 17);
+    assert_eq!(after.pin_joints().map(|joint| joint.count).sum::<u32>(), 51);
     assert_eq!(document.visible_undo_steps(), history + 1);
-    for (index, joint) in after.dowel_joints().enumerate() {
+    for (index, joint) in after.pin_joints().enumerate() {
         assert_eq!(
             joint.first.instance_path.root_occurrence().0,
             first_ids[index]
@@ -1499,7 +1493,7 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
                 assert!(before.feature(feature_id).is_none());
             }
         }
-        let projection = project_dowel_joint_contract(&after, joint).unwrap();
+        let projection = project_pin_joint_contract(&after, joint).unwrap();
         assert_eq!(projection.pairs.len(), 3);
         for (point, pair) in projection.pairs.iter().enumerate() {
             let expected_x = index as f64 * 1_000.0 + 60.0 + point as f64 * 100.0;
@@ -1575,7 +1569,7 @@ fn baseline_report_measures_preserved_inputs_and_builds_the_17_cabinet_278_panel
             definitions: snapshot.definitions().count(),
             features: snapshot.features().count(),
             occurrences: snapshot.occurrences().count(),
-            dowel_joints: snapshot.dowel_joints().count(),
+            pin_joints: snapshot.pin_joints().count(),
         });
     }
 

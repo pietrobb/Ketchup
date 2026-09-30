@@ -13,7 +13,7 @@
       "required_gap_mm": 0.0,
       "contact_tolerance_mm": 0.000001
     },
-    "dowel": {
+    "pin": {
       "diameter_mm": 8.0,
       "length_mm": 30.0,
       "hole_depth_each_part_mm": 16.0,
@@ -43,10 +43,10 @@
     ],
     "expected": {
       "rear_joint_rows": 4,
-      "rear_dowels": 12,
-      "new_rear_dowels": 9,
-      "total_document_dowel_joints": 10,
-      "total_document_dowels": 30,
+      "rear_pins": 12,
+      "new_rear_pins": 9,
+      "total_document_pin_joints": 10,
+      "total_document_pins": 30,
       "replacement_part_allowed": false,
       "hidden_superseded_part_allowed": false,
       "undo_steps_added": 1,
@@ -68,7 +68,7 @@
       "definitions": 15,
       "features": 126,
       "instances": 47,
-      "dowel_joints": 6
+      "pin_joints": 6
     },
     {
       "path": "nightstand_v9_retention.ketchup",
@@ -80,7 +80,7 @@
       "definitions": 15,
       "features": 144,
       "instances": 53,
-      "dowel_joints": 7
+      "pin_joints": 7
     },
     {
       "path": "nightstand_v10_interrupted.ketchup",
@@ -92,12 +92,12 @@
       "definitions": 16,
       "features": 174,
       "instances": 60,
-      "dowel_joints": 9,
+      "pin_joints": 9,
       "known_defects": [
         "replaced_the_rear_part_instead_of_editing_it",
         "hid_the_superseded_part",
-        "missing_left_side_dowel_row",
-        "missing_right_side_dowel_row",
+        "missing_left_side_pin_row",
+        "missing_right_side_pin_row",
         "no_recorded_phase_trace"
       ]
     }

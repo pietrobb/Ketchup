@@ -5,11 +5,11 @@ use egui_kittest::{Harness, kittest::Queryable as _};
 #[test]
 fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geometry() {
     use ketchup_core::assistant_sidecar::{
-        AssistantCadEditOperation as Op, AssistantCadParameterValueType, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantPin,
+        AssistantCadEditOperation as Op, AssistantCadParameterValueType, AssistantInstancePath,
+        AssistantPin, AssistantPinJointFace,
     };
     use ketchup_core::document::FeatureParameterTarget;
-    use ketchup_core::joinery::project_dowel_joint_contract;
+    use ketchup_core::pin_joint::project_pin_joint_contract;
 
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
         "../ketchup-application/tests/fixtures/fast_assembly/nightstand_v9_retention.ketchup",
@@ -34,7 +34,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     // (both sides, bottom shelf, drawer front) stand on the floor by default.
     // The drawer box (8-11) rides on runners the fixture does not model, so it
     // is declared carried explicitly. Everything else must be carried by
-    // contact or by the verified dowel joints.
+    // contact or by the verified pin joints.
     app.document
         .apply_batch(&CommandBatch::new(
             [8, 9, 10, 11]
@@ -62,7 +62,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     assert!(!app.exact_results.is_empty());
     let before = app.live_bridge_stamp();
     let undo = app.undo_step_count();
-    let face = |id, origin, inward, maximum| AssistantDowelJointFace {
+    let face = |id, origin, inward, maximum| AssistantPinJointFace {
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
@@ -74,23 +74,22 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     };
     let rear = |origin, inward| face(6, origin, inward, [464.0, 218.0, 8.0]);
     let side = |id| face(id, [0.0; 3], [0.0, 0.0, 1.0], [350.0, 432.0, 18.0]);
-    let row =
-        |name: &str, first, second, center, direction, spacing| Op::CreatePhysicalDowelJoint {
-            joint_id: None,
-            name: name.into(),
-            first,
-            second,
-            first_center_local_mm: center,
-            row_unit_first_local: direction,
-            count: 3,
-            spacing_mm: spacing,
-            pin: AssistantPin {
-                diameter_mm: 8.0,
-                length_mm: 30.0,
-                hole_clearance_mm: 1.0,
-            },
-            first_insertion_mm: None,
-        };
+    let row = |name: &str, first, second, center, direction, spacing| Op::CreatePhysicalPinJoint {
+        joint_id: None,
+        name: name.into(),
+        first,
+        second,
+        first_center_local_mm: center,
+        row_unit_first_local: direction,
+        count: 3,
+        spacing_mm: spacing,
+        pin: AssistantPin {
+            diameter_mm: 8.0,
+            length_mm: 30.0,
+            hole_clearance_mm: 1.0,
+        },
+        first_insertion_mm: None,
+    };
     let program = AssistantCadEditProgram {
         operations: vec![
             Op::SetFeatureParameter {
@@ -179,9 +178,9 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     )
     .unwrap();
     assert_eq!(repaired.feature_parameter_value(&target), Some(218.0));
-    assert_eq!(repaired.dowel_joints().count(), 10);
-    for joint in repaired.dowel_joints() {
-        let projected = project_dowel_joint_contract(&repaired, joint).unwrap();
+    assert_eq!(repaired.pin_joints().count(), 10);
+    for joint in repaired.pin_joints() {
+        let projected = project_pin_joint_contract(&repaired, joint).unwrap();
         for pair in projected.pairs {
             assert_eq!(pair.first.diameter_mm, 8.0);
             assert_eq!(pair.first.depth_mm, 16.0);
@@ -197,7 +196,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     let empty = bridge.execute(&mut app, Request::Status {}, false).unwrap();
     assert_eq!(empty["selected_context"]["state"], "empty");
     let joint = repaired
-        .dowel_joints()
+        .pin_joints()
         .find(|joint| {
             joint.first.instance_path.root_occurrence() == OccurrenceId(6)
                 && joint.second.instance_path.root_occurrence() == OccurrenceId(1)
@@ -211,10 +210,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         .get_render(&repaired, definition_id)
         .unwrap()
         .clone();
-    let hole = &project_dowel_joint_contract(&repaired, joint)
-        .unwrap()
-        .pairs[1]
-        .first;
+    let hole = &project_pin_joint_contract(&repaired, joint).unwrap().pairs[1].first;
     let edges = package.edge_evidence();
     let matching_edges = edges
         .iter()
@@ -243,24 +239,22 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         }
     ));
     let selected = bridge.execute(&mut app, Request::Status {}, false).unwrap();
-    assert_eq!(selected["selected_context"]["state"], "dowel_pair");
+    assert_eq!(selected["selected_context"]["state"], "pin_pair");
     assert_eq!(
-        selected["selected_context"]["dowel_pair"]["joint_id"],
+        selected["selected_context"]["pin_pair"]["joint_id"],
         joint.id.0
     );
-    assert_eq!(selected["selected_context"]["dowel_pair"]["pair_index"], 1);
+    assert_eq!(selected["selected_context"]["pin_pair"]["pair_index"], 1);
     assert_eq!(
-        selected["selected_context"]["dowel_pair"]["first_pocket_feature_id"],
+        selected["selected_context"]["pin_pair"]["first_pocket_feature_id"],
         binding.first_pocket_feature_id.0
     );
     assert_eq!(
-        selected["selected_context"]["dowel_pair"]["second_pocket_feature_id"],
+        selected["selected_context"]["pin_pair"]["second_pocket_feature_id"],
         binding.second_pocket_feature_id.0
     );
     for index in [0, 2] {
-        let pair = &project_dowel_joint_contract(&repaired, joint)
-            .unwrap()
-            .pairs[index];
+        let pair = &project_pin_joint_contract(&repaired, joint).unwrap().pairs[index];
         let ordinal = edges
             .iter()
             .find(|edge| {
@@ -284,20 +278,14 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             }
         ));
         let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
-        assert_eq!(status["selected_context"]["state"], "dowel_pair");
+        assert_eq!(status["selected_context"]["state"], "pin_pair");
         assert_eq!(
-            status["selected_context"]["dowel_pair"]["joint_id"],
+            status["selected_context"]["pin_pair"]["joint_id"],
             joint.id.0
         );
-        assert_eq!(
-            status["selected_context"]["dowel_pair"]["pair_index"],
-            index
-        );
+        assert_eq!(status["selected_context"]["pin_pair"]["pair_index"], index);
     }
-    let second = &project_dowel_joint_contract(&repaired, joint)
-        .unwrap()
-        .pairs[1]
-        .second;
+    let second = &project_pin_joint_contract(&repaired, joint).unwrap().pairs[1].second;
     let second_definition = repaired
         .resolve_instance_path(&second.instance_path)
         .unwrap()
@@ -330,14 +318,14 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         }
     ));
     let opposite = bridge.execute(&mut app, Request::Status {}, false).unwrap();
-    assert_eq!(opposite["selected_context"]["state"], "dowel_pair");
+    assert_eq!(opposite["selected_context"]["state"], "pin_pair");
     assert_eq!(
-        opposite["selected_context"]["dowel_pair"]["joint_id"],
+        opposite["selected_context"]["pin_pair"]["joint_id"],
         joint.id.0
     );
-    assert_eq!(opposite["selected_context"]["dowel_pair"]["pair_index"], 1);
+    assert_eq!(opposite["selected_context"]["pin_pair"]["pair_index"], 1);
     assert_eq!(
-        opposite["selected_context"]["dowel_pair"]["selected_side"],
+        opposite["selected_context"]["pin_pair"]["selected_side"],
         "second"
     );
     assert!(app.select_topological_locator(
@@ -361,9 +349,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
                             origin
                                 .into_iter()
                                 .zip(
-                                    project_dowel_joint_contract(&repaired, joint)
-                                        .unwrap()
-                                        .pairs[0]
+                                    project_pin_joint_contract(&repaired, joint).unwrap().pairs[0]
                                         .first
                                         .entry_local_mm,
                                 )
@@ -381,7 +367,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         multiple["selected_context"]["state"],
         "multiple_topological_elements"
     );
-    assert!(multiple["selected_context"]["dowel_pair"].is_null());
+    assert!(multiple["selected_context"]["pin_pair"].is_null());
     let other = edges
         .iter()
         .find(|edge| edge.circle_radius_mm.is_none() && edge.edge_ordinal != ordinal)
@@ -396,7 +382,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     ));
     let non_hole = bridge.execute(&mut app, Request::Status {}, false).unwrap();
     assert_eq!(non_hole["selected_context"]["state"], "topological_element");
-    assert!(non_hole["selected_context"]["dowel_pair"].is_null());
+    assert!(non_hole["selected_context"]["pin_pair"].is_null());
     let after = app.live_bridge_stamp();
     assert!(app.undo());
     assert_eq!(
@@ -451,12 +437,12 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     let clicked = bridge
         .execute(harness.state_mut(), Request::Status {}, false)
         .unwrap();
-    assert_eq!(clicked["selected_context"]["state"], "dowel_pair");
+    assert_eq!(clicked["selected_context"]["state"], "pin_pair");
     assert_eq!(
-        clicked["selected_context"]["dowel_pair"]["joint_id"],
+        clicked["selected_context"]["pin_pair"]["joint_id"],
         joint.id.0
     );
-    assert_eq!(clicked["selected_context"]["dowel_pair"]["pair_index"], 1);
+    assert_eq!(clicked["selected_context"]["pin_pair"]["pair_index"], 1);
     harness.input_mut().events.push(egui::Event::PointerButton {
         pos: pointer,
         button: egui::PointerButton::Primary,
@@ -473,7 +459,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     let moved = bridge
         .execute(harness.state_mut(), Request::Status {}, false)
         .unwrap();
-    assert_eq!(moved["selected_context"]["dowel_pair"]["pair_index"], 1);
+    assert_eq!(moved["selected_context"]["pin_pair"]["pair_index"], 1);
     let highlight = harness.state().selected_topological_edge_paths();
     assert!(
         !highlight.is_empty(),

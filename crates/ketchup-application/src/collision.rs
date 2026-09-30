@@ -979,7 +979,7 @@ fn collision_report(
         candidates
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
         // Panel hulls decide every pair whose boxes do not penetrate, at any
-        // rotation; only penetrating hulls (e.g. dowel in hole) need OCCT.
+        // rotation; only penetrating hulls (e.g. pin in hole) need OCCT.
         let local_hulls = graphs.iter().map(hull::local_hull).collect::<Vec<_>>();
         let world_hulls = bodies
             .iter()

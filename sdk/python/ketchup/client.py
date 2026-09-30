@@ -445,14 +445,14 @@ class Document:
             operation["rotation"] = rotation
         return self.apply([operation])
 
-    def dowel_joint(self, name, first, second, first_center_local_mm,
+    def pin_joint(self, name, first, second, first_center_local_mm,
                     row_unit_first_local, count, spacing_mm, *, pin,
                     physical_hole_pairs=()):
         """Persist one relational row and optionally bind its physical pocket pairs.
 
         ``pin`` is ``{"diameter_mm", "length_mm", "hole_clearance_mm"}``.
         """
-        return self.apply([{"operation": "create_dowel_joint", "name": name,
+        return self.apply([{"operation": "create_pin_joint", "name": name,
                             "first": dict(first), "second": dict(second),
                             "first_center_local_mm": list(first_center_local_mm),
                             "row_unit_first_local": list(row_unit_first_local),
