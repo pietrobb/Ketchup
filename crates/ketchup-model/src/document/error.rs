@@ -130,7 +130,7 @@ pub enum CanonicalError {
     CollectionNotFound(CollectionId),
     CollectionMembershipNotCanonical(CollectionId),
     OccurrenceInCollection(OccurrenceId),
-    InvalidImportReceipt,
+    InvalidImportReceipt(ImportContractError),
     ImportAlreadyExists(ImportId),
     InvalidPersistentDimensionTarget,
     InvalidDimensionPresentation,
@@ -311,7 +311,7 @@ impl CanonicalError {
                 "canonical.collection_membership_not_canonical"
             }
             Self::OccurrenceInCollection(..) => "canonical.occurrence_in_collection",
-            Self::InvalidImportReceipt => "canonical.invalid_import_receipt",
+            Self::InvalidImportReceipt(_) => "canonical.invalid_import_receipt",
             Self::ImportAlreadyExists(..) => "canonical.import_already_exists",
             Self::InvalidPersistentDimensionTarget => {
                 "canonical.invalid_persistent_dimension_target"
@@ -675,7 +675,7 @@ impl fmt::Display for CanonicalError {
             Self::OccurrenceInCollection(id) => {
                 write!(formatter, "occurrence {} is still in a collection", id.0)
             }
-            Self::InvalidImportReceipt => formatter.write_str("import receipt is invalid"),
+            Self::InvalidImportReceipt(error) => write!(formatter, "import receipt is invalid: {error}"),
             Self::ImportAlreadyExists(id) => {
                 write!(formatter, "import {} already exists", id.0)
             }

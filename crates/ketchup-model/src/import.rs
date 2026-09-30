@@ -331,6 +331,7 @@ pub enum ImportContractError {
     InvalidDiagnostic,
     DiagnosticsNotCanonical,
     OutputsNotCanonical,
+    InvalidEvidence,
 }
 
 impl fmt::Display for ImportContractError {
@@ -342,6 +343,7 @@ impl fmt::Display for ImportContractError {
             Self::InvalidDiagnostic => "import diagnostic is invalid",
             Self::DiagnosticsNotCanonical => "import diagnostics are not canonical",
             Self::OutputsNotCanonical => "import outputs are not canonical",
+            Self::InvalidEvidence => "imported result evidence is invalid",
         })
     }
 }

@@ -1018,6 +1018,12 @@ impl LocaleCatalog {
             .unwrap_or_else(|| format!("[{key}]"))
     }
 
+    /// The localized message for `key` followed by the error that caused it.
+    #[must_use]
+    pub fn text_because(&self, key: &str, cause: impl fmt::Display) -> String {
+        format!("{}: {cause}", self.text(key))
+    }
+
     #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.messages.contains_key(key)

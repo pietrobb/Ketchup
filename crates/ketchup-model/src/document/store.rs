@@ -74,8 +74,9 @@ impl DocumentStore {
         {
             return Err(HumanConfirmationError::PolicyEpochInvalid);
         }
-        let verifying_key = VerifyingKey::from_bytes(&verifying_key)
-            .map_err(|_| HumanConfirmationError::InvalidVerifyingKey)?;
+        let verifying_key = VerifyingKey::from_bytes(&verifying_key).map_err(
+            |_: ed25519_dalek::SignatureError| HumanConfirmationError::InvalidVerifyingKey,
+        )?;
         self.human_confirmation_policy = Some(Box::new(HumanConfirmationPolicy {
             verifying_key,
             epoch,
@@ -1304,19 +1305,27 @@ impl DocumentStore {
                 CanonicalCommand::RecordImport(receipt) => {
                     receipt
                         .validate()
-                        .map_err(|_| CanonicalError::InvalidImportReceipt)?;
+                        .map_err(CanonicalError::InvalidImportReceipt)?;
                     if product.import_receipts.contains_key(&receipt.id()) {
                         return Err(CanonicalError::ImportAlreadyExists(receipt.id()));
                     }
                     for output in receipt.outputs() {
-                        let exists = match output {
-                            ImportOutputRef::Definition(id) => product.definitions.contains_key(id),
-                            ImportOutputRef::Feature(id) => product.features.contains_key(id),
-                            ImportOutputRef::Occurrence(id) => product.occurrences.contains_key(id),
-                            ImportOutputRef::Group(id) => product.groups.contains_key(id),
+                        let missing = match output {
+                            ImportOutputRef::Definition(id) => {
+                                (!product.definitions.contains_key(id))
+                                    .then_some(CanonicalError::DefinitionNotFound(*id))
+                            }
+                            ImportOutputRef::Feature(id) => (!product.features.contains_key(id))
+                                .then_some(CanonicalError::FeatureNotFound(*id)),
+                            ImportOutputRef::Occurrence(id) => {
+                                (!product.occurrences.contains_key(id))
+                                    .then_some(CanonicalError::OccurrenceNotFound(*id))
+                            }
+                            ImportOutputRef::Group(id) => (!product.groups.contains_key(id))
+                                .then_some(CanonicalError::GroupNotFound(*id)),
                         };
-                        if !exists {
-                            return Err(CanonicalError::InvalidImportReceipt);
+                        if let Some(error) = missing {
+                            return Err(error);
                         }
                     }
                     product
@@ -3714,7 +3723,9 @@ impl DocumentStore {
                     &approval.signing_payload(),
                     &Signature::from_bytes(&approval.signature),
                 )
-                .map_err(|_| ProposalCommitError::HumanApprovalInvalid)?;
+                .map_err(|_: ed25519_dalek::SignatureError| {
+                    ProposalCommitError::HumanApprovalInvalid
+                })?;
         }
         let committed = self.commit_verified_proposal_inner(proposal)?;
         self.human_confirmation_policy
@@ -3766,7 +3777,9 @@ impl DocumentStore {
                     &approval.signing_payload(),
                     &Signature::from_bytes(&approval.signature),
                 )
-                .map_err(|_| SideEffectAuthorizationError::Invalid)?;
+                .map_err(|_: ed25519_dalek::SignatureError| {
+                    SideEffectAuthorizationError::Invalid
+                })?;
         }
         self.human_confirmation_policy
             .as_mut()

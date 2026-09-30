@@ -604,7 +604,7 @@ fn invalid_or_stale_import_leaves_the_published_state_unchanged() {
         Ok(_) => panic!("missing import outputs must reject the entire batch"),
         Err(error) => error,
     };
-    assert_eq!(error, CanonicalError::InvalidImportReceipt);
+    assert_eq!(error, CanonicalError::DefinitionNotFound(DefinitionId(9)));
     assert_eq!(document.current().canonical_digest(), before);
     assert_eq!(document.visible_undo_steps(), 0);
 

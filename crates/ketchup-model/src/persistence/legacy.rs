@@ -1276,9 +1276,8 @@ fn read_topological_reference(
 ) -> Result<TopologicalElementRef, PersistenceError> {
     let length = usize::try_from(reader.count_with_limit(128 * 1024)?)
         .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-    TopologicalElementRef::from_bytes(reader.take(length)?).map_err(|_| {
-        PersistenceError::InvalidCanonicalData(CanonicalError::InvalidTopologicalFeatureReference)
-    })
+    TopologicalElementRef::from_bytes(reader.take(length)?)
+        .map_err(|error| PersistenceError::Legacy(LegacyError::InvalidTopologicalReference(error)))
 }
 
 fn read_profile_face_reference(
@@ -1490,8 +1489,8 @@ fn read_import_receipt(
             }
         };
         diagnostics.push(
-            ImportDiagnostic::new(severity, code, subject, reader.u32()?).map_err(|_| {
-                PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt)
+            ImportDiagnostic::new(severity, code, subject, reader.u32()?).map_err(|error| {
+                PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt(error))
             })?,
         );
     }
@@ -1521,7 +1520,9 @@ fn read_import_receipt(
         diagnostics,
         outputs,
     )
-    .map_err(|_| PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt))
+    .map_err(|error| {
+        PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt(error))
+    })
 }
 
 fn read_workplane(
@@ -4473,6 +4474,7 @@ pub enum LegacyError {
     InvalidOptionalMarker(u8),
     InvalidParameterSlot(u8),
     InvalidParameterPath(crate::document::ParameterPathError),
+    InvalidTopologicalReference(crate::topology::TopologicalReferenceError),
     InvalidParameterValueType(u8),
     InvalidRecipeValue(u8),
     InvalidPersistentDimensionTarget(u8),
@@ -4555,6 +4557,9 @@ impl fmt::Display for LegacyError {
             }
             Self::InvalidParameterPath(error) => {
                 write!(formatter, "feature parameter path is invalid: {error}")
+            }
+            Self::InvalidTopologicalReference(error) => {
+                write!(formatter, "topological reference is invalid: {error}")
             }
             Self::InvalidParameterValueType(value) => {
                 write!(formatter, "feature parameter value type {value} is invalid")
@@ -4691,6 +4696,48 @@ mod tests {
         assert!(
             text.starts_with("feature parameter path is invalid: "),
             "{text}"
+        );
+    }
+
+    fn put_string(bytes: &mut Vec<u8>, text: &str) {
+        bytes.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(text.as_bytes());
+    }
+
+    #[test]
+    fn invalid_topological_reference_names_the_decoding_error() {
+        let mut bytes = 3_u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(b"bad");
+        let error = read_topological_reference(&mut Reader::new(&bytes)).unwrap_err();
+        let PersistenceError::Legacy(LegacyError::InvalidTopologicalReference(cause)) = &error
+        else {
+            panic!("unexpected error {error:?}");
+        };
+        assert!(error.to_string().ends_with(&cause.to_string()), "{error}");
+    }
+
+    #[test]
+    fn invalid_import_diagnostic_reports_the_receipt_contract_rule() {
+        let mut bytes = 1_u64.to_le_bytes().to_vec();
+        bytes.push(1);
+        bytes.extend_from_slice(&[7; 32]);
+        bytes.extend_from_slice(&5_u64.to_le_bytes());
+        put_string(&mut bytes, "part.stl");
+        bytes.extend_from_slice(&[1, 2]);
+        put_string(&mut bytes, "ketchup-stl");
+        put_string(&mut bytes, "1");
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.push(1);
+        put_string(&mut bytes, "mesh.manifold");
+        bytes.push(0);
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        assert_eq!(
+            read_import_receipt(&mut Reader::new(&bytes), false, false, false),
+            Err(PersistenceError::InvalidCanonicalData(
+                CanonicalError::InvalidImportReceipt(
+                    crate::import::ImportContractError::InvalidDiagnostic
+                )
+            ))
         );
     }
 }

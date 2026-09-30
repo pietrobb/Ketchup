@@ -142,6 +142,9 @@ pub enum GlbImportError {
     InvalidHierarchy,
     InvalidText,
     InvalidSourceIdentity(ImportContractError),
+    MalformedJson(String),
+    InvalidReport(ImportContractError),
+    RejectedByDocument(crate::document::CanonicalError),
     IdSpaceExhausted,
 }
 
@@ -172,6 +175,15 @@ impl fmt::Display for GlbImportError {
                     "GLB source name or provenance is invalid: {error}"
                 );
             }
+            Self::MalformedJson(reason) => {
+                return write!(formatter, "GLB JSON document is malformed: {reason}");
+            }
+            Self::InvalidReport(error) => {
+                return write!(formatter, "GLB import report is invalid: {error}");
+            }
+            Self::RejectedByDocument(error) => {
+                return write!(formatter, "GLB result is rejected by the document: {error}");
+            }
             Self::IdSpaceExhausted => "canonical import ID space is exhausted",
         })
     }
@@ -187,8 +199,8 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         return Err(GlbImportError::SourceTooLarge);
     }
     let (json_bytes, binary) = parse_container(source)?;
-    let root: Value =
-        serde_json::from_slice(json_bytes).map_err(|_| GlbImportError::InvalidJson)?;
+    let root: Value = serde_json::from_slice(json_bytes)
+        .map_err(|error| GlbImportError::MalformedJson(error.to_string()))?;
     let root = object(&root)?;
     validate_asset(root)?;
     reject_required_extensions(root)?;
@@ -265,7 +277,8 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     bump(
         &mut diagnostic_counts,
         "glb_mesh_hierarchy_transforms_and_instances_preserved",
-        u32::try_from(instance_count).map_err(|_| GlbImportError::TooManyNodes)?,
+        u32::try_from(instance_count)
+            .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
     )?;
     let mut diagnostics = diagnostic_counts
         .into_iter()
@@ -276,7 +289,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
                 ImportDiagnosticSeverity::Warning
             };
             ImportDiagnostic::new(severity, code, None, count)
-                .map_err(|_| GlbImportError::InvalidGeometry)
+                .map_err(GlbImportError::InvalidReport)
         })
         .collect::<Result<Vec<_>, _>>()?;
     diagnostics.sort();
@@ -315,7 +328,8 @@ pub fn plan_glb_import(
     let mut outputs = Vec::new();
     let mut definition_ids = Vec::with_capacity(scene.primitives.len());
     for (offset, primitive) in scene.primitives.iter().enumerate() {
-        let offset = u64::try_from(offset).map_err(|_| GlbImportError::IdSpaceExhausted)?;
+        let offset = u64::try_from(offset)
+            .map_err(|_: std::num::TryFromIntError| GlbImportError::IdSpaceExhausted)?;
         let definition_id = DefinitionId(
             definition_start
                 .checked_add(offset)
@@ -350,7 +364,10 @@ pub fn plan_glb_import(
     for (offset, node_index) in scene.traversal.iter().copied().enumerate() {
         let id = GroupId(
             group_start
-                .checked_add(u64::try_from(offset).map_err(|_| GlbImportError::IdSpaceExhausted)?)
+                .checked_add(
+                    u64::try_from(offset)
+                        .map_err(|_: std::num::TryFromIntError| GlbImportError::IdSpaceExhausted)?,
+                )
                 .ok_or(GlbImportError::IdSpaceExhausted)?,
         );
         group_ids[node_index] = Some(id);
@@ -428,7 +445,7 @@ pub fn plan_glb_import(
     let batch = CommandBatch::new(commands);
     snapshot
         .preview_batch(&batch)
-        .map_err(|_| GlbImportError::InvalidGeometry)?;
+        .map_err(GlbImportError::RejectedByDocument)?;
     Ok(batch)
 }
 
@@ -457,7 +474,7 @@ fn parse_container(source: &[u8]) -> Result<(&[u8], &[u8]), GlbImportError> {
             return Err(GlbImportError::InvalidContainer);
         }
         let length = usize::try_from(read_u32(source, offset)?)
-            .map_err(|_| GlbImportError::InvalidContainer)?;
+            .map_err(|_: std::num::TryFromIntError| GlbImportError::InvalidContainer)?;
         let kind = read_u32(source, offset + 4)?;
         if !length.is_multiple_of(4) {
             return Err(GlbImportError::InvalidContainer);
@@ -625,7 +642,7 @@ fn parse_meshes(
             diagnostics,
             "glb_unselected_meshes_ignored",
             u32::try_from(meshes.len() - selected_meshes.len())
-                .map_err(|_| GlbImportError::TooManyMeshes)?,
+                .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyMeshes)?,
         )?;
     }
     let mut parsed = Vec::new();
@@ -736,7 +753,7 @@ fn weld_indexed_geometry(
                 *index
             } else {
                 let index = u32::try_from(welded_vertices.len())
-                    .map_err(|_| GlbImportError::TooManyVertices)?;
+                    .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyVertices)?;
                 welded_vertices.push(point);
                 index_by_position.insert(key, index);
                 index
@@ -1034,7 +1051,8 @@ fn parse_nodes(
         bump(
             diagnostics,
             "glb_unselected_nodes_ignored",
-            u32::try_from(ignored).map_err(|_| GlbImportError::TooManyNodes)?,
+            u32::try_from(ignored)
+                .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
         )?;
     }
     let instance_count = traversal.iter().try_fold(0_usize, |count, index| {
@@ -1175,7 +1193,7 @@ fn gltf_transform_to_ketchup(gltf: [f64; 16]) -> Result<Transform, GlbImportErro
     {
         return Err(GlbImportError::InvalidTransform);
     }
-    Transform::from_matrix(matrix).map_err(|_| GlbImportError::InvalidTransform)
+    Transform::from_matrix(matrix).map_err(GlbImportError::RejectedByDocument)
 }
 
 fn multiply_matrix(left: [f64; 16], right: [f64; 16]) -> [f64; 16] {
@@ -1248,7 +1266,8 @@ fn record_document_losses(
             bump(
                 diagnostics,
                 code,
-                u32::try_from(values.len()).map_err(|_| GlbImportError::UnsupportedFeature)?,
+                u32::try_from(values.len())
+                    .map_err(|_: std::num::TryFromIntError| GlbImportError::UnsupportedFeature)?,
             )?;
         }
     }
@@ -1257,7 +1276,8 @@ fn record_document_losses(
         bump(
             diagnostics,
             "glb_optional_extensions_ignored",
-            u32::try_from(used.len()).map_err(|_| GlbImportError::UnsupportedFeature)?,
+            u32::try_from(used.len())
+                .map_err(|_: std::num::TryFromIntError| GlbImportError::UnsupportedFeature)?,
         )?;
     }
     Ok(())
@@ -1390,7 +1410,8 @@ fn optional_u64(object: &Map<String, Value>, name: &str) -> Result<Option<u64>, 
 }
 
 fn usize_value(object: &Map<String, Value>, name: &str) -> Result<usize, GlbImportError> {
-    usize::try_from(u64_value(object, name)?).map_err(|_| GlbImportError::InvalidJson)
+    usize::try_from(u64_value(object, name)?)
+        .map_err(|_: std::num::TryFromIntError| GlbImportError::InvalidJson)
 }
 
 fn optional_usize(
@@ -1398,7 +1419,10 @@ fn optional_usize(
     name: &str,
 ) -> Result<Option<usize>, GlbImportError> {
     optional_u64(object, name)?
-        .map(|value| usize::try_from(value).map_err(|_| GlbImportError::InvalidJson))
+        .map(|value| {
+            usize::try_from(value)
+                .map_err(|_: std::num::TryFromIntError| GlbImportError::InvalidJson)
+        })
         .transpose()
 }
 

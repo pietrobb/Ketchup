@@ -191,9 +191,14 @@ pub(super) fn validate_product_with_drawing_sources(
         }
     }
     for (id, receipt) in &product.import_receipts {
-        if *id != receipt.id() || receipt.validate().is_err() {
-            return Err(CanonicalError::InvalidImportReceipt);
+        if *id != receipt.id() {
+            return Err(CanonicalError::InvalidImportReceipt(
+                ImportContractError::InvalidIdentity,
+            ));
         }
+        receipt
+            .validate()
+            .map_err(CanonicalError::InvalidImportReceipt)?;
     }
     for definition in product.definitions.values() {
         ensure_product_id(definition.id.0)?;

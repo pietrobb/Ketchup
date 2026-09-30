@@ -718,7 +718,7 @@ impl KetchupApp {
                 match self.prepare_manual_push_pull_proposal(batch.clone()) {
                     Some(proposal) => self
                         .complete_mutation_with_work_recovery(|document| proposal.commit(document))
-                        .map_err(|_| self.catalog.text("error-preview-stale")),
+                        .map_err(|error| self.catalog.text_because("error-preview-stale", error)),
                     None => Err(self.catalog.text("error-preview-stale")),
                 }
             }

@@ -1,14 +1,9 @@
 # Remaining errors that drop their cause (<file> <discard|string> <count>); may only shrink.
 crates/ketchup-analysis/src/validator_hosting.rs discard 2
-crates/ketchup-app/src/assembly_ui.rs discard 17
-crates/ketchup-app/src/assistant_runtime.rs discard 2
 crates/ketchup-app/src/assistant_runtime.rs string 9
-crates/ketchup-app/src/drawn_shape.rs discard 1
 crates/ketchup-app/src/feature_history_ui.rs string 6
-crates/ketchup-app/src/glb_import_ui.rs discard 2
 crates/ketchup-app/src/glb_import_ui.rs string 7
-crates/ketchup-app/src/lib.rs discard 14
-crates/ketchup-app/src/lib.rs string 70
+crates/ketchup-app/src/lib.rs string 69
 crates/ketchup-app/src/live_bridge.rs discard 4
 crates/ketchup-app/src/live_bridge.rs string 4
 crates/ketchup-app/src/live_bridge/bootstrap.rs discard 7
@@ -50,7 +45,6 @@ crates/ketchup-model/src/cam.rs discard 9
 crates/ketchup-model/src/document/assembly_validation.rs discard 1
 crates/ketchup-model/src/document/feature_validation.rs discard 1
 crates/ketchup-model/src/document/solid_tool.rs discard 6
-crates/ketchup-model/src/document/store.rs discard 4
 crates/ketchup-model/src/drawing.rs discard 3
 crates/ketchup-model/src/exact_brep_graph.rs discard 2
 crates/ketchup-model/src/exact_brep_graph/compiler.rs discard 13
@@ -60,10 +54,8 @@ crates/ketchup-model/src/exact_validation.rs discard 3
 crates/ketchup-model/src/feature_history.rs discard 2
 crates/ketchup-model/src/graph.rs discard 3
 crates/ketchup-model/src/import.rs discard 5
-crates/ketchup-model/src/import/glb.rs discard 15
 crates/ketchup-model/src/import/iges.rs discard 2
 crates/ketchup-model/src/import/sketchup_scene.rs discard 6
-crates/ketchup-model/src/persistence/legacy.rs discard 3
 crates/ketchup-model/src/pin_joint.rs discard 5
 crates/ketchup-model/src/shared_change.rs discard 4
 crates/ketchup-model/src/space.rs discard 1

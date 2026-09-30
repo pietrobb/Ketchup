@@ -33,6 +33,8 @@ CONTENT_FREE = {
     "TryFromIntError", "TryFromSliceError", "PoisonError", "TryLockError", "SendError",
     "TrySendError", "RecvError", "TryRecvError", "RecvTimeoutError", "Infallible",
     "fmt::Error",
+    # Opaque by design: a failed signature check must not reveal why it failed.
+    "ed25519_dalek::SignatureError",
 }
 DISCARD = re.compile(r"map_err\(\s*(?:move\s*)?\|\s*_\w*\s*(?::\s*([^|]+?)\s*)?\|")
 STRING = re.compile(r"""Err\(\s*"(?:[^"\\]|\\.)*"\s*\.\s*(?:to_owned|to_string|into)\(\)\s*\)""")

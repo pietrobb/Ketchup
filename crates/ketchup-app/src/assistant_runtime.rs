@@ -295,12 +295,12 @@ fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
     let candidate = install_root.join("python3");
     let path = candidate
         .canonicalize()
-        .map_err(|_| "the co-located pinned Python runtime is unavailable".to_owned())?;
+        .map_err(|error| format!("the co-located pinned Python runtime is unavailable: {error}"))?;
     let bytes = read_bounded_regular_file(
         &path,
         ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES,
     )
-    .map_err(|_| "the co-located pinned Python runtime is unavailable".to_owned())?;
+    .map_err(|error| format!("the co-located pinned Python runtime is unavailable: {error}"))?;
     if sha256_hex(&bytes) != PINNED_PUBLIC_PYTHON_SHA256 {
         return Err(
             "the co-located Python runtime identity does not match the release pin".to_owned(),

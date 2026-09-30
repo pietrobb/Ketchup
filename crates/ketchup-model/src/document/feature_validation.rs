@@ -1228,30 +1228,38 @@ pub(super) fn validate_imported_exact_body(
                 && spec.area_mm2 > 0.0
         }
     };
+    let reject = |reason| Err(CanonicalError::InvalidImportReceipt(reason));
+    if spec.import_id.0 == 0 {
+        return reject(ImportContractError::InvalidIdentity);
+    }
     if (!legacy_solid && !typed_body)
-        || spec.import_id.0 == 0
         || spec.source_byte_len == 0
         || spec.source_byte_len > 32 * 1024 * 1024
         || spec.source_sha256.iter().all(|byte| *byte == 0)
-        || spec.result_fingerprint.is_empty()
+    {
+        return reject(ImportContractError::InvalidSource);
+    }
+    if spec.result_fingerprint.is_empty()
         || spec.result_fingerprint.len() > 128
-        || spec.topology_counts.is_some_and(|counts| {
-            counts[..3].contains(&0)
-                || counts[4] != spec.solid_count
-                || counts[..3]
-                    .iter()
-                    .map(|count| u64::from(*count))
-                    .sum::<u64>()
-                    > crate::topology::MAX_GENERATED_TOPOLOGICAL_REFERENCES
-        })
-        || !measurements_valid
-        || !bounds_valid
         || spec.backend.is_empty()
         || spec.backend.len() > 1_024
         || spec.tolerance.is_empty()
         || spec.tolerance.len() > 1_024
     {
-        return Err(CanonicalError::InvalidImportReceipt);
+        return reject(ImportContractError::InvalidText);
+    }
+    if spec.topology_counts.is_some_and(|counts| {
+        counts[..3].contains(&0)
+            || counts[4] != spec.solid_count
+            || counts[..3]
+                .iter()
+                .map(|count| u64::from(*count))
+                .sum::<u64>()
+                > crate::topology::MAX_GENERATED_TOPOLOGICAL_REFERENCES
+    }) || !measurements_valid
+        || !bounds_valid
+    {
+        return reject(ImportContractError::InvalidEvidence);
     }
     Ok(())
 }

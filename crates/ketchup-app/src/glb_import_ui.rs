@@ -75,13 +75,13 @@ impl KetchupApp {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| "GLB source name is not valid UTF-8".to_owned())?;
-        let review = std::panic::catch_unwind(|| inspect_glb(&source.source))
-            .map_err(|_| "bounded GLB parser stopped without publishing geometry".to_owned())?
-            .map_err(|error| error.to_string())?;
-        let batch =
-            std::panic::catch_unwind(|| plan_glb_import(&snapshot, &source.source, source_name))
-                .map_err(|_| "bounded GLB parser stopped without publishing geometry".to_owned())?
+        let review =
+            crate::bounded_parser::run_bounded_parser("GLB", || inspect_glb(&source.source))?
                 .map_err(|error| error.to_string())?;
+        let batch = crate::bounded_parser::run_bounded_parser("GLB", || {
+            plan_glb_import(&snapshot, &source.source, source_name)
+        })?
+        .map_err(|error| error.to_string())?;
         Ok(GlbImportPreviewPlan {
             source,
             review,

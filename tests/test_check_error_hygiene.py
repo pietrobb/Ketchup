@@ -44,9 +44,11 @@ def test_only_named_content_free_error_types_may_be_dropped(tmp_path):
         "let b = lock.map_err(|_: PoisonError<Guard<'_>>| Error::Poisoned)?;\n"
         "let c = s.parse::<u32>().map_err(|_: std::num::ParseIntError| Error::Number)?;\n"
         "let d = write!(out, \"x\").map_err(|_: std::fmt::Error| Error::Limit)?;\n"
-        "let e = file.read(b).map_err(|_: std::io::Error| Error::Io)?;\n",
+        "let e = file.read(b).map_err(|_: std::io::Error| Error::Io)?;\n"
+        "let f = key.verify(m, s).map_err(|_: ed25519_dalek::SignatureError| Error::Forged)?;\n"
+        "let g = other.check().map_err(|_: SignatureError| Error::Forged)?;\n",
     )
-    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs discard": 2}
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs discard": 3}
 
 
 def test_inline_test_modules_are_not_production_code(tmp_path):

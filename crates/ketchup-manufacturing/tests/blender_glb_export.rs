@@ -589,6 +589,19 @@ fn glb_rejects_future_minimum_versions_numerically() {
 }
 
 #[test]
+fn glb_malformed_json_reports_the_parser_reason() {
+    let mut source = sample_glb();
+    // The JSON chunk data starts after the 12-byte header and the 8-byte chunk header.
+    source[20] = b'x';
+    let error = inspect_glb(&source).unwrap_err();
+    let GlbImportError::MalformedJson(reason) = &error else {
+        panic!("unexpected error {error:?}");
+    };
+    assert!(reason.contains("line 1 column 1"), "{reason}");
+    assert!(error.to_string().ends_with(reason.as_str()), "{error}");
+}
+
+#[test]
 fn glb_rejects_scene_expansion_beyond_the_canonical_output_envelope() {
     let source = rewrite_glb_json(&sample_glb(), |document| {
         let template = document["nodes"][0].clone();

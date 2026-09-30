@@ -144,6 +144,7 @@ mod app_state;
 mod assembly_ui;
 mod assistant_runtime;
 mod body_ui;
+mod bounded_parser;
 mod close_guard;
 pub mod dialogs;
 mod drawn_shape;
@@ -6186,13 +6187,12 @@ impl KetchupApp {
             .and_then(|name| name.to_str())
             .ok_or_else(|| "STL source name is not valid UTF-8".to_owned())?;
         let units = ImportUnitDecision::new(source.unit, ImportUnitAuthority::UserDeclared);
-        let review = std::panic::catch_unwind(|| parse_stl(&source.source, units))
-            .map_err(|_| "bounded STL parser stopped without publishing geometry".to_owned())?
-            .map_err(|error| error.to_string())?;
-        let batch = std::panic::catch_unwind(|| {
+        let review =
+            bounded_parser::run_bounded_parser("STL", || parse_stl(&source.source, units))?
+                .map_err(|error| error.to_string())?;
+        let batch = bounded_parser::run_bounded_parser("STL", || {
             plan_stl_import(&snapshot, &source.source, source_name, units)
-        })
-        .map_err(|_| "bounded STL parser stopped without publishing geometry".to_owned())?
+        })?
         .map_err(|error| error.to_string())?;
         let proposal = self
             .document
@@ -6292,14 +6292,11 @@ impl KetchupApp {
             ImportLengthUnit::Inch,
             ImportLengthUnit::Foot,
         ] {
-            match std::panic::catch_unwind(|| {
+            match bounded_parser::run_bounded_parser("DXF", || {
                 inspect_dxf(source, DxfImportOptions::new(Some(unit)))
-            }) {
-                Ok(Ok(review)) => return Ok(review),
-                Ok(Err(error)) => last_error = Some(error.to_string()),
-                Err(_) => {
-                    return Err("bounded DXF parser stopped without publishing geometry".to_owned());
-                }
+            })? {
+                Ok(review) => return Ok(review),
+                Err(error) => last_error = Some(error.to_string()),
             }
         }
         Err(last_error.unwrap_or_else(|| "DXF review could not be prepared".to_owned()))
@@ -6327,13 +6324,12 @@ impl KetchupApp {
             .and_then(|name| name.to_str())
             .ok_or_else(|| "DXF source name is not valid UTF-8".to_owned())?;
         let options = DxfImportOptions::new(Some(source.unit));
-        let review = std::panic::catch_unwind(|| inspect_dxf(&source.source, options))
-            .map_err(|_| "bounded DXF parser stopped without publishing geometry".to_owned())?
-            .map_err(|error| error.to_string())?;
-        let batch = std::panic::catch_unwind(|| {
+        let review =
+            bounded_parser::run_bounded_parser("DXF", || inspect_dxf(&source.source, options))?
+                .map_err(|error| error.to_string())?;
+        let batch = bounded_parser::run_bounded_parser("DXF", || {
             plan_dxf_import(&snapshot, &source.source, source_name, options)
-        })
-        .map_err(|_| "bounded DXF parser stopped without publishing geometry".to_owned())?
+        })?
         .map_err(|error| error.to_string())?;
         let proposal = self
             .document
@@ -6736,16 +6732,12 @@ impl KetchupApp {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| "SketchUp scene source name is not valid UTF-8".to_owned())?;
-        let review = std::panic::catch_unwind(|| inspect_sketchup_scene(&source.source))
-            .map_err(|_| {
-                "bounded SketchUp scene parser stopped without publishing geometry".to_owned()
-            })?
-            .map_err(|error| error.to_string())?;
-        let batch = std::panic::catch_unwind(|| {
+        let review = bounded_parser::run_bounded_parser("SketchUp scene", || {
+            inspect_sketchup_scene(&source.source)
+        })?
+        .map_err(|error| error.to_string())?;
+        let batch = bounded_parser::run_bounded_parser("SketchUp scene", || {
             plan_sketchup_scene_import(&snapshot, &source.source, source_name)
-        })
-        .map_err(|_| {
-            "bounded SketchUp scene parser stopped without publishing geometry".to_owned()
         })?
         .map_err(|error| error.to_string())?;
         let proposal = self
@@ -8436,8 +8428,9 @@ impl KetchupApp {
             let info = selected.get_info();
             *selected_info
                 .lock()
-                .map_err(|_| "selected-adapter evidence lock is unavailable".to_owned())? =
-                Some(info);
+                .map_err(|_: std::sync::PoisonError<_>| {
+                    "selected-adapter evidence lock is unavailable".to_owned()
+                })? = Some(info);
             Ok(selected.clone())
         }));
 
@@ -34478,7 +34471,7 @@ impl KetchupApp {
                 let parse_f64 = |value: &str, name: &str| {
                     value
                         .parse::<f64>()
-                        .map_err(|_| format!("{name} must be a finite number"))
+                        .map_err(|error| format!("{name} must be a finite number: {error}"))
                 };
                 let youngs_modulus_mpa = parse_f64(&pending.youngs_modulus_mpa, "Young's modulus")?;
                 let poisson_ratio = parse_f64(&pending.poisson_ratio, "Poisson ratio")?;
@@ -34488,15 +34481,17 @@ impl KetchupApp {
                     .split(',')
                     .map(str::trim)
                     .map(|value| {
-                        value.parse::<u32>().map_err(|_| {
-                            "Fixed face ordinals must be comma-separated u32 values".to_owned()
+                        value.parse::<u32>().map_err(|error| {
+                            format!(
+                                "Fixed face ordinals must be comma-separated u32 values: {error}"
+                            )
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let loaded_face_ordinal = pending
                     .loaded_face_ordinal
                     .parse::<u32>()
-                    .map_err(|_| "Loaded face ordinal must be u32".to_owned())?;
+                    .map_err(|error| format!("Loaded face ordinal must be u32: {error}"))?;
                 let traction = [
                     parse_f64(&pending.traction_x_n_per_mm2, "Traction X")?,
                     parse_f64(&pending.traction_y_n_per_mm2, "Traction Y")?,
@@ -35973,17 +35968,17 @@ fn world_rotation_transform(
     centre_mm: Vec3,
     axis: Axis,
     angle_degrees: f64,
-) -> Result<Transform, ()> {
-    world_axis_rotation_transform(centre_mm, axis_direction(axis), angle_degrees).map_err(|_| ())
+) -> Result<Transform, CanonicalError> {
+    world_axis_rotation_transform(centre_mm, axis_direction(axis), angle_degrees)
 }
 
 fn world_scale_transform(
     centre_mm: Vec3,
     factor: f64,
     axis: Option<Axis>,
-) -> Result<Transform, ()> {
+) -> Result<Transform, CanonicalError> {
     if !factor.is_finite() || factor <= 0.0 || factor > 1_000.0 {
-        return Err(());
+        return Err(CanonicalError::InvalidTransform);
     }
     let [scale_x, scale_y, scale_z] = match axis {
         Some(Axis::X) => [factor, 1.0, 1.0],
@@ -36009,7 +36004,6 @@ fn world_scale_transform(
         0.0,
         1.0,
     ])
-    .map_err(|_| ())
 }
 
 fn scale_is_meaningful(factor: f64) -> bool {
@@ -36129,7 +36123,10 @@ fn snapped_rotation_degrees(angle_degrees: f64, free: bool) -> f64 {
     }
 }
 
-fn rotate_transform_90(transform: Transform, local_box: ProjectedBox) -> Result<Transform, ()> {
+fn rotate_transform_90(
+    transform: Transform,
+    local_box: ProjectedBox,
+) -> Result<Transform, CanonicalError> {
     let center_x = local_box.origin_mm.x + local_box.size_mm.x * 0.5;
     let center_y = local_box.origin_mm.y + local_box.size_mm.y * 0.5;
     let local_rotation = Transform::from_matrix([
@@ -36149,8 +36146,7 @@ fn rotate_transform_90(transform: Transform, local_box: ProjectedBox) -> Result<
         0.0,
         0.0,
         1.0,
-    ])
-    .map_err(|_| ())?;
+    ])?;
     Ok(transform.compose(local_rotation))
 }
 
@@ -36442,7 +36438,9 @@ fn current_unix_time_ms() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_millis();
-    u64::try_from(millis).map_err(|_| "system time is outside the supported range".to_owned())
+    u64::try_from(millis).map_err(|_: std::num::TryFromIntError| {
+        "system time is outside the supported range".to_owned()
+    })
 }
 
 fn exact_model_step_loss_report(

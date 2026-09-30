@@ -1233,12 +1233,14 @@ impl KetchupApp {
     }
 
     fn assembly_kinematic_selection_result(&self) -> Result<[OccurrenceId; 2], String> {
-        self.selected_root_occurrence_ids()
+        let selected = self
+            .selected_root_occurrence_ids()
             .map_err(|error| self.root_occurrence_selection_error(&error))?
             .into_iter()
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| self.catalog.text("assembly-error-joint-selection"))
+            .collect::<Vec<_>>();
+        <[OccurrenceId; 2]>::try_from(selected.as_slice()).map_err(
+            |_: std::array::TryFromSliceError| self.catalog.text("assembly-error-joint-selection"),
+        )
     }
 
     pub(super) fn assembly_kinematic_selection(&self) -> Option<[OccurrenceId; 2]> {
@@ -1257,7 +1259,10 @@ impl KetchupApp {
             .joint_position_input
             .trim()
             .parse::<f64>()
-            .map_err(|_| self.catalog.text("assembly-error-joint-position"))?;
+            .map_err(|error| {
+                self.catalog
+                    .text_because("assembly-error-joint-position", error)
+            })?;
         let kind = match self.assembly_editor.joint_kind {
             AssemblyJointKindChoice::Prismatic => AssemblyJointKind::Prismatic {
                 axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
@@ -1270,7 +1275,10 @@ impl KetchupApp {
                     .joint_lead_input
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| self.catalog.text("assembly-error-joint-lead"))?;
+                    .map_err(|error| {
+                        self.catalog
+                            .text_because("assembly-error-joint-lead", error)
+                    })?;
                 if !lead_mm_per_revolution.is_finite() || lead_mm_per_revolution <= 0.0 {
                     return Err(self.catalog.text("assembly-error-joint-lead"));
                 }
@@ -1323,24 +1331,36 @@ impl KetchupApp {
             .coupling_input_reference
             .trim()
             .parse::<f64>()
-            .map_err(|_| self.catalog.text("assembly-error-coupling-parameter"))?;
+            .map_err(|error| {
+                self.catalog
+                    .text_because("assembly-error-coupling-parameter", error)
+            })?;
         let output_reference_position = self
             .assembly_editor
             .coupling_output_reference
             .trim()
             .parse::<f64>()
-            .map_err(|_| self.catalog.text("assembly-error-coupling-parameter"))?;
+            .map_err(|error| {
+                self.catalog
+                    .text_because("assembly-error-coupling-parameter", error)
+            })?;
         let first = &self.assembly_editor.coupling_first_parameter;
         let second = &self.assembly_editor.coupling_second_parameter;
         let option = self.assembly_editor.coupling_option;
-        let parameter_error = || self.catalog.text("assembly-error-coupling-parameter");
+        let parameter_error = |error: &dyn std::fmt::Display| {
+            self.catalog
+                .text_because("assembly-error-coupling-parameter", error)
+        };
         let transmission = match self.assembly_editor.coupling_kind {
             AssemblyCouplingKindChoice::GearPair => AssemblyTransmissionKind::GearPair {
-                input_teeth: first.trim().parse::<u32>().map_err(|_| parameter_error())?,
+                input_teeth: first
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|error| parameter_error(&error))?,
                 output_teeth: second
                     .trim()
                     .parse::<u32>()
-                    .map_err(|_| parameter_error())?,
+                    .map_err(|error| parameter_error(&error))?,
                 mesh: if option {
                     GearMeshKind::Internal
                 } else {
@@ -1351,25 +1371,28 @@ impl KetchupApp {
                 input_pitch_diameter_mm: first
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| parameter_error())?,
+                    .map_err(|error| parameter_error(&error))?,
                 output_pitch_diameter_mm: second
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| parameter_error())?,
+                    .map_err(|error| parameter_error(&error))?,
                 crossed: option,
             },
             AssemblyCouplingKindChoice::Chain => AssemblyTransmissionKind::Chain {
-                input_sprocket_teeth: first.trim().parse::<u32>().map_err(|_| parameter_error())?,
+                input_sprocket_teeth: first
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|error| parameter_error(&error))?,
                 output_sprocket_teeth: second
                     .trim()
                     .parse::<u32>()
-                    .map_err(|_| parameter_error())?,
+                    .map_err(|error| parameter_error(&error))?,
             },
             AssemblyCouplingKindChoice::RackAndPinion => AssemblyTransmissionKind::RackAndPinion {
                 pinion_pitch_diameter_mm: first
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| parameter_error())?,
+                    .map_err(|error| parameter_error(&error))?,
                 direction: if option {
                     AssemblyMotionDirection::Opposite
                 } else {
@@ -1380,7 +1403,7 @@ impl KetchupApp {
                 lead_mm_per_revolution: first
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| parameter_error())?,
+                    .map_err(|error| parameter_error(&error))?,
                 handedness: if option {
                     ScrewHandedness::Left
                 } else {
@@ -1413,7 +1436,7 @@ impl KetchupApp {
             transmission,
         );
         if !coupling.has_valid_shape() {
-            return Err(parameter_error());
+            return Err(self.catalog.text("assembly-error-coupling-parameter"));
         }
         Ok(AssemblyPreviewSource::Coupling { coupling, editing })
     }
@@ -1437,7 +1460,10 @@ impl KetchupApp {
             .drag_position_input
             .trim()
             .parse::<f64>()
-            .map_err(|_| self.catalog.text("assembly-error-drag-position"))?;
+            .map_err(|error| {
+                self.catalog
+                    .text_because("assembly-error-drag-position", error)
+            })?;
         if !requested_position.is_finite() {
             return Err(self.catalog.text("assembly-error-drag-position"));
         }
@@ -1465,7 +1491,10 @@ impl KetchupApp {
             .motion_position_input
             .trim()
             .parse::<f64>()
-            .map_err(|_| self.catalog.text("assembly-error-motion-position"))?;
+            .map_err(|error| {
+                self.catalog
+                    .text_because("assembly-error-motion-position", error)
+            })?;
         let name = self.assembly_editor.motion_name_input.trim();
         if name.is_empty() {
             return Err(self.catalog.text("assembly-error-motion-name"));
@@ -1700,7 +1729,7 @@ impl KetchupApp {
         {
             let definition_id = snapshot
                 .resolve_instance_path(instance_path)
-                .map_err(|_| self.catalog.text("error-preview-stale"))?
+                .map_err(|error| self.catalog.text_because("error-preview-stale", error))?
                 .definition_id;
             DrawingSource::Definition(definition_id)
         } else {
@@ -1717,7 +1746,7 @@ impl KetchupApp {
                 .map(|(index, path)| {
                     let definition_id = snapshot
                         .resolve_instance_path(path)
-                        .map_err(|_| self.catalog.text("error-preview-stale"))?
+                        .map_err(|error| self.catalog.text_because("error-preview-stale", error))?
                         .definition_id;
                     let position = *positions.entry(definition_id).or_insert_with(|| {
                         let assigned = next_position;

@@ -37,8 +37,8 @@ use crate::graph::{
     validate_graph as validate_typed_graph,
 };
 use crate::import::{
-    ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit, ImportOutputRef,
-    ImportReceipt, ImportUnitAuthority,
+    ImportContractError, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit,
+    ImportOutputRef, ImportReceipt, ImportUnitAuthority,
 };
 use crate::mechanical_contract::{
     MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalCondition,
