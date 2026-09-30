@@ -11,7 +11,6 @@ use ketchup_core::import::{
     ImportLengthUnit, StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{PrincipalPlane, WorkplaneSpec};
 use ketchup_core::topology::{
     MAX_GENERATED_TOPOLOGICAL_REFERENCES, TopologicalElementKind, TopologicalElementRef,
     TopologicalReferenceError, TopologicalReferenceQuarantineReason,
@@ -19,6 +18,7 @@ use ketchup_core::topology::{
     canonical_topological_lineage_digest, publish_generated_topological_references,
     resolve_topological_reference, topological_edge_provenance_tokens,
 };
+use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneSpec};
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);

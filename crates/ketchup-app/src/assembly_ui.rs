@@ -22,8 +22,8 @@ use ketchup_core::mechanical_coupling::{
     AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
     AssemblyTransmissionKind, CoupledJointKind, GearMeshKind, ScrewHandedness,
 };
-use ketchup_core::prismatic::Aabb;
 use ketchup_core::tolerance::ROUNDING;
+use ketchup_geometry::prismatic::Aabb;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

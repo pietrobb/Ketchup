@@ -22,8 +22,8 @@ use ketchup_core::shared_change::{
     OccurrenceForkImpactError, OccurrenceForkPropagationError, SharedChangeExportEligibility,
     SharedChangeExportFormat, commit_occurrence_fork_change, project_occurrence_fork_impact,
 };
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::testing::box_package;
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);

@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec, WorkplaneSupport,
 };

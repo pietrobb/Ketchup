@@ -645,7 +645,7 @@ impl DigestV3 {
             self.byte(match owned.kind {
                 RecognizedRecipeFeatureKind::Profile => 1,
                 RecognizedRecipeFeatureKind::Pad => {
-                    use crate::sketch::{PadOperation, PadProfile};
+                    use ketchup_geometry::sketch::{PadOperation, PadProfile};
                     // The old recipe told the four pad records apart by kind.
                     match features.get(&owned.feature_id).map(|feature| &feature.kind) {
                         Some(FeatureKind::Pad(spec)) => match (spec.profile, &spec.operation) {
@@ -842,7 +842,7 @@ impl DigestV3 {
         }
     }
 
-    fn sketch_point_ref(&mut self, reference: crate::sketch::SketchPointRef) {
+    fn sketch_point_ref(&mut self, reference: ketchup_geometry::sketch::SketchPointRef) {
         self.u64(reference.entity.0);
         self.byte(match reference.point {
             SketchPointKind::Start => 1,
@@ -895,11 +895,11 @@ impl DigestV3 {
         );
     }
 
-    fn feature_direction(&mut self, direction: crate::sketch::FeatureDirection) {
+    fn feature_direction(&mut self, direction: ketchup_geometry::sketch::FeatureDirection) {
         match direction {
-            crate::sketch::FeatureDirection::AlongNormal => self.byte(1),
-            crate::sketch::FeatureDirection::OppositeNormal => self.byte(2),
-            crate::sketch::FeatureDirection::Vector(vector) => {
+            ketchup_geometry::sketch::FeatureDirection::AlongNormal => self.byte(1),
+            ketchup_geometry::sketch::FeatureDirection::OppositeNormal => self.byte(2),
+            ketchup_geometry::sketch::FeatureDirection::Vector(vector) => {
                 self.byte(3);
                 for component in vector {
                     self.u64(component.to_bits());
@@ -908,15 +908,15 @@ impl DigestV3 {
         }
     }
 
-    fn feature_extent_end(&mut self, end: &crate::sketch::FeatureExtentEnd) {
+    fn feature_extent_end(&mut self, end: &ketchup_geometry::sketch::FeatureExtentEnd) {
         match end {
-            crate::sketch::FeatureExtentEnd::Blind(distance) => {
+            ketchup_geometry::sketch::FeatureExtentEnd::Blind(distance) => {
                 self.byte(1);
                 self.bytes(distance.source_token().as_bytes());
                 self.u64(distance.millimetres().to_bits());
             }
-            crate::sketch::FeatureExtentEnd::ThroughAll => self.byte(2),
-            crate::sketch::FeatureExtentEnd::UpToFace(reference) => {
+            ketchup_geometry::sketch::FeatureExtentEnd::ThroughAll => self.byte(2),
+            ketchup_geometry::sketch::FeatureExtentEnd::UpToFace(reference) => {
                 self.byte(3);
                 self.body_subshape_reference(reference);
             }
@@ -925,8 +925,8 @@ impl DigestV3 {
 
     /// The legacy reader builds a pad only from the old extrusion, pad, sketch pocket,
     /// through cut and pocket records; each keeps the encoding of its old record.
-    fn pad(&mut self, spec: &crate::sketch::PadSpec) {
-        use crate::sketch::{CutStart, FeatureExtent, PadOperation, PadProfile};
+    fn pad(&mut self, spec: &ketchup_geometry::sketch::PadSpec) {
+        use ketchup_geometry::sketch::{CutStart, FeatureExtent, PadOperation, PadProfile};
         match (&spec.profile, &spec.operation, &spec.extent) {
             (PadProfile::Feature(profile), PadOperation::NewBody, FeatureExtent::Blind(height)) => {
                 self.byte(2);
@@ -969,32 +969,32 @@ impl DigestV3 {
         }
     }
 
-    fn pad_sketch_region(&mut self, profile: crate::sketch::PadProfile) {
+    fn pad_sketch_region(&mut self, profile: ketchup_geometry::sketch::PadProfile) {
         self.u64(profile.feature_id().0);
         self.u64(match profile {
-            crate::sketch::PadProfile::SketchRegion { region, .. } => region.0,
-            crate::sketch::PadProfile::Feature(_) => 0,
+            ketchup_geometry::sketch::PadProfile::SketchRegion { region, .. } => region.0,
+            ketchup_geometry::sketch::PadProfile::Feature(_) => 0,
         });
     }
 
-    fn feature_extent(&mut self, extent: &crate::sketch::FeatureExtent) {
+    fn feature_extent(&mut self, extent: &ketchup_geometry::sketch::FeatureExtent) {
         match extent {
-            crate::sketch::FeatureExtent::Blind(distance) => {
+            ketchup_geometry::sketch::FeatureExtent::Blind(distance) => {
                 self.byte(1);
                 self.bytes(distance.source_token().as_bytes());
                 self.u64(distance.millimetres().to_bits());
             }
-            crate::sketch::FeatureExtent::ThroughAll => self.byte(2),
-            crate::sketch::FeatureExtent::UpToFace(reference) => {
+            ketchup_geometry::sketch::FeatureExtent::ThroughAll => self.byte(2),
+            ketchup_geometry::sketch::FeatureExtent::UpToFace(reference) => {
                 self.byte(3);
                 self.body_subshape_reference(reference);
             }
-            crate::sketch::FeatureExtent::Symmetric(distance) => {
+            ketchup_geometry::sketch::FeatureExtent::Symmetric(distance) => {
                 self.byte(4);
                 self.bytes(distance.source_token().as_bytes());
                 self.u64(distance.millimetres().to_bits());
             }
-            crate::sketch::FeatureExtent::Bidirectional { along, opposite } => {
+            ketchup_geometry::sketch::FeatureExtent::Bidirectional { along, opposite } => {
                 self.byte(5);
                 self.feature_extent_end(along);
                 self.feature_extent_end(opposite);
@@ -1372,8 +1372,8 @@ impl DigestV3 {
             FeatureKind::PlanarOffset { profile, distance } => {
                 self.byte(12);
                 self.u64(profile.0);
-                self.bytes(distance.source_token.as_bytes());
-                self.u64(distance.millimetres.to_bits());
+                self.bytes(distance.source_token().as_bytes());
+                self.u64(distance.millimetres().to_bits());
             }
             FeatureKind::Sweep { profile, path } => {
                 self.byte(13);
@@ -1434,8 +1434,8 @@ impl DigestV3 {
             FeatureKind::SurfaceExtend { target, distance } => {
                 self.byte(34);
                 self.u64(target.0);
-                self.bytes(distance.source_token.as_bytes());
-                self.u64(distance.millimetres.to_bits());
+                self.bytes(distance.source_token().as_bytes());
+                self.u64(distance.millimetres().to_bits());
             }
             FeatureKind::SurfaceKnit {
                 surfaces,
@@ -1447,8 +1447,8 @@ impl DigestV3 {
                 for surface in surfaces {
                     self.u64(surface.0);
                 }
-                self.bytes(tolerance.source_token.as_bytes());
-                self.u64(tolerance.millimetres.to_bits());
+                self.bytes(tolerance.source_token().as_bytes());
+                self.u64(tolerance.millimetres().to_bits());
                 self.byte(u8::from(*make_solid));
             }
             FeatureKind::SurfaceThicken {
@@ -1458,8 +1458,8 @@ impl DigestV3 {
             } => {
                 self.byte(36);
                 self.u64(target.0);
-                self.bytes(thickness.source_token.as_bytes());
-                self.u64(thickness.millimetres.to_bits());
+                self.bytes(thickness.source_token().as_bytes());
+                self.u64(thickness.millimetres().to_bits());
                 self.byte(match direction {
                     ShellDirection::Inward => 1,
                     ShellDirection::Outward => 2,
@@ -1518,8 +1518,8 @@ impl DigestV3 {
                 for reference in recorded {
                     self.topological_reference(reference);
                 }
-                self.bytes(thickness.source_token.as_bytes());
-                self.u64(thickness.millimetres.to_bits());
+                self.bytes(thickness.source_token().as_bytes());
+                self.u64(thickness.millimetres().to_bits());
                 self.byte(match direction {
                     ShellDirection::Inward => 1,
                     ShellDirection::Outward => 2,
@@ -1562,20 +1562,20 @@ impl DigestV3 {
                     EdgeFinishKind::Fillet => 1,
                     EdgeFinishKind::Chamfer => 2,
                 });
-                self.bytes(amount.source_token.as_bytes());
-                self.u64(amount.millimetres.to_bits());
+                self.bytes(amount.source_token().as_bytes());
+                self.u64(amount.millimetres().to_bits());
                 self.u64(fillet_radius_stations.len() as u64);
                 for station in fillet_radius_stations {
                     self.u64(station.position.to_bits());
-                    self.bytes(station.radius.source_token.as_bytes());
-                    self.u64(station.radius.millimetres.to_bits());
+                    self.bytes(station.radius.source_token().as_bytes());
+                    self.u64(station.radius.millimetres().to_bits());
                 }
                 match chamfer_mode {
                     ChamferMode::Symmetric => self.byte(1),
                     ChamferMode::TwoDistance { second_distance } => {
                         self.byte(2);
-                        self.bytes(second_distance.source_token.as_bytes());
-                        self.u64(second_distance.millimetres.to_bits());
+                        self.bytes(second_distance.source_token().as_bytes());
+                        self.u64(second_distance.millimetres().to_bits());
                     }
                     ChamferMode::DistanceAngle { angle_degrees } => {
                         self.byte(3);
@@ -1605,8 +1605,8 @@ impl DigestV3 {
                         self.profile_face(face);
                     }
                 }
-                self.bytes(distance.source_token.as_bytes());
-                self.u64(distance.millimetres.to_bits());
+                self.bytes(distance.source_token().as_bytes());
+                self.u64(distance.millimetres().to_bits());
             }
             FeatureKind::RigidTransform { target, transform } => {
                 self.byte(24);

@@ -8,7 +8,7 @@ use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind,
     Proposal, ProposalContext, ProposalPrepareError, Snapshot,
 };
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };

@@ -16,11 +16,11 @@ use ketchup_core::document::{
 use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
 use ketchup_core::persistence;
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
-use ketchup_core::sketch::{PadOperation, PadProfile};
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

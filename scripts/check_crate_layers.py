@@ -12,18 +12,19 @@ from pathlib import Path
 
 LAYERS = {
     "ketchup-tolerance": 0,
-    "ketchup-core": 1,
-    "ketchup-exact": 1,
-    "ketchup-interaction": 2,
-    "ketchup-assistant": 2,
-    "ketchup-analysis": 2,
-    "ketchup-pdm": 2,
-    "ketchup-manufacturing": 2,
-    "ketchup-program": 3,
-    "ketchup-scheduler": 3,
-    "ketchup-application": 4,
-    "ketchup-headless": 5,
-    "ketchup-app": 5,
+    "ketchup-geometry": 1,
+    "ketchup-core": 2,
+    "ketchup-exact": 2,
+    "ketchup-interaction": 3,
+    "ketchup-assistant": 3,
+    "ketchup-analysis": 3,
+    "ketchup-pdm": 3,
+    "ketchup-manufacturing": 3,
+    "ketchup-program": 4,
+    "ketchup-scheduler": 4,
+    "ketchup-application": 5,
+    "ketchup-headless": 6,
+    "ketchup-app": 6,
 }
 
 

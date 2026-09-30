@@ -3,8 +3,8 @@ use crate::assembly_joint::{
     sample_assembly_motion_study,
 };
 use crate::document::{DefinitionId, FeatureKind, OccurrenceId, Snapshot, Transform};
-use crate::sketch::{PadOperation, PadSpec};
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING};
+use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use std::collections::BTreeMap;
 use std::fmt;
 

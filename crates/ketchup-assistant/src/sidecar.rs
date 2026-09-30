@@ -2352,7 +2352,7 @@ impl AssistantWorkplaneSpec {
                 origin_mm,
                 x_axis,
                 y_axis,
-            } => ketchup_core::sketch::WorkplaneFrame::from_axes(*origin_mm, *x_axis, *y_axis)
+            } => ketchup_geometry::sketch::WorkplaneFrame::from_axes(*origin_mm, *x_axis, *y_axis)
                 .map(|_| ())
                 .map_err(|_| "assistant workplane frame is invalid".to_owned()),
             Self::Principal { .. } => Ok(()),
@@ -2583,7 +2583,7 @@ impl AssistantSketchEntity {
                     && source_entities
                         .iter()
                         .all(|entity| entity.validate().is_ok())
-                    && source_ids.len() <= ketchup_core::sketch::MAX_SKETCH_ENTITIES
+                    && source_ids.len() <= ketchup_geometry::sketch::MAX_SKETCH_ENTITIES
                     && source_ids.iter().collect::<BTreeSet<_>>().len() == source_ids.len()
                     && (1..=MAX_ASSISTANT_PROFILE_COPIES).contains(&copies.len())
                     && copies.iter().all(|copy| {
@@ -2859,8 +2859,8 @@ fn validate_assistant_sketch_payload(
         || name.len() > MAX_ASSISTANT_NAME_BYTES
         || name.chars().any(char::is_control)
         || entities.is_empty()
-        || expanded_entity_count > ketchup_core::sketch::MAX_SKETCH_ENTITIES
-        || constraints.len() > ketchup_core::sketch::MAX_SKETCH_CONSTRAINTS
+        || expanded_entity_count > ketchup_geometry::sketch::MAX_SKETCH_ENTITIES
+        || constraints.len() > ketchup_geometry::sketch::MAX_SKETCH_CONSTRAINTS
     {
         return Err("assistant sketch creation is invalid".to_owned());
     }

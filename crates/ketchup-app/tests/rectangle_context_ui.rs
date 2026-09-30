@@ -11,8 +11,8 @@ use ketchup_core::{
     },
     exact_brep_graph::ExactBRepGraph,
     persistence,
-    sketch::{PrincipalPlane, SketchEntity},
 };
+use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity};
 use ketchup_interaction::Vec3;
 
 fn tool(shell: &mut Shell, plane: PrincipalPlane) {

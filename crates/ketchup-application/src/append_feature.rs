@@ -16,10 +16,10 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
-use ketchup_core::sketch::{
+use ketchup_core::topology::TopologicalElementKind;
+use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
 };
-use ketchup_core::topology::TopologicalElementKind;
 
 pub(crate) fn plan_feature_kind(
     snapshot: &Snapshot,
@@ -133,7 +133,7 @@ pub(crate) fn plan_feature_kind(
                 direction: FeatureDirection::AlongNormal,
                 extent: FeatureExtent::Blind(
                     Dimension::new(depth_mm.to_string(), *depth_mm).map_err(|error| {
-                        assistant_canonical_rejection(error, operation_name, "feature.depth_mm")
+                        assistant_canonical_rejection(error.into(), operation_name, "feature.depth_mm")
                     })?,
                 ),
                 operation: PadOperation::Cut {
@@ -185,7 +185,7 @@ pub(crate) fn plan_feature_kind(
                 profile,
                 distance: Dimension::new(distance_mm.to_string(), *distance_mm).map_err(
                     |error| {
-                        assistant_canonical_rejection(error, operation_name, "feature.distance_mm")
+                        assistant_canonical_rejection(error.into(), operation_name, "feature.distance_mm")
                     },
                 )?,
             }
@@ -451,7 +451,7 @@ pub(crate) fn plan_feature_kind(
                 "Assistant SurfaceExtend target is resolved before feature planning",
             )),
             distance: Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
-                assistant_canonical_rejection(error, operation_name, "feature.distance_mm")
+                assistant_canonical_rejection(error.into(), operation_name, "feature.distance_mm")
             })?,
         },
         AssistantCadBodyFeature::SurfaceKnit {
@@ -473,7 +473,7 @@ pub(crate) fn plan_feature_kind(
                 tolerance: Dimension::new(tolerance_mm.to_string(), *tolerance_mm).map_err(
                     |error| {
                         assistant_canonical_rejection(
-                            error,
+                            error.into(),
                             operation_name,
                             "feature.tolerance_mm",
                         )
@@ -491,7 +491,7 @@ pub(crate) fn plan_feature_kind(
                 "Assistant SurfaceThicken target is resolved before feature planning",
             )),
             thickness: Dimension::new(thickness_mm.to_string(), *thickness_mm).map_err(|error| {
-                assistant_canonical_rejection(error, operation_name, "feature.thickness_mm")
+                assistant_canonical_rejection(error.into(), operation_name, "feature.thickness_mm")
             })?,
             direction: match direction {
                 AssistantCadShellDirection::Inward => ShellDirection::Inward,
@@ -583,7 +583,7 @@ pub(crate) fn plan_feature_kind(
             }
             let thickness =
                 Dimension::new(thickness_mm.to_string(), *thickness_mm).map_err(|error| {
-                    assistant_canonical_rejection(error, operation_name, "feature.thickness_mm")
+                    assistant_canonical_rejection(error.into(), operation_name, "feature.thickness_mm")
                 })?;
             plan_topology_shell_kind(
                 target,
@@ -667,7 +667,7 @@ pub(crate) fn plan_feature_kind(
                 edges.push((*reference).clone());
             }
             let radius = Dimension::new(radius_mm.to_string(), *radius_mm).map_err(|error| {
-                assistant_canonical_rejection(error, operation_name, "feature.radius_mm")
+                assistant_canonical_rejection(error.into(), operation_name, "feature.radius_mm")
             })?;
             let radius_stations = radius_stations
                 .iter()
@@ -678,7 +678,7 @@ pub(crate) fn plan_feature_kind(
                         radius: Dimension::new(station.radius_mm.to_string(), station.radius_mm)
                             .map_err(|error| {
                                 assistant_canonical_rejection(
-                                    error,
+                                    error.into(),
                                     operation_name,
                                     &format!("feature.radius_stations.{index}.radius_mm"),
                                 )
@@ -760,7 +760,7 @@ pub(crate) fn plan_feature_kind(
             }
             let distance =
                 Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
-                    assistant_canonical_rejection(error, operation_name, "feature.distance_mm")
+                    assistant_canonical_rejection(error.into(), operation_name, "feature.distance_mm")
                 })?;
             match mode {
                 AssistantCadChamferMode::Symmetric => {
@@ -808,7 +808,7 @@ pub(crate) fn plan_feature_kind(
                             )
                             .map_err(|error| {
                                 assistant_canonical_rejection(
-                                    error,
+                                    error.into(),
                                     operation_name,
                                     "feature.mode.second_distance_mm",
                                 )

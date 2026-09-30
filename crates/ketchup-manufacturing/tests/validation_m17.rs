@@ -17,7 +17,6 @@ use ketchup_core::exact_validation::{
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::persistence;
-use ketchup_core::prismatic::Aabb;
 use ketchup_core::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceOwner, ClearanceSeverity,
     ClearanceValidationError, ClearanceVolumeId, SpaceId, validate_clearance_occupancy,
@@ -29,6 +28,7 @@ use ketchup_core::validation::{
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
     ValidatorRoleIndex,
 };
+use ketchup_geometry::prismatic::Aabb;
 use ketchup_manufacturing::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
     BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,

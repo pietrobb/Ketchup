@@ -48,11 +48,11 @@ use ketchup_core::pin_joint::{
     PinHole, PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair,
     project_pin_joint_contract,
 };
-use ketchup_core::sketch::{
-    PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
-};
 use ketchup_core::tolerance::ROUNDING;
 use ketchup_core::topology::TopologicalElementKind;
+use ketchup_geometry::sketch::{
+    PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
+};
 use ketchup_interaction::Vec3;
 use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
 use serde::Serialize;
@@ -2548,7 +2548,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 let dimension =
                     Dimension::new(value_mm.to_string(), *value_mm).map_err(|error| {
                         assistant_canonical_rejection(
-                            error,
+                            error.into(),
                             operation_name,
                             &format!("feature:{}", feature_id.0),
                         )
@@ -2584,7 +2584,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 })?;
                 let dimension = Dimension::new(value.to_string(), *value).map_err(|error| {
                     assistant_canonical_rejection(
-                        error,
+                        error.into(),
                         operation_name,
                         &format!("feature:{}", feature_id.0),
                     )
@@ -3790,7 +3790,11 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 id: NodeId(*node_id),
                 name: name.clone(),
                 dimension: Dimension::new(value.to_string(), *value).map_err(|error| {
-                    assistant_canonical_rejection(error, operation_name, &format!("node:{node_id}"))
+                    assistant_canonical_rejection(
+                        error.into(),
+                        operation_name,
+                        &format!("node:{node_id}"),
+                    )
                 })?,
                 dependencies: Vec::new(),
             }),

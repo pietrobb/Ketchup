@@ -2,7 +2,7 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, OccurrenceId, Transform,
 };
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
     Axis, ElementId, InteractionError, InteractionScene, LocaleCatalog, PreviewError,

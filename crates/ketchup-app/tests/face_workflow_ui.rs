@@ -17,8 +17,8 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactResultRegistry};
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_core::sketch::{PrincipalPlane, WorkplaneSupport};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneSupport};
 use ketchup_interaction::{ElementId, SnapKind, Vec3};
 
 fn open_face_workflow(shell: &mut Shell) {

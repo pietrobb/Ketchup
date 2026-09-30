@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_core::sketch::PrincipalPlane;
+use ketchup_geometry::sketch::PrincipalPlane;
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

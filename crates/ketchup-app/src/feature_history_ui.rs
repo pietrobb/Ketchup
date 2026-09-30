@@ -15,12 +15,12 @@ use ketchup_core::shared_change::{
     commit_shared_definition_change, project_component_replacement_impact,
     project_occurrence_fork_impact, project_shared_change_impact,
 };
-use ketchup_core::sketch::{
+use ketchup_core::tolerance::ROUNDING;
+use ketchup_geometry::sketch::{
     MAX_SKETCH_CONSTRAINTS, PadOperation, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity,
     SketchEntityId, SketchError,
 };
-use ketchup_core::tolerance::ROUNDING;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FeatureHistoryPreviewKind {

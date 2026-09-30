@@ -18,8 +18,8 @@ use ketchup_core::mechanical_coupling::{
     AssemblyTransmissionKind,
 };
 use ketchup_core::persistence;
-use ketchup_core::prismatic::Aabb;
 use ketchup_core::state_view::encode_semantic_state;
+use ketchup_geometry::prismatic::Aabb;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const FIRST: OccurrenceId = OccurrenceId(10);

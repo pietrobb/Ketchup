@@ -13,13 +13,13 @@ use ketchup_core::document::{
     ProposalPrincipal, ProposalRisk, ProposalValue, RuleOutput, SlotPath, SlotResolution,
     SlotSegment, TagId, Transform, TrustedConfirmationSurface,
 };
-use ketchup_core::prismatic::{Aabb, CanonicalJoint, JointId};
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceId,
 };
 use ketchup_core::tolerance::TolerancePolicy;
+use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 
 const RULE: NodeId = NodeId(1);
 const EXPRESSION_INPUT: NodeId = NodeId(2);

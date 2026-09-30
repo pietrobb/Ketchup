@@ -12,15 +12,15 @@ use ketchup_core::feature_history::{
     prepare_body_profile_translation,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
-use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
-    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
-    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
-};
 use ketchup_core::testing::box_package;
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
+};
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
+    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use std::collections::BTreeSet;
 

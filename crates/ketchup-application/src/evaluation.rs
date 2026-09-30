@@ -13,7 +13,7 @@ use ketchup_core::import::{
     StepImportEvidence,
 };
 use ketchup_core::persistence::ContainerData;
-use ketchup_core::sketch::{WorkplaneSpec, WorkplaneSupport};
+use ketchup_geometry::sketch::{WorkplaneSpec, WorkplaneSupport};
 use ketchup_scheduler::{
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
 };

@@ -1,4 +1,4 @@
-use crate::graph::DerivedIdentity;
+use crate::slot::DerivedIdentity;
 use crate::tolerance::{InvalidTolerance, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use std::fmt;
 

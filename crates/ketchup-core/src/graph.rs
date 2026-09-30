@@ -1,4 +1,6 @@
 use crate::document::{Dimension, NodeId};
+pub use ketchup_geometry::slot::{DerivedIdentity, SlotPath, SlotSegment};
+use ketchup_geometry::slot::{SlotError, ensure_semantic_key};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -10,7 +12,6 @@ pub const DEFAULT_BACKEND_ID: &str = "ketchup.backend.in-process.numeric.v1";
 pub const MAX_EXPRESSION_BYTES: usize = 4096;
 pub const MAX_EXPRESSION_TOKENS: usize = 1024;
 pub const MAX_EXPRESSION_DEPTH: usize = 64;
-pub const MAX_SLOT_PATH_SEGMENTS: usize = 64;
 pub const MAX_RULE_OUTPUT_DEPTH: usize = 64;
 pub const MAX_RULE_OUTPUTS: usize = 16_384;
 
@@ -118,78 +119,6 @@ impl ExpressionAst {
         } else {
             Err(DiagnosticCode::NonFiniteResult)
         }
-    }
-}
-
-#[derive(
-    Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct SlotSegment {
-    pub producer_rule_id: NodeId,
-    pub output_port: String,
-    pub semantic_key: String,
-}
-
-impl SlotSegment {
-    pub fn new(
-        producer_rule_id: NodeId,
-        output_port: impl Into<String>,
-        semantic_key: impl Into<String>,
-    ) -> Result<Self, GraphError> {
-        if producer_rule_id.0 == 0 {
-            return Err(GraphError::ReservedNodeId);
-        }
-        let output_port = output_port.into();
-        let semantic_key = semantic_key.into();
-        ensure_semantic_key(&output_port)?;
-        ensure_semantic_key(&semantic_key)?;
-        Ok(Self {
-            producer_rule_id,
-            output_port,
-            semantic_key,
-        })
-    }
-}
-
-#[derive(
-    Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct SlotPath(Vec<SlotSegment>);
-
-impl SlotPath {
-    pub fn new(segments: Vec<SlotSegment>) -> Result<Self, GraphError> {
-        if segments.is_empty() {
-            return Err(GraphError::EmptySlotPath);
-        }
-        if segments.len() > MAX_SLOT_PATH_SEGMENTS {
-            return Err(GraphError::SlotPathLimit);
-        }
-        Ok(Self(segments))
-    }
-
-    #[must_use]
-    pub fn segments(&self) -> &[SlotSegment] {
-        &self.0
-    }
-}
-
-#[derive(
-    Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct DerivedIdentity {
-    pub root_rule_node_id: NodeId,
-    pub slot_path: SlotPath,
-}
-
-impl DerivedIdentity {
-    pub fn new(root_rule_node_id: NodeId, slot_path: SlotPath) -> Result<Self, GraphError> {
-        if root_rule_node_id.0 == 0 {
-            return Err(GraphError::ReservedNodeId);
-        }
-        Ok(Self {
-            root_rule_node_id,
-            slot_path,
-        })
     }
 }
 
@@ -1214,14 +1143,6 @@ fn check_depth(depth: usize) -> Result<(), GraphError> {
     }
 }
 
-fn ensure_semantic_key(value: &str) -> Result<(), GraphError> {
-    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
-        Err(GraphError::InvalidSemanticKey)
-    } else {
-        Ok(())
-    }
-}
-
 fn diagnostic_message(code: DiagnosticCode) -> &'static str {
     match code {
         DiagnosticCode::DependencyFailed => "a dependency did not evaluate",
@@ -1302,10 +1223,21 @@ pub enum GraphError {
     EmptyEvaluationIdentity,
 }
 
+impl From<SlotError> for GraphError {
+    fn from(error: SlotError) -> Self {
+        match error {
+            SlotError::ReservedNodeId => Self::ReservedNodeId,
+            SlotError::InvalidSemanticKey => Self::InvalidSemanticKey,
+            SlotError::EmptySlotPath => Self::EmptySlotPath,
+            SlotError::SlotPathLimit => Self::SlotPathLimit,
+        }
+    }
+}
+
 impl fmt::Display for GraphError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ReservedNodeId => formatter.write_str("node ID zero is reserved"),
+            Self::ReservedNodeId => write!(formatter, "{}", SlotError::ReservedNodeId),
             Self::ReservedOverrideId => formatter.write_str("override ID zero is reserved"),
             Self::EmptyNodeName => formatter.write_str("node name is empty"),
             Self::DependenciesNotCanonical => {
@@ -1322,9 +1254,9 @@ impl fmt::Display for GraphError {
             Self::UnexpectedToken => formatter.write_str("expression contains an unexpected token"),
             Self::UnexpectedEnd => formatter.write_str("expression ends unexpectedly"),
             Self::UnclosedParenthesis => formatter.write_str("expression parenthesis is unclosed"),
-            Self::InvalidSemanticKey => formatter.write_str("semantic key is invalid"),
-            Self::EmptySlotPath => formatter.write_str("slot path must not be empty"),
-            Self::SlotPathLimit => formatter.write_str("slot path exceeds its segment limit"),
+            Self::InvalidSemanticKey => write!(formatter, "{}", SlotError::InvalidSemanticKey),
+            Self::EmptySlotPath => write!(formatter, "{}", SlotError::EmptySlotPath),
+            Self::SlotPathLimit => write!(formatter, "{}", SlotError::SlotPathLimit),
             Self::RuleOutputLimit => formatter.write_str("rule outputs exceed their limit"),
             Self::RuleOutputDepthLimit => {
                 formatter.write_str("rule outputs exceed their depth limit")

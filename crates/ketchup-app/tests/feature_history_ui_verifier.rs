@@ -16,7 +16,7 @@ use ketchup_core::document::{
 use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
 use ketchup_core::persistence;
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

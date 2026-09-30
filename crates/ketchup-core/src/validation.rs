@@ -3,11 +3,11 @@ use crate::document::{
 };
 use crate::exact_product::BodyResultIdentity;
 use crate::graph::{DerivedIdentity, sha256_hex};
-use crate::prismatic::{
+use crate::tolerance::TolerancePolicy;
+use ketchup_geometry::prismatic::{
     Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome,
     validate_joint_geometry,
 };
-use crate::tolerance::TolerancePolicy;
 use std::collections::BTreeMap;
 use std::fmt;
 

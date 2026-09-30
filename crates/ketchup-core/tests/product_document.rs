@@ -18,13 +18,13 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::producer_exact_graph;
 use ketchup_core::persistence;
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_core::sketch::{
+use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::testing::{cbor_entry, rewrite_saved_snapshot, with_document_id};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
     SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec,
 };
-use ketchup_core::state_view::encode_semantic_state;
-use ketchup_core::testing::{cbor_entry, rewrite_saved_snapshot, with_document_id};
 
 const CABINET: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(10);

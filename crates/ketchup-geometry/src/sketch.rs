@@ -1,5 +1,6 @@
-use crate::document::{Dimension, FeatureId};
-use crate::exact_product::BodySubshapeRef;
+use crate::dimension::Dimension;
+use crate::id::FeatureId;
+use crate::reference::BodySubshapeRef;
 use crate::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, FINITE_DIFFERENCE_STEP,
     INITIAL_DAMPING, MAX_COORDINATE_MM, NEGLIGIBLE, ROUNDING,
@@ -61,7 +62,7 @@ pub enum WorkplaneSupport {
     },
     PlanarFace {
         reference: Box<BodySubshapeRef>,
-        #[serde(serialize_with = "crate::document::derived")]
+        #[serde(serialize_with = "crate::derived::derived")]
         health: WorkplaneSupportHealth,
     },
     ConstructionPlane {
@@ -183,7 +184,7 @@ impl serde::Serialize for WorkplaneSpec {
         impl serde::Serialize for Frame<'_> {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 if matches!(self.0.support, WorkplaneSupport::PlanarFace { .. }) {
-                    crate::document::derived(&self.0.frame, serializer)
+                    crate::derived::derived(&self.0.frame, serializer)
                 } else {
                     self.0.frame.serialize(serializer)
                 }
@@ -939,7 +940,9 @@ pub struct SketchSpec {
 }
 
 impl SketchSpec {
-    pub(crate) fn rectangle_bounds(&self) -> Option<[[f64; 2]; 2]> {
+    /// Corners of the axis-aligned rectangle this sketch draws, if it is one.
+    #[must_use]
+    pub fn rectangle_bounds(&self) -> Option<[[f64; 2]; 2]> {
         if !self.constraints.is_empty() || self.entities.len() != 4 {
             return None;
         }

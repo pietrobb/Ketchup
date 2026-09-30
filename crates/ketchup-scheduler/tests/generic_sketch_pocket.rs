@@ -4,7 +4,7 @@ use fixture::*;
 use ketchup_core::document::{CanonicalCommand, CommandBatch};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{ExactProductError, ExactResultRegistry};
-use ketchup_core::sketch::PrincipalPlane;
+use ketchup_geometry::sketch::PrincipalPlane;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::sync::Arc;
 

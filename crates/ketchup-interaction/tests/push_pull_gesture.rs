@@ -6,9 +6,9 @@ use ketchup_core::exact_product::{
     BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactProductError, ExactResultRegistry,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_core::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
 use ketchup_core::testing::box_package;
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
 use ketchup_interaction::face_intent::{
     FaceIntentError, FaceIntentSource, FaceIntentTarget, HoverFaceCandidate, TransientFaceIntent,
 };

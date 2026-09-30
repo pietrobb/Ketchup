@@ -90,14 +90,8 @@ use ketchup_core::import::{
     StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
 };
 use ketchup_core::persistence::ContainerData;
-use ketchup_core::prismatic::JointId;
 use ketchup_core::sheet_metal::{
     SheetMetalManufacturingProjection, project_sheet_metal_manufacturing,
-};
-use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
-    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
-    SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
 #[cfg(test)]
 use ketchup_core::space::ClearanceOwner;
@@ -110,6 +104,12 @@ use ketchup_core::tolerance::{
 };
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_core::validation::ValidatorRoleIndex;
+use ketchup_geometry::prismatic::JointId;
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
+    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
+    SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+};
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
     SnapResult, Vec3,
@@ -10390,7 +10390,7 @@ impl KetchupApp {
             let target = match edit.constraint_id {
                 Some(constraint_id) => ketchup_core::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
                     sketch_id: FeatureId(edit.feature_id),
-                    constraint_id: ketchup_core::sketch::SketchConstraintId(constraint_id),
+                    constraint_id: ketchup_geometry::sketch::SketchConstraintId(constraint_id),
                 },
                 None => ketchup_core::feature_history::ExactParameterEditTarget::FeatureDimension(
                     FeatureId(edit.feature_id),
@@ -10421,7 +10421,7 @@ impl KetchupApp {
             }
             let dimension =
                 Dimension::new(edit.value_mm.to_string(), edit.value_mm).map_err(|error| {
-                    assistant_canonical_rejection(error, "edit_parameter", &edit_target)
+                    assistant_canonical_rejection(error.into(), "edit_parameter", &edit_target)
                 })?;
             return ketchup_core::feature_history::prepare_body_parameter_edit(
                 &self.document,

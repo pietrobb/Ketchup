@@ -8,12 +8,12 @@ use ketchup_core::feature_history::{
     prepare_body_parameter_edit,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchError, SketchPointKind,
     SketchPointRef, SketchSpec, WorkplaneSpec,
 };
-use ketchup_core::sketch::{PadOperation, PadProfile};
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use std::collections::BTreeSet;
 
 const PART: DefinitionId = DefinitionId(1);

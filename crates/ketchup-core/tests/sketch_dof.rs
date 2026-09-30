@@ -2,7 +2,7 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchError, SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSpec,
 };
@@ -317,8 +317,8 @@ fn redundant_sketch_fails_atomically_and_repaired_sketch_roundtrips_with_undo() 
             id: FeatureId(1),
             definition_id: DefinitionId(1),
             name: "XY".into(),
-            kind: FeatureKind::Workplane(ketchup_core::sketch::WorkplaneSpec::principal(
-                ketchup_core::sketch::PrincipalPlane::Xy,
+            kind: FeatureKind::Workplane(ketchup_geometry::sketch::WorkplaneSpec::principal(
+                ketchup_geometry::sketch::PrincipalPlane::Xy,
             )),
         },
         CanonicalCommand::CreateFeature {

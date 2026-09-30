@@ -1,0 +1,15 @@
+[package]
+name = "ketchup-geometry"
+description = "Geometry vocabulary of Ketchup: typed IDs, dimensions, face references, sketches and prismatic checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ketchup-tolerance = { path = "../ketchup-tolerance" }
+serde = { version = "1.0", features = ["derive"] }
+
+[lints]
+workspace = true

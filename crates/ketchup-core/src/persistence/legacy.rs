@@ -75,21 +75,21 @@ use crate::mechanical_coupling::{
     AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
 use crate::pin_joint::{PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair, PinSpec};
-use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
-use crate::sketch::{
-    CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_CONSTRAINTS,
-    MAX_SKETCH_ENTITIES, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchConstraint,
-    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind,
-    SketchPointRef, SketchRegionId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
-};
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceOwner, ClearanceSeverity, ClearanceVolumeId,
     SpaceId,
 };
 use crate::tolerance::TolerancePolicy;
 use crate::topology::TopologicalElementRef;
+use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId};
+use ketchup_geometry::sketch::{
+    CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_CONSTRAINTS,
+    MAX_SKETCH_ENTITIES, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchConstraint,
+    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind,
+    SketchPointRef, SketchRegionId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
+};
 
 use super::{MAGIC, MigrationLoss, PersistenceError};
 
@@ -953,7 +953,7 @@ fn read_rule_outputs(reader: &mut Reader<'_>) -> Result<Vec<RuleOutput>, Persist
         }
         frame.remaining -= 1;
         let segment = SlotSegment::new(NodeId(reader.u64()?), reader.string()?, reader.string()?)
-            .map_err(CanonicalError::Graph)?;
+            .map_err(CanonicalError::from)?;
         let child_count = reader.count()?;
         if frames.len() >= crate::graph::MAX_RULE_OUTPUT_DEPTH {
             return Err(PersistenceError::ResourceLimit);
@@ -975,16 +975,16 @@ fn read_slot_path(reader: &mut Reader<'_>) -> Result<SlotPath, PersistenceError>
     for _ in 0..reader.count()? {
         segments.push(
             SlotSegment::new(NodeId(reader.u64()?), reader.string()?, reader.string()?)
-                .map_err(CanonicalError::Graph)?,
+                .map_err(CanonicalError::from)?,
         );
     }
     SlotPath::new(segments)
-        .map_err(|error| PersistenceError::InvalidCanonicalData(CanonicalError::Graph(error)))
+        .map_err(|error| PersistenceError::InvalidCanonicalData(CanonicalError::from(error)))
 }
 
 fn read_identity(reader: &mut Reader<'_>) -> Result<DerivedIdentity, PersistenceError> {
     DerivedIdentity::new(NodeId(reader.u64()?), read_slot_path(reader)?)
-        .map_err(CanonicalError::Graph)
+        .map_err(CanonicalError::from)
         .map_err(PersistenceError::from)
 }
 
@@ -1250,7 +1250,7 @@ fn read_bounded_volume(reader: &mut Reader<'_>) -> Result<Aabb, PersistenceError
 fn read_override(reader: &mut Reader<'_>) -> Result<CanonicalOverride, PersistenceError> {
     let id = reader.u64()?;
     let target = DerivedIdentity::new(NodeId(reader.u64()?), read_slot_path(reader)?)
-        .map_err(CanonicalError::Graph)?;
+        .map_err(CanonicalError::from)?;
     let parameter = reader.string()?;
     let value = f64::from_bits(reader.u64()?);
     let health = match reader.u8()? {

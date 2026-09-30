@@ -2,7 +2,7 @@
 
 use crate::harness;
 
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

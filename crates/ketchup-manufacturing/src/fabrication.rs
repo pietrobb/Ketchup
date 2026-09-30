@@ -13,12 +13,12 @@ use ketchup_core::exact_validation::{
 };
 use ketchup_core::graph::{DerivedIdentity, sha256_hex};
 use ketchup_core::pin_joint::{PinHole, project_pin_joint_contract};
-use ketchup_core::sketch::{PadOperation, PadSpec};
 use ketchup_core::tolerance::{ROUNDING, TolerancePolicy};
 use ketchup_core::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
     ValidationState,
 };
+use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

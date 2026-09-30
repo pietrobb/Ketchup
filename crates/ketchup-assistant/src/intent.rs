@@ -220,7 +220,7 @@ pub enum WorkflowIntent {
         severity: ketchup_core::space::ClearanceSeverity,
     },
     CreateJoint {
-        target: ketchup_core::prismatic::JointId,
+        target: ketchup_geometry::prismatic::JointId,
         participant_a: DerivedIdentity,
         participant_b: DerivedIdentity,
         volume_min: [f64; 3],
@@ -230,7 +230,7 @@ pub enum WorkflowIntent {
         target: FeatureParameterTarget,
     },
     DeleteJoint {
-        target: ketchup_core::prismatic::JointId,
+        target: ketchup_geometry::prismatic::JointId,
     },
     DeleteSpace {
         target: ketchup_core::space::SpaceId,
@@ -676,7 +676,7 @@ pub fn propose_intent(
                 input_ports: Vec::new(),
                 output_ports: vec![
                     ketchup_core::document::PortSpec::number("result")
-                        .map_err(ketchup_core::document::CanonicalError::Graph)?,
+                        .map_err(ketchup_core::document::CanonicalError::from)?,
                 ],
                 outputs: Vec::new(),
                 override_parameters: Vec::new(),
@@ -699,11 +699,11 @@ pub fn propose_intent(
                 rule,
                 SlotPath::new(vec![
                     SlotSegment::new(rule, output_port, semantic_key)
-                        .map_err(ketchup_core::document::CanonicalError::Graph)?,
+                        .map_err(ketchup_core::document::CanonicalError::from)?,
                 ])
-                .map_err(ketchup_core::document::CanonicalError::Graph)?,
+                .map_err(ketchup_core::document::CanonicalError::from)?,
             )
-            .map_err(ketchup_core::document::CanonicalError::Graph)?;
+            .map_err(ketchup_core::document::CanonicalError::from)?;
             let snapshot = store.current();
             if snapshot.resolve_slot(&identity) != SlotResolution::Resolved {
                 return Err(ketchup_core::document::CanonicalError::UnresolvedDerivedOutput.into());
@@ -729,7 +729,7 @@ pub fn propose_intent(
                 value,
                 SlotResolution::Resolved,
             )
-            .map_err(ketchup_core::document::CanonicalError::Graph)?;
+            .map_err(ketchup_core::document::CanonicalError::from)?;
             (
                 ProposalGoal::CreateRuleOverride(target),
                 AuthoritativeDependency::Override(target),
@@ -757,11 +757,11 @@ pub fn propose_intent(
                 rule,
                 SlotPath::new(vec![
                     SlotSegment::new(rule, output_port, semantic_key)
-                        .map_err(ketchup_core::document::CanonicalError::Graph)?,
+                        .map_err(ketchup_core::document::CanonicalError::from)?,
                 ])
-                .map_err(ketchup_core::document::CanonicalError::Graph)?,
+                .map_err(ketchup_core::document::CanonicalError::from)?,
             )
-            .map_err(ketchup_core::document::CanonicalError::Graph)?;
+            .map_err(ketchup_core::document::CanonicalError::from)?;
             (
                 ProposalGoal::CreateFeatureParameterBinding(target.clone()),
                 AuthoritativeDependency::FeatureParameterBinding(target.clone()),
@@ -825,7 +825,7 @@ pub fn propose_intent(
                     ketchup_core::space::CanonicalSpace::new(
                         target,
                         purpose,
-                        ketchup_core::prismatic::Aabb::new(volume_min, volume_max)
+                        ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
                             .map_err(ketchup_core::document::CanonicalError::from)?,
                         Vec::new(),
                         Vec::new(),
@@ -861,7 +861,7 @@ pub fn propose_intent(
                         target,
                         ketchup_core::space::ClearanceOwner::Space(owner),
                         reason,
-                        ketchup_core::prismatic::Aabb::new(volume_min, volume_max)
+                        ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
                             .map_err(ketchup_core::document::CanonicalError::from)?,
                         ketchup_core::tolerance::TolerancePolicy::new(tolerance_mm)
                             .map_err(ketchup_core::document::CanonicalError::from)?,
@@ -894,11 +894,11 @@ pub fn propose_intent(
                 ProposalGoal::CreateJoint(target),
                 AuthoritativeDependency::Joint(target),
                 CanonicalCommand::UpsertJoint(
-                    ketchup_core::prismatic::CanonicalJoint::new(
+                    ketchup_geometry::prismatic::CanonicalJoint::new(
                         target,
                         participant_a,
                         participant_b,
-                        ketchup_core::prismatic::Aabb::new(volume_min, volume_max)
+                        ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
                             .map_err(ketchup_core::document::CanonicalError::from)?,
                     )
                     .map_err(ketchup_core::document::CanonicalError::from)?,
@@ -1487,6 +1487,12 @@ impl fmt::Display for IntentError {
 }
 
 impl std::error::Error for IntentError {}
+
+impl From<ketchup_geometry::dimension::DimensionError> for IntentError {
+    fn from(error: ketchup_geometry::dimension::DimensionError) -> Self {
+        Self::Canonical(error.into())
+    }
+}
 
 impl From<ketchup_core::document::CanonicalError> for IntentError {
     fn from(error: ketchup_core::document::CanonicalError) -> Self {

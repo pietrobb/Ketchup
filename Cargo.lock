@@ -2263,6 +2263,7 @@ dependencies = [
  "ketchup-application",
  "ketchup-assistant",
  "ketchup-core",
+ "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
  "ketchup-pdm",
@@ -2285,6 +2286,7 @@ dependencies = [
  "ketchup-analysis",
  "ketchup-assistant",
  "ketchup-core",
+ "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
  "ketchup-pdm",
@@ -2300,6 +2302,7 @@ name = "ketchup-assistant"
 version = "0.1.0"
 dependencies = [
  "ketchup-core",
+ "ketchup-geometry",
  "serde",
  "serde_json",
  "syn 2.0.119",
@@ -2313,6 +2316,7 @@ dependencies = [
  "ed25519-dalek",
  "ketchup-core",
  "ketchup-exact",
+ "ketchup-geometry",
  "ketchup-tolerance",
  "resvg",
  "serde",
@@ -2328,6 +2332,14 @@ dependencies = [
  "cxx",
  "cxx-build",
  "ketchup-tolerance",
+]
+
+[[package]]
+name = "ketchup-geometry"
+version = "0.1.0"
+dependencies = [
+ "ketchup-tolerance",
+ "serde",
 ]
 
 [[package]]
@@ -2351,6 +2363,7 @@ name = "ketchup-interaction"
 version = "0.1.0"
 dependencies = [
  "ketchup-core",
+ "ketchup-geometry",
 ]
 
 [[package]]
@@ -2358,6 +2371,7 @@ name = "ketchup-manufacturing"
 version = "0.1.0"
 dependencies = [
  "ketchup-core",
+ "ketchup-geometry",
  "serde",
  "serde_json",
 ]
@@ -2395,6 +2409,7 @@ dependencies = [
  "ketchup-assistant",
  "ketchup-core",
  "ketchup-exact",
+ "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
  "process-wrap",

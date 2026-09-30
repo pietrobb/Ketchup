@@ -14,21 +14,22 @@ private-oauth = ["ketchup-assistant/private-oauth", "ketchup-scheduler/private-o
 manual-alpha = ["private-oauth"]
 
 [dependencies]
-ketchup-manufacturing = { path = "../ketchup-manufacturing" }
-ketchup-analysis = { path = "../ketchup-analysis" }
-ketchup-pdm = { path = "../ketchup-pdm" }
-ketchup-assistant = { path = "../ketchup-assistant" }
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-ketchup-core = { path = "../ketchup-core" }
+getrandom = "0.3.4"
+ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-application = { path = "../ketchup-application" }
+ketchup-assistant = { path = "../ketchup-assistant" }
+ketchup-core = { path = "../ketchup-core" }
+ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-interaction = { path = "../ketchup-interaction" }
+ketchup-manufacturing = { path = "../ketchup-manufacturing" }
+ketchup-pdm = { path = "../ketchup-pdm" }
 ketchup-program = { path = "../ketchup-program" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-getrandom = "0.3.4"
 raw-window-handle = "0.6.2"
 rfd = "0.15.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tempfile = "3.23.0"
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 

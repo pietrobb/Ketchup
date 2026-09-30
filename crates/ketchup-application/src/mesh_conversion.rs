@@ -19,7 +19,7 @@ use ketchup_core::mesh_recognition::{
     CylinderRecognition, MeshRecognition, MeshRecognitionCandidate, MeshRecognitionResiduals,
     recognize_mesh_body_cancellable,
 };
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchEntity,
     SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };

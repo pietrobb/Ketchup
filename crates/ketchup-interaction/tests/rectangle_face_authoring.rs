@@ -4,10 +4,10 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_product::{ExactFaceRole, ExactResultRegistry};
 use ketchup_core::persistence;
-use ketchup_core::sketch::{
+use ketchup_core::testing::box_package;
+use ketchup_geometry::sketch::{
     PrincipalPlane, SketchSolveStatus, WorkplaneFrame, WorkplaneSupport, WorkplaneSupportHealth,
 };
-use ketchup_core::testing::box_package;
 use ketchup_interaction::face_intent::{
     FaceIntentError, FaceIntentTarget, HoverFaceCandidate, TransientFaceIntent,
 };

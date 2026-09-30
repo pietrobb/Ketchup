@@ -1,8 +1,8 @@
 //! Canonical profile surfaces shared by viewport rendering and picking.
 use crate::mesh_projection::{CanonicalPlanarProfileMesh, canonical_profile_feature_mesh};
 use ketchup_core::document::{DefinitionId, FeatureKind, Snapshot};
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::tolerance::ROUNDING;
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 
 pub type SurfaceMesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);

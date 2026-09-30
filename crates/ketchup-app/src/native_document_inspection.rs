@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use ketchup_core::document::FeatureKind;
-use ketchup_core::sketch::{PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDocumentInspection {

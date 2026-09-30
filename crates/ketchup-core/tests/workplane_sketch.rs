@@ -7,7 +7,9 @@ use ketchup_core::exact_product::{
     canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{
+use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::testing::box_package;
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PadSpec,
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind,
     SketchDiagnosticStatus, SketchEntity, SketchEntityId, SketchError, SketchOffsetSide,
@@ -15,9 +17,7 @@ use ketchup_core::sketch::{
     SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec,
     WorkplaneSupport, WorkplaneSupportHealth,
 };
-use ketchup_core::sketch::{PadOperation, PadProfile};
-use ketchup_core::state_view::encode_semantic_state;
-use ketchup_core::testing::box_package;
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const XY: FeatureId = FeatureId(10);

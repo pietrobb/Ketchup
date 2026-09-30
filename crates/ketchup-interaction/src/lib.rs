@@ -868,8 +868,8 @@ pub fn plan_smart_push_pull(
     let feature = snapshot
         .feature(target)
         .ok_or(InteractionError::FeatureNotFound(target))?;
-    let FeatureKind::Pad(ketchup_core::sketch::PadSpec {
-        extent: ketchup_core::sketch::FeatureExtent::Blind(height),
+    let FeatureKind::Pad(ketchup_geometry::sketch::PadSpec {
+        extent: ketchup_geometry::sketch::FeatureExtent::Blind(height),
         ..
     }) = feature.kind()
     else {

@@ -1661,7 +1661,7 @@ fn load_document(
             reference.definition_id,
             reference.producer_feature_id,
         )
-        .is_ok_and(|graph| reference.matches_durable_graph_identity(&graph));
+        .is_ok_and(|graph| graph.names_durable_reference(reference));
         if !names_current_body {
             return Err(PersistenceError::InvalidExactReference);
         }
@@ -1857,6 +1857,12 @@ impl fmt::Display for PersistenceError {
 }
 
 impl std::error::Error for PersistenceError {}
+impl From<ketchup_geometry::dimension::DimensionError> for PersistenceError {
+    fn from(error: ketchup_geometry::dimension::DimensionError) -> Self {
+        CanonicalError::from(error).into()
+    }
+}
+
 impl From<CanonicalError> for PersistenceError {
     fn from(error: CanonicalError) -> Self {
         Self::InvalidCanonicalData(error)

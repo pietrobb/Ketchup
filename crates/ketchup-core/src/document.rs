@@ -49,14 +49,7 @@ use crate::mechanical_coupling::{
     CoupledJointKind,
 };
 use crate::pin_joint::{PinJointContract, PinJointError, PinJointId, project_pin_joint_contract};
-use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sheet_metal::{SheetMetalError, SheetMetalSpec};
-use crate::sketch::{
-    CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile, PadSpec,
-    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
-    SketchError, SketchOffsetSide, SketchPointKind, SketchSpec, SolvedSketchRegionProfile,
-    WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
-};
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceError, SpaceId,
@@ -64,6 +57,13 @@ use crate::space::{
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ketchup_geometry::prismatic::{CanonicalJoint, JointId, PrismaticError};
+use ketchup_geometry::sketch::{
+    CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile, PadSpec,
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
+    SketchError, SketchOffsetSide, SketchPointKind, SketchSpec, SolvedSketchRegionProfile,
+    WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -71,41 +71,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use ketchup_geometry::dimension::Dimension;
+use ketchup_geometry::dimension::DimensionError;
+
 pub const COMMAND_SCHEMA_V1: &str = "ketchup.command.v1";
 pub const TOLERANCE_PROFILE_V1: &str = "ketchup.tolerance.r0-v1";
 pub const MAX_SOLID_TOOL_RESULT_FEATURES: usize =
     2 * (MAX_EXACT_BREP_GRAPH_NODES + 2 * MAX_EXACT_BREP_GRAPH_PROFILES) + 3;
 
-macro_rules! typed_id {
-    ($name:ident) => {
-        #[derive(
-            Clone,
-            Copy,
-            Debug,
-            PartialEq,
-            Eq,
-            PartialOrd,
-            Ord,
-            Hash,
-            serde::Serialize,
-            serde::Deserialize,
-        )]
-        #[serde(transparent)]
-        pub struct $name(pub u64);
-    };
-}
+pub use ketchup_geometry::id::{DefinitionId, DocumentId, FeatureId, NodeId};
+use ketchup_geometry::typed_id;
 
-typed_id!(DocumentId);
-typed_id!(DefinitionId);
 typed_id!(BodyId);
 typed_id!(OccurrenceId);
 typed_id!(GroupId);
-typed_id!(FeatureId);
 typed_id!(TagId);
 typed_id!(ClassificationDimensionId);
 typed_id!(ClassificationCategoryId);
 typed_id!(CollectionId);
-typed_id!(NodeId);
 typed_id!(LocalOccurrenceId);
 typed_id!(LocalGroupId);
 
@@ -128,7 +111,8 @@ pub struct LocalGroupKey {
 pub(crate) mod digest_v3;
 mod instance_path;
 mod stable_digest;
-pub(crate) use stable_digest::{derived, digest_product, identity_form};
+pub(crate) use ketchup_geometry::derived::{derived, identity_form};
+pub(crate) use stable_digest::digest_product;
 
 pub use instance_path::{InstancePath, InstancePathStep};
 use stable_digest::{StableDigest, digest_feature, digest_snapshot};
@@ -1610,30 +1594,32 @@ fn push_parameter_descriptor(
 fn describe_feature_extent(
     descriptors: &mut Vec<ParameterDescriptor>,
     prefix: &str,
-    extent: &crate::sketch::FeatureExtent,
+    extent: &ketchup_geometry::sketch::FeatureExtent,
 ) {
     match extent {
-        crate::sketch::FeatureExtent::Blind(_) | crate::sketch::FeatureExtent::Symmetric(_) => {
+        ketchup_geometry::sketch::FeatureExtent::Blind(_)
+        | ketchup_geometry::sketch::FeatureExtent::Symmetric(_) => {
             push_parameter_descriptor(
                 descriptors,
                 format!("{prefix}.distance"),
                 ParameterValueType::Length,
             );
         }
-        crate::sketch::FeatureExtent::Bidirectional { along, opposite } => {
+        ketchup_geometry::sketch::FeatureExtent::Bidirectional { along, opposite } => {
             describe_feature_extent_end(descriptors, &format!("{prefix}.along"), along);
             describe_feature_extent_end(descriptors, &format!("{prefix}.opposite"), opposite);
         }
-        crate::sketch::FeatureExtent::ThroughAll | crate::sketch::FeatureExtent::UpToFace(_) => {}
+        ketchup_geometry::sketch::FeatureExtent::ThroughAll
+        | ketchup_geometry::sketch::FeatureExtent::UpToFace(_) => {}
     }
 }
 
 fn describe_feature_extent_end(
     descriptors: &mut Vec<ParameterDescriptor>,
     prefix: &str,
-    extent: &crate::sketch::FeatureExtentEnd,
+    extent: &ketchup_geometry::sketch::FeatureExtentEnd,
 ) {
-    if matches!(extent, crate::sketch::FeatureExtentEnd::Blind(_)) {
+    if matches!(extent, ketchup_geometry::sketch::FeatureExtentEnd::Blind(_)) {
         push_parameter_descriptor(
             descriptors,
             format!("{prefix}.distance"),
@@ -2519,46 +2505,6 @@ impl SceneOccurrence {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Dimension {
-    source_token: String,
-    millimetres: f64,
-}
-
-impl Dimension {
-    pub fn new(source_token: impl Into<String>, millimetres: f64) -> Result<Self, CanonicalError> {
-        let source_token = source_token.into();
-        if source_token.trim().is_empty() {
-            return Err(CanonicalError::EmptySourceToken);
-        }
-        if !millimetres.is_finite() || millimetres.abs() > MAX_COORDINATE_MM {
-            return Err(CanonicalError::DimensionOutsideEnvelope);
-        }
-        Ok(Self {
-            source_token,
-            millimetres,
-        })
-    }
-
-    pub fn from_decimal(source_token: impl Into<String>) -> Result<Self, CanonicalError> {
-        let source_token = source_token.into();
-        let millimetres = source_token
-            .parse::<f64>()
-            .map_err(|_| CanonicalError::InvalidDecimalToken)?;
-        Self::new(source_token, millimetres)
-    }
-
-    #[must_use]
-    pub fn source_token(&self) -> &str {
-        &self.source_token
-    }
-
-    #[must_use]
-    pub const fn millimetres(&self) -> f64 {
-        self.millimetres
-    }
-}
-
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -2889,47 +2835,47 @@ pub enum CanonicalCommand {
     },
     SplitSketchEntity {
         id: FeatureId,
-        entity_id: crate::sketch::SketchEntityId,
-        new_entity_id: crate::sketch::SketchEntityId,
+        entity_id: ketchup_geometry::sketch::SketchEntityId,
+        new_entity_id: ketchup_geometry::sketch::SketchEntityId,
         parameter: f64,
         joint_constraint_ids: Vec<SketchConstraintId>,
     },
     JoinSketchEntities {
         id: FeatureId,
-        source_entity_id: crate::sketch::SketchEntityId,
+        source_entity_id: ketchup_geometry::sketch::SketchEntityId,
         source_endpoint: SketchPointKind,
-        consumed_entity_id: crate::sketch::SketchEntityId,
+        consumed_entity_id: ketchup_geometry::sketch::SketchEntityId,
         consumed_endpoint: SketchPointKind,
     },
     TrimSketchEntity {
         id: FeatureId,
-        entity_id: crate::sketch::SketchEntityId,
+        entity_id: ketchup_geometry::sketch::SketchEntityId,
         start_parameter: f64,
         end_parameter: f64,
     },
     ExtendSketchEntity {
         id: FeatureId,
-        entity_id: crate::sketch::SketchEntityId,
+        entity_id: ketchup_geometry::sketch::SketchEntityId,
         endpoint: SketchPointKind,
         parameter: f64,
     },
     OffsetSketchEntity {
         id: FeatureId,
-        entity_id: crate::sketch::SketchEntityId,
-        new_entity_id: crate::sketch::SketchEntityId,
+        entity_id: ketchup_geometry::sketch::SketchEntityId,
+        new_entity_id: ketchup_geometry::sketch::SketchEntityId,
         distance_mm: f64,
         side: SketchOffsetSide,
     },
     ProjectSketchEntity {
         id: FeatureId,
         source_feature_id: FeatureId,
-        source_entity_id: crate::sketch::SketchEntityId,
-        new_entity_id: crate::sketch::SketchEntityId,
+        source_entity_id: ketchup_geometry::sketch::SketchEntityId,
+        new_entity_id: ketchup_geometry::sketch::SketchEntityId,
         projection_constraint_id: SketchConstraintId,
     },
     SetSketchEntityConstruction {
         id: FeatureId,
-        entity_id: crate::sketch::SketchEntityId,
+        entity_id: ketchup_geometry::sketch::SketchEntityId,
         construction: bool,
         construction_constraint_id: SketchConstraintId,
     },
@@ -7982,7 +7928,7 @@ impl DocumentStore {
             return Err(CanonicalError::WrongNodeKind(root_rule_node_id));
         }
         let target = DerivedIdentity::new(root_rule_node_id, slot_path.clone())
-            .map_err(CanonicalError::Graph)?;
+            .map_err(CanonicalError::from)?;
         if resolve_derived_identity(&snapshot.product.evaluator_nodes, &target)
             != SlotResolution::Resolved
         {
@@ -9975,16 +9921,34 @@ impl CanonicalError {
     }
 }
 
+impl From<GraphError> for CanonicalError {
+    fn from(error: GraphError) -> Self {
+        Self::Graph(error)
+    }
+}
+
+impl From<ketchup_geometry::slot::SlotError> for CanonicalError {
+    fn from(error: ketchup_geometry::slot::SlotError) -> Self {
+        Self::Graph(error.into())
+    }
+}
+
+impl From<DimensionError> for CanonicalError {
+    fn from(error: DimensionError) -> Self {
+        match error {
+            DimensionError::EmptySourceToken => Self::EmptySourceToken,
+            DimensionError::InvalidDecimalToken => Self::InvalidDecimalToken,
+            DimensionError::OutsideEnvelope => Self::DimensionOutsideEnvelope,
+        }
+    }
+}
+
 impl fmt::Display for CanonicalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptySourceToken => formatter.write_str("dimension source token is empty"),
-            Self::InvalidDecimalToken => {
-                formatter.write_str("dimension source token is not decimal")
-            }
-            Self::DimensionOutsideEnvelope => {
-                formatter.write_str("dimension is outside the canonical coordinate envelope")
-            }
+            Self::EmptySourceToken => write!(formatter, "{}", DimensionError::EmptySourceToken),
+            Self::InvalidDecimalToken => write!(formatter, "{}", DimensionError::InvalidDecimalToken),
+            Self::DimensionOutsideEnvelope => write!(formatter, "{}", DimensionError::OutsideEnvelope),
             Self::InvalidRevolve => formatter.write_str("revolve axis or angle is invalid"),
             Self::InvalidPlanarOffset => {
                 formatter.write_str("planar offset distance or bounded profile is invalid")
@@ -11910,8 +11874,8 @@ fn project_sketch_entity(
     product: &ProductModel,
     target_feature_id: FeatureId,
     source_feature_id: FeatureId,
-    source_entity_id: crate::sketch::SketchEntityId,
-    new_entity_id: crate::sketch::SketchEntityId,
+    source_entity_id: ketchup_geometry::sketch::SketchEntityId,
+    new_entity_id: ketchup_geometry::sketch::SketchEntityId,
 ) -> Result<SketchEntity, CanonicalError> {
     if target_feature_id == source_feature_id || source_entity_id.0 == 0 || new_entity_id.0 == 0 {
         return Err(CanonicalError::Sketch(SketchError::InvalidProjectionSource));
@@ -12236,7 +12200,7 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
                 },
                 FeatureExtent::Blind(depth),
             ) = (&spec.operation, &spec.extent)
-                && depth.millimetres <= 0.0
+                && depth.millimetres() <= 0.0
             {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
@@ -12257,8 +12221,8 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
             direction,
             ..
         } => {
-            Dimension::new(thickness.source_token.clone(), thickness.millimetres).map(|_| ())?;
-            if thickness.millimetres <= 0.0 {
+            Dimension::new(thickness.source_token(), thickness.millimetres()).map(|_| ())?;
+            if thickness.millimetres() <= 0.0 {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
             // No removed faces is a closed shell.
@@ -12291,9 +12255,9 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
             chamfer_edge_sides,
             ..
         } => {
-            Dimension::new(amount.source_token.clone(), amount.millimetres).map(|_| ())?;
+            Dimension::new(amount.source_token(), amount.millimetres()).map(|_| ())?;
             if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                .contains(&amount.millimetres)
+                .contains(&amount.millimetres())
             {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
@@ -12313,12 +12277,12 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
                     }
                     ChamferMode::TwoDistance { second_distance } => {
                         Dimension::new(
-                            second_distance.source_token.clone(),
-                            second_distance.millimetres,
+                            second_distance.source_token(),
+                            second_distance.millimetres(),
                         )
                         .map(|_| ())?;
                         if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                            .contains(&second_distance.millimetres)
+                            .contains(&second_distance.millimetres())
                         {
                             return Err(CanonicalError::DimensionOutsideEnvelope);
                         }
@@ -12360,16 +12324,13 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
                 }
                 let mut previous = 0.0;
                 for station in fillet_radius_stations {
-                    Dimension::new(
-                        station.radius.source_token.clone(),
-                        station.radius.millimetres,
-                    )
-                    .map(|_| ())?;
+                    Dimension::new(station.radius.source_token(), station.radius.millimetres())
+                        .map(|_| ())?;
                     if !station.position.is_finite()
                         || station.position <= previous
                         || station.position > 1.0
                         || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                            .contains(&station.radius.millimetres)
+                            .contains(&station.radius.millimetres())
                     {
                         return Err(CanonicalError::DimensionOutsideEnvelope);
                     }
@@ -12400,8 +12361,8 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
             Ok(())
         }
         FeatureKind::FaceOffset { face, distance, .. } => {
-            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
-            if distance.millimetres.abs() <= PROFILE_EPSILON_MM {
+            Dimension::new(distance.source_token(), distance.millimetres()).map(|_| ())?;
+            if distance.millimetres().abs() <= PROFILE_EPSILON_MM {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
             match face {
@@ -12448,15 +12409,15 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
             Ok(())
         }
         FeatureKind::PlanarOffset { distance, .. } => {
-            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
-            if distance.millimetres.abs() < EXACT_MIN_LENGTH_MM {
+            Dimension::new(distance.source_token(), distance.millimetres()).map(|_| ())?;
+            if distance.millimetres().abs() < EXACT_MIN_LENGTH_MM {
                 return Err(CanonicalError::InvalidPlanarOffset);
             }
             Ok(())
         }
         FeatureKind::SurfaceExtend { distance, .. } => {
-            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
-            if distance.millimetres < EXACT_MIN_LENGTH_MM {
+            Dimension::new(distance.source_token(), distance.millimetres()).map(|_| ())?;
+            if distance.millimetres() < EXACT_MIN_LENGTH_MM {
                 return Err(CanonicalError::InvalidPlanarOffset);
             }
             Ok(())
@@ -12468,9 +12429,9 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
             Ok(())
         }
         FeatureKind::SurfaceThicken { thickness, .. } => {
-            Dimension::new(thickness.source_token.clone(), thickness.millimetres).map(|_| ())?;
+            Dimension::new(thickness.source_token(), thickness.millimetres()).map(|_| ())?;
             if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                .contains(&thickness.millimetres)
+                .contains(&thickness.millimetres())
             {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
@@ -12481,10 +12442,10 @@ fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), Ca
             tolerance,
             ..
         } => {
-            Dimension::new(tolerance.source_token.clone(), tolerance.millimetres).map(|_| ())?;
+            Dimension::new(tolerance.source_token(), tolerance.millimetres()).map(|_| ())?;
             if !(2..=256).contains(&surfaces.len())
                 || !surfaces.windows(2).all(|pair| pair[0] < pair[1])
-                || !(tolerance_mm..=10.0).contains(&tolerance.millimetres)
+                || !(tolerance_mm..=10.0).contains(&tolerance.millimetres())
             {
                 return Err(CanonicalError::InvalidFeatureMap);
             }
@@ -15733,7 +15694,7 @@ fn supported_planar_face_frame(
         reference.producer_feature_id,
     )
     .ok()?;
-    if !reference.matches_durable_graph_identity(&graph) {
+    if !graph.names_durable_reference(reference) {
         return None;
     }
     graph.extrusion_face_frame(reference.profile_feature_id.0, &reference.semantic_role)
@@ -19694,7 +19655,7 @@ pub(crate) fn validate_graph(
 #[cfg(test)]
 mod parameter_contract_tests {
     use super::*;
-    use crate::sketch::{
+    use ketchup_geometry::sketch::{
         FeatureDirection, SketchConstraint, SketchEntityId, SketchPointRef, SketchRegionId,
     };
 

@@ -14,8 +14,8 @@ use ketchup_core::persistence;
 use ketchup_core::pin_joint::{
     PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair, PinSpec,
 };
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{
     SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
 use std::collections::BTreeMap;
@@ -144,7 +144,7 @@ fn adoption_part(
 
 #[test]
 fn rectangular_sketch_pad_dimensions_preserve_anchors_and_entity_identity() {
-    use ketchup_core::sketch::{FeatureDirection, FeatureExtent, PadSpec};
+    use ketchup_geometry::sketch::{FeatureDirection, FeatureExtent, PadSpec};
     for angle in [0.0_f64, 37.0] {
         let (sine, cosine) = angle.to_radians().sin_cos();
         let frame =
@@ -354,7 +354,7 @@ fn rectangular_sketch_pad_dimensions_preserve_anchors_and_entity_identity() {
 #[test]
 fn sketch_bounds_parameters_reject_constraints_and_nonrectangular_profiles() {
     use ketchup_core::document::ParameterPath;
-    use ketchup_core::sketch::{SketchConstraint, SketchConstraintId, SketchConstraintKind};
+    use ketchup_geometry::sketch::{SketchConstraint, SketchConstraintId, SketchConstraintKind};
     let corners = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]];
     let rectangle = SketchSpec {
         workplane: FeatureId(1),

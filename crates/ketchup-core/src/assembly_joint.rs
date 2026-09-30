@@ -3,8 +3,8 @@ use crate::document::{
     ProposalPrepareError, Snapshot, Transform,
 };
 use crate::mechanical_coupling::{AssemblyMotionCoupling, AssemblyMotionCouplingId};
-use crate::prismatic::Aabb;
 use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
+use ketchup_geometry::prismatic::Aabb;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

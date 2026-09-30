@@ -14,11 +14,11 @@ use ketchup_core::document::{
     CanonicalCommand, CanonicalError, DefinitionId, Dimension, FeatureId, FeatureKind,
     OccurrenceId, Snapshot, Transform,
 };
-use ketchup_core::sketch::{
+use ketchup_core::tolerance::ROUNDING;
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchSpec, WorkplaneSpec,
     WorkplaneSupport,
 };
-use ketchup_core::tolerance::ROUNDING;
 use ketchup_interaction::Vec3;
 
 fn revolve_axis_in_workplane(
@@ -91,7 +91,7 @@ fn construction_plane_workplane(
                 "Reference an existing construction plane or the typed construction_feature output of an earlier create_construction_plane operation.",
             )
         })?;
-    let frame = ketchup_core::sketch::WorkplaneFrame::from_construction_plane(
+    let frame = ketchup_geometry::sketch::WorkplaneFrame::from_construction_plane(
         origin_mm,
         normal,
         x_direction,
@@ -167,7 +167,7 @@ pub(crate) fn plan_creation(
                     y_axis,
                 } => WorkplaneSpec {
                     support: WorkplaneSupport::Free,
-                    frame: ketchup_core::sketch::WorkplaneFrame::from_axes(
+                    frame: ketchup_geometry::sketch::WorkplaneFrame::from_axes(
                         *origin_mm, *x_axis, *y_axis,
                     )
                     .map_err(|error| {
@@ -204,7 +204,7 @@ pub(crate) fn plan_creation(
                     let distance =
                         Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
                             assistant_canonical_rejection(
-                                error,
+                                error.into(),
                                 operation_name,
                                 &format!("feature:{}", base.0),
                             )
@@ -318,7 +318,7 @@ pub(crate) fn plan_creation(
                     y_axis,
                 } => WorkplaneSpec {
                     support: WorkplaneSupport::Free,
-                    frame: ketchup_core::sketch::WorkplaneFrame::from_axes(
+                    frame: ketchup_geometry::sketch::WorkplaneFrame::from_axes(
                         *origin_mm, *x_axis, *y_axis,
                     )
                     .map_err(|error| {
@@ -355,7 +355,7 @@ pub(crate) fn plan_creation(
                     let distance =
                         Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
                             assistant_canonical_rejection(
-                                error,
+                                error.into(),
                                 operation_name,
                                 &format!("feature:{}", base.0),
                             )
@@ -418,7 +418,7 @@ pub(crate) fn plan_creation(
                     let height =
                         Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
                             assistant_canonical_rejection(
-                                error,
+                                error.into(),
                                 operation_name,
                                 &format!("feature:{}", body_id.0),
                             )

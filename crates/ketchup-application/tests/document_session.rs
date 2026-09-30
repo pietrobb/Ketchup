@@ -6,12 +6,12 @@ use ketchup_application::{
     scoped_static_load_report,
 };
 use ketchup_assistant::sidecar::*;
-use ketchup_core::sketch::{CutStart, PadOperation, PadProfile, PadSpec};
 use ketchup_core::{
     document::*,
     exact_product::{ExactBodyPackage, ExactResultRegistry},
     persistence::{self, ContainerData},
 };
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile, PadSpec};
 use std::{collections::BTreeSet, time::Duration};
 #[test]
 fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
@@ -1301,7 +1301,7 @@ fn shared_poll_wait_cancel_and_stale_publication() {
     assert!(task.wait(Duration::from_secs(1)).is_err());
 }
 
-use ketchup_core::sketch::*;
+use ketchup_geometry::sketch::*;
 fn rectangle_sketch(workplane: FeatureId, min_mm: [f64; 2], max_mm: [f64; 2]) -> SketchSpec {
     let corners = [
         min_mm,

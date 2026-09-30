@@ -4,7 +4,7 @@ use eframe::egui::{Key, Vec2, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_core::document::FeatureKind;
-use ketchup_core::sketch::{PrincipalPlane, SketchEntity};
+use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity};
 use ketchup_interaction::{SnapKind, Vec3};
 
 fn rectangle_tool(shell: &mut Shell, plane: PrincipalPlane) {

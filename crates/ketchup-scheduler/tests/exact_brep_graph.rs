@@ -28,14 +28,14 @@ use ketchup_core::exact_product::{
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle, plan_iges_import, plan_step_import};
 use ketchup_core::persistence;
-use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
-use ketchup_core::sketch::{
+use ketchup_core::topology::{
+    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
+};
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
     SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
     WorkplaneSupportHealth,
-};
-use ketchup_core::topology::{
-    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
 use ketchup_scheduler::{
     DerivedResult, EvaluationScheduler, ExactFeaFaceTraction, ExactFeaSetup, ExactFeaSetupError,

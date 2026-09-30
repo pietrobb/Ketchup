@@ -16,6 +16,7 @@ testing = []
 [dependencies]
 ciborium = "0.2"
 ed25519-dalek = "2.2.0"
+ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-tolerance = { path = "../ketchup-tolerance" }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"

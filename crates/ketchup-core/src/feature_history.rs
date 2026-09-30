@@ -8,7 +8,7 @@ use crate::exact_brep_graph::ExactBRepGraph;
 use crate::exact_product::{
     BodySubshapeRef, ExactReferenceQuarantineReason, ExactReferenceResolution, ExactResultRegistry,
 };
-use crate::sketch::{SketchConstraintId, SketchConstraintKind, WorkplaneSupport};
+use ketchup_geometry::sketch::{SketchConstraintId, SketchConstraintKind, WorkplaneSupport};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

@@ -4,8 +4,8 @@ use ketchup_core::document::{
     FeatureKind, FeatureParameterTarget, OccurrenceId, ParameterValueType, RuleProgramSource,
     Snapshot, Transform,
 };
-use ketchup_core::sketch::{PadOperation, PadSpec};
 use ketchup_core::tolerance::ACCUMULATED_ROUNDING;
+use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_program::model::ProgramOperation;
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
 

@@ -12,8 +12,8 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, OccurrenceId, Transform,
 };
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::{graph::sha256_hex, persistence};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -479,7 +479,7 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
     };
     let corners = [[0.0, 0.0], [464.0, 0.0], [464.0, 218.0], [0.0, 218.0]];
     for (index, entity) in sketch.entities.iter().enumerate() {
-        let ketchup_core::sketch::SketchEntity::Line {
+        let ketchup_geometry::sketch::SketchEntity::Line {
             id,
             start_mm,
             end_mm,

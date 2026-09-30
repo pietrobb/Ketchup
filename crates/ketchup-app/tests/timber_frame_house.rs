@@ -36,12 +36,12 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
 use ketchup_core::persistence::{self, ContainerData};
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
     ValidationState,
 };
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_manufacturing::fabrication::{
     FABRICATION_ROLE_DIMENSION_V1, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
     TIMBER_MEMBER_ROLE_V1,

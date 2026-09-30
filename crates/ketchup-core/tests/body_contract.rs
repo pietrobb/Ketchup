@@ -7,14 +7,14 @@ use ketchup_core::document::{
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactResultRegistry, exact_body_terminal_features,
 };
-use ketchup_core::sketch::{
+use ketchup_core::testing::{box_package, cbor_entry, rewrite_saved_snapshot};
+use ketchup_core::{persistence, state_view::encode_semantic_state};
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
     SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
-use ketchup_core::sketch::{PadOperation, PadProfile};
-use ketchup_core::testing::{box_package, cbor_entry, rewrite_saved_snapshot};
-use ketchup_core::{persistence, state_view::encode_semantic_state};
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);

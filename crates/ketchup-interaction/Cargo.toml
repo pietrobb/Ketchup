@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 ketchup-core = { path = "../ketchup-core" }
+ketchup-geometry = { path = "../ketchup-geometry" }
 
 [lints]
 workspace = true

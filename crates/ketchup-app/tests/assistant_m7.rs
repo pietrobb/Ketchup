@@ -37,15 +37,15 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::ExactBodyPackage;
 use ketchup_core::persistence;
-use ketchup_core::sketch::{
+use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::topology::{TopologicalElementKind, TopologicalReferenceStability};
+use ketchup_core::validation::VALIDATOR_ROLE_DIMENSION_V1;
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
     SketchSpec, WorkplaneSpec,
 };
-use ketchup_core::sketch::{PadOperation, PadProfile};
-use ketchup_core::state_view::encode_semantic_state;
-use ketchup_core::topology::{TopologicalElementKind, TopologicalReferenceStability};
-use ketchup_core::validation::VALIDATOR_ROLE_DIMENSION_V1;
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
@@ -3578,7 +3578,7 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
     };
     assert!(matches!(
         &workplane.support,
-        ketchup_core::sketch::WorkplaneSupport::Offset { distance, .. }
+        ketchup_geometry::sketch::WorkplaneSupport::Offset { distance, .. }
             if distance.millimetres() == 18.0
     ));
     let FeatureKind::Sketch(sketch) = edited.feature(offset_sketch_id).unwrap().kind() else {

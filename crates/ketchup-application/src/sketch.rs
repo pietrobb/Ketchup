@@ -3,7 +3,7 @@ use ketchup_assistant::sidecar::{
     AssistantSketchPointKind, AssistantSketchPointRef,
 };
 use ketchup_core::document::{CanonicalError, Dimension};
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
     SketchEntityId, SketchPointKind, SketchPointRef,
 };

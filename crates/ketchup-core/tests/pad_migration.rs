@@ -6,7 +6,7 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::persistence;
-use ketchup_core::sketch::{CutStart, FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{CutStart, FeatureExtent, PadOperation, PadProfile, PadSpec};
 
 /// Written by the retired field-by-field codec: a part with a sketch pocket (15),
 /// a part with a downward extrusion (31), and a part with an extrusion (41), a

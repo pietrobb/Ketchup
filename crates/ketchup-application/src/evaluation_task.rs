@@ -254,10 +254,10 @@ mod tests {
         FeatureKind, OccurrenceId, Transform,
     };
     use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
-    use ketchup_core::sketch::{
+    use ketchup_core::testing::box_package;
+    use ketchup_geometry::sketch::{
         PrincipalPlane, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
     };
-    use ketchup_core::testing::box_package;
 
     const DEFINITION: DefinitionId = DefinitionId(1);
     const PROFILE: FeatureId = FeatureId(10);

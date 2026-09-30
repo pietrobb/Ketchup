@@ -10,7 +10,7 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{PrincipalPlane, SketchEntity, SketchEntityId, WorkplaneFrame};
+use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity, SketchEntityId, WorkplaneFrame};
 use std::collections::BTreeSet;
 
 #[test]

@@ -5,11 +5,11 @@ use crate::document::{
 use crate::pin_joint::{
     PinHole, PinJointContract, PinJointFace, PinJointId, project_pin_joint_contract,
 };
-use crate::sketch::{
+use crate::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
+use ketchup_geometry::sketch::{
     FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchEntity, WorkplaneFrame,
     WorkplaneSupport,
 };
-use crate::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -890,7 +890,7 @@ fn rebind_affected_joinery(
             Ok(CanonicalCommand::SetFeatureParameter {
                 target,
                 dimension: Dimension::new(value.to_string(), value)
-                    .map_err(AssemblyRecipeCompileError::Canonical)?,
+                    .map_err(|error| AssemblyRecipeCompileError::Canonical(error.into()))?,
             })
         })
         .collect::<Result<Vec<_>, AssemblyRecipeCompileError>>()?;

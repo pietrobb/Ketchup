@@ -14,6 +14,7 @@ private-oauth = []
 
 [dependencies]
 ketchup-core = { path = "../ketchup-core" }
+ketchup-geometry = { path = "../ketchup-geometry" }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 

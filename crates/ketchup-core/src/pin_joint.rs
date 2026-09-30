@@ -1,6 +1,6 @@
 use crate::document::{FeatureId, FeatureKind, InstancePath, Snapshot, Transform};
-use crate::sketch::{PadOperation, PadProfile, PadSpec, SketchEntity};
 use crate::tolerance::ACCUMULATED_ROUNDING;
+use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec, SketchEntity};
 use std::fmt;
 
 pub const PIN_JOINERY_PROJECTION_V1: &str = "ketchup.pin-joinery-projection.v1";

@@ -4,8 +4,8 @@ use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId,
     ProfileSegment, SceneOccurrence, SceneQueryBudgetExceeded, Snapshot, Transform,
 };
-use ketchup_core::sketch::{PadOperation, PadProfile, PadSpec};
 use ketchup_core::tolerance::ROUNDING;
+use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

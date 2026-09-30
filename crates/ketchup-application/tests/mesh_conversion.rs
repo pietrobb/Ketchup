@@ -1,4 +1,4 @@
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::time::{Duration, Instant};
 
 use ketchup_application::evaluation::exact_worker_candidates;

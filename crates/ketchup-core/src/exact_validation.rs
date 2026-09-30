@@ -9,8 +9,6 @@ use crate::exact_brep_graph::{
 };
 use crate::exact_product::{ExactBodyPackage, ExactResultKey, ExactResultRegistry};
 use crate::graph::sha256_hex;
-use crate::prismatic::Aabb;
-use crate::sketch::{PadOperation, PadSpec};
 use crate::tolerance::{ROUNDING, TolerancePolicy};
 use crate::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
@@ -19,6 +17,8 @@ use crate::validation::{
     ValidationInvocation, ValidationPolicyRef, ValidationReport, ValidationState,
     ValidatorDescriptor,
 };
+use ketchup_geometry::prismatic::Aabb;
+use ketchup_geometry::sketch::{PadOperation, PadSpec};
 
 pub const EXACT_VALIDATOR_CONTRACT_V1: &str = "ketchup.validator.exact-bodies.v1";
 pub const EXACT_VALIDATOR_IMPLEMENTATION_V1: &str = "ketchup.builtin.exact-bodies.aabb-cpu-f64.v1";

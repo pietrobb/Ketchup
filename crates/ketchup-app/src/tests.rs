@@ -7,7 +7,7 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepOperation};
 use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 #[path = "planning_topology_tests.rs"]
 mod planning_topology;
 
@@ -7783,11 +7783,12 @@ fn assistant_create_joint_is_typed_observational_and_undoable() {
     assert_eq!(app.document.visible_undo_steps(), undo_before);
 
     assert!(app.confirm_assistant_proposal());
-    let joint = ketchup_core::prismatic::CanonicalJoint::new(
+    let joint = ketchup_geometry::prismatic::CanonicalJoint::new(
         target,
         participant("left"),
         participant("right"),
-        ketchup_core::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(app.document.current().joint(target), Some(&joint));
@@ -7807,11 +7808,12 @@ fn assistant_delete_joint_is_typed_observational_and_undoable() {
         )
         .unwrap()
     };
-    let joint = ketchup_core::prismatic::CanonicalJoint::new(
+    let joint = ketchup_geometry::prismatic::CanonicalJoint::new(
         target,
         participant("left"),
         participant("right"),
-        ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
+            .unwrap(),
     )
     .unwrap();
     app.document
@@ -7893,7 +7895,8 @@ fn assistant_create_space_is_typed_observational_and_undoable() {
     let space = ketchup_core::space::CanonicalSpace::new(
         target,
         "maintenance access",
-        ketchup_core::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+            .unwrap(),
         Vec::new(),
         Vec::new(),
     )
@@ -7912,7 +7915,8 @@ fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
     let space = ketchup_core::space::CanonicalSpace::new(
         owner,
         "equipment",
-        ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0])
+            .unwrap(),
         Vec::new(),
         Vec::new(),
     )
@@ -7962,7 +7966,8 @@ fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
         target,
         ClearanceOwner::Space(owner),
         "maintenance envelope",
-        ketchup_core::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+            .unwrap(),
         TolerancePolicy::new(0.01).unwrap(),
         ClearanceSeverity::Required,
         None,
@@ -7984,7 +7989,8 @@ fn assistant_delete_space_is_typed_observational_and_undoable() {
     let space = ketchup_core::space::CanonicalSpace::new(
         target,
         "maintenance access",
-        ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
+            .unwrap(),
         Vec::new(),
         Vec::new(),
     )
@@ -8037,7 +8043,8 @@ fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
     let space = ketchup_core::space::CanonicalSpace::new(
         owner,
         "equipment",
-        ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0])
+            .unwrap(),
         Vec::new(),
         Vec::new(),
     )
@@ -8046,7 +8053,8 @@ fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
         target,
         ketchup_core::space::ClearanceOwner::Space(owner),
         "maintenance envelope",
-        ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]).unwrap(),
+        ketchup_geometry::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
+            .unwrap(),
         ketchup_core::tolerance::TolerancePolicy::new(0.01).unwrap(),
         ketchup_core::space::ClearanceSeverity::Required,
         None,

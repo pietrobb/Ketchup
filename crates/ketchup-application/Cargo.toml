@@ -13,10 +13,11 @@ default = []
 
 [dependencies]
 ketchup-analysis = { path = "../ketchup-analysis" }
-ketchup-pdm = { path = "../ketchup-pdm" }
 ketchup-assistant = { path = "../ketchup-assistant" }
 ketchup-core = { path = "../ketchup-core" }
+ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-interaction = { path = "../ketchup-interaction" }
+ketchup-pdm = { path = "../ketchup-pdm" }
 ketchup-program = { path = "../ketchup-program" }
 ketchup-scheduler = { path = "../ketchup-scheduler", default-features = false }
 serde = { version = "1.0", features = ["derive"] }

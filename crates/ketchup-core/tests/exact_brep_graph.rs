@@ -16,12 +16,6 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::ExactFaceRole;
 use ketchup_core::persistence;
-use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
-use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
-    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
-};
 use ketchup_core::testing::box_package;
 use ketchup_core::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, TolerancePolicy};
 use ketchup_core::topology::{
@@ -29,6 +23,12 @@ use ketchup_core::topology::{
 };
 use ketchup_exact::{
     MAX_PLANAR_LOOP_SEGMENTS, MAX_PLANAR_REGION_HOLES, MAX_PLANAR_REGION_SEGMENTS,
+};
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
 };
 
 const DEFINITION: DefinitionId = DefinitionId(1);

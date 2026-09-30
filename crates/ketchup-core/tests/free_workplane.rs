@@ -2,10 +2,10 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind,
 };
 use ketchup_core::persistence;
-use ketchup_core::sketch::{
+use ketchup_core::testing::with_document_id;
+use ketchup_geometry::sketch::{
     PrincipalPlane, SketchError, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
-use ketchup_core::testing::with_document_id;
 
 fn frame() -> WorkplaneFrame {
     WorkplaneFrame::from_axes([120.0, -40.0, 70.0], [0.8, 0.6, 0.0], [0.0, 0.0, 1.0]).unwrap()

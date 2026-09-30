@@ -3,39 +3,11 @@
 //! A digest hashes the serde form of a value, the same definition the native file stores,
 //! so a new field takes part in every digest without further code. A saved field that is
 //! evidence of an evaluation or is derived from other fields is not document identity: it
-//! declares `#[serde(serialize_with = "crate::document::derived")]` and hashes as a unit.
+//! declares `#[serde(serialize_with = "crate::document::derived")]` (see
+//! [`ketchup_geometry::derived`]) and hashes as a unit.
 
 use super::*;
 use serde::Serialize;
-use std::cell::Cell;
-
-thread_local! {
-    static HASHING_IDENTITY: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Serializes a saved field that does not identify the document.
-pub(crate) fn derived<T: Serialize, S: serde::Serializer>(
-    value: &T,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    if HASHING_IDENTITY.get() {
-        serializer.serialize_unit()
-    } else {
-        value.serialize(serializer)
-    }
-}
-
-/// Runs `serialize` so that every derived field serializes as a unit.
-pub(crate) fn identity_form<R>(serialize: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            HASHING_IDENTITY.set(self.0);
-        }
-    }
-    let _restore = Restore(HASHING_IDENTITY.replace(true));
-    serialize()
-}
 
 pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
     digest_product(snapshot.product.as_ref())
@@ -248,7 +220,7 @@ impl std::io::Write for StableDigest {
 mod tests {
     use super::*;
     use crate::exact_product::{BodySubshapeRef, ReferenceStability};
-    use crate::sketch::{WorkplaneFrame, WorkplaneSupportHealth};
+    use ketchup_geometry::sketch::{WorkplaneFrame, WorkplaneSupportHealth};
 
     fn identity(value: &impl Serialize) -> String {
         let mut digest = StableDigest::new();
@@ -290,7 +262,7 @@ mod tests {
             support,
             frame: WorkplaneFrame {
                 origin_mm: [0.0, 0.0, origin_z],
-                ..WorkplaneFrame::principal(crate::sketch::PrincipalPlane::Xy)
+                ..WorkplaneFrame::principal(ketchup_geometry::sketch::PrincipalPlane::Xy)
             },
         }
     }

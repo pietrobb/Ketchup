@@ -103,6 +103,12 @@ impl fmt::Display for AdapterError {
     }
 }
 impl std::error::Error for AdapterError {}
+impl From<ketchup_geometry::dimension::DimensionError> for AdapterError {
+    fn from(error: ketchup_geometry::dimension::DimensionError) -> Self {
+        CanonicalError::from(error).into()
+    }
+}
+
 impl From<CanonicalError> for AdapterError {
     fn from(error: CanonicalError) -> Self {
         Self::InvalidCanonicalValue(error)

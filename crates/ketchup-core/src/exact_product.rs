@@ -12,7 +12,6 @@ use crate::exact_brep_graph::{
 };
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::import::StepImportMesh;
-use crate::sketch::{SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile};
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use crate::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceError,
@@ -22,172 +21,66 @@ use crate::topology::{
     resolve_topological_reference as resolve_role_neutral_topological_reference,
     topological_edge_provenance_tokens,
 };
+use ketchup_geometry::sketch::{
+    SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use ketchup_geometry::reference::reference_lineage_digest;
+pub use ketchup_geometry::reference::{
+    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ReferenceStability,
+    canonical_reference_lineage_digest,
+};
+
 pub const EXACT_PRODUCT_SCHEMA_V1: &str = "ketchup.exact-product.v1";
 pub const EXACT_BREP_GRAPH_EVALUATOR_V1: &str = "ketchup.exact-brep-graph-evaluator.v1";
 pub const EXACT_MIN_LENGTH_MM: f64 = 0.01;
 pub const MAX_EXACT_PLANAR_OFFSET_LENGTH_MM: f64 = 100_000.0;
-pub const BODY_SUBSHAPE_REF_SCHEMA_V1: &str = "ketchup.body-subshape-ref.v1";
 
-/// Well-known faces of an extrusion, as the exact evaluator names them. A
-/// result may name other faces too (caps of revolves, sweeps and lofts,
-/// offsets, surfaces); those references are valid without a role here.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ExactFaceRole {
-    Top,
-    Bottom,
-    /// The side swept by the profile's first line (the profile has no arc).
-    LinearSide,
-    /// The side swept by the profile's first arc.
-    ArcSide,
-    /// The side swept by a circular profile.
-    CircleSide,
-}
-
-const EXACT_FACE_ROLES: [ExactFaceRole; 5] = [
-    ExactFaceRole::Top,
-    ExactFaceRole::Bottom,
-    ExactFaceRole::LinearSide,
-    ExactFaceRole::ArcSide,
-    ExactFaceRole::CircleSide,
-];
-
-impl ExactFaceRole {
-    #[must_use]
-    pub const fn semantic_role(self) -> &'static str {
-        match self {
-            Self::Top => "extrusion.top",
-            Self::Bottom => "extrusion.bottom",
-            Self::LinearSide => "extrusion.side(profile_edge=line.0)",
-            Self::ArcSide => "extrusion.side(profile_edge=arc.0)",
-            Self::CircleSide => "extrusion.side(profile_edge=circle)",
-        }
-    }
-
-    #[must_use]
-    pub const fn source_element_id(self) -> &'static str {
-        match self {
-            Self::Top | Self::Bottom => "profile.face",
-            Self::LinearSide => "profile.edge.line.0",
-            Self::ArcSide => "profile.edge.arc.0",
-            Self::CircleSide => "profile.edge.circle",
-        }
-    }
-
-    #[must_use]
-    pub const fn expected_type(self) -> &'static str {
-        match self {
-            Self::Top | Self::Bottom | Self::LinearSide => "planar_face",
-            Self::CircleSide => "cylindrical_face",
-            Self::ArcSide => "face",
-        }
-    }
-}
-
-/// Subshape types a reference may name. Older files also stored edge
-/// references; they still load and resolve like any other lost reference.
-const SUBSHAPE_REFERENCE_TYPES: [&str; 4] = ["planar_face", "cylindrical_face", "face", "edge"];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ReferenceStability {
-    Guaranteed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct BodySubshapeRef {
-    #[serde(serialize_with = "crate::document::derived")]
-    pub schema: String,
-    pub document_id: DocumentId,
-    pub definition_id: DefinitionId,
-    pub profile_feature_id: FeatureId,
-    pub producer_feature_id: FeatureId,
-    pub semantic_role: String,
-    pub source_element_id: String,
-    pub expected_type: String,
-    pub expected_cardinality: u32,
-    pub stability: ReferenceStability,
-    // The evaluation that last resolved the reference; a later evaluation replaces it in place.
-    #[serde(serialize_with = "crate::document::derived")]
-    pub canonical_input_digest: String,
-    #[serde(serialize_with = "crate::document::derived")]
-    pub exact_input_digest: String,
-    #[serde(serialize_with = "crate::document::derived")]
-    pub result_fingerprint: String,
-    #[serde(serialize_with = "crate::document::derived")]
-    pub evaluator: String,
-    #[serde(serialize_with = "crate::document::derived")]
-    pub backend: String,
-    #[serde(serialize_with = "crate::document::derived")]
-    pub tolerance: String,
-    pub lineage_digest: String,
-    #[serde(serialize_with = "crate::document::derived")]
-    pub corroborating_geometry_fingerprint: String,
-}
-
-impl BodySubshapeRef {
-    #[must_use]
-    pub fn role(&self) -> Option<ExactFaceRole> {
-        EXACT_FACE_ROLES.into_iter().find(|role| {
-            self.semantic_role == role.semantic_role()
-                && self.source_element_id == role.source_element_id()
-        })
-    }
-
-    #[must_use]
-    pub fn has_valid_lineage(&self) -> bool {
-        self.schema == BODY_SUBSHAPE_REF_SCHEMA_V1
-            && self.expected_cardinality == 1
-            && !self.semantic_role.is_empty()
-            && !self.source_element_id.is_empty()
-            && SUBSHAPE_REFERENCE_TYPES.contains(&self.expected_type.as_str())
-            && self
-                .role()
-                .is_none_or(|role| self.expected_type == role.expected_type())
-            && self.lineage_digest == reference_lineage_digest(self)
-    }
-
-    /// Whether this reference names a face or edge of the body `graph` builds,
+impl ExactBRepGraph {
+    /// Whether `reference` names a face or edge of the body this graph builds,
     /// regardless of which evaluation produced the stored evidence.
     #[must_use]
-    pub fn matches_durable_graph_identity(&self, graph: &ExactBRepGraph) -> bool {
-        self.has_valid_lineage()
-            && self.document_id.0 == graph.document_id
-            && self.definition_id.0 == graph.definition_id
-            && self.producer_feature_id.0 == graph.producer_feature_id
-            && (graph
+    pub fn names_durable_reference(&self, reference: &BodySubshapeRef) -> bool {
+        reference.has_valid_lineage()
+            && reference.document_id.0 == self.document_id
+            && reference.definition_id.0 == self.definition_id
+            && reference.producer_feature_id.0 == self.producer_feature_id
+            && (self
                 .profiles
                 .iter()
-                .any(|profile| profile.source_feature_id == self.profile_feature_id.0)
-                || self.profile_feature_id == self.producer_feature_id)
+                .any(|profile| profile.source_feature_id == reference.profile_feature_id.0)
+                || reference.profile_feature_id == reference.producer_feature_id)
     }
 
+    /// Whether `reference` names a face or edge of the body this graph builds and
+    /// carries the evidence of evaluating exactly this graph.
     #[must_use]
-    pub fn matches_exact_brep_graph(&self, graph: &ExactBRepGraph) -> bool {
-        self.has_valid_lineage()
-            && self.document_id.0 == graph.document_id
-            && self.definition_id.0 == graph.definition_id
-            && self.producer_feature_id.0 == graph.producer_feature_id
-            && (graph
+    pub fn names_evaluated_reference(&self, reference: &BodySubshapeRef) -> bool {
+        reference.has_valid_lineage()
+            && reference.document_id.0 == self.document_id
+            && reference.definition_id.0 == self.definition_id
+            && reference.producer_feature_id.0 == self.producer_feature_id
+            && (self
                 .profiles
                 .iter()
-                .any(|profile| profile.source_feature_id == self.profile_feature_id.0)
-                || (self.profile_feature_id == self.producer_feature_id
-                    && graph.nodes.iter().any(|node| {
-                        node.source_feature_id == graph.producer_feature_id
+                .any(|profile| profile.source_feature_id == reference.profile_feature_id.0)
+                || (reference.profile_feature_id == reference.producer_feature_id
+                    && self.nodes.iter().any(|node| {
+                        node.source_feature_id == self.producer_feature_id
                             && matches!(node.operation, ExactBRepOperation::SheetMetal { .. })
                     })))
-            && self.canonical_input_digest == graph.canonical_input_digest
-            && self.evaluator == EXACT_BREP_GRAPH_EVALUATOR_V1
-            && !self.exact_input_digest.is_empty()
-            && !self.result_fingerprint.is_empty()
-            && !self.backend.is_empty()
-            && !self.tolerance.is_empty()
-            && !self.corroborating_geometry_fingerprint.is_empty()
+            && reference.canonical_input_digest == self.canonical_input_digest
+            && reference.evaluator == EXACT_BREP_GRAPH_EVALUATOR_V1
+            && !reference.exact_input_digest.is_empty()
+            && !reference.result_fingerprint.is_empty()
+            && !reference.backend.is_empty()
+            && !reference.tolerance.is_empty()
+            && !reference.corroborating_geometry_fingerprint.is_empty()
     }
 }
 
@@ -3877,7 +3770,7 @@ impl<'a> ExactProducerCompilation<'a> {
     #[must_use]
     pub fn matches_reference(&self, reference: &BodySubshapeRef) -> bool {
         ExactBRepGraph::from_snapshot(self.snapshot, self.definition_id, self.feature_id)
-            .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph))
+            .is_ok_and(|graph| graph.names_evaluated_reference(reference))
     }
 }
 
@@ -4290,36 +4183,6 @@ fn exact_circle_profile(segments: &[ProfileSegment], closed: bool) -> Option<Exa
         radius_bits: radius.to_bits(),
         clockwise: *first_clockwise,
     })
-}
-
-fn reference_lineage_digest(reference: &BodySubshapeRef) -> String {
-    canonical_reference_lineage_digest(
-        reference.document_id,
-        reference.producer_feature_id,
-        &reference.semantic_role,
-        &reference.source_element_id,
-        &reference.expected_type,
-    )
-}
-
-#[must_use]
-pub fn canonical_reference_lineage_digest(
-    document_id: DocumentId,
-    producer_feature_id: FeatureId,
-    semantic_role: &str,
-    source_element_id: &str,
-    expected_type: &str,
-) -> String {
-    let identity = format!(
-        "{}:{}:{}:{}:{}",
-        document_id.0, producer_feature_id.0, semantic_role, source_element_id, expected_type
-    );
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in identity.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("fnv1a64:{hash:016x}")
 }
 
 #[cfg(test)]

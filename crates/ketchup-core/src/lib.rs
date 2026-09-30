@@ -19,10 +19,8 @@ pub mod mechanical_coupling;
 pub mod mesh_recognition;
 pub mod persistence;
 pub mod pin_joint;
-pub mod prismatic;
 pub mod shared_change;
 pub mod sheet_metal;
-pub mod sketch;
 pub mod space;
 pub mod state_view;
 #[cfg(feature = "testing")]
@@ -44,5 +42,44 @@ mod tests {
     #[test]
     fn application_name_is_stable() {
         assert_eq!(application_name(), "Ketchup");
+    }
+
+    #[test]
+    fn geometry_errors_keep_their_canonical_codes() {
+        use crate::document::CanonicalError;
+        use crate::graph::GraphError;
+        use ketchup_geometry::dimension::DimensionError;
+        use ketchup_geometry::slot::SlotError;
+
+        let codes = [
+            DimensionError::EmptySourceToken,
+            DimensionError::InvalidDecimalToken,
+            DimensionError::OutsideEnvelope,
+        ]
+        .map(|error| CanonicalError::from(error).code());
+        assert_eq!(
+            codes,
+            [
+                "canonical.empty_source_token",
+                "canonical.invalid_decimal_token",
+                "canonical.dimension_outside_envelope",
+            ]
+        );
+        assert_eq!(
+            CanonicalError::from(DimensionError::OutsideEnvelope).to_string(),
+            DimensionError::OutsideEnvelope.to_string()
+        );
+        for (slot, graph) in [
+            (SlotError::ReservedNodeId, GraphError::ReservedNodeId),
+            (
+                SlotError::InvalidSemanticKey,
+                GraphError::InvalidSemanticKey,
+            ),
+            (SlotError::EmptySlotPath, GraphError::EmptySlotPath),
+            (SlotError::SlotPathLimit, GraphError::SlotPathLimit),
+        ] {
+            assert_eq!(GraphError::from(slot), graph);
+            assert_eq!(graph.to_string(), slot.to_string());
+        }
     }
 }

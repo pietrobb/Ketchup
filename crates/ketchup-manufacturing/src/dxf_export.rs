@@ -6,7 +6,7 @@ use std::fmt::{self, Write as _};
 
 use ketchup_core::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
 use ketchup_core::import::{DxfImportOptions, inspect_dxf};
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{
     SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
 

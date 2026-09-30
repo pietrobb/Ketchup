@@ -4,7 +4,7 @@ use crate::spatial::SnapshotBinding;
 use ketchup_core::document::{BodyId, DefinitionId, Snapshot};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::BodySubshapeRef;
-use ketchup_core::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
+use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -213,7 +213,7 @@ impl TransientFaceIntent {
             reference.producer_feature_id,
         )
         .map_err(|_| FaceIntentError::ReferenceUnavailable)?;
-        if !reference.matches_durable_graph_identity(&graph) {
+        if !graph.names_durable_reference(reference) {
             return Err(FaceIntentError::StaleReference);
         }
         let current = snapshot

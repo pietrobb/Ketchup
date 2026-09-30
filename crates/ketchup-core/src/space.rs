@@ -2,9 +2,9 @@ use crate::document::{InstancePath, Snapshot};
 use crate::exact_product::ExactResultRegistry;
 use crate::exact_validation::{GeneralBodyParticipant, GeneralBodyValidationError};
 use crate::graph::{DerivedIdentity, SlotResolution};
-use crate::prismatic::{Aabb, PrismaticError, collide_axis_aligned_prisms};
 use crate::tolerance::TolerancePolicy;
 use crate::validation::EvidenceCounts;
+use ketchup_geometry::prismatic::{Aabb, PrismaticError, collide_axis_aligned_prisms};
 use std::fmt;
 
 const MAX_SEMANTIC_TEXT_BYTES: usize = 4_096;

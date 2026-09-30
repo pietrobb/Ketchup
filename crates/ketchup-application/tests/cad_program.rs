@@ -1,4 +1,4 @@
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeSet;
 
 use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest};
@@ -22,10 +22,10 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
 use ketchup_core::persistence::{ContainerData, LoadOutcome, load, save, save_document_store};
-use ketchup_core::sketch::{
+use ketchup_core::testing::box_package;
+use ketchup_geometry::sketch::{
     PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
-use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 fn part() -> AssistantCadEditOperation {
@@ -629,7 +629,7 @@ fn public_cubic_bezier_profile_plans_as_an_exact_editable_part() {
     assert_eq!(sketch.entities.len(), 2);
     assert!(sketch.entities.iter().all(|entity| matches!(
         entity,
-        ketchup_core::sketch::SketchEntity::CubicBezier { .. }
+        ketchup_geometry::sketch::SketchEntity::CubicBezier { .. }
     )));
     assert!(ExactBRepGraph::from_snapshot(&preview, DefinitionId(1), FeatureId(3)).is_ok());
 }
@@ -687,7 +687,7 @@ fn public_large_ellipse_has_a_visible_bounded_deviation_and_reopens_exactly() {
     let (sin, cos) = 32.0_f64.to_radians().sin_cos();
     let mut maximum_sampled_deviation = 0.0_f64;
     for entity in &sketch.entities {
-        let ketchup_core::sketch::SketchEntity::CubicBezier {
+        let ketchup_geometry::sketch::SketchEntity::CubicBezier {
             start_mm,
             control_1_mm,
             control_2_mm,
@@ -780,7 +780,7 @@ fn public_rotated_rounded_rectangle_plans_as_an_exact_editable_profile() {
         sketch
             .entities
             .iter()
-            .filter(|entity| matches!(entity, ketchup_core::sketch::SketchEntity::Line { .. }))
+            .filter(|entity| matches!(entity, ketchup_geometry::sketch::SketchEntity::Line { .. }))
             .count(),
         4
     );
@@ -788,7 +788,7 @@ fn public_rotated_rounded_rectangle_plans_as_an_exact_editable_profile() {
         sketch
             .entities
             .iter()
-            .filter(|entity| matches!(entity, ketchup_core::sketch::SketchEntity::Arc { .. }))
+            .filter(|entity| matches!(entity, ketchup_geometry::sketch::SketchEntity::Arc { .. }))
             .count(),
         4
     );
@@ -853,8 +853,8 @@ fn public_profile_copies_expand_to_transformed_editable_closed_profiles() {
     );
     assert!(sketch.entities.iter().all(|entity| matches!(
         entity,
-        ketchup_core::sketch::SketchEntity::Line { .. }
-            | ketchup_core::sketch::SketchEntity::Arc { .. }
+        ketchup_geometry::sketch::SketchEntity::Line { .. }
+            | ketchup_geometry::sketch::SketchEntity::Arc { .. }
     )));
 
     let exact_document = DocumentStore::new();
@@ -1864,7 +1864,7 @@ fn program_sketch_persistently_references_typed_construction_plane_output() {
     };
     assert!(matches!(
         workplane.support,
-        ketchup_core::sketch::WorkplaneSupport::ConstructionPlane {
+        ketchup_geometry::sketch::WorkplaneSupport::ConstructionPlane {
             feature: FeatureId(1)
         }
     ));
@@ -1911,8 +1911,8 @@ fn program_sketch_persistently_references_typed_construction_plane_output() {
     assert_eq!(document.current().canonical_digest(), committed_digest);
     assert!(matches!(
         document.current().feature(FeatureId(2)).unwrap().kind(),
-        FeatureKind::Workplane(ketchup_core::sketch::WorkplaneSpec {
-            support: ketchup_core::sketch::WorkplaneSupport::ConstructionPlane {
+        FeatureKind::Workplane(ketchup_geometry::sketch::WorkplaneSpec {
+            support: ketchup_geometry::sketch::WorkplaneSupport::ConstructionPlane {
                 feature: FeatureId(1)
             },
             ..

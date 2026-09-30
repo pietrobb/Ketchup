@@ -12,7 +12,7 @@ use ketchup_core::document::{
     MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
 use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,

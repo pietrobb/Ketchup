@@ -11,13 +11,13 @@ use crate::exact_product::{
     accepts_planar_offset_geometry, exact_planar_offset_profile_from_segments,
 };
 use crate::sheet_metal::SheetMetalEdge;
-use crate::sketch::{
+use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
+use crate::topology::{TopologicalElementKind, TopologicalElementRef};
+use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile,
     SketchRegionId, SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
     WorkplaneFrame,
 };
-use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
-use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2271,7 +2271,7 @@ impl<'a> GraphCompiler<'a> {
         if let Some(region_id) = region_id {
             return self.compile_sketch_profile(feature_id, region_id, direction);
         }
-        let plane = WorkplaneFrame::principal(crate::sketch::PrincipalPlane::Xy);
+        let plane = WorkplaneFrame::principal(ketchup_geometry::sketch::PrincipalPlane::Xy);
         let direction = direction
             .vector(plane.normal)
             .ok_or(ExactBRepGraphError::InvalidParameter)?;
@@ -2486,7 +2486,7 @@ impl<'a> GraphCompiler<'a> {
             reference.producer_feature_id,
         )
         .map_err(|_| ExactBRepGraphError::UnresolvedExtent)?;
-        if !reference.matches_durable_graph_identity(&face_graph) {
+        if !face_graph.names_durable_reference(reference) {
             return Err(ExactBRepGraphError::UnresolvedExtent);
         }
         let intersection = [0, 1, 2].map(|axis| origin_mm[axis] + direction[axis] * distance);
@@ -3224,7 +3224,7 @@ fn point_bits(points: &[[f64; 2]]) -> Result<Vec<[u64; 2]>, ExactBRepGraphError>
 
 fn identity_frame() -> [u64; 12] {
     frame_bits(
-        WorkplaneFrame::principal(crate::sketch::PrincipalPlane::Xy),
+        WorkplaneFrame::principal(ketchup_geometry::sketch::PrincipalPlane::Xy),
         [0.0, 0.0, 1.0],
     )
 }

@@ -261,7 +261,7 @@ fn suppressed_extrusion_does_not_offer_phantom_snap_points() {
 
 #[test]
 fn constrained_circle_snap_uses_solved_geometry_on_yz() {
-    use ketchup_core::sketch::{
+    use ketchup_geometry::sketch::{
         SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntityId,
         SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec,
     };

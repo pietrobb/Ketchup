@@ -13,7 +13,7 @@ use ketchup_core::document::{
     LoftSection, ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection,
     SpatialPathSegment, Transform,
 };
-use ketchup_core::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
+use ketchup_geometry::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
 use ketchup_program::model::{
     Part, ProgramBoolean, ProgramBooleanKind, ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind,
     ProgramFaceOffset, ProgramLoftSection, ProgramMirror, ProgramOperation, ProgramPartBody,
@@ -399,7 +399,8 @@ impl<'a> OperationPlanner<'a> {
     }
 
     fn dimension(&self, millimetres: f64) -> Result<Dimension, AssistantRejection> {
-        Dimension::new(millimetres.to_string(), millimetres).map_err(|error| self.rejection(error))
+        Dimension::new(millimetres.to_string(), millimetres)
+            .map_err(|error| self.rejection(error.into()))
     }
 
     fn boolean(

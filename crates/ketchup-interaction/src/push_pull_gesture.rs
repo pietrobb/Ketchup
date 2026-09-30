@@ -9,7 +9,7 @@ use ketchup_core::document::{
     Proposal, ProposalContext, ProposalPrepareError, Snapshot,
 };
 use ketchup_core::exact_product::{BodySubshapeRef, ExactFaceRole};
-use ketchup_core::sketch::{PadOperation, PadSpec};
+use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use std::collections::BTreeSet;
 use std::fmt;
 

@@ -1,8 +1,8 @@
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
 };
-use ketchup_core::sketch::{CutStart, PadOperation, PadProfile};
-use ketchup_core::sketch::{
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchEntity, SketchEntityId,
     SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
