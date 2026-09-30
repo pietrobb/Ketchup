@@ -822,8 +822,9 @@ fn append_cam_collision(
     fixture_id: Option<u64>,
     moving: &ketchup_exact::ExactBody,
     obstacle: &ketchup_exact::ExactBody,
+    tolerance_mm: f64,
 ) -> Result<(), ketchup_exact::GeometryError> {
-    let relation = backend.query_body_pair(moving, obstacle, DEFAULT_LINEAR_TOLERANCE_MM)?;
+    let relation = backend.query_body_pair(moving, obstacle, tolerance_mm)?;
     if relation.relation != ExactPairRelation::Separated {
         collisions.push(CamSimulationWireCollision {
             motion_index,
@@ -845,6 +846,7 @@ fn simulate_cam_geometry(
     request: &CamSimulationWireRequest,
 ) -> Result<CamSimulationWireEvidence, ketchup_exact::GeometryError> {
     let target = evaluate_exact_brep_graph(backend, graph, &[])?;
+    let tolerance_mm = graph.tolerance.linear_mm();
     let box_from_bounds = |bounds: [[f64; 3]; 2]| BoxSpec {
         origin_mm: Point3 {
             x: bounds[0][0],
@@ -898,6 +900,7 @@ fn simulate_cam_geometry(
                 None,
                 &tool.body,
                 &stock.body,
+                tolerance_mm,
             )?;
         }
         append_cam_collision(
@@ -910,6 +913,7 @@ fn simulate_cam_geometry(
             None,
             &holder.body,
             &stock.body,
+            tolerance_mm,
         )?;
         for (fixture_id, fixture) in &fixture_bodies {
             append_cam_collision(
@@ -922,6 +926,7 @@ fn simulate_cam_geometry(
                 Some(*fixture_id),
                 &tool.body,
                 &fixture.body,
+                tolerance_mm,
             )?;
             append_cam_collision(
                 &mut collisions,
@@ -933,6 +938,7 @@ fn simulate_cam_geometry(
                 Some(*fixture_id),
                 &holder.body,
                 &fixture.body,
+                tolerance_mm,
             )?;
         }
         if matches!(motion.kind, 1 | 2) {
@@ -953,7 +959,7 @@ fn simulate_cam_geometry(
         }
     }
     let stock_after_mm3 = stock.body.topology.volume_mm3;
-    let common = backend.query_body_pair(&stock.body, &target.body, DEFAULT_LINEAR_TOLERANCE_MM)?;
+    let common = backend.query_body_pair(&stock.body, &target.body, tolerance_mm)?;
     let residual_stock_mm3 = (stock_after_mm3 - common.common_volume_mm3).max(0.0);
     let gouge_mm3 = (target.body.topology.volume_mm3 - common.common_volume_mm3).max(0.0);
     let evidence = CamSimulationWireEvidence {
@@ -2139,7 +2145,7 @@ fn exact_brep_weldment_joint(
     primary: ExactBRepWeldmentJointPrimary,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let input_relation =
-        backend.query_body_pair(&first.body, &second.body, DEFAULT_LINEAR_TOLERANCE_MM)?;
+        backend.query_body_pair(&first.body, &second.body, graph.tolerance.linear_mm())?;
     if input_relation.relation != ExactPairRelation::Penetrating
         || input_relation.common_volume_mm3 <= APPROXIMATION
     {
@@ -3718,6 +3724,52 @@ mod tests {
             };
             assert!(verified_copy(&forged, label, "test_import").is_err());
         }
+    }
+
+    #[test]
+    fn cam_collision_uses_the_document_tolerance_not_the_default() {
+        let backend = ExactBackend::new();
+        let unit_box = |x: f64| {
+            backend
+                .make_box(BoxSpec {
+                    origin_mm: Point3 { x, y: 0.0, z: 0.0 },
+                    size_mm: Size3 {
+                        x: 1.0,
+                        y: 1.0,
+                        z: 1.0,
+                    },
+                })
+                .unwrap()
+        };
+        let holder = unit_box(0.0);
+        // A 1 µm gap: apart under the default tolerance, touching under a 10 µm one.
+        let fixture = unit_box(1.001);
+        let mut graph: ExactBRepGraph = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/v9_top_side_contact/left.graph"
+        ))
+        .unwrap();
+        let collisions_at = |tolerance_mm: f64| {
+            let mut collisions = Vec::new();
+            append_cam_collision(
+                &mut collisions,
+                &backend,
+                0,
+                0,
+                1,
+                1,
+                Some(7),
+                &holder.body,
+                &fixture.body,
+                tolerance_mm,
+            )
+            .unwrap();
+            collisions
+        };
+        assert!(collisions_at(graph.tolerance.linear_mm()).is_empty());
+        graph.tolerance = ketchup_core::tolerance::TolerancePolicy::new(0.01).unwrap();
+        let touching = collisions_at(graph.tolerance.linear_mm());
+        assert_eq!(touching.len(), 1);
+        assert!((touching[0].distance_mm - 0.001).abs() < 1.0e-9);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail when a new tolerance literal appears in crate source.
 
-Tolerances and model limits have one home: crates/ketchup-core/src/tolerance.rs
+Tolerances and model limits have one home: crates/ketchup-tolerance/src/lib.rs
 (the document's TolerancePolicy), handed to the exact kernel through its FFI.
 A literal such as 1.0e-9 anywhere else is a module-local tolerance.
 
@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "scripts/tolerance_literals_baseline.txt"
 SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/include/**/*.hxx"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
-HOME = "crates/ketchup-core/src/tolerance.rs"
+HOME = "crates/ketchup-tolerance/src/lib.rs"
 LITERAL = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?:_f64)?[eE]-\d+")
 # An inline `#[cfg(test)] mod name { ... }` at the top level of a Rust file, up to its
 # closing brace in column 0; test assertions may state their own precision.

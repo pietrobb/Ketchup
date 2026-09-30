@@ -18,7 +18,7 @@ def write(root, relative, text):
 def test_counts_literals_outside_the_tolerance_home_and_tests(tmp_path):
     write(tmp_path, "crates/a/src/lib.rs", "const E: f64 = 1.0e-9;\nlet x = 1e-7_f64; let y = 2.5e-3;\n")
     write(tmp_path, "crates/a/src/native.cc", "if (d <= 1.0e-12) {}\n")
-    write(tmp_path, "crates/ketchup-core/src/tolerance.rs", "pub const T: f64 = 1.0e-7;\n")
+    write(tmp_path, "crates/ketchup-tolerance/src/lib.rs", "pub const T: f64 = 1.0e-7;\n")
     write(tmp_path, "crates/a/src/scene_tests.rs", "assert!(d < 1.0e-9);\n")
     write(tmp_path, "crates/a/tests/it.rs", "assert!(d < 1.0e-9);\n")
     write(tmp_path, "crates/a/src/names.rs", "let v1e_5 = x1e-5; let n = 10e5;\n")

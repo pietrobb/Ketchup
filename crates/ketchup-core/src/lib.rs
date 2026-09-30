@@ -37,7 +37,7 @@ pub mod state_view;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod three_mf_export;
-pub mod tolerance;
+pub use ketchup_tolerance as tolerance;
 pub mod topology;
 pub mod validation;
 pub mod validator_hosting;

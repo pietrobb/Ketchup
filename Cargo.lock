@@ -2284,6 +2284,7 @@ dependencies = [
  "ed25519-dalek",
  "ketchup-core",
  "ketchup-exact",
+ "ketchup-tolerance",
  "resvg",
  "serde",
  "serde_json",
@@ -2298,6 +2299,7 @@ version = "0.1.0"
 dependencies = [
  "cxx",
  "cxx-build",
+ "ketchup-tolerance",
 ]
 
 [[package]]
@@ -2345,6 +2347,13 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wasmi",
+]
+
+[[package]]
+name = "ketchup-tolerance"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

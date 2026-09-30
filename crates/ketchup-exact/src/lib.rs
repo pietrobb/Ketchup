@@ -1,17 +1,20 @@
 //! Narrow, exception-safe exact geometry boundary used by the A0 gate.
 
+use ketchup_tolerance::{
+    ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, ROUNDING,
+};
 use std::fmt;
 
 pub mod naming;
 
 const BACKEND_FINGERPRINT: &str = env!("KETCHUP_OCCT_BUILD_FINGERPRINT");
+// not a tolerance: the evidence identity naming the kernel checks.
 const TOLERANCE_PROFILE: &str = "r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel=1e-10";
 const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
-const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 const PLANAR_SEGMENT_STRIDE: usize = 10;
 const SPATIAL_SEGMENT_STRIDE: usize = 14;
-const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = 1.0e-7;
+const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const MAX_SWEEP_PATH_SEGMENTS: usize = 64;
 pub const MAX_PLANAR_LOOP_SEGMENTS: usize = 64;
 pub const MAX_PLANAR_REGION_HOLES: usize = 64;
@@ -601,8 +604,6 @@ fn planar_segment_endpoints(segment: &PlanarProfileSegment) -> ([f64; 2], [f64; 
     }
 }
 
-const SWEEP_PATH_INTERSECTION_EPSILON_MM: f64 = 1.0e-9;
-
 fn sweep_path_segment_bounds(segment: &PlanarProfileSegment) -> [[f64; 2]; 2] {
     let points = match segment {
         PlanarProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
@@ -675,11 +676,10 @@ fn sweep_path_join_is_separated(
     let projection =
         |point: [f64; 2]| (point[0] - join[0]) * tangent[0] + (point[1] - join[1]) * tangent[1];
     let left_is_behind = match left {
-        PlanarProfileSegment::Line { start_mm, .. } => {
-            projection(*start_mm) < -SWEEP_PATH_INTERSECTION_EPSILON_MM
+        PlanarProfileSegment::Line { start_mm, .. } => projection(*start_mm) < -ROUNDING,
+        PlanarProfileSegment::CircularArc { .. } => {
+            sweep_path_arc_angle(left).is_some_and(|angle| angle < std::f64::consts::PI - ROUNDING)
         }
-        PlanarProfileSegment::CircularArc { .. } => sweep_path_arc_angle(left)
-            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
         PlanarProfileSegment::CubicBezier {
             start_mm,
             control_1_mm,
@@ -687,14 +687,13 @@ fn sweep_path_join_is_separated(
             ..
         } => [*start_mm, *control_1_mm, *control_2_mm]
             .into_iter()
-            .all(|point| projection(point) < -SWEEP_PATH_INTERSECTION_EPSILON_MM),
+            .all(|point| projection(point) < -ROUNDING),
     };
     let right_is_ahead = match right {
-        PlanarProfileSegment::Line { end_mm, .. } => {
-            projection(*end_mm) > SWEEP_PATH_INTERSECTION_EPSILON_MM
+        PlanarProfileSegment::Line { end_mm, .. } => projection(*end_mm) > ROUNDING,
+        PlanarProfileSegment::CircularArc { .. } => {
+            sweep_path_arc_angle(right).is_some_and(|angle| angle < std::f64::consts::PI - ROUNDING)
         }
-        PlanarProfileSegment::CircularArc { .. } => sweep_path_arc_angle(right)
-            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
         PlanarProfileSegment::CubicBezier {
             control_1_mm,
             control_2_mm,
@@ -702,7 +701,7 @@ fn sweep_path_join_is_separated(
             ..
         } => [*control_1_mm, *control_2_mm, *end_mm]
             .into_iter()
-            .all(|point| projection(point) > SWEEP_PATH_INTERSECTION_EPSILON_MM),
+            .all(|point| projection(point) > ROUNDING),
     };
     left_is_behind && right_is_ahead
 }
@@ -727,9 +726,8 @@ fn sweep_path_self_intersects(
     for left in 0..bounds.len() {
         for right in left + 2..bounds.len() {
             if [0, 1].into_iter().all(|axis| {
-                bounds[left][0][axis] <= bounds[right][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
-                    && bounds[right][0][axis]
-                        <= bounds[left][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
+                bounds[left][0][axis] <= bounds[right][1][axis] + ROUNDING
+                    && bounds[right][0][axis] <= bounds[left][1][axis] + ROUNDING
             }) {
                 return true;
             }
@@ -882,11 +880,9 @@ fn spatial_sweep_path_join_is_separated(
     let join = spatial_segment_endpoints(left).1;
     let projection = |point: [f64; 3]| spatial_dot(spatial_sub(point, join), tangent);
     let left_is_behind = match left {
-        SpatialProfileSegment::Line { start_mm, .. } => {
-            projection(*start_mm) < -SWEEP_PATH_INTERSECTION_EPSILON_MM
-        }
+        SpatialProfileSegment::Line { start_mm, .. } => projection(*start_mm) < -ROUNDING,
         SpatialProfileSegment::CircularArc { .. } => spatial_sweep_path_arc_angle(left)
-            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+            .is_some_and(|angle| angle < std::f64::consts::PI - ROUNDING),
         SpatialProfileSegment::CubicBezier {
             start_mm,
             control_1_mm,
@@ -894,14 +890,12 @@ fn spatial_sweep_path_join_is_separated(
             ..
         } => [*start_mm, *control_1_mm, *control_2_mm]
             .into_iter()
-            .all(|point| projection(point) < -SWEEP_PATH_INTERSECTION_EPSILON_MM),
+            .all(|point| projection(point) < -ROUNDING),
     };
     let right_is_ahead = match right {
-        SpatialProfileSegment::Line { end_mm, .. } => {
-            projection(*end_mm) > SWEEP_PATH_INTERSECTION_EPSILON_MM
-        }
+        SpatialProfileSegment::Line { end_mm, .. } => projection(*end_mm) > ROUNDING,
         SpatialProfileSegment::CircularArc { .. } => spatial_sweep_path_arc_angle(right)
-            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+            .is_some_and(|angle| angle < std::f64::consts::PI - ROUNDING),
         SpatialProfileSegment::CubicBezier {
             control_1_mm,
             control_2_mm,
@@ -909,7 +903,7 @@ fn spatial_sweep_path_join_is_separated(
             ..
         } => [*control_1_mm, *control_2_mm, *end_mm]
             .into_iter()
-            .all(|point| projection(point) > SWEEP_PATH_INTERSECTION_EPSILON_MM),
+            .all(|point| projection(point) > ROUNDING),
     };
     left_is_behind && right_is_ahead
 }
@@ -1031,7 +1025,7 @@ fn spatial_sweep_path_metrics(
                 }
             }
             let normal_length = spatial_length(*normal);
-            if (normal_length - 1.0).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM {
+            if (normal_length - 1.0).abs() > ROUNDING {
                 return Err(invalid());
             }
             let normal = spatial_unit(*normal).ok_or_else(invalid)?;
@@ -1040,9 +1034,9 @@ fn spatial_sweep_path_metrics(
             let radius = spatial_length(start_radius);
             let end_radius_length = spatial_length(end_radius);
             if radius <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
-                || (radius - end_radius_length).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
-                || spatial_dot(start_radius, normal).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
-                || spatial_dot(end_radius, normal).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
+                || (radius - end_radius_length).abs() > ROUNDING
+                || spatial_dot(start_radius, normal).abs() > ROUNDING
+                || spatial_dot(end_radius, normal).abs() > ROUNDING
                 || start == end
             {
                 return Err(invalid());
@@ -1147,7 +1141,7 @@ fn spatial_sweep_path_self_intersects(
                 ) if left_center == right_center
                     && metrics[0].0 + metrics[1].0
                         >= std::f64::consts::TAU * spatial_length(spatial_sub(*start_mm, *left_center))
-                            - SWEEP_PATH_INTERSECTION_EPSILON_MM
+                            - ROUNDING
             )
         },
     ) {
@@ -1186,8 +1180,8 @@ fn validate_spatial_sweep_path(
         if spatial_segment_endpoints(&segments[0]).1 != spatial_segment_endpoints(&segments[1]).0 {
             return Err(invalid("Spatial Sweep path segments are disconnected"));
         }
-        if spatial_dot(metrics[0].2, metrics[1].1) < 1.0 - 1.0e-9
-            || spatial_length(spatial_cross(metrics[0].2, metrics[1].1)) > 1.0e-9
+        if spatial_dot(metrics[0].2, metrics[1].1) < 1.0 - ROUNDING
+            || spatial_length(spatial_cross(metrics[0].2, metrics[1].1)) > ROUNDING
         {
             return Err(invalid(
                 "Spatial Sweep path segments must be C1 tangent-continuous",
@@ -1197,8 +1191,8 @@ fn validate_spatial_sweep_path(
     if closed {
         let outgoing = metrics.last().unwrap().2;
         let incoming = metrics.first().unwrap().1;
-        if spatial_dot(outgoing, incoming) < 1.0 - 1.0e-9
-            || spatial_length(spatial_cross(outgoing, incoming)) > 1.0e-9
+        if spatial_dot(outgoing, incoming) < 1.0 - ROUNDING
+            || spatial_length(spatial_cross(outgoing, incoming)) > ROUNDING
         {
             return Err(invalid(
                 "Closed Spatial Sweep path seam must be C1 tangent-continuous",
@@ -1930,12 +1924,12 @@ fn transform_is_rigid(matrix: &[f64; 16]) -> bool {
             + matrix[4 + left] * matrix[4 + right]
             + matrix[8 + left] * matrix[8 + right]
     };
-    (dot(0, 0) - 1.0).abs() <= 1.0e-10
-        && (dot(1, 1) - 1.0).abs() <= 1.0e-10
-        && (dot(2, 2) - 1.0).abs() <= 1.0e-10
-        && dot(0, 1).abs() <= 1.0e-10
-        && dot(0, 2).abs() <= 1.0e-10
-        && dot(1, 2).abs() <= 1.0e-10
+    (dot(0, 0) - 1.0).abs() <= ROUNDING
+        && (dot(1, 1) - 1.0).abs() <= ROUNDING
+        && (dot(2, 2) - 1.0).abs() <= ROUNDING
+        && dot(0, 1).abs() <= ROUNDING
+        && dot(0, 2).abs() <= ROUNDING
+        && dot(1, 2).abs() <= ROUNDING
 }
 
 fn parse_step_xde_manifest(raw: &str) -> Result<StepXdeManifest, StepXdeManifestError> {
@@ -2258,7 +2252,7 @@ impl ExactBackend {
         );
         if !(2..=256).contains(&surfaces.len())
             || !tolerance_mm.is_finite()
-            || !(1.0e-7..=10.0).contains(&tolerance_mm)
+            || !(DEFAULT_LINEAR_TOLERANCE_MM..=10.0).contains(&tolerance_mm)
             || surfaces.iter().any(|surface| {
                 surface.topology.solid_count != 0 || surface.topology.face_count == 0
             })
@@ -2272,7 +2266,9 @@ impl ExactBackend {
                 GeometryErrorCode::InvalidParameter,
                 operation,
                 &input,
-                "Surface knit requires 2..256 distinct non-solid surfaces and a tolerance from 1e-7 to 10 mm".to_owned(),
+                format!(
+                    "Surface knit requires 2..256 distinct non-solid surfaces and a tolerance from {DEFAULT_LINEAR_TOLERANCE_MM} to 10 mm"
+                ),
             ));
         }
         let missing_native = || GeometryError {
@@ -2692,7 +2688,7 @@ impl ExactBackend {
                     let radius = start_radius[0].hypot(start_radius[1]);
                     let end_radius_length = end_radius[0].hypot(end_radius[1]);
                     if radius <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
-                        || (radius - end_radius_length).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
+                        || (radius - end_radius_length).abs() > ROUNDING
                         || start == end
                     {
                         return Err(invalid());
@@ -2788,7 +2784,7 @@ impl ExactBackend {
             }
             let dot = metrics[0].2[0] * metrics[1].1[0] + metrics[0].2[1] * metrics[1].1[1];
             let cross = metrics[0].2[0] * metrics[1].1[1] - metrics[0].2[1] * metrics[1].1[0];
-            if dot < 1.0 - 1.0e-9 || cross.abs() > 1.0e-9 {
+            if dot < 1.0 - ROUNDING || cross.abs() > ROUNDING {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidProfile,
                     operation,
@@ -2966,13 +2962,13 @@ impl ExactBackend {
                     .frame
                     .iter()
                     .any(|value| !value.is_finite() || value.abs() > 1_000_000.0)
-                || (norm(x_axis) - 1.0).abs() > 1.0e-8
-                || (norm(y_axis) - 1.0).abs() > 1.0e-8
-                || (norm(normal) - 1.0).abs() > 1.0e-8
-                || dot(x_axis, y_axis).abs() > 1.0e-8
-                || dot(x_axis, normal).abs() > 1.0e-8
-                || dot(y_axis, normal).abs() > 1.0e-8
-                || dot(cross, normal) < 1.0 - 1.0e-8
+                || (norm(x_axis) - 1.0).abs() > ACCUMULATED_ROUNDING
+                || (norm(y_axis) - 1.0).abs() > ACCUMULATED_ROUNDING
+                || (norm(normal) - 1.0).abs() > ACCUMULATED_ROUNDING
+                || dot(x_axis, y_axis).abs() > ACCUMULATED_ROUNDING
+                || dot(x_axis, normal).abs() > ACCUMULATED_ROUNDING
+                || dot(y_axis, normal).abs() > ACCUMULATED_ROUNDING
+                || dot(cross, normal) < 1.0 - ACCUMULATED_ROUNDING
             {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidParameter,
@@ -3253,10 +3249,10 @@ impl ExactBackend {
                 }
                 let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
                 let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
-                if (start_mm[2] - end_mm[2]).abs() > 1.0e-9
-                    || (start_mm[2] - center_mm[2]).abs() > 1.0e-9
-                    || start_radius <= 1.0e-9
-                    || (start_radius - end_radius).abs() > 1.0e-7
+                if (start_mm[2] - end_mm[2]).abs() > ROUNDING
+                    || (start_mm[2] - center_mm[2]).abs() > ROUNDING
+                    || start_radius <= ROUNDING
+                    || (start_radius - end_radius).abs() > DEFAULT_LINEAR_TOLERANCE_MM
                     || start_mm == end_mm
                 {
                     return Err(parameter_error(
@@ -4040,7 +4036,7 @@ impl ExactBackend {
             .chain(normal)
             .chain(keep_point_mm)
             .any(|value| !value.is_finite())
-            || normal.iter().map(|value| value * value).sum::<f64>() <= 1.0e-18
+            || normal.iter().map(|value| value * value).sum::<f64>() <= ROUNDING * ROUNDING
         {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
@@ -4361,7 +4357,7 @@ impl ExactBackend {
             || options.angular_deflection_rad > std::f64::consts::PI
             || !(4..=65_536).contains(&options.max_tetrahedra)
             || !options.max_relative_volume_error.is_finite()
-            || !(1.0e-12..=0.25).contains(&options.max_relative_volume_error)
+            || !(NEGLIGIBLE..=0.25).contains(&options.max_relative_volume_error)
             || !options.min_tetrahedron_quality.is_finite()
             || !(0.0..=1.0).contains(&options.min_tetrahedron_quality);
         if invalid_options {
@@ -4493,7 +4489,7 @@ impl ExactBackend {
             let ac = subtract3(points[2], points[0]);
             let ad = subtract3(points[3], points[0]);
             let signed_volume_mm3 = dot3(ab, cross3(ac, ad)) / 6.0;
-            if !signed_volume_mm3.is_finite() || signed_volume_mm3 <= 1.0e-15 {
+            if !signed_volume_mm3.is_finite() || signed_volume_mm3 <= NEGLIGIBLE {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidShape,
                     "volume_mesh_body",
@@ -4842,7 +4838,7 @@ fn collect_output(
                         + direction.z * direction.z
                         - 1.0)
                         .abs()
-                        <= 1.0e-12
+                        <= NEGLIGIBLE
             }
             (None, None) => !matches!(edge.curve_kind.as_str(), "line" | "circle"),
             _ => false,
@@ -4989,8 +4985,8 @@ pub fn validate_closed_planar_profile(points: &[Point3]) -> Result<(), GeometryE
         .take(points.len())
         .map(|(left, right)| left.x * right.y - right.x * left.y)
         .sum::<f64>();
-    if points.iter().any(|point| (point.z - z).abs() > 1.0e-9)
-        || twice_area.abs() <= 1.0e-12
+    if points.iter().any(|point| (point.z - z).abs() > ROUNDING)
+        || twice_area.abs() <= NEGLIGIBLE
         || segments_intersect(points[0], points[1], points[2], points[3])
         || segments_intersect(points[1], points[2], points[3], points[0])
     {
@@ -5158,7 +5154,7 @@ fn validate_general_revolve_profile(
             let end_radius = (end[0] - center_mm[0]).hypot(end[1] - center_mm[1]);
             if start_radius < MIN_LENGTH_MM
                 || (start_radius - end_radius).abs()
-                    > 1.0e-9 * start_radius.max(end_radius).max(1.0)
+                    > ROUNDING * start_radius.max(end_radius).max(1.0)
             {
                 return Err(invalid(format!(
                     "Profile arc {index} has inconsistent radius"
@@ -5232,7 +5228,7 @@ fn validate_mixed_profile(
             let end_radius = (end[0] - center_mm[0]).hypot(end[1] - center_mm[1]);
             if start_radius < MIN_LENGTH_MM
                 || (start_radius - end_radius).abs()
-                    > 1.0e-9 * start_radius.max(end_radius).max(1.0)
+                    > ROUNDING * start_radius.max(end_radius).max(1.0)
             {
                 return Err(invalid(format!(
                     "Profile arc {index} has inconsistent radius"
@@ -5265,8 +5261,8 @@ fn is_simple_linear_planar_profile(segments: &[PlanarProfileSegment]) -> bool {
     if points.len() != segments.len()
         || points.iter().enumerate().any(|(index, point)| {
             points[index + 1..].iter().any(|candidate| {
-                (point[0] - candidate[0]).abs() <= 1.0e-9
-                    && (point[1] - candidate[1]).abs() <= 1.0e-9
+                (point[0] - candidate[0]).abs() <= ROUNDING
+                    && (point[1] - candidate[1]).abs() <= ROUNDING
             })
         })
     {
@@ -5278,7 +5274,7 @@ fn is_simple_linear_planar_profile(segments: &[PlanarProfileSegment]) -> bool {
         .take(points.len())
         .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
         .sum::<f64>();
-    if !twice_area.is_finite() || twice_area.abs() <= 1.0e-9 {
+    if !twice_area.is_finite() || twice_area.abs() <= ROUNDING {
         return false;
     }
     for left in 0..points.len() {
@@ -5306,24 +5302,24 @@ fn planar_segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2])
         (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (point[0] - start[0])
     };
     let on_segment = |start: [f64; 2], end: [f64; 2], point: [f64; 2]| {
-        point[0] >= start[0].min(end[0]) - 1.0e-9
-            && point[0] <= start[0].max(end[0]) + 1.0e-9
-            && point[1] >= start[1].min(end[1]) - 1.0e-9
-            && point[1] <= start[1].max(end[1]) + 1.0e-9
+        point[0] >= start[0].min(end[0]) - ROUNDING
+            && point[0] <= start[0].max(end[0]) + ROUNDING
+            && point[1] >= start[1].min(end[1]) - ROUNDING
+            && point[1] <= start[1].max(end[1]) + ROUNDING
     };
     let ab_c = cross(a, b, c);
     let ab_d = cross(a, b, d);
     let cd_a = cross(c, d, a);
     let cd_b = cross(c, d, b);
-    if ((ab_c > 1.0e-9 && ab_d < -1.0e-9) || (ab_c < -1.0e-9 && ab_d > 1.0e-9))
-        && ((cd_a > 1.0e-9 && cd_b < -1.0e-9) || (cd_a < -1.0e-9 && cd_b > 1.0e-9))
+    if ((ab_c > ROUNDING && ab_d < -ROUNDING) || (ab_c < -ROUNDING && ab_d > ROUNDING))
+        && ((cd_a > ROUNDING && cd_b < -ROUNDING) || (cd_a < -ROUNDING && cd_b > ROUNDING))
     {
         return true;
     }
-    (ab_c.abs() <= 1.0e-9 && on_segment(a, b, c))
-        || (ab_d.abs() <= 1.0e-9 && on_segment(a, b, d))
-        || (cd_a.abs() <= 1.0e-9 && on_segment(c, d, a))
-        || (cd_b.abs() <= 1.0e-9 && on_segment(c, d, b))
+    (ab_c.abs() <= ROUNDING && on_segment(a, b, c))
+        || (ab_d.abs() <= ROUNDING && on_segment(a, b, d))
+        || (cd_a.abs() <= ROUNDING && on_segment(c, d, a))
+        || (cd_b.abs() <= ROUNDING && on_segment(c, d, b))
 }
 
 fn validate_circle(

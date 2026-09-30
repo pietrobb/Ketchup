@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 cxx = "=1.0.198"
+ketchup-tolerance = { path = "../ketchup-tolerance" }
 
 [build-dependencies]
 cxx-build = "=1.0.198"
