@@ -1,8 +1,8 @@
-use ketchup_core::document::{DocumentStore, FeatureId, NodeId, Proposal, ProposalBudget};
-use ketchup_core::extension::{
+use ketchup_assistant::extension::{
     PLUGIN_PROTOCOL_V1, PluginCapability, PluginGateway, PluginGatewayError, PluginGrant,
     PluginLimits, PluginManifest, PluginRequest, PluginResponse,
 };
+use ketchup_core::document::{DocumentStore, FeatureId, NodeId, Proposal, ProposalBudget};
 #[cfg(windows)]
 use process_wrap::std::JobObject;
 use process_wrap::std::{ChildWrapper, CommandWrap};

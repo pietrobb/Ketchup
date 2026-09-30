@@ -19,7 +19,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantTransport, AssistantTransportResponse, KetchupApp};
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantApiDiagnostics, AssistantCadEditProgram, AssistantChatResult,
     AssistantFeaReviewRequest, AssistantHandshake,
 };

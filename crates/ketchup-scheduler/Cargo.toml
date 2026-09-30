@@ -10,9 +10,10 @@ repository.workspace = true
 
 [features]
 default = []
-private-oauth = ["ketchup-core/private-oauth"]
+private-oauth = ["ketchup-assistant/private-oauth"]
 
 [dependencies]
+ketchup-assistant = { path = "../ketchup-assistant" }
 ciborium = "0.2"
 ketchup-core = { path = "../ketchup-core" }
 ketchup-exact = { path = "../ketchup-exact" }

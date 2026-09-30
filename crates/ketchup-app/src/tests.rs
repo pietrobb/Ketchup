@@ -1,7 +1,7 @@
 use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
-use ketchup_core::assistant_sidecar::AssistantCadLoftSection;
+use ketchup_assistant::sidecar::AssistantCadLoftSection;
 use ketchup_core::document::{
     EdgeRef, FaceRef, InstancePathStep, ProposalGoal, SpatialPathSegment,
 };
@@ -101,7 +101,7 @@ fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {
             AssistantCadEditOperation::Transform {
                 selector: selector.clone(),
                 translation_mm: [10.0, 0.0, 0.0],
-                rotation: Some(ketchup_core::assistant_sidecar::AssistantCadRotation {
+                rotation: Some(ketchup_assistant::sidecar::AssistantCadRotation {
                     pivot_mm: [0.0, 0.0, 0.0],
                     axis: [0.0, 0.0, 1.0],
                     angle_degrees: 90.0,
@@ -871,7 +871,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
                 target_feature_id: 2,
                 removed_face_reference_ids: requested_reference_ids,
                 thickness_mm: 2.0,
-                direction: ketchup_core::assistant_sidecar::AssistantCadShellDirection::Inward,
+                direction: ketchup_assistant::sidecar::AssistantCadShellDirection::Inward,
             },
         }],
     };
@@ -1105,7 +1105,7 @@ fn cad_edit_append_topology_shell_rejects_unpublished_reference_without_mutation
                 target_feature_id: 2,
                 removed_face_reference_ids: vec!["f".repeat(64)],
                 thickness_mm: 2.0,
-                direction: ketchup_core::assistant_sidecar::AssistantCadShellDirection::Inward,
+                direction: ketchup_assistant::sidecar::AssistantCadShellDirection::Inward,
             },
         }],
     };
@@ -1834,12 +1834,10 @@ fn structured_rejection_is_localized_and_drives_exactly_one_bounded_replan() {
         AssistantModelIntent {
             replace_scene: false,
             boxes: Vec::new(),
-            translations: vec![
-                ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                    occurrence_id: 999,
-                    delta_mm: [10.0, 0.0, 0.0],
-                },
-            ],
+            translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+                occurrence_id: 999,
+                delta_mm: [10.0, 0.0, 0.0],
+            }],
             rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
@@ -3088,12 +3086,10 @@ fn assistant_preview_plan_rejects_source_proposal_stale_and_replay_atomically() 
     let model_intent = AssistantModelIntent {
         replace_scene: false,
         boxes: Vec::new(),
-        translations: vec![
-            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                occurrence_id: 1,
-                delta_mm: [5.0, 0.0, 0.0],
-            },
-        ],
+        translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+            occurrence_id: 1,
+            delta_mm: [5.0, 0.0, 0.0],
+        }],
         rotations: Vec::new(),
         profile_translations: Vec::new(),
         parameter_edits: Vec::new(),
@@ -3789,12 +3785,10 @@ fn assistant_panel_progress_phases_are_accessible_with_deterministic_channels() 
             model_intent: Some(AssistantModelIntent {
                 replace_scene: false,
                 boxes: Vec::new(),
-                translations: vec![
-                    ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                        occurrence_id: 1,
-                        delta_mm: [25.0, 0.0, 0.0],
-                    },
-                ],
+                translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+                    occurrence_id: 1,
+                    delta_mm: [25.0, 0.0, 0.0],
+                }],
                 rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
@@ -3842,12 +3836,10 @@ fn new_chat_discards_a_pending_assistant_execution_before_commit() {
             model_intent: Some(AssistantModelIntent {
                 replace_scene: false,
                 boxes: Vec::new(),
-                translations: vec![
-                    ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                        occurrence_id: 1,
-                        delta_mm: [25.0, 0.0, 0.0],
-                    },
-                ],
+                translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+                    occurrence_id: 1,
+                    delta_mm: [25.0, 0.0, 0.0],
+                }],
                 rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
@@ -3895,12 +3887,10 @@ fn assistant_model_change_requires_explicit_confirmation_after_validation() {
                 model_intent: Some(AssistantModelIntent {
                     replace_scene: false,
                     boxes: Vec::new(),
-                    translations: vec![
-                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                            occurrence_id: 1,
-                            delta_mm: [25.0, 0.0, 0.0],
-                        },
-                    ],
+                    translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+                        occurrence_id: 1,
+                        delta_mm: [25.0, 0.0, 0.0],
+                    }],
                     rotations: Vec::new(),
                     profile_translations: Vec::new(),
                     parameter_edits: Vec::new(),
@@ -4039,12 +4029,10 @@ fn stale_assistant_model_result_is_reported_without_mutating_the_newer_document(
                 model_intent: Some(AssistantModelIntent {
                     replace_scene: false,
                     boxes: Vec::new(),
-                    translations: vec![
-                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                            occurrence_id: 1,
-                            delta_mm: [100.0, 0.0, 0.0],
-                        },
-                    ],
+                    translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+                        occurrence_id: 1,
+                        delta_mm: [100.0, 0.0, 0.0],
+                    }],
                     rotations: Vec::new(),
                     profile_translations: Vec::new(),
                     parameter_edits: Vec::new(),
@@ -12535,12 +12523,10 @@ fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
                     name: "Grooved behind".to_owned(),
                     size_mm: [100.0, 60.0, 20.0],
                     origin_mm: [0.0, 0.0, 0.0],
-                    subtract_boxes: vec![
-                        ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
-                            size_mm: [10.0, 60.0, 5.0],
-                            origin_mm: [45.0, 0.0, 15.0],
-                        }
-                    ],
+                    subtract_boxes: vec![ketchup_assistant::sidecar::AssistantSubtractionIntent {
+                        size_mm: [10.0, 60.0, 5.0],
+                        origin_mm: [45.0, 0.0, 15.0],
+                    }],
                 },
                 AssistantBoxIntent {
                     name: "Plain in front".to_owned(),

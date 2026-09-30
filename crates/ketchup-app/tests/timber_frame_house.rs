@@ -16,7 +16,7 @@ use ketchup_app::{AppCommand, AssistantMessageRole};
 use ketchup_application::validation::{
     ASSISTANT_VALIDATOR_IDS, AssistantValidationSelection, assistant_validation_context_with_worker,
 };
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadClassificationCategory, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,

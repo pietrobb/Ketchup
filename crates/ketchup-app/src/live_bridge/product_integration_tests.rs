@@ -4,7 +4,7 @@ use egui_kittest::{Harness, kittest::Queryable as _};
 
 #[test]
 fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geometry() {
-    use ketchup_core::assistant_sidecar::{
+    use ketchup_assistant::sidecar::{
         AssistantCadEditOperation as Op, AssistantCadParameterValueType, AssistantInstancePath,
         AssistantPin, AssistantPinJointFace,
     };

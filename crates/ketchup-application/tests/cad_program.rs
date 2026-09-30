@@ -6,10 +6,10 @@ use ketchup_application::{
     AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program as plan,
     plan_assistant_cad_edit_program_with_outputs as plan_with_outputs,
 };
+use ketchup_assistant::sidecar::*;
 use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
-use ketchup_core::assistant_sidecar::*;
 use ketchup_core::document::{
     BodyKind, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension,
     DocumentStore, FeatureId, FeatureKind, GroupId, InstancePath, InstancePathStep, OccurrenceId,

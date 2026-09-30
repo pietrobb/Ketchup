@@ -4,7 +4,7 @@
 //! occurrence with the part's exact frame (`Part::transform_matrix`).
 
 use crate::model::{Part, ProgramModel, ProgramPartBody, ProgramProfileSegment};
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantPanelHole,
     AssistantPanelPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
 };

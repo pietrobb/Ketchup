@@ -8,7 +8,8 @@ use crate::harness;
 
 use harness::Shell;
 use ketchup_app::{AppCommand, live_bridge::Stamp};
-use ketchup_core::{assistant_sidecar::*, document::FeatureKind};
+use ketchup_assistant::sidecar::*;
+use ketchup_core::document::FeatureKind;
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},

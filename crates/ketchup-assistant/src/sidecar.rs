@@ -1,11 +1,13 @@
-use crate::document::{
+use ketchup_core::document::{
     Dimension, ProfileSegment, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
 };
-use crate::exact_product::EXACT_MIN_LENGTH_MM;
-use crate::pin_joint::PinSpec;
-use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
-use crate::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING};
+use ketchup_core::exact_product::EXACT_MIN_LENGTH_MM;
+use ketchup_core::pin_joint::PinSpec;
+use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+use ketchup_core::tolerance::{
+    APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -2350,7 +2352,7 @@ impl AssistantWorkplaneSpec {
                 origin_mm,
                 x_axis,
                 y_axis,
-            } => crate::sketch::WorkplaneFrame::from_axes(*origin_mm, *x_axis, *y_axis)
+            } => ketchup_core::sketch::WorkplaneFrame::from_axes(*origin_mm, *x_axis, *y_axis)
                 .map(|_| ())
                 .map_err(|_| "assistant workplane frame is invalid".to_owned()),
             Self::Principal { .. } => Ok(()),
@@ -2581,7 +2583,7 @@ impl AssistantSketchEntity {
                     && source_entities
                         .iter()
                         .all(|entity| entity.validate().is_ok())
-                    && source_ids.len() <= crate::sketch::MAX_SKETCH_ENTITIES
+                    && source_ids.len() <= ketchup_core::sketch::MAX_SKETCH_ENTITIES
                     && source_ids.iter().collect::<BTreeSet<_>>().len() == source_ids.len()
                     && (1..=MAX_ASSISTANT_PROFILE_COPIES).contains(&copies.len())
                     && copies.iter().all(|copy| {
@@ -2857,8 +2859,8 @@ fn validate_assistant_sketch_payload(
         || name.len() > MAX_ASSISTANT_NAME_BYTES
         || name.chars().any(char::is_control)
         || entities.is_empty()
-        || expanded_entity_count > crate::sketch::MAX_SKETCH_ENTITIES
-        || constraints.len() > crate::sketch::MAX_SKETCH_CONSTRAINTS
+        || expanded_entity_count > ketchup_core::sketch::MAX_SKETCH_ENTITIES
+        || constraints.len() > ketchup_core::sketch::MAX_SKETCH_CONSTRAINTS
     {
         return Err("assistant sketch creation is invalid".to_owned());
     }

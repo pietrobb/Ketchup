@@ -7,7 +7,7 @@ use crate::sketch::{
 use crate::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
 };
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{

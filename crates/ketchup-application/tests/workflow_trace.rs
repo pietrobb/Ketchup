@@ -363,7 +363,7 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
             &ketchup_core::exact_product::ExactResultRegistry::default(),
             0,
             &ketchup_application::model_query::EditContextRequest {
-                targets: vec![ketchup_core::assistant_sidecar::AssistantInstancePath {
+                targets: vec![ketchup_assistant::sidecar::AssistantInstancePath {
                     root_occurrence_id: 6,
                     steps: vec![],
                 }],
@@ -588,8 +588,8 @@ fn assert_original_rear_sketch_resizes(fixture: &str) {
 #[test]
 fn original_v9_rear_physical_joinery_after_unique_sides() {
     use ketchup_application::plan_assistant_cad_edit_program;
-    use ketchup_core::assistant_sidecar::AssistantCadParameterValueType;
-    use ketchup_core::assistant_sidecar::{
+    use ketchup_assistant::sidecar::AssistantCadParameterValueType;
+    use ketchup_assistant::sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
         AssistantPinJointFace,
     };
@@ -1380,7 +1380,7 @@ fn deterministic_large_panel_fixture() -> DocumentStore {
 #[test]
 fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
     use ketchup_application::plan_assistant_cad_edit_program;
-    use ketchup_core::assistant_sidecar::{
+    use ketchup_assistant::sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
         AssistantPinJointFace,
     };

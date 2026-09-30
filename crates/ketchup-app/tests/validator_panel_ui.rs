@@ -7,7 +7,7 @@ use crate::harness;
 use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::KetchupApp;
-use ketchup_core::assistant_sidecar::{AssistantBoxIntent, AssistantModelIntent};
+use ketchup_assistant::sidecar::{AssistantBoxIntent, AssistantModelIntent};
 
 fn empty_intent(boxes: Vec<AssistantBoxIntent>) -> AssistantModelIntent {
     AssistantModelIntent {

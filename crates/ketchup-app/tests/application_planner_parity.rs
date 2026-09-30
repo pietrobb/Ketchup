@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_application::plan_assistant_cad_edit_program;
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantCadPartFeature, AssistantCadRotation, AssistantPrincipalPlane, AssistantSketchEntity,
     AssistantWorkplaneSpec,

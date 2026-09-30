@@ -1,8 +1,8 @@
-use crate::document::{DocumentStore, FeatureId, NodeId, Proposal, ProposalBudget};
 use crate::intent::{
     IntentCapability, IntentError, IntentGrant, IntentRequest, WorkflowIntent, propose_intent,
 };
-use crate::state_view::encode_semantic_state;
+use ketchup_core::document::{DocumentStore, FeatureId, NodeId, Proposal, ProposalBudget};
+use ketchup_core::state_view::encode_semantic_state;
 use std::collections::BTreeSet;
 use std::fmt;
 

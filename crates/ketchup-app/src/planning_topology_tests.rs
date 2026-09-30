@@ -19,7 +19,7 @@ fn finishes(app: &KetchupApp) -> Vec<AssistantCadBodyFeature> {
             target_feature_id: 2,
             removed_face_reference_ids: vec![reference(TopologicalElementKind::Face)],
             thickness_mm: 1.0,
-            direction: ketchup_core::assistant_sidecar::AssistantCadShellDirection::Inward,
+            direction: ketchup_assistant::sidecar::AssistantCadShellDirection::Inward,
         },
         AssistantCadBodyFeature::TopologyFillet {
             target_feature_id: 2,

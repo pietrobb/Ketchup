@@ -2,7 +2,7 @@ use ketchup_application::evaluation::{
     EvidenceStatus, ExactEvaluationSelection, exact_source, exact_worker_candidates,
 };
 use ketchup_application::{DocumentSession, SessionError, SessionSettings};
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadPartFeature,
     AssistantPrincipalPlane, AssistantSketchConstraint, AssistantSketchEntity,
     AssistantWorkplaneSpec,
@@ -111,10 +111,8 @@ fn assert_timeout_unchanged(session: &mut DocumentSession, timeout: Duration) {
 
 #[test]
 fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence() {
+    use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantPin, AssistantPinJointFace};
     use ketchup_core::assembly_recipe::*;
-    use ketchup_core::assistant_sidecar::{
-        AssistantInstancePath, AssistantPin, AssistantPinJointFace,
-    };
     use ketchup_core::document::{
         ClassificationCategoryId, ClassificationDimensionId, FeatureParameterTarget, InstancePath,
         ParameterValueType,

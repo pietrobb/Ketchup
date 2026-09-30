@@ -1,11 +1,11 @@
 use super::{ActiveTool, KetchupApp};
 use eframe::egui;
-pub use ketchup_core::assistant_sidecar::{
+pub use ketchup_assistant::sidecar::{
     AssistantAxisSpec as AxisSpec, AssistantHelixHandedness as HelixHandedness,
     AssistantHelixParameters as HelixToolParameters,
     AssistantThreadParameters as ThreadToolParameters, AssistantThreadProfile as ThreadProfile,
 };
-use ketchup_core::assistant_sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
+use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
 use ketchup_core::document::SpatialPathSegment;
 use ketchup_core::tolerance::ROUNDING;
 use ketchup_interaction::{ElementId, Vec3};

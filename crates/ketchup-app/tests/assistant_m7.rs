@@ -7,7 +7,8 @@ use ketchup_app::{
     ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1, AppCommand, AssistantChatMessage, AssistantMessageRole,
     AssistantProvider, AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
 };
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAssemblyJointAxis,
     AssistantAssemblyJointKind, AssistantAssemblyJointLimits, AssistantAxisSpec,
     AssistantBoxIntent, AssistantCadBodyFeature, AssistantCadBooleanOperation,
@@ -35,7 +36,6 @@ use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V18, ExactBRepGraph, ExactBRepLoftContinuity, ExactBRepOperation,
 };
 use ketchup_core::exact_product::ExactBodyPackage;
-use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
@@ -1176,7 +1176,7 @@ fn assistant_diagnostics_show_exact_api_usage_and_search_project_memory() {
             .app()
             .assistant_handshake()
             .capabilities
-            .contains(&ketchup_core::assistant_sidecar::AssistantCapability::DebugObservability)
+            .contains(&ketchup_assistant::sidecar::AssistantCapability::DebugObservability)
     );
 
     let input_label = shell.catalog().text("assistant-input-hint");
@@ -2702,8 +2702,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
                     target_feature_id: 2,
                     removed_face_reference_ids: Vec::new(),
                     thickness_mm: 2.0,
-                    direction:
-                        ketchup_core::assistant_sidecar::AssistantCadShellDirection::Symmetric,
+                    direction: ketchup_assistant::sidecar::AssistantCadShellDirection::Symmetric,
                 },
             }],
         },
@@ -3115,8 +3114,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
                     target_feature_id: 2,
                     removed_face_reference_ids: Vec::new(),
                     thickness_mm: 0.5,
-                    direction:
-                        ketchup_core::assistant_sidecar::AssistantCadShellDirection::Symmetric,
+                    direction: ketchup_assistant::sidecar::AssistantCadShellDirection::Symmetric,
                 },
             }],
         },

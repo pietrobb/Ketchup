@@ -9,11 +9,7 @@ use crate::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
     world_plane_mirror_transform,
 };
-use ketchup_core::assembly_joint::{
-    AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
-    preview_assembly_joint_drag,
-};
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantAssemblyJointAxis, AssistantAssemblyJointKind, AssistantAssemblyJointLimits,
     AssistantAxisSpec, AssistantCadBodyFeature, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
@@ -24,6 +20,10 @@ use ketchup_core::assistant_sidecar::{
     AssistantPanelPocket, AssistantPrincipalPlane, AssistantProgramPinJointFace,
     AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
     AssistantWorkplaneSpec, validated_spatial_path_segments,
+};
+use ketchup_core::assembly_joint::{
+    AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
+    preview_assembly_joint_drag,
 };
 use ketchup_core::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
@@ -493,7 +493,7 @@ fn plan_panel(
     holes: &[AssistantPanelHole],
     pockets: &[AssistantPanelPocket],
     translation_mm: [f64; 3],
-    rotation: Option<ketchup_core::assistant_sidecar::AssistantCadRotation>,
+    rotation: Option<ketchup_assistant::sidecar::AssistantCadRotation>,
     staged: &mut StagedPlanningContext,
     next_definition: &mut Option<u64>,
     next_feature: &mut Option<u64>,
@@ -2385,9 +2385,9 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 staged_planning.refresh(operation_name, &document_target)?;
                 let planning_snapshot = staged_planning.staged_snapshot();
                 let workplane = match workplane {
-                    ketchup_core::assistant_sidecar::AssistantWorkplaneSpec::ConstructionPlane {
+                    ketchup_assistant::sidecar::AssistantWorkplaneSpec::ConstructionPlane {
                         plane: AssistantCadFeatureReference::ProgramOutput(reference),
-                    } => ketchup_core::assistant_sidecar::AssistantWorkplaneSpec::ConstructionPlane {
+                    } => ketchup_assistant::sidecar::AssistantWorkplaneSpec::ConstructionPlane {
                         plane: AssistantCadFeatureReference::Existing(
                             staged_planning.resolve_program_output(
                                 *reference,
@@ -2750,7 +2750,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     )
                 })?;
                 next_pin_joint = id.0.checked_add(1);
-                let face = |input: &ketchup_core::assistant_sidecar::AssistantPinJointFace| {
+                let face = |input: &ketchup_assistant::sidecar::AssistantPinJointFace| {
                     resolve_assistant_instance_path(
                         &input.instance_path,
                         staged_planning.staged_snapshot(),
@@ -2943,7 +2943,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     next_pin_joint = id.0.checked_add(1);
                     id
                 };
-                let face = |input: &ketchup_core::assistant_sidecar::AssistantPinJointFace| {
+                let face = |input: &ketchup_assistant::sidecar::AssistantPinJointFace| {
                     resolve_assistant_instance_path(
                         &input.instance_path,
                         staged_planning.staged_snapshot(),

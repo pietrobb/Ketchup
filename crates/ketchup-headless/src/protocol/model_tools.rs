@@ -1,6 +1,6 @@
 use super::*;
 use ketchup_application::model_query::{self, EditContextRequest, EntityKind, PageRequest};
-use ketchup_core::assistant_sidecar::AssistantInstancePath;
+use ketchup_assistant::sidecar::AssistantInstancePath;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

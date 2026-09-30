@@ -27,7 +27,8 @@ use ketchup_application::transforms::{
     world_edit_in_parent_space,
 };
 use ketchup_application::validation::*;
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::intent::{IntentRequest, WorkflowIntent, propose_intent};
+use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBoxIntent,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantCapability, AssistantChatResult, AssistantDistribution, AssistantFeaReviewRequest,
@@ -35,7 +36,7 @@ use ketchup_core::assistant_sidecar::{
     AssistantRejectionPhase,
 };
 #[cfg(test)]
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadLoftContinuity,
 };
@@ -94,7 +95,6 @@ use ketchup_core::import::{
 use ketchup_core::import::{
     StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
 };
-use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::local_pdm::{
     ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseConflictVerdict,
     ReleaseDependencyInput, ReleaseManifest,
@@ -8751,10 +8751,10 @@ impl KetchupApp {
         let target = format!("document:{}", self.document.current().document_id().0);
         let proposal = propose_intent(&self.document, IntentRequest::m7a(intent.clone())).map_err(
             |error| match error {
-                ketchup_core::intent::IntentError::Canonical(error) => {
+                ketchup_assistant::intent::IntentError::Canonical(error) => {
                     assistant_canonical_rejection(error, "workflow_intent", &target)
                 }
-                ketchup_core::intent::IntentError::Proposal(error) => {
+                ketchup_assistant::intent::IntentError::Proposal(error) => {
                     assistant_proposal_prepare_rejection(error, "workflow_intent", &target)
                 }
                 error => assistant_planning_rejection(

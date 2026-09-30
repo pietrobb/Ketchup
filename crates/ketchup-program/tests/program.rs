@@ -483,7 +483,7 @@ fn panel_operations_carry_holes_and_pockets_in_panel_coordinates() {
     let model = eval(CABINET);
     let operations = ketchup_program::cad::part_operations(&model);
     assert_eq!(operations.len(), 7);
-    let ketchup_core::assistant_sidecar::AssistantCadEditOperation::CreatePanel {
+    let ketchup_assistant::sidecar::AssistantCadEditOperation::CreatePanel {
         name,
         holes,
         pockets,

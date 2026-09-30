@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_core::assistant_sidecar::{ASSISTANT_PROTOCOL_VERSION, AssistantCapability};
+use ketchup_assistant::sidecar::{ASSISTANT_PROTOCOL_VERSION, AssistantCapability};
 
 fn ready_client(mode: &str, timeout: Duration) -> AssistantProcessClient {
     let handshake = AssistantHandshake {

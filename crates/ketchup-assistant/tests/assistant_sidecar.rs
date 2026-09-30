@@ -1,4 +1,4 @@
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantAxisSpec, AssistantCadBodyFeature,
     AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
@@ -1423,7 +1423,7 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
                     target_feature_id,
                     removed_face_reference_ids,
                     thickness_mm,
-                    direction: ketchup_core::assistant_sidecar::AssistantCadShellDirection::Inward,
+                    direction: ketchup_assistant::sidecar::AssistantCadShellDirection::Inward,
                 },
             }],
         };
@@ -2122,12 +2122,10 @@ fn assistant_rotation_is_shape_independent_arbitrary_axis_and_fail_closed() {
     );
 
     let conflicting_move = AssistantModelIntent {
-        translations: vec![
-            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                occurrence_id: 7,
-                delta_mm: [1.0, 0.0, 0.0],
-            },
-        ],
+        translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+            occurrence_id: 7,
+            delta_mm: [1.0, 0.0, 0.0],
+        }],
         ..valid
     };
     assert_eq!(
@@ -2203,12 +2201,10 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
     );
 
     let mixed = AssistantModelIntent {
-        translations: vec![
-            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                occurrence_id: 1,
-                delta_mm: [1.0, 0.0, 0.0],
-            },
-        ],
+        translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+            occurrence_id: 1,
+            delta_mm: [1.0, 0.0, 0.0],
+        }],
         ..valid
     };
     assert_eq!(
@@ -2253,12 +2249,10 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
     );
 
     let mixed = AssistantModelIntent {
-        translations: vec![
-            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                occurrence_id: 1,
-                delta_mm: [1.0, 0.0, 0.0],
-            },
-        ],
+        translations: vec![ketchup_assistant::sidecar::AssistantTranslationIntent {
+            occurrence_id: 1,
+            delta_mm: [1.0, 0.0, 0.0],
+        }],
         ..valid
     };
     assert_eq!(

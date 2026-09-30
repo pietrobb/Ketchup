@@ -1,5 +1,5 @@
 use crate::{AssistantTransport, AssistantTransportResponse};
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
 };
 use ketchup_core::graph::sha256_hex;
@@ -79,7 +79,7 @@ impl AssistantTransport for ProcessAssistantTransport {
         message: &str,
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
-    ) -> Result<ketchup_core::assistant_sidecar::AssistantChatResult, String> {
+    ) -> Result<ketchup_assistant::sidecar::AssistantChatResult, String> {
         self.chat_with_diagnostics(handshake, request_id, message, context, cancellation)
             .map(|response| response.result)
     }

@@ -1,0 +1,32 @@
+[package]
+name = "ketchup-assistant"
+description = "AI assistant surface of Ketchup: typed CAD edit programs, operation catalog, workflow intents and plugins"
+version.workspace = true
+edition.workspace = true
+autotests = false
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+private-oauth = []
+
+[dependencies]
+ketchup-core = { path = "../ketchup-core" }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+
+[build-dependencies]
+syn = { version = "2", features = ["full"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+ketchup-core = { path = "../ketchup-core", features = ["testing"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

@@ -4,7 +4,7 @@ use crate::{
     plan_assistant_cad_edit_program,
     validation::{AssistantValidationSelection, assistant_validation_context_with_worker},
 };
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantRejectionDiagnostic,
 };
 use ketchup_core::document::{

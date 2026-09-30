@@ -506,7 +506,7 @@ fn full_140_house_has_no_silent_collision_cap() {
 }
 #[test]
 fn exact_hole_does_not_collide_with_insert() {
-    use ketchup_core::assistant_sidecar::*;
+    use ketchup_assistant::sidecar::*;
     let mut session = DocumentSession::default();
     let mut operations = Vec::new();
     for (name, radii) in [("ring", vec![10.0, 5.0]), ("insert", vec![4.0])] {

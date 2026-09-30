@@ -5,9 +5,9 @@ use ketchup_application::{
     model_query::{EditContextRequest, EntityKind, ModelQuery, PageRequest},
     scoped_static_load_report,
 };
+use ketchup_assistant::sidecar::*;
 use ketchup_core::sketch::{CutStart, PadOperation, PadProfile, PadSpec};
 use ketchup_core::{
-    assistant_sidecar::*,
     document::*,
     exact_product::{ExactBodyPackage, ExactResultRegistry},
     persistence::{self, ContainerData},

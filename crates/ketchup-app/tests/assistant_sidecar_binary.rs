@@ -10,7 +10,7 @@ use ketchup_app::{
     private_assistant_launch, private_assistant_launch_for_executable,
     public_assistant_launch_for_install_root,
 };
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
 };
 use ketchup_scheduler::assistant::{AssistantProcessClient, AssistantProcessLaunch};

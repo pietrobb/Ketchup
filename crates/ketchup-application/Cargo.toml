@@ -12,6 +12,7 @@ repository.workspace = true
 default = []
 
 [dependencies]
+ketchup-assistant = { path = "../ketchup-assistant" }
 ketchup-core = { path = "../ketchup-core" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-program = { path = "../ketchup-program" }

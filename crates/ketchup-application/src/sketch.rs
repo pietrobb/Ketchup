@@ -1,4 +1,4 @@
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantPrincipalPlane, AssistantSketchConstraint, AssistantSketchEntity,
     AssistantSketchPointKind, AssistantSketchPointRef,
 };

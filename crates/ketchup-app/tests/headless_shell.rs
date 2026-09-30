@@ -17,6 +17,7 @@ use ketchup_app::{
     AlignMode, AppCommand, AssistantWorkspaceMode, DistributionMode, GeneralFinishKind, KetchupApp,
     RectangularPatternSpec, ViewFlag,
 };
+use ketchup_assistant::intent::WorkflowIntent;
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
     EdgeFinishKind, EvaluationIdentity, FaceRef, FeatureId, FeatureKind, FeatureParameterBinding,
@@ -33,7 +34,6 @@ use ketchup_core::exact_product::{
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
 use ketchup_core::import::{ImportFormat, StepImportMesh, StepMeshTriangle};
-use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::{

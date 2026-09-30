@@ -9,6 +9,10 @@ use ketchup_application::{
     },
     validation_rules::ValidationRules,
 };
+use ketchup_assistant::sidecar::{
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
+    AssistantPinJointFace,
+};
 use ketchup_core::{
     assembly_joint::{
         AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
@@ -16,10 +20,6 @@ use ketchup_core::{
     assembly_recipe::{
         AssemblyRecipe, RecipeEditScope, RecipeFaceRef, RecipeKey, RecipePartAdoption,
         RecipePartMobility, RecipeRelation, RecipeRelationKind, RecognizedRecipeFeatureKind,
-    },
-    assistant_sidecar::{
-        AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
-        AssistantPinJointFace,
     },
     document::*,
     exact_product::ExactResultRegistry,

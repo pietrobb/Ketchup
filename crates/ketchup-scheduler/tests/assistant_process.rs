@@ -1,4 +1,4 @@
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
 };
 use ketchup_scheduler::assistant::{

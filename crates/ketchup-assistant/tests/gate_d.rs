@@ -1,3 +1,7 @@
+use ketchup_assistant::intent::{
+    IntentCapability, IntentError, IntentGrant, IntentRequest, RequestingPrincipal, WorkflowIntent,
+    propose_intent,
+};
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, CanonicalCommand, CollectionId, CommandBatch,
     DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentStore,
@@ -8,10 +12,6 @@ use ketchup_core::document::{
     ProposalCommitError, ProposalConfirmation, ProposalContext, ProposalGoal, ProposalPrepareError,
     ProposalPrincipal, ProposalRisk, ProposalValue, RuleOutput, SlotPath, SlotResolution,
     SlotSegment, TagId, Transform, TrustedConfirmationSurface,
-};
-use ketchup_core::intent::{
-    IntentCapability, IntentError, IntentGrant, IntentRequest, RequestingPrincipal, WorkflowIntent,
-    propose_intent,
 };
 use ketchup_core::prismatic::{Aabb, CanonicalJoint, JointId};
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};

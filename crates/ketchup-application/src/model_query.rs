@@ -1,9 +1,9 @@
 //! Bounded projections of canonical snapshots; no geometry evaluation or parallel model.
 //! Occurrences are document/root records (including group members), not expanded
 //! definition-local instances. Definitions/features are the full canonical catalogs.
+use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantInstancePathStep};
 use ketchup_core::assembly::{AssemblyMateKind, AssemblyReferenceHealth};
 use ketchup_core::assembly_joint::AssemblyJointKind;
-use ketchup_core::assistant_sidecar::{AssistantInstancePath, AssistantInstancePathStep};
 use ketchup_core::document::{
     ClassificationCategoryId, ClassificationDimensionId, DefinitionId, FeatureId, FeatureKind,
     InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,

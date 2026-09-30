@@ -224,8 +224,7 @@ impl Generator {
 }
 
 fn main() {
-    let path =
-        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("src/assistant_sidecar.rs");
+    let path = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("src/sidecar.rs");
     println!("cargo:rerun-if-changed={}", path.display());
     let source = fs::read_to_string(path).expect("read authoritative CAD wire contract");
     let ast = syn::parse_file(&source).expect("parse CAD wire contract");

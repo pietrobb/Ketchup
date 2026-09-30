@@ -5,6 +5,7 @@ use crate::harness;
 use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
+use ketchup_assistant::intent::WorkflowIntent;
 use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
@@ -14,7 +15,6 @@ use ketchup_core::document::{
 };
 use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
-use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_scheduler::ExactWorkerSupervisor;

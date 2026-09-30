@@ -4,10 +4,8 @@ use ketchup_app::{
     KetchupApp, inspect_native_document, live_bridge::bootstrap::LiveStdinBootstrap,
     verify_public_assistant_runtime,
 };
-use ketchup_core::{
-    assistant_sidecar::AssistantDistribution,
-    persistence::{self, LoadOutcome},
-};
+use ketchup_assistant::sidecar::AssistantDistribution;
+use ketchup_core::persistence::{self, LoadOutcome};
 
 fn bootstrap_failed() -> ! {
     eprintln!("live bridge bootstrap failed");

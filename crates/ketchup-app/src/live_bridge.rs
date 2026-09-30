@@ -27,11 +27,11 @@ use ketchup_application::{
         AssistantValidationSelection, assistant_validation_context_with_worker_cancellation,
     },
 };
+use ketchup_assistant::sidecar::{
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantInstancePath, AssistantRejectionDiagnostic,
+};
 use ketchup_core::{
-    assistant_sidecar::{
-        AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-        AssistantInstancePath, AssistantRejectionDiagnostic,
-    },
     document::{
         CommandBatch, DocumentStore, OccurrenceId, Proposal, Snapshot, VerifiedProposalCommit,
     },
@@ -1912,7 +1912,7 @@ impl LiveBridge {
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::Operations { name } => {
-                ketchup_core::cad_catalog::cad_operation_catalog(name.as_deref())
+                ketchup_assistant::catalog::cad_operation_catalog(name.as_deref())
             }
             Request::EditContext { targets, .. } => self
                 .query

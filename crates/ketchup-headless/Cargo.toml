@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ketchup-assistant = { path = "../ketchup-assistant" }
 ketchup-application = { path = "../ketchup-application" }
 ketchup-core = { path = "../ketchup-core" }
 ketchup-program = { path = "../ketchup-program" }

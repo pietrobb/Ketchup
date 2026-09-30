@@ -5,7 +5,7 @@ use crate::topology::{
     GeneralFinishKind, assistant_topology_references, plan_topology_advanced_chamfer_kind,
     plan_topology_finish_kind, plan_topology_shell_kind, plan_topology_variable_fillet_kind,
 };
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
     AssistantCadLoftContinuity, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
 };

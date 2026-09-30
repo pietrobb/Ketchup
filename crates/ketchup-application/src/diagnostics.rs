@@ -1,4 +1,4 @@
-use ketchup_core::assistant_sidecar::{AssistantRejectionDiagnostic, AssistantRejectionPhase};
+use ketchup_assistant::sidecar::{AssistantRejectionDiagnostic, AssistantRejectionPhase};
 use ketchup_core::document::CanonicalError;
 
 pub type AssistantRejection = Box<AssistantRejectionDiagnostic>;

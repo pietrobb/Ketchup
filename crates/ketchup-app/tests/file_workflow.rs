@@ -14,7 +14,7 @@ use eframe::egui::{Key, Pos2, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantMessageRole};
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadProgramFeatureOutput,
     AssistantCadProgramFeatureReference, AssistantCadSheetMetalEdge, AssistantCadSheetMetalFlange,

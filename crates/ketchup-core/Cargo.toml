@@ -10,7 +10,6 @@ repository.workspace = true
 
 [features]
 default = []
-private-oauth = []
 # Test doubles for exact evaluation results; see `src/testing.rs`.
 testing = []
 
@@ -22,10 +21,6 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.10.9"
 tempfile = "3.23.0"
-
-[build-dependencies]
-syn = { version = "2", features = ["full"] }
-serde_json = "1.0"
 
 [dev-dependencies]
 ketchup-core = { path = ".", features = ["testing"] }

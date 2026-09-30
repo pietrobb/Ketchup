@@ -41,4 +41,4 @@ pub use validation::{
     AssistantValidationSelection, StructuralValidationScope, scoped_static_load_report,
 };
 
-pub use ketchup_core::assistant_sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
+pub use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};

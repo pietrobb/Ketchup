@@ -1515,7 +1515,7 @@ fn apply_and_verify_phase_failures_are_zero_mutation() {
 #[test]
 fn unsupported_planning_diagnostic_is_a_bounded_capability_gap() {
     let diagnostic = AssistantRejectionDiagnostic {
-        phase: ketchup_core::assistant_sidecar::AssistantRejectionPhase::ProposalPlanning,
+        phase: ketchup_assistant::sidecar::AssistantRejectionPhase::ProposalPlanning,
         code: "planning.cad_feature_result_unsupported".into(),
         operation: "append_feature".into(),
         target: "feature:7".into(),
@@ -2003,7 +2003,7 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
             AssistantCadEditOperation::Delete {
                 selector: selector.clone(),
                 dependency_policy:
-                    ketchup_core::assistant_sidecar::AssistantCadDeletePolicy::RemoveReferences,
+                    ketchup_assistant::sidecar::AssistantCadDeletePolicy::RemoveReferences,
             },
             AssistantCadEditOperation::SetColor {
                 selector: selector.clone(),

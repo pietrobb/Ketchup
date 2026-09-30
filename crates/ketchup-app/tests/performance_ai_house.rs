@@ -3,7 +3,7 @@ use crate::harness;
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_core::assistant_sidecar::AssistantChatResult;
+use ketchup_assistant::sidecar::AssistantChatResult;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

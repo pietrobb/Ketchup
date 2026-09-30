@@ -9,7 +9,7 @@ use ketchup_app::{
         bootstrap::*,
     },
 };
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
 };
 use ketchup_interaction::Vec3;

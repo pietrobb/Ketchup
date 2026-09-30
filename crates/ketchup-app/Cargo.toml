@@ -10,10 +10,11 @@ repository.workspace = true
 
 [features]
 default = ["private-oauth"]
-private-oauth = ["ketchup-core/private-oauth", "ketchup-scheduler/private-oauth"]
+private-oauth = ["ketchup-assistant/private-oauth", "ketchup-scheduler/private-oauth"]
 manual-alpha = ["private-oauth"]
 
 [dependencies]
+ketchup-assistant = { path = "../ketchup-assistant" }
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 ketchup-core = { path = "../ketchup-core" }
 ketchup-application = { path = "../ketchup-application" }

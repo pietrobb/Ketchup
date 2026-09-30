@@ -6,10 +6,8 @@ use ketchup_application::{
     batch_task::OccurrenceBatchOperation,
     model_query::{EntityKind, PageRequest},
 };
-use ketchup_core::{
-    assistant_sidecar::*,
-    document::{CommandBatch, DocumentStore},
-};
+use ketchup_assistant::sidecar::*;
+use ketchup_core::document::{CommandBatch, DocumentStore};
 use std::{
     io::{Read, Write},
     net::TcpStream,

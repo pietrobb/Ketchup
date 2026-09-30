@@ -2249,6 +2249,7 @@ dependencies = [
  "egui_kittest",
  "getrandom 0.3.4",
  "ketchup-application",
+ "ketchup-assistant",
  "ketchup-core",
  "ketchup-interaction",
  "ketchup-program",
@@ -2267,6 +2268,7 @@ dependencies = [
 name = "ketchup-application"
 version = "0.1.0"
 dependencies = [
+ "ketchup-assistant",
  "ketchup-core",
  "ketchup-interaction",
  "ketchup-program",
@@ -2274,6 +2276,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "ketchup-assistant"
+version = "0.1.0"
+dependencies = [
+ "ketchup-core",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2289,7 +2301,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "syn 2.0.119",
  "tempfile",
 ]
 
@@ -2307,6 +2318,7 @@ name = "ketchup-headless"
 version = "0.1.0"
 dependencies = [
  "ketchup-application",
+ "ketchup-assistant",
  "ketchup-core",
  "ketchup-program",
  "serde",
@@ -2327,6 +2339,7 @@ version = "0.1.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "ketchup-assistant",
  "ketchup-core",
  "serde",
  "serde_json",
@@ -2339,6 +2352,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
+ "ketchup-assistant",
  "ketchup-core",
  "ketchup-exact",
  "ketchup-interaction",

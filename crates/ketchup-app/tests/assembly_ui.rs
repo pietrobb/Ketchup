@@ -11,6 +11,7 @@ use eframe::egui::{Key, Modifiers, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
+use ketchup_assistant::intent::WorkflowIntent;
 use ketchup_core::assembly::{AssemblyMateKind, AssemblySolveStatus};
 use ketchup_core::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
@@ -21,7 +22,6 @@ use ketchup_core::document::{
     OccurrenceId, TagId, Transform,
 };
 use ketchup_core::drawing::{DrawingSheetId, DrawingSource};
-use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::mechanical_coupling::{
     AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
     AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,

@@ -5,7 +5,7 @@ use crate::harness;
 use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::private_assistant_launch;
-use ketchup_core::assistant_sidecar::{
+use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantCapability, AssistantDistribution,
     AssistantHandshake, AssistantModelIntent, AssistantTranslationIntent,
 };
