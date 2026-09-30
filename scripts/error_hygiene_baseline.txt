@@ -42,7 +42,6 @@ crates/ketchup-manufacturing/src/blender_export.rs discard 3
 crates/ketchup-manufacturing/src/dxf_export.rs discard 4
 crates/ketchup-manufacturing/src/fabrication.rs discard 5
 crates/ketchup-manufacturing/src/fabrication/production.rs discard 2
-crates/ketchup-manufacturing/src/three_mf_export.rs discard 31
 crates/ketchup-model/src/adapters.rs discard 2
 crates/ketchup-model/src/assembly.rs discard 2
 crates/ketchup-model/src/assembly_joint.rs discard 2
@@ -60,12 +59,11 @@ crates/ketchup-model/src/exact_product.rs discard 7
 crates/ketchup-model/src/exact_validation.rs discard 3
 crates/ketchup-model/src/feature_history.rs discard 2
 crates/ketchup-model/src/graph.rs discard 3
-crates/ketchup-model/src/import.rs discard 11
-crates/ketchup-model/src/import/dxf.rs discard 41
-crates/ketchup-model/src/import/glb.rs discard 17
-crates/ketchup-model/src/import/iges.rs discard 6
-crates/ketchup-model/src/import/sketchup_scene.rs discard 8
-crates/ketchup-model/src/persistence/legacy.rs discard 41
+crates/ketchup-model/src/import.rs discard 5
+crates/ketchup-model/src/import/glb.rs discard 15
+crates/ketchup-model/src/import/iges.rs discard 2
+crates/ketchup-model/src/import/sketchup_scene.rs discard 6
+crates/ketchup-model/src/persistence/legacy.rs discard 3
 crates/ketchup-model/src/pin_joint.rs discard 5
 crates/ketchup-model/src/shared_change.rs discard 4
 crates/ketchup-model/src/space.rs discard 1

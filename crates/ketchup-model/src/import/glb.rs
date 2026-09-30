@@ -5,8 +5,9 @@ use std::fmt;
 use serde_json::{Map, Value};
 
 use super::{
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit, ImportOutputRef,
-    ImportReceipt, ImportUnitAuthority, ImportUnitDecision, MAX_IMPORT_OUTPUTS,
+    ImportContractError, ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat,
+    ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
+    MAX_IMPORT_OUTPUTS,
 };
 use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
@@ -140,7 +141,7 @@ pub enum GlbImportError {
     InvalidTransform,
     InvalidHierarchy,
     InvalidText,
-    InvalidSourceIdentity,
+    InvalidSourceIdentity(ImportContractError),
     IdSpaceExhausted,
 }
 
@@ -165,7 +166,12 @@ impl fmt::Display for GlbImportError {
             Self::InvalidTransform => "GLB contains a non-finite or degenerate node transform",
             Self::InvalidHierarchy => "GLB selected scene is not a finite single-parent tree",
             Self::InvalidText => "GLB contains invalid identity text",
-            Self::InvalidSourceIdentity => "GLB source name or provenance is invalid",
+            Self::InvalidSourceIdentity(error) => {
+                return write!(
+                    formatter,
+                    "GLB source name or provenance is invalid: {error}"
+                );
+            }
             Self::IdSpaceExhausted => "canonical import ID space is exhausted",
         })
     }
@@ -292,12 +298,14 @@ pub fn plan_glb_import(
 ) -> Result<CommandBatch, GlbImportError> {
     validate_text(source_name)?;
     if source_name.contains(['/', '\\']) {
-        return Err(GlbImportError::InvalidSourceIdentity);
+        return Err(GlbImportError::InvalidSourceIdentity(
+            ImportContractError::InvalidSource,
+        ));
     }
     let scene = inspect_glb(source)?;
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| GlbImportError::IdSpaceExhausted)?;
+        .ok_or(GlbImportError::IdSpaceExhausted)?;
     let definition_start = next_id(snapshot.definitions().map(|item| item.id().0))?;
     let feature_start = next_id(snapshot.features().map(|item| item.id().0))?;
     let occurrence_start = next_id(snapshot.occurrences().map(|item| item.id().0))?;
@@ -415,7 +423,7 @@ pub fn plan_glb_import(
         scene.diagnostics,
         outputs,
     )
-    .map_err(|_| GlbImportError::InvalidSourceIdentity)?;
+    .map_err(GlbImportError::InvalidSourceIdentity)?;
     commands.push(CanonicalCommand::RecordImport(receipt));
     let batch = CommandBatch::new(commands);
     snapshot

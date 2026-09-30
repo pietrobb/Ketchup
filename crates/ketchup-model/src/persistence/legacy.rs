@@ -47,13 +47,13 @@ use crate::drawing::{
     DrawingAngularDimension, DrawingAnnotations, DrawingBomBalloon, DrawingBomBalloonId,
     DrawingCircularDimension, DrawingCircularDimensionKind, DrawingDatumId, DrawingDatumReference,
     DrawingDatumSymbol, DrawingDetailRegion, DrawingDimensionId, DrawingDimensionTolerance,
-    DrawingFeatureControlFrame, DrawingFeatureControlFrameId, DrawingGeometricCharacteristic,
-    DrawingLinearDimension, DrawingMargins, DrawingMaterialCondition, DrawingNote, DrawingNoteId,
-    DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale,
-    DrawingSectionPlane, DrawingSheet, DrawingSheetId, DrawingSource, DrawingTitleBlock,
-    DrawingViewFrame, MAX_DRAWING_BOM_BALLOONS, MAX_DRAWING_DIMENSIONS, MAX_DRAWING_NOTES,
-    MAX_DRAWING_VIEWS, ORTHOGRAPHIC_DRAWING_SCHEMA_V1, ORTHOGRAPHIC_DRAWING_SCHEMA_V2,
-    OrthographicViewKind,
+    DrawingError, DrawingFeatureControlFrame, DrawingFeatureControlFrameId,
+    DrawingGeometricCharacteristic, DrawingLinearDimension, DrawingMargins,
+    DrawingMaterialCondition, DrawingNote, DrawingNoteId, DrawingPageOrientation, DrawingPageSize,
+    DrawingPageTemplate, DrawingScale, DrawingSectionPlane, DrawingSheet, DrawingSheetId,
+    DrawingSource, DrawingTitleBlock, DrawingViewFrame, MAX_DRAWING_BOM_BALLOONS,
+    MAX_DRAWING_DIMENSIONS, MAX_DRAWING_NOTES, MAX_DRAWING_VIEWS, ORTHOGRAPHIC_DRAWING_SCHEMA_V1,
+    ORTHOGRAPHIC_DRAWING_SCHEMA_V2, OrthographicViewKind,
 };
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
@@ -746,9 +746,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
         let payload_length = usize::try_from(u64::from_le_bytes(
             manifest_bytes[0..8]
                 .try_into()
-                .map_err(|_| PersistenceError::Truncated)?,
+                .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?,
         ))
-        .map_err(|_| PersistenceError::LengthOverflow)?;
+        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         if payload_length > MAX_PAYLOAD_BYTES
             || bytes.len() != HEADER_BYTES + MANIFEST_BYTES + payload_length
         {
@@ -756,7 +756,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
         }
         let checksum: [u8; 32] = manifest_bytes[8..40]
             .try_into()
-            .map_err(|_| PersistenceError::Truncated)?;
+            .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
         let payload = reader.take(payload_length)?;
         if crate::graph::sha256_bytes(payload) != checksum {
             return Err(PersistenceError::ChecksumMismatch);
@@ -926,13 +926,9 @@ fn read_rule_outputs(reader: &mut Reader<'_>) -> Result<Vec<RuleOutput>, Persist
         parent: Option<SlotSegment>,
     }
     let root_count = reader.count()?;
-    let mut root_outputs = Vec::new();
-    root_outputs
-        .try_reserve_exact(root_count as usize)
-        .map_err(|_| PersistenceError::ResourceLimit)?;
     let mut frames = vec![Frame {
         remaining: root_count,
-        outputs: root_outputs,
+        outputs: Vec::new(),
         parent: None,
     }];
     loop {
@@ -958,13 +954,9 @@ fn read_rule_outputs(reader: &mut Reader<'_>) -> Result<Vec<RuleOutput>, Persist
         if frames.len() >= crate::graph::MAX_RULE_OUTPUT_DEPTH {
             return Err(PersistenceError::ResourceLimit);
         }
-        let mut children = Vec::new();
-        children
-            .try_reserve_exact(child_count as usize)
-            .map_err(|_| PersistenceError::ResourceLimit)?;
         frames.push(Frame {
             remaining: child_count,
-            outputs: children,
+            outputs: Vec::new(),
             parent: Some(segment),
         });
     }
@@ -1005,7 +997,7 @@ fn read_legacy_parameter_path(reader: &mut Reader<'_>) -> Result<ParameterPath, 
         }
     };
     ParameterPath::new(path)
-        .map_err(|_| PersistenceError::Legacy(LegacyError::InvalidParameterPath))
+        .map_err(|error| PersistenceError::Legacy(LegacyError::InvalidParameterPath(error)))
 }
 
 fn read_feature_parameter_target(
@@ -1015,7 +1007,7 @@ fn read_feature_parameter_target(
     let feature_id = FeatureId(reader.u64()?);
     let (path, value_type) = if general_parameter_paths {
         let path = ParameterPath::new(reader.string()?)
-            .map_err(|_| PersistenceError::Legacy(LegacyError::InvalidParameterPath))?;
+            .map_err(|error| PersistenceError::Legacy(LegacyError::InvalidParameterPath(error)))?;
         let value_type = match reader.u8()? {
             1 => ParameterValueType::Length,
             2 => ParameterValueType::Angle,
@@ -1283,7 +1275,7 @@ fn read_topological_reference(
     reader: &mut Reader<'_>,
 ) -> Result<TopologicalElementRef, PersistenceError> {
     let length = usize::try_from(reader.count_with_limit(128 * 1024)?)
-        .map_err(|_| PersistenceError::LengthOverflow)?;
+        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
     TopologicalElementRef::from_bytes(reader.take(length)?).map_err(|_| {
         PersistenceError::InvalidCanonicalData(CanonicalError::InvalidTopologicalFeatureReference)
     })
@@ -1450,7 +1442,7 @@ fn read_import_receipt(
     let source_sha256 = reader
         .take(32)?
         .try_into()
-        .map_err(|_| PersistenceError::Truncated)?;
+        .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
     let source_byte_len = reader.u64()?;
     let source_name = reader.string()?;
     let source_unit = match reader.u8()? {
@@ -2197,7 +2189,7 @@ fn read_drawing_sheet_with_annotations(
         ORTHOGRAPHIC_DRAWING_SCHEMA_V1
     };
     if persisted_schema != expected_schema {
-        return Err(invalid_drawing_sheet());
+        return Err(invalid_drawing(DrawingError::InvalidSheet));
     }
     let id = DrawingSheetId(reader.u64()?);
     let name = reader.string()?;
@@ -2213,7 +2205,7 @@ fn read_drawing_sheet_with_annotations(
             }
             DrawingSource::RigidAssemblyInstances { instance_paths }
         }
-        _ => return Err(invalid_drawing_sheet()),
+        _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
     };
     if !page_contract {
         return DrawingSheet::new(id, name, source).map_err(|error| {
@@ -2226,19 +2218,18 @@ fn read_drawing_sheet_with_annotations(
         3 => DrawingPageSize::A2,
         4 => DrawingPageSize::A3,
         5 => DrawingPageSize::A4,
-        _ => return Err(invalid_drawing_sheet()),
+        _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
     };
     let orientation = match reader.u8()? {
         1 => DrawingPageOrientation::Portrait,
         2 => DrawingPageOrientation::Landscape,
-        _ => return Err(invalid_drawing_sheet()),
+        _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
     };
     let scale_numerator = reader.u32()?;
     let scale_denominator = reader.u32()?;
-    let scale = DrawingScale::new(scale_numerator, scale_denominator)
-        .map_err(|_| invalid_drawing_sheet())?;
+    let scale = DrawingScale::new(scale_numerator, scale_denominator).map_err(invalid_drawing)?;
     if scale.numerator() != scale_numerator || scale.denominator() != scale_denominator {
-        return Err(invalid_drawing_sheet());
+        return Err(invalid_drawing(DrawingError::InvalidSheet));
     }
     let page = DrawingPageTemplate::new(
         size,
@@ -2246,14 +2237,14 @@ fn read_drawing_sheet_with_annotations(
         scale,
         DrawingMargins::new(reader.u16()?, reader.u16()?, reader.u16()?, reader.u16()?),
     )
-    .map_err(|_| invalid_drawing_sheet())?;
+    .map_err(invalid_drawing)?;
     let title_block = DrawingTitleBlock::new(
         reader.string()?,
         reader.string()?,
         reader.string()?,
         reader.string()?,
     )
-    .map_err(|_| invalid_drawing_sheet())?;
+    .map_err(invalid_drawing)?;
     if !view_contract {
         return DrawingSheet::with_contract(id, name, source, page, title_block).map_err(|error| {
             PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
@@ -2278,7 +2269,7 @@ fn read_drawing_sheet_with_annotations(
                         [components[3], components[4], components[5]],
                         [components[6], components[7], components[8]],
                     )
-                    .map_err(|_| invalid_drawing_sheet())?,
+                    .map_err(invalid_drawing)?,
                 )
             }
             6 if section_contract => {
@@ -2291,10 +2282,10 @@ fn read_drawing_sheet_with_annotations(
                     [components[3], components[4], components[5]],
                     [components[6], components[7], components[8]],
                 )
-                .map_err(|_| invalid_drawing_sheet())?;
+                .map_err(invalid_drawing)?;
                 OrthographicViewKind::Section(
                     DrawingSectionPlane::new(frame, f64::from_bits(reader.u64()?))
-                        .map_err(|_| invalid_drawing_sheet())?,
+                        .map_err(invalid_drawing)?,
                 )
             }
             7 if detail_contract => {
@@ -2307,24 +2298,24 @@ fn read_drawing_sheet_with_annotations(
                     [components[3], components[4], components[5]],
                     [components[6], components[7], components[8]],
                 )
-                .map_err(|_| invalid_drawing_sheet())?;
+                .map_err(invalid_drawing)?;
                 let center_mm = [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)];
                 let radius_mm = f64::from_bits(reader.u64()?);
                 let numerator = reader.u32()?;
                 let denominator = reader.u32()?;
-                let magnification = DrawingScale::new(numerator, denominator)
-                    .map_err(|_| invalid_drawing_sheet())?;
+                let magnification =
+                    DrawingScale::new(numerator, denominator).map_err(invalid_drawing)?;
                 if magnification.numerator() != numerator
                     || magnification.denominator() != denominator
                 {
-                    return Err(invalid_drawing_sheet());
+                    return Err(invalid_drawing(DrawingError::InvalidSheet));
                 }
                 OrthographicViewKind::Detail(
                     DrawingDetailRegion::new(frame, center_mm, radius_mm, magnification)
-                        .map_err(|_| invalid_drawing_sheet())?,
+                        .map_err(invalid_drawing)?,
                 )
             }
-            _ => return Err(invalid_drawing_sheet()),
+            _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
         };
         views.push(view);
     }
@@ -2345,14 +2336,14 @@ fn read_drawing_sheet_with_annotations(
             0 => DrawingDimensionTolerance::None,
             1 if tolerance_contract => {
                 DrawingDimensionTolerance::symmetric(f64::from_bits(reader.u64()?))
-                    .map_err(|_| invalid_drawing_sheet())?
+                    .map_err(invalid_drawing)?
             }
             2 if tolerance_contract => DrawingDimensionTolerance::bilateral(
                 f64::from_bits(reader.u64()?),
                 f64::from_bits(reader.u64()?),
             )
-            .map_err(|_| invalid_drawing_sheet())?,
-            _ => return Err(invalid_drawing_sheet()),
+            .map_err(invalid_drawing)?,
+            _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
         };
         linear_dimensions.push(
             DrawingLinearDimension::from_persisted(
@@ -2362,14 +2353,14 @@ fn read_drawing_sheet_with_annotations(
                 offset_page_mm,
                 tolerance,
             )
-            .map_err(|_| invalid_drawing_sheet())?,
+            .map_err(invalid_drawing)?,
         );
     }
     let (title_block, notes) = if annotation_contract {
         let parametric = match reader.u8()? {
             0 => false,
             1 => true,
-            _ => return Err(invalid_drawing_sheet()),
+            _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
         };
         let title_block = DrawingTitleBlock::from_persisted(
             title_block.title().to_owned(),
@@ -2378,7 +2369,7 @@ fn read_drawing_sheet_with_annotations(
             title_block.author().to_owned(),
             parametric,
         )
-        .map_err(|_| invalid_drawing_sheet())?;
+        .map_err(invalid_drawing)?;
         let note_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
         let mut notes = Vec::with_capacity(note_count as usize);
         for _ in 0..note_count {
@@ -2388,7 +2379,7 @@ fn read_drawing_sheet_with_annotations(
                     [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
                     reader.string()?,
                 )
-                .map_err(|_| invalid_drawing_sheet())?,
+                .map_err(invalid_drawing)?,
             );
         }
         (title_block, notes)
@@ -2407,7 +2398,7 @@ fn read_drawing_sheet_with_annotations(
                     f64::from_bits(reader.u64()?),
                     read_drawing_tolerance(reader)?,
                 )
-                .map_err(|_| invalid_drawing_sheet())?,
+                .map_err(invalid_drawing)?,
             );
         }
         let circular_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS as u32)?;
@@ -2419,7 +2410,7 @@ fn read_drawing_sheet_with_annotations(
             let kind = match reader.u8()? {
                 1 => DrawingCircularDimensionKind::Radius,
                 2 => DrawingCircularDimensionKind::Diameter,
-                _ => return Err(invalid_drawing_sheet()),
+                _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
             };
             circular_dimensions.push(
                 DrawingCircularDimension::from_persisted(
@@ -2431,7 +2422,7 @@ fn read_drawing_sheet_with_annotations(
                     f64::from_bits(reader.u64()?),
                     read_drawing_tolerance(reader)?,
                 )
-                .map_err(|_| invalid_drawing_sheet())?,
+                .map_err(invalid_drawing)?,
             );
         }
         (angular_dimensions, circular_dimensions)
@@ -2450,7 +2441,7 @@ fn read_drawing_sheet_with_annotations(
                     reader.string()?,
                     [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
                 )
-                .map_err(|_| invalid_drawing_sheet())?,
+                .map_err(invalid_drawing)?,
             );
         }
         let frame_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
@@ -2464,7 +2455,7 @@ fn read_drawing_sheet_with_annotations(
             let diameter_zone = match reader.u8()? {
                 0 => false,
                 1 => true,
-                _ => return Err(invalid_drawing_sheet()),
+                _ => return Err(invalid_drawing(DrawingError::InvalidSheet)),
             };
             let material_condition = read_drawing_material_condition(reader.u8()?)?;
             let reference_count = reader.count_with_limit(3)?;
@@ -2475,7 +2466,7 @@ fn read_drawing_sheet_with_annotations(
                         reader.string()?,
                         read_drawing_material_condition(reader.u8()?)?,
                     )
-                    .map_err(|_| invalid_drawing_sheet())?,
+                    .map_err(invalid_drawing)?,
                 );
             }
             feature_control_frames.push(
@@ -2490,7 +2481,7 @@ fn read_drawing_sheet_with_annotations(
                     references,
                     [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
                 )
-                .map_err(|_| invalid_drawing_sheet())?,
+                .map_err(invalid_drawing)?,
             );
         }
         (datum_symbols, feature_control_frames)
@@ -2509,7 +2500,7 @@ fn read_drawing_sheet_with_annotations(
                     reader.u32()?,
                     [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
                 )
-                .map_err(|_| invalid_drawing_sheet())?,
+                .map_err(invalid_drawing)?,
             );
         }
         bom_balloons
@@ -2554,7 +2545,7 @@ fn read_drawing_characteristic(
         12 => Ok(DrawingGeometricCharacteristic::Symmetry),
         13 => Ok(DrawingGeometricCharacteristic::CircularRunout),
         14 => Ok(DrawingGeometricCharacteristic::TotalRunout),
-        _ => Err(invalid_drawing_sheet()),
+        _ => Err(invalid_drawing(DrawingError::InvalidSheet)),
     }
 }
 
@@ -2564,7 +2555,7 @@ fn read_drawing_material_condition(code: u8) -> Result<DrawingMaterialCondition,
         1 => Ok(DrawingMaterialCondition::MaximumMaterial),
         2 => Ok(DrawingMaterialCondition::LeastMaterial),
         3 => Ok(DrawingMaterialCondition::RegardlessOfFeatureSize),
-        _ => Err(invalid_drawing_sheet()),
+        _ => Err(invalid_drawing(DrawingError::InvalidSheet)),
     }
 }
 
@@ -2574,13 +2565,13 @@ fn read_drawing_tolerance(
     match reader.u8()? {
         0 => Ok(DrawingDimensionTolerance::None),
         1 => DrawingDimensionTolerance::symmetric(f64::from_bits(reader.u64()?))
-            .map_err(|_| invalid_drawing_sheet()),
+            .map_err(invalid_drawing),
         2 => DrawingDimensionTolerance::bilateral(
             f64::from_bits(reader.u64()?),
             f64::from_bits(reader.u64()?),
         )
-        .map_err(|_| invalid_drawing_sheet()),
-        _ => Err(invalid_drawing_sheet()),
+        .map_err(invalid_drawing),
+        _ => Err(invalid_drawing(DrawingError::InvalidSheet)),
     }
 }
 
@@ -2793,8 +2784,9 @@ fn read_assembly_recipe(reader: &mut Reader<'_>) -> Result<AssemblyRecipe, Persi
             };
             let target = if reader.boolean()? {
                 let feature_id = FeatureId(reader.u64()?);
-                let path = ParameterPath::new(reader.string()?)
-                    .map_err(|_| PersistenceError::Legacy(LegacyError::InvalidParameterPath))?;
+                let path = ParameterPath::new(reader.string()?).map_err(|error| {
+                    PersistenceError::Legacy(LegacyError::InvalidParameterPath(error))
+                })?;
                 let value_type = match reader.u8()? {
                     1 => ParameterValueType::Length,
                     2 => ParameterValueType::Angle,
@@ -3606,7 +3598,7 @@ fn read_product(
                 let source_sha256 = reader
                     .take(32)?
                     .try_into()
-                    .map_err(|_| PersistenceError::Truncated)?;
+                    .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
                 let source_byte_len = reader.u64()?;
                 let source_part_index = if capabilities.imported_exact_part {
                     match reader.u8()? {
@@ -4357,10 +4349,8 @@ fn read_product(
     Ok(product)
 }
 
-fn invalid_drawing_sheet() -> PersistenceError {
-    PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(
-        crate::drawing::DrawingError::InvalidSheet,
-    ))
+fn invalid_drawing(error: DrawingError) -> PersistenceError {
+    PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
 }
 
 struct Reader<'a> {
@@ -4395,25 +4385,19 @@ impl<'a> Reader<'a> {
         Ok(self.take(1)?[0])
     }
     fn u16(&mut self) -> Result<u16, PersistenceError> {
-        Ok(u16::from_le_bytes(
-            self.take(2)?
-                .try_into()
-                .map_err(|_| PersistenceError::Truncated)?,
-        ))
+        Ok(u16::from_le_bytes(self.take(2)?.try_into().map_err(
+            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+        )?))
     }
     fn u32(&mut self) -> Result<u32, PersistenceError> {
-        Ok(u32::from_le_bytes(
-            self.take(4)?
-                .try_into()
-                .map_err(|_| PersistenceError::Truncated)?,
-        ))
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(
+            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+        )?))
     }
     fn u64(&mut self) -> Result<u64, PersistenceError> {
-        Ok(u64::from_le_bytes(
-            self.take(8)?
-                .try_into()
-                .map_err(|_| PersistenceError::Truncated)?,
-        ))
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(
+            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+        )?))
     }
     fn count(&mut self) -> Result<u32, PersistenceError> {
         self.count_with_limit(MAX_COLLECTION_ITEMS)
@@ -4432,7 +4416,7 @@ impl<'a> Reader<'a> {
     }
     fn string(&mut self) -> Result<String, PersistenceError> {
         let length = usize::try_from(self.count_with_limit(MAX_STRING_BYTES as u32)?)
-            .map_err(|_| PersistenceError::LengthOverflow)?;
+            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         self.string_bytes = self
             .string_bytes
             .checked_add(length)
@@ -4442,12 +4426,7 @@ impl<'a> Reader<'a> {
         }
         let value =
             std::str::from_utf8(self.take(length)?).map_err(PersistenceError::InvalidUtf8)?;
-        let mut owned = String::new();
-        owned
-            .try_reserve_exact(length)
-            .map_err(|_| PersistenceError::ResourceLimit)?;
-        owned.push_str(value);
-        Ok(owned)
+        Ok(value.to_owned())
     }
     fn optional_id(&mut self) -> Result<Option<u64>, PersistenceError> {
         match self.u8()? {
@@ -4493,7 +4472,7 @@ pub enum LegacyError {
     InvalidReferenceStability(u8),
     InvalidOptionalMarker(u8),
     InvalidParameterSlot(u8),
-    InvalidParameterPath,
+    InvalidParameterPath(crate::document::ParameterPathError),
     InvalidParameterValueType(u8),
     InvalidRecipeValue(u8),
     InvalidPersistentDimensionTarget(u8),
@@ -4574,7 +4553,9 @@ impl fmt::Display for LegacyError {
             Self::InvalidParameterSlot(value) => {
                 write!(formatter, "feature parameter slot {value} is invalid")
             }
-            Self::InvalidParameterPath => formatter.write_str("feature parameter path is invalid"),
+            Self::InvalidParameterPath(error) => {
+                write!(formatter, "feature parameter path is invalid: {error}")
+            }
             Self::InvalidParameterValueType(value) => {
                 write!(formatter, "feature parameter value type {value} is invalid")
             }
@@ -4674,5 +4655,42 @@ impl fmt::Display for LegacyError {
                 key.definition_id.0, key.local_id.0
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_drawing_value_reports_its_own_reason() {
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(&0.0_f64.to_bits().to_le_bytes());
+        assert_eq!(
+            read_drawing_tolerance(&mut Reader::new(&bytes)),
+            Err(invalid_drawing(DrawingError::InvalidDimension))
+        );
+    }
+
+    #[test]
+    fn invalid_parameter_path_names_the_broken_rule() {
+        let path = b"bounds.Width";
+        let mut bytes = 7_u64.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&u32::try_from(path.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(path);
+        let error = read_feature_parameter_target(&mut Reader::new(&bytes), true).unwrap_err();
+        assert_eq!(
+            error,
+            PersistenceError::Legacy(LegacyError::InvalidParameterPath(
+                crate::document::ParameterPathError::InvalidSegment
+            ))
+        );
+        let text =
+            LegacyError::InvalidParameterPath(crate::document::ParameterPathError::InvalidSegment)
+                .to_string();
+        assert!(
+            text.starts_with("feature parameter path is invalid: "),
+            "{text}"
+        );
     }
 }

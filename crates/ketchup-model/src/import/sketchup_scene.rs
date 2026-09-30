@@ -6,8 +6,8 @@ use serde::de::{Error as _, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use super::{
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit, ImportOutputRef,
-    ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
+    ImportContractError, ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat,
+    ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
 };
 use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, MESH_BODY_SCHEMA_V1,
@@ -256,7 +256,7 @@ pub enum SketchupSceneImportError {
     MissingDefinition,
     InvalidGeometry,
     InvalidTransform,
-    InvalidSourceIdentity,
+    InvalidSourceIdentity(ImportContractError),
     IdSpaceExhausted,
 }
 
@@ -289,8 +289,11 @@ impl fmt::Display for SketchupSceneImportError {
             Self::InvalidTransform => {
                 "SketchUp scene package contains an invalid instance transform"
             }
-            Self::InvalidSourceIdentity => {
-                "SketchUp scene package source name or provenance is invalid"
+            Self::InvalidSourceIdentity(error) => {
+                return write!(
+                    formatter,
+                    "SketchUp scene package source name or provenance is invalid: {error}"
+                );
             }
             Self::IdSpaceExhausted => "canonical import ID space is exhausted",
         })
@@ -525,12 +528,14 @@ pub fn plan_sketchup_scene_import(
 ) -> Result<CommandBatch, SketchupSceneImportError> {
     validate_text(source_name)?;
     if source_name.contains(['/', '\\']) {
-        return Err(SketchupSceneImportError::InvalidSourceIdentity);
+        return Err(SketchupSceneImportError::InvalidSourceIdentity(
+            ImportContractError::InvalidSource,
+        ));
     }
     let scene = inspect_sketchup_scene(source)?;
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| SketchupSceneImportError::IdSpaceExhausted)?;
+        .ok_or(SketchupSceneImportError::IdSpaceExhausted)?;
     let definition_start = next_id(snapshot.definitions().map(|item| item.id().0))?;
     let feature_start = next_id(snapshot.features().map(|item| item.id().0))?;
     let occurrence_start = next_id(snapshot.occurrences().map(|item| item.id().0))?;
@@ -601,7 +606,7 @@ pub fn plan_sketchup_scene_import(
         scene.diagnostics,
         outputs,
     )
-    .map_err(|_| SketchupSceneImportError::InvalidSourceIdentity)?;
+    .map_err(SketchupSceneImportError::InvalidSourceIdentity)?;
     commands.push(CanonicalCommand::RecordImport(receipt));
     Ok(CommandBatch::new(commands))
 }

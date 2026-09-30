@@ -8,8 +8,9 @@ use crate::document::{
 };
 
 use super::{
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit, ImportOutputRef,
-    ImportReceipt, ImportUnitAuthority, ImportUnitDecision, MAX_IMPORT_DIAGNOSTICS,
+    ImportContractError, ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat,
+    ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
+    MAX_IMPORT_DIAGNOSTICS,
 };
 
 pub const DXF_PARSER_ID: &str = "ketchup-dxf";
@@ -100,7 +101,7 @@ impl ParsedDxf {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DxfImportError {
     Empty,
     SourceTooLarge,
@@ -115,6 +116,14 @@ pub enum DxfImportError {
     UnitsRequired,
     UnsupportedUnits,
     InvalidNumber,
+    NotANumber {
+        value: String,
+        cause: std::num::ParseFloatError,
+    },
+    NotAnInteger {
+        value: String,
+        cause: std::num::ParseIntError,
+    },
     NonPlanarGeometry,
     CoordinateOutOfRange,
     DegenerateGeometry,
@@ -127,11 +136,21 @@ pub enum DxfImportError {
     AmbiguousGeometry,
     NoSupportedGeometry,
     ReportTooLarge,
+    InvalidReport(ImportContractError),
 }
 
 impl fmt::Display for DxfImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::NotANumber { value, cause } => {
+                return write!(formatter, "DXF value {value:?} is not a number: {cause}");
+            }
+            Self::NotAnInteger { value, cause } => {
+                return write!(formatter, "DXF value {value:?} is not an integer: {cause}");
+            }
+            Self::InvalidReport(cause) => {
+                return write!(formatter, "DXF unsupported/loss report is invalid: {cause}");
+            }
             Self::Empty => "DXF source is empty",
             Self::SourceTooLarge => "DXF source exceeds the bounded 8 MiB envelope",
             Self::NonAscii => "DXF must use the bounded ASCII encoding; binary DXF is unsupported",
@@ -181,10 +200,10 @@ impl fmt::Display for DxfImportError {
 
 impl std::error::Error for DxfImportError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DxfImportPlanError {
     Parse(DxfImportError),
-    InvalidSourceIdentity,
+    InvalidSourceIdentity(ImportContractError),
     IdSpaceExhausted,
 }
 
@@ -192,8 +211,11 @@ impl fmt::Display for DxfImportPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Parse(error) => error.fmt(formatter),
-            Self::InvalidSourceIdentity => {
-                formatter.write_str("DXF source name or provenance is invalid")
+            Self::InvalidSourceIdentity(error) => {
+                write!(
+                    formatter,
+                    "DXF source name or provenance is invalid: {error}"
+                )
             }
             Self::IdSpaceExhausted => formatter.write_str("canonical import ID space is exhausted"),
         }
@@ -243,7 +265,7 @@ impl DiagnosticCounts {
             .into_iter()
             .map(|((severity, code, subject), count)| {
                 ImportDiagnostic::new(severity, code, subject, count)
-                    .map_err(|_| DxfImportError::ReportTooLarge)
+                    .map_err(DxfImportError::InvalidReport)
             })
             .collect()
     }
@@ -405,7 +427,7 @@ pub fn plan_dxf_import(
     let parsed = inspect_dxf(source, options)?;
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| DxfImportPlanError::IdSpaceExhausted)?;
+        .ok_or(DxfImportPlanError::IdSpaceExhausted)?;
     let mut next_definition = next_id(snapshot.definitions().map(|item| item.id().0))?;
     let mut next_feature = next_id(snapshot.features().map(|item| item.id().0))?;
     let mut next_occurrence = next_id(snapshot.occurrences().map(|item| item.id().0))?;
@@ -470,7 +492,7 @@ pub fn plan_dxf_import(
         parsed.diagnostics,
         outputs,
     )
-    .map_err(|_| DxfImportPlanError::InvalidSourceIdentity)?;
+    .map_err(DxfImportPlanError::InvalidSourceIdentity)?;
     commands.push(CanonicalCommand::RecordImport(receipt));
     Ok(CommandBatch::new(commands))
 }
@@ -493,7 +515,9 @@ fn parse_pairs(source: &[u8]) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
     if !source.is_ascii() {
         return Err(DxfImportError::NonAscii);
     }
-    let text = std::str::from_utf8(source).map_err(|_| DxfImportError::NonAscii)?;
+    let Ok(text) = std::str::from_utf8(source) else {
+        unreachable!("ASCII is valid UTF-8");
+    };
     let lines = text.lines().collect::<Vec<_>>();
     if lines.iter().any(|line| line.len() > MAX_DXF_LINE_BYTES) {
         return Err(DxfImportError::LineTooLong);
@@ -507,10 +531,7 @@ fn parse_pairs(source: &[u8]) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
     lines
         .chunks_exact(2)
         .map(|pair| {
-            let code = pair[0]
-                .trim()
-                .parse::<i16>()
-                .map_err(|_| DxfImportError::MalformedPairs)?;
+            let code = parse_integer::<i16>(pair[0].trim())?;
             Ok(DxfPair {
                 code,
                 value: pair[1].trim(),
@@ -594,9 +615,7 @@ fn parse_header(
     }
     let declared = match variables.get("$INSUNITS") {
         Some(values) => {
-            let value = exactly_one(values, 70)?
-                .parse::<i16>()
-                .map_err(|_| DxfImportError::InvalidHeader)?;
+            let value = parse_integer::<i16>(exactly_one(values, 70)?)?;
             match value {
                 0 => None,
                 1 => Some(ImportLengthUnit::Inch),
@@ -1257,13 +1276,14 @@ fn parse_spline(
     if degree < 1 || declared_knots < 1 || declared_controls < 2 || declared_fit_points < 0 {
         return Err(DxfImportError::MalformedPairs);
     }
-    let degree = usize::try_from(degree).map_err(|_| DxfImportError::MalformedPairs)?;
-    let declared_knots =
-        usize::try_from(declared_knots).map_err(|_| DxfImportError::MalformedPairs)?;
-    let declared_controls =
-        usize::try_from(declared_controls).map_err(|_| DxfImportError::MalformedPairs)?;
-    let declared_fit_points =
-        usize::try_from(declared_fit_points).map_err(|_| DxfImportError::MalformedPairs)?;
+    let degree = usize::try_from(degree)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let declared_knots = usize::try_from(declared_knots)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let declared_controls = usize::try_from(declared_controls)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let declared_fit_points = usize::try_from(declared_fit_points)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     if declared_controls > MAX_DXF_SEGMENTS_PER_PROFILE + 1 {
         return Err(DxfImportError::TooManySegments);
     }
@@ -1480,7 +1500,8 @@ fn parse_mpolygon(
             ImportDiagnosticSeverity::Info,
             "dxf.mpolygon-geometry",
             Some(layer),
-            u32::try_from(profiles.len()).map_err(|_| DxfImportError::TooManyProfiles)?,
+            u32::try_from(profiles.len())
+                .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyProfiles)?,
         )?;
     }
     Ok(profiles)
@@ -1499,7 +1520,8 @@ fn parse_polygon_boundaries(
     if path_count < 1 {
         return Err(DxfImportError::MalformedPairs);
     }
-    let path_count = usize::try_from(path_count).map_err(|_| DxfImportError::TooManyProfiles)?;
+    let path_count = usize::try_from(path_count)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyProfiles)?;
     if path_count > MAX_DXF_PROFILES {
         return Err(DxfImportError::TooManyProfiles);
     }
@@ -1515,10 +1537,7 @@ fn parse_polygon_boundaries(
 
     let mut profiles = Vec::with_capacity(path_count);
     for (path_index, (path_start, path_type)) in path_starts.iter().copied().enumerate() {
-        let path_type = path_type
-            .value
-            .parse::<i64>()
-            .map_err(|_| DxfImportError::MalformedPairs)?;
+        let path_type = parse_integer::<i64>(path_type.value)?;
         if path_type < 0 {
             return Err(DxfImportError::MalformedPairs);
         }
@@ -1540,15 +1559,12 @@ fn parse_polygon_boundaries(
             .iter()
             .rposition(|pair| pair.code == 97)
             .ok_or(DxfImportError::MalformedPairs)?;
-        let source_count = path_record[source_count_index]
-            .value
-            .parse::<i64>()
-            .map_err(|_| DxfImportError::MalformedPairs)?;
+        let source_count = parse_integer::<i64>(path_record[source_count_index].value)?;
         if source_count < 0 {
             return Err(DxfImportError::MalformedPairs);
         }
-        let source_count =
-            usize::try_from(source_count).map_err(|_| DxfImportError::MalformedPairs)?;
+        let source_count = usize::try_from(source_count)
+            .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
         if !allow_source_handles && source_count != 0 {
             return Err(DxfImportError::AmbiguousGeometry);
         }
@@ -1597,10 +1613,7 @@ fn polygon_trailing_record<'a>(
         .iter()
         .rposition(|pair| pair.code == 97)
         .ok_or(DxfImportError::MalformedPairs)?;
-    let source_count = path_record[source_count_index]
-        .value
-        .parse::<usize>()
-        .map_err(|_| DxfImportError::MalformedPairs)?;
+    let source_count = parse_integer::<usize>(path_record[source_count_index].value)?;
     let source_end = source_count_index
         .checked_add(1)
         .and_then(|index| index.checked_add(source_count))
@@ -1626,7 +1639,8 @@ fn report_polygon_topology_loss(
             ImportDiagnosticSeverity::Warning,
             code,
             Some(layer.to_owned()),
-            u32::try_from(path_count).map_err(|_| DxfImportError::TooManyProfiles)?,
+            u32::try_from(path_count)
+                .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyProfiles)?,
         )?;
     }
     Ok(())
@@ -1656,8 +1670,8 @@ fn parse_hatch_path(
     if declared_count < 3 {
         return Err(DxfImportError::DegenerateGeometry);
     }
-    let declared_count =
-        usize::try_from(declared_count).map_err(|_| DxfImportError::TooManySegments)?;
+    let declared_count = usize::try_from(declared_count)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManySegments)?;
     if declared_count > MAX_DXF_SEGMENTS_PER_PROFILE {
         return Err(DxfImportError::TooManySegments);
     }
@@ -1741,8 +1755,8 @@ fn parse_hatch_edge_path(
     if declared_count < 1 {
         return Err(DxfImportError::DegenerateGeometry);
     }
-    let declared_count =
-        usize::try_from(declared_count).map_err(|_| DxfImportError::TooManySegments)?;
+    let declared_count = usize::try_from(declared_count)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManySegments)?;
     if declared_count > MAX_DXF_SEGMENTS_PER_PROFILE {
         return Err(DxfImportError::TooManySegments);
     }
@@ -2047,13 +2061,14 @@ fn parse_hatch_linear_spline_edge(
     {
         return Err(DxfImportError::MalformedPairs);
     }
-    let degree = usize::try_from(degree).map_err(|_| DxfImportError::MalformedPairs)?;
-    let declared_knots =
-        usize::try_from(declared_knots).map_err(|_| DxfImportError::MalformedPairs)?;
-    let declared_controls =
-        usize::try_from(declared_controls).map_err(|_| DxfImportError::MalformedPairs)?;
-    let declared_fit_points =
-        usize::try_from(declared_fit_points).map_err(|_| DxfImportError::MalformedPairs)?;
+    let degree = usize::try_from(degree)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let declared_knots = usize::try_from(declared_knots)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let declared_controls = usize::try_from(declared_controls)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let declared_fit_points = usize::try_from(declared_fit_points)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     if declared_controls > MAX_DXF_SEGMENTS_PER_PROFILE + 1 {
         return Err(DxfImportError::TooManySegments);
     }
@@ -2190,14 +2205,12 @@ fn parse_mesh(
     }
 
     let parse_marker_count = |position: usize| -> Result<usize, DxfImportError> {
-        let value = record[position]
-            .value
-            .parse::<i64>()
-            .map_err(|_| DxfImportError::MalformedPairs)?;
+        let value = parse_integer::<i64>(record[position].value)?;
         if value < 0 {
             return Err(DxfImportError::MalformedPairs);
         }
-        usize::try_from(value).map_err(|_| DxfImportError::MalformedPairs)
+        usize::try_from(value)
+            .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)
     };
     let declared_vertices = parse_marker_count(vertices_marker)?;
     if !(3..=MAX_DXF_PAIRS / 3).contains(&declared_vertices) {
@@ -2240,11 +2253,7 @@ fn parse_mesh(
     }
     let face_values = face_record
         .iter()
-        .map(|pair| {
-            pair.value
-                .parse::<i64>()
-                .map_err(|_| DxfImportError::MalformedPairs)
-        })
+        .map(|pair| parse_integer::<i64>(pair.value))
         .collect::<Result<Vec<_>, _>>()?;
     let mut faces = Vec::new();
     let mut cursor = 0;
@@ -2254,8 +2263,8 @@ fn parse_mesh(
         if declared_face_vertices < 3 {
             return Err(DxfImportError::DegenerateGeometry);
         }
-        let declared_face_vertices =
-            usize::try_from(declared_face_vertices).map_err(|_| DxfImportError::MalformedPairs)?;
+        let declared_face_vertices = usize::try_from(declared_face_vertices)
+            .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
         if declared_face_vertices > MAX_DXF_SEGMENTS_PER_PROFILE
             || cursor + declared_face_vertices > face_values.len()
         {
@@ -2271,7 +2280,8 @@ fn parse_mesh(
             if *raw_index < 0 {
                 return Err(DxfImportError::MalformedPairs);
             }
-            let index = usize::try_from(*raw_index).map_err(|_| DxfImportError::MalformedPairs)?;
+            let index = usize::try_from(*raw_index)
+                .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
             if index >= vertices.len() || !unique_indices.insert(index) {
                 return Err(DxfImportError::AmbiguousGeometry);
             }
@@ -2382,13 +2392,15 @@ fn build_mesh_boundary_profiles(
         ImportDiagnosticSeverity::Warning,
         topology_loss_code,
         Some(layer.clone()),
-        u32::try_from(faces.len()).map_err(|_| DxfImportError::TooManyProfiles)?,
+        u32::try_from(faces.len())
+            .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyProfiles)?,
     )?;
     diagnostics.add(
         ImportDiagnosticSeverity::Info,
         boundary_code,
         Some(layer),
-        u32::try_from(profiles.len()).map_err(|_| DxfImportError::TooManyProfiles)?,
+        u32::try_from(profiles.len())
+            .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyProfiles)?,
     )?;
     Ok(profiles)
 }
@@ -2541,8 +2553,8 @@ fn parse_leader(
     {
         return Err(DxfImportError::MalformedPairs);
     }
-    let declared_vertices =
-        usize::try_from(declared_vertices).map_err(|_| DxfImportError::MalformedPairs)?;
+    let declared_vertices = usize::try_from(declared_vertices)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     if declared_vertices > MAX_DXF_SEGMENTS_PER_PROFILE + 1 {
         return Err(DxfImportError::TooManySegments);
     }
@@ -2809,10 +2821,10 @@ fn parse_insert(
     if scale_x == 0.0 || scale_y == 0.0 || scale_z != 1.0 || column_count <= 0 || row_count <= 0 {
         return Err(DxfImportError::UnsupportedInsertTransform);
     }
-    let column_count =
-        usize::try_from(column_count).map_err(|_| DxfImportError::UnsupportedInsertTransform)?;
-    let row_count =
-        usize::try_from(row_count).map_err(|_| DxfImportError::UnsupportedInsertTransform)?;
+    let column_count = usize::try_from(column_count)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::UnsupportedInsertTransform)?;
+    let row_count = usize::try_from(row_count)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::UnsupportedInsertTransform)?;
     let placement_count = row_count
         .checked_mul(column_count)
         .ok_or(DxfImportError::TooManyEntities)?;
@@ -2911,7 +2923,8 @@ fn parse_insert(
         ImportDiagnosticSeverity::Info,
         "dxf.block-insert",
         Some(name.to_owned()),
-        u32::try_from(placement_count).map_err(|_| DxfImportError::TooManyEntities)?,
+        u32::try_from(placement_count)
+            .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyEntities)?,
     )?;
     Ok(profiles)
 }
@@ -3274,8 +3287,10 @@ fn finish_polygon_mesh(
     if m_count < 2 || n_count < 2 {
         return Err(DxfImportError::MalformedPairs);
     }
-    let m_count = usize::try_from(m_count).map_err(|_| DxfImportError::MalformedPairs)?;
-    let n_count = usize::try_from(n_count).map_err(|_| DxfImportError::MalformedPairs)?;
+    let m_count = usize::try_from(m_count)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let n_count = usize::try_from(n_count)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     let vertex_count = m_count
         .checked_mul(n_count)
         .ok_or(DxfImportError::TooManyEntities)?;
@@ -3413,8 +3428,8 @@ fn parse_polyface_vertex(
                 let one_based = raw_index
                     .checked_abs()
                     .ok_or(DxfImportError::MalformedPairs)?;
-                let one_based =
-                    usize::try_from(one_based).map_err(|_| DxfImportError::MalformedPairs)?;
+                let one_based = usize::try_from(one_based)
+                    .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
                 indices.push(
                     one_based
                         .checked_sub(1)
@@ -3444,10 +3459,10 @@ fn finish_polyface(
     if declared_vertices < 3 || declared_faces < 1 {
         return Err(DxfImportError::MalformedPairs);
     }
-    let declared_vertices =
-        usize::try_from(declared_vertices).map_err(|_| DxfImportError::MalformedPairs)?;
-    let declared_faces =
-        usize::try_from(declared_faces).map_err(|_| DxfImportError::MalformedPairs)?;
+    let declared_vertices = usize::try_from(declared_vertices)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+    let declared_faces = usize::try_from(declared_faces)
+        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     if native_vertices.len() != declared_vertices || faces.len() != declared_faces {
         return Err(DxfImportError::MalformedPairs);
     }
@@ -3832,24 +3847,30 @@ fn parse_optional_i64(record: &[DxfPair<'_>], code: i16) -> Result<Option<i64>, 
     if values.next().is_some() {
         return Err(DxfImportError::MalformedPairs);
     }
-    value
-        .map(|value| {
-            value
-                .parse::<i64>()
-                .map_err(|_| DxfImportError::MalformedPairs)
-        })
-        .transpose()
+    value.map(parse_integer::<i64>).transpose()
 }
 
 fn parse_number(value: &str) -> Result<f64, DxfImportError> {
-    let value = value
+    let number = value
         .parse::<f64>()
-        .map_err(|_| DxfImportError::InvalidNumber)?;
-    if value.is_finite() {
-        Ok(value)
+        .map_err(|cause| DxfImportError::NotANumber {
+            value: value.to_owned(),
+            cause,
+        })?;
+    if number.is_finite() {
+        Ok(number)
     } else {
         Err(DxfImportError::InvalidNumber)
     }
+}
+
+fn parse_integer<T: std::str::FromStr<Err = std::num::ParseIntError>>(
+    value: &str,
+) -> Result<T, DxfImportError> {
+    value.parse().map_err(|cause| DxfImportError::NotAnInteger {
+        value: value.to_owned(),
+        cause,
+    })
 }
 
 fn scale_coordinate(value: f64, scale: f64) -> Result<f64, DxfImportError> {

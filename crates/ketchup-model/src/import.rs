@@ -534,7 +534,7 @@ impl std::error::Error for StepMeshError {}
 pub enum StepImportPlanError {
     Empty,
     SourceTooLarge,
-    InvalidSourceIdentity,
+    InvalidSourceIdentity(ImportContractError),
     MissingOrAmbiguousUnits,
     InvalidWorkerEvidence,
     IdSpaceExhausted,
@@ -545,7 +545,12 @@ impl fmt::Display for StepImportPlanError {
         formatter.write_str(match self {
             Self::Empty => "STEP source is empty",
             Self::SourceTooLarge => "STEP source exceeds the bounded 32 MiB envelope",
-            Self::InvalidSourceIdentity => "STEP source name or provenance is invalid",
+            Self::InvalidSourceIdentity(error) => {
+                return write!(
+                    formatter,
+                    "STEP source name or provenance is invalid: {error}"
+                );
+            }
             Self::MissingOrAmbiguousUnits => {
                 "STEP source has missing or ambiguous declared length units"
             }
@@ -586,7 +591,7 @@ pub fn plan_step_import(
     };
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| StepImportPlanError::IdSpaceExhausted)?;
+        .ok_or(StepImportPlanError::IdSpaceExhausted)?;
     let definition_id = DefinitionId(next_id(
         snapshot.definitions().map(|item| item.id().0).collect(),
     )?);
@@ -642,7 +647,7 @@ pub fn plan_step_import(
         diagnostics,
         outputs,
     )
-    .map_err(|_| StepImportPlanError::InvalidSourceIdentity)?;
+    .map_err(StepImportPlanError::InvalidSourceIdentity)?;
     let display_name = source_name
         .strip_suffix(".step")
         .or_else(|| source_name.strip_suffix(".stp"))
@@ -836,7 +841,7 @@ pub fn plan_step_xde_import(
     )?;
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| StepImportPlanError::IdSpaceExhausted)?;
+        .ok_or(StepImportPlanError::IdSpaceExhausted)?;
 
     let definitions = (0..evidence.parts.len())
         .map(|index| DefinitionId(definition_start + index as u64))
@@ -1018,7 +1023,7 @@ pub fn plan_step_xde_import(
         diagnostics,
         outputs,
     )
-    .map_err(|_| StepImportPlanError::InvalidSourceIdentity)?;
+    .map_err(StepImportPlanError::InvalidSourceIdentity)?;
     commands.push(CanonicalCommand::RecordImport(receipt));
     Ok(CommandBatch::new(commands))
 }
@@ -1178,7 +1183,7 @@ pub fn parse_stl(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StlImportPlanError {
     Parse(StlImportError),
-    InvalidSourceIdentity,
+    InvalidSourceIdentity(ImportContractError),
     IdSpaceExhausted,
 }
 
@@ -1186,8 +1191,11 @@ impl fmt::Display for StlImportPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Parse(error) => error.fmt(formatter),
-            Self::InvalidSourceIdentity => {
-                formatter.write_str("STL source name or provenance is invalid")
+            Self::InvalidSourceIdentity(error) => {
+                write!(
+                    formatter,
+                    "STL source name or provenance is invalid: {error}"
+                )
             }
             Self::IdSpaceExhausted => formatter.write_str("canonical import ID space is exhausted"),
         }
@@ -1212,7 +1220,7 @@ pub fn plan_stl_import(
     let mesh = parse_stl(source, units)?;
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| StlImportPlanError::IdSpaceExhausted)?;
+        .ok_or(StlImportPlanError::IdSpaceExhausted)?;
     let definition_id = DefinitionId(next_product_id(
         snapshot.definitions().map(|item| item.id().0),
     )?);
@@ -1238,7 +1246,7 @@ pub fn plan_stl_import(
         mesh.diagnostics,
         outputs,
     )
-    .map_err(|_| StlImportPlanError::InvalidSourceIdentity)?;
+    .map_err(StlImportPlanError::InvalidSourceIdentity)?;
     let display_name = source_name
         .strip_suffix(".stl")
         .or_else(|| source_name.strip_suffix(".STL"))

@@ -27,9 +27,12 @@ BASELINE_NAME = "scripts/error_hygiene_baseline.txt"
 SOURCES = ["crates/*/src/**/*.rs"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 # Errors whose value says nothing beyond their type: dropping them loses nothing.
+# An entry matches the named type by its trailing path, so "fmt::Error" accepts
+# `std::fmt::Error` but not an unrelated `io::Error`.
 CONTENT_FREE = {
     "TryFromIntError", "TryFromSliceError", "PoisonError", "TryLockError", "SendError",
     "TrySendError", "RecvError", "TryRecvError", "RecvTimeoutError", "Infallible",
+    "fmt::Error",
 }
 DISCARD = re.compile(r"map_err\(\s*(?:move\s*)?\|\s*_\w*\s*(?::\s*([^|]+?)\s*)?\|")
 STRING = re.compile(r"""Err\(\s*"(?:[^"\\]|\\.)*"\s*\.\s*(?:to_owned|to_string|into)\(\)\s*\)""")
@@ -39,8 +42,8 @@ TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod \w+ \{
 
 
 def content_free(type_text: str) -> bool:
-    name = type_text.split("<", 1)[0].strip().rsplit("::", 1)[-1]
-    return name in CONTENT_FREE
+    path = type_text.split("<", 1)[0].strip()
+    return any(path == entry or path.endswith("::" + entry) for entry in CONTENT_FREE)
 
 
 def file_counts(text: str) -> dict[str, int]:

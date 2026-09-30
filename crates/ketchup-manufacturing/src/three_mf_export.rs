@@ -469,30 +469,31 @@ fn encode_model(
     xml_limit: usize,
 ) -> Result<String, ExactProductError> {
     let mut xml = BoundedString::new(xml_limit);
+    // BoundedString refuses a write only when the XML would exceed its limit.
+    let over_limit = |_: std::fmt::Error| ExactProductError::ExportResourceLimit;
     write!(
         xml,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n  <metadata name=\"Title\">Ketchup model</metadata>\n  <metadata name=\"KetchupSourceDigest\">{}</metadata>\n  <resources>\n",
         snapshot.canonical_digest()
     )
-    .map_err(|_| ExactProductError::ExportResourceLimit)?;
+    .map_err(over_limit)?;
     if !material_indices.is_empty() {
         xml.write_str("    <basematerials id=\"1\">\n")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
         for color in material_indices.keys() {
             writeln!(
                 xml,
                 "      <base name=\"Ketchup #{:02X}{:02X}{:02X}\" displaycolor=\"#{:02X}{:02X}{:02X}FF\"/>",
                 color[0], color[1], color[2], color[0], color[1], color[2]
             )
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
         }
         xml.write_str("    </basematerials>\n")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
     }
     for (key, package) in packages {
         let id = mesh_ids[key];
-        write!(xml, "    <object id=\"{id}\" type=\"model\" name=\"")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        write!(xml, "    <object id=\"{id}\" type=\"model\" name=\"").map_err(over_limit)?;
         write_xml_escaped(
             &mut xml,
             snapshot
@@ -500,10 +501,9 @@ fn encode_model(
                 .ok_or(ExactProductError::InvalidMeshExport)?
                 .name(),
         )?;
-        writeln!(xml, " body {}\">", key.producer_feature_id.0)
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        writeln!(xml, " body {}\">", key.producer_feature_id.0).map_err(over_limit)?;
         xml.write_str("      <mesh>\n        <vertices>\n")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
         for index in 0..package.vertex_count() {
             let vertex = package
                 .vertex_position_mm(index)
@@ -513,10 +513,10 @@ fn encode_model(
                 "          <vertex x=\"{:.17}\" y=\"{:.17}\" z=\"{:.17}\"/>",
                 vertex[0], vertex[1], vertex[2]
             )
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
         }
         xml.write_str("        </vertices>\n        <triangles>\n")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
         for index in 0..package.triangle_count() {
             let [v1, v2, v3] = package
                 .triangle_indices(index)
@@ -527,17 +527,17 @@ fn encode_model(
                     xml,
                     "          <triangle v1=\"{v1}\" v2=\"{v2}\" v3=\"{v3}\" pid=\"1\" p1=\"{material}\" p2=\"{material}\" p3=\"{material}\"/>"
                 )
-                .map_err(|_| ExactProductError::ExportResourceLimit)?;
+                .map_err(over_limit)?;
             } else {
                 writeln!(
                     xml,
                     "          <triangle v1=\"{v1}\" v2=\"{v2}\" v3=\"{v3}\"/>"
                 )
-                .map_err(|_| ExactProductError::ExportResourceLimit)?;
+                .map_err(over_limit)?;
             }
         }
         xml.write_str("        </triangles>\n      </mesh>\n    </object>\n")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
     }
     for node_index in node_order {
         let node = &nodes[*node_index];
@@ -546,13 +546,13 @@ fn encode_model(
             "    <object id=\"{}\" type=\"model\" name=\"",
             node_ids[node_index]
         )
-        .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        .map_err(over_limit)?;
         write_xml_escaped(&mut xml, &node.name)?;
         xml.write_str("\">\n      <components>\n")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
         for mesh in &node.meshes {
             writeln!(xml, "        <component objectid=\"{}\"/>", mesh_ids[mesh])
-                .map_err(|_| ExactProductError::ExportResourceLimit)?;
+                .map_err(over_limit)?;
         }
         for child in &node.children {
             writeln!(
@@ -561,13 +561,13 @@ fn encode_model(
                 node_ids[child],
                 transform_3mf(nodes[*child].transform)?
             )
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
         }
         xml.write_str("      </components>\n    </object>\n")
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(over_limit)?;
     }
     xml.write_str("  </resources>\n  <build>\n")
-        .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        .map_err(over_limit)?;
     for root in roots {
         writeln!(
             xml,
@@ -575,10 +575,10 @@ fn encode_model(
             node_ids[root],
             transform_3mf(nodes[*root].transform)?
         )
-        .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        .map_err(over_limit)?;
     }
     xml.write_str("  </build>\n</model>\n")
-        .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        .map_err(over_limit)?;
     Ok(xml.into_inner())
 }
 
@@ -625,7 +625,7 @@ fn write_xml_escaped(xml: &mut BoundedString, value: &str) -> Result<(), ExactPr
             _ => return Err(ExactProductError::InvalidMeshExport),
         };
         xml.write_str(escaped)
-            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+            .map_err(|_: std::fmt::Error| ExactProductError::ExportResourceLimit)?;
     }
     Ok(())
 }
@@ -640,10 +640,13 @@ fn encode_package(
         size: u32,
         offset: u32,
     }
-    u16::try_from(entries.len()).map_err(|_| ExactProductError::ExportResourceLimit)?;
+    u16::try_from(entries.len())
+        .map_err(|_: std::num::TryFromIntError| ExactProductError::ExportResourceLimit)?;
     let archive_size = entries.iter().try_fold(22_usize, |total, (name, bytes)| {
-        u16::try_from(name.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
-        u32::try_from(bytes.len()).map_err(|_| ExactProductError::ExportResourceLimit)?;
+        u16::try_from(name.len())
+            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        u32::try_from(bytes.len())
+            .map_err(|_: std::num::TryFromIntError| ExactProductError::ExportResourceLimit)?;
         let entry_size = 76_usize
             .checked_add(name.len().saturating_mul(2))
             .and_then(|size| size.checked_add(bytes.len()))
@@ -654,11 +657,12 @@ fn encode_package(
     let mut central = Vec::with_capacity(entries.len());
     for (name, bytes) in entries {
         let name_bytes = name.as_bytes();
-        let name_len =
-            u16::try_from(name_bytes.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
-        let size = u32::try_from(bytes.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
-        let offset =
-            u32::try_from(archive.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+        let name_len = u16::try_from(name_bytes.len())
+            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        let size = u32::try_from(bytes.len())
+            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        let offset = u32::try_from(archive.len())
+            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
         let crc = crc32(bytes);
         archive.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
@@ -680,12 +684,12 @@ fn encode_package(
             offset,
         });
     }
-    let central_offset =
-        u32::try_from(archive.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+    let central_offset = u32::try_from(archive.len())
+        .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
     for entry in &central {
         let name = entry.name.as_bytes();
-        let name_len =
-            u16::try_from(name.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+        let name_len = u16::try_from(name.len())
+            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
         archive.extend_from_slice(&0x0201_4b50_u32.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
@@ -706,10 +710,11 @@ fn encode_package(
         archive.extend_from_slice(name);
     }
     let central_size = u32::try_from(archive.len())
-        .map_err(|_| ExactProductError::InvalidMeshExport)?
+        .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?
         .checked_sub(central_offset)
         .ok_or(ExactProductError::InvalidMeshExport)?;
-    let count = u16::try_from(central.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+    let count = u16::try_from(central.len())
+        .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
     archive.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
     archive.extend_from_slice(&0_u16.to_le_bytes());
     archive.extend_from_slice(&0_u16.to_le_bytes());

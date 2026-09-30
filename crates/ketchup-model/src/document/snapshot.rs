@@ -430,8 +430,11 @@ impl Snapshot {
         self.product.import_receipts.values().map(Arc::as_ref)
     }
 
-    pub fn next_import_id(&self) -> Result<ImportId, CanonicalError> {
-        next_id(self.product.import_receipts.keys().map(|id| id.0)).map(ImportId)
+    /// The next free import ID, or `None` when the import ID space is exhausted.
+    #[must_use]
+    pub fn next_import_id(&self) -> Option<ImportId> {
+        let last = self.product.import_receipts.keys().map(|id| id.0).max();
+        last.unwrap_or(0).checked_add(1).map(ImportId)
     }
 
     pub fn occurrences_in_collection(&self, id: CollectionId) -> impl Iterator<Item = &Occurrence> {

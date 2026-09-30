@@ -1,7 +1,7 @@
 use ketchup_model::document::{DocumentStore, FeatureKind, MeshAuthority};
 use ketchup_model::import::{
     ImportFormat, ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, StlImportError,
-    parse_stl, plan_stl_import,
+    StlImportPlanError, parse_stl, plan_stl_import,
 };
 use ketchup_model::persistence;
 
@@ -162,6 +162,25 @@ fn invalid_topology_and_structure_are_actionable_refusals() {
         parse_stl(&inverted, millimetres()),
         Err(StlImportError::InconsistentOrientation | StlImportError::NonPositiveVolume)
     ));
+}
+
+#[test]
+fn rejected_source_name_keeps_the_receipt_contract_reason() {
+    let document = DocumentStore::new();
+    let error = plan_stl_import(
+        &document.current(),
+        &binary_tetrahedron(),
+        "",
+        millimetres(),
+    )
+    .unwrap_err();
+    let StlImportPlanError::InvalidSourceIdentity(cause) = error else {
+        panic!("an empty source name must be refused by the receipt contract: {error:?}");
+    };
+    assert_eq!(
+        error.to_string(),
+        format!("STL source name or provenance is invalid: {cause}")
+    );
 }
 
 #[test]

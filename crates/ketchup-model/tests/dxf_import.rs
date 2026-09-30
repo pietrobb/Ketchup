@@ -2959,6 +2959,32 @@ fn unitless_files_require_review_and_scale_user_units_before_validation() {
 }
 
 #[test]
+fn unreadable_values_name_the_value_and_the_parser_reason() {
+    let options = || DxfImportOptions::new(Some(ImportLengthUnit::Millimetre));
+    let bad_code = dxf(Some(4), "0\nLINE\n1x\n0\n");
+    let Err(error) = inspect_dxf(&bad_code, options()) else {
+        panic!("a non-numeric group code must be rejected");
+    };
+    assert!(
+        matches!(&error, DxfImportError::NotAnInteger { value, .. } if value == "1x"),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "DXF value \"1x\" is not an integer: invalid digit found in string"
+    );
+
+    let bad_number = dxf(Some(4), "0\nLINE\n10\nabc\n20\n0\n11\n1\n21\n0\n");
+    let Err(error) = inspect_dxf(&bad_number, options()) else {
+        panic!("a non-numeric coordinate must be rejected");
+    };
+    assert_eq!(
+        error.to_string(),
+        "DXF value \"abc\" is not a number: invalid float literal"
+    );
+}
+
+#[test]
 fn malformed_non_planar_and_ambiguous_geometry_fail_closed_with_typed_errors() {
     let malformed = b"0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n1\n";
     assert_eq!(

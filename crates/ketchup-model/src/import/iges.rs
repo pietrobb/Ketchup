@@ -8,8 +8,8 @@ use crate::document::{
 use crate::graph::sha256_bytes;
 
 use super::{
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit, ImportOutputRef,
-    ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
+    ImportContractError, ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat,
+    ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
 };
 
 pub const IGES_PARSER_ID: &str = "ketchup-occt-iges";
@@ -64,7 +64,7 @@ pub struct IgesXdeImportEvidence {
 pub enum IgesImportPlanError {
     Empty,
     SourceTooLarge,
-    InvalidSourceIdentity,
+    InvalidSourceIdentity(ImportContractError),
     InvalidWorkerEvidence,
     IdSpaceExhausted,
 }
@@ -74,7 +74,12 @@ impl fmt::Display for IgesImportPlanError {
         formatter.write_str(match self {
             Self::Empty => "IGES source is empty",
             Self::SourceTooLarge => "IGES source exceeds the bounded 32 MiB envelope",
-            Self::InvalidSourceIdentity => "IGES source name or provenance is invalid",
+            Self::InvalidSourceIdentity(error) => {
+                return write!(
+                    formatter,
+                    "IGES source name or provenance is invalid: {error}"
+                );
+            }
             Self::InvalidWorkerEvidence => "IGES worker evidence is incomplete or invalid",
             Self::IdSpaceExhausted => "canonical import ID space is exhausted",
         })
@@ -125,7 +130,7 @@ pub fn plan_iges_import(
     };
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| IgesImportPlanError::IdSpaceExhausted)?;
+        .ok_or(IgesImportPlanError::IdSpaceExhausted)?;
     let definition_id = DefinitionId(next_id(
         snapshot.definitions().map(|item| item.id().0).collect(),
     )?);
@@ -175,7 +180,7 @@ pub fn plan_iges_import(
         diagnostics,
         outputs,
     )
-    .map_err(|_| IgesImportPlanError::InvalidSourceIdentity)?;
+    .map_err(IgesImportPlanError::InvalidSourceIdentity)?;
     let display_name = source_name
         .strip_suffix(".iges")
         .or_else(|| source_name.strip_suffix(".igs"))
@@ -307,7 +312,7 @@ pub fn plan_iges_xde_import(
     )?;
     let import_id = snapshot
         .next_import_id()
-        .map_err(|_| IgesImportPlanError::IdSpaceExhausted)?;
+        .ok_or(IgesImportPlanError::IdSpaceExhausted)?;
 
     let definitions = (0..evidence.parts.len())
         .map(|index| DefinitionId(definition_start + index as u64))
@@ -455,7 +460,7 @@ pub fn plan_iges_xde_import(
         diagnostics,
         outputs,
     )
-    .map_err(|_| IgesImportPlanError::InvalidSourceIdentity)?;
+    .map_err(IgesImportPlanError::InvalidSourceIdentity)?;
     commands.push(CanonicalCommand::RecordImport(receipt));
     Ok(CommandBatch::new(commands))
 }
