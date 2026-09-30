@@ -19,13 +19,6 @@ MAX_OUTPUT = 32768
 MAX_STARTUP = 1024
 MAX_SESSIONS = 64
 SESSION_TIMEOUT = 30.0
-# Actionable next step for rejections an agent can fix by itself.
-_REJECTION_HINTS = {
-    "save_path_required": "The window has no bound file (new or crash-recovered document); "
-                          "use KetchupLiveFile save_as with an explicit absolute path.",
-    "invalid_params": "The request does not match the protocol; fix the arguments using details.reason.",
-    "stale_document": "The document changed since that stamp; re-read status and retry with the new stamp.",
-}
 IMAGE_ROOT = Path(__file__).resolve().parents[1] / "artifacts" / "live-view"
 
 # Reuse the offline loader/plan binding only. Do not register its tools, create
@@ -333,9 +326,11 @@ class Runtime:
                 elif isinstance(error, self.sdk.LiveConsentError):
                     value = _error(error.code, "The Kečup window could not be attached (it may have closed). List windows again.")
                 elif isinstance(error, self.sdk.LiveBridgeError):
+                    # The host's rejection names the reason and the fix.
                     details = error.details or {}
-                    message = details.get("message") or _REJECTION_HINTS.get(
-                        error.code, "Live bridge rejected the request.")
+                    message = details.get("reason") or "Live bridge rejected the request."
+                    if details.get("fix_hint"):
+                        message += " Fix: " + details["fix_hint"]
                     value = _error(error.code, message, details=error.details)
                 elif isinstance(error, self.sdk.LiveTransportError):
                     unknown = bool(error.mutation_outcome_unknown)

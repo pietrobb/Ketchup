@@ -35,10 +35,18 @@ PROGRAM = {"operations": [{"operation": "set_color", "selector": {
     "type": "occurrences", "occurrence_ids": [1]}, "color": [1, 2, 3]}]}
 
 
+def rejection(code, **fields):
+    """The host's rejection result of an error response."""
+    return {"code": code, "phase": "validation", "target": "request",
+            "reason": "rejected", "fix_hint": "fix it", "causes": [], **fields}
+
+
 def response(request, *, result=None, error=None, stamp=STAMP):
+    if error is not None and result is None and type(error) is str:
+        result = rejection(error)
     return {"version": 1, "id": request["id"], "ok": error is None,
             "stamp": asdict(stamp) if stamp is not None else None,
-            "result": ({} if result is None else result) if error is None else None,
+            "result": {} if result is None else result,
             "error": error}
 
 
@@ -462,7 +470,7 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
     def answer(req, stream):
         method = req["request"]["method"]
         if method == "image":
-            return response(req, error="unsupported_image")
+            return response(req, error="unsupported_image_protocol")
         result = ({"disconnected": True} if method == "disconnect"
                   else image_capability() if method == "status" else {})
         return response(req, result=result, stamp=Stamp(7, 99, "b" * 64, 101))
@@ -697,7 +705,7 @@ def test_exact_max_response_and_fragmentation():
         assert live.status()["result"]["padding"]
 
 
-@pytest.mark.parametrize("code", ["stale_document", "selection_changed", "unsupported_image", "unauthorized", "busy"])
+@pytest.mark.parametrize("code", ["stale_document", "selection_changed", "unsupported_image_protocol", "unauthorized", "busy"])
 def test_safe_server_rejection_no_retry(code):
     with Peer(lambda req, stream: response(req, error=code, stamp=None)) as peer, LiveSession(peer.address, TOKEN) as live:
         with pytest.raises(LiveBridgeError) as caught:
@@ -707,23 +715,42 @@ def test_safe_server_rejection_no_retry(code):
         assert len(peer.requests) == 1
 
 
-def test_capability_gap_exposes_only_bounded_machine_fields():
-    gap = {"kind": "capability_gap",
-           "capability": "planning.cad_feature_result_unsupported",
-           "operation": "append_feature", "retryable": False, "published": False}
+def test_capability_gap_is_a_rejection_with_its_diagnostic_details():
+    gap = rejection("capability_gap", phase="planning", target="feature:7",
+                    reason="unsupported exact result", fix_hint="use a supported operation",
+                    details={"diagnostic_code": "planning.cad_feature_result_unsupported",
+                             "operation": "append_feature", "retryable": False,
+                             "published": False})
 
     def answer(request, _stream):
-        value = response(request, error="capability_gap")
-        value["result"] = gap
-        return value
+        return response(request, error="capability_gap", result=gap)
 
     with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
         with pytest.raises(LiveBridgeError) as caught:
             live.apply_and_verify(PROGRAM, expected=STAMP)
         assert caught.value.code == "capability_gap"
         assert caught.value.details == gap
+        assert "unsupported exact result" in str(caught.value)
         assert not live.closed
         assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize("broken", [
+    {"code": "busy"},  # the rejection of another code
+    {"target": ""},  # no target
+    {"fix_hint": ""},  # no fix
+    {"causes": "text"},
+    {"extra": 1},
+])
+def test_error_result_must_be_this_codes_rejection_with_target_and_fix(broken):
+    def answer(request, _stream):
+        return response(request, error="stale_document",
+                        result={**rejection("stale_document"), **broken})
+
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
+        with pytest.raises(LiveProtocolError):
+            live.commit(STAMP, 1)
+        assert live.closed
 
 
 def test_invalid_params_exposes_bounded_schema_reason_and_keeps_connection():
@@ -731,17 +758,24 @@ def test_invalid_params_exposes_bounded_schema_reason_and_keeps_connection():
 
     def answer(request, _stream):
         if request["request"]["method"] == "apply_and_verify":
-            value = response(request, error="invalid_params", stamp=None)
-            value["result"] = {"reason": reason}
-            return value
+            return response(request, error="invalid_params", stamp=None,
+                            result=rejection("invalid_params", reason=reason))
         return response(request)
 
     with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
         with pytest.raises(LiveBridgeError) as caught:
             live.apply_and_verify(PROGRAM, expected=STAMP)
         assert caught.value.code == "invalid_params"
-        assert caught.value.details == {"reason": reason}
+        assert caught.value.details["reason"] == reason
         assert not live.closed and live.status()["ok"]
+
+
+def test_sdk_accepts_exactly_the_hosts_rejection_codes():
+    """The SDK's error codes are the host catalog, the one source of the codes."""
+    import re
+    catalog = (Path(__file__).resolve().parents[1] / "crates" / "ketchup-application" / "src"
+               / "rejections.rs").read_text(encoding="utf-8")
+    assert live_module._ERROR_CODES == set(re.findall(r'entry\(\s*"([a-z_]+)"', catalog))
 
 
 def test_apply_and_verify_waits_for_its_own_job_deadline_not_the_session_timeout():
@@ -1324,8 +1358,8 @@ def test_image_observed_rust_v2_schema(tmp_path):
 
 
 @pytest.mark.parametrize("code", ["image_unavailable", "image_timeout", "hidden_viewport", "stale_image",
-    "unsupported_image_protocol", "occluded_viewport", "invalid_image_callback", "invalid_image_dimensions", "incomplete_image",
-    "unsupported_image_texture", "unsupported_image_renderer"])
+    "unsupported_image_protocol", "invalid_image_callback", "invalid_image_dimensions", "incomplete_image",
+    "unsupported_image_renderer"])
 def test_observed_rust_image_errors_are_safe_and_nonfatal(code):
     def answer(req, stream):
         if req["request"]["method"] == "status":

@@ -740,7 +740,7 @@ fn pending_native_capture_rejects_exact_registry_replacement_without_document_mu
         "replaced exact registry must invalidate already-submitted pixels"
     );
     assert_eq!(reply.error.as_deref(), Some("stale_image"));
-    assert!(reply.result.is_none());
+    assert_eq!(reply.result.unwrap()["code"], "stale_image");
     assert!(
         h.state()
             .live

@@ -13,6 +13,7 @@ pub mod model_query;
 mod part_role;
 pub mod pdm_workflow;
 mod planner;
+pub mod rejections;
 mod rule_exact_collisions;
 mod rule_operations;
 mod rule_program;

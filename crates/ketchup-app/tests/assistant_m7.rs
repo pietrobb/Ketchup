@@ -3640,7 +3640,8 @@ fn scripted_sketch_program_rejects_invalid_constraint_without_mutation() {
     assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
     assert_eq!(
         rejection.text,
-        "apply_and_verify: invalid_program: assistant sketch constraint reference is invalid"
+        "apply_and_verify: invalid_program: assistant sketch constraint reference is invalid \
+         (Fix the operation named in the reason; the operations method lists every field.)"
     );
     assert!(invalid_shell.app().assistant_proposal().is_none());
     assert_eq!(invalid_shell.app().document_revision(), before_revision);

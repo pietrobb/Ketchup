@@ -33,7 +33,7 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
         Err("program_rejected")
     );
     assert_eq!(
-        take_error_details().unwrap()["reason"],
+        take_error_details().unwrap()["details"]["program_code"],
         "not_program_document"
     );
     assert_eq!(app.live_bridge_stamp(), manual);
@@ -95,9 +95,10 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
         Err("program_rejected")
     );
     let details = take_error_details().unwrap();
-    assert_eq!(details["published"], false);
+    assert_eq!(details["details"]["published"], false);
+    assert_eq!(details["target"], "program");
     assert!(
-        details["message"]
+        details["reason"]
             .as_str()
             .unwrap()
             .contains("table.star:21:"),

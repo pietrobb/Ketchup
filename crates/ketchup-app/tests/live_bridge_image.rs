@@ -136,6 +136,12 @@ fn wait_callback(h: &mut Harness<'_, KetchupApp>) -> u64 {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+/// An error answer carries only its rejection, never pixels.
+fn is_pixel_free_rejection(response: &Response) -> bool {
+    response.result.as_ref().is_some_and(|result| {
+        result["code"].as_str() == response.error.as_deref() && result.get("data").is_none()
+    })
+}
 fn wait_response(h: &mut Harness<'_, KetchupApp>, rx: mpsc::Receiver<Response>) -> Response {
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
@@ -329,7 +335,10 @@ fn unsupported_image_protocol_is_rejected_before_callback_scheduling() {
     let mut h = harness();
     let rx = request_version_mode(&h, IMAGE_PROTOCOL_VERSION - 1, CaptureMode::Offscreen);
     let response = wait_response(&mut h, rx);
-    assert!(!response.ok && response.result.is_none(), "{response:?}");
+    assert!(
+        !response.ok && is_pixel_free_rejection(&response),
+        "{response:?}"
+    );
     assert_eq!(
         response.error.as_deref(),
         Some("unsupported_image_protocol")
@@ -425,7 +434,10 @@ fn screenshots_are_ignored_and_unserviced_gpu_callback_times_out() {
                 h.state().viewport_rect().unwrap(),
             );
         } else {
-            assert!(!response.ok && response.result.is_none(), "{response:?}");
+            assert!(
+                !response.ok && is_pixel_free_rejection(&response),
+                "{response:?}"
+            );
             assert_eq!(response.error.as_deref(), Some("image_timeout"));
             // Lost/discarded output must not poison the next capture.
             capture(&mut h);
@@ -477,7 +489,7 @@ fn pending_gpu_capture_rejects_precise_hidden_and_stale_states() {
         }
         let response = wait_response(&mut h, rx);
         assert!(
-            !response.ok && response.result.is_none(),
+            !response.ok && is_pixel_free_rejection(&response),
             "{case}: {response:?}"
         );
         assert_eq!(

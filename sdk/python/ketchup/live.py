@@ -56,30 +56,26 @@ _IMAGE_FRAMINGS = ("viewport", "selection", "detail_selection")
 _IMAGE_DETAIL_KINDS = ("edges", "faces")
 _MUTATIONS = frozenset({"apply_and_verify", "apply_program", "batch_job_start", "batch_job_step", "batch_job_cancel", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
 # Never surface arbitrary remote text, even if it looks like an error code.
+# Exactly the codes of ketchup-application/src/rejections.rs (checked by tests).
 _ERROR_CODES = frozenset({
-    "invalid_request", "unauthorized", "unsupported_version", "queue_unavailable",
-    "response_limit", "stale_document", "unsupported_selection_scope",
-    "selection_limit", "invalid_selection", "read_only_document", "selection_changed",
-    "invalid_program", "planning_rejected", "capability_gap", "proposal_ids_exhausted",
-    "proposal_not_found", "commit_rejected", "recovery_rejected",
-    "undo_unavailable", "redo_unavailable", "entity_not_found", "view_unavailable",
-    "unsupported_image", "unsupported_image_protocol", "invalid_params", "invalid_cursor", "stale_cursor",
-    "cross_query_cursor", "output_too_large", "busy", "image_unavailable", "image_timeout",
-    "hidden_viewport", "stale_image", "occluded_viewport", "invalid_image_callback",
-    "invalid_image_dimensions", "invalid_image_framing", "incomplete_image", "unsupported_image_texture",
-    "unsupported_image_renderer", "stale_workset", "workset_not_found",
-    "unsupported_workset_scope", "incomplete_workset", "missing_workset_identity",
-    "batch_job_limit", "batch_job_ids_exhausted", "batch_job_not_found",
-    "batch_cancelled", "stale_batch_task", "batch_transaction_failed",
-    "apply_and_verify_busy", "invalid_job_timeout",
-    "unknown_validator", "candidate_rejected", "job_timeout",
-    "job_worker_unavailable", "request_cancelled", "exact_worker_unavailable",
-    "exact_worker_disconnected", "exact_worker_rejected",
-    "exact_evaluation_rejected", "exact_materialization_rejected", "exact_evaluation_incomplete", "validation_failed",
-    "validation_incomplete",
-    "apply_and_verify_worker_disconnected", "exact_reference_rejected",
-    "save_path_required", "save_rejected", "open_rejected", "invalid_path",
-    "unknown_operation", "program_rejected",
+    "apply_and_verify_busy", "apply_and_verify_worker_disconnected", "batch_cancelled",
+    "batch_job_ids_exhausted", "batch_job_limit", "batch_job_not_found", "batch_transaction_failed",
+    "busy", "candidate_rejected", "capability_gap", "commit_rejected", "cross_query_cursor",
+    "entity_not_found", "exact_evaluation_incomplete", "exact_evaluation_rejected",
+    "exact_reference_rejected", "exact_worker_disconnected", "exact_worker_unavailable",
+    "hidden_viewport", "image_requires_frame_callback", "image_timeout", "image_unavailable",
+    "incomplete_image", "incomplete_workset", "invalid_cursor", "invalid_image_callback",
+    "invalid_image_dimensions", "invalid_image_framing", "invalid_job_timeout", "invalid_params",
+    "invalid_path", "invalid_program", "invalid_request", "invalid_selection", "job_timeout",
+    "job_worker_unavailable", "missing_workset_identity", "open_rejected", "output_too_large",
+    "planning_rejected", "program_rejected", "proposal_ids_exhausted", "proposal_not_found",
+    "queue_unavailable", "read_only_document", "recovery_rejected", "redo_unavailable",
+    "request_cancelled", "response_limit", "save_path_required", "save_rejected",
+    "selection_changed", "selection_limit", "stale_batch_task", "stale_cursor", "stale_document",
+    "stale_image", "stale_workset", "unauthorized", "undo_unavailable", "unknown_operation",
+    "unknown_validator", "unsupported_image_protocol", "unsupported_image_renderer",
+    "unsupported_selection_scope", "unsupported_version", "unsupported_workset_scope",
+    "validation_failed", "validation_incomplete", "view_unavailable", "workset_not_found",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
 Kind = Literal["occurrences", "instances", "definitions", "features", "relations", "faces", "edges"]
@@ -89,39 +85,21 @@ ImageFraming = Literal["viewport", "selection", "detail_selection"]
 ImageDetailKind = Literal["edges", "faces"]
 
 
-def _capability_gap(value: object) -> dict:
-    if (type(value) is not dict
-            or set(value) != {"kind", "capability", "operation", "retryable", "published"}
-            or value["kind"] != "capability_gap"
-            or type(value["capability"]) is not str
-            or not 1 <= len(value["capability"]) <= 128
-            or type(value["operation"]) is not str
-            or not 1 <= len(value["operation"]) <= 64
-            or value["retryable"] is not False
-            or value["published"] is not False):
-        raise ValueError("invalid capability gap")
-    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._-")
-    if any(set(value[field]) - allowed for field in ("capability", "operation")):
-        raise ValueError("invalid capability gap identifier")
-    return value
-
-
 _CODE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._-")
+_REJECTION_TEXT = ("phase", "target", "reason", "fix_hint")
 
 
-def _diagnostic(value: object) -> dict:
-    """Why a request failed: code, message, and optionally hint, issues, target."""
-    if (type(value) is not dict or value.get("kind") != "diagnostic"
-            or type(value.get("code")) is not str or type(value.get("message")) is not str):
-        raise ValueError("invalid error diagnostic")
-    return value
-
-
-def _invalid_params(value: object) -> dict:
-    """The host's schema message for a malformed request body, bounded."""
-    if (type(value) is not dict or set(value) != {"reason"}
-            or type(value["reason"]) is not str or not 1 <= len(value["reason"]) <= 512):
-        raise ValueError("invalid params detail")
+def _rejection(value: object, code: str) -> dict:
+    """Why a request failed: the host's rejection of `code` with the request
+    field it is about (target), the reason and what to change (fix_hint)."""
+    if (type(value) is not dict
+            or not {"code", *_REJECTION_TEXT, "causes"} <= set(value) <= {"code", *_REJECTION_TEXT, "causes", "details"}
+            or value["code"] != code
+            or any(type(value[field]) is not str or not value[field] for field in _REJECTION_TEXT)
+            or type(value["causes"]) is not list
+            or any(type(cause) is not str for cause in value["causes"])
+            or type(value.get("details", {})) is not dict):
+        raise ValueError("invalid rejection")
     return value
 
 
@@ -132,7 +110,7 @@ class LiveBridgeError(RuntimeError):
         known = type(code) is str and 1 <= len(code) <= 128 and not set(code) - _CODE_CHARS
         self.code = code if known else "remote_error"
         self.details = details if type(details) is dict else None
-        message = self.details.get("message") if self.details else None
+        message = self.details.get("reason") if self.details else None
         super().__init__("live bridge rejected request: " + self.code
                          + (": " + message if type(message) is str and message else ""))
 
@@ -1157,12 +1135,8 @@ class LiveSession:
                 raise ValueError("invalid success response")
         elif type(response["error"]) is not str or response["error"] == "response_limit":
             raise ValueError("invalid or unavailable response; response_limit can follow execution")
-        elif response["error"] == "capability_gap":
-            response["result"] = _capability_gap(response["result"])
-        elif response["error"] == "invalid_params" and response["result"] is not None:
-            response["result"] = _invalid_params(response["result"])
-        elif response["result"] is not None:
-            response["result"] = _diagnostic(response["result"])
+        else:
+            response["result"] = _rejection(response["result"], response["error"])
         return response
 
     def _request(self, method: str, *, _deadline: float | None = None, **params) -> dict:

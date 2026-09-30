@@ -66,7 +66,7 @@ class SessionDouble:
         if expected != self.stamp:
             raise skill._live().LiveBridgeError("stale_document")
         if method == "image":
-            raise skill._live().LiveBridgeError("unsupported_image")
+            raise skill._live().LiveBridgeError("unsupported_image_protocol")
         if method == "start_batch_job":
             handle = f"opaque-job-{len(self.batch_states) + 1}"
             self.batch_states[handle] = "pending"
@@ -451,7 +451,7 @@ def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, mon
                            expected=expected, view="iso"))["stamp"] == expected
         image = await call(registered, "KetchupLiveView", action="image", handle=handle, expected=expected,
                            image_path=str(tmp_path / "unsupported.png"))
-        assert image["error"]["code"] == "unsupported_image"
+        assert image["error"]["code"] == "unsupported_image_protocol"
         state.active = True
         disconnected = await call(registered, "KetchupLiveSession", action="disconnect", handle=handle)
         assert disconnected["result"]["app_terminated"] is False and session.closed
@@ -815,9 +815,11 @@ def test_public_model_tool_rejects_incomplete_payload_without_mutation():
 
 def test_public_model_tool_surfaces_bounded_capability_gap_without_retry():
     session = SessionDouble()
-    gap = {"kind": "capability_gap",
-           "capability": "planning.cad_feature_result_unsupported",
-           "operation": "append_feature", "retryable": False, "published": False}
+    gap = {"code": "capability_gap", "phase": "planning", "target": "feature:7",
+           "reason": "unsupported exact result", "fix_hint": "use a supported operation",
+           "causes": [], "details": {"diagnostic_code": "planning.cad_feature_result_unsupported",
+                                     "operation": "append_feature", "retryable": False,
+                                     "published": False}}
 
     def reject(*_args, **_kwargs):
         raise skill._live().LiveBridgeError("capability_gap", gap)
@@ -970,15 +972,18 @@ def test_launched_session_reconnect_reuses_address_and_credential_then_wipes_it(
 def test_invalid_params_rejection_keeps_session_and_explains_the_fix():
     session = SessionDouble()
     reason = "unknown variant `set_colour`, expected one of `set_color`"
-    session.fail = skill._live().LiveBridgeError("invalid_params", {"reason": reason})
+    details = {"code": "invalid_params", "phase": "request", "target": "params",
+               "reason": reason, "fix_hint": "Fix the parameter named in the reason.",
+               "causes": []}
+    session.fail = skill._live().LiveBridgeError("invalid_params", details)
     registered = tools(SimpleNamespace(active=False), lambda *args: session)
     async def scenario():
         handle = (await launch(registered))["result"]["handle"]
         result = await call(registered, "KetchupLiveModel", action="apply_and_verify",
                             handle=handle, program=PROGRAM)
         assert result["error"]["code"] == "invalid_params"
-        assert result["details"] == {"reason": reason}
-        assert "details.reason" in result["error"]["message"]
+        assert result["details"] == details
+        assert result["error"]["message"] == reason + " Fix: Fix the parameter named in the reason."
         session.fail = None
         assert (await call(registered, "KetchupLiveInspect", action="status", handle=handle))["ok"]
     asyncio.run(scenario())

@@ -12,6 +12,7 @@
 
 use crate::{ActiveTool, AppCommand, KetchupApp, SelectionId, WorkRecoveryMutationError};
 use eframe::egui;
+use ketchup_application::rejections::rejected;
 use ketchup_application::{
     batch_task::{
         OccurrenceBatchDocument, OccurrenceBatchError, OccurrenceBatchOperation,
@@ -38,6 +39,7 @@ use ketchup_model::{
     exact_product::ExactResultRegistry,
     tolerance::ROUNDING,
 };
+use ketchup_rejection::Rejection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -331,30 +333,49 @@ thread_local! {
     static ERROR_DETAILS: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Records the cause of `code` for the client and returns the code.
-fn failure(code: &'static str, message: impl Into<String>, details: Value) -> &'static str {
-    let mut value = json!({"kind": "diagnostic", "code": code, "message": message.into()});
-    if let (Some(value), Some(details)) = (value.as_object_mut(), details.as_object()) {
-        for (key, item) in details {
-            value.insert(key.clone(), item.clone());
-        }
+/// Records `rejection` with the request-specific `details` as the result of
+/// the next error response.
+fn record_rejection(rejection: &Rejection, details: Value) {
+    let mut value = serde_json::to_value(rejection).unwrap_or(Value::Null);
+    if let (Some(object), Some(details)) = (value.as_object_mut(), details.as_object())
+        && !details.is_empty()
+    {
+        object.insert("details".to_owned(), Value::Object(details.clone()));
     }
     ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
+}
+
+/// Records why `code` failed for the client and returns the code.
+fn failure(code: &'static str, reason: impl Into<String>, details: Value) -> &'static str {
+    record_rejection(&rejected(code).reason(reason), details);
     code
 }
 
+/// Records a planner diagnostic as the rejection of `code`: its target and
+/// repair hint replace the generic ones of the code.
 fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnostic) -> &'static str {
-    failure(
-        code,
-        diagnostic.failed_invariant.clone(),
+    record_rejection(
+        &rejected(code)
+            .target(diagnostic.target.clone())
+            .reason(diagnostic.failed_invariant.clone())
+            .fix_hint(diagnostic.repair_hint.clone()),
         json!({
-            "reason": diagnostic.code,
+            "diagnostic_code": diagnostic.code,
             "operation": diagnostic.operation,
-            "target": diagnostic.target,
-            "hint": diagnostic.repair_hint,
             "retryable": diagnostic.retryable,
+            "published": false,
         }),
-    )
+    );
+    code
+}
+
+/// The result of an error response for `code`: the recorded rejection when it
+/// belongs to this code, otherwise the code's catalog rejection.
+fn rejection_result(code: &str, recorded: Option<Value>) -> Value {
+    match recorded {
+        Some(value) if value["code"] == code => value,
+        _ => serde_json::to_value(rejected(code)).unwrap_or(Value::Null),
+    }
 }
 
 const MAX_PROGRAM_MESSAGE_CHARS: usize = 4000;
@@ -390,11 +411,11 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
         .chars()
         .take(MAX_PROGRAM_MESSAGE_CHARS)
         .collect::<String>();
-    failure(
-        "program_rejected",
-        message,
-        json!({"reason": reason, "hint": hint, "published": false}),
-    )
+    record_rejection(
+        &rejected("program_rejected").reason(message).fix_hint(hint),
+        json!({"program_code": reason, "published": false}),
+    );
+    "program_rejected"
 }
 
 /// What an applied program changed, bounded to fit one response frame.
@@ -506,7 +527,10 @@ impl Response {
             id,
             ok: false,
             stamp: None,
-            result: ERROR_DETAILS.with(|slot| slot.borrow_mut().take()),
+            result: Some(rejection_result(
+                code,
+                ERROR_DETAILS.with(|slot| slot.borrow_mut().take()),
+            )),
             error: Some(code.into()),
         }
     }
@@ -523,25 +547,8 @@ impl Response {
             id,
             ok: false,
             stamp: None,
-            result: Some(json!({ "reason": reason })),
+            result: serde_json::to_value(rejected("invalid_params").reason(reason)).ok(),
             error: Some("invalid_params".into()),
-        }
-    }
-
-    fn capability_gap(id: u64, diagnostic: &AssistantRejectionDiagnostic) -> Self {
-        Self {
-            version: 1,
-            id,
-            ok: false,
-            stamp: None,
-            result: Some(json!({
-                "kind": "capability_gap",
-                "capability": diagnostic.code,
-                "operation": diagnostic.operation,
-                "retryable": false,
-                "published": false,
-            })),
-            error: Some("capability_gap".into()),
         }
     }
 }
@@ -1299,9 +1306,12 @@ impl LiveBridge {
         reply: &mpsc::SyncSender<Response>,
         diagnostic: &AssistantRejectionDiagnostic,
     ) {
-        let mut response = Response::capability_gap(id, diagnostic);
-        response.stamp = Some(app.live_bridge_stamp());
-        let _ = reply.try_send(response);
+        Self::reply(
+            app,
+            id,
+            reply,
+            Err(planning_failure("capability_gap", diagnostic)),
+        );
     }
 
     fn reply(

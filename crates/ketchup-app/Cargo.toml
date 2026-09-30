@@ -25,6 +25,7 @@ ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-manufacturing = { path = "../ketchup-manufacturing" }
 ketchup-pdm = { path = "../ketchup-pdm" }
 ketchup-program = { path = "../ketchup-program" }
+ketchup-rejection = { path = "../ketchup-rejection" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
 raw-window-handle = "0.6.2"
 rfd = "0.15.4"

@@ -1524,19 +1524,51 @@ fn unsupported_planning_diagnostic_is_a_bounded_capability_gap() {
         retryable: true,
     };
     assert!(LiveBridge::is_capability_gap(&diagnostic));
-    let response = Response::capability_gap(19, &diagnostic);
+    let response = Response::error(19, planning_failure("capability_gap", &diagnostic));
     assert!(!response.ok);
     assert_eq!(response.error.as_deref(), Some("capability_gap"));
     assert_eq!(
         response.result,
         Some(json!({
-            "kind": "capability_gap",
-            "capability": "planning.cad_feature_result_unsupported",
-            "operation": "append_feature",
-            "retryable": false,
-            "published": false,
+            "code": "capability_gap",
+            "phase": "planning",
+            "target": "feature:7",
+            "reason": "unsupported exact result",
+            "fix_hint": "use a supported exact operation",
+            "causes": [],
+            "details": {
+                "diagnostic_code": "planning.cad_feature_result_unsupported",
+                "operation": "append_feature",
+                "retryable": true,
+                "published": false,
+            },
         }))
     );
+}
+
+/// Every error code the bridge answers with carries the shared rejection:
+/// its code, a phase, the request field it is about, a reason and a fix.
+#[test]
+fn every_bridge_error_response_is_a_rejection_with_target_and_fix() {
+    for entry in ketchup_application::rejections::HOST_REJECTIONS {
+        let response = Response::error(3, entry.code);
+        assert_eq!(response.error.as_deref(), Some(entry.code));
+        let result = response.result.expect("an error response explains itself");
+        let rejection: Rejection = serde_json::from_value(result).unwrap();
+        assert_eq!(rejection.code(), entry.code);
+        assert!(!rejection.target_name().is_empty(), "{}", entry.code);
+        assert!(!rejection.reason_text().is_empty(), "{}", entry.code);
+        assert!(!rejection.fix_hint_text().is_empty(), "{}", entry.code);
+    }
+    // A recorded rejection of another code never leaks into this response.
+    failure("stale_document", "changed", json!({}));
+    let response = Response::error(4, "busy");
+    assert_eq!(response.result.unwrap()["code"], "busy");
+    let invalid = Response::invalid_params(5, "unknown field `x`");
+    let invalid = invalid.result.unwrap();
+    assert_eq!(invalid["code"], "invalid_params");
+    assert_eq!(invalid["reason"], "unknown field `x`");
+    assert_eq!(invalid["target"], "params");
 }
 
 #[test]

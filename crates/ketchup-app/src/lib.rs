@@ -11336,10 +11336,10 @@ impl KetchupApp {
                                     .map(str::to_owned)
                             };
                             let mut text = format!("apply_and_verify: {code}");
-                            if let Some(message) = detail("message") {
+                            if let Some(message) = detail("reason") {
                                 text.push_str(&format!(": {message}"));
                             }
-                            if let Some(hint) = detail("hint") {
+                            if let Some(hint) = detail("fix_hint") {
                                 text.push_str(&format!(" ({hint})"));
                             }
                             self.assistant.messages.push(AssistantChatMessage {
