@@ -7,12 +7,12 @@ use ketchup_assistant::sidecar::{
     AssistantPrincipalPlane, AssistantSketchConstraint, AssistantSketchEntity,
     AssistantWorkplaneSpec,
 };
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, FeatureId, FeatureKind,
     MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
 use ketchup_model::exact_product::ExactResultRegistry;
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
@@ -112,6 +112,9 @@ fn assert_timeout_unchanged(session: &mut DocumentSession, timeout: Duration) {
 #[test]
 fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence() {
     use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantPin, AssistantPinJointFace};
+    use ketchup_manufacturing::fabrication::{
+        FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
+    };
     use ketchup_model::assembly_recipe::*;
     use ketchup_model::document::{
         ClassificationCategoryId, ClassificationDimensionId, FeatureParameterTarget, InstancePath,
@@ -120,9 +123,6 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
     use ketchup_model::exact_validation::GeneralBodyParticipant;
     use ketchup_model::pin_joint::{PinJointId, project_pin_joint_contract};
     use ketchup_model::tolerance::TolerancePolicy;
-    use ketchup_manufacturing::fabrication::{
-        FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
-    };
 
     let key = |name: &str| RecipeKey::new(name).unwrap();
     let mut session = worker_session();

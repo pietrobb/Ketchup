@@ -4,6 +4,8 @@ use eframe::egui::{Key, accesskit::Role};
 use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_application::transforms::world_axis_rotation_transform;
+use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity};
+use ketchup_interaction::Vec3;
 use ketchup_model::{
     document::{
         CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
@@ -12,8 +14,6 @@ use ketchup_model::{
     exact_brep_graph::ExactBRepGraph,
     persistence,
 };
-use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity};
-use ketchup_interaction::Vec3;
 
 fn tool(shell: &mut Shell, plane: PrincipalPlane) {
     shell.click_command(AppCommand::Rectangle);

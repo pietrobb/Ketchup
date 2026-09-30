@@ -1,3 +1,7 @@
+use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
+use ketchup_interaction::face_intent::{
+    FaceIntentError, FaceIntentSource, FaceIntentTarget, HoverFaceCandidate, TransientFaceIntent,
+};
 use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind,
@@ -5,10 +9,6 @@ use ketchup_model::document::{
 use ketchup_model::exact_product::{BodySubshapeRef, ExactFaceRole};
 use ketchup_model::testing::box_package;
 use ketchup_model::{persistence, state_view::encode_semantic_state};
-use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
-use ketchup_interaction::face_intent::{
-    FaceIntentError, FaceIntentSource, FaceIntentTarget, HoverFaceCandidate, TransientFaceIntent,
-};
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const PROFILE_ONE: FeatureId = FeatureId(10);

@@ -1,11 +1,11 @@
 use ketchup_assistant::extension::{
     PluginCapability, PluginGatewayError, PluginGrant, PluginLimits,
 };
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     ProposalCommitError, ProposalPrincipal,
 };
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_scheduler::plugin::{PluginHostError, run_plugin_process};
 use std::ffi::OsString;
 use std::path::PathBuf;

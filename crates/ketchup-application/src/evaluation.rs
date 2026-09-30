@@ -1,3 +1,4 @@
+use ketchup_geometry::sketch::{WorkplaneSpec, WorkplaneSupport};
 use ketchup_model::document::{
     DefinitionId, DocumentStore, FeatureId, FeatureKind, OccurrenceId, SceneOccurrence, Snapshot,
 };
@@ -13,7 +14,6 @@ use ketchup_model::import::{
     StepImportEvidence,
 };
 use ketchup_model::persistence::ContainerData;
-use ketchup_geometry::sketch::{WorkplaneSpec, WorkplaneSupport};
 use ketchup_scheduler::{
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
 };

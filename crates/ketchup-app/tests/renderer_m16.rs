@@ -2,13 +2,13 @@ use ketchup_app::renderer::{
     DerivedRenderCache, GpuFrameDescriptor, GpuInstancedRenderer, InstancedRenderPlan,
     RENDER_BACKEND_WGPU_V1, RENDER_EVALUATOR_V1, RENDER_PLAN_SCHEMA_V1,
 };
+use ketchup_interaction::projection::CanonicalInteractionProjection;
+use ketchup_interaction::{Ray, Vec3};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
     FeatureId, FeatureKind, InstancePath, NodeId, OccurrenceId, SlotPath, SlotSegment, Transform,
 };
 use ketchup_model::exact_product::ExactResultRegistry;
-use ketchup_interaction::projection::CanonicalInteractionProjection;
-use ketchup_interaction::{Ray, Vec3};
 use ketchup_scheduler::AcceptanceIdentity;
 use ketchup_scheduler::general::{
     CompletionOutcome, GeneralJobScheduler, JobKind, JobPolicy, JobRequest, ScheduleOutcome,

@@ -2,12 +2,12 @@ use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_assistant::sidecar::AssistantCadLoftSection;
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::{
     EdgeRef, FaceRef, InstancePathStep, ProposalGoal, SpatialPathSegment,
 };
 use ketchup_model::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepOperation};
 use ketchup_model::graph::{EvaluatorNodeKind, PortSpec};
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 #[path = "planning_topology_tests.rs"]
 mod planning_topology;
 
@@ -9264,9 +9264,10 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
         }
     )));
     let intersect_digest = intersected.canonical_digest();
-    let reopened = ketchup_model::persistence::load(&ketchup_model::persistence::save(&intersected))
-        .unwrap()
-        .snapshot();
+    let reopened =
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(&intersected))
+            .unwrap()
+            .snapshot();
     assert_eq!(reopened.canonical_digest(), intersect_digest);
     assert!(
         ExactBRepGraph::from_snapshot(&reopened, intersect_definition, intersect_feature_id,)
@@ -11435,10 +11436,11 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     assert!(app.confirm_preview());
     assert!((app.active_boxes().into_iter().next().unwrap().size_mm.y - 65.0).abs() < 1.0e-5);
     let committed_digest = app.canonical_digest();
-    let reopened =
-        ketchup_model::persistence::load(&ketchup_model::persistence::save(&app.document.current()))
-            .unwrap()
-            .snapshot();
+    let reopened = ketchup_model::persistence::load(&ketchup_model::persistence::save(
+        &app.document.current(),
+    ))
+    .unwrap()
+    .snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), source_digest);

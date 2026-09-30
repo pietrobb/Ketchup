@@ -1,13 +1,13 @@
-use ketchup_model::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    InstancePath, OccurrenceId, Transform,
-};
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
     Axis, ElementId, InteractionError, InteractionScene, LocaleCatalog, PreviewError,
     PreviewSession, Ray, Side, SmartPushPullOutcome, SnapKind, SnapPolicy, SnapTracker, Vec3,
     plan_smart_push_pull,
+};
+use ketchup_model::document::{
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
+    InstancePath, OccurrenceId, Transform,
 };
 
 #[derive(Clone, Copy)]

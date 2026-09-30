@@ -4,6 +4,9 @@ mod bounds;
 #[path = "collision_hull.rs"]
 mod hull;
 use crate::validation::{AssistantValidationSelection, assistant_validation_context_base};
+use ketchup_interaction::spatial::{
+    SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
+};
 use ketchup_model::document::{
     BodyId, DefinitionId, FeatureId, InstancePath, InstancePathStep, OccurrenceId, SceneOccurrence,
     Snapshot,
@@ -20,9 +23,6 @@ use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_model::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     ValidationDiagnostic, ValidationInvocation, ValidationReport, ValidationState,
-};
-use ketchup_interaction::spatial::{
-    SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
 };
 use ketchup_program::ExactPair;
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};

@@ -17,6 +17,7 @@ use ketchup_analysis::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaElement, FeaElementKind, FeaLoad, FeaMaterial, FeaModel,
     FeaNode,
 };
+use ketchup_exact::GeometryErrorCode;
 use ketchup_model::cam::{
     CAM_SIMULATION_SCHEMA_V1, CamCollisionEvidence, CamCollisionParticipant, CamCollisionTarget,
     CamFixture, CamMotionKind, CamMotionPath, CamPlan, CamSimulationEvidence, CamToolpath,
@@ -37,7 +38,6 @@ use ketchup_model::import::{
     STEP_MESH_MAGIC, StepImportEvidence, StepImportMesh, StepXdeImportEvidence,
     StepXdeNodeEvidence, StepXdePartEvidence,
 };
-use ketchup_exact::GeometryErrorCode;
 #[cfg(windows)]
 use process_wrap::std::JobObject;
 use process_wrap::std::{ChildWrapper, CommandWrap};

@@ -1882,8 +1882,10 @@ fn review_only_history_and_focused_editor_reject_mutations() {
     let steps = (app.undo_step_count(), app.redo_step_count());
     // Presence of a review candidate is the GUI's read-only boundary.
     app.file.review_candidate = Some(
-        ketchup_model::persistence::load(&ketchup_model::persistence::save(&app.document.current()))
-            .unwrap(),
+        ketchup_model::persistence::load(&ketchup_model::persistence::save(
+            &app.document.current(),
+        ))
+        .unwrap(),
     );
     let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
     assert_eq!(status["read_only"], true);

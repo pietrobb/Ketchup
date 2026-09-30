@@ -9,6 +9,9 @@ use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
     AssistantCadLoftContinuity, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
 };
+use ketchup_geometry::sketch::{
+    CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
+};
 use ketchup_model::document::{
     BooleanOperation, CanonicalError, ChamferEdgeSide, ChamferMode, DefinitionId, Dimension,
     FeatureId, FeatureKind, FilletRadiusStation, LoftContinuity, LoftSection, ShellDirection,
@@ -17,9 +20,6 @@ use ketchup_model::document::{
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
 use ketchup_model::topology::TopologicalElementKind;
-use ketchup_geometry::sketch::{
-    CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
-};
 
 pub(crate) fn plan_feature_kind(
     snapshot: &Snapshot,

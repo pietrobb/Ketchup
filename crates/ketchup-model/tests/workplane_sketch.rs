@@ -1,3 +1,12 @@
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PadSpec,
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind,
+    SketchDiagnosticStatus, SketchEntity, SketchEntityId, SketchError, SketchOffsetSide,
+    SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSolverPolicy, SketchSpec,
+    SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec,
+    WorkplaneSupport, WorkplaneSupportHealth,
+};
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
     FeatureId, FeatureKind,
@@ -9,15 +18,6 @@ use ketchup_model::exact_product::{
 use ketchup_model::persistence;
 use ketchup_model::state_view::encode_semantic_state;
 use ketchup_model::testing::box_package;
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PadSpec,
-    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind,
-    SketchDiagnosticStatus, SketchEntity, SketchEntityId, SketchError, SketchOffsetSide,
-    SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSolverPolicy, SketchSpec,
-    SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec,
-    WorkplaneSupport, WorkplaneSupportHealth,
-};
-use ketchup_geometry::sketch::{PadOperation, PadProfile};
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const XY: FeatureId = FeatureId(10);

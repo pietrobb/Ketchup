@@ -1,3 +1,4 @@
+use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, InstancePathStep, OccurrenceId,
     Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
@@ -18,7 +19,6 @@ use ketchup_model::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
     ValidationState,
 };
-use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

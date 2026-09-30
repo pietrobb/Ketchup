@@ -6,6 +6,7 @@ use eframe::egui::{Key, Modifiers, accesskit::Role};
 use harness::{Shell, shift};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_application::transforms::world_axis_rotation_transform;
+use ketchup_interaction::Vec3;
 use ketchup_model::{
     document::{
         CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
@@ -13,7 +14,6 @@ use ketchup_model::{
     },
     persistence,
 };
-use ketchup_interaction::Vec3;
 
 fn exact_worker_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))

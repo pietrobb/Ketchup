@@ -3,8 +3,8 @@ use crate::harness;
 use eframe::egui::Key;
 use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
-use ketchup_model::document::{FeatureKind, ProfileSegment};
 use ketchup_interaction::{Axis, Vec3};
+use ketchup_model::document::{FeatureKind, ProfileSegment};
 
 fn last_line(shell: &Shell) -> [Vec3; 2] {
     let snapshot = shell.app().document_snapshot();

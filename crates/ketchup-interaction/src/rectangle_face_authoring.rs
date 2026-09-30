@@ -4,13 +4,13 @@ use crate::face_intent::{
     FaceIntentError, FaceWorkplaneContext, ResolvedFaceIntent, TransientFaceIntent,
 };
 use crate::spatial::SnapshotBinding;
-use ketchup_model::document::{
-    BodyId, CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind,
-    Proposal, ProposalContext, ProposalPrepareError, Snapshot,
-};
 use ketchup_geometry::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+};
+use ketchup_model::document::{
+    BodyId, CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind,
+    Proposal, ProposalContext, ProposalPrepareError, Snapshot,
 };
 use std::fmt;
 

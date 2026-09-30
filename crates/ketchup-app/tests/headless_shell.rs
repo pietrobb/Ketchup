@@ -18,6 +18,10 @@ use ketchup_app::{
     RectangularPatternSpec, ViewFlag,
 };
 use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_interaction::{
+    Axis, ElementId, LocaleCatalog, Side, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
+    mesh_projection::MeshInteractionProjection,
+};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
     EdgeFinishKind, EvaluationIdentity, FaceRef, FeatureId, FeatureKind, FeatureParameterBinding,
@@ -36,10 +40,6 @@ use ketchup_model::graph::{EvaluationStatus, EvaluatorNodeKind};
 use ketchup_model::import::{ImportFormat, StepImportMesh, StepMeshTriangle};
 use ketchup_model::persistence;
 use ketchup_model::topology::TopologicalElementKind;
-use ketchup_interaction::{
-    Axis, ElementId, LocaleCatalog, Side, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
-    mesh_projection::MeshInteractionProjection,
-};
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 const PARAMETRIC_PROFILE: FeatureId = FeatureId(10);

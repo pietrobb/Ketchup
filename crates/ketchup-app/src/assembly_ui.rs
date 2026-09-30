@@ -1,4 +1,6 @@
 use super::*;
+use ketchup_geometry::prismatic::Aabb;
+use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
     AssemblyRecomputePublishError, AssemblyRecomputeStatus, AssemblySolveResult,
@@ -23,8 +25,6 @@ use ketchup_model::mechanical_coupling::{
     AssemblyTransmissionKind, CoupledJointKind, GearMeshKind, ScrewHandedness,
 };
 use ketchup_model::tolerance::ROUNDING;
-use ketchup_geometry::prismatic::Aabb;
-use ketchup_interaction::projection::CanonicalInteractionProjection;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MateKindChoice {

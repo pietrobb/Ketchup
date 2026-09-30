@@ -1,6 +1,7 @@
 #[path = "support/generic_sketch_pocket.rs"]
 mod fixture;
 use fixture::*;
+use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity, SketchEntityId, WorkplaneFrame};
 use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
     DocumentStore, FeatureId, FeatureKind, ProfileSegment,
@@ -10,7 +11,6 @@ use ketchup_model::exact_brep_graph::{
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_model::persistence;
-use ketchup_geometry::sketch::{PrincipalPlane, SketchEntity, SketchEntityId, WorkplaneFrame};
 use std::collections::BTreeSet;
 
 #[test]

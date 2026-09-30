@@ -4,6 +4,7 @@ use ketchup_application::evaluation::{
 use ketchup_application::workflow_trace::{
     AssemblyWorkflowTraceRecorder, WorkflowEvidenceKind, WorkflowPhase, WorkflowRunProfile,
 };
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::assembly_recipe::{
     AssemblyRecipe, RecipeEditScope, RecipeKey, RecipePartAdoption, RecipePartMobility,
     RecognizedRecipeFeatureKind,
@@ -13,7 +14,6 @@ use ketchup_model::document::{
     InstancePath, OccurrenceId, Transform,
 };
 use ketchup_model::{graph::sha256_hex, persistence};
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

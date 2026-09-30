@@ -41,6 +41,33 @@ use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadLoftContinuity,
 };
+use ketchup_geometry::prismatic::JointId;
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
+    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
+    SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+};
+use ketchup_interaction::{
+    Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
+    SnapResult, Vec3,
+    exact_projection::{
+        ExactInteractionProjection, SnapshotBoundTopologicalSelection, TopologicalPickLocator,
+    },
+    mesh_projection::{MeshInteractionProjection, canonical_sketch_profile_mesh},
+    projection::{
+        CanonicalInteractionProjection, InteractionProjection, ProjectedBox,
+        definition_requires_evaluated_geometry,
+    },
+};
+use ketchup_manufacturing::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
+use ketchup_manufacturing::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
+use ketchup_manufacturing::fabrication::{
+    BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
+    project_general_fabrication,
+};
+use ketchup_manufacturing::three_mf_export::{
+    ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
+};
 use ketchup_model::cam::{CamPlanId, CamPostprocessorDialect};
 use ketchup_model::document::{
     AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand,
@@ -104,33 +131,6 @@ use ketchup_model::tolerance::{
 };
 use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_model::validation::ValidatorRoleIndex;
-use ketchup_geometry::prismatic::JointId;
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
-    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
-    SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-};
-use ketchup_interaction::{
-    Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
-    SnapResult, Vec3,
-    exact_projection::{
-        ExactInteractionProjection, SnapshotBoundTopologicalSelection, TopologicalPickLocator,
-    },
-    mesh_projection::{MeshInteractionProjection, canonical_sketch_profile_mesh},
-    projection::{
-        CanonicalInteractionProjection, InteractionProjection, ProjectedBox,
-        definition_requires_evaluated_geometry,
-    },
-};
-use ketchup_manufacturing::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
-use ketchup_manufacturing::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
-use ketchup_manufacturing::fabrication::{
-    BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
-    project_general_fabrication,
-};
-use ketchup_manufacturing::three_mf_export::{
-    ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
-};
 use ketchup_pdm::local::{
     ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseConflictVerdict,
     ReleaseDependencyInput, ReleaseManifest,
@@ -5871,25 +5871,25 @@ impl KetchupApp {
         let owned_identity = (self.file.path.as_deref() == Some(path))
             .then_some(self.file.identity)
             .flatten();
-        let expected_identity = match ketchup_model::persistence::read_native_document_identity(path)
-        {
-            Ok(identity) => Some(identity),
-            Err(ketchup_model::persistence::FilePersistenceError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound =>
-            {
-                None
-            }
-            Err(error) => {
-                self.digest = self.catalog.format(
-                    "error-save-document",
-                    &BTreeMap::from([
-                        ("path", path.display().to_string()),
-                        ("reason", error.to_string()),
-                    ]),
-                );
-                return false;
-            }
-        };
+        let expected_identity =
+            match ketchup_model::persistence::read_native_document_identity(path) {
+                Ok(identity) => Some(identity),
+                Err(ketchup_model::persistence::FilePersistenceError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    None
+                }
+                Err(error) => {
+                    self.digest = self.catalog.format(
+                        "error-save-document",
+                        &BTreeMap::from([
+                            ("path", path.display().to_string()),
+                            ("reason", error.to_string()),
+                        ]),
+                    );
+                    return false;
+                }
+            };
         if owned_identity.is_some_and(|owned| Some(owned) != expected_identity) {
             self.digest = self.catalog.format(
                 "error-save-document",
@@ -9491,7 +9491,9 @@ impl KetchupApp {
                 presentation,
             } => {
                 let target = match target {
-                    ketchup_model::document::PersistentDimensionTarget::FeatureParameter(target) => {
+                    ketchup_model::document::PersistentDimensionTarget::FeatureParameter(
+                        target,
+                    ) => {
                         format!("{}:{}", target.feature_id.0, target.path.as_str())
                     }
                     ketchup_model::document::PersistentDimensionTarget::DerivedOutput(identity) => {

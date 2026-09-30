@@ -1,11 +1,11 @@
 use crate::spatial::{SnapshotBinding, SpatialBounds, SpatialIndex, SpatialQueryStats};
 use crate::{InteractionError, InteractionScene, SharedBoxGeometry, Vec3};
+use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId,
     ProfileSegment, SceneOccurrence, SceneQueryBudgetExceeded, Snapshot, Transform,
 };
 use ketchup_model::tolerance::ROUNDING;
-use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

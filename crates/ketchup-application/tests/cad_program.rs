@@ -7,6 +7,9 @@ use ketchup_application::{
     plan_assistant_cad_edit_program_with_outputs as plan_with_outputs,
 };
 use ketchup_assistant::sidecar::*;
+use ketchup_geometry::sketch::{
+    PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+};
 use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
@@ -23,9 +26,6 @@ use ketchup_model::exact_brep_graph::{
 use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
 use ketchup_model::persistence::{ContainerData, LoadOutcome, load, save, save_document_store};
 use ketchup_model::testing::box_package;
-use ketchup_geometry::sketch::{
-    PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
-};
 use std::sync::Arc;
 
 fn part() -> AssistantCadEditOperation {
@@ -5060,7 +5060,9 @@ fn public_assistant_cam_setup_is_exact_bound_atomic_undoable_and_fail_closed() {
         .is_err()
     );
     assert_eq!(
-        document.current().cam_plan(ketchup_model::cam::CamPlanId(1)),
+        document
+            .current()
+            .cam_plan(ketchup_model::cam::CamPlanId(1)),
         Some(&cam)
     );
 }

@@ -24,6 +24,13 @@ use ketchup_assistant::sidecar::{
     AssistantSketchPointRef, AssistantSubtractionIntent, AssistantTranslationIntent,
     AssistantWorkplaneSpec,
 };
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
+    SketchSpec, WorkplaneSpec,
+};
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
+use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode,
     ClassificationCategoryId, ClassificationDimensionId, CommandBatch, DefinitionId, Dimension,
@@ -40,13 +47,6 @@ use ketchup_model::persistence;
 use ketchup_model::state_view::encode_semantic_state;
 use ketchup_model::topology::{TopologicalElementKind, TopologicalReferenceStability};
 use ketchup_model::validation::VALIDATOR_ROLE_DIMENSION_V1;
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
-    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
-    SketchSpec, WorkplaneSpec,
-};
-use ketchup_geometry::sketch::{PadOperation, PadProfile};
-use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

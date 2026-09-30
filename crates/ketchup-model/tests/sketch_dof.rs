@@ -1,11 +1,11 @@
-use ketchup_model::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-};
-use ketchup_model::persistence;
 use ketchup_geometry::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchError, SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSpec,
 };
+use ketchup_model::document::{
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
+};
+use ketchup_model::persistence;
 
 fn point(entity: u64, point: SketchPointKind) -> SketchPointRef {
     SketchPointRef {

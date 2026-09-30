@@ -1,4 +1,9 @@
 use super::*;
+use ketchup_geometry::sketch::{
+    MAX_SKETCH_CONSTRAINTS, PadOperation, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity,
+    SketchEntityId, SketchError,
+};
 use ketchup_model::document::FeatureParameterTarget;
 use ketchup_model::exact_product::body_exact_graph;
 use ketchup_model::feature_history::{
@@ -16,11 +21,6 @@ use ketchup_model::shared_change::{
     project_occurrence_fork_impact, project_shared_change_impact,
 };
 use ketchup_model::tolerance::ROUNDING;
-use ketchup_geometry::sketch::{
-    MAX_SKETCH_CONSTRAINTS, PadOperation, SketchConstraint, SketchConstraintId,
-    SketchConstraintKind, SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity,
-    SketchEntityId, SketchError,
-};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FeatureHistoryPreviewKind {
@@ -2072,7 +2072,9 @@ impl KetchupApp {
                 ketchup_model::document::RevisionOrigin::Principal(
                     ProposalPrincipal::LocalAssistant,
                 ) => self.catalog.text("revision-history-origin-assistant"),
-                ketchup_model::document::RevisionOrigin::Principal(ProposalPrincipal::Human(id)) => {
+                ketchup_model::document::RevisionOrigin::Principal(ProposalPrincipal::Human(
+                    id,
+                )) => {
                     format!(
                         "{} {id}",
                         self.catalog.text("revision-history-origin-human")

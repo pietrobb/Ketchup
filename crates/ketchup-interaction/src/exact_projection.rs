@@ -10,7 +10,9 @@ use ketchup_model::document::{
     ProposalCommitError, ProposalContext, ProposalDiffEntry, ProposalPrepareError, Revision,
     Snapshot, Transform,
 };
-use ketchup_model::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
+use ketchup_model::exact_product::{
+    AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry,
+};
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceQuarantineReason,

@@ -21,6 +21,10 @@ use ketchup_assistant::sidecar::{
     AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
     AssistantWorkplaneSpec, validated_spatial_path_segments,
 };
+use ketchup_geometry::sketch::{
+    PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
+};
+use ketchup_interaction::Vec3;
 use ketchup_model::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
     preview_assembly_joint_drag,
@@ -50,10 +54,6 @@ use ketchup_model::pin_joint::{
 };
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::topology::TopologicalElementKind;
-use ketchup_geometry::sketch::{
-    PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
-};
-use ketchup_interaction::Vec3;
 use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};

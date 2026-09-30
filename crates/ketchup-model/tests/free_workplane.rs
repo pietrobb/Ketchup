@@ -1,11 +1,11 @@
+use ketchup_geometry::sketch::{
+    PrincipalPlane, SketchError, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind,
 };
 use ketchup_model::persistence;
 use ketchup_model::testing::with_document_id;
-use ketchup_geometry::sketch::{
-    PrincipalPlane, SketchError, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-};
 
 fn frame() -> WorkplaneFrame {
     WorkplaneFrame::from_axes([120.0, -40.0, 70.0], [0.8, 0.6, 0.0], [0.0, 0.0, 1.0]).unwrap()

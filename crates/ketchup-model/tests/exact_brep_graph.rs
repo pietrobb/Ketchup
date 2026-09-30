@@ -1,3 +1,12 @@
+use ketchup_exact::{
+    MAX_PLANAR_LOOP_SEGMENTS, MAX_PLANAR_REGION_HOLES, MAX_PLANAR_REGION_SEGMENTS,
+};
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
+};
 use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
     Dimension, DocumentStore, EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind,
@@ -20,15 +29,6 @@ use ketchup_model::testing::box_package;
 use ketchup_model::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, TolerancePolicy};
 use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
-};
-use ketchup_exact::{
-    MAX_PLANAR_LOOP_SEGMENTS, MAX_PLANAR_REGION_HOLES, MAX_PLANAR_REGION_SEGMENTS,
-};
-use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
-    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
 };
 
 const DEFINITION: DefinitionId = DefinitionId(1);

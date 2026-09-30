@@ -1,3 +1,10 @@
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchConstraint,
+    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind,
+    SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
+};
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
     EdgeFinishKind, EdgeRef, FaceRef, FeatureEvaluationState, FeatureId, FeatureKind, OccurrenceId,
@@ -13,13 +20,6 @@ use ketchup_model::state_view::encode_semantic_state;
 use ketchup_model::testing::box_package;
 use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
-};
-use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchConstraint,
-    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind,
-    SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;

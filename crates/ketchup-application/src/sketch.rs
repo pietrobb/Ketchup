@@ -2,11 +2,11 @@ use ketchup_assistant::sidecar::{
     AssistantPrincipalPlane, AssistantSketchConstraint, AssistantSketchEntity,
     AssistantSketchPointKind, AssistantSketchPointRef,
 };
-use ketchup_model::document::{CanonicalError, Dimension};
 use ketchup_geometry::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
     SketchEntityId, SketchPointKind, SketchPointRef,
 };
+use ketchup_model::document::{CanonicalError, Dimension};
 
 pub(crate) fn assistant_principal_plane(plane: AssistantPrincipalPlane) -> PrincipalPlane {
     match plane {

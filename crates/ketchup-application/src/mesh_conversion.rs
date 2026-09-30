@@ -9,6 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
     FeatureKind, MeshBodySpec, Snapshot, Transform,
@@ -18,10 +22,6 @@ use ketchup_model::exact_product::ExactBRepGraphPackage;
 use ketchup_model::mesh_recognition::{
     CylinderRecognition, MeshRecognition, MeshRecognitionCandidate, MeshRecognitionResiduals,
     recognize_mesh_body_cancellable,
-};
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchEntity,
-    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 

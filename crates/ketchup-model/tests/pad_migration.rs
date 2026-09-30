@@ -1,12 +1,12 @@
 //! Documents written before extrusions, pockets and through cuts became one `Pad`
 //! load as pads that keep their digest, parameter targets and exact geometry.
 
+use ketchup_geometry::sketch::{CutStart, FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::{
     DefinitionId, FeatureId, FeatureKind, PersistentDimensionId, PersistentDimensionTarget,
 };
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_model::persistence;
-use ketchup_geometry::sketch::{CutStart, FeatureExtent, PadOperation, PadProfile, PadSpec};
 
 /// Written by the retired field-by-field codec: a part with a sketch pocket (15),
 /// a part with a downward extrusion (31), and a part with an extrusion (41), a

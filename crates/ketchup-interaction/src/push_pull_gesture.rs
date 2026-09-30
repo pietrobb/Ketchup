@@ -4,12 +4,12 @@ use crate::face_intent::{
     FaceIntentError, FaceWorkplaneContext, ResolvedFaceIntent, TransientFaceIntent,
 };
 use crate::spatial::SnapshotBinding;
+use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind,
     Proposal, ProposalContext, ProposalPrepareError, Snapshot,
 };
 use ketchup_model::exact_product::{BodySubshapeRef, ExactFaceRole};
-use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use std::collections::BTreeSet;
 use std::fmt;
 

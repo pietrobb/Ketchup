@@ -5,11 +5,11 @@ use crate::spatial::{
     ray_triangle_distance, transform_point, transformed_bounds,
 };
 use crate::{Ray, Vec3};
+use ketchup_geometry::sketch::SolvedSketchRegionProfile;
 use ketchup_model::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, ProfileSegment, Snapshot, Transform,
 };
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
-use ketchup_geometry::sketch::SolvedSketchRegionProfile;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

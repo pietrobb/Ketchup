@@ -1,9 +1,3 @@
-use ketchup_model::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Transform,
-};
-use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
-use ketchup_model::testing::box_package;
 use ketchup_interaction::exact_projection::ExactInteractionProjection;
 use ketchup_interaction::mesh_projection::MeshInteractionProjection;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
@@ -12,6 +6,12 @@ use ketchup_interaction::spatial::{
     overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
 };
 use ketchup_interaction::{Ray, Vec3};
+use ketchup_model::document::{
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
+    InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Transform,
+};
+use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
+use ketchup_model::testing::box_package;
 use std::sync::{Arc, atomic::AtomicBool};
 
 const DEFINITION: DefinitionId = DefinitionId(1);

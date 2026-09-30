@@ -7,13 +7,13 @@ use crate::diagnostics::{
     AssistantRejection, assistant_canonical_rejection, assistant_planning_rejection,
 };
 use crate::sketch::assistant_sketch_entities;
+use ketchup_geometry::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
 use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, ChamferMode, DefinitionId,
     Dimension, EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind, LoftContinuity,
     LoftSection, ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection,
     SpatialPathSegment, Transform,
 };
-use ketchup_geometry::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
 use ketchup_program::model::{
     Part, ProgramBoolean, ProgramBooleanKind, ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind,
     ProgramFaceOffset, ProgramLoftSection, ProgramMirror, ProgramOperation, ProgramPartBody,

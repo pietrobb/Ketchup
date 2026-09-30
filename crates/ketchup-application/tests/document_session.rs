@@ -6,12 +6,12 @@ use ketchup_application::{
     scoped_static_load_report,
 };
 use ketchup_assistant::sidecar::*;
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile, PadSpec};
 use ketchup_model::{
     document::*,
     exact_product::{ExactBodyPackage, ExactResultRegistry},
     persistence::{self, ContainerData},
 };
-use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile, PadSpec};
 use std::{collections::BTreeSet, time::Duration};
 #[test]
 fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {

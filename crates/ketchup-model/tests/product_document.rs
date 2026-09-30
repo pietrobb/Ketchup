@@ -1,4 +1,9 @@
 use ciborium::Value;
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
+    SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec,
+};
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, CanonicalError, CollectionId, CommandBatch,
     ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit,
@@ -20,11 +25,6 @@ use ketchup_model::exact_product::producer_exact_graph;
 use ketchup_model::persistence;
 use ketchup_model::state_view::encode_semantic_state;
 use ketchup_model::testing::{cbor_entry, rewrite_saved_snapshot, with_document_id};
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_geometry::sketch::{
-    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
-    SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec,
-};
 
 const CABINET: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(10);

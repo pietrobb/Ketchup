@@ -4,11 +4,11 @@ use ketchup_model::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
-use ketchup_model::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
-use ketchup_model::import::{DxfImportOptions, inspect_dxf};
 use ketchup_geometry::sketch::{
     SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
+use ketchup_model::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
+use ketchup_model::import::{DxfImportOptions, inspect_dxf};
 
 pub const DXF_PROFILE_EXPORT_SCHEMA_V1: &str = "ketchup.dxf-profile-export.v1";
 const MAX_EXPORT_PROFILES: usize = 170;

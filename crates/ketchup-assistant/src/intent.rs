@@ -706,7 +706,9 @@ pub fn propose_intent(
             .map_err(ketchup_model::document::CanonicalError::from)?;
             let snapshot = store.current();
             if snapshot.resolve_slot(&identity) != SlotResolution::Resolved {
-                return Err(ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into());
+                return Err(
+                    ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into(),
+                );
             }
             if !snapshot.evaluator_node(rule).is_some_and(|node| {
                 node.allowed_parameters()
@@ -793,7 +795,8 @@ pub fn propose_intent(
             }
             if !snapshot.has_feature_parameter(&dimension_target) {
                 return Err(
-                    ketchup_model::document::CanonicalError::InvalidPersistentDimensionTarget.into(),
+                    ketchup_model::document::CanonicalError::InvalidPersistentDimensionTarget
+                        .into(),
                 );
             }
             (
@@ -888,7 +891,9 @@ pub fn propose_intent(
             if snapshot.resolve_slot(&participant_a) != SlotResolution::Resolved
                 || snapshot.resolve_slot(&participant_b) != SlotResolution::Resolved
             {
-                return Err(ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into());
+                return Err(
+                    ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into(),
+                );
             }
             (
                 ProposalGoal::CreateJoint(target),
@@ -930,8 +935,10 @@ pub fn propose_intent(
             let mut bindings = snapshot.feature_parameter_bindings();
             let Some(binding) = bindings.next() else {
                 return Err(
-                    ketchup_model::document::CanonicalError::FeatureParameterBindingNotFound(target)
-                        .into(),
+                    ketchup_model::document::CanonicalError::FeatureParameterBindingNotFound(
+                        target,
+                    )
+                    .into(),
                 );
             };
             if binding.target != target || bindings.next().is_some() {
@@ -1230,15 +1237,17 @@ pub fn propose_intent(
                 ketchup_model::document::CanonicalError::FeatureNotFound(source_feature),
             )?;
             if !matches!(feature.kind(), FeatureKind::Profile { .. }) {
-                return Err(ketchup_model::document::CanonicalError::FeatureIsNotProfile(
-                    source_feature,
-                )
-                .into());
+                return Err(
+                    ketchup_model::document::CanonicalError::FeatureIsNotProfile(source_feature)
+                        .into(),
+                );
             }
             if snapshot.definition(new_definition).is_some() {
                 return Err(
-                    ketchup_model::document::CanonicalError::DefinitionAlreadyExists(new_definition)
-                        .into(),
+                    ketchup_model::document::CanonicalError::DefinitionAlreadyExists(
+                        new_definition,
+                    )
+                    .into(),
                 );
             }
             if snapshot.feature(new_feature).is_some() {
@@ -1266,11 +1275,9 @@ pub fn propose_intent(
             name,
         } => {
             let snapshot = store.current();
-            snapshot
-                .group(target)
-                .ok_or(ketchup_model::document::CanonicalError::GroupNotFound(
-                    target,
-                ))?;
+            snapshot.group(target).ok_or(
+                ketchup_model::document::CanonicalError::GroupNotFound(target),
+            )?;
             if snapshot
                 .groups()
                 .any(|group| group.parent() == Some(target))
@@ -1282,14 +1289,18 @@ pub fn propose_intent(
             }
             if snapshot.definition(new_definition).is_some() {
                 return Err(
-                    ketchup_model::document::CanonicalError::DefinitionAlreadyExists(new_definition)
-                        .into(),
+                    ketchup_model::document::CanonicalError::DefinitionAlreadyExists(
+                        new_definition,
+                    )
+                    .into(),
                 );
             }
             if snapshot.occurrence(new_occurrence).is_some() {
                 return Err(
-                    ketchup_model::document::CanonicalError::OccurrenceAlreadyExists(new_occurrence)
-                        .into(),
+                    ketchup_model::document::CanonicalError::OccurrenceAlreadyExists(
+                        new_occurrence,
+                    )
+                    .into(),
                 );
             }
             (

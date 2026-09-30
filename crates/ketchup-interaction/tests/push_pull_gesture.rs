@@ -1,12 +1,3 @@
-use ketchup_model::document::{
-    BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureEvaluationState, FeatureId, FeatureKind,
-};
-use ketchup_model::exact_product::{
-    BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactProductError, ExactResultRegistry,
-};
-use ketchup_model::persistence;
-use ketchup_model::testing::box_package;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
 use ketchup_interaction::face_intent::{
@@ -16,6 +7,15 @@ use ketchup_interaction::push_pull_gesture::{
     PushPullGestureError, PushPullPreviewSource, PushPullSnapCandidate, PushPullSnapKind,
     PushPullSnapSettings, SmartPushPullGesture,
 };
+use ketchup_model::document::{
+    BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore,
+    FeatureEvaluationState, FeatureId, FeatureKind,
+};
+use ketchup_model::exact_product::{
+    BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactProductError, ExactResultRegistry,
+};
+use ketchup_model::persistence;
+use ketchup_model::testing::box_package;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

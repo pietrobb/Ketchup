@@ -1,10 +1,3 @@
-use ketchup_model::document::{
-    BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind,
-};
-use ketchup_model::exact_product::{ExactFaceRole, ExactResultRegistry};
-use ketchup_model::persistence;
-use ketchup_model::testing::box_package;
 use ketchup_geometry::sketch::{
     PrincipalPlane, SketchSolveStatus, WorkplaneFrame, WorkplaneSupport, WorkplaneSupportHealth,
 };
@@ -15,6 +8,13 @@ use ketchup_interaction::rectangle_face_authoring::{
     RectangleAuthoringError, RectangleDirection, RectangleFaceAuthoring, RectangleFeatureIds,
     RectangleSize,
 };
+use ketchup_model::document::{
+    BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+    FeatureKind,
+};
+use ketchup_model::exact_product::{ExactFaceRole, ExactResultRegistry};
+use ketchup_model::persistence;
+use ketchup_model::testing::box_package;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

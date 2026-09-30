@@ -1,3 +1,6 @@
+use ketchup_manufacturing::blender_export::{
+    ExactGlbInstance, MAX_GLB_EXPORT_INSTANCES, exact_model_glb_export,
+};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, MeshAuthority, OccurrenceId, Transform,
@@ -14,9 +17,6 @@ use ketchup_model::mesh_recognition::{
 };
 use ketchup_model::persistence;
 use ketchup_model::testing::box_package;
-use ketchup_manufacturing::blender_export::{
-    ExactGlbInstance, MAX_GLB_EXPORT_INSTANCES, exact_model_glb_export,
-};
 use serde_json::Value;
 
 const DEFINITION: DefinitionId = DefinitionId(1);

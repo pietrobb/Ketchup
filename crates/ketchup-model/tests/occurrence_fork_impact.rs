@@ -1,3 +1,4 @@
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
@@ -23,7 +24,6 @@ use ketchup_model::shared_change::{
     SharedChangeExportFormat, commit_occurrence_fork_change, project_occurrence_fork_impact,
 };
 use ketchup_model::testing::box_package;
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -103,7 +103,10 @@ fn planar_endpoint(
     AssemblyMateEndpoint::resolved_planar_face(occurrence_id, attachment.clone())
 }
 
-fn registry(snapshot: &ketchup_model::document::Snapshot, fingerprint: &str) -> ExactResultRegistry {
+fn registry(
+    snapshot: &ketchup_model::document::Snapshot,
+    fingerprint: &str,
+) -> ExactResultRegistry {
     ExactResultRegistry::accept(snapshot, [Arc::new(exact_package(snapshot, fingerprint))]).unwrap()
 }
 

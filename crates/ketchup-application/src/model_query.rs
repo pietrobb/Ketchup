@@ -2,6 +2,10 @@
 //! Occurrences are document/root records (including group members), not expanded
 //! definition-local instances. Definitions/features are the full canonical catalogs.
 use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantInstancePathStep};
+use ketchup_interaction::Vec3;
+use ketchup_interaction::projection::{
+    CanonicalInteractionProjection, InteractionProjection, ProjectedOccurrence,
+};
 use ketchup_model::assembly::{AssemblyMateKind, AssemblyReferenceHealth};
 use ketchup_model::assembly_joint::AssemblyJointKind;
 use ketchup_model::document::{
@@ -15,10 +19,6 @@ use ketchup_model::exact_product::{
 };
 use ketchup_model::pin_joint::project_pin_joint_contract;
 use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
-use ketchup_interaction::Vec3;
-use ketchup_interaction::projection::{
-    CanonicalInteractionProjection, InteractionProjection, ProjectedOccurrence,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque, hash_map::RandomState};

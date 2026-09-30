@@ -21,6 +21,7 @@ use ketchup_assistant::sidecar::{
     AssistantCadWeldmentJointPolicy, AssistantCadWeldmentJointPrimary, AssistantCamToolKind,
     AssistantCamWorkOffset, AssistantChatResult, AssistantFeaReviewRequest,
 };
+use ketchup_interaction::Vec3;
 use ketchup_model::document::{
     CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
     DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId, OccurrenceId,
@@ -32,7 +33,6 @@ use ketchup_model::import::{
     MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, inspect_dxf,
 };
 use ketchup_model::mesh_recognition::{MeshRecognition, recognize_mesh_body};
-use ketchup_interaction::Vec3;
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 fn compose_two_shared_occurrences(shell: &mut Shell) {

@@ -385,13 +385,15 @@ fn complete_view_names_every_field_and_text_each_committed_document_stores() {
             .unwrap()
             .snapshot();
         let mut names = std::collections::BTreeSet::new();
-        let _ =
-            ketchup_model::testing::rewrite_saved_snapshot(&persistence::save(&snapshot), |saved| {
+        let _ = ketchup_model::testing::rewrite_saved_snapshot(
+            &persistence::save(&snapshot),
+            |saved| {
                 saved_names(
                     ketchup_model::testing::cbor_entry(saved, "product"),
                     &mut names,
                 );
-            });
+            },
+        );
         let complete = encode_semantic_state(&snapshot).complete();
         for name in &names {
             assert!(

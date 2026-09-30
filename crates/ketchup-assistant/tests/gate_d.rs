@@ -2,6 +2,8 @@ use ketchup_assistant::intent::{
     IntentCapability, IntentError, IntentGrant, IntentRequest, RequestingPrincipal, WorkflowIntent,
     propose_intent,
 };
+use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId};
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::{
     AuthenticatedApprover, AuthoritativeDependency, CanonicalCommand, CollectionId, CommandBatch,
     DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentStore,
@@ -18,8 +20,6 @@ use ketchup_model::space::{
     ClearanceSeverity, ClearanceVolumeId, SpaceId,
 };
 use ketchup_model::tolerance::TolerancePolicy;
-use ketchup_geometry::prismatic::{Aabb, CanonicalJoint, JointId};
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 
 const RULE: NodeId = NodeId(1);
 const EXPRESSION_INPUT: NodeId = NodeId(2);
@@ -797,9 +797,9 @@ fn gate_d_occurrence_tag_is_observational_and_commits_one_verified_batch() {
             ketchup_model::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Occurrence(OCCURRENCE),
             ),
-            ketchup_model::document::ProposalAssumption::TargetExists(AuthoritativeDependency::Tag(
-                TAG
-            ),),
+            ketchup_model::document::ProposalAssumption::TargetExists(
+                AuthoritativeDependency::Tag(TAG),
+            ),
         ]
     );
     assert_eq!(

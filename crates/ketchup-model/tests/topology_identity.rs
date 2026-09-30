@@ -1,3 +1,4 @@
+use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneSpec};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore,
     EdgeFinishKind, EdgeRef, FaceRef, FeatureId, FeatureKind, Snapshot,
@@ -18,7 +19,6 @@ use ketchup_model::topology::{
     canonical_topological_lineage_digest, publish_generated_topological_references,
     resolve_topological_reference, topological_edge_provenance_tokens,
 };
-use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneSpec};
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);

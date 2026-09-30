@@ -1,3 +1,7 @@
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{
+    SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+};
 use ketchup_model::assembly_recipe::{
     ASSEMBLY_RECIPE_SCHEMA_V1, AssemblyRecipe, AssemblyRecipeCompileError, AssemblyRecipeError,
     RecipeDimensionAnchor, RecipeEditScope, RecipeFaceRef, RecipeJoinery, RecipeKey,
@@ -13,10 +17,6 @@ use ketchup_model::document::{
 use ketchup_model::persistence;
 use ketchup_model::pin_joint::{
     PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair, PinSpec,
-};
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_geometry::sketch::{
-    SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
 use std::collections::BTreeMap;
 
@@ -353,8 +353,8 @@ fn rectangular_sketch_pad_dimensions_preserve_anchors_and_entity_identity() {
 
 #[test]
 fn sketch_bounds_parameters_reject_constraints_and_nonrectangular_profiles() {
-    use ketchup_model::document::ParameterPath;
     use ketchup_geometry::sketch::{SketchConstraint, SketchConstraintId, SketchConstraintKind};
+    use ketchup_model::document::ParameterPath;
     let corners = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]];
     let rectangle = SketchSpec {
         workplane: FeatureId(1),
@@ -1890,7 +1890,8 @@ fn dependent_physical_holes_follow_rebound_joinery_without_changing_identity() {
         );
         assert_eq!(document.visible_undo_steps(), 1);
     }
-    let projection = ketchup_model::pin_joint::project_pin_joint_contract(&snapshot, joint).unwrap();
+    let projection =
+        ketchup_model::pin_joint::project_pin_joint_contract(&snapshot, joint).unwrap();
     assert_eq!(projection.pairs.len(), 1);
     assert_eq!(
         projection.pairs[0]

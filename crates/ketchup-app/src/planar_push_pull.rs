@@ -2,8 +2,8 @@ use super::*;
 use ketchup_application::evaluation::{
     ProducerKey, publish_exact_products, start_exact_evaluation_scoped,
 };
-use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, SCREEN_ROUNDING_PX};
 use ketchup_interaction::exact_projection::ExactSurfaceHit;
+use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, SCREEN_ROUNDING_PX};
 #[cfg(test)]
 #[path = "planar_push_pull_tests.rs"]
 pub(crate) mod tests;

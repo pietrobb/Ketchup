@@ -1,3 +1,12 @@
+use ketchup_geometry::prismatic::Aabb;
+use ketchup_manufacturing::fabrication::{
+    BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
+    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
+    GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
+    GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
+    MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus, TIMBER_MATERIAL_V1,
+    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
+};
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
     CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId,
@@ -27,15 +36,6 @@ use ketchup_model::validation::{
     EvidenceClass, EvidenceCounts, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
     ValidatorRoleIndex,
-};
-use ketchup_geometry::prismatic::Aabb;
-use ketchup_manufacturing::fabrication::{
-    BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
-    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
-    GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
-    GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
-    MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus, TIMBER_MATERIAL_V1,
-    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
 };
 use std::sync::Arc;
 

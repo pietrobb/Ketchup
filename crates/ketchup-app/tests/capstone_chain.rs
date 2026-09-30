@@ -16,8 +16,8 @@ use eframe::egui::{Key, Vec2, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_model::document::{FeatureKind, OccurrenceId};
 use ketchup_interaction::Vec3;
+use ketchup_model::document::{FeatureKind, OccurrenceId};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},

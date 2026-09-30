@@ -3,8 +3,8 @@ use crate::harness;
 use eframe::egui::Key;
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
-use ketchup_model::document::FeatureKind;
 use ketchup_interaction::Vec3;
+use ketchup_model::document::FeatureKind;
 use std::{path::PathBuf, time::Duration};
 
 fn exact_worker_path() -> PathBuf {

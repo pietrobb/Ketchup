@@ -1,4 +1,10 @@
 use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
+    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
+};
 use ketchup_model::cam::{
     CamCollisionParticipant, CamCollisionTarget, CamCutParameters, CamFixture, CamMotionKind,
     CamOperation, CamPath2d, CamPathSegment2d, CamPlan, CamPlanId, CamPostprocessorDialect,
@@ -30,12 +36,6 @@ use ketchup_model::import::{StepImportMesh, StepMeshTriangle, plan_iges_import, 
 use ketchup_model::persistence;
 use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
-};
-use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
-    SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
 };
 use ketchup_scheduler::{
     DerivedResult, EvaluationScheduler, ExactFeaFaceTraction, ExactFeaSetup, ExactFeaSetupError,

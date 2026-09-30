@@ -23,6 +23,11 @@ use ketchup_assistant::sidecar::{
     AssistantCadRotation, AssistantChatResult, AssistantDistribution, AssistantPrincipalPlane,
     AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_manufacturing::fabrication::{
+    FABRICATION_ROLE_DIMENSION_V1, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
+    TIMBER_MEMBER_ROLE_V1,
+};
 use ketchup_model::document::{
     DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, InstancePath, Snapshot,
 };
@@ -40,11 +45,6 @@ use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_model::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
     ValidationState,
-};
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_manufacturing::fabrication::{
-    FABRICATION_ROLE_DIMENSION_V1, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
-    TIMBER_MEMBER_ROLE_V1,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::path::PathBuf;

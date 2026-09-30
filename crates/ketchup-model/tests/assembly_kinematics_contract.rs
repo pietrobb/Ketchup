@@ -1,3 +1,4 @@
+use ketchup_geometry::prismatic::Aabb;
 use ketchup_model::assembly_joint::{
     ASSEMBLY_JOINT_SCHEMA_V1, AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind,
     AssemblyJointLimits, AssemblyKinematicPublishError, AssemblyKinematicSolveError,
@@ -19,7 +20,6 @@ use ketchup_model::mechanical_coupling::{
 };
 use ketchup_model::persistence;
 use ketchup_model::state_view::encode_semantic_state;
-use ketchup_geometry::prismatic::Aabb;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const FIRST: OccurrenceId = OccurrenceId(10);

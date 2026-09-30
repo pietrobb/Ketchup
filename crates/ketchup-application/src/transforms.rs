@@ -1,6 +1,6 @@
+use ketchup_interaction::Vec3;
 use ketchup_model::document::{CanonicalError, GroupId, Snapshot, Transform};
 use ketchup_model::tolerance::NEGLIGIBLE;
-use ketchup_interaction::Vec3;
 
 pub fn translated_transform(
     transform: Transform,

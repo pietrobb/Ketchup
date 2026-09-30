@@ -13,6 +13,15 @@ use crate::{
     WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence, WorkerExactBRepGraphResult,
     WorkerExactVolumeBoundaryTriangle, WorkerExactVolumeMesh,
 };
+use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
+use ketchup_exact::{
+    AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec,
+    EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel, ExactOpOutput,
+    ExactPairRelation, ExactVolumeMeshOptions, FramedLoftProfile, FramedLoftSection,
+    FramedLoftSpec, LoftSurfaceContinuity, PlanarProfileLoop, PlanarProfileSegment, Point3,
+    RectangleOffsetSpec, ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment,
+    StepXdeExportNode, StepXdeExportPart,
+};
 use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
 use ketchup_model::document::Transform;
 use ketchup_model::exact_brep_graph::{
@@ -32,15 +41,6 @@ use ketchup_model::import::{
 use ketchup_model::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM};
 use ketchup_model::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
-};
-use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
-use ketchup_exact::{
-    AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec,
-    EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel, ExactOpOutput,
-    ExactPairRelation, ExactVolumeMeshOptions, FramedLoftProfile, FramedLoftSection,
-    FramedLoftSpec, LoftSurfaceContinuity, PlanarProfileLoop, PlanarProfileSegment, Point3,
-    RectangleOffsetSpec, ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment,
-    StepXdeExportNode, StepXdeExportPart,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read, Write};

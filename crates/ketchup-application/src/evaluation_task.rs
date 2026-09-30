@@ -249,15 +249,15 @@ pub fn publish_exact_products(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ketchup_geometry::sketch::{
+        PrincipalPlane, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    };
     use ketchup_model::document::{
         CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
         FeatureKind, OccurrenceId, Transform,
     };
     use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
     use ketchup_model::testing::box_package;
-    use ketchup_geometry::sketch::{
-        PrincipalPlane, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
-    };
 
     const DEFINITION: DefinitionId = DefinitionId(1);
     const PROFILE: FeatureId = FeatureId(10);

@@ -1,3 +1,9 @@
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchError, SketchPointKind,
+    SketchPointRef, SketchSpec, WorkplaneSpec,
+};
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use ketchup_model::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
     Dimension, DocumentStore, FeatureId, FeatureKind, ProposalCommitError, ProposalPrepareError,
@@ -8,12 +14,6 @@ use ketchup_model::feature_history::{
     prepare_body_parameter_edit,
 };
 use ketchup_model::persistence;
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
-    SketchConstraintKind, SketchEntity, SketchEntityId, SketchError, SketchPointKind,
-    SketchPointRef, SketchSpec, WorkplaneSpec,
-};
-use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use std::collections::BTreeSet;
 
 const PART: DefinitionId = DefinitionId(1);

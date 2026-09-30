@@ -12,6 +12,7 @@ use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_interaction::LocaleCatalog;
 use ketchup_model::assembly::{AssemblyMateKind, AssemblySolveStatus};
 use ketchup_model::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
@@ -27,7 +28,6 @@ use ketchup_model::mechanical_coupling::{
     AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
 use ketchup_model::persistence;
-use ketchup_interaction::LocaleCatalog;
 
 fn exact_worker_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))

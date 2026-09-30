@@ -5,6 +5,11 @@ use crate::harness;
 use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
+use ketchup_geometry::sketch::{
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+};
+use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use ketchup_model::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
@@ -16,11 +21,6 @@ use ketchup_model::document::{
 use ketchup_model::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
 use ketchup_model::persistence;
-use ketchup_geometry::sketch::{
-    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
-    SketchConstraintKind, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
-};
-use ketchup_geometry::sketch::{PadOperation, PadProfile};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

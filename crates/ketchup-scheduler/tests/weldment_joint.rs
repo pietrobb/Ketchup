@@ -1,3 +1,8 @@
+use ketchup_manufacturing::fabrication::{
+    FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
+    MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, WELDMENT_CUT_LIST_EXPORT_V1,
+    WELDMENT_DRAWING_SVG_V1, WeldmentCutTreatment, project_general_fabrication,
+};
 use ketchup_model::document::{
     CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
     DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, FeatureParameterTarget,
@@ -15,11 +20,6 @@ use ketchup_model::persistence::{self, ContainerData};
 use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_model::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationState,
-};
-use ketchup_manufacturing::fabrication::{
-    FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
-    MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, WELDMENT_CUT_LIST_EXPORT_V1,
-    WELDMENT_DRAWING_SVG_V1, WeldmentCutTreatment, project_general_fabrication,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::sync::Arc;

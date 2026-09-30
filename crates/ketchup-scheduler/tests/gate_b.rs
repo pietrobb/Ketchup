@@ -1,7 +1,7 @@
+use ketchup_exact::GeometryErrorCode;
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
-use ketchup_exact::GeometryErrorCode;
 use ketchup_scheduler::{
     DerivedResult, EvaluationScheduler, ExactWorkerClient, InsertOutcome, JobToken,
 };

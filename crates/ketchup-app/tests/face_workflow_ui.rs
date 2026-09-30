@@ -9,6 +9,9 @@ use ketchup_app::{
     dialogs::ScriptedFileDialogs,
     renderer::{DerivedRenderCache, InstancedRenderPlan},
 };
+use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneSupport};
+use ketchup_interaction::{ElementId, SnapKind, Vec3};
 use ketchup_model::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, OccurrenceId, ProfileSegment, Snapshot,
 };
@@ -17,9 +20,6 @@ use ketchup_model::exact_brep_graph::{
     ExactBRepPlanarSegment,
 };
 use ketchup_model::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactResultRegistry};
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneSupport};
-use ketchup_interaction::{ElementId, SnapKind, Vec3};
 
 fn open_face_workflow(shell: &mut Shell) {
     shell.click_command(AppCommand::Rectangle);
