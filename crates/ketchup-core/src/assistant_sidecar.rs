@@ -3,6 +3,7 @@ use crate::document::{
     is_valid_spatial_sweep_path,
 };
 use crate::exact_product::EXACT_MIN_LENGTH_MM;
+use crate::joinery::DowelSpec;
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use crate::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING};
 use serde::{Deserialize, Serialize};
@@ -781,13 +782,23 @@ pub struct AssistantDowelPhysicalHolePair {
     pub second_pocket_feature_id: u64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantStandardDowel {
-    D6x30,
-    D8x30,
-    D8x40,
-    D10x40,
+/// A cylindrical pin: its size and how much longer than the pin end each
+/// drilled hole is. Named sizes (such as the 8x30 dowel) are data in the
+/// program library, not a closed list here.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPin {
+    pub diameter_mm: f64,
+    pub length_mm: f64,
+    pub hole_clearance_mm: f64,
+}
+
+impl AssistantPin {
+    /// The pin split half and half between both parts.
+    #[must_use]
+    pub fn spec(self) -> DowelSpec {
+        DowelSpec::symmetric(self.diameter_mm, self.length_mm, self.hole_clearance_mm)
+    }
 }
 
 impl AssistantCadPartFeature {
@@ -2028,7 +2039,7 @@ pub enum AssistantCadEditOperation {
         row_unit_first_local: [f64; 3],
         count: u32,
         spacing_mm: f64,
-        dowel: AssistantStandardDowel,
+        pin: AssistantPin,
         #[serde(default)]
         physical_hole_pairs: Vec<AssistantDowelPhysicalHolePair>,
     },
@@ -2040,7 +2051,7 @@ pub enum AssistantCadEditOperation {
         row_unit_first_local: [f64; 3],
         count: u32,
         spacing_mm: f64,
-        dowel: AssistantStandardDowel,
+        pin: AssistantPin,
         physical_hole_pairs: Vec<AssistantProgramDowelPhysicalHolePair>,
     },
     CreatePhysicalDowelJoint {
@@ -2053,9 +2064,9 @@ pub enum AssistantCadEditOperation {
         row_unit_first_local: [f64; 3],
         count: u32,
         spacing_mm: f64,
-        dowel: AssistantStandardDowel,
+        pin: AssistantPin,
         /// Dowel length inserted into the first part; the rest goes into the
-        /// second. Omitted means half each. Lets a dowel go shallow into a thin
+        /// second. Omitted means half each. Lets a pin go shallow into a thin
         /// board face and deep into the mating board's end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         first_insertion_mm: Option<f64>,

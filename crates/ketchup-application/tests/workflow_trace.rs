@@ -591,7 +591,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
     use ketchup_core::assistant_sidecar::AssistantCadParameterValueType;
     use ketchup_core::assistant_sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantStandardDowel,
+        AssistantInstancePath, AssistantPin,
     };
     use ketchup_core::exact_product::ExactResultRegistry;
     use ketchup_core::joinery::project_dowel_joint_contract;
@@ -642,7 +642,11 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
             row_unit_first_local: direction,
             count: 3,
             spacing_mm: spacing,
-            dowel: AssistantStandardDowel::D8x30,
+            pin: AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
             first_insertion_mm: None,
         }
     };
@@ -1379,7 +1383,7 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
     use ketchup_application::plan_assistant_cad_edit_program;
     use ketchup_core::assistant_sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantStandardDowel,
+        AssistantInstancePath, AssistantPin,
     };
     use ketchup_core::exact_product::ExactResultRegistry;
     use ketchup_core::joinery::project_dowel_joint_contract;
@@ -1441,7 +1445,11 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
                     row_unit_first_local: [1.0, 0.0, 0.0],
                     count: 3,
                     spacing_mm: 100.0,
-                    dowel: AssistantStandardDowel::D8x30,
+                    pin: AssistantPin {
+                        diameter_mm: 8.0,
+                        length_mm: 30.0,
+                        hole_clearance_mm: 1.0,
+                    },
                     first_insertion_mm: None,
                 },
             )

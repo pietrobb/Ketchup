@@ -11,7 +11,7 @@ use ketchup_core::document::{
     TagId, Transform,
 };
 use ketchup_core::joinery::{
-    DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair, StandardDowel,
+    DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair, DowelSpec,
 };
 use ketchup_core::persistence;
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
@@ -86,7 +86,7 @@ fn dowel_joint() -> DowelJointContract {
         row_unit_first_local: [1.0, 0.0, 0.0],
         count: 3,
         spacing_mm: 32.0,
-        dowel: StandardDowel::D8x30.symmetric_spec(),
+        dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
         pair_offsets_first_local_mm: Vec::new(),
         physical_hole_pairs: None,
     }
@@ -1634,7 +1634,7 @@ fn dependent_joinery_document_with_physical_holes(
         row_unit_first_local: [1.0, 0.0, 0.0],
         count: if physical_holes { 1 } else { 3 },
         spacing_mm: 32.0,
-        dowel: StandardDowel::D8x30.symmetric_spec(),
+        dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
         pair_offsets_first_local_mm: Vec::new(),
         physical_hole_pairs: physical_holes.then(|| {
             vec![DowelPhysicalHolePair {

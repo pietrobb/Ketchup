@@ -42,38 +42,6 @@ pub struct DowelPhysicalHolePair {
     pub second_pocket_feature_id: FeatureId,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StandardDowel {
-    D6x30,
-    D8x30,
-    D8x40,
-    D10x40,
-}
-
-impl StandardDowel {
-    #[must_use]
-    pub const fn dimensions_mm(self) -> (f64, f64) {
-        match self {
-            Self::D6x30 => (6.0, 30.0),
-            Self::D8x30 => (8.0, 30.0),
-            Self::D8x40 => (8.0, 40.0),
-            Self::D10x40 => (10.0, 40.0),
-        }
-    }
-
-    #[must_use]
-    pub fn symmetric_spec(self) -> DowelSpec {
-        let (diameter_mm, length_mm) = self.dimensions_mm();
-        DowelSpec {
-            diameter_mm,
-            length_mm,
-            first_insertion_mm: length_mm / 2.0,
-            second_insertion_mm: length_mm / 2.0,
-            bottom_clearance_mm: 1.0,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DowelSpec {
     pub diameter_mm: f64,
@@ -84,6 +52,19 @@ pub struct DowelSpec {
 }
 
 impl DowelSpec {
+    /// A pin inserted half into each part, each hole `hole_clearance_mm`
+    /// deeper than the pin end.
+    #[must_use]
+    pub fn symmetric(diameter_mm: f64, length_mm: f64, hole_clearance_mm: f64) -> Self {
+        Self {
+            diameter_mm,
+            length_mm,
+            first_insertion_mm: length_mm / 2.0,
+            second_insertion_mm: length_mm / 2.0,
+            bottom_clearance_mm: hole_clearance_mm,
+        }
+    }
+
     fn validate(self) -> Result<(), DowelJointError> {
         if [
             self.diameter_mm,
@@ -803,7 +784,7 @@ mod tests {
             row_unit_world: [1.0, 0.0, 0.0],
             count: 3,
             spacing_mm: 32.0,
-            dowel: StandardDowel::D8x30.symmetric_spec(),
+            dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
         }
     }
 
@@ -881,7 +862,7 @@ mod tests {
         let diagnostic = validate_probe_coincidence(
             first,
             matching_second,
-            StandardDowel::D8x30.symmetric_spec(),
+            DowelSpec::symmetric(8.0, 30.0, 1.0),
         )
         .unwrap();
         assert_eq!(diagnostic.maximum_endpoint_error_mm, 0.0);
@@ -891,7 +872,7 @@ mod tests {
             ..matching_second
         };
         assert_eq!(
-            validate_probe_coincidence(first, offset_second, StandardDowel::D8x30.symmetric_spec(),),
+            validate_probe_coincidence(first, offset_second, DowelSpec::symmetric(8.0, 30.0, 1.0),),
             Err(DowelJointError::PhysicalDowelProbesDoNotCoincide)
         );
     }
@@ -920,21 +901,20 @@ mod tests {
     }
 
     #[test]
-    fn standard_presets_keep_dowel_length_and_hole_clearance_explicit() {
-        for preset in [
-            StandardDowel::D6x30,
-            StandardDowel::D8x30,
-            StandardDowel::D8x40,
-            StandardDowel::D10x40,
+    fn symmetric_pin_splits_length_and_rejects_invalid_sizes() {
+        let spec = DowelSpec::symmetric(10.0, 40.0, 1.5);
+        spec.validate().unwrap();
+        assert_eq!(spec.first_insertion_mm, 20.0);
+        assert_eq!(spec.second_insertion_mm, 20.0);
+        assert_eq!(spec.first_hole_depth_mm(), 21.5);
+        assert_eq!(spec.second_hole_depth_mm(), 21.5);
+        for invalid in [
+            DowelSpec::symmetric(0.0, 30.0, 1.0),
+            DowelSpec::symmetric(8.0, -30.0, 1.0),
+            DowelSpec::symmetric(8.0, 30.0, -1.0),
+            DowelSpec::symmetric(f64::NAN, 30.0, 1.0),
         ] {
-            let spec = preset.symmetric_spec();
-            spec.validate().unwrap();
-            assert_eq!(
-                spec.first_insertion_mm + spec.second_insertion_mm,
-                spec.length_mm
-            );
-            assert!(spec.first_hole_depth_mm() > spec.first_insertion_mm);
-            assert!(spec.second_hole_depth_mm() > spec.second_insertion_mm);
+            assert_eq!(invalid.validate(), Err(DowelJointError::InvalidDowel));
         }
     }
 
@@ -988,7 +968,7 @@ mod tests {
             row_unit_first_local: [1.0, 0.0, 0.0],
             count: 3,
             spacing_mm: 32.0,
-            dowel: StandardDowel::D8x30.symmetric_spec(),
+            dowel: DowelSpec::symmetric(8.0, 30.0, 1.0),
             pair_offsets_first_local_mm: Vec::new(),
             physical_hole_pairs: None,
         };

@@ -446,14 +446,17 @@ class Document:
         return self.apply([operation])
 
     def dowel_joint(self, name, first, second, first_center_local_mm,
-                    row_unit_first_local, count, spacing_mm, *, dowel="d8x30",
+                    row_unit_first_local, count, spacing_mm, *, pin,
                     physical_hole_pairs=()):
-        """Persist one relational row and optionally bind its physical pocket pairs."""
+        """Persist one relational row and optionally bind its physical pocket pairs.
+
+        ``pin`` is ``{"diameter_mm", "length_mm", "hole_clearance_mm"}``.
+        """
         return self.apply([{"operation": "create_dowel_joint", "name": name,
                             "first": dict(first), "second": dict(second),
                             "first_center_local_mm": list(first_center_local_mm),
                             "row_unit_first_local": list(row_unit_first_local),
-                            "count": count, "spacing_mm": spacing_mm, "dowel": dowel,
+                            "count": count, "spacing_mm": spacing_mm, "pin": dict(pin),
                             "physical_hole_pairs": [dict(pair) for pair in physical_hole_pairs]}])
 
     def create_sketch(self, definition_id, name, entities, *, constraints=(), workplane=None):

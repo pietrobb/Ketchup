@@ -23,7 +23,7 @@ use ketchup_core::assistant_sidecar::{
     AssistantCamWorkOffset, AssistantInstancePath, AssistantInstancePathStep, AssistantPanelHole,
     AssistantPanelPocket, AssistantPrincipalPlane, AssistantProgramDowelJointFace,
     AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
-    AssistantStandardDowel, AssistantWorkplaneSpec, validated_spatial_path_segments,
+    AssistantWorkplaneSpec, validated_spatial_path_segments,
 };
 use ketchup_core::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
@@ -46,7 +46,7 @@ use ketchup_core::exact_product::{
 };
 use ketchup_core::joinery::{
     DowelHole, DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair,
-    StandardDowel, project_dowel_joint_contract,
+    project_dowel_joint_contract,
 };
 use ketchup_core::sketch::{
     PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
@@ -2745,7 +2745,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 row_unit_first_local,
                 count,
                 spacing_mm,
-                dowel,
+                pin,
                 physical_hole_pairs,
             } => {
                 let id = next_dowel_joint.map(DowelJointId).ok_or_else(|| {
@@ -2790,13 +2790,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     row_unit_first_local: *row_unit_first_local,
                     count: *count,
                     spacing_mm: *spacing_mm,
-                    dowel: match dowel {
-                        AssistantStandardDowel::D6x30 => StandardDowel::D6x30,
-                        AssistantStandardDowel::D8x30 => StandardDowel::D8x30,
-                        AssistantStandardDowel::D8x40 => StandardDowel::D8x40,
-                        AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
-                    }
-                    .symmetric_spec(),
+                    dowel: pin.spec(),
                     pair_offsets_first_local_mm: Vec::new(),
                     physical_hole_pairs: (!physical_hole_pairs.is_empty()).then(|| {
                         physical_hole_pairs
@@ -2830,7 +2824,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 row_unit_first_local,
                 count,
                 spacing_mm,
-                dowel,
+                pin,
                 physical_hole_pairs,
             } => {
                 staged_planning.refresh(operation_name, &document_target)?;
@@ -2897,13 +2891,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     row_unit_first_local: *row_unit_first_local,
                     count: *count,
                     spacing_mm: *spacing_mm,
-                    dowel: match dowel {
-                        AssistantStandardDowel::D6x30 => StandardDowel::D6x30,
-                        AssistantStandardDowel::D8x30 => StandardDowel::D8x30,
-                        AssistantStandardDowel::D8x40 => StandardDowel::D8x40,
-                        AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
-                    }
-                    .symmetric_spec(),
+                    dowel: pin.spec(),
                     pair_offsets_first_local_mm: Vec::new(),
                     physical_hole_pairs: Some(pairs),
                 };
@@ -2930,17 +2918,11 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 row_unit_first_local,
                 count,
                 spacing_mm,
-                dowel,
+                pin,
                 first_insertion_mm,
             } => {
                 staged_planning.refresh(operation_name, &document_target)?;
-                let mut dowel_spec = match dowel {
-                    AssistantStandardDowel::D6x30 => StandardDowel::D6x30,
-                    AssistantStandardDowel::D8x30 => StandardDowel::D8x30,
-                    AssistantStandardDowel::D8x40 => StandardDowel::D8x40,
-                    AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
-                }
-                .symmetric_spec();
+                let mut dowel_spec = pin.spec();
                 if let Some(first_insertion) = *first_insertion_mm {
                     if !(first_insertion > 0.0 && first_insertion < dowel_spec.length_mm) {
                         return Err(assistant_planning_rejection(

@@ -2493,7 +2493,11 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
             row_unit_first_local: [1.0, 0.0, 0.0],
             count: 3,
             spacing_mm: 25.0,
-            dowel: AssistantStandardDowel::D8x30,
+            pin: AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
             physical_hole_pairs: Vec::new(),
         }]),
     )
@@ -2555,7 +2559,11 @@ fn physical_dowel_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
                 row_unit_first_local: [0.0, 0.0, 1.0],
                 count: 2,
                 spacing_mm: 30.0,
-                dowel: AssistantStandardDowel::D8x30,
+                pin: AssistantPin {
+                    diameter_mm: 8.0,
+                    length_mm: 30.0,
+                    hole_clearance_mm: 1.0,
+                },
                 first_insertion_mm,
             },
         ])
@@ -2632,7 +2640,11 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         row_unit_first_local: [1.0, 0.0, 0.0],
         count: 3,
         spacing_mm: 25.0,
-        dowel: AssistantStandardDowel::D8x30,
+        pin: AssistantPin {
+            diameter_mm: 8.0,
+            length_mm: 30.0,
+            hole_clearance_mm: 1.0,
+        },
         first_insertion_mm: None,
     }]);
     let input: AssistantCadEditProgram =
@@ -2732,7 +2744,11 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         row_unit_first_local: [1.0, 0.0, 0.0],
         count: 2,
         spacing_mm: 30.0,
-        dowel: AssistantStandardDowel::D8x30,
+        pin: AssistantPin {
+            diameter_mm: 8.0,
+            length_mm: 30.0,
+            hole_clearance_mm: 1.0,
+        },
         first_insertion_mm: None,
     }]);
     let update_batch = plan(
@@ -2916,7 +2932,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let joint = |second_normal, count, spacing_mm, dowel| {
+    let joint = |second_normal, count, spacing_mm, pin| {
         AssistantCadEditOperation::CreatePhysicalDowelJoint {
             joint_id: None,
             name: "Guarded physical row".into(),
@@ -2926,7 +2942,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
             row_unit_first_local: [1.0, 0.0, 0.0],
             count,
             spacing_mm,
-            dowel,
+            pin,
             first_insertion_mm: None,
         }
     };
@@ -2953,21 +2969,57 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
     let clean = seed(Vec::new(), 18.0);
     assert_rejected_without_mutation(
         &clean,
-        joint([0.0, 0.0, -1.0], 2, 25.0, AssistantStandardDowel::D8x30),
+        joint(
+            [0.0, 0.0, -1.0],
+            2,
+            25.0,
+            AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
+        ),
     );
     assert_rejected_without_mutation(
         &clean,
-        joint([0.0, 0.0, 1.0], 2, 7.0, AssistantStandardDowel::D8x30),
+        joint(
+            [0.0, 0.0, 1.0],
+            2,
+            7.0,
+            AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
+        ),
     );
     assert_rejected_without_mutation(
         &clean,
-        joint([0.0, 0.0, 1.0], 1, 0.0, AssistantStandardDowel::D8x40),
+        joint(
+            [0.0, 0.0, 1.0],
+            1,
+            0.0,
+            AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 40.0,
+                hole_clearance_mm: 1.0,
+            },
+        ),
     );
 
     let separated = seed(Vec::new(), 20.0);
     assert_rejected_without_mutation(
         &separated,
-        joint([0.0, 0.0, 1.0], 1, 0.0, AssistantStandardDowel::D8x30),
+        joint(
+            [0.0, 0.0, 1.0],
+            1,
+            0.0,
+            AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
+        ),
     );
 
     let hardware = AssistantPanelHole {
@@ -2980,7 +3032,16 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
     let obstructed = seed(vec![hardware], 18.0);
     assert_rejected_without_mutation(
         &obstructed,
-        joint([0.0, 0.0, 1.0], 1, 0.0, AssistantStandardDowel::D8x30),
+        joint(
+            [0.0, 0.0, 1.0],
+            1,
+            0.0,
+            AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
+        ),
     );
 
     let mut shallow = seed(Vec::new(), 18.0);
@@ -2992,7 +3053,11 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
             [0.0, 0.0, 1.0],
             1,
             0.0,
-            AssistantStandardDowel::D8x30,
+            AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
         )]),
     )
     .unwrap();
@@ -3110,7 +3175,11 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
                     row_unit_first_local: [1.0, 0.0, 0.0],
                     count: 3,
                     spacing_mm: 25.0,
-                    dowel: AssistantStandardDowel::D8x30,
+                    pin: AssistantPin {
+                        diameter_mm: 8.0,
+                        length_mm: 30.0,
+                        hole_clearance_mm: 1.0,
+                    },
                     first_insertion_mm: None,
                 }]),
             )
@@ -3196,7 +3265,11 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
         row_unit_first_local: [1.0, 0.0, 0.0],
         count: 2,
         spacing_mm: 40.0,
-        dowel: AssistantStandardDowel::D8x30,
+        pin: AssistantPin {
+            diameter_mm: 8.0,
+            length_mm: 30.0,
+            hole_clearance_mm: 1.0,
+        },
         first_insertion_mm: None,
     };
     let top_batch = plan(
@@ -3227,7 +3300,11 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
             row_unit_first_local: [0.0, 1.0, 0.0],
             count: 2,
             spacing_mm: 20.0,
-            dowel: AssistantStandardDowel::D8x30,
+            pin: AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
             first_insertion_mm: None,
         }
     };
@@ -3411,7 +3488,11 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
             row_unit_first_local: [1.0, 0.0, 0.0],
             count: 1,
             spacing_mm: 0.0,
-            dowel: AssistantStandardDowel::D8x30,
+            pin: AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
             physical_hole_pairs: vec![AssistantProgramDowelPhysicalHolePair {
                 first_pocket_feature: named(
                     "lower-hole",
@@ -3584,7 +3665,7 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
                 "row_unit_first_local": [1.0, 0.0, 0.0],
                 "count": 1,
                 "spacing_mm": 0.0,
-                "dowel": "d8x30",
+                "pin": {"diameter_mm": 8.0, "length_mm": 30.0, "hole_clearance_mm": 1.0},
                 "physical_hole_pairs": [{
                     "first_pocket_feature": {"name": "first-hole", "output": "body_feature"},
                     "second_pocket_feature": {"name": "second-hole", "output": "body_feature"}
@@ -3704,7 +3785,11 @@ fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
             row_unit_first_local: [1.0, 0.0, 0.0],
             count: 3,
             spacing_mm: 25.0,
-            dowel: AssistantStandardDowel::D8x30,
+            pin: AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
             physical_hole_pairs,
         }]),
     )

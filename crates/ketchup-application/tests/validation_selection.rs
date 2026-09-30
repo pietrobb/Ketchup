@@ -18,7 +18,7 @@ use ketchup_core::{
     },
     assistant_sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantStandardDowel,
+        AssistantInstancePath, AssistantPin,
     },
     document::*,
     exact_product::ExactResultRegistry,
@@ -651,7 +651,11 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         row_unit_first_local: [1.0, 0.0, 0.0],
         count,
         spacing_mm: if count > 1 { 40.0 } else { 0.0 },
-        dowel: AssistantStandardDowel::D8x30,
+        pin: AssistantPin {
+            diameter_mm: 8.0,
+            length_mm: 30.0,
+            hole_clearance_mm: 1.0,
+        },
         first_insertion_mm: None,
     };
     let dowels = plan_assistant_cad_edit_program(

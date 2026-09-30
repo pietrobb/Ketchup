@@ -6,7 +6,7 @@ use egui_kittest::{Harness, kittest::Queryable as _};
 fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geometry() {
     use ketchup_core::assistant_sidecar::{
         AssistantCadEditOperation as Op, AssistantCadParameterValueType, AssistantDowelJointFace,
-        AssistantInstancePath, AssistantStandardDowel,
+        AssistantInstancePath, AssistantPin,
     };
     use ketchup_core::document::FeatureParameterTarget;
     use ketchup_core::joinery::project_dowel_joint_contract;
@@ -84,7 +84,11 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             row_unit_first_local: direction,
             count: 3,
             spacing_mm: spacing,
-            dowel: AssistantStandardDowel::D8x30,
+            pin: AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
             first_insertion_mm: None,
         };
     let program = AssistantCadEditProgram {

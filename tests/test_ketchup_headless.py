@@ -186,10 +186,12 @@ class ClientTests(unittest.TestCase):
                 "bounds_min_local_mm": [0, 0, 0], "bounds_max_local_mm": [100, 50, 18]}
         doc.dowel_joint("Row", face, {**face, "instance_path": {
             "root_occurrence_id": 2, "steps": []}, "face_origin_local_mm": [0, 0, 0],
-            "inward_unit_local": [0, 0, 1]}, [20, 10, 18], [1, 0, 0], 3, 25)
+            "inward_unit_local": [0, 0, 1]}, [20, 10, 18], [1, 0, 0], 3, 25,
+            pin={"diameter_mm": 8, "length_mm": 30, "hole_clearance_mm": 1})
         operation = process.requests[-1]["params"]["program"]["operations"][0]
         self.assertEqual(operation["operation"], "create_dowel_joint")
-        self.assertEqual(operation["dowel"], "d8x30")
+        self.assertEqual(operation["pin"],
+                         {"diameter_mm": 8, "length_mm": 30, "hole_clearance_mm": 1})
         self.assertEqual(operation["count"], 3)
 
     def test_surface_helpers_emit_only_typed_append_feature_operations(self):

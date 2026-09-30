@@ -113,7 +113,7 @@ fn assert_timeout_unchanged(session: &mut DocumentSession, timeout: Duration) {
 fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence() {
     use ketchup_core::assembly_recipe::*;
     use ketchup_core::assistant_sidecar::{
-        AssistantDowelJointFace, AssistantInstancePath, AssistantStandardDowel,
+        AssistantDowelJointFace, AssistantInstancePath, AssistantPin,
     };
     use ketchup_core::document::{
         ClassificationCategoryId, ClassificationDimensionId, FeatureParameterTarget, InstancePath,
@@ -198,7 +198,11 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                     row_unit_first_local: [1.0, 0.0, 0.0],
                     count: 2,
                     spacing_mm: 32.0,
-                    dowel: AssistantStandardDowel::D8x30,
+                    pin: AssistantPin {
+                        diameter_mm: 8.0,
+                        length_mm: 30.0,
+                        hole_clearance_mm: 1.0,
+                    },
                     first_insertion_mm: None,
                 }],
             },
