@@ -4331,7 +4331,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
             "collision",
             "assembly_retention",
             "gravity_support",
-            "shelf_deflection",
+            "beam_deflection",
             "tipping",
             "anchoring",
             "hardware_manufacturing",
@@ -4357,7 +4357,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         serde_json::json!([
             "collision",
             "assembly_retention",
-            "shelf_deflection",
+            "beam_deflection",
             "tipping",
             "anchoring",
             "hardware_manufacturing",
@@ -4378,7 +4378,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
             "collision",
             "assembly_retention",
             "gravity_support",
-            "shelf_deflection",
+            "beam_deflection",
             "tipping",
             "anchoring",
             "hardware_manufacturing",
@@ -4401,7 +4401,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
 }
 
 #[test]
-fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_limits() {
+fn assistant_chat_reports_beam_deflection_tipping_and_anchoring_with_explicit_limits() {
     let query = "Iba priehyb, prevrátenie a kotvenie";
     let transport = Arc::new(ScriptedAssistantTransport::new([(
         query.to_owned(),
@@ -4593,7 +4593,7 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
     let validation = &contexts[0]["validation"];
     assert_eq!(
         validation["requested"],
-        serde_json::json!(["shelf_deflection", "tipping", "anchoring"])
+        serde_json::json!(["beam_deflection", "tipping", "anchoring"])
     );
     assert_eq!(validation["executed"], validation["requested"]);
     assert_eq!(
@@ -4612,14 +4612,14 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
     assert_eq!(validation["complete"], true);
     assert_eq!(validation["issue_count"], 3);
 
-    let shelf = &validation["shelf_deflection"];
+    let shelf = &validation["beam_deflection"];
     assert_eq!(shelf["state"], "failed");
     assert_eq!(shelf["complete"], true);
     assert_eq!(shelf["applicable_count"], 1);
     assert_eq!(shelf["issue_count"], 1);
     assert_eq!(
         shelf["issues"][0]["code"],
-        "furniture.shelf_deflection_exceeded"
+        "physics.beam_deflection_exceeded"
     );
     assert_eq!(shelf["issues"][0]["name"], "Opaque panel A");
     assert_eq!(shelf["issues"][0]["role"], "furniture.shelf.xy");
@@ -4631,7 +4631,9 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
     assert_eq!(shelf["issues"][0]["depth_mm"], 300.0);
     assert_eq!(shelf["issues"][0]["thickness_mm"], 12.0);
     assert_eq!(shelf["inputs"]["design_load_n"], 500.0);
-    assert_eq!(shelf["inputs"]["elastic_modulus_n_mm2"], 2_500.0);
+    assert_eq!(shelf["inputs"]["default_material"], "engineered_wood");
+    assert_eq!(shelf["issues"][0]["material"], "engineered_wood");
+    assert_eq!(shelf["issues"][0]["elastic_modulus_n_mm2"], 2_500.0);
     assert!(
         shelf["issues"][0]["predicted_deflection_mm"]
             .as_f64()
@@ -4878,11 +4880,8 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
         manufacturing["limits"]["minimum_hole_spacing_material_mm"],
         3.0
     );
-    assert_eq!(
-        manufacturing["limits"]["minimum_hinge_cup_diameter_mm"],
-        35.0
-    );
-    assert_eq!(manufacturing["limits"]["minimum_hinge_cup_depth_mm"], 12.0);
+    assert_eq!(manufacturing["limits"]["minimum_cup_diameter_mm"], 35.0);
+    assert_eq!(manufacturing["limits"]["minimum_cup_depth_mm"], 12.0);
     assert_eq!(manufacturing["limits"]["minimum_panel_thickness_mm"], 6.0);
     assert_eq!(
         manufacturing["assumptions"],

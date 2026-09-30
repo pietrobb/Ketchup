@@ -7,6 +7,7 @@ use ketchup_application::{
         assistant_assembly_constraints_report, assistant_assembly_retention_report,
         assistant_static_load_report, assistant_validation_context,
     },
+    validation_rules::ValidationRules,
 };
 use ketchup_core::{
     assembly_joint::{
@@ -23,7 +24,7 @@ use ketchup_core::{
     document::*,
     exact_product::ExactResultRegistry,
     pin_joint::PinJointId,
-    validation::ValidatorRoleIndex,
+    validation::{MATERIAL_DIMENSION_V1, ValidatorRoleIndex},
 };
 
 fn structural_document(occurrence_count: u64) -> DocumentStore {
@@ -1269,7 +1270,7 @@ fn shared_support_capacity_aggregates_by_load_case_with_scoped_global_parity() {
 }
 
 #[test]
-fn furniture_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
+fn structural_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1361,14 +1362,14 @@ fn furniture_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
         ]))
         .unwrap();
     let selection =
-        AssistantValidationSelection::only(&["shelf_deflection", "tipping", "anchoring"]);
+        AssistantValidationSelection::only(&["beam_deflection", "tipping", "anchoring"]);
     let exact_results = ExactResultRegistry::default();
     let snapshot = document.current();
     let report = assistant_validation_context(&snapshot, &exact_results, &selection);
 
     assert_eq!(report["complete"], true, "{report:#}");
     assert_eq!(report["state"], "failed", "{report:#}");
-    let shelf = &report["shelf_deflection"];
+    let shelf = &report["beam_deflection"];
     assert_eq!(shelf["state"], "failed", "{shelf:#}");
     assert_eq!(shelf["evaluations"][0]["span_mm"], 1_000.0);
     assert_eq!(shelf["evaluations"][0]["depth_mm"], 300.0);
@@ -1396,12 +1397,97 @@ fn furniture_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
         ]))
         .unwrap();
     let sheared = assistant_validation_context(&document.current(), &exact_results, &selection);
-    assert_eq!(sheared["shelf_deflection"]["state"], "not_evaluated");
-    assert_eq!(sheared["shelf_deflection"]["complete"], false);
+    assert_eq!(sheared["beam_deflection"]["state"], "not_evaluated");
+    assert_eq!(sheared["beam_deflection"]["complete"], false);
     assert_eq!(
-        sheared["shelf_deflection"]["not_evaluated"][0]["reason"],
+        sheared["beam_deflection"]["not_evaluated"][0]["reason"],
         "occurrence transform shears the declared source frame"
     );
+
+    // Stiffness comes from the part's material: the same 20 mm plate that sags
+    // past the limit in the rules' default material passes in steel, and a
+    // material the rules do not know is reported instead of guessed.
+    let classify_material = |document: &mut DocumentStore, material: &str| {
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OccurrenceId(1),
+                    transform: Transform::from_matrix([
+                        2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+                        1.0,
+                    ])
+                    .unwrap(),
+                },
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: ClassificationDimensionId(2),
+                    name: MATERIAL_DIMENSION_V1.into(),
+                    categories: vec![(ClassificationCategoryId(1), material.into())],
+                },
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id: OccurrenceId(1),
+                    dimension_id: ClassificationDimensionId(2),
+                    category_id: Some(ClassificationCategoryId(1)),
+                },
+            ]))
+            .unwrap();
+        assistant_validation_context(&document.current(), &exact_results, &selection)
+    };
+    let rules = ValidationRules::library();
+    let steel = classify_material(&mut document, "steel");
+    let beam = &steel["beam_deflection"];
+    assert_eq!(beam["state"], "passed", "{beam:#}");
+    let evaluation = &beam["evaluations"][0];
+    assert_eq!(evaluation["material"], "steel");
+    assert_eq!(evaluation["material_source"], "classification");
+    assert_eq!(
+        evaluation["elastic_modulus_n_mm2"],
+        rules.materials["steel"].elastic_modulus_n_mm2
+    );
+    let expected_mm = 5.0 * rules.beam_deflection.design_load_n * 1_000.0_f64.powi(3)
+        / (384.0
+            * rules.materials["steel"].elastic_modulus_n_mm2
+            * (300.0 * 20.0_f64.powi(3) / 12.0));
+    let predicted_mm = evaluation["predicted_deflection_mm"].as_f64().unwrap();
+    assert!((predicted_mm - expected_mm).abs() <= 1e-9 * expected_mm);
+    assert_eq!(evaluation["result"], "passed");
+    assert_eq!(
+        steel["tipping"]["limit"]["minimum_tip_angle_degrees"],
+        rules.tipping.minimum_tip_angle_degrees
+    );
+
+    let unknown = classify_material(&mut document, "unobtainium");
+    let beam = &unknown["beam_deflection"];
+    assert_eq!(beam["state"], "not_evaluated", "{beam:#}");
+    assert_eq!(beam["not_evaluated"][0]["material"], "unobtainium");
+    assert_eq!(
+        beam["not_evaluated"][0]["reason"],
+        "the part's material has no elastic modulus in the validation rules"
+    );
+}
+
+#[test]
+fn library_validation_rules_are_the_single_source_of_validator_limits() {
+    let rules = ValidationRules::library();
+    assert!(rules.materials.contains_key(&rules.default_material));
+    let text = ketchup_program::library_validation_rules();
+    assert_eq!(&ValidationRules::from_json(text).unwrap(), rules);
+
+    let mut value: serde_json::Value = serde_json::from_str(text).unwrap();
+    value["passage_clearance"]["minimum_width_mm"] = serde_json::json!(0.0);
+    assert_eq!(
+        ValidationRules::from_json(&value.to_string()).unwrap_err(),
+        "passage_clearance.minimum_width_mm must be a finite positive number"
+    );
+    let mut value: serde_json::Value = serde_json::from_str(text).unwrap();
+    value["default_material"] = serde_json::json!("unobtainium");
+    assert!(
+        ValidationRules::from_json(&value.to_string())
+            .unwrap_err()
+            .contains("has no entry in materials")
+    );
+    let mut value: serde_json::Value = serde_json::from_str(text).unwrap();
+    value["tipping"]["maximum_tip_angle_degrees"] = serde_json::json!(30.0);
+    assert!(ValidationRules::from_json(&value.to_string()).is_err());
 }
 
 #[test]

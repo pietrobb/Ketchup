@@ -15,6 +15,9 @@ pub const VALIDATOR_PROTOCOL_V1: &str = "ketchup.validator-protocol.v1";
 pub const DIAGNOSTIC_SCHEMA_V1: &str = "ketchup.validation-diagnostic.v1";
 pub const VALIDATOR_ROLE_DIMENSION_V1: &str = "ketchup.validator-role.v1";
 pub const VALIDATOR_ROLE_INPUT_V1: &str = "ketchup.validator-role-input.v1";
+/// Classification dimension whose category names a part's material; the
+/// validators look the material's properties up in their rule set.
+pub const MATERIAL_DIMENSION_V1: &str = "ketchup.material.v1";
 
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ValidatorRole(String);

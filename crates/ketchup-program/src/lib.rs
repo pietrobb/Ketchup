@@ -34,6 +34,15 @@ pub use validate::{COLLISION_UNVERIFIED, Issue, Severity, validate, validate_wit
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+/// The library's validation rules: material stiffness and the normative
+/// limits (passage width, anchoring height, hole material, ...) that the
+/// document validators evaluate. Norms differ by country and product, so
+/// they are data here, not constants in the validators.
+#[must_use]
+pub fn library_validation_rules() -> &'static str {
+    include_str!("../library/validation_rules.json")
+}
+
 /// Everything a caller (person, AI agent, UI) needs after one evaluation.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Report {

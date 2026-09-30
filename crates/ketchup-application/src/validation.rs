@@ -1,3 +1,4 @@
+use crate::validation_rules::{ValidationRules, occurrence_materials};
 use ketchup_core::assembly_joint::AssemblyJointKind;
 use ketchup_core::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
 use ketchup_core::document::{InstancePath, OccurrenceId, Snapshot};
@@ -6,9 +7,9 @@ use ketchup_core::exact_validation::*;
 use ketchup_core::pin_joint::project_pin_joint_contract;
 use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, TolerancePolicy};
 use ketchup_core::validation::{
-    DiagnosticSeverity, EvidenceClass, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
-    ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
-    ValidatorRoleIndex,
+    DiagnosticSeverity, EvidenceClass, HostNeutralValidator, MATERIAL_DIMENSION_V1,
+    VALIDATOR_ROLE_DIMENSION_V1, ValidationExecution, ValidationInvocation, ValidationState,
+    ValidatorRoleError, ValidatorRoleIndex,
 };
 use std::collections::{BTreeMap, BTreeSet};
 const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
@@ -27,7 +28,7 @@ pub const ASSISTANT_VALIDATOR_IDS: [&str; 10] = [
     "collision",
     "assembly_retention",
     "gravity_support",
-    "shelf_deflection",
+    "beam_deflection",
     "tipping",
     "anchoring",
     "hardware_manufacturing",
@@ -53,8 +54,8 @@ pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 10] = [
         "parts that are not carried, directly or transitively, by the ground along the declared gravity axis",
     ),
     (
-        "shelf_deflection",
-        "shelf sag under the declared design load against the span and absolute deflection limits",
+        "beam_deflection",
+        "sag of declared load-bearing plates under the rule set's design load, with stiffness from each part's material, against the span and absolute deflection limits",
     ),
     (
         "tipping",
@@ -62,15 +63,15 @@ pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 10] = [
     ),
     (
         "anchoring",
-        "tall shallow furniture that must be anchored to the wall",
+        "tall shallow free-standing bodies that must be anchored to a wall",
     ),
     (
         "hardware_manufacturing",
-        "hole edge material, hole spacing, hinge cup envelopes, drawer-slide pair alignment and minimum panel thickness",
+        "hole edge material, hole spacing, cup envelopes, slide-pair alignment and minimum panel thickness",
     ),
     (
         "room_placement",
-        "furniture that leaves the declared room volume",
+        "bodies that leave the declared room volume",
     ),
     (
         "passage_clearance",
@@ -81,23 +82,6 @@ pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 10] = [
         "declared static loads against the supports that actually carry them",
     ),
 ];
-pub const SHELF_DESIGN_LOAD_N: f64 = 500.0;
-pub const SHELF_ELASTIC_MODULUS_N_MM2: f64 = 2_500.0;
-pub const SHELF_DEFLECTION_SPAN_RATIO: f64 = 200.0;
-pub const SHELF_MAX_DEFLECTION_MM: f64 = 5.0;
-pub const MINIMUM_TIP_ANGLE_DEGREES: f64 = 15.0;
-pub const ANCHORING_MINIMUM_HEIGHT_MM: f64 = 1_000.0;
-pub const ANCHORING_MINIMUM_HEIGHT_DEPTH_RATIO: f64 = 2.0;
-pub const MINIMUM_HOLE_EDGE_MATERIAL_MM: f64 = 5.0;
-pub const MINIMUM_HOLE_SPACING_MATERIAL_MM: f64 = 3.0;
-pub const MINIMUM_HINGE_CUP_DIAMETER_MM: f64 = 35.0;
-pub const MINIMUM_HINGE_CUP_DEPTH_MM: f64 = 12.0;
-pub const MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM: f64 = 1.0;
-pub const MAXIMUM_DRAWER_SLIDE_VERTICAL_MISMATCH_MM: f64 = 1.0;
-pub const MINIMUM_PANEL_THICKNESS_MM: f64 = 6.0;
-pub const MINIMUM_PASSAGE_WIDTH_MM: f64 = 900.0;
-pub const MINIMUM_PASSAGE_HEADROOM_MM: f64 = 2_000.0;
-pub const ROOM_PLACEMENT_TOLERANCE_MM: f64 = 0.1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AssistantValidationSelection {
@@ -1511,10 +1495,12 @@ pub fn assistant_assembly_retention_report(
     })
 }
 
-pub fn assistant_shelf_deflection_report(
+pub fn assistant_beam_deflection_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
     roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    materials: &Result<BTreeMap<OccurrenceId, String>, String>,
+    rules: &ValidationRules,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -1529,22 +1515,28 @@ pub fn assistant_shelf_deflection_report(
             "issues": [],
         });
     }
+    let not_evaluated_report = |error_key: &str, error: String| {
+        serde_json::json!({
+            "state": "not_evaluated",
+            "complete": false,
+            "applicable_count": 0,
+            "issue_count": 0,
+            "issues_complete": true,
+            error_key: error,
+            "evaluations": [],
+            "not_evaluated": [],
+            "issues": [],
+        })
+    };
     let roles = match roles {
         Ok(roles) => roles,
-        Err(error) => {
-            return serde_json::json!({
-                "state": "not_evaluated",
-                "complete": false,
-                "applicable_count": 0,
-                "issue_count": 0,
-                "issues_complete": true,
-                "role_error": error.to_string(),
-                "evaluations": [],
-                "not_evaluated": [],
-                "issues": [],
-            });
-        }
+        Err(error) => return not_evaluated_report("role_error", error.to_string()),
     };
+    let materials = match materials {
+        Ok(materials) => materials,
+        Err(error) => return not_evaluated_report("material_error", error.clone()),
+    };
+    let rule = &rules.beam_deflection;
 
     let mut evaluations = Vec::new();
     let mut not_evaluated = Vec::new();
@@ -1560,6 +1552,24 @@ pub fn assistant_shelf_deflection_report(
         let name = names
             .get(&occurrence_id)
             .expect("validated visible participants retain display names");
+        let (material, material_source) = materials.get(&occurrence_id).map_or(
+            (rules.default_material.as_str(), "rules_default"),
+            |material| (material.as_str(), "classification"),
+        );
+        let Some(elastic_modulus_n_mm2) = rules
+            .materials
+            .get(material)
+            .map(|properties| properties.elastic_modulus_n_mm2)
+        else {
+            not_evaluated.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "role": role.as_str(),
+                "material": material,
+                "reason": "the part's material has no elastic modulus in the validation rules",
+            }));
+            continue;
+        };
         let geometry = participant.geometry_evidence();
         let vertical_alignment = geometry
             .source_axis_world_z_alignment(thickness_axis)
@@ -1569,7 +1579,7 @@ pub fn assistant_shelf_deflection_report(
                 "occurrence_id": occurrence_id.0,
                 "name": name,
                 "role": role.as_str(),
-                "reason": "declared shelf thickness axis is not aligned with world gravity",
+                "reason": "declared thickness axis is not aligned with world gravity",
                 "source_axis_world_z_alignment": vertical_alignment,
             }));
             continue;
@@ -1587,11 +1597,10 @@ pub fn assistant_shelf_deflection_report(
         let depth_mm = dimensions[surface_axes[0]].min(dimensions[surface_axes[1]]);
         let thickness_mm = dimensions[thickness_axis];
         let second_moment_mm4 = depth_mm * thickness_mm.powi(3) / 12.0;
-        let line_load_n_mm = SHELF_DESIGN_LOAD_N / span_mm;
+        let line_load_n_mm = rule.design_load_n / span_mm;
         let predicted_deflection_mm = 5.0 * line_load_n_mm * span_mm.powi(4)
-            / (384.0 * SHELF_ELASTIC_MODULUS_N_MM2 * second_moment_mm4);
-        let allowable_deflection_mm =
-            (span_mm / SHELF_DEFLECTION_SPAN_RATIO).min(SHELF_MAX_DEFLECTION_MM);
+            / (384.0 * elastic_modulus_n_mm2 * second_moment_mm4);
+        let allowable_deflection_mm = (span_mm / rule.span_ratio).min(rule.maximum_mm);
         let failed = predicted_deflection_mm > allowable_deflection_mm;
         let evaluation = serde_json::json!({
             "occurrence_id": occurrence_id.0,
@@ -1603,17 +1612,19 @@ pub fn assistant_shelf_deflection_report(
             "span_mm": span_mm,
             "depth_mm": depth_mm,
             "thickness_mm": thickness_mm,
-            "design_load_n": SHELF_DESIGN_LOAD_N,
-            "elastic_modulus_n_mm2": SHELF_ELASTIC_MODULUS_N_MM2,
+            "design_load_n": rule.design_load_n,
+            "material": material,
+            "material_source": material_source,
+            "elastic_modulus_n_mm2": elastic_modulus_n_mm2,
             "support_model": "simply_supported_uniform_load",
             "predicted_deflection_mm": predicted_deflection_mm,
             "allowable_deflection_mm": allowable_deflection_mm,
-            "limit": "min(span/200, 5 mm)",
+            "limit": format!("min(span/{}, {} mm)", rule.span_ratio, rule.maximum_mm),
             "result": if failed { "failed" } else { "passed" },
         });
         if failed {
             issues.push(serde_json::json!({
-                "code": "furniture.shelf_deflection_exceeded",
+                "code": "physics.beam_deflection_exceeded",
                 "severity": "warning",
                 "occurrence_id": occurrence_id.0,
                 "name": name,
@@ -1624,8 +1635,9 @@ pub fn assistant_shelf_deflection_report(
                 "span_mm": span_mm,
                 "depth_mm": depth_mm,
                 "thickness_mm": thickness_mm,
-                "design_load_n": SHELF_DESIGN_LOAD_N,
-                "elastic_modulus_n_mm2": SHELF_ELASTIC_MODULUS_N_MM2,
+                "design_load_n": rule.design_load_n,
+                "material": material,
+                "elastic_modulus_n_mm2": elastic_modulus_n_mm2,
                 "predicted_deflection_mm": predicted_deflection_mm,
                 "allowable_deflection_mm": allowable_deflection_mm,
             }));
@@ -1648,19 +1660,20 @@ pub fn assistant_shelf_deflection_report(
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "inputs": {
-            "design_load_n": SHELF_DESIGN_LOAD_N,
-            "elastic_modulus_n_mm2": SHELF_ELASTIC_MODULUS_N_MM2,
+            "design_load_n": rule.design_load_n,
+            "default_material": rules.default_material,
+            "materials": rules.materials,
             "support_model": "simply_supported_uniform_load",
         },
         "limit": {
-            "span_ratio": SHELF_DEFLECTION_SPAN_RATIO,
-            "maximum_mm": SHELF_MAX_DEFLECTION_MM,
+            "span_ratio": rule.span_ratio,
+            "maximum_mm": rule.maximum_mm,
         },
         "assumptions": [
-            "canonical validator roles declare shelf plane and thickness axis",
+            "canonical validator roles declare the load-bearing plate and its thickness axis",
             "source-frame extents are bound to the accepted body geometry",
-            "uniform 500 N service load",
-            "2500 N/mm2 engineered-wood elastic modulus",
+            format!("uniform {} N service load", rule.design_load_n),
+            format!("elastic modulus from the part's {MATERIAL_DIMENSION_V1} classification, else from the rules' default material {:?}", rules.default_material),
             "simple supports at both span ends",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
@@ -1673,6 +1686,7 @@ pub fn assistant_tipping_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
     roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    rules: &ValidationRules,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -1748,7 +1762,7 @@ pub fn assistant_tipping_report(
         let height_mm = dimensions[vertical_axis];
         let centre_of_mass_height_mm = height_mm / 2.0;
         let critical_tip_angle_degrees = (base_depth_mm / height_mm).atan().to_degrees();
-        let failed = critical_tip_angle_degrees < MINIMUM_TIP_ANGLE_DEGREES;
+        let failed = critical_tip_angle_degrees < rules.tipping.minimum_tip_angle_degrees;
         let evaluation = serde_json::json!({
             "occurrence_id": occurrence_id.0,
             "name": name,
@@ -1761,7 +1775,7 @@ pub fn assistant_tipping_report(
             "centre_of_mass_height_mm": centre_of_mass_height_mm,
             "mass_model": "uniform_source_frame_envelope",
             "critical_tip_angle_degrees": critical_tip_angle_degrees,
-            "minimum_tip_angle_degrees": MINIMUM_TIP_ANGLE_DEGREES,
+            "minimum_tip_angle_degrees": rules.tipping.minimum_tip_angle_degrees,
             "result": if failed { "failed" } else { "passed" },
         });
         if failed {
@@ -1778,7 +1792,7 @@ pub fn assistant_tipping_report(
                 "height_mm": height_mm,
                 "centre_of_mass_height_mm": centre_of_mass_height_mm,
                 "critical_tip_angle_degrees": critical_tip_angle_degrees,
-                "minimum_tip_angle_degrees": MINIMUM_TIP_ANGLE_DEGREES,
+                "minimum_tip_angle_degrees": rules.tipping.minimum_tip_angle_degrees,
             }));
         }
         evaluations.push(evaluation);
@@ -1799,7 +1813,7 @@ pub fn assistant_tipping_report(
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "inputs": { "mass_model": "uniform_source_frame_envelope" },
-        "limit": { "minimum_tip_angle_degrees": MINIMUM_TIP_ANGLE_DEGREES },
+        "limit": { "minimum_tip_angle_degrees": rules.tipping.minimum_tip_angle_degrees },
         "assumptions": [
             "canonical validator roles declare the case-furniture vertical axis",
             "source-frame extents are bound to the accepted body geometry",
@@ -1817,6 +1831,7 @@ pub fn assistant_anchoring_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
     roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    rules: &ValidationRules,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -1893,8 +1908,8 @@ pub fn assistant_anchoring_report(
         let base_depth_mm = dimensions[base_axes[0]].min(dimensions[base_axes[1]]);
         let height_mm = dimensions[vertical_axis];
         let height_depth_ratio = height_mm / base_depth_mm;
-        let anchoring_required = height_mm >= ANCHORING_MINIMUM_HEIGHT_MM
-            && height_depth_ratio >= ANCHORING_MINIMUM_HEIGHT_DEPTH_RATIO;
+        let anchoring_required = height_mm >= rules.anchoring.minimum_height_mm
+            && height_depth_ratio >= rules.anchoring.minimum_height_depth_ratio;
         let evaluation = serde_json::json!({
             "occurrence_id": occurrence_id.0,
             "name": name,
@@ -1905,8 +1920,8 @@ pub fn assistant_anchoring_report(
             "base_depth_mm": base_depth_mm,
             "height_mm": height_mm,
             "height_depth_ratio": height_depth_ratio,
-            "minimum_height_mm": ANCHORING_MINIMUM_HEIGHT_MM,
-            "minimum_height_depth_ratio": ANCHORING_MINIMUM_HEIGHT_DEPTH_RATIO,
+            "minimum_height_mm": rules.anchoring.minimum_height_mm,
+            "minimum_height_depth_ratio": rules.anchoring.minimum_height_depth_ratio,
             "anchoring_required": anchoring_required,
             "anchor_declaration": "not_available_in_current_document_schema",
             "result": if anchoring_required { "required" } else { "not_required" },
@@ -1924,8 +1939,8 @@ pub fn assistant_anchoring_report(
                 "base_depth_mm": base_depth_mm,
                 "height_mm": height_mm,
                 "height_depth_ratio": height_depth_ratio,
-                "minimum_height_mm": ANCHORING_MINIMUM_HEIGHT_MM,
-                "minimum_height_depth_ratio": ANCHORING_MINIMUM_HEIGHT_DEPTH_RATIO,
+                "minimum_height_mm": rules.anchoring.minimum_height_mm,
+                "minimum_height_depth_ratio": rules.anchoring.minimum_height_depth_ratio,
                 "anchor_declaration": "not_available_in_current_document_schema",
             }));
         }
@@ -1948,8 +1963,8 @@ pub fn assistant_anchoring_report(
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "limit": {
-            "minimum_height_mm": ANCHORING_MINIMUM_HEIGHT_MM,
-            "minimum_height_depth_ratio": ANCHORING_MINIMUM_HEIGHT_DEPTH_RATIO,
+            "minimum_height_mm": rules.anchoring.minimum_height_mm,
+            "minimum_height_depth_ratio": rules.anchoring.minimum_height_depth_ratio,
         },
         "assumptions": [
             "canonical validator roles declare the case-furniture vertical axis",
@@ -2020,6 +2035,7 @@ pub fn assistant_hardware_manufacturing_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
     roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    rules: &ValidationRules,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -2107,7 +2123,7 @@ pub fn assistant_hardware_manufacturing_report(
     for &panel_index in &panel_indices {
         let panel = &geometries[panel_index];
         let thickness_mm = panel.dimensions[panel.axis];
-        let failed = thickness_mm < MINIMUM_PANEL_THICKNESS_MM;
+        let failed = thickness_mm < rules.hardware_manufacturing.minimum_panel_thickness_mm;
         evaluations.push(serde_json::json!({
             "rule": "panel_minimum_thickness",
             "occurrence_id": panel.occurrence_id.0,
@@ -2118,7 +2134,7 @@ pub fn assistant_hardware_manufacturing_report(
             "evidence_class": panel.evidence_class,
             "thickness_axis": panel.axis,
             "thickness_mm": thickness_mm,
-            "minimum_thickness_mm": MINIMUM_PANEL_THICKNESS_MM,
+            "minimum_thickness_mm": rules.hardware_manufacturing.minimum_panel_thickness_mm,
             "result": if failed { "failed" } else { "passed" },
         }));
         if failed {
@@ -2133,8 +2149,8 @@ pub fn assistant_hardware_manufacturing_report(
                 "evidence_class": panel.evidence_class,
                 "thickness_axis": panel.axis,
                 "thickness_mm": thickness_mm,
-                "minimum_thickness_mm": MINIMUM_PANEL_THICKNESS_MM,
-                "rule": "panel stock thickness must be at least 6 mm",
+                "minimum_thickness_mm": rules.hardware_manufacturing.minimum_panel_thickness_mm,
+                "rule": format!("panel stock thickness must be at least {} mm", rules.hardware_manufacturing.minimum_panel_thickness_mm),
             }));
         }
     }
@@ -2223,7 +2239,8 @@ pub fn assistant_hardware_manufacturing_report(
             })
             .min_by(f64::total_cmp)
             .expect("a hole has two radial edge distances");
-        let edge_failed = edge_material_mm < MINIMUM_HOLE_EDGE_MATERIAL_MM;
+        let edge_failed =
+            edge_material_mm < rules.hardware_manufacturing.minimum_hole_edge_material_mm;
         evaluations.push(serde_json::json!({
             "rule": "hole_edge_distance",
             "occurrence_id": hole.occurrence_id.0,
@@ -2239,7 +2256,7 @@ pub fn assistant_hardware_manufacturing_report(
             "diameter_mm": diameter_mm,
             "depth_mm": depth_mm,
             "edge_material_mm": edge_material_mm,
-            "minimum_edge_material_mm": MINIMUM_HOLE_EDGE_MATERIAL_MM,
+            "minimum_edge_material_mm": rules.hardware_manufacturing.minimum_hole_edge_material_mm,
             "result": if edge_failed { "failed" } else { "passed" },
         }));
         if edge_failed {
@@ -2252,13 +2269,13 @@ pub fn assistant_hardware_manufacturing_report(
                 "host_name": host.name,
                 "evidence_class": hole.evidence_class,
                 "edge_material_mm": edge_material_mm,
-                "minimum_edge_material_mm": MINIMUM_HOLE_EDGE_MATERIAL_MM,
-                "rule": "hole perimeter must leave at least 5 mm of material to every panel edge",
+                "minimum_edge_material_mm": rules.hardware_manufacturing.minimum_hole_edge_material_mm,
+                "rule": format!("hole perimeter must leave at least {} mm of material to every panel edge", rules.hardware_manufacturing.minimum_hole_edge_material_mm),
             }));
         }
         if hole.role_kind == AssistantManufacturingRoleKind::HingeCup {
-            let hinge_failed = diameter_mm < MINIMUM_HINGE_CUP_DIAMETER_MM
-                || depth_mm < MINIMUM_HINGE_CUP_DEPTH_MM;
+            let hinge_failed = diameter_mm < rules.hardware_manufacturing.minimum_cup_diameter_mm
+                || depth_mm < rules.hardware_manufacturing.minimum_cup_depth_mm;
             evaluations.push(serde_json::json!({
                 "rule": "hinge_cup_envelope",
                 "occurrence_id": hole.occurrence_id.0,
@@ -2267,8 +2284,8 @@ pub fn assistant_hardware_manufacturing_report(
                 "host_name": host.name,
                 "diameter_mm": diameter_mm,
                 "depth_mm": depth_mm,
-                "minimum_diameter_mm": MINIMUM_HINGE_CUP_DIAMETER_MM,
-                "minimum_depth_mm": MINIMUM_HINGE_CUP_DEPTH_MM,
+                "minimum_diameter_mm": rules.hardware_manufacturing.minimum_cup_diameter_mm,
+                "minimum_depth_mm": rules.hardware_manufacturing.minimum_cup_depth_mm,
                 "result": if hinge_failed { "failed" } else { "passed" },
             }));
             if hinge_failed {
@@ -2281,9 +2298,9 @@ pub fn assistant_hardware_manufacturing_report(
                     "host_name": host.name,
                     "diameter_mm": diameter_mm,
                     "depth_mm": depth_mm,
-                    "minimum_diameter_mm": MINIMUM_HINGE_CUP_DIAMETER_MM,
-                    "minimum_depth_mm": MINIMUM_HINGE_CUP_DEPTH_MM,
-                    "rule": "named hinge cup requires a 35 mm diameter and 12 mm depth envelope",
+                    "minimum_diameter_mm": rules.hardware_manufacturing.minimum_cup_diameter_mm,
+                    "minimum_depth_mm": rules.hardware_manufacturing.minimum_cup_depth_mm,
+                    "rule": format!("a declared cup requires a {} mm diameter and {} mm depth envelope", rules.hardware_manufacturing.minimum_cup_diameter_mm, rules.hardware_manufacturing.minimum_cup_depth_mm),
                 }));
             }
         }
@@ -2308,7 +2325,11 @@ pub fn assistant_hardware_manufacturing_report(
                 .sum::<f64>()
                 .sqrt();
             let material_between_mm = radial_distance_mm - left.3 - right.3;
-            if material_between_mm < MINIMUM_HOLE_SPACING_MATERIAL_MM {
+            if material_between_mm
+                < rules
+                    .hardware_manufacturing
+                    .minimum_hole_spacing_material_mm
+            {
                 issues.push(serde_json::json!({
                     "code": "manufacturing.hole_spacing_below_minimum",
                     "severity": "warning",
@@ -2319,8 +2340,8 @@ pub fn assistant_hardware_manufacturing_report(
                     "host_occurrence_id": host.occurrence_id.0,
                     "host_name": host.name,
                     "material_between_mm": material_between_mm,
-                    "minimum_material_between_mm": MINIMUM_HOLE_SPACING_MATERIAL_MM,
-                    "rule": "hole perimeters must leave at least 3 mm of material between them",
+                    "minimum_material_between_mm": rules.hardware_manufacturing.minimum_hole_spacing_material_mm,
+                    "rule": format!("hole perimeters must leave at least {} mm of material between them", rules.hardware_manufacturing.minimum_hole_spacing_material_mm),
                 }));
             }
         }
@@ -2361,8 +2382,14 @@ pub fn assistant_hardware_manufacturing_report(
         }
         let length_mismatch_mm = (left.dimensions[left.axis] - right.dimensions[right.axis]).abs();
         let vertical_mismatch_mm = (left.centre[2] - right.centre[2]).abs();
-        let failed = length_mismatch_mm > MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM
-            || vertical_mismatch_mm > MAXIMUM_DRAWER_SLIDE_VERTICAL_MISMATCH_MM;
+        let failed = length_mismatch_mm
+            > rules
+                .hardware_manufacturing
+                .maximum_slide_pair_length_mismatch_mm
+            || vertical_mismatch_mm
+                > rules
+                    .hardware_manufacturing
+                    .maximum_slide_pair_vertical_mismatch_mm;
         evaluations.push(serde_json::json!({
             "rule": "linear_hardware_pair_alignment",
             "association": group,
@@ -2376,8 +2403,8 @@ pub fn assistant_hardware_manufacturing_report(
             "length_axis": left.axis,
             "length_mismatch_mm": length_mismatch_mm,
             "vertical_mismatch_mm": vertical_mismatch_mm,
-            "maximum_length_mismatch_mm": MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM,
-            "maximum_vertical_mismatch_mm": MAXIMUM_DRAWER_SLIDE_VERTICAL_MISMATCH_MM,
+            "maximum_length_mismatch_mm": rules.hardware_manufacturing.maximum_slide_pair_length_mismatch_mm,
+            "maximum_vertical_mismatch_mm": rules.hardware_manufacturing.maximum_slide_pair_vertical_mismatch_mm,
             "result": if failed { "failed" } else { "passed" },
         }));
         if failed {
@@ -2391,9 +2418,9 @@ pub fn assistant_hardware_manufacturing_report(
                 "right_name": right.name,
                 "length_mismatch_mm": length_mismatch_mm,
                 "vertical_mismatch_mm": vertical_mismatch_mm,
-                "maximum_length_mismatch_mm": MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM,
-                "maximum_vertical_mismatch_mm": MAXIMUM_DRAWER_SLIDE_VERTICAL_MISMATCH_MM,
-                "rule": "a linear-hardware pair must have equal declared-axis length and world-Z alignment within 1 mm",
+                "maximum_length_mismatch_mm": rules.hardware_manufacturing.maximum_slide_pair_length_mismatch_mm,
+                "maximum_vertical_mismatch_mm": rules.hardware_manufacturing.maximum_slide_pair_vertical_mismatch_mm,
+                "rule": format!("a linear-hardware pair must have equal declared-axis length within {} mm and world-Z alignment within {} mm", rules.hardware_manufacturing.maximum_slide_pair_length_mismatch_mm, rules.hardware_manufacturing.maximum_slide_pair_vertical_mismatch_mm),
             }));
         }
     }
@@ -2415,15 +2442,7 @@ pub fn assistant_hardware_manufacturing_report(
         "applicable_count": applicable_count,
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-        "limits": {
-            "minimum_hole_edge_material_mm": MINIMUM_HOLE_EDGE_MATERIAL_MM,
-            "minimum_hole_spacing_material_mm": MINIMUM_HOLE_SPACING_MATERIAL_MM,
-            "minimum_hinge_cup_diameter_mm": MINIMUM_HINGE_CUP_DIAMETER_MM,
-            "minimum_hinge_cup_depth_mm": MINIMUM_HINGE_CUP_DEPTH_MM,
-            "maximum_drawer_slide_length_mismatch_mm": MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM,
-            "maximum_drawer_slide_vertical_mismatch_mm": MAXIMUM_DRAWER_SLIDE_VERTICAL_MISMATCH_MM,
-            "minimum_panel_thickness_mm": MINIMUM_PANEL_THICKNESS_MM,
-        },
+        "limits": &rules.hardware_manufacturing,
         "assumptions": [
             "canonical validator roles declare panels, holes, hinge cups, linear-hardware pairs, source axes, and association groups",
             "a hole or hinge-cup association group must resolve to exactly one explicitly declared host panel",
@@ -2441,6 +2460,7 @@ pub fn assistant_room_placement_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
     roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    rules: &ValidationRules,
     tolerance: TolerancePolicy,
     selected: bool,
     coverage_complete: bool,
@@ -2510,7 +2530,7 @@ pub fn assistant_room_placement_report(
             "applicable_count": 0,
             "issue_count": 0,
             "issues_complete": true,
-            "limits": { "boundary_tolerance_mm": ROOM_PLACEMENT_TOLERANCE_MM },
+            "limits": { "boundary_tolerance_mm": rules.room_placement.boundary_tolerance_mm },
             "evaluations": [],
             "issues": [],
             "not_evaluated": [{
@@ -2562,7 +2582,7 @@ pub fn assistant_room_placement_report(
             .into_iter()
             .max_by(f64::total_cmp)
             .unwrap_or(0.0);
-        let failed = maximum_outside_mm > ROOM_PLACEMENT_TOLERANCE_MM;
+        let failed = maximum_outside_mm > rules.room_placement.boundary_tolerance_mm;
         evaluations.push(serde_json::json!({
             "rule": "furniture_inside_associated_room",
             "occurrence_id": furniture.occurrence_id.0,
@@ -2582,7 +2602,7 @@ pub fn assistant_room_placement_report(
                 "ceiling": clearances_mm[5],
             },
             "maximum_outside_mm": maximum_outside_mm,
-            "boundary_tolerance_mm": ROOM_PLACEMENT_TOLERANCE_MM,
+            "boundary_tolerance_mm": rules.room_placement.boundary_tolerance_mm,
             "result": if failed { "failed" } else { "passed" },
         }));
         if failed {
@@ -2606,7 +2626,7 @@ pub fn assistant_room_placement_report(
                     "ceiling": outside_by_mm[5],
                 },
                 "maximum_outside_mm": maximum_outside_mm,
-                "boundary_tolerance_mm": ROOM_PLACEMENT_TOLERANCE_MM,
+                "boundary_tolerance_mm": rules.room_placement.boundary_tolerance_mm,
                 "rule": "a spatial.furniture occurrence must stay inside its associated spatial.room envelope",
             }));
         }
@@ -2628,7 +2648,7 @@ pub fn assistant_room_placement_report(
         "room_count": rooms.len(),
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-        "limits": { "boundary_tolerance_mm": ROOM_PLACEMENT_TOLERANCE_MM },
+        "limits": { "boundary_tolerance_mm": rules.room_placement.boundary_tolerance_mm },
         "assumptions": [
             "canonical spatial roles explicitly associate furniture with exactly one room group",
             "containment uses current revision-bound oriented source-frame geometry",
@@ -2644,6 +2664,7 @@ pub fn assistant_passage_clearance_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
     roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    rules: &ValidationRules,
     tolerance: TolerancePolicy,
     selected: bool,
     coverage_complete: bool,
@@ -2714,8 +2735,8 @@ pub fn assistant_passage_clearance_report(
             "issue_count": 0,
             "issues_complete": true,
             "limits": {
-                "minimum_width_mm": MINIMUM_PASSAGE_WIDTH_MM,
-                "minimum_headroom_mm": MINIMUM_PASSAGE_HEADROOM_MM,
+                "minimum_width_mm": rules.passage_clearance.minimum_width_mm,
+                "minimum_headroom_mm": rules.passage_clearance.minimum_headroom_mm,
             },
             "evaluations": [],
             "issues": [],
@@ -2747,8 +2768,8 @@ pub fn assistant_passage_clearance_report(
         });
         let width_mm = dimensions_mm[surface_axes[0]].min(dimensions_mm[surface_axes[1]]);
         let headroom_mm = dimensions_mm[height_axis];
-        let envelope_failed =
-            width_mm < MINIMUM_PASSAGE_WIDTH_MM || headroom_mm < MINIMUM_PASSAGE_HEADROOM_MM;
+        let envelope_failed = width_mm < rules.passage_clearance.minimum_width_mm
+            || headroom_mm < rules.passage_clearance.minimum_headroom_mm;
         evaluations.push(serde_json::json!({
             "rule": "minimum_passage_envelope",
             "occurrence_id": passage.occurrence_id.0,
@@ -2764,8 +2785,8 @@ pub fn assistant_passage_clearance_report(
             "source_frame_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
             "width_mm": width_mm,
             "headroom_mm": headroom_mm,
-            "minimum_width_mm": MINIMUM_PASSAGE_WIDTH_MM,
-            "minimum_headroom_mm": MINIMUM_PASSAGE_HEADROOM_MM,
+            "minimum_width_mm": rules.passage_clearance.minimum_width_mm,
+            "minimum_headroom_mm": rules.passage_clearance.minimum_headroom_mm,
             "result": if envelope_failed { "failed" } else { "passed" },
         }));
         if envelope_failed {
@@ -2776,9 +2797,9 @@ pub fn assistant_passage_clearance_report(
                 "name": passage.name,
                 "width_mm": width_mm,
                 "headroom_mm": headroom_mm,
-                "minimum_width_mm": MINIMUM_PASSAGE_WIDTH_MM,
-                "minimum_headroom_mm": MINIMUM_PASSAGE_HEADROOM_MM,
-                "rule": "a spatial.passage envelope must be at least 900 mm wide and 2000 mm high",
+                "minimum_width_mm": rules.passage_clearance.minimum_width_mm,
+                "minimum_headroom_mm": rules.passage_clearance.minimum_headroom_mm,
+                "rule": format!("a spatial.passage envelope must be at least {} mm wide and {} mm high", rules.passage_clearance.minimum_width_mm, rules.passage_clearance.minimum_headroom_mm),
             }));
         }
         for obstacle in geometries.iter().filter(|geometry| {
@@ -2839,8 +2860,8 @@ pub fn assistant_passage_clearance_report(
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "limits": {
-            "minimum_width_mm": MINIMUM_PASSAGE_WIDTH_MM,
-            "minimum_headroom_mm": MINIMUM_PASSAGE_HEADROOM_MM,
+            "minimum_width_mm": rules.passage_clearance.minimum_width_mm,
+            "minimum_headroom_mm": rules.passage_clearance.minimum_headroom_mm,
         },
         "assumptions": [
             "canonical spatial roles explicitly declare passages, obstacles, and association groups",
@@ -3532,7 +3553,7 @@ pub(crate) fn assistant_validation_context_base(
                 "issues": [],
                 "assumptions": [],
             },
-            "shelf_deflection": {
+            "beam_deflection": {
                 "state": "skipped",
                 "complete": false,
                 "applicable_count": 0,
@@ -3711,17 +3732,21 @@ pub(crate) fn assistant_validation_context_base(
         selection.requested.contains("assembly_retention"),
         coverage_complete,
     );
-    let shelf_deflection = assistant_shelf_deflection_report(
+    let rules = ValidationRules::library();
+    let beam_deflection = assistant_beam_deflection_report(
         &participants,
         &names,
         &validator_roles,
-        selection.requested.contains("shelf_deflection"),
+        &occurrence_materials(snapshot),
+        rules,
+        selection.requested.contains("beam_deflection"),
         coverage_complete,
     );
     let tipping = assistant_tipping_report(
         &participants,
         &names,
         &validator_roles,
+        rules,
         selection.requested.contains("tipping"),
         coverage_complete,
     );
@@ -3729,6 +3754,7 @@ pub(crate) fn assistant_validation_context_base(
         &participants,
         &names,
         &validator_roles,
+        rules,
         selection.requested.contains("anchoring"),
         coverage_complete,
     );
@@ -3736,6 +3762,7 @@ pub(crate) fn assistant_validation_context_base(
         &participants,
         &names,
         &validator_roles,
+        rules,
         selection.requested.contains("hardware_manufacturing"),
         coverage_complete,
     );
@@ -3743,6 +3770,7 @@ pub(crate) fn assistant_validation_context_base(
         &participants,
         &names,
         &validator_roles,
+        rules,
         tolerance,
         selection.requested.contains("room_placement"),
         coverage_complete,
@@ -3751,6 +3779,7 @@ pub(crate) fn assistant_validation_context_base(
         &participants,
         &names,
         &validator_roles,
+        rules,
         tolerance,
         selection.requested.contains("passage_clearance"),
         coverage_complete,
@@ -3865,9 +3894,7 @@ pub(crate) fn assistant_validation_context_base(
         } else {
             retention_only_state
         };
-    let shelf_state = shelf_deflection["state"]
-        .as_str()
-        .unwrap_or("not_evaluated");
+    let beam_state = beam_deflection["state"].as_str().unwrap_or("not_evaluated");
     let tipping_state = tipping["state"].as_str().unwrap_or("not_evaluated");
     let anchoring_state = anchoring["state"].as_str().unwrap_or("not_evaluated");
     let hardware_manufacturing_state = hardware_manufacturing["state"]
@@ -3881,7 +3908,7 @@ pub(crate) fn assistant_validation_context_base(
     let assembly_retention_issue_count = assembly_retention["issue_count"].as_u64().unwrap_or(0)
         as usize
         + assembly_constraints["issue_count"].as_u64().unwrap_or(0) as usize;
-    let shelf_issue_count = shelf_deflection["issue_count"].as_u64().unwrap_or(0) as usize;
+    let beam_issue_count = beam_deflection["issue_count"].as_u64().unwrap_or(0) as usize;
     let tipping_issue_count = tipping["issue_count"].as_u64().unwrap_or(0) as usize;
     let anchoring_issue_count = anchoring["issue_count"].as_u64().unwrap_or(0) as usize;
     let hardware_manufacturing_issue_count =
@@ -3895,7 +3922,7 @@ pub(crate) fn assistant_validation_context_base(
         ("collision", collision_state),
         ("assembly_retention", assembly_retention_state),
         ("gravity_support", gravity_state),
-        ("shelf_deflection", shelf_state),
+        ("beam_deflection", beam_state),
         ("tipping", tipping_state),
         ("anchoring", anchoring_state),
         ("hardware_manufacturing", hardware_manufacturing_state),
@@ -3927,7 +3954,7 @@ pub(crate) fn assistant_validation_context_base(
         collision_state,
         assembly_retention_state,
         gravity_state,
-        shelf_state,
+        beam_state,
         tipping_state,
         anchoring_state,
         hardware_manufacturing_state,
@@ -3954,8 +3981,8 @@ pub(crate) fn assistant_validation_context_base(
                     || assembly_constraints["complete"].as_bool() == Some(true))))
         && (!selection.requested.contains("gravity_support")
             || gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES)
-        && (!selection.requested.contains("shelf_deflection")
-            || shelf_deflection["complete"].as_bool() == Some(true))
+        && (!selection.requested.contains("beam_deflection")
+            || beam_deflection["complete"].as_bool() == Some(true))
         && (!selection.requested.contains("tipping")
             || tipping["complete"].as_bool() == Some(true))
         && (!selection.requested.contains("anchoring")
@@ -3971,7 +3998,7 @@ pub(crate) fn assistant_validation_context_base(
     let total_issue_count = issue_count
         + assembly_retention_issue_count
         + gravity_issue_count
-        + shelf_issue_count
+        + beam_issue_count
         + tipping_issue_count
         + anchoring_issue_count
         + hardware_manufacturing_issue_count
@@ -3983,7 +4010,7 @@ pub(crate) fn assistant_validation_context_base(
     for report in [
         &assembly_retention,
         &assembly_constraints,
-        &shelf_deflection,
+        &beam_deflection,
         &tipping,
         &anchoring,
         &hardware_manufacturing,
@@ -4063,7 +4090,7 @@ pub(crate) fn assistant_validation_context_base(
             "issues": gravity_issues,
             "assumptions": gravity_assumptions,
         },
-        "shelf_deflection": shelf_deflection,
+        "beam_deflection": beam_deflection,
         "tipping": tipping,
         "anchoring": anchoring,
         "hardware_manufacturing": hardware_manufacturing,

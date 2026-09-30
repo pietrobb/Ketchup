@@ -568,8 +568,11 @@ fn resolve_assistant_validator_names(text: &str) -> (BTreeSet<&'static str>, Vec
             .as_slice(),
         ),
         (
-            "shelf_deflection",
+            "beam_deflection",
             [
+                "priehyb nosníka",
+                "priehyb nosnika",
+                "beam deflection",
                 "priehyb políc",
                 "priehyb polic",
                 "priehyb police",

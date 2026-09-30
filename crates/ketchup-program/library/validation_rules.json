@@ -1,0 +1,36 @@
+{
+  "materials": {
+    "engineered_wood": { "elastic_modulus_n_mm2": 2500.0 },
+    "aluminium": { "elastic_modulus_n_mm2": 70000.0 },
+    "steel": { "elastic_modulus_n_mm2": 210000.0 }
+  },
+  "default_material": "engineered_wood",
+  "beam_deflection": {
+    "design_load_n": 500.0,
+    "span_ratio": 200.0,
+    "maximum_mm": 5.0
+  },
+  "tipping": {
+    "minimum_tip_angle_degrees": 15.0
+  },
+  "anchoring": {
+    "minimum_height_mm": 1000.0,
+    "minimum_height_depth_ratio": 2.0
+  },
+  "hardware_manufacturing": {
+    "minimum_hole_edge_material_mm": 5.0,
+    "minimum_hole_spacing_material_mm": 3.0,
+    "minimum_cup_diameter_mm": 35.0,
+    "minimum_cup_depth_mm": 12.0,
+    "maximum_slide_pair_length_mismatch_mm": 1.0,
+    "maximum_slide_pair_vertical_mismatch_mm": 1.0,
+    "minimum_panel_thickness_mm": 6.0
+  },
+  "room_placement": {
+    "boundary_tolerance_mm": 0.1
+  },
+  "passage_clearance": {
+    "minimum_width_mm": 900.0,
+    "minimum_headroom_mm": 2000.0
+  }
+}

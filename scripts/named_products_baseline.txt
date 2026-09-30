@@ -1,5 +1,4 @@
 # Remaining named-product occurrences; may only shrink.
 crates/ketchup-app/src/lib.rs:drawer 1
-crates/ketchup-application/src/validation.rs:drawer 13
 crates/ketchup-headless/src/protocol/model_tools.rs:nightstand 1
 crates/ketchup-scheduler/src/bin/pair_query/mod.rs:nightstand 1

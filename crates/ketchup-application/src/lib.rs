@@ -19,6 +19,7 @@ mod sketch;
 pub mod topology;
 pub mod transforms;
 pub mod validation;
+pub mod validation_rules;
 mod worker_pool;
 pub mod workflow_trace;
 
