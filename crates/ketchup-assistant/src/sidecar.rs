@@ -4100,6 +4100,33 @@ impl AssistantRejectionDiagnostic {
     }
 }
 
+impl From<AssistantRejectionPhase> for ketchup_rejection::RejectionPhase {
+    fn from(phase: AssistantRejectionPhase) -> Self {
+        match phase {
+            AssistantRejectionPhase::IntentValidation
+            | AssistantRejectionPhase::CanonicalValidation
+            | AssistantRejectionPhase::DomainValidation => Self::Validation,
+            AssistantRejectionPhase::ProposalPlanning => Self::Planning,
+            AssistantRejectionPhase::ExactValidation => Self::Verification,
+            AssistantRejectionPhase::CommitValidation => Self::Commit,
+        }
+    }
+}
+
+/// The sidecar wire diagnostic read as the shared rejection; the operation that
+/// refused leads the reason so nothing of the diagnostic is lost.
+impl From<AssistantRejectionDiagnostic> for ketchup_rejection::Rejection {
+    fn from(diagnostic: AssistantRejectionDiagnostic) -> Self {
+        Self::new(diagnostic.code, diagnostic.phase.into())
+            .target(diagnostic.target)
+            .reason(format!(
+                "{}: {}",
+                diagnostic.operation, diagnostic.failed_invariant
+            ))
+            .fix_hint(diagnostic.repair_hint)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantApiDiagnostics {

@@ -2303,6 +2303,7 @@ version = "0.1.0"
 dependencies = [
  "ketchup-geometry",
  "ketchup-model",
+ "ketchup-rejection",
  "serde",
  "serde_json",
  "syn 2.0.119",
@@ -2397,6 +2398,14 @@ dependencies = [
  "serde",
  "serde_json",
  "starlark",
+]
+
+[[package]]
+name = "ketchup-rejection"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

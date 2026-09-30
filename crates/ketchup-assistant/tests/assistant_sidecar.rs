@@ -2300,6 +2300,33 @@ fn assistant_rejection_diagnostic_is_typed_bounded_and_strict() {
 }
 
 #[test]
+fn assistant_rejection_diagnostic_reads_as_the_shared_rejection() {
+    let rejection = ketchup_rejection::Rejection::from(AssistantRejectionDiagnostic {
+        phase: AssistantRejectionPhase::ExactValidation,
+        code: "exact.solid_invalid".to_owned(),
+        operation: "create_panel".to_owned(),
+        target: "occurrence:17".to_owned(),
+        failed_invariant: "The panel must evaluate to one closed solid.".to_owned(),
+        repair_hint: "Give the panel a positive thickness.".to_owned(),
+        retryable: true,
+    });
+    assert_eq!(rejection.code(), "exact.solid_invalid");
+    assert_eq!(
+        rejection.phase(),
+        ketchup_rejection::RejectionPhase::Verification
+    );
+    assert_eq!(rejection.target_name(), "occurrence:17");
+    assert_eq!(
+        rejection.reason_text(),
+        "create_panel: The panel must evaluate to one closed solid."
+    );
+    assert_eq!(
+        rejection.fix_hint_text(),
+        "Give the panel a positive thickness."
+    );
+}
+
+#[test]
 fn assistant_rejection_diagnostic_rejects_unstable_codes_and_unbounded_text() {
     let valid = AssistantRejectionDiagnostic {
         phase: AssistantRejectionPhase::ProposalPlanning,

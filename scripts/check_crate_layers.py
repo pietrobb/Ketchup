@@ -16,6 +16,7 @@ from pathlib import Path
 
 LAYERS = {
     "ketchup-tolerance": 0,
+    "ketchup-rejection": 0,
     "ketchup-geometry": 1,
     "ketchup-model": 2,
     "ketchup-exact": 2,
