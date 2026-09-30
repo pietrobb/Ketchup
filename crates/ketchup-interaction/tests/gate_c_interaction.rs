@@ -455,7 +455,7 @@ fn pseudo_locale_expands_visible_text_without_rewriting_arguments() {
     assert!(rendered.len() > "Boxes: 7".len() * 2);
     assert!(rendered.contains('7'));
     assert!(!rendered.contains("{ $count }"));
-    assert_eq!(pseudo.text("shortcut-none"), "[!!  !!]");
+    assert_eq!(pseudo.text("key-f1"), "[!! F1 !!]");
 }
 
 #[test]

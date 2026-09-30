@@ -151,6 +151,7 @@ mod feature_history_ui;
 mod gesture;
 mod glb_import_ui;
 mod helix_thread_ui;
+mod keymap;
 pub mod live_bridge;
 mod mesh_conversion_ui;
 mod modal;
@@ -1942,7 +1943,6 @@ impl ProjectionMode {
 struct CommandSpec {
     id: AppCommand,
     label_key: &'static str,
-    shortcut_key: &'static str,
     tool: Option<ActiveTool>,
     implemented: bool,
 }
@@ -1954,861 +1954,738 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
-            shortcut_key: "shortcut-new",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Open,
             label_key: "file-open",
-            shortcut_key: "shortcut-open",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Save,
             label_key: "file-save",
-            shortcut_key: "shortcut-save",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SaveAs,
             label_key: "file-save-as",
-            shortcut_key: "shortcut-save-as",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ImportMeshStl,
             label_key: "file-import-stl",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ImportDrawingDxf,
             label_key: "file-import-dxf",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ImportExactStep,
             label_key: "file-import-step",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ImportExactIges,
             label_key: "file-import-iges",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ImportSketchupScene,
             label_key: "file-import-sketchup-scene",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ImportBlenderGlb,
             label_key: "file-import-blender-glb",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ConvertSelectedMeshToExact,
             label_key: "model-convert-mesh-exact",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportDrawingDxf,
             label_key: "file-export-dxf",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportExactStep,
             label_key: "file-export-exact",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportExactIges,
             label_key: "file-export-iges",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportMeshStl,
             label_key: "file-export-mesh",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportPrintThreeMf,
             label_key: "file-export-print-3mf",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportBlenderGlb,
             label_key: "file-export-blender-glb",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportGeneralFabrication,
             label_key: "file-export-general-fabrication",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportWeldmentCutList,
             label_key: "file-export-weldment-cut-list",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportSheetMetalManufacturing,
             label_key: "file-export-sheet-metal-manufacturing",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportHomagMpr,
             label_key: "file-export-homag-mpr",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ReviewCamExport,
             label_key: "file-review-cam-export",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ReviewStaticFea,
             label_key: "file-review-static-fea",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ReviewLocalPdm,
             label_key: "file-review-local-pdm",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ExportHundeggerBtlx,
             label_key: "file-export-hundegger-btlx",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Select,
             label_key: "tool-select",
-            shortcut_key: "shortcut-space",
             tool: Some(ActiveTool::Select),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Line,
             label_key: "tool-line",
-            shortcut_key: "shortcut-line",
             tool: Some(ActiveTool::Line),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Rectangle,
             label_key: "tool-rectangle",
-            shortcut_key: "shortcut-rectangle",
             tool: Some(ActiveTool::Rectangle),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Circle,
             label_key: "tool-circle",
-            shortcut_key: "shortcut-circle",
             tool: Some(ActiveTool::Circle),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Arc,
             label_key: "tool-arc",
-            shortcut_key: "shortcut-arc",
             tool: Some(ActiveTool::Arc),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SolidSubtract,
             label_key: "solid-tool-subtract",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::SolidSubtract),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SolidTrim,
             label_key: "solid-tool-trim",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::SolidTrim),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SolidUnion,
             label_key: "solid-tool-union",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::SolidUnion),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SolidIntersect,
             label_key: "solid-tool-intersect",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::SolidIntersect),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SolidSplit,
             label_key: "solid-tool-split",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::SolidSplit),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::PlanarOffset,
             label_key: "feature-planar-offset",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::PlanarOffset),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Helix,
             label_key: "feature-helix",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Helix),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Thread,
             label_key: "feature-thread",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Thread),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Sweep,
             label_key: "feature-sweep",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Sweep),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Loft,
             label_key: "feature-loft",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Loft),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Revolve,
             label_key: "feature-revolve",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Revolve),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Shell,
             label_key: "feature-shell",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Shell),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Fillet,
             label_key: "feature-fillet",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Fillet),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Chamfer,
             label_key: "feature-chamfer",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Chamfer),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::PushPull,
             label_key: "tool-push-pull",
-            shortcut_key: "shortcut-push-pull",
             tool: Some(ActiveTool::PushPull),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Move,
             label_key: "tool-move",
-            shortcut_key: "shortcut-move",
             tool: Some(ActiveTool::Move),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Rotate,
             label_key: "tool-rotate",
-            shortcut_key: "shortcut-rotate",
             tool: Some(ActiveTool::Rotate),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Scale,
             label_key: "tool-scale",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::Scale),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Measure,
             label_key: "tool-measure",
-            shortcut_key: "shortcut-measure",
             tool: Some(ActiveTool::Measure),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Orbit,
             label_key: "tool-orbit",
-            shortcut_key: "shortcut-orbit",
             tool: Some(ActiveTool::Orbit),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Pan,
             label_key: "tool-pan",
-            shortcut_key: "shortcut-pan",
             tool: Some(ActiveTool::Pan),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Undo,
             label_key: "action-undo",
-            shortcut_key: "shortcut-undo",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Redo,
             label_key: "action-redo",
-            shortcut_key: "shortcut-redo",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Copy,
             label_key: "action-copy",
-            shortcut_key: "shortcut-copy",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Cut,
             label_key: "action-cut",
-            shortcut_key: "shortcut-cut",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Paste,
             label_key: "action-paste",
-            shortcut_key: "shortcut-paste",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Duplicate,
             label_key: "action-duplicate",
-            shortcut_key: "shortcut-duplicate",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Delete,
             label_key: "action-delete",
-            shortcut_key: "shortcut-delete",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Deselect,
             label_key: "action-deselect",
-            shortcut_key: "shortcut-escape",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SelectAll,
             label_key: "action-select-all",
-            shortcut_key: "shortcut-select-all",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::InvertSelection,
             label_key: "action-invert-selection",
-            shortcut_key: "shortcut-invert-selection",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Group,
             label_key: "model-group",
-            shortcut_key: "shortcut-group",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Ungroup,
             label_key: "model-ungroup",
-            shortcut_key: "shortcut-ungroup",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::MakeComponent,
             label_key: "model-make-component",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::MakeUnique,
             label_key: "model-make-unique",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ReplaceComponent,
             label_key: "model-replace-component",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::SelectAllInstances,
             label_key: "model-select-all-instances",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::AssignTag,
             label_key: "model-assign-tag",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::AlignOccurrences,
             label_key: "model-align-occurrences",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::DistributeOccurrences,
             label_key: "model-distribute-occurrences",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::LinearPattern,
             label_key: "model-linear-pattern",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::RectangularPattern,
             label_key: "model-rectangular-pattern",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::CircularPattern,
             label_key: "model-circular-pattern",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::GroundOccurrence,
             label_key: "model-ground-occurrence",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::UngroundOccurrence,
             label_key: "model-unground-occurrence",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::RenameOccurrence,
             label_key: "model-rename-occurrence",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::RenameDefinition,
             label_key: "model-rename-definition",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::PurgeUnused,
             label_key: "model-purge-unused",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Hide,
             label_key: "model-hide",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::HideOthers,
             label_key: "model-hide-others",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Unhide,
             label_key: "model-unhide",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::UnhideAll,
             label_key: "model-unhide-all",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::PreviousView,
             label_key: "view-previous",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::HomeView,
             label_key: "view-home",
-            shortcut_key: "shortcut-home",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewIso,
             label_key: "view-iso",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewTop,
             label_key: "view-top",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewBottom,
             label_key: "view-bottom",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewFront,
             label_key: "view-front",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewBack,
             label_key: "view-back",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewRight,
             label_key: "view-right",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewLeft,
             label_key: "view-left",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::GridAxes),
             label_key: "view-grid-axes",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::WhiteBackground),
             label_key: "view-white-background",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Shadows),
             label_key: "view-shadows",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Fog),
             label_key: "view-fog",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::HiddenObjects),
             label_key: "view-hidden-objects",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Xray),
             label_key: "view-xray",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewShaded,
             label_key: "view-shaded",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Wireframe),
             label_key: "view-wireframe",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Monochrome),
             label_key: "view-monochrome",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::HiddenLine),
             label_key: "view-hidden-line",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Edges),
             label_key: "view-edges",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Profiles),
             label_key: "view-profiles",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Halos),
             label_key: "view-halos",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::DepthCue),
             label_key: "view-depth-cue",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::FadeDistantEdges),
             label_key: "view-fade-distant-edges",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::HighContrastEdges),
             label_key: "view-high-contrast-edges",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::SelectionHalo),
             label_key: "view-selection-halo",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Endpoints),
             label_key: "view-endpoints",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Midpoints),
             label_key: "view-midpoints",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Extensions),
             label_key: "view-extensions",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Jitter),
             label_key: "view-jitter",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::Dashes),
             label_key: "view-dashes",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::View(ViewFlag::ColorByAxis),
             label_key: "view-color-by-axis",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ViewProjection,
             label_key: "view-projection",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ZoomFit,
             label_key: "view-zoom-fit",
-            shortcut_key: "shortcut-zoom-fit",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ZoomSelection,
             label_key: "view-zoom-selection",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::CenterSelection,
             label_key: "view-center-selection",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ZoomWindow,
             label_key: "view-zoom-window",
-            shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::ZoomWindow),
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ZoomIn,
             label_key: "view-zoom-in",
-            shortcut_key: "shortcut-zoom-in",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::ZoomOut,
             label_key: "view-zoom-out",
-            shortcut_key: "shortcut-zoom-out",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::Shortcuts,
             label_key: "help-shortcuts",
-            shortcut_key: "shortcut-shortcuts",
             tool: None,
             implemented: true,
         },
         CommandSpec {
             id: AppCommand::About,
             label_key: "help-about",
-            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
@@ -29625,109 +29502,12 @@ impl KetchupApp {
                 .is_some_and(|pick| pick.overlapping.len() > 1);
         let cycle_with_alt = self.face_workflow.update_alt_pick_through(alt_pick_through);
         self.face_workflow.set_xray_preview(alt_pick_through);
-        let new_document = context.input(|input| {
-            input.modifiers.command && !input.modifiers.shift && input.key_pressed(egui::Key::N)
-        });
-        let open_document = context.input(|input| {
-            input.modifiers.command && !input.modifiers.shift && input.key_pressed(egui::Key::O)
-        });
-        let save_as = context.input(|input| {
-            input.modifiers.command && input.modifiers.shift && input.key_pressed(egui::Key::S)
-        });
-        let save_document = context.input(|input| {
-            input.modifiers.command && !input.modifiers.shift && input.key_pressed(egui::Key::S)
-        });
-        let undo = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z));
-        let redo = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y));
-        let copy = !context.wants_keyboard_input()
-            && context.input_mut(|input| {
-                let mut native_copy = false;
-                input.events.retain(|event| {
-                    let is_copy = matches!(event, egui::Event::Copy);
-                    native_copy |= is_copy;
-                    !is_copy
-                });
-                native_copy || input.consume_key(egui::Modifiers::COMMAND, egui::Key::C)
-            });
-        let cut = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::X));
-        let paste = !context.wants_keyboard_input()
-            && context.input_mut(|input| {
-                let mut native_paste = false;
-                input.events.retain(|event| {
-                    let is_paste = matches!(event, egui::Event::Paste(_));
-                    native_paste |= is_paste;
-                    !is_paste
-                });
-                native_paste || input.consume_key(egui::Modifiers::COMMAND, egui::Key::V)
-            });
-        let duplicate = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::D));
-        let select_all = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::A));
-        let invert_selection = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::I));
-        let delete = !context.wants_keyboard_input()
-            && context.input(|input| input.key_pressed(egui::Key::Delete));
-        let select = !context.wants_keyboard_input()
-            && context
-                .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
-        let line = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::L));
-        let rectangle = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::R));
-        let circle = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::C));
-        let arc = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::A));
-        let push_pull = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::P));
-        let move_tool = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::M));
-        let rotate_tool = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Q));
-        let measure = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::T));
-        let home_view = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Home));
-        let zoom_fit = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::Z));
-        let zoom_in = !context.wants_keyboard_input()
-            && context.input_mut(|input| {
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus)
-                    || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals)
-            });
-        let zoom_out = !context.wants_keyboard_input()
-            && context
-                .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus));
+        let typing = context.wants_keyboard_input();
+        let command = context.input_mut(|input| keymap::pressed(input, typing));
         let cycle_overlap = cycle_with_alt
-            || (!context.wants_keyboard_input()
-                && context
-                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)));
-        let shortcuts = context.input(|input| input.key_pressed(egui::Key::F1));
-        let group = !context.wants_keyboard_input()
-            && context.input(|input| {
-                input.modifiers.command && !input.modifiers.shift && input.key_pressed(egui::Key::G)
-            });
-        let ungroup = !context.wants_keyboard_input()
-            && context.input(|input| {
-                input.modifiers.command && input.modifiers.shift && input.key_pressed(egui::Key::G)
-            });
-        let confirm_box_preview = !context.wants_keyboard_input()
-            && (self.has_preview() || self.has_drawn_shape_preview())
-            && context.input(|input| input.key_pressed(egui::Key::Enter));
-        let confirm_operation_preview = !context.wants_keyboard_input()
-            && self.has_occurrence_operation_preview()
-            && context.input(|input| input.key_pressed(egui::Key::Enter));
-        let confirm_sweep_preview = !context.wants_keyboard_input()
-            && self.tool_preview.get::<SweepPreview>().is_some()
-            && context.input(|input| input.key_pressed(egui::Key::Enter));
-        let confirm_loft_preview = !context.wants_keyboard_input()
-            && self.tool_preview.get::<LoftPreview>().is_some()
-            && context.input(|input| input.key_pressed(egui::Key::Enter));
-        let escape = context.input(|input| input.key_pressed(egui::Key::Escape));
+            || (!typing
+                && context.input_mut(|input| input.consume_shortcut(&keymap::CYCLE_OVERLAP)));
+        let confirm = !typing && context.input(|input| input.key_pressed(keymap::CONFIRM));
         if !context.wants_keyboard_input() {
             let typed = context.input(|input| {
                 input
@@ -29777,14 +29557,7 @@ impl KetchupApp {
         ) && (!context.wants_keyboard_input()
             || context.memory(|memory| memory.has_focus(egui::Id::new("value-box-input"))))
         {
-            let requested = [
-                (egui::Key::ArrowRight, Some(Axis::X)),
-                (egui::Key::ArrowLeft, Some(Axis::Y)),
-                (egui::Key::ArrowUp, Some(Axis::Z)),
-                (egui::Key::ArrowDown, None),
-            ]
-            .into_iter()
-            .find(|(key, _)| {
+            let requested = keymap::AXIS_LOCKS.into_iter().find(|(key, _)| {
                 context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, *key))
             });
             if let Some((_, axis)) = requested {
@@ -29836,129 +29609,83 @@ impl KetchupApp {
             }
         }
 
-        if new_document {
-            self.dispatch_command(AppCommand::New);
-        } else if open_document {
-            self.dispatch_command(AppCommand::Open);
-        } else if save_as {
-            self.dispatch_command(AppCommand::SaveAs);
-        } else if save_document {
-            self.dispatch_command(AppCommand::Save);
-        } else if undo {
-            self.dispatch_command(AppCommand::Undo);
-        } else if redo {
-            self.dispatch_command(AppCommand::Redo);
-        } else if copy {
-            if self.command_enabled(AppCommand::Copy) {
-                self.dispatch_command(AppCommand::Copy);
-                context.copy_text("Ketchup object selection".to_owned());
+        if let Some(command) = command {
+            match command {
+                // Esc first cancels whatever is in progress; only with nothing
+                // left to cancel does it deselect.
+                AppCommand::Deselect => self.cancel_or_deselect(),
+                AppCommand::Copy => {
+                    if self.command_enabled(AppCommand::Copy) {
+                        self.dispatch_command(AppCommand::Copy);
+                        context.copy_text("Ketchup object selection".to_owned());
+                    }
+                }
+                command => self.dispatch_command(command),
             }
-        } else if cut {
-            self.dispatch_command(AppCommand::Cut);
-        } else if paste {
-            self.dispatch_command(AppCommand::Paste);
-        } else if duplicate {
-            self.dispatch_command(AppCommand::Duplicate);
-        } else if select_all {
-            self.dispatch_command(AppCommand::SelectAll);
-        } else if invert_selection {
-            self.dispatch_command(AppCommand::InvertSelection);
-        } else if group {
-            self.dispatch_command(AppCommand::Group);
-        } else if ungroup {
-            self.dispatch_command(AppCommand::Ungroup);
-        } else if delete {
-            self.dispatch_command(AppCommand::Delete);
-        } else if select {
-            self.dispatch_command(AppCommand::Select);
-        } else if line {
-            self.dispatch_command(AppCommand::Line);
-        } else if rectangle {
-            self.dispatch_command(AppCommand::Rectangle);
-        } else if circle {
-            self.dispatch_command(AppCommand::Circle);
-        } else if arc {
-            self.dispatch_command(AppCommand::Arc);
-        } else if push_pull {
-            self.dispatch_command(AppCommand::PushPull);
-        } else if move_tool {
-            self.dispatch_command(AppCommand::Move);
-        } else if rotate_tool {
-            self.dispatch_command(AppCommand::Rotate);
-        } else if measure {
-            self.dispatch_command(AppCommand::Measure);
-        } else if home_view {
-            self.dispatch_command(AppCommand::HomeView);
-        } else if zoom_fit {
-            self.dispatch_command(AppCommand::ZoomFit);
-        } else if zoom_in {
-            self.dispatch_command(AppCommand::ZoomIn);
-        } else if zoom_out {
-            self.dispatch_command(AppCommand::ZoomOut);
         } else if cycle_overlap {
             self.cycle_hover_overlap();
-        } else if shortcuts {
-            self.dispatch_command(AppCommand::Shortcuts);
-        } else if confirm_box_preview {
+        } else if confirm && (self.has_preview() || self.has_drawn_shape_preview()) {
             self.confirm_preview();
-        } else if confirm_operation_preview {
+        } else if confirm && self.has_occurrence_operation_preview() {
             self.confirm_push_pull_preview();
-        } else if confirm_sweep_preview {
+        } else if confirm && self.tool_preview.get::<SweepPreview>().is_some() {
             self.confirm_sweep_preview();
-        } else if confirm_loft_preview {
+        } else if confirm && self.tool_preview.get::<LoftPreview>().is_some() {
             self.confirm_loft_preview();
-        } else if escape {
-            if matches!(
-                self.active_tool,
-                ActiveTool::Move | ActiveTool::Rotate | ActiveTool::Scale
-            ) {
-                self.end_transform_correction();
-            }
-            self.face_workflow.set_xray_preview(false);
-            if self.feature_history_preview_pending() {
-                self.cancel_feature_history_preview();
-            } else if matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread) {
-                self.clear_ephemeral_edit_state();
-                self.active_tool = ActiveTool::Select;
-                self.status_key = "status-ready";
-                self.digest = self.catalog.text("digest-cancelled");
-            } else if self.active_tool == ActiveTool::ZoomWindow {
-                self.gesture.drag.close::<ZoomWindowDrag>();
-                self.active_tool = ActiveTool::Select;
-                self.status_key = "status-ready";
-                self.digest = self.catalog.text("digest-cancelled");
-            } else if self.gesture.measure.start.is_some() {
-                self.clear_measurement();
-                self.digest = self.catalog.text("digest-measure-cleared");
-                self.status_key = "status-measure-first-point";
-            } else if self.has_preview()
-                || self.has_occurrence_operation_preview()
-                || self.revolve_tool.is_some()
-                || self.tool_preview.get::<RevolvePreview>().is_some()
-                || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
-                || self.tool_preview.get::<SweepPreview>().is_some()
-                || self.tool_preview.get::<LoftPreview>().is_some()
-                || self.tool_preview.get::<GeneralFinishPreview>().is_some()
-                || self.solid_tool_target.is_some()
-                || self.gesture.drag.get::<PushPullAnchor>().is_some()
-                || self.tool_session.is_some()
-                || self.gesture.sketch.armed
-            {
-                self.clear_ephemeral_edit_state();
-                self.cancel_rectangle_sketch();
-                self.digest = self.catalog.text("digest-cancelled");
-            } else if self.selection_count() > 0 {
-                self.dispatch_command(AppCommand::Deselect);
-            } else {
-                self.exit_edit_context();
-            }
+        }
+    }
+
+    fn cancel_or_deselect(&mut self) {
+        if matches!(
+            self.active_tool,
+            ActiveTool::Move | ActiveTool::Rotate | ActiveTool::Scale
+        ) {
+            self.end_transform_correction();
+        }
+        self.face_workflow.set_xray_preview(false);
+        if self.feature_history_preview_pending() {
+            self.cancel_feature_history_preview();
+        } else if matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread) {
+            self.clear_ephemeral_edit_state();
+            self.active_tool = ActiveTool::Select;
+            self.status_key = "status-ready";
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if self.active_tool == ActiveTool::ZoomWindow {
+            self.gesture.drag.close::<ZoomWindowDrag>();
+            self.active_tool = ActiveTool::Select;
+            self.status_key = "status-ready";
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if self.gesture.measure.start.is_some() {
+            self.clear_measurement();
+            self.digest = self.catalog.text("digest-measure-cleared");
+            self.status_key = "status-measure-first-point";
+        } else if self.has_preview()
+            || self.has_occurrence_operation_preview()
+            || self.revolve_tool.is_some()
+            || self.tool_preview.get::<RevolvePreview>().is_some()
+            || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
+            || self.tool_preview.get::<SweepPreview>().is_some()
+            || self.tool_preview.get::<LoftPreview>().is_some()
+            || self.tool_preview.get::<GeneralFinishPreview>().is_some()
+            || self.solid_tool_target.is_some()
+            || self.gesture.drag.get::<PushPullAnchor>().is_some()
+            || self.tool_session.is_some()
+            || self.gesture.sketch.armed
+        {
+            self.clear_ephemeral_edit_state();
+            self.cancel_rectangle_sketch();
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if self.selection_count() > 0 {
+            self.dispatch_command(AppCommand::Deselect);
+        } else {
+            self.exit_edit_context();
         }
     }
 
     fn command_button(&mut self, ui: &mut egui::Ui, id: AppCommand) {
         let spec = CommandRegistry::spec(id);
         let label = self.catalog.text(spec.label_key);
-        let shortcut = self.catalog.text(spec.shortcut_key);
+        let shortcut = keymap::shortcut_text(&self.catalog, id);
         let enabled = self.command_enabled(id);
         if ui
             .add_enabled(enabled, egui::Button::new(label))
@@ -29975,7 +29702,7 @@ impl KetchupApp {
             "menu-command",
             &BTreeMap::from([
                 ("label", self.catalog.text(spec.label_key)),
-                ("shortcut", self.catalog.text(spec.shortcut_key)),
+                ("shortcut", keymap::shortcut_text(&self.catalog, id)),
             ]),
         );
         let enabled = self.command_enabled(id);
@@ -30106,7 +29833,7 @@ impl KetchupApp {
         );
         name_widget(&response, enabled, &label);
         response
-            .on_hover_text(self.catalog.text(CommandRegistry::spec(id).shortcut_key))
+            .on_hover_text(keymap::shortcut_text(&self.catalog, id))
             .clicked()
     }
 
@@ -30505,7 +30232,7 @@ impl KetchupApp {
                         "tool-tooltip",
                         &BTreeMap::from([
                             ("tool", label.clone()),
-                            ("shortcut", self.catalog.text(spec.shortcut_key)),
+                            ("shortcut", keymap::shortcut_text(&self.catalog, spec.id)),
                         ]),
                     ))
                     .clicked()
@@ -32196,7 +31923,7 @@ impl KetchupApp {
                     let undo_label = self.catalog.text("assistant-undo-change");
                     undo_clicked = ui
                         .add_enabled(can_undo, egui::Button::new(&undo_label))
-                        .on_hover_text(self.catalog.text("shortcut-undo"))
+                        .on_hover_text(keymap::shortcut_text(&self.catalog, AppCommand::Undo))
                         .clicked();
                 });
             if undo_clicked {
@@ -35459,13 +35186,13 @@ impl KetchupApp {
             .show(context, |ui| {
                 for spec in CommandRegistry::COMMANDS
                     .iter()
-                    .filter(|spec| spec.shortcut_key != "shortcut-none")
+                    .filter(|spec| keymap::binding(spec.id).is_some())
                 {
                     ui.label(self.catalog.format(
                         "shortcuts-row",
                         &BTreeMap::from([
                             ("command", self.catalog.text(spec.label_key)),
-                            ("shortcut", self.catalog.text(spec.shortcut_key)),
+                            ("shortcut", keymap::shortcut_text(&self.catalog, spec.id)),
                         ]),
                     ));
                 }

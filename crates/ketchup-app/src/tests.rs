@@ -18207,3 +18207,91 @@ fn starting_a_pointer_drag_ends_the_one_that_was_running() {
     app.gesture.drag.close::<ZoomWindowDrag>();
     assert!(app.gesture.drag.is_none());
 }
+
+fn press_in_a_frame(events: Vec<egui::Event>, typing: bool) -> Option<AppCommand> {
+    let context = egui::Context::default();
+    let mut pressed = None;
+    let _ = context.run(
+        egui::RawInput {
+            events,
+            ..Default::default()
+        },
+        |context| pressed = context.input_mut(|input| keymap::pressed(input, typing)),
+    );
+    pressed
+}
+
+fn key_event(chord: &egui::KeyboardShortcut) -> egui::Event {
+    egui::Event::Key {
+        key: chord.logical_key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: chord.modifiers,
+    }
+}
+
+#[test]
+fn every_shortcut_in_the_keymap_runs_its_command_and_prints_the_same_chord() {
+    let english = LocaleCatalog::english();
+    let slovak = LocaleCatalog::slovak();
+    for binding in keymap::KEYMAP {
+        for chord in binding.chords {
+            assert_eq!(
+                press_in_a_frame(vec![key_event(chord)], false),
+                Some(binding.command),
+                "{chord:?} must run {:?}, not an earlier binding",
+                binding.command
+            );
+            assert_eq!(
+                press_in_a_frame(vec![key_event(chord)], true),
+                binding.while_typing.then_some(binding.command),
+                "{chord:?} while typing"
+            );
+            for catalog in [&english, &slovak] {
+                let text = keymap::chord_text(catalog, chord);
+                assert!(!text.is_empty() && !text.contains('['), "{text}");
+            }
+        }
+        assert_eq!(
+            keymap::shortcut_text(&english, binding.command),
+            keymap::chord_text(&english, &binding.chords[0])
+        );
+        assert!(
+            CommandRegistry::COMMANDS
+                .iter()
+                .any(|spec| spec.id == binding.command && spec.implemented),
+            "{:?} is bound but not an implemented command",
+            binding.command
+        );
+    }
+    assert_eq!(
+        keymap::shortcut_text(&english, AppCommand::SaveAs),
+        "Ctrl+Shift+S"
+    );
+    assert_eq!(
+        keymap::shortcut_text(&slovak, AppCommand::Select),
+        "Medzerník"
+    );
+    assert_eq!(keymap::shortcut_text(&english, AppCommand::Orbit), "O");
+    assert!(keymap::shortcut_text(&english, AppCommand::ImportMeshStl).is_empty());
+}
+
+#[test]
+fn platform_clipboard_requests_run_the_clipboard_commands() {
+    // The desktop shell turns Ctrl+C, Ctrl+X and Ctrl+V into clipboard
+    // events instead of key presses.
+    assert_eq!(
+        press_in_a_frame(vec![egui::Event::Copy], false),
+        Some(AppCommand::Copy)
+    );
+    assert_eq!(
+        press_in_a_frame(vec![egui::Event::Cut], false),
+        Some(AppCommand::Cut)
+    );
+    assert_eq!(
+        press_in_a_frame(vec![egui::Event::Paste("text".to_owned())], false),
+        Some(AppCommand::Paste)
+    );
+    assert_eq!(press_in_a_frame(vec![egui::Event::Cut], true), None);
+}
