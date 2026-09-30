@@ -8557,7 +8557,7 @@ fn occurrence_alignment_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.undo_step_count(), undo_steps);
 
     app.begin_occurrence_align();
-    app.pending_occurrence_align.as_mut().unwrap().axis = Axis::Z;
+    app.modal.get_mut::<PendingOccurrenceAlign>().unwrap().axis = Axis::Z;
     assert!(app.preview_pending_occurrence_align());
     let preview = app.occurrence_operation_preview.as_mut().unwrap();
     preview.batch = CommandBatch::new(vec![CanonicalCommand::DeleteOccurrence {
@@ -8600,8 +8600,8 @@ fn occurrence_alignment_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.undo_step_count(), undo_steps);
 
     assert!(app.preview_pending_occurrence_align());
-    app.pending_occurrence_align
-        .as_mut()
+    app.modal
+        .get_mut::<PendingOccurrenceAlign>()
         .unwrap()
         .preview_plan
         .as_mut()
@@ -8614,7 +8614,10 @@ fn occurrence_alignment_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
-    app.pending_occurrence_align.as_mut().unwrap().preview_plan = Some(plan.clone());
+    app.modal
+        .get_mut::<PendingOccurrenceAlign>()
+        .unwrap()
+        .preview_plan = Some(plan.clone());
     assert!(app.confirm_occurrence_align());
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
@@ -8673,8 +8676,8 @@ fn occurrence_distribution_plan_rejects_tamper_and_replay_atomically() {
 
     app.begin_occurrence_distribution();
     assert!(app.preview_pending_occurrence_distribution());
-    app.pending_occurrence_distribution
-        .as_mut()
+    app.modal
+        .get_mut::<PendingOccurrenceDistribution>()
         .unwrap()
         .preview_plan
         .as_mut()
@@ -8684,8 +8687,8 @@ fn occurrence_distribution_plan_rejects_tamper_and_replay_atomically() {
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
-    app.pending_occurrence_distribution
-        .as_mut()
+    app.modal
+        .get_mut::<PendingOccurrenceDistribution>()
         .unwrap()
         .preview_plan = Some(plan.clone());
     assert!(app.confirm_occurrence_distribution());
@@ -11833,8 +11836,8 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
     assert_eq!(occurrence_source.source_revision, app.document_revision());
     assert_eq!(occurrence_source.occurrence_count, 1);
     app.begin_occurrence_rename();
-    app.pending_occurrence_rename.as_mut().unwrap().name = "Exact occurrence".to_owned();
-    let occurrence_pending = app.pending_occurrence_rename.clone().unwrap();
+    app.modal.get_mut::<PendingOccurrenceRename>().unwrap().name = "Exact occurrence".to_owned();
+    let occurrence_pending = app.modal.get::<PendingOccurrenceRename>().cloned().unwrap();
     let occurrence_plan = app.occurrence_rename_plan(&occurrence_pending).unwrap();
     assert_eq!(
         occurrence_plan.command,
@@ -11881,8 +11884,8 @@ fn rename_plans_are_revision_context_command_bound_and_clipboard_preserving() {
 
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     app.begin_definition_rename();
-    app.pending_definition_rename.as_mut().unwrap().name = "Exact definition".to_owned();
-    let definition_pending = app.pending_definition_rename.clone().unwrap();
+    app.modal.get_mut::<PendingDefinitionRename>().unwrap().name = "Exact definition".to_owned();
+    let definition_pending = app.modal.get::<PendingDefinitionRename>().cloned().unwrap();
     let definition_plan = app.definition_rename_plan(&definition_pending).unwrap();
     assert_eq!(definition_plan.source.instance_count, 1);
     assert_eq!(
@@ -18081,4 +18084,25 @@ fn every_view_switch_is_one_command_with_a_label_and_both_reports() {
             "{flag:?} after Previous View"
         );
     }
+}
+
+#[test]
+fn opening_a_dialog_replaces_the_one_that_was_open() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.begin_definition_rename();
+    assert!(app.modal.get::<PendingDefinitionRename>().is_some());
+    app.begin_occurrence_rename();
+    assert!(app.modal.get::<PendingOccurrenceRename>().is_some());
+    assert!(app.modal.get::<PendingDefinitionRename>().is_none());
+    app.begin_tag_creation(None);
+    assert!(app.tag_creation_visible());
+    assert!(app.modal.get::<PendingOccurrenceRename>().is_none());
+
+    // Closing or removing a dialog that is not open leaves the open one.
+    app.modal.close::<PendingOccurrenceRename>();
+    assert!(app.modal.remove::<PendingDefinitionRename>().is_none());
+    assert!(app.tag_creation_visible());
+    assert!(app.modal.remove::<PendingTagCreation>().is_some());
+    assert!(app.modal.is_none());
 }

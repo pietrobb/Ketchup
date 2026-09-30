@@ -150,9 +150,9 @@ impl KetchupApp {
             })
         });
         match result {
-            Ok(pending) => self.pending_glb_import = Some(pending),
+            Ok(pending) => self.modal.open(pending),
             Err(reason) => {
-                self.pending_glb_import = None;
+                self.modal.close::<PendingGlbImport>();
                 self.digest = self.catalog.format(
                     "error-import-glb",
                     &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
@@ -162,7 +162,7 @@ impl KetchupApp {
     }
 
     pub(super) fn show_glb_import_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_glb_import.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingGlbImport>() else {
             return;
         };
         let path = pending.plan.source.path.display().to_string();
@@ -236,12 +236,12 @@ impl KetchupApp {
                 });
             });
         if cancel {
-            self.pending_glb_import = None;
+            self.modal.close::<PendingGlbImport>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if import {
             let pending = self
-                .pending_glb_import
-                .take()
+                .modal
+                .remove::<PendingGlbImport>()
                 .expect("the GLB review window has a pending import");
             self.import_glb_from(&pending);
         }

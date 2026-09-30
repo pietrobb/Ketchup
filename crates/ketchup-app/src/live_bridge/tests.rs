@@ -3,6 +3,7 @@ use crate::dialogs::{
     DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
     HistoryTruncationRequest, ImportDialogRequest, SaveRequest, ScriptedFileDialogs,
 };
+use crate::modal::ModalSlot;
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
 #[path = "mesh_conversion_tests.rs"]
@@ -1733,7 +1734,10 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
             }
             4 => {
                 app.begin_definition_rename();
-                app.pending_definition_rename.as_mut().unwrap().name = "unfinished rename".into();
+                app.modal
+                    .get_mut::<crate::PendingDefinitionRename>()
+                    .unwrap()
+                    .name = "unfinished rename".into();
             }
             5 => {
                 app.set_move_session(
@@ -1804,7 +1808,10 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 assert_eq!(app.pocket_depth_input, "human depth");
             }
             4 => assert_eq!(
-                app.pending_definition_rename.as_ref().unwrap().name,
+                app.modal
+                    .get::<crate::PendingDefinitionRename>()
+                    .unwrap()
+                    .name,
                 "unfinished rename"
             ),
             5 => assert_eq!(

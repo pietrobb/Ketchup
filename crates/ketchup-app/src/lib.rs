@@ -135,6 +135,7 @@ use ketchup_interaction::{
     },
 };
 use ketchup_scheduler::{ExactWorkerSupervisor, assistant::AssistantCancellation};
+use modal::{Modal, ModalSlot};
 pub use view_settings::{ViewFlag, ViewSettings};
 mod assembly_ui;
 mod assistant_runtime;
@@ -148,6 +149,7 @@ mod glb_import_ui;
 mod helix_thread_ui;
 pub mod live_bridge;
 mod mesh_conversion_ui;
+mod modal;
 mod native_document_inspection;
 mod occurrence_color_ui;
 mod planar_push_pull;
@@ -5259,25 +5261,8 @@ pub struct KetchupApp {
     measure_end: Option<Vec3>,
     shortcuts_open: bool,
     about_open: bool,
-    pending_definition_rename: Option<PendingDefinitionRename>,
-    pending_occurrence_rename: Option<PendingOccurrenceRename>,
-    pending_component_replacement: Option<PendingComponentReplacement>,
-    pending_tag_creation: Option<PendingTagCreation>,
-    pending_tag_deletion: Option<PendingTagDeletion>,
-    pending_tag_clear: Option<PendingTagClear>,
-    pending_tag_rename: Option<PendingTagRename>,
-    pending_tag_assignment: Option<PendingTagAssignment>,
-    pending_occurrence_align: Option<PendingOccurrenceAlign>,
-    pending_occurrence_distribution: Option<PendingOccurrenceDistribution>,
-    pending_linear_pattern: Option<PendingLinearPattern>,
-    pending_rectangular_pattern: Option<PendingRectangularPattern>,
-    pending_circular_pattern: Option<PendingCircularPattern>,
-    pending_stl_import: Option<PendingStlImport>,
-    pending_dxf_import: Option<PendingDxfImport>,
-    pending_step_import: Option<PendingStepImport>,
-    pending_iges_import: Option<PendingIgesImport>,
-    pending_sketchup_scene_import: Option<PendingSketchupSceneImport>,
-    pending_glb_import: Option<glb_import_ui::PendingGlbImport>,
+    /// The dialog waiting for the user, if any.
+    modal: Option<Modal>,
     mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState,
     viewport_rect: Option<Rect>,
     /// Zoom Fit was requested before the viewport was laid out or had anything
@@ -5508,25 +5493,7 @@ impl KetchupApp {
             measure_end: None,
             shortcuts_open: false,
             about_open: false,
-            pending_definition_rename: None,
-            pending_occurrence_rename: None,
-            pending_component_replacement: None,
-            pending_tag_creation: None,
-            pending_tag_deletion: None,
-            pending_tag_clear: None,
-            pending_tag_rename: None,
-            pending_tag_assignment: None,
-            pending_occurrence_align: None,
-            pending_occurrence_distribution: None,
-            pending_linear_pattern: None,
-            pending_rectangular_pattern: None,
-            pending_circular_pattern: None,
-            pending_stl_import: None,
-            pending_dxf_import: None,
-            pending_step_import: None,
-            pending_iges_import: None,
-            pending_sketchup_scene_import: None,
-            pending_glb_import: None,
+            modal: None,
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
             viewport_rect: None,
             zoom_fit_pending: false,
@@ -5648,22 +5615,22 @@ impl KetchupApp {
     }
 
     fn invalidate_pending_import_reviews(&mut self) {
-        if let Some(pending) = self.pending_stl_import.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingStlImport>() {
             pending.invalidated = true;
         }
-        if let Some(pending) = self.pending_dxf_import.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingDxfImport>() {
             pending.invalidated = true;
         }
-        if let Some(pending) = self.pending_step_import.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingStepImport>() {
             pending.invalidated = true;
         }
-        if let Some(pending) = self.pending_iges_import.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingIgesImport>() {
             pending.invalidated = true;
         }
-        if let Some(pending) = self.pending_sketchup_scene_import.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingSketchupSceneImport>() {
             pending.invalidated = true;
         }
-        if let Some(pending) = self.pending_glb_import.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<glb_import_ui::PendingGlbImport>() {
             pending.invalidated = true;
         }
     }
@@ -8364,9 +8331,9 @@ impl KetchupApp {
                             invalidated: false,
                         })
                     }) {
-                        Ok(pending) => self.pending_stl_import = Some(pending),
+                        Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
-                            self.pending_stl_import = None;
+                            self.modal.close::<PendingStlImport>();
                             self.digest = self.catalog.format(
                                 "error-import-stl",
                                 &BTreeMap::from([
@@ -8398,9 +8365,9 @@ impl KetchupApp {
                         })
                     });
                     match result {
-                        Ok(pending) => self.pending_step_import = Some(pending),
+                        Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
-                            self.pending_step_import = None;
+                            self.modal.close::<PendingStepImport>();
                             self.digest = self.catalog.format(
                                 "error-import-step",
                                 &BTreeMap::from([
@@ -8432,9 +8399,9 @@ impl KetchupApp {
                         })
                     });
                     match result {
-                        Ok(pending) => self.pending_iges_import = Some(pending),
+                        Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
-                            self.pending_iges_import = None;
+                            self.modal.close::<PendingIgesImport>();
                             self.digest = self.catalog.format(
                                 "error-import-iges",
                                 &BTreeMap::from([
@@ -8466,9 +8433,9 @@ impl KetchupApp {
                         })
                     });
                     match result {
-                        Ok(pending) => self.pending_sketchup_scene_import = Some(pending),
+                        Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
-                            self.pending_sketchup_scene_import = None;
+                            self.modal.close::<PendingSketchupSceneImport>();
                             self.digest = self.catalog.format(
                                 "error-import-sketchup-scene",
                                 &BTreeMap::from([
@@ -8508,7 +8475,7 @@ impl KetchupApp {
                         })
                     });
                     match result {
-                        Ok(pending) => self.pending_dxf_import = Some(pending),
+                        Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
                             self.digest = self.catalog.format(
                                 "error-import-dxf",
@@ -15891,7 +15858,7 @@ impl KetchupApp {
         let Some(source) = self.occurrence_rename_source_plan() else {
             return;
         };
-        self.pending_occurrence_rename = Some(PendingOccurrenceRename {
+        self.modal.open(PendingOccurrenceRename {
             name: source.original_name.clone(),
             source,
         });
@@ -15909,7 +15876,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_occurrence_rename = None;
+        self.modal.close::<PendingOccurrenceRename>();
         self.digest = self.catalog.format(
             "digest-renamed-occurrence",
             &BTreeMap::from([("name", plan.target_name)]),
@@ -15918,7 +15885,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_occurrence_rename(&mut self) -> bool {
-        let Some(pending) = self.pending_occurrence_rename.clone() else {
+        let Some(pending) = self.modal.get::<PendingOccurrenceRename>().cloned() else {
             return false;
         };
         let Some(plan) = self.occurrence_rename_plan(&pending) else {
@@ -15929,13 +15896,13 @@ impl KetchupApp {
 
     #[must_use]
     pub fn rename_occurrence_visible(&self) -> bool {
-        self.pending_occurrence_rename.is_some()
+        self.modal.get::<PendingOccurrenceRename>().is_some()
     }
 
     #[must_use]
     pub fn rename_occurrence_input(&self) -> Option<&str> {
-        self.pending_occurrence_rename
-            .as_ref()
+        self.modal
+            .get::<PendingOccurrenceRename>()
             .map(|pending| pending.name.as_str())
     }
 
@@ -16023,7 +15990,7 @@ impl KetchupApp {
             return;
         };
         let target_definition_id = source.initial_target_definition_id;
-        self.pending_component_replacement = Some(PendingComponentReplacement {
+        self.modal.open(PendingComponentReplacement {
             source,
             target_definition_id,
         });
@@ -16031,13 +15998,13 @@ impl KetchupApp {
 
     #[must_use]
     pub fn component_replacement_visible(&self) -> bool {
-        self.pending_component_replacement.is_some()
+        self.modal.get::<PendingComponentReplacement>().is_some()
     }
 
     #[must_use]
     pub fn component_replacement_input(&self) -> Option<(OccurrenceId, DefinitionId)> {
-        self.pending_component_replacement
-            .as_ref()
+        self.modal
+            .get::<PendingComponentReplacement>()
             .map(|pending| (pending.source.occurrence_id, pending.target_definition_id))
     }
 
@@ -16066,7 +16033,7 @@ impl KetchupApp {
         {
             primary.definition_id = target_definition_id;
         }
-        self.pending_component_replacement = None;
+        self.modal.close::<PendingComponentReplacement>();
         self.digest = self.catalog.format(
             "digest-replaced-component",
             &BTreeMap::from([("name", target_definition_name)]),
@@ -16075,7 +16042,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_component_replacement(&mut self) -> bool {
-        let Some(pending) = self.pending_component_replacement.clone() else {
+        let Some(pending) = self.modal.get::<PendingComponentReplacement>().cloned() else {
             return false;
         };
         let Some(plan) = self.component_replacement_plan(&pending) else {
@@ -16162,7 +16129,7 @@ impl KetchupApp {
         let Some(source) = self.tag_creation_source_plan(occurrence_ids.as_ref()) else {
             return;
         };
-        self.pending_tag_creation = Some(PendingTagCreation {
+        self.modal.open(PendingTagCreation {
             source,
             name: String::new(),
         });
@@ -16170,13 +16137,13 @@ impl KetchupApp {
 
     #[must_use]
     pub fn tag_creation_visible(&self) -> bool {
-        self.pending_tag_creation.is_some()
+        self.modal.get::<PendingTagCreation>().is_some()
     }
 
     #[must_use]
     pub fn tag_creation_input(&self) -> Option<&str> {
-        self.pending_tag_creation
-            .as_ref()
+        self.modal
+            .get::<PendingTagCreation>()
             .map(|pending| pending.name.as_str())
     }
 
@@ -16194,7 +16161,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_tag_creation = None;
+        self.modal.close::<PendingTagCreation>();
         self.digest = if let Some(occurrence_ids) = plan.source.occurrence_ids {
             self.catalog.format(
                 "digest-created-tag-from-selection",
@@ -16213,7 +16180,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_tag_creation(&mut self) -> bool {
-        let Some(pending) = self.pending_tag_creation.clone() else {
+        let Some(pending) = self.modal.get::<PendingTagCreation>().cloned() else {
             return false;
         };
         let Some(plan) = self.tag_creation_plan(&pending.source, &pending.name) else {
@@ -16271,12 +16238,12 @@ impl KetchupApp {
         let Some(source) = self.tag_deletion_source_plan(id) else {
             return;
         };
-        self.pending_tag_deletion = Some(PendingTagDeletion { source });
+        self.modal.open(PendingTagDeletion { source });
     }
 
     #[must_use]
     pub fn tag_deletion_visible(&self) -> bool {
-        self.pending_tag_deletion.is_some()
+        self.modal.get::<PendingTagDeletion>().is_some()
     }
 
     fn apply_tag_deletion_plan(&mut self, plan: TagDeletionPlan) -> bool {
@@ -16290,7 +16257,7 @@ impl KetchupApp {
             return false;
         }
         let count = plan.source.occurrence_ids.len();
-        self.pending_tag_deletion = None;
+        self.modal.close::<PendingTagDeletion>();
         self.digest = self.catalog.format(
             if count == 0 {
                 "digest-deleted-tag"
@@ -16306,7 +16273,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_tag_deletion(&mut self) -> bool {
-        let Some(pending) = self.pending_tag_deletion.clone() else {
+        let Some(pending) = self.modal.get::<PendingTagDeletion>().cloned() else {
             return false;
         };
         let Some(plan) = self.tag_deletion_plan(&pending.source) else {
@@ -16356,12 +16323,12 @@ impl KetchupApp {
         let Some(source) = self.tag_clear_source_plan(id) else {
             return;
         };
-        self.pending_tag_clear = Some(PendingTagClear { source });
+        self.modal.open(PendingTagClear { source });
     }
 
     #[must_use]
     pub fn tag_clear_visible(&self) -> bool {
-        self.pending_tag_clear.is_some()
+        self.modal.get::<PendingTagClear>().is_some()
     }
 
     fn apply_tag_clear_plan(&mut self, plan: TagClearPlan) -> bool {
@@ -16375,7 +16342,7 @@ impl KetchupApp {
             return false;
         }
         let count = plan.source.occurrence_ids.len();
-        self.pending_tag_clear = None;
+        self.modal.close::<PendingTagClear>();
         self.digest = self.catalog.format(
             "digest-cleared-tag",
             &BTreeMap::from([
@@ -16387,7 +16354,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_tag_clear(&mut self) -> bool {
-        let Some(pending) = self.pending_tag_clear.clone() else {
+        let Some(pending) = self.modal.get::<PendingTagClear>().cloned() else {
             return false;
         };
         let Some(plan) = self.tag_clear_plan(&pending.source) else {
@@ -16444,18 +16411,18 @@ impl KetchupApp {
             return;
         };
         let name = source.original_name.clone();
-        self.pending_tag_rename = Some(PendingTagRename { source, name });
+        self.modal.open(PendingTagRename { source, name });
     }
 
     #[must_use]
     pub fn tag_rename_visible(&self) -> bool {
-        self.pending_tag_rename.is_some()
+        self.modal.get::<PendingTagRename>().is_some()
     }
 
     #[must_use]
     pub fn tag_rename_input(&self) -> Option<&str> {
-        self.pending_tag_rename
-            .as_ref()
+        self.modal
+            .get::<PendingTagRename>()
             .map(|pending| pending.name.as_str())
     }
 
@@ -16473,7 +16440,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_tag_rename = None;
+        self.modal.close::<PendingTagRename>();
         self.digest = self.catalog.format(
             "digest-renamed-tag",
             &BTreeMap::from([
@@ -16485,7 +16452,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_tag_rename(&mut self) -> bool {
-        let Some(pending) = self.pending_tag_rename.clone() else {
+        let Some(pending) = self.modal.get::<PendingTagRename>().cloned() else {
             return false;
         };
         let Some(plan) = self.tag_rename_plan(&pending.source, &pending.name) else {
@@ -17364,18 +17331,18 @@ impl KetchupApp {
             return;
         };
         let target_tag = source.initial_tag;
-        self.pending_tag_assignment = Some(PendingTagAssignment { source, target_tag });
+        self.modal.open(PendingTagAssignment { source, target_tag });
     }
 
     #[must_use]
     pub fn tag_assignment_visible(&self) -> bool {
-        self.pending_tag_assignment.is_some()
+        self.modal.get::<PendingTagAssignment>().is_some()
     }
 
     #[must_use]
     pub fn tag_assignment_input(&self) -> Option<Option<TagId>> {
-        self.pending_tag_assignment
-            .as_ref()
+        self.modal
+            .get::<PendingTagAssignment>()
             .map(|pending| pending.target_tag)
     }
 
@@ -17404,7 +17371,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_tag_assignment = None;
+        self.modal.close::<PendingTagAssignment>();
         self.digest = self.catalog.format(
             "digest-assigned-tag",
             &BTreeMap::from([("count", count.to_string()), ("tag", plan.target_tag_name)]),
@@ -17413,7 +17380,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_tag_assignment(&mut self) -> bool {
-        let Some(pending) = self.pending_tag_assignment.clone() else {
+        let Some(pending) = self.modal.get::<PendingTagAssignment>().cloned() else {
             return false;
         };
         let Some(plan) = self.dialog_tag_assignment_plan(&pending) else {
@@ -17465,7 +17432,7 @@ impl KetchupApp {
         let Some(source) = self.definition_rename_source_plan() else {
             return;
         };
-        self.pending_definition_rename = Some(PendingDefinitionRename {
+        self.modal.open(PendingDefinitionRename {
             name: source.original_name.clone(),
             source,
         });
@@ -17483,7 +17450,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_definition_rename = None;
+        self.modal.close::<PendingDefinitionRename>();
         self.digest = self.catalog.format(
             "digest-renamed-definition",
             &BTreeMap::from([("name", plan.target_name)]),
@@ -17492,7 +17459,7 @@ impl KetchupApp {
     }
 
     pub fn confirm_definition_rename(&mut self) -> bool {
-        let Some(pending) = self.pending_definition_rename.clone() else {
+        let Some(pending) = self.modal.get::<PendingDefinitionRename>().cloned() else {
             return false;
         };
         let Some(plan) = self.definition_rename_plan(&pending) else {
@@ -17534,13 +17501,13 @@ impl KetchupApp {
 
     #[must_use]
     pub fn rename_definition_visible(&self) -> bool {
-        self.pending_definition_rename.is_some()
+        self.modal.get::<PendingDefinitionRename>().is_some()
     }
 
     #[must_use]
     pub fn rename_definition_input(&self) -> Option<&str> {
-        self.pending_definition_rename
-            .as_ref()
+        self.modal
+            .get::<PendingDefinitionRename>()
             .map(|pending| pending.name.as_str())
     }
 
@@ -20400,7 +20367,7 @@ impl KetchupApp {
             return;
         };
         self.occurrence_operation_preview = None;
-        self.pending_occurrence_align = Some(PendingOccurrenceAlign {
+        self.modal.open(PendingOccurrenceAlign {
             source,
             axis: Axis::X,
             mode: AlignMode::Center,
@@ -20410,12 +20377,12 @@ impl KetchupApp {
 
     #[must_use]
     pub fn occurrence_align_visible(&self) -> bool {
-        self.pending_occurrence_align.is_some()
+        self.modal.get::<PendingOccurrenceAlign>().is_some()
     }
 
     #[must_use]
     pub fn occurrence_align_inputs(&self) -> Option<(OccurrenceId, OccurrenceId, Axis, AlignMode)> {
-        self.pending_occurrence_align.as_ref().map(|pending| {
+        self.modal.get::<PendingOccurrenceAlign>().map(|pending| {
             (
                 pending.source.moving_id,
                 pending.source.reference_id,
@@ -20431,8 +20398,8 @@ impl KetchupApp {
 
     #[must_use]
     pub fn occurrence_align_preview_is_current(&self) -> bool {
-        self.pending_occurrence_align
-            .as_ref()
+        self.modal
+            .get::<PendingOccurrenceAlign>()
             .is_some_and(|pending| {
                 let Some(plan) =
                     self.occurrence_alignment_plan(&pending.source, pending.axis, pending.mode)
@@ -20453,7 +20420,7 @@ impl KetchupApp {
     }
 
     pub fn preview_pending_occurrence_align(&mut self) -> bool {
-        let Some(pending) = self.pending_occurrence_align.clone() else {
+        let Some(pending) = self.modal.get::<PendingOccurrenceAlign>().cloned() else {
             return false;
         };
         let Some(plan) =
@@ -20461,13 +20428,13 @@ impl KetchupApp {
         else {
             return false;
         };
-        if let Some(current) = self.pending_occurrence_align.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingOccurrenceAlign>() {
             current.preview_plan = None;
         }
         if !self.preview_occurrence_alignment_plan(plan.clone()) {
             return false;
         }
-        if let Some(current) = self.pending_occurrence_align.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingOccurrenceAlign>() {
             current.preview_plan = Some(plan);
         }
         true
@@ -20475,8 +20442,8 @@ impl KetchupApp {
 
     pub fn confirm_occurrence_align(&mut self) -> bool {
         let Some(plan) = self
-            .pending_occurrence_align
-            .as_ref()
+            .modal
+            .get::<PendingOccurrenceAlign>()
             .and_then(|pending| pending.preview_plan.clone())
         else {
             return false;
@@ -20490,7 +20457,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_occurrence_align = None;
+        self.modal.close::<PendingOccurrenceAlign>();
         true
     }
 
@@ -20668,7 +20635,7 @@ impl KetchupApp {
             return;
         };
         self.occurrence_operation_preview = None;
-        self.pending_occurrence_distribution = Some(PendingOccurrenceDistribution {
+        self.modal.open(PendingOccurrenceDistribution {
             source,
             axis: Axis::X,
             mode: DistributionMode::Centers,
@@ -20678,20 +20645,20 @@ impl KetchupApp {
 
     #[must_use]
     pub fn occurrence_distribution_visible(&self) -> bool {
-        self.pending_occurrence_distribution.is_some()
+        self.modal.get::<PendingOccurrenceDistribution>().is_some()
     }
 
     #[must_use]
     pub fn occurrence_distribution_axis(&self) -> Option<Axis> {
-        self.pending_occurrence_distribution
-            .as_ref()
+        self.modal
+            .get::<PendingOccurrenceDistribution>()
             .map(|pending| pending.axis)
     }
 
     #[must_use]
     pub fn occurrence_distribution_mode(&self) -> Option<DistributionMode> {
-        self.pending_occurrence_distribution
-            .as_ref()
+        self.modal
+            .get::<PendingOccurrenceDistribution>()
             .map(|pending| pending.mode)
     }
 
@@ -20704,8 +20671,8 @@ impl KetchupApp {
 
     #[must_use]
     pub fn occurrence_distribution_preview_is_current(&self) -> bool {
-        self.pending_occurrence_distribution
-            .as_ref()
+        self.modal
+            .get::<PendingOccurrenceDistribution>()
             .is_some_and(|pending| {
                 let Some(plan) =
                     self.occurrence_distribution_plan(&pending.source, pending.axis, pending.mode)
@@ -20727,7 +20694,7 @@ impl KetchupApp {
     }
 
     pub fn preview_pending_occurrence_distribution(&mut self) -> bool {
-        let Some(pending) = self.pending_occurrence_distribution.clone() else {
+        let Some(pending) = self.modal.get::<PendingOccurrenceDistribution>().cloned() else {
             return false;
         };
         let Some(plan) =
@@ -20735,13 +20702,13 @@ impl KetchupApp {
         else {
             return false;
         };
-        if let Some(current) = self.pending_occurrence_distribution.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingOccurrenceDistribution>() {
             current.preview_plan = None;
         }
         if !self.preview_occurrence_distribution_plan(plan.clone()) {
             return false;
         }
-        if let Some(current) = self.pending_occurrence_distribution.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingOccurrenceDistribution>() {
             current.preview_plan = Some(plan);
         }
         true
@@ -20749,8 +20716,8 @@ impl KetchupApp {
 
     pub fn confirm_occurrence_distribution(&mut self) -> bool {
         let Some(plan) = self
-            .pending_occurrence_distribution
-            .as_ref()
+            .modal
+            .get::<PendingOccurrenceDistribution>()
             .and_then(|pending| pending.preview_plan.clone())
         else {
             return false;
@@ -20764,7 +20731,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_occurrence_distribution = None;
+        self.modal.close::<PendingOccurrenceDistribution>();
         true
     }
 
@@ -20890,7 +20857,7 @@ impl KetchupApp {
             return;
         };
         self.occurrence_operation_preview = None;
-        self.pending_linear_pattern = Some(PendingLinearPattern {
+        self.modal.open(PendingLinearPattern {
             source,
             axis: Axis::X,
             spacing: "100".to_owned(),
@@ -20901,12 +20868,12 @@ impl KetchupApp {
 
     #[must_use]
     pub fn linear_pattern_visible(&self) -> bool {
-        self.pending_linear_pattern.is_some()
+        self.modal.get::<PendingLinearPattern>().is_some()
     }
 
     #[must_use]
     pub fn linear_pattern_inputs(&self) -> Option<(Axis, &str, &str)> {
-        self.pending_linear_pattern.as_ref().map(|pending| {
+        self.modal.get::<PendingLinearPattern>().map(|pending| {
             (
                 pending.axis,
                 pending.spacing.as_str(),
@@ -20923,33 +20890,35 @@ impl KetchupApp {
 
     #[must_use]
     pub fn linear_pattern_preview_is_current(&self) -> bool {
-        self.pending_linear_pattern.as_ref().is_some_and(|pending| {
-            let (Ok(spacing_mm), Ok(count)) = (
-                pending.spacing.trim().parse::<f64>(),
-                pending.count.trim().parse::<usize>(),
-            ) else {
-                return false;
-            };
-            let Some(plan) =
-                self.linear_pattern_plan(&pending.source, pending.axis, spacing_mm, count)
-            else {
-                return false;
-            };
-            self.linear_pattern_binding_is_current(pending)
-                && pending.preview_plan.as_ref() == Some(&plan)
-                && self
-                    .occurrence_operation_preview
-                    .as_ref()
-                    .is_some_and(|preview| {
-                        self.has_occurrence_operation_preview()
-                            && preview.source_revision == plan.source.source_revision
-                            && preview.batch.commands() == plan.commands.as_slice()
-                    })
-        })
+        self.modal
+            .get::<PendingLinearPattern>()
+            .is_some_and(|pending| {
+                let (Ok(spacing_mm), Ok(count)) = (
+                    pending.spacing.trim().parse::<f64>(),
+                    pending.count.trim().parse::<usize>(),
+                ) else {
+                    return false;
+                };
+                let Some(plan) =
+                    self.linear_pattern_plan(&pending.source, pending.axis, spacing_mm, count)
+                else {
+                    return false;
+                };
+                self.linear_pattern_binding_is_current(pending)
+                    && pending.preview_plan.as_ref() == Some(&plan)
+                    && self
+                        .occurrence_operation_preview
+                        .as_ref()
+                        .is_some_and(|preview| {
+                            self.has_occurrence_operation_preview()
+                                && preview.source_revision == plan.source.source_revision
+                                && preview.batch.commands() == plan.commands.as_slice()
+                        })
+            })
     }
 
     pub fn preview_pending_linear_pattern(&mut self) -> bool {
-        let Some(pending) = self.pending_linear_pattern.clone() else {
+        let Some(pending) = self.modal.get::<PendingLinearPattern>().cloned() else {
             return false;
         };
         let (Ok(spacing_mm), Ok(count)) = (
@@ -20962,13 +20931,13 @@ impl KetchupApp {
         else {
             return false;
         };
-        if let Some(current) = self.pending_linear_pattern.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingLinearPattern>() {
             current.preview_plan = None;
         }
         if !self.preview_linear_pattern_plan(plan.clone()) {
             return false;
         }
-        if let Some(current) = self.pending_linear_pattern.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingLinearPattern>() {
             current.preview_plan = Some(plan);
         }
         true
@@ -20976,8 +20945,8 @@ impl KetchupApp {
 
     pub fn confirm_linear_pattern(&mut self) -> bool {
         let Some(plan) = self
-            .pending_linear_pattern
-            .as_ref()
+            .modal
+            .get::<PendingLinearPattern>()
             .and_then(|pending| pending.preview_plan.clone())
         else {
             return false;
@@ -20985,7 +20954,7 @@ impl KetchupApp {
         if !self.linear_pattern_preview_is_current() || !self.apply_linear_pattern_plan(plan) {
             return false;
         }
-        self.pending_linear_pattern = None;
+        self.modal.close::<PendingLinearPattern>();
         true
     }
 
@@ -20996,7 +20965,7 @@ impl KetchupApp {
         spacing_mm: f64,
         count: usize,
     ) -> bool {
-        let source = match self.pending_linear_pattern.as_ref() {
+        let source = match self.modal.get::<PendingLinearPattern>() {
             Some(pending) if pending.source.occurrence_id == source_id => pending.source.clone(),
             Some(_) => return false,
             None => {
@@ -21189,7 +21158,7 @@ impl KetchupApp {
             return;
         };
         self.occurrence_operation_preview = None;
-        self.pending_rectangular_pattern = Some(PendingRectangularPattern {
+        self.modal.open(PendingRectangularPattern {
             source,
             primary_axis: Axis::X,
             primary_spacing: "100".to_owned(),
@@ -21203,21 +21172,23 @@ impl KetchupApp {
 
     #[must_use]
     pub fn rectangular_pattern_visible(&self) -> bool {
-        self.pending_rectangular_pattern.is_some()
+        self.modal.get::<PendingRectangularPattern>().is_some()
     }
 
     #[must_use]
     pub fn rectangular_pattern_inputs(&self) -> Option<(Axis, &str, &str, Axis, &str, &str)> {
-        self.pending_rectangular_pattern.as_ref().map(|pending| {
-            (
-                pending.primary_axis,
-                pending.primary_spacing.as_str(),
-                pending.primary_count.as_str(),
-                pending.secondary_axis,
-                pending.secondary_spacing.as_str(),
-                pending.secondary_count.as_str(),
-            )
-        })
+        self.modal
+            .get::<PendingRectangularPattern>()
+            .map(|pending| {
+                (
+                    pending.primary_axis,
+                    pending.primary_spacing.as_str(),
+                    pending.primary_count.as_str(),
+                    pending.secondary_axis,
+                    pending.secondary_spacing.as_str(),
+                    pending.secondary_count.as_str(),
+                )
+            })
     }
 
     fn rectangular_pattern_binding_is_current(&self, pending: &PendingRectangularPattern) -> bool {
@@ -21228,8 +21199,8 @@ impl KetchupApp {
 
     #[must_use]
     pub fn rectangular_pattern_preview_is_current(&self) -> bool {
-        self.pending_rectangular_pattern
-            .as_ref()
+        self.modal
+            .get::<PendingRectangularPattern>()
             .is_some_and(|pending| {
                 let (
                     Ok(primary_spacing_mm),
@@ -21272,7 +21243,7 @@ impl KetchupApp {
     }
 
     pub fn preview_pending_rectangular_pattern(&mut self) -> bool {
-        let Some(pending) = self.pending_rectangular_pattern.clone() else {
+        let Some(pending) = self.modal.get::<PendingRectangularPattern>().cloned() else {
             return false;
         };
         let (
@@ -21302,13 +21273,13 @@ impl KetchupApp {
         ) else {
             return false;
         };
-        if let Some(current) = self.pending_rectangular_pattern.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingRectangularPattern>() {
             current.preview_plan = None;
         }
         if !self.preview_rectangular_pattern_plan(plan.clone()) {
             return false;
         }
-        if let Some(current) = self.pending_rectangular_pattern.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingRectangularPattern>() {
             current.preview_plan = Some(plan);
         }
         true
@@ -21316,8 +21287,8 @@ impl KetchupApp {
 
     pub fn confirm_rectangular_pattern(&mut self) -> bool {
         let Some(plan) = self
-            .pending_rectangular_pattern
-            .as_ref()
+            .modal
+            .get::<PendingRectangularPattern>()
             .and_then(|pending| pending.preview_plan.clone())
         else {
             return false;
@@ -21327,7 +21298,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.pending_rectangular_pattern = None;
+        self.modal.close::<PendingRectangularPattern>();
         true
     }
 
@@ -21336,7 +21307,7 @@ impl KetchupApp {
         source_id: OccurrenceId,
         spec: RectangularPatternSpec,
     ) -> bool {
-        let source = match self.pending_rectangular_pattern.as_ref() {
+        let source = match self.modal.get::<PendingRectangularPattern>() {
             Some(pending) if pending.source.occurrence_id == source_id => pending.source.clone(),
             Some(_) => return false,
             None => {
@@ -21552,7 +21523,7 @@ impl KetchupApp {
             return;
         };
         self.occurrence_operation_preview = None;
-        self.pending_circular_pattern = Some(PendingCircularPattern {
+        self.modal.open(PendingCircularPattern {
             source,
             axis: Axis::Z,
             centre_x: "0".to_owned(),
@@ -21566,12 +21537,12 @@ impl KetchupApp {
 
     #[must_use]
     pub fn circular_pattern_visible(&self) -> bool {
-        self.pending_circular_pattern.is_some()
+        self.modal.get::<PendingCircularPattern>().is_some()
     }
 
     #[must_use]
     pub fn circular_pattern_inputs(&self) -> Option<(Axis, &str, &str, &str, &str, &str)> {
-        self.pending_circular_pattern.as_ref().map(|pending| {
+        self.modal.get::<PendingCircularPattern>().map(|pending| {
             (
                 pending.axis,
                 pending.centre_x.as_str(),
@@ -21591,8 +21562,8 @@ impl KetchupApp {
 
     #[must_use]
     pub fn circular_pattern_preview_is_current(&self) -> bool {
-        self.pending_circular_pattern
-            .as_ref()
+        self.modal
+            .get::<PendingCircularPattern>()
             .is_some_and(|pending| {
                 let (Ok(centre_x), Ok(centre_y), Ok(centre_z), Ok(angle), Ok(count)) = (
                     pending.centre_x.trim().parse::<f64>(),
@@ -21626,7 +21597,7 @@ impl KetchupApp {
     }
 
     pub fn preview_pending_circular_pattern(&mut self) -> bool {
-        let Some(pending) = self.pending_circular_pattern.clone() else {
+        let Some(pending) = self.modal.get::<PendingCircularPattern>().cloned() else {
             return false;
         };
         let (Ok(centre_x), Ok(centre_y), Ok(centre_z), Ok(angle), Ok(count)) = (
@@ -21647,13 +21618,13 @@ impl KetchupApp {
         ) else {
             return false;
         };
-        if let Some(current) = self.pending_circular_pattern.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingCircularPattern>() {
             current.preview_plan = None;
         }
         if !self.preview_circular_pattern_plan(plan.clone()) {
             return false;
         }
-        if let Some(current) = self.pending_circular_pattern.as_mut() {
+        if let Some(current) = self.modal.get_mut::<PendingCircularPattern>() {
             current.preview_plan = Some(plan);
         }
         true
@@ -21661,8 +21632,8 @@ impl KetchupApp {
 
     pub fn confirm_circular_pattern(&mut self) -> bool {
         let Some(plan) = self
-            .pending_circular_pattern
-            .as_ref()
+            .modal
+            .get::<PendingCircularPattern>()
             .and_then(|pending| pending.preview_plan.clone())
         else {
             return false;
@@ -21670,7 +21641,7 @@ impl KetchupApp {
         if !self.circular_pattern_preview_is_current() || !self.apply_circular_pattern_plan(plan) {
             return false;
         }
-        self.pending_circular_pattern = None;
+        self.modal.close::<PendingCircularPattern>();
         true
     }
 
@@ -21682,7 +21653,7 @@ impl KetchupApp {
         angle_step_degrees: f64,
         count: usize,
     ) -> bool {
-        let source = match self.pending_circular_pattern.as_ref() {
+        let source = match self.modal.get::<PendingCircularPattern>() {
             Some(pending) if pending.source.occurrence_id == source_id => pending.source.clone(),
             Some(_) => return false,
             None => {
@@ -33574,7 +33545,7 @@ impl KetchupApp {
     }
 
     fn show_occurrence_rename_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_occurrence_rename.clone() else {
+        let Some(pending) = self.modal.get::<PendingOccurrenceRename>().cloned() else {
             return;
         };
         let mut name = pending.name.clone();
@@ -33610,11 +33581,11 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        if let Some(pending) = self.pending_occurrence_rename.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingOccurrenceRename>() {
             pending.name = name;
         }
         if cancel || !open {
-            self.pending_occurrence_rename = None;
+            self.modal.close::<PendingOccurrenceRename>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if rename {
             self.confirm_occurrence_rename();
@@ -33622,7 +33593,7 @@ impl KetchupApp {
     }
 
     fn show_definition_rename_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_definition_rename.clone() else {
+        let Some(pending) = self.modal.get::<PendingDefinitionRename>().cloned() else {
             return;
         };
         let mut name = pending.name.clone();
@@ -33658,11 +33629,11 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        if let Some(pending) = self.pending_definition_rename.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingDefinitionRename>() {
             pending.name = name;
         }
         if cancel || !open {
-            self.pending_definition_rename = None;
+            self.modal.close::<PendingDefinitionRename>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if rename {
             self.confirm_definition_rename();
@@ -33670,7 +33641,7 @@ impl KetchupApp {
     }
 
     fn show_component_replacement_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_component_replacement.clone() else {
+        let Some(pending) = self.modal.get::<PendingComponentReplacement>().cloned() else {
             return;
         };
         let mut definition_id = pending.target_definition_id;
@@ -33710,11 +33681,11 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        if let Some(pending) = self.pending_component_replacement.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingComponentReplacement>() {
             pending.target_definition_id = definition_id;
         }
         if cancel || !open {
-            self.pending_component_replacement = None;
+            self.modal.close::<PendingComponentReplacement>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if replace {
             self.confirm_component_replacement();
@@ -33722,7 +33693,7 @@ impl KetchupApp {
     }
 
     fn show_tag_creation_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_tag_creation.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingTagCreation>() else {
             return;
         };
         if self
@@ -33730,7 +33701,7 @@ impl KetchupApp {
             .as_ref()
             != Some(&pending.source)
         {
-            self.pending_tag_creation = None;
+            self.modal.close::<PendingTagCreation>();
             return;
         }
         let mut name = pending.name.clone();
@@ -33773,11 +33744,11 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        if let Some(pending) = self.pending_tag_creation.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingTagCreation>() {
             pending.name = name;
         }
         if cancel || !open {
-            self.pending_tag_creation = None;
+            self.modal.close::<PendingTagCreation>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if create {
             self.confirm_tag_creation();
@@ -33785,11 +33756,11 @@ impl KetchupApp {
     }
 
     fn show_tag_deletion_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_tag_deletion.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingTagDeletion>() else {
             return;
         };
         if self.tag_deletion_source_plan(pending.source.id).as_ref() != Some(&pending.source) {
-            self.pending_tag_deletion = None;
+            self.modal.close::<PendingTagDeletion>();
             return;
         }
         let mut open = true;
@@ -33823,7 +33794,7 @@ impl KetchupApp {
                 });
             });
         if cancel || !open {
-            self.pending_tag_deletion = None;
+            self.modal.close::<PendingTagDeletion>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if delete {
             self.confirm_tag_deletion();
@@ -33831,11 +33802,11 @@ impl KetchupApp {
     }
 
     fn show_tag_clear_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_tag_clear.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingTagClear>() else {
             return;
         };
         if self.tag_clear_source_plan(pending.source.id).as_ref() != Some(&pending.source) {
-            self.pending_tag_clear = None;
+            self.modal.close::<PendingTagClear>();
             return;
         }
         let count = pending.source.occurrence_ids.len();
@@ -33866,18 +33837,18 @@ impl KetchupApp {
                 });
             });
         if cancel || !open {
-            self.pending_tag_clear = None;
+            self.modal.close::<PendingTagClear>();
         } else if clear {
             self.confirm_tag_clear();
         }
     }
 
     fn show_tag_rename_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_tag_rename.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingTagRename>() else {
             return;
         };
         if self.tag_rename_source_plan(pending.source.id).as_ref() != Some(&pending.source) {
-            self.pending_tag_rename = None;
+            self.modal.close::<PendingTagRename>();
             return;
         }
         let mut name = pending.name.clone();
@@ -33910,11 +33881,11 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        if let Some(pending) = self.pending_tag_rename.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingTagRename>() {
             pending.name = name;
         }
         if cancel || !open {
-            self.pending_tag_rename = None;
+            self.modal.close::<PendingTagRename>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if rename {
             self.confirm_tag_rename();
@@ -33922,11 +33893,11 @@ impl KetchupApp {
     }
 
     fn show_tag_assignment_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_tag_assignment.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingTagAssignment>() else {
             return;
         };
         if self.tag_assignment_source_plan().as_ref() != Some(&pending.source) {
-            self.pending_tag_assignment = None;
+            self.modal.close::<PendingTagAssignment>();
             return;
         }
         let options = pending
@@ -33973,11 +33944,11 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        if let Some(pending) = self.pending_tag_assignment.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingTagAssignment>() {
             pending.target_tag = tag;
         }
         if cancel || !open {
-            self.pending_tag_assignment = None;
+            self.modal.close::<PendingTagAssignment>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if assign {
             self.confirm_tag_assignment();
@@ -33985,7 +33956,7 @@ impl KetchupApp {
     }
 
     fn show_occurrence_align_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_occurrence_align.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingOccurrenceAlign>() else {
             return;
         };
         let previous_axis = pending.axis;
@@ -34049,7 +34020,7 @@ impl KetchupApp {
                 });
             });
         let changed = axis != previous_axis || mode != previous_mode;
-        if let Some(pending) = self.pending_occurrence_align.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingOccurrenceAlign>() {
             pending.axis = axis;
             pending.mode = mode;
             if changed {
@@ -34060,7 +34031,7 @@ impl KetchupApp {
             self.occurrence_operation_preview = None;
         }
         if cancel || !open {
-            self.pending_occurrence_align = None;
+            self.modal.close::<PendingOccurrenceAlign>();
             self.occurrence_operation_preview = None;
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
@@ -34071,7 +34042,7 @@ impl KetchupApp {
     }
 
     fn show_occurrence_distribution_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_occurrence_distribution.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingOccurrenceDistribution>() else {
             return;
         };
         let previous_axis = pending.axis;
@@ -34142,7 +34113,7 @@ impl KetchupApp {
                 });
             });
         let changed = axis != previous_axis || mode != previous_mode;
-        if let Some(pending) = self.pending_occurrence_distribution.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingOccurrenceDistribution>() {
             pending.axis = axis;
             pending.mode = mode;
             if changed {
@@ -34153,7 +34124,7 @@ impl KetchupApp {
             self.occurrence_operation_preview = None;
         }
         if cancel || !open {
-            self.pending_occurrence_distribution = None;
+            self.modal.close::<PendingOccurrenceDistribution>();
             self.occurrence_operation_preview = None;
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
@@ -34164,7 +34135,7 @@ impl KetchupApp {
     }
 
     fn show_linear_pattern_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_linear_pattern.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingLinearPattern>() else {
             return;
         };
         let previous_axis = pending.axis;
@@ -34246,7 +34217,7 @@ impl KetchupApp {
             });
         let changed =
             axis != previous_axis || spacing != previous_spacing || count != previous_count;
-        if let Some(pending) = self.pending_linear_pattern.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingLinearPattern>() {
             pending.axis = axis;
             pending.spacing = spacing;
             pending.count = count;
@@ -34258,7 +34229,7 @@ impl KetchupApp {
             self.occurrence_operation_preview = None;
         }
         if cancel || !open {
-            self.pending_linear_pattern = None;
+            self.modal.close::<PendingLinearPattern>();
             self.occurrence_operation_preview = None;
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
@@ -34269,7 +34240,7 @@ impl KetchupApp {
     }
 
     fn show_rectangular_pattern_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_rectangular_pattern.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingRectangularPattern>() else {
             return;
         };
         let binding_is_current = self.rectangular_pattern_binding_is_current(pending);
@@ -34412,7 +34383,7 @@ impl KetchupApp {
             || secondary_axis != previous_secondary_axis
             || secondary_spacing != previous_secondary_spacing
             || secondary_count != previous_secondary_count;
-        if let Some(pending) = self.pending_rectangular_pattern.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingRectangularPattern>() {
             pending.primary_axis = primary_axis;
             pending.primary_spacing = primary_spacing;
             pending.primary_count = primary_count;
@@ -34427,7 +34398,7 @@ impl KetchupApp {
             self.occurrence_operation_preview = None;
         }
         if cancel || !open {
-            self.pending_rectangular_pattern = None;
+            self.modal.close::<PendingRectangularPattern>();
             self.occurrence_operation_preview = None;
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
@@ -34438,7 +34409,7 @@ impl KetchupApp {
     }
 
     fn show_circular_pattern_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_circular_pattern.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingCircularPattern>() else {
             return;
         };
         let binding_is_current = self.circular_pattern_binding_is_current(pending);
@@ -34542,7 +34513,7 @@ impl KetchupApp {
             || centre_z != previous_centre_z
             || angle != previous_angle
             || count != previous_count;
-        if let Some(pending) = self.pending_circular_pattern.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingCircularPattern>() {
             pending.axis = axis;
             pending.centre_x = centre_x;
             pending.centre_y = centre_y;
@@ -34557,7 +34528,7 @@ impl KetchupApp {
             self.occurrence_operation_preview = None;
         }
         if cancel || !open {
-            self.pending_circular_pattern = None;
+            self.modal.close::<PendingCircularPattern>();
             self.occurrence_operation_preview = None;
             self.digest = self.catalog.text("digest-cancelled");
         } else if preview {
@@ -35072,7 +35043,7 @@ impl KetchupApp {
     }
 
     fn show_stl_import_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_stl_import.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingStlImport>() else {
             return;
         };
         let path = pending.plan.source.path.clone();
@@ -35108,7 +35079,7 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        let updated_source = self.pending_stl_import.as_ref().and_then(|pending| {
+        let updated_source = self.modal.get::<PendingStlImport>().and_then(|pending| {
             (pending.plan.source.unit != unit).then(|| {
                 let mut source = pending.plan.source.clone();
                 source.unit = unit;
@@ -35118,8 +35089,8 @@ impl KetchupApp {
         if let Some(source) = updated_source {
             let result = self.prepare_stl_import_preview_plan(source);
             let pending = self
-                .pending_stl_import
-                .as_mut()
+                .modal
+                .get_mut::<PendingStlImport>()
                 .expect("the STL review window still has a pending import");
             match result {
                 Ok(plan) => {
@@ -35130,19 +35101,19 @@ impl KetchupApp {
             }
         }
         if cancel {
-            self.pending_stl_import = None;
+            self.modal.close::<PendingStlImport>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if import {
             let pending = self
-                .pending_stl_import
-                .take()
+                .modal
+                .remove::<PendingStlImport>()
                 .expect("the STL review window has a pending import");
             self.import_stl_from(&pending);
         }
     }
 
     fn show_dxf_import_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_dxf_import.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingDxfImport>() else {
             return;
         };
         let path = pending.plan.source.path.clone();
@@ -35246,10 +35217,10 @@ impl KetchupApp {
                         .clicked();
                 });
             });
-        if let Some(pending) = self.pending_dxf_import.as_mut() {
+        if let Some(pending) = self.modal.get_mut::<PendingDxfImport>() {
             pending.unit_confirmed = unit_confirmed;
         }
-        let updated_source = self.pending_dxf_import.as_ref().and_then(|pending| {
+        let updated_source = self.modal.get::<PendingDxfImport>().and_then(|pending| {
             (pending.plan.source.unit != unit).then(|| {
                 let mut source = pending.plan.source.clone();
                 source.unit = unit;
@@ -35259,8 +35230,8 @@ impl KetchupApp {
         if let Some(source) = updated_source {
             let result = self.prepare_dxf_import_preview_plan(source);
             let pending = self
-                .pending_dxf_import
-                .as_mut()
+                .modal
+                .get_mut::<PendingDxfImport>()
                 .expect("the DXF review window still has a pending import");
             match result {
                 Ok(plan) => {
@@ -35271,19 +35242,19 @@ impl KetchupApp {
             }
         }
         if cancel {
-            self.pending_dxf_import = None;
+            self.modal.close::<PendingDxfImport>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if import {
             let pending = self
-                .pending_dxf_import
-                .take()
+                .modal
+                .remove::<PendingDxfImport>()
                 .expect("the DXF review window has a pending import");
             self.import_dxf_from(&pending);
         }
     }
 
     fn show_step_import_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_step_import.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingStepImport>() else {
             return;
         };
         let path = pending.plan.source.path.clone();
@@ -35332,19 +35303,19 @@ impl KetchupApp {
                 });
             });
         if cancel {
-            self.pending_step_import = None;
+            self.modal.close::<PendingStepImport>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if import {
             let pending = self
-                .pending_step_import
-                .take()
+                .modal
+                .remove::<PendingStepImport>()
                 .expect("the STEP review window has a pending import");
             self.import_step_from(&pending);
         }
     }
 
     fn show_iges_import_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_iges_import.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingIgesImport>() else {
             return;
         };
         let path = pending.plan.source.path.clone();
@@ -35403,19 +35374,19 @@ impl KetchupApp {
                 });
             });
         if cancel {
-            self.pending_iges_import = None;
+            self.modal.close::<PendingIgesImport>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if import {
             let pending = self
-                .pending_iges_import
-                .take()
+                .modal
+                .remove::<PendingIgesImport>()
                 .expect("the IGES review window has a pending import");
             self.import_iges_from(&pending);
         }
     }
 
     fn show_sketchup_scene_import_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_sketchup_scene_import.as_ref() else {
+        let Some(pending) = self.modal.get::<PendingSketchupSceneImport>() else {
             return;
         };
         let path = pending.plan.source.path.display().to_string();
@@ -35487,12 +35458,12 @@ impl KetchupApp {
                 });
             });
         if cancel {
-            self.pending_sketchup_scene_import = None;
+            self.modal.close::<PendingSketchupSceneImport>();
             self.digest = self.catalog.text("digest-cancelled");
         } else if import {
             let pending = self
-                .pending_sketchup_scene_import
-                .take()
+                .modal
+                .remove::<PendingSketchupSceneImport>()
                 .expect("the SketchUp scene review window has a pending import");
             self.import_sketchup_scene_from(&pending);
         }
