@@ -230,7 +230,6 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     std::size_t first_arc_index = profile_edges.capacity();
     std::size_t first_line_index = profile_edges.capacity();
     std::size_t first_cubic_index = profile_edges.capacity();
-    gp_Pnt first_arc_middle;
     for (const NativeSegment& segment : segments) {
       const gp_Pnt start = planar_point(segment.start, 0.0);
       const gp_Pnt end = planar_point(segment.end, 0.0);
@@ -266,7 +265,6 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
         edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
         if (first_arc_index == profile_edges.capacity()) {
           first_arc_index = profile_edges.size();
-          first_arc_middle = middle;
         }
       } else if (segment.kind == NativeSegmentKind::CubicBezier) {
         edge = cubic_bezier_edge(segment, 0.0);
@@ -279,8 +277,12 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       if (edge.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile edge is null");
       }
-      profile_edges.push_back(edge);
       wire_builder.Add(edge);
+      if (!wire_builder.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile wire is incomplete");
+      }
+      // The wire may re-share vertices through a copy; keep the edge it stores.
+      profile_edges.push_back(wire_builder.Edge());
     }
     if (!wire_builder.IsDone()
         || (first_arc_index >= profile_edges.size()
@@ -298,52 +300,9 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     const std::size_t reference_index = reference_is_arc
         ? first_arc_index
         : (reference_is_line ? first_line_index : first_cubic_index);
-    TopoDS_Edge profile_reference;
-    if (!reference_is_arc && !reference_is_line) {
-      profile_reference = profile_edges[reference_index];
-    } else {
-      const gp_Pnt expected_reference_start =
-          planar_point(segments[reference_index].start, 0.0);
-      const gp_Pnt expected_reference_end = planar_point(segments[reference_index].end, 0.0);
-      for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
-        const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
-        const GeomAbs_CurveType expected_type = reference_is_arc ? GeomAbs_Circle : GeomAbs_Line;
-        if (BRepAdaptor_Curve(candidate).GetType() != expected_type) {
-          continue;
-        }
-        TopoDS_Vertex first;
-        TopoDS_Vertex last;
-        TopExp::Vertices(candidate, first, last);
-        if (first.IsNull() || last.IsNull()) {
-          continue;
-        }
-        const gp_Pnt first_point = BRep_Tool::Pnt(first);
-        const gp_Pnt last_point = BRep_Tool::Pnt(last);
-        const bool endpoints_match =
-            (first_point.Distance(expected_reference_start) <= tolerances().rounding
-                && last_point.Distance(expected_reference_end) <= tolerances().rounding)
-            || (first_point.Distance(expected_reference_end) <= tolerances().rounding
-                && last_point.Distance(expected_reference_start) <= tolerances().rounding);
-        // Two arcs of one circle share both endpoints (a circle drawn as two
-        // halves); the arc's midpoint tells them apart.
-        bool middle_matches = true;
-        if (endpoints_match && reference_is_arc) {
-          const BRepAdaptor_Curve curve(candidate);
-          const gp_Pnt candidate_middle =
-              curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
-          middle_matches = candidate_middle.Distance(first_arc_middle) <= tolerances().approximation;
-        }
-        if (endpoints_match && middle_matches) {
-          if (!profile_reference.IsNull()) {
-            return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile reference edge is ambiguous");
-          }
-          profile_reference = candidate;
-        }
-      }
-    }
-    if (profile_reference.IsNull()) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile lost its reference edge");
-    }
+    // Segment index -> the wire's edge: the face and the prism are built on that
+    // wire, so its edges are the ones the prism reports history for.
+    const TopoDS_Edge profile_reference = profile_edges[reference_index];
     BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
     if (!operation.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile prism builder did not complete");
@@ -725,8 +684,12 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
       if (edge.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve edge is null");
       }
-      profile_edges.push_back(edge);
       wire_builder.Add(edge);
+      if (!wire_builder.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve wire builder did not complete");
+      }
+      // Segment index -> the edge the wire stores; the revolve reports history for it.
+      profile_edges.push_back(wire_builder.Edge());
     }
     if (!wire_builder.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve wire builder did not complete");
@@ -736,77 +699,6 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve profile face builder did not complete");
     }
     const TopoDS_Face profile = face_builder.Face();
-    std::vector<TopoDS_Edge> operation_edges;
-    operation_edges.reserve(2);
-    for (std::size_t source_index = 0; source_index < 2; ++source_index) {
-      const NativeSegment& segment = segments[source_index];
-      const NativeSegmentKind kind = segment.kind;
-      const gp_Pnt expected_start = planar_point(segment.start, 0.0);
-      const gp_Pnt expected_end = planar_point(segment.end, 0.0);
-      gp_Pnt expected_middle(
-          (expected_start.X() + expected_end.X()) / 2.0,
-          (expected_start.Y() + expected_end.Y()) / 2.0,
-          0.0);
-      if (kind == NativeSegmentKind::CircularArc) {
-        const double center_x = segment.center.x;
-        const double center_y = segment.center.y;
-        const bool clockwise = segment.clockwise;
-        const double start_angle = std::atan2(
-            expected_start.Y() - center_y, expected_start.X() - center_x);
-        const double end_angle = std::atan2(
-            expected_end.Y() - center_y, expected_end.X() - center_x);
-        double sweep = end_angle - start_angle;
-        const double tau = 2.0 * std::acos(-1.0);
-        if (clockwise) {
-          while (sweep >= 0.0) sweep -= tau;
-        } else {
-          while (sweep <= 0.0) sweep += tau;
-        }
-        const double radius = expected_start.Distance(gp_Pnt(center_x, center_y, 0.0));
-        expected_middle = gp_Pnt(
-            center_x + radius * std::cos(start_angle + sweep / 2.0),
-            center_y + radius * std::sin(start_angle + sweep / 2.0),
-            0.0);
-      }
-      TopoDS_Edge matched;
-      for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
-        const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
-        BRepAdaptor_Curve curve(candidate);
-        if ((kind == NativeSegmentKind::Line && curve.GetType() != GeomAbs_Line)
-            || (kind == NativeSegmentKind::CircularArc && curve.GetType() != GeomAbs_Circle)) {
-          continue;
-        }
-        TopoDS_Vertex first;
-        TopoDS_Vertex last;
-        TopExp::Vertices(candidate, first, last);
-        if (first.IsNull() || last.IsNull()) {
-          continue;
-        }
-        const gp_Pnt first_point = BRep_Tool::Pnt(first);
-        const gp_Pnt last_point = BRep_Tool::Pnt(last);
-        const bool endpoints_match =
-            (first_point.Distance(expected_start) <= tolerances().rounding
-                && last_point.Distance(expected_end) <= tolerances().rounding)
-            || (first_point.Distance(expected_end) <= tolerances().rounding
-                && last_point.Distance(expected_start) <= tolerances().rounding);
-        if (!endpoints_match) {
-          continue;
-        }
-        if (kind == NativeSegmentKind::CircularArc) {
-          const gp_Pnt candidate_middle = curve.Value(
-              (curve.FirstParameter() + curve.LastParameter()) / 2.0);
-          if (candidate_middle.Distance(expected_middle) > tolerances().accumulated_rounding) {
-            continue;
-          }
-        }
-        matched = candidate;
-        break;
-      }
-      if (matched.IsNull()) {
-        return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve profile edge identity was lost");
-      }
-      operation_edges.push_back(matched);
-    }
     const double angle_radians = angle_degrees * std::acos(-1.0) / 180.0;
     BRepPrimAPI_MakeRevol operation(
         profile,
@@ -822,7 +714,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
     for (std::size_t index = 0; index < 2; ++index) {
       const std::string source = std::string("profile.edge.") + std::to_string(index);
       HistoryRecord record{side_roles[index], "generated", source, 0, false};
-      const NCollection_List<TopoDS_Shape>& generated = operation.Generated(operation_edges[index]);
+      const NCollection_List<TopoDS_Shape>& generated = operation.Generated(profile_edges[index]);
       for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
         const HistoryRecord candidate = history_record(
             side_roles[index], "generated", source, result, iterator.Value());

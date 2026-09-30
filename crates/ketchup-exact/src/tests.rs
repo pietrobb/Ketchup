@@ -1207,6 +1207,13 @@ fn native_sources_receive_segments_as_tagged_structs() {
         })
     };
     let mut violations = Vec::new();
+    for entry in std::fs::read_dir(source_dir.join("src")).unwrap() {
+        let path = entry.unwrap().path();
+        // Review 2026-09-29 §10: no exact-kernel source grows back into a monolith.
+        if std::fs::metadata(&path).unwrap().len() > 60 * 1024 {
+            violations.push(format!("{} is over 60 KB", path.display()));
+        }
+    }
     for path in sources {
         let text = std::fs::read_to_string(&path).unwrap();
         for (number, line) in text.lines().enumerate() {

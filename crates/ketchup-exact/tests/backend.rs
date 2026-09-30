@@ -964,6 +964,76 @@ fn all_cubic_oval_extrusion_is_valid_deterministic_and_bounded() {
     );
 }
 
+/// The side face the extrusion history names for the profile's reference segment.
+fn side_face_centroid(output: &ExactOpOutput, role: &str) -> Point3 {
+    let ordinal = output
+        .topology_history
+        .iter()
+        .find(|entry| entry.semantic_role.as_deref() == Some(role))
+        .and_then(|entry| entry.output_face_ordinal)
+        .unwrap_or_else(|| panic!("{role} has no output face"));
+    output
+        .body
+        .topology
+        .faces
+        .iter()
+        .find(|face| face.ordinal == ordinal)
+        .unwrap()
+        .centroid_mm
+}
+
+#[test]
+fn a_reference_arc_is_its_own_segment_even_when_another_arc_shares_both_endpoints() {
+    let upper = PlanarProfileSegment::CircularArc {
+        start_mm: [40.0, 0.0],
+        end_mm: [-40.0, 0.0],
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    let lower = PlanarProfileSegment::CircularArc {
+        start_mm: [-40.0, 0.0],
+        end_mm: [40.0, 0.0],
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    let backend = ExactBackend::new();
+    for (profile, side) in [([upper, lower], 1.0), ([lower, upper], -1.0)] {
+        let output = backend.extrude_mixed_profile(&profile, 10.0).unwrap();
+        assert_valid(&output);
+        let centroid = side_face_centroid(&output, "extrusion.side(profile_edge=arc.0)");
+        assert!(
+            centroid.y * side > 10.0,
+            "the side face must come from the first arc: {centroid:?}"
+        );
+    }
+}
+
+#[test]
+fn a_reference_cubic_is_its_own_segment() {
+    let upper = PlanarProfileSegment::CubicBezier {
+        start_mm: [30.0, 0.0],
+        control_1_mm: [20.0, 20.0],
+        control_2_mm: [-20.0, 20.0],
+        end_mm: [-30.0, 0.0],
+    };
+    let lower = PlanarProfileSegment::CubicBezier {
+        start_mm: [-30.0, 0.0],
+        control_1_mm: [-20.0, -20.0],
+        control_2_mm: [20.0, -20.0],
+        end_mm: [30.0, 0.0],
+    };
+    let backend = ExactBackend::new();
+    for (profile, side) in [([upper, lower], 1.0), ([lower, upper], -1.0)] {
+        let output = backend.extrude_mixed_profile(&profile, 10.0).unwrap();
+        assert_valid(&output);
+        let centroid = side_face_centroid(&output, "extrusion.side(profile_edge=spline.0)");
+        assert!(
+            centroid.y * side > 5.0,
+            "the side face must come from the first cubic: {centroid:?}"
+        );
+    }
+}
+
 #[test]
 fn compound_region_revolve_preserves_mixed_boundaries_and_hole() {
     let outer = PlanarProfileLoop::Segments(vec![
