@@ -57,31 +57,19 @@ std::unique_ptr<NativeOperationResult> extrude_circle_native(
   });
 }
 
-TopoDS_Edge cubic_bezier_edge(
-    rust::Slice<const double> segments, std::size_t offset, double z) {
-  TColgp_Array1OfPnt poles(1, 4);
-  poles.SetValue(1, gp_Pnt(segments[offset + 1], segments[offset + 2], z));
-  poles.SetValue(2, gp_Pnt(segments[offset + 5], segments[offset + 6], z));
-  poles.SetValue(3, gp_Pnt(segments[offset + 7], segments[offset + 8], z));
-  poles.SetValue(4, gp_Pnt(segments[offset + 3], segments[offset + 4], z));
-  occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
-  BRepBuilderAPI_MakeEdge edge_builder(curve);
-  return edge_builder.IsDone() ? edge_builder.Edge() : TopoDS_Edge{};
-}
-
 std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
-    rust::Slice<const double> values) noexcept {
+    const NativeSegment& motion, double radius, double axial_length) noexcept {
   return guarded([&] {
-    if (values.size() != 13
-        || !std::all_of(values.begin(), values.end(), [](double value) { return std::isfinite(value); })
-        || (values[0] != 0.0 && values[0] != 1.0)
-        || values[11] <= 0.0 || values[12] <= 0.0) {
+    if (!segment_bounded(motion, std::numeric_limits<double>::max())
+        || !std::isfinite(radius) || !std::isfinite(axial_length)
+        || (motion.kind != NativeSegmentKind::Line
+            && motion.kind != NativeSegmentKind::CircularArc)
+        || radius <= 0.0 || axial_length <= 0.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Axial tool sweep payload is malformed");
     }
-    const gp_Pnt start(values[1], values[2], values[3]);
-    const gp_Pnt end(values[4], values[5], values[6]);
-    const double radius = values[11];
-    const double length = values[12];
+    const gp_Pnt start = spatial_point(motion.start);
+    const gp_Pnt end = spatial_point(motion.end);
+    const double length = axial_length;
     const auto cylinder = [&](const gp_Pnt& point) {
       BRepPrimAPI_MakeCylinder builder(
           gp_Ax2(point, gp_Dir(0.0, 0.0, 1.0)), radius, length);
@@ -98,7 +86,7 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
     };
 
     TopoDS_Shape result;
-    if (values[0] == 0.0) {
+    if (motion.kind == NativeSegmentKind::Line) {
       const double dx = end.X() - start.X();
       const double dy = end.Y() - start.Y();
       const double dz = end.Z() - start.Z();
@@ -140,10 +128,9 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
         result = fuse(fuse(bridge.Shape(), cylinder(start)), cylinder(end));
       }
     } else {
-      const gp_Pnt center(values[7], values[8], values[9]);
+      const gp_Pnt center = spatial_point(motion.center);
       if (std::abs(start.Z() - end.Z()) > tolerances().rounding
-          || std::abs(start.Z() - center.Z()) > tolerances().rounding
-          || (values[10] != 0.0 && values[10] != 1.0)) {
+          || std::abs(start.Z() - center.Z()) > tolerances().rounding) {
         return error_result(STATUS_INVALID_PARAMETER, "Axial tool arc sweep is malformed");
       }
       const double centerline_radius = std::hypot(start.X() - center.X(), start.Y() - center.Y());
@@ -153,7 +140,7 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
           || start.Distance(end) <= tolerances().rounding) {
         return error_result(STATUS_DEGENERATE_OPERATION, "Axial tool arc sweep is degenerate");
       }
-      const bool clockwise = values[10] != 0.0;
+      const bool clockwise = motion.clockwise;
       const double tau = 2.0 * std::acos(-1.0);
       const double start_angle = std::atan2(start.Y() - center.Y(), start.X() - center.X());
       const double end_angle = std::atan2(end.Y() - center.Y(), end.X() - center.X());
@@ -232,32 +219,31 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
 }
 
 std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
-    rust::Slice<const double> segments, double height) noexcept {
+    rust::Slice<const NativeSegment> segments, double height) noexcept {
   return guarded([&] {
-    if (segments.size() < 16 || segments.size() % 10 != 0) {
+    if (segments.size() < 2) {
       return error_result(STATUS_INVALID_PARAMETER, "Mixed profile segment payload is malformed");
     }
     BRepBuilderAPI_MakeWire wire_builder;
     std::vector<TopoDS_Edge> profile_edges;
-    profile_edges.reserve(segments.size() / 10);
+    profile_edges.reserve(segments.size());
     std::size_t first_arc_index = profile_edges.capacity();
     std::size_t first_line_index = profile_edges.capacity();
     std::size_t first_cubic_index = profile_edges.capacity();
     gp_Pnt first_arc_middle;
-    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
-      const double kind = segments[offset];
-      const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-      const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+    for (const NativeSegment& segment : segments) {
+      const gp_Pnt start = planar_point(segment.start, 0.0);
+      const gp_Pnt end = planar_point(segment.end, 0.0);
       TopoDS_Edge edge;
-      if (kind == 0.0) {
+      if (segment.kind == NativeSegmentKind::Line) {
         edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
         if (first_line_index == profile_edges.capacity()) {
           first_line_index = profile_edges.size();
         }
-      } else if (kind == 1.0) {
-        const double center_x = segments[offset + 5];
-        const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 9] != 0.0;
+      } else if (segment.kind == NativeSegmentKind::CircularArc) {
+        const double center_x = segment.center.x;
+        const double center_y = segment.center.y;
+        const bool clockwise = segment.clockwise;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;
@@ -282,8 +268,8 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
           first_arc_index = profile_edges.size();
           first_arc_middle = middle;
         }
-      } else if (kind == 2.0) {
-        edge = cubic_bezier_edge(segments, offset, 0.0);
+      } else if (segment.kind == NativeSegmentKind::CubicBezier) {
+        edge = cubic_bezier_edge(segment, 0.0);
         if (first_cubic_index == profile_edges.capacity()) {
           first_cubic_index = profile_edges.size();
         }
@@ -316,11 +302,9 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     if (!reference_is_arc && !reference_is_line) {
       profile_reference = profile_edges[reference_index];
     } else {
-      const std::size_t reference_offset = reference_index * 10;
-      const gp_Pnt expected_reference_start(
-          segments[reference_offset + 1], segments[reference_offset + 2], 0.0);
-      const gp_Pnt expected_reference_end(
-          segments[reference_offset + 3], segments[reference_offset + 4], 0.0);
+      const gp_Pnt expected_reference_start =
+          planar_point(segments[reference_index].start, 0.0);
+      const gp_Pnt expected_reference_end = planar_point(segments[reference_index].end, 0.0);
       for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
         const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
         const GeomAbs_CurveType expected_type = reference_is_arc ? GeomAbs_Circle : GeomAbs_Line;
@@ -398,12 +382,12 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
 }
 
 std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     rust::Slice<const std::uint32_t> loop_segment_counts,
     double height) noexcept {
   return guarded([&] {
     if (loop_segment_counts.size() < 2 || loop_segment_counts.size() > 65
-        || segments.empty() || segments.size() % 10 != 0
+        || segments.empty()
         || !std::isfinite(height) || height <= 0.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region payload is malformed");
     }
@@ -411,19 +395,18 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
     for (const std::uint32_t count : loop_segment_counts) {
       declared_segments += count;
     }
-    if (declared_segments != segments.size() / 10 || declared_segments > 4096) {
+    if (declared_segments != segments.size() || declared_segments > 4096) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region segment counts do not match");
     }
 
     auto build_wire = [&](std::size_t first_segment, std::size_t segment_count) {
       BRepBuilderAPI_MakeWire wire_builder;
       for (std::size_t index = 0; index < segment_count; ++index) {
-        const std::size_t offset = (first_segment + index) * 10;
-        const double kind = segments[offset];
+        const NativeSegment& segment = segments[first_segment + index];
         TopoDS_Edge edge;
-        if (kind == 0.0) {
-          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+        if (segment.kind == NativeSegmentKind::Line) {
+          const gp_Pnt start = planar_point(segment.start, 0.0);
+          const gp_Pnt end = planar_point(segment.end, 0.0);
           if (start.Distance(end) <= tolerances().linear_mm) {
             return TopoDS_Wire{};
           }
@@ -432,12 +415,12 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-        } else if (kind == 1.0) {
-          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-          const double center_x = segments[offset + 5];
-          const double center_y = segments[offset + 6];
-          const bool clockwise = segments[offset + 9] != 0.0;
+        } else if (segment.kind == NativeSegmentKind::CircularArc) {
+          const gp_Pnt start = planar_point(segment.start, 0.0);
+          const gp_Pnt end = planar_point(segment.end, 0.0);
+          const double center_x = segment.center.x;
+          const double center_y = segment.center.y;
+          const bool clockwise = segment.clockwise;
           const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
           const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
           double sweep = end_angle - start_angle;
@@ -462,12 +445,12 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-        } else if (kind == 2.0) {
-          edge = cubic_bezier_edge(segments, offset, 0.0);
-        } else if (kind == 3.0 && segment_count == 1) {
-          const double center_x = segments[offset + 1];
-          const double center_y = segments[offset + 2];
-          const double radius = segments[offset + 3];
+        } else if (segment.kind == NativeSegmentKind::CubicBezier) {
+          edge = cubic_bezier_edge(segment, 0.0);
+        } else if (segment.kind == NativeSegmentKind::Circle && segment_count == 1) {
+          const double center_x = segment.center.x;
+          const double center_y = segment.center.y;
+          const double radius = segment.radius;
           if (!std::isfinite(center_x) || !std::isfinite(center_y)
               || !std::isfinite(radius) || radius <= tolerances().linear_mm) {
             return TopoDS_Wire{};
@@ -478,7 +461,7 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-          if (segments[offset + 9] != 0.0) {
+          if (segment.clockwise) {
             edge.Reverse();
           }
         } else {
@@ -533,14 +516,14 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
 }
 
 std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     rust::Slice<const std::uint32_t> loop_segment_counts,
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept {
   return guarded([&] {
     if (loop_segment_counts.size() < 2 || loop_segment_counts.size() > 65
-        || segments.empty() || segments.size() % 10 != 0
+        || segments.empty()
         || !std::isfinite(axis_start_x) || !std::isfinite(axis_start_y)
         || !std::isfinite(axis_end_x) || !std::isfinite(axis_end_y)
         || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0) {
@@ -550,7 +533,7 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
     for (const std::uint32_t count : loop_segment_counts) {
       declared_segments += count;
     }
-    if (declared_segments != segments.size() / 10 || declared_segments > 4096) {
+    if (declared_segments != segments.size() || declared_segments > 4096) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region revolve segment counts do not match");
     }
     const gp_Vec axis_vector(
@@ -564,12 +547,11 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
     auto build_wire = [&](std::size_t first_segment, std::size_t segment_count) {
       BRepBuilderAPI_MakeWire wire_builder;
       for (std::size_t index = 0; index < segment_count; ++index) {
-        const std::size_t offset = (first_segment + index) * 10;
-        const double kind = segments[offset];
+        const NativeSegment& segment = segments[first_segment + index];
         TopoDS_Edge edge;
-        if (kind == 0.0) {
-          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+        if (segment.kind == NativeSegmentKind::Line) {
+          const gp_Pnt start = planar_point(segment.start, 0.0);
+          const gp_Pnt end = planar_point(segment.end, 0.0);
           if (start.Distance(end) <= tolerances().linear_mm) {
             return TopoDS_Wire{};
           }
@@ -578,12 +560,12 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-        } else if (kind == 1.0) {
-          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-          const double center_x = segments[offset + 5];
-          const double center_y = segments[offset + 6];
-          const bool clockwise = segments[offset + 9] != 0.0;
+        } else if (segment.kind == NativeSegmentKind::CircularArc) {
+          const gp_Pnt start = planar_point(segment.start, 0.0);
+          const gp_Pnt end = planar_point(segment.end, 0.0);
+          const double center_x = segment.center.x;
+          const double center_y = segment.center.y;
+          const bool clockwise = segment.clockwise;
           const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
           const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
           double sweep = end_angle - start_angle;
@@ -607,12 +589,12 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-        } else if (kind == 2.0) {
-          edge = cubic_bezier_edge(segments, offset, 0.0);
-        } else if (kind == 3.0 && segment_count == 1) {
-          const double center_x = segments[offset + 1];
-          const double center_y = segments[offset + 2];
-          const double radius = segments[offset + 3];
+        } else if (segment.kind == NativeSegmentKind::CubicBezier) {
+          edge = cubic_bezier_edge(segment, 0.0);
+        } else if (segment.kind == NativeSegmentKind::Circle && segment_count == 1) {
+          const double center_x = segment.center.x;
+          const double center_y = segment.center.y;
+          const double radius = segment.radius;
           if (!std::isfinite(center_x) || !std::isfinite(center_y)
               || !std::isfinite(radius) || radius <= tolerances().linear_mm) {
             return TopoDS_Wire{};
@@ -623,7 +605,7 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-          if (segments[offset + 9] != 0.0) {
+          if (segment.clockwise) {
             edge.Reverse();
           }
         } else {
@@ -685,12 +667,12 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
 }
 
 std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept {
   return guarded([&] {
-    if (segments.size() < 16 || segments.size() % 10 != 0
+    if (segments.size() < 2
         || !std::isfinite(axis_start_x) || !std::isfinite(axis_start_y)
         || !std::isfinite(axis_end_x) || !std::isfinite(axis_end_y)
         || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0) {
@@ -706,18 +688,17 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
 
     BRepBuilderAPI_MakeWire wire_builder;
     std::vector<TopoDS_Edge> profile_edges;
-    profile_edges.reserve(segments.size() / 10);
-    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
-      const double kind = segments[offset];
-      const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-      const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+    profile_edges.reserve(segments.size());
+    for (const NativeSegment& segment : segments) {
+      const gp_Pnt start = planar_point(segment.start, 0.0);
+      const gp_Pnt end = planar_point(segment.end, 0.0);
       TopoDS_Edge edge;
-      if (kind == 0.0) {
+      if (segment.kind == NativeSegmentKind::Line) {
         edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
-      } else if (kind == 1.0) {
-        const double center_x = segments[offset + 5];
-        const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 9] != 0.0;
+      } else if (segment.kind == NativeSegmentKind::CircularArc) {
+        const double center_x = segment.center.x;
+        const double center_y = segment.center.y;
+        const bool clockwise = segment.clockwise;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;
@@ -758,18 +739,18 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
     std::vector<TopoDS_Edge> operation_edges;
     operation_edges.reserve(2);
     for (std::size_t source_index = 0; source_index < 2; ++source_index) {
-      const std::size_t offset = source_index * 10;
-      const double kind = segments[offset];
-      const gp_Pnt expected_start(segments[offset + 1], segments[offset + 2], 0.0);
-      const gp_Pnt expected_end(segments[offset + 3], segments[offset + 4], 0.0);
+      const NativeSegment& segment = segments[source_index];
+      const NativeSegmentKind kind = segment.kind;
+      const gp_Pnt expected_start = planar_point(segment.start, 0.0);
+      const gp_Pnt expected_end = planar_point(segment.end, 0.0);
       gp_Pnt expected_middle(
           (expected_start.X() + expected_end.X()) / 2.0,
           (expected_start.Y() + expected_end.Y()) / 2.0,
           0.0);
-      if (kind == 1.0) {
-        const double center_x = segments[offset + 5];
-        const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 9] != 0.0;
+      if (kind == NativeSegmentKind::CircularArc) {
+        const double center_x = segment.center.x;
+        const double center_y = segment.center.y;
+        const bool clockwise = segment.clockwise;
         const double start_angle = std::atan2(
             expected_start.Y() - center_y, expected_start.X() - center_x);
         const double end_angle = std::atan2(
@@ -791,8 +772,8 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
       for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
         const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
         BRepAdaptor_Curve curve(candidate);
-        if ((kind == 0.0 && curve.GetType() != GeomAbs_Line)
-            || (kind == 1.0 && curve.GetType() != GeomAbs_Circle)) {
+        if ((kind == NativeSegmentKind::Line && curve.GetType() != GeomAbs_Line)
+            || (kind == NativeSegmentKind::CircularArc && curve.GetType() != GeomAbs_Circle)) {
           continue;
         }
         TopoDS_Vertex first;
@@ -811,7 +792,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
         if (!endpoints_match) {
           continue;
         }
-        if (kind == 1.0) {
+        if (kind == NativeSegmentKind::CircularArc) {
           const gp_Pnt candidate_middle = curve.Value(
               (curve.FirstParameter() + curve.LastParameter()) / 2.0);
           if (candidate_middle.Distance(expected_middle) > tolerances().accumulated_rounding) {

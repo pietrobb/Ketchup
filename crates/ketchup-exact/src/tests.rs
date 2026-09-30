@@ -1013,6 +1013,220 @@ fn spatial_sweep_validation_accepts_nonintersecting_aabb_overlap() {
 }
 
 #[test]
+fn segment_request_digest_encoding_is_frozen() {
+    // Stored exact provenance holds digests of this encoding, so it stays as it
+    // was when segments still crossed the native boundary as float arrays.
+    assert_eq!(
+        planar_segment_digest_values(&PlanarProfileSegment::Line {
+            start_mm: [1.0, 2.0],
+            end_mm: [3.0, 4.0],
+        }),
+        [0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        planar_segment_digest_values(&PlanarProfileSegment::CircularArc {
+            start_mm: [1.0, 2.0],
+            end_mm: [3.0, 4.0],
+            center_mm: [5.0, 6.0],
+            clockwise: true,
+        }),
+        [1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0, 1.0]
+    );
+    assert_eq!(
+        planar_segment_digest_values(&PlanarProfileSegment::CubicBezier {
+            start_mm: [1.0, 2.0],
+            control_1_mm: [5.0, 6.0],
+            control_2_mm: [7.0, 8.0],
+            end_mm: [3.0, 4.0],
+        }),
+        [2.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 0.0]
+    );
+    assert_eq!(
+        circle_digest_values([7.0, 8.0], 9.0, true),
+        [3.0, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    );
+    assert_eq!(
+        spatial_segment_digest_values(&SpatialProfileSegment::CircularArc {
+            start_mm: [1.0, 2.0, 3.0],
+            end_mm: [4.0, 5.0, 6.0],
+            center_mm: [7.0, 8.0, 9.0],
+            normal: [0.0, 0.0, 1.0],
+            clockwise: false,
+        }),
+        [
+            11.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 0.0, 0.0, 1.0, 0.0
+        ]
+    );
+}
+
+#[test]
+fn native_segments_carry_their_kind_as_a_tag_and_name_every_value() {
+    let point = |x, y, z| ffi::NativePoint { x, y, z };
+    let arc = native_planar_segment(&PlanarProfileSegment::CircularArc {
+        start_mm: [1.0, 2.0],
+        end_mm: [3.0, 4.0],
+        center_mm: [5.0, 6.0],
+        clockwise: true,
+    });
+    assert!(arc.kind == ffi::NativeSegmentKind::CircularArc);
+    assert_eq!(arc.start, point(1.0, 2.0, 0.0));
+    assert_eq!(arc.end, point(3.0, 4.0, 0.0));
+    assert_eq!(arc.center, point(5.0, 6.0, 0.0));
+    assert_eq!(arc.normal, point(0.0, 0.0, 1.0));
+    assert!(arc.clockwise);
+
+    let bezier = native_planar_segment(&PlanarProfileSegment::CubicBezier {
+        start_mm: [1.0, 2.0],
+        control_1_mm: [5.0, 6.0],
+        control_2_mm: [7.0, 8.0],
+        end_mm: [3.0, 4.0],
+    });
+    assert!(bezier.kind == ffi::NativeSegmentKind::CubicBezier);
+    assert_eq!(bezier.control_1, point(5.0, 6.0, 0.0));
+    assert_eq!(bezier.control_2, point(7.0, 8.0, 0.0));
+    assert_eq!(bezier.center, point(0.0, 0.0, 0.0));
+
+    let hole = native_circle([7.0, 8.0], 9.0, true);
+    assert!(hole.kind == ffi::NativeSegmentKind::Circle);
+    assert_eq!(
+        (hole.center, hole.radius, hole.clockwise),
+        (point(7.0, 8.0, 0.0), 9.0, true)
+    );
+
+    let spatial = native_spatial_segment(&SpatialProfileSegment::CubicBezier {
+        start_mm: [1.0, 2.0, 3.0],
+        control_1_mm: [4.0, 5.0, 6.0],
+        control_2_mm: [7.0, 8.0, 9.0],
+        end_mm: [10.0, 11.0, 12.0],
+    });
+    assert!(spatial.kind == ffi::NativeSegmentKind::CubicBezier);
+    assert_eq!(spatial.control_2, point(7.0, 8.0, 9.0));
+    assert_eq!(spatial.end, point(10.0, 11.0, 12.0));
+}
+
+#[test]
+fn canonical_planar_region_keeps_native_segments_aligned_with_the_request_digest() {
+    let square = |start: usize| {
+        let corners = [[0.0, 0.0], [100.0, 0.0], [100.0, 80.0], [0.0, 80.0]];
+        PlanarProfileLoop::Segments(
+            (0..4)
+                .map(|index| PlanarProfileSegment::Line {
+                    start_mm: corners[(start + index) % 4],
+                    end_mm: corners[(start + index + 1) % 4],
+                })
+                .collect(),
+        )
+    };
+    let circle = PlanarProfileLoop::Circle {
+        center_mm: [25.0, 40.0],
+        radius_mm: 10.0,
+    };
+    let slot = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [60.0, 30.0],
+            end_mm: [80.0, 30.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [80.0, 30.0],
+            end_mm: [80.0, 50.0],
+            center_mm: [80.0, 40.0],
+            clockwise: false,
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [80.0, 50.0],
+            end_mm: [60.0, 50.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [60.0, 50.0],
+            end_mm: [60.0, 30.0],
+            center_mm: [60.0, 40.0],
+            clockwise: false,
+        },
+    ]);
+    let region = |outer: &PlanarProfileLoop, holes: &[PlanarProfileLoop]| {
+        flatten_planar_region(outer, holes, "unit", "unit")
+            .unwrap()
+            .canonicalize()
+    };
+    let canonical = region(&square(2), &[slot.clone(), circle.clone()]);
+    let digest = canonical.digest_values();
+    let native = canonical.native_segments();
+    assert_eq!(canonical.loop_segment_counts(), [4, 4, 1]);
+    assert_eq!(digest.len(), native.len() * 10);
+    for (values, segment) in digest.chunks(10).zip(&native) {
+        if segment.kind == ffi::NativeSegmentKind::Circle {
+            assert_eq!(
+                [values[1], values[2], values[3]],
+                [segment.center.x, segment.center.y, segment.radius]
+            );
+        } else {
+            assert_eq!(
+                [values[1], values[2], values[3], values[4]],
+                [
+                    segment.start.x,
+                    segment.start.y,
+                    segment.end.x,
+                    segment.end.y
+                ]
+            );
+        }
+        assert_eq!(values[9] != 0.0, segment.clockwise);
+    }
+
+    let reordered = region(&square(1), &[circle, slot]);
+    assert_eq!(reordered.digest_values(), digest);
+    assert_eq!(reordered.native_segments(), native);
+}
+
+#[test]
+fn native_sources_receive_segments_as_tagged_structs() {
+    let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = vec![source_dir.join("include").join("ketchup_exact.hxx")];
+    for entry in std::fs::read_dir(source_dir.join("src")).unwrap() {
+        let path = entry.unwrap().path();
+        if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("cc" | "hxx")
+        ) {
+            sources.push(path);
+        }
+    }
+    let float_kind_comparison = |line: &str| {
+        line.match_indices("kind").any(|(index, _)| {
+            let rest = line[index + 4..].trim_start();
+            let Some(rest) = rest.strip_prefix("==").or_else(|| rest.strip_prefix("!=")) else {
+                return false;
+            };
+            let literal = rest
+                .trim_start()
+                .split(|character: char| !(character.is_ascii_digit() || character == '.'))
+                .next()
+                .unwrap_or_default();
+            literal.contains('.')
+                && literal.starts_with(|character: char| character.is_ascii_digit())
+        })
+    };
+    let mut violations = Vec::new();
+    for path in sources {
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (number, line) in text.lines().enumerate() {
+            if float_kind_comparison(line)
+                || line.to_ascii_lowercase().contains("stride")
+                || (line.contains("rust::Slice<const double>") && line.contains("segments"))
+            {
+                violations.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
 fn native_occt_exception_is_contained_by_the_facade() {
     let error = collect_output(
         ffi::exception_probe_native(),

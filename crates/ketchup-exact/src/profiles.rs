@@ -95,9 +95,8 @@ impl ExactBackend {
             ));
         };
         validate_mixed_profile(segments, operation, &input)?;
-        let flattened = flatten_planar_segments(segments);
         collect_output(
-            ffi::planar_surface_profile_native(&flattened),
+            ffi::planar_surface_profile_native(&native_planar_segments(segments)),
             operation,
             &input,
             HistoryConfidence::Complete,
@@ -435,22 +434,22 @@ impl ExactBackend {
         } else {
             segments.to_vec()
         };
-        let encoded = flatten_planar_segments(&segments);
+        let encoded = segments
+            .iter()
+            .map(planar_segment_digest_values)
+            .collect::<Vec<_>>();
         let canonical_start = (0..segments.len())
             .min_by(|left, right| {
-                for offset in 0..segments.len() {
-                    for value in 0..PLANAR_SEGMENT_STRIDE {
-                        let left_value = encoded
-                            [((left + offset) % segments.len()) * PLANAR_SEGMENT_STRIDE + value];
-                        let right_value = encoded
-                            [((right + offset) % segments.len()) * PLANAR_SEGMENT_STRIDE + value];
-                        let ordering = left_value.total_cmp(&right_value);
-                        if !ordering.is_eq() {
-                            return ordering;
-                        }
-                    }
-                }
-                std::cmp::Ordering::Equal
+                (0..segments.len())
+                    .flat_map(|offset| {
+                        let left = &encoded[(left + offset) % segments.len()];
+                        let right = &encoded[(right + offset) % segments.len()];
+                        left.iter()
+                            .zip(right)
+                            .map(|(left, right)| left.total_cmp(right))
+                    })
+                    .find(|ordering| !ordering.is_eq())
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .expect("validated planar offset profile is non-empty");
         segments.rotate_left(canonical_start);
@@ -458,9 +457,8 @@ impl ExactBackend {
             "offset_planar_profile:{segments:?}:{:016x}",
             distance_mm.to_bits()
         );
-        let flattened = flatten_planar_segments(&segments);
         let output = collect_output(
-            ffi::offset_planar_profile_native(&flattened, distance_mm),
+            ffi::offset_planar_profile_native(&native_planar_segments(&segments), distance_mm),
             "offset_planar_profile",
             &input,
             HistoryConfidence::Complete,
@@ -539,20 +537,19 @@ impl ExactBackend {
                 ));
             }
         }
-        let (flattened, loop_segment_counts) =
-            flatten_planar_region(outer, holes, operation, &bounded_input)?;
-        let (flattened, loop_segment_counts) =
-            canonicalize_planar_region_encoding(flattened, loop_segment_counts);
-        let encoded_bits = flattened
-            .iter()
-            .map(|value| value.to_bits())
-            .collect::<Vec<_>>();
+        let region = flatten_planar_region(outer, holes, operation, &bounded_input)?.canonicalize();
+        let loop_segment_counts = region.loop_segment_counts();
+        let encoded_bits = digest_bits(&region.digest_values());
         let input = format!(
             "{operation}:{loop_segment_counts:?}:{encoded_bits:?}:{:016x}",
             distance_mm.to_bits()
         );
         let output = collect_output(
-            ffi::offset_planar_region_native(&flattened, &loop_segment_counts, distance_mm),
+            ffi::offset_planar_region_native(
+                &region.native_segments(),
+                &loop_segment_counts,
+                distance_mm,
+            ),
             operation,
             &input,
             HistoryConfidence::Complete,

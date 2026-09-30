@@ -22,7 +22,7 @@ use std::fmt;
 
 use crate::{
     EdgeFinish, ExactBackend, ExactOpOutput, GeometryError, GeometryErrorCode, HistoryConfidence,
-    PlanarProfileSegment, collect_output, ffi, flatten_planar_segments, planar_segment_endpoints,
+    PlanarProfileSegment, collect_output, ffi, native_planar_segments, planar_segment_endpoints,
     planar_segment_signed_area, reverse_planar_segments, validate_general_revolve_profile,
     validate_length, validate_mixed_profile,
 };
@@ -198,7 +198,7 @@ impl ExactBackend {
         validate_length(height_mm, "height_mm", OPERATION, &input)?;
         let (segments, names) = counter_clockwise(profile, OPERATION, &input)?;
         let output = collect_output(
-            ffi::named_prism_native(&flatten_planar_segments(&segments), base_z_mm, height_mm),
+            ffi::named_prism_native(&native_planar_segments(&segments), base_z_mm, height_mm),
             OPERATION,
             &input,
             HistoryConfidence::Complete,
@@ -230,7 +230,7 @@ impl ExactBackend {
         )?;
         let output = collect_output(
             ffi::named_revol_native(
-                &flatten_planar_segments(&segments),
+                &native_planar_segments(&segments),
                 axis_start_mm[0],
                 axis_start_mm[1],
                 axis_end_mm[0],

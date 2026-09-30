@@ -71,37 +71,27 @@ std::unique_ptr<NativeOperationResult> offset_rectangle_native(
 }
 
 std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
-    rust::Slice<const double> segments, double distance) noexcept {
+    rust::Slice<const NativeSegment> segments, double distance) noexcept {
   return guarded([&] {
-    if (segments.size() < 20 || segments.size() % 10 != 0 || segments.size() > 640
+    if (segments.size() < 2 || segments.size() > 64
         || !std::isfinite(distance)
         || std::abs(distance) > 100000.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar offset payload is malformed");
     }
     BRepBuilderAPI_MakeWire source_builder;
     bool line_only = true;
-    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
-      for (std::size_t index = 0; index < 10; ++index) {
-        if (!std::isfinite(segments[offset + index])
-            || std::abs(segments[offset + index]) > 1000000.0) {
-          return error_result(STATUS_INVALID_PARAMETER, "Planar offset segment value is invalid");
-        }
+    for (std::size_t index = 0; index < segments.size(); ++index) {
+      const NativeSegment& segment = segments[index];
+      if (!segment_bounded(segment, 1000000.0)) {
+        return error_result(STATUS_INVALID_PARAMETER, "Planar offset segment value is invalid");
       }
-      const double kind = segments[offset];
-      const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-      const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-      const std::size_t next = (offset + 10) % segments.size();
-      if (segments[offset + 3] != segments[next + 1]
-          || segments[offset + 4] != segments[next + 2]) {
+      const gp_Pnt start = planar_point(segment.start, 0.0);
+      const gp_Pnt end = planar_point(segment.end, 0.0);
+      if (!same_point(segment.end, segments[(index + 1) % segments.size()].start)) {
         return error_result(STATUS_INVALID_PARAMETER, "Planar offset source wire is open");
       }
       TopoDS_Edge edge;
-      if (kind == 0.0) {
-        if (segments[offset + 5] != 0.0 || segments[offset + 6] != 0.0
-            || segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
-            || segments[offset + 9] != 0.0) {
-          return error_result(STATUS_INVALID_PARAMETER, "Planar offset line payload is malformed");
-        }
+      if (segment.kind == NativeSegmentKind::Line) {
         const double length = start.Distance(end);
         if (!std::isfinite(length) || length < 0.01 || length > 100000.0) {
           return error_result(STATUS_INVALID_PARAMETER, "Planar offset line length is invalid");
@@ -111,15 +101,11 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
           return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset line builder did not complete");
         }
         edge = edge_builder.Edge();
-      } else if (kind == 1.0) {
+      } else if (segment.kind == NativeSegmentKind::CircularArc) {
         line_only = false;
-        if (segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
-            || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)) {
-          return error_result(STATUS_INVALID_PARAMETER, "Planar offset arc payload is malformed");
-        }
-        const double center_x = segments[offset + 5];
-        const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 9] != 0.0;
+        const double center_x = segment.center.x;
+        const double center_y = segment.center.y;
+        const bool clockwise = segment.clockwise;
         const gp_Pnt center(center_x, center_y, 0.0);
         const double radius = start.Distance(center);
         const double end_radius = end.Distance(center);
@@ -152,20 +138,17 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
           return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset arc edge did not complete");
         }
         edge = edge_builder.Edge();
-      } else if (kind == 2.0) {
+      } else if (segment.kind == NativeSegmentKind::CubicBezier) {
         line_only = false;
-        if (segments[offset + 9] != 0.0) {
-          return error_result(STATUS_INVALID_PARAMETER, "Planar offset cubic payload is malformed");
-        }
-        const gp_Pnt control_1(segments[offset + 5], segments[offset + 6], 0.0);
-        const gp_Pnt control_2(segments[offset + 7], segments[offset + 8], 0.0);
+        const gp_Pnt control_1 = planar_point(segment.control_1, 0.0);
+        const gp_Pnt control_2 = planar_point(segment.control_2, 0.0);
         const double control_polygon_length =
             start.Distance(control_1) + control_1.Distance(control_2) + control_2.Distance(end);
         if (!std::isfinite(control_polygon_length) || control_polygon_length < 0.01
             || control_polygon_length > 100000.0) {
           return error_result(STATUS_INVALID_PARAMETER, "Planar offset cubic length is invalid");
         }
-        edge = cubic_bezier_edge(segments, offset, 0.0);
+        edge = cubic_bezier_edge(segment, 0.0);
       } else {
         return error_result(STATUS_INVALID_PARAMETER, "Planar offset segment kind is unsupported");
       }
@@ -174,7 +157,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
       }
       source_builder.Add(edge);
     }
-    if (!source_builder.IsDone() || (line_only && segments.size() < 30)) {
+    if (!source_builder.IsDone() || (line_only && segments.size() < 3)) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset source wire did not complete");
     }
     BRepBuilderAPI_MakeFace source_face_builder(source_builder.Wire(), true);
@@ -218,7 +201,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
 }
 
 std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
-    rust::Slice<const double> segments) noexcept {
+    rust::Slice<const NativeSegment> segments) noexcept {
   return offset_planar_profile_native(segments, 0.0);
 }
 
@@ -529,12 +512,12 @@ std::unique_ptr<NativeOperationResult> thicken_surface_native(
 }
 
 std::unique_ptr<NativeOperationResult> offset_planar_region_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     rust::Slice<const std::uint32_t> loop_segment_counts,
     double distance) noexcept {
   return guarded([&] {
     if (loop_segment_counts.size() < 2 || loop_segment_counts.size() > 65
-        || segments.empty() || segments.size() % 10 != 0
+        || segments.empty()
         || !std::isfinite(distance) || std::abs(distance) < 0.01
         || std::abs(distance) > 100000.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region offset payload is malformed");
@@ -546,7 +529,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
       }
       declared_segments += count;
     }
-    if (declared_segments != segments.size() / 10 || declared_segments > 4096) {
+    if (declared_segments != segments.size() || declared_segments > 4096) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region offset segment counts do not match");
     }
 
@@ -554,22 +537,15 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
       BRepBuilderAPI_MakeWire wire_builder;
       bool line_only = true;
       for (std::size_t index = 0; index < segment_count; ++index) {
-        const std::size_t offset = (first_segment + index) * 10;
-        for (std::size_t value = 0; value < 10; ++value) {
-          if (!std::isfinite(segments[offset + value])
-              || std::abs(segments[offset + value]) > 1000000.0) {
-            return TopoDS_Wire{};
-          }
+        const NativeSegment& segment = segments[first_segment + index];
+        if (!segment_bounded(segment, 1000000.0)) {
+          return TopoDS_Wire{};
         }
-        const double kind = segments[offset];
         TopoDS_Edge edge;
-        if (kind == 0.0) {
-          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-          if (segments[offset + 5] != 0.0 || segments[offset + 6] != 0.0
-              || segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
-              || segments[offset + 9] != 0.0
-              || start.Distance(end) < 0.01 || start.Distance(end) > 100000.0) {
+        if (segment.kind == NativeSegmentKind::Line) {
+          const gp_Pnt start = planar_point(segment.start, 0.0);
+          const gp_Pnt end = planar_point(segment.end, 0.0);
+          if (start.Distance(end) < 0.01 || start.Distance(end) > 100000.0) {
             return TopoDS_Wire{};
           }
           BRepBuilderAPI_MakeEdge edge_builder(start, end);
@@ -577,19 +553,17 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-        } else if (kind == 1.0) {
+        } else if (segment.kind == NativeSegmentKind::CircularArc) {
           line_only = false;
-          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-          const double center_x = segments[offset + 5];
-          const double center_y = segments[offset + 6];
-          const bool clockwise = segments[offset + 9] != 0.0;
+          const gp_Pnt start = planar_point(segment.start, 0.0);
+          const gp_Pnt end = planar_point(segment.end, 0.0);
+          const double center_x = segment.center.x;
+          const double center_y = segment.center.y;
+          const bool clockwise = segment.clockwise;
           const gp_Pnt center(center_x, center_y, 0.0);
           const double radius = start.Distance(center);
           const double end_radius = end.Distance(center);
-          if (segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
-              || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)
-              || radius < 0.01 || radius > 100000.0
+          if (radius < 0.01 || radius > 100000.0
               || std::abs(radius - end_radius) > tolerances().rounding * std::max({radius, end_radius, 1.0})
               || std::abs(center_x) + radius > 1000000.0
               || std::abs(center_y) + radius > 1000000.0) {
@@ -617,31 +591,26 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-        } else if (kind == 2.0) {
+        } else if (segment.kind == NativeSegmentKind::CubicBezier) {
           line_only = false;
-          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
-          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
-          const gp_Pnt control_1(segments[offset + 5], segments[offset + 6], 0.0);
-          const gp_Pnt control_2(segments[offset + 7], segments[offset + 8], 0.0);
+          const gp_Pnt start = planar_point(segment.start, 0.0);
+          const gp_Pnt end = planar_point(segment.end, 0.0);
+          const gp_Pnt control_1 = planar_point(segment.control_1, 0.0);
+          const gp_Pnt control_2 = planar_point(segment.control_2, 0.0);
           const double control_polygon_length =
               start.Distance(control_1) + control_1.Distance(control_2) + control_2.Distance(end);
-          if (segments[offset + 9] != 0.0 || control_polygon_length < 0.01
-              || control_polygon_length > 100000.0) {
+          if (control_polygon_length < 0.01 || control_polygon_length > 100000.0) {
             return TopoDS_Wire{};
           }
-          edge = cubic_bezier_edge(segments, offset, 0.0);
-        } else if (kind == 3.0 && segment_count == 1) {
+          edge = cubic_bezier_edge(segment, 0.0);
+        } else if (segment.kind == NativeSegmentKind::Circle && segment_count == 1) {
           line_only = false;
-          const double center_x = segments[offset + 1];
-          const double center_y = segments[offset + 2];
-          const double radius = segments[offset + 3];
+          const double center_x = segment.center.x;
+          const double center_y = segment.center.y;
+          const double radius = segment.radius;
           if (radius < 0.01 || radius > 100000.0
               || std::abs(center_x) + radius > 1000000.0
-              || std::abs(center_y) + radius > 1000000.0
-              || segments[offset + 4] != 0.0 || segments[offset + 5] != 0.0
-              || segments[offset + 6] != 0.0 || segments[offset + 7] != 0.0
-              || segments[offset + 8] != 0.0
-              || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)) {
+              || std::abs(center_y) + radius > 1000000.0) {
             return TopoDS_Wire{};
           }
           BRepBuilderAPI_MakeEdge edge_builder(
@@ -650,7 +619,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-          if (segments[offset + 9] != 0.0) {
+          if (segment.clockwise) {
             edge.Reverse();
           }
         } else {
@@ -659,12 +628,10 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
         if (edge.IsNull()) {
           return TopoDS_Wire{};
         }
-        if (kind != 3.0) {
-          const std::size_t next = (first_segment + (index + 1) % segment_count) * 10;
-          if (segments[offset + 3] != segments[next + 1]
-              || segments[offset + 4] != segments[next + 2]) {
-            return TopoDS_Wire{};
-          }
+        if (segment.kind != NativeSegmentKind::Circle
+            && !same_point(
+                segment.end, segments[first_segment + (index + 1) % segment_count].start)) {
+          return TopoDS_Wire{};
         }
         wire_builder.Add(edge);
       }
@@ -700,15 +667,15 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
     offset_wires.reserve(source_wires.size());
     std::size_t source_segment = 0;
     for (std::size_t index = 0; index < source_wires.size(); ++index) {
+      const NativeSegment& first = segments[source_segment];
       const bool circle_hole = index != 0
           && loop_segment_counts[index] == 1
-          && segments[source_segment * 10] == 3.0;
+          && first.kind == NativeSegmentKind::Circle;
       TopoDS_Wire operation_wire = source_wires[index];
       if (circle_hole) {
-        const std::size_t offset = source_segment * 10;
         BRepBuilderAPI_MakeEdge edge_builder(gp_Circ(gp_Ax2(
-            gp_Pnt(segments[offset + 1], segments[offset + 2], 0.0),
-            gp_Dir(0.0, 0.0, 1.0)), segments[offset + 3]));
+            planar_point(first.center, 0.0),
+            gp_Dir(0.0, 0.0, 1.0)), first.radius));
         if (!edge_builder.IsDone()) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT planar region circle hole is invalid");
         }

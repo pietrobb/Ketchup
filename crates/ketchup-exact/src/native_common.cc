@@ -504,4 +504,26 @@ rust::Vec<NativeEdgeHistoryEvidence> NativeOperationResult::edge_history_evidenc
 const NativeOperationResult::Impl& NativeOperationResult::impl() const noexcept {
   return *impl_;
 }
+
+bool segment_bounded(const NativeSegment& segment, double limit) {
+  const auto bounded = [limit](double value) {
+    return std::isfinite(value) && std::abs(value) <= limit;
+  };
+  for (const NativePoint* point : {&segment.start, &segment.end, &segment.center,
+                                   &segment.normal, &segment.control_1, &segment.control_2}) {
+    if (!bounded(point->x) || !bounded(point->y) || !bounded(point->z)) return false;
+  }
+  return bounded(segment.radius);
+}
+
+TopoDS_Edge cubic_bezier_edge(const NativeSegment& segment, double z) {
+  TColgp_Array1OfPnt poles(1, 4);
+  poles.SetValue(1, planar_point(segment.start, z));
+  poles.SetValue(2, planar_point(segment.control_1, z));
+  poles.SetValue(3, planar_point(segment.control_2, z));
+  poles.SetValue(4, planar_point(segment.end, z));
+  occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
+  BRepBuilderAPI_MakeEdge edge_builder(curve);
+  return edge_builder.IsDone() ? edge_builder.Edge() : TopoDS_Edge{};
+}
 } // namespace ketchup::exact

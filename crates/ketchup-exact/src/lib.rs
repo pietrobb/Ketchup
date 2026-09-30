@@ -31,8 +31,6 @@ const BACKEND_FINGERPRINT: &str = env!("KETCHUP_OCCT_BUILD_FINGERPRINT");
 const TOLERANCE_PROFILE: &str = "r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel=1e-10";
 const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
-const PLANAR_SEGMENT_STRIDE: usize = 10;
-const SPATIAL_SEGMENT_STRIDE: usize = 14;
 const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const MAX_SWEEP_PATH_SEGMENTS: usize = 64;
 pub const MAX_PLANAR_LOOP_SEGMENTS: usize = 64;
@@ -74,6 +72,55 @@ mod ffi {
 
     extern "Rust" {
         fn native_tolerances() -> NativeTolerances;
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct NativePoint {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+
+    #[derive(Debug)]
+    enum NativeSegmentKind {
+        Line,
+        CircularArc,
+        CubicBezier,
+        /// A full circle; the only segment of its loop.
+        Circle,
+    }
+
+    /// One profile or path segment. Planar segments lie in z = 0 of their profile
+    /// frame. Fields a kind does not use are zero.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct NativeSegment {
+        kind: NativeSegmentKind,
+        start: NativePoint,
+        end: NativePoint,
+        /// Arc or circle center.
+        center: NativePoint,
+        /// Arc or circle plane normal.
+        normal: NativePoint,
+        control_1: NativePoint,
+        control_2: NativePoint,
+        /// Circle radius.
+        radius: f64,
+        /// Arc or circle direction about `normal`.
+        clockwise: bool,
+    }
+
+    /// One framed Loft section: a profile frame at `elevation` along `normal`,
+    /// followed by either `segment_count` segments or `spline_point_count`
+    /// interpolated points.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct NativeLoftSection {
+        origin: NativePoint,
+        x_axis: NativePoint,
+        y_axis: NativePoint,
+        normal: NativePoint,
+        elevation: f64,
+        segment_count: u32,
+        spline_point_count: u32,
     }
 
     struct NativePairQuery {
@@ -220,10 +267,12 @@ mod ffi {
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn offset_planar_profile_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
-        fn planar_surface_profile_native(segments: &[f64]) -> UniquePtr<NativeOperationResult>;
+        fn planar_surface_profile_native(
+            segments: &[NativeSegment],
+        ) -> UniquePtr<NativeOperationResult>;
         fn trim_surface_native(
             target: &NativeOperationResult,
             cutter: &NativeOperationResult,
@@ -247,7 +296,7 @@ mod ffi {
             direction: u8,
         ) -> UniquePtr<NativeOperationResult>;
         fn offset_planar_region_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             loop_segment_counts: &[u32],
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
@@ -258,18 +307,24 @@ mod ffi {
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn sweep_planar_profile_native(
-            profile_segments: &[f64],
-            path_segments: &[f64],
+            profile_segments: &[NativeSegment],
+            path_segments: &[NativeSegment],
+        ) -> UniquePtr<NativeOperationResult>;
+        fn sweep_spatial_profile_native(
+            profile_segments: &[NativeSegment],
+            path_segments: &[NativeSegment],
         ) -> UniquePtr<NativeOperationResult>;
         fn loft_framed_profiles_native(
-            values: &[f64],
-            guide_segments: &[f64],
+            sections: &[NativeLoftSection],
+            segments: &[NativeSegment],
+            spline_points: &[NativePoint],
+            guide_segments: &[NativeSegment],
             continuity: u8,
             make_solid: bool,
         ) -> UniquePtr<NativeOperationResult>;
         fn loft_spline_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn loft_planar_profiles_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             section_segment_counts: &[u32],
             elevations: &[f64],
         ) -> UniquePtr<NativeOperationResult>;
@@ -279,18 +334,22 @@ mod ffi {
             radius: f64,
             height: f64,
         ) -> UniquePtr<NativeOperationResult>;
-        fn sweep_axial_tool_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
+        fn sweep_axial_tool_native(
+            motion: &NativeSegment,
+            radius: f64,
+            axial_length: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn extrude_mixed_profile_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             height: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn extrude_planar_region_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             loop_segment_counts: &[u32],
             height: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn revolve_general_profile_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             axis_start_x: f64,
             axis_start_y: f64,
             axis_end_x: f64,
@@ -298,7 +357,7 @@ mod ffi {
             angle_degrees: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn revolve_planar_region_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             loop_segment_counts: &[u32],
             axis_start_x: f64,
             axis_start_y: f64,
@@ -380,12 +439,12 @@ mod ffi {
             operation: u8,
         ) -> UniquePtr<NativeOperationResult>;
         fn named_prism_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             base_z: f64,
             height: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn named_revol_native(
-            segments: &[f64],
+            segments: &[NativeSegment],
             axis_start_x: f64,
             axis_start_y: f64,
             axis_end_x: f64,

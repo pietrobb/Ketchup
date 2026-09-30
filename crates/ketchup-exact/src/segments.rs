@@ -144,79 +144,233 @@ pub(super) fn sweep_path_self_intersects(
     false
 }
 
-pub(super) fn flatten_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<f64> {
-    segments
-        .iter()
-        .flat_map(|segment| match segment {
-            PlanarProfileSegment::Line { start_mm, end_mm } => [
-                0.0,
-                start_mm[0],
-                start_mm[1],
-                end_mm[0],
-                end_mm[1],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-            PlanarProfileSegment::CircularArc {
-                start_mm,
-                end_mm,
-                center_mm,
-                clockwise,
-            } => [
-                1.0,
-                start_mm[0],
-                start_mm[1],
-                end_mm[0],
-                end_mm[1],
-                center_mm[0],
-                center_mm[1],
-                0.0,
-                0.0,
-                f64::from(*clockwise),
-            ],
-            PlanarProfileSegment::CubicBezier {
-                start_mm,
-                control_1_mm,
-                control_2_mm,
-                end_mm,
-            } => [
-                2.0,
-                start_mm[0],
-                start_mm[1],
-                end_mm[0],
-                end_mm[1],
-                control_1_mm[0],
-                control_1_mm[1],
-                control_2_mm[0],
-                control_2_mm[1],
-                0.0,
-            ],
-        })
-        .collect()
-}
-
-pub(super) fn flatten_planar_loop(profile: &PlanarProfileLoop) -> Vec<f64> {
-    match profile {
-        PlanarProfileLoop::Segments(segments) => flatten_planar_segments(segments),
-        PlanarProfileLoop::Circle {
-            center_mm,
-            radius_mm,
-        } => vec![
-            3.0,
-            center_mm[0],
-            center_mm[1],
-            *radius_mm,
+// Request-digest encoding of segments: stored exact provenance records the digest
+// of these values, so they stay frozen and never cross the native boundary.
+pub(super) fn planar_segment_digest_values(segment: &PlanarProfileSegment) -> [f64; 10] {
+    match segment {
+        PlanarProfileSegment::Line { start_mm, end_mm } => [
             0.0,
+            start_mm[0],
+            start_mm[1],
+            end_mm[0],
+            end_mm[1],
             0.0,
             0.0,
             0.0,
             0.0,
             0.0,
         ],
+        PlanarProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => [
+            1.0,
+            start_mm[0],
+            start_mm[1],
+            end_mm[0],
+            end_mm[1],
+            center_mm[0],
+            center_mm[1],
+            0.0,
+            0.0,
+            f64::from(*clockwise),
+        ],
+        PlanarProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => [
+            2.0,
+            start_mm[0],
+            start_mm[1],
+            end_mm[0],
+            end_mm[1],
+            control_1_mm[0],
+            control_1_mm[1],
+            control_2_mm[0],
+            control_2_mm[1],
+            0.0,
+        ],
     }
+}
+
+pub(super) fn circle_digest_values(
+    center_mm: [f64; 2],
+    radius_mm: f64,
+    reversed: bool,
+) -> [f64; 10] {
+    [
+        3.0,
+        center_mm[0],
+        center_mm[1],
+        radius_mm,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        f64::from(reversed),
+    ]
+}
+
+pub(super) fn planar_segments_digest_values(segments: &[PlanarProfileSegment]) -> Vec<f64> {
+    segments
+        .iter()
+        .flat_map(planar_segment_digest_values)
+        .collect()
+}
+
+pub(super) fn planar_loop_digest_values(profile: &PlanarProfileLoop) -> Vec<f64> {
+    match profile {
+        PlanarProfileLoop::Segments(segments) => planar_segments_digest_values(segments),
+        PlanarProfileLoop::Circle {
+            center_mm,
+            radius_mm,
+        } => circle_digest_values(*center_mm, *radius_mm, false).to_vec(),
+    }
+}
+
+pub(super) fn digest_bits(values: &[f64]) -> Vec<u64> {
+    values.iter().map(|value| value.to_bits()).collect()
+}
+
+fn native_point(point: [f64; 2]) -> ffi::NativePoint {
+    ffi::NativePoint {
+        x: point[0],
+        y: point[1],
+        z: 0.0,
+    }
+}
+
+pub(super) fn native_spatial_point(point: [f64; 3]) -> ffi::NativePoint {
+    ffi::NativePoint {
+        x: point[0],
+        y: point[1],
+        z: point[2],
+    }
+}
+
+fn native_segment(kind: ffi::NativeSegmentKind) -> ffi::NativeSegment {
+    let zero = native_spatial_point([0.0; 3]);
+    ffi::NativeSegment {
+        kind,
+        start: zero,
+        end: zero,
+        center: zero,
+        normal: zero,
+        control_1: zero,
+        control_2: zero,
+        radius: 0.0,
+        clockwise: false,
+    }
+}
+
+pub(super) fn native_planar_segment(segment: &PlanarProfileSegment) -> ffi::NativeSegment {
+    match *segment {
+        PlanarProfileSegment::Line { start_mm, end_mm } => ffi::NativeSegment {
+            start: native_point(start_mm),
+            end: native_point(end_mm),
+            ..native_segment(ffi::NativeSegmentKind::Line)
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => ffi::NativeSegment {
+            start: native_point(start_mm),
+            end: native_point(end_mm),
+            center: native_point(center_mm),
+            normal: native_spatial_point([0.0, 0.0, 1.0]),
+            clockwise,
+            ..native_segment(ffi::NativeSegmentKind::CircularArc)
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => ffi::NativeSegment {
+            start: native_point(start_mm),
+            end: native_point(end_mm),
+            control_1: native_point(control_1_mm),
+            control_2: native_point(control_2_mm),
+            ..native_segment(ffi::NativeSegmentKind::CubicBezier)
+        },
+    }
+}
+
+pub(super) fn native_circle(
+    center_mm: [f64; 2],
+    radius_mm: f64,
+    clockwise: bool,
+) -> ffi::NativeSegment {
+    ffi::NativeSegment {
+        center: native_point(center_mm),
+        normal: native_spatial_point([0.0, 0.0, 1.0]),
+        radius: radius_mm,
+        clockwise,
+        ..native_segment(ffi::NativeSegmentKind::Circle)
+    }
+}
+
+pub(super) fn native_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<ffi::NativeSegment> {
+    segments.iter().map(native_planar_segment).collect()
+}
+
+pub(super) fn native_planar_loop(profile: &PlanarProfileLoop) -> Vec<ffi::NativeSegment> {
+    match profile {
+        PlanarProfileLoop::Segments(segments) => native_planar_segments(segments),
+        PlanarProfileLoop::Circle {
+            center_mm,
+            radius_mm,
+        } => vec![native_circle(*center_mm, *radius_mm, false)],
+    }
+}
+
+pub(super) fn native_spatial_segment(segment: &SpatialProfileSegment) -> ffi::NativeSegment {
+    match *segment {
+        SpatialProfileSegment::Line { start_mm, end_mm } => ffi::NativeSegment {
+            start: native_spatial_point(start_mm),
+            end: native_spatial_point(end_mm),
+            ..native_segment(ffi::NativeSegmentKind::Line)
+        },
+        SpatialProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            normal,
+            clockwise,
+        } => ffi::NativeSegment {
+            start: native_spatial_point(start_mm),
+            end: native_spatial_point(end_mm),
+            center: native_spatial_point(center_mm),
+            normal: native_spatial_point(normal),
+            clockwise,
+            ..native_segment(ffi::NativeSegmentKind::CircularArc)
+        },
+        SpatialProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => ffi::NativeSegment {
+            start: native_spatial_point(start_mm),
+            end: native_spatial_point(end_mm),
+            control_1: native_spatial_point(control_1_mm),
+            control_2: native_spatial_point(control_2_mm),
+            ..native_segment(ffi::NativeSegmentKind::CubicBezier)
+        },
+    }
+}
+
+pub(super) fn native_spatial_segments(
+    segments: &[SpatialProfileSegment],
+) -> Vec<ffi::NativeSegment> {
+    segments.iter().map(native_spatial_segment).collect()
 }
 
 pub(super) fn spatial_segment_endpoints(segment: &SpatialProfileSegment) -> ([f64; 3], [f64; 3]) {
@@ -316,70 +470,74 @@ pub(super) fn spatial_sweep_path_join_is_separated(
     left_is_behind && right_is_ahead
 }
 
-pub(super) fn flatten_spatial_segments(segments: &[SpatialProfileSegment]) -> Vec<f64> {
+pub(super) fn spatial_segment_digest_values(segment: &SpatialProfileSegment) -> [f64; 14] {
+    match segment {
+        SpatialProfileSegment::Line { start_mm, end_mm } => [
+            10.0,
+            start_mm[0],
+            start_mm[1],
+            start_mm[2],
+            end_mm[0],
+            end_mm[1],
+            end_mm[2],
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ],
+        SpatialProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            normal,
+            clockwise,
+        } => [
+            11.0,
+            start_mm[0],
+            start_mm[1],
+            start_mm[2],
+            end_mm[0],
+            end_mm[1],
+            end_mm[2],
+            center_mm[0],
+            center_mm[1],
+            center_mm[2],
+            normal[0],
+            normal[1],
+            normal[2],
+            f64::from(*clockwise),
+        ],
+        SpatialProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => [
+            12.0,
+            start_mm[0],
+            start_mm[1],
+            start_mm[2],
+            end_mm[0],
+            end_mm[1],
+            end_mm[2],
+            control_1_mm[0],
+            control_1_mm[1],
+            control_1_mm[2],
+            control_2_mm[0],
+            control_2_mm[1],
+            control_2_mm[2],
+            0.0,
+        ],
+    }
+}
+
+pub(super) fn spatial_segments_digest_values(segments: &[SpatialProfileSegment]) -> Vec<f64> {
     segments
         .iter()
-        .flat_map(|segment| match segment {
-            SpatialProfileSegment::Line { start_mm, end_mm } => [
-                10.0,
-                start_mm[0],
-                start_mm[1],
-                start_mm[2],
-                end_mm[0],
-                end_mm[1],
-                end_mm[2],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-            SpatialProfileSegment::CircularArc {
-                start_mm,
-                end_mm,
-                center_mm,
-                normal,
-                clockwise,
-            } => [
-                11.0,
-                start_mm[0],
-                start_mm[1],
-                start_mm[2],
-                end_mm[0],
-                end_mm[1],
-                end_mm[2],
-                center_mm[0],
-                center_mm[1],
-                center_mm[2],
-                normal[0],
-                normal[1],
-                normal[2],
-                f64::from(*clockwise),
-            ],
-            SpatialProfileSegment::CubicBezier {
-                start_mm,
-                control_1_mm,
-                control_2_mm,
-                end_mm,
-            } => [
-                12.0,
-                start_mm[0],
-                start_mm[1],
-                start_mm[2],
-                end_mm[0],
-                end_mm[1],
-                end_mm[2],
-                control_1_mm[0],
-                control_1_mm[1],
-                control_1_mm[2],
-                control_2_mm[0],
-                control_2_mm[1],
-                control_2_mm[2],
-                0.0,
-            ],
-        })
+        .flat_map(spatial_segment_digest_values)
         .collect()
 }
 
@@ -722,12 +880,103 @@ pub(super) fn reverse_planar_segments(
         .collect()
 }
 
+/// One region segment in both encodings, so canonical ordering keeps them aligned.
+#[derive(Clone, Copy)]
+struct RegionSegment {
+    digest: [f64; 10],
+    native: ffi::NativeSegment,
+}
+
+/// A planar region: the outer loop first, then its holes, outer counterclockwise
+/// and holes clockwise.
+pub(super) struct PlanarRegionPayload {
+    loops: Vec<Vec<RegionSegment>>,
+}
+
+impl PlanarRegionPayload {
+    pub(super) fn digest_values(&self) -> Vec<f64> {
+        self.loops
+            .iter()
+            .flatten()
+            .flat_map(|segment| segment.digest)
+            .collect()
+    }
+
+    pub(super) fn native_segments(&self) -> Vec<ffi::NativeSegment> {
+        self.loops
+            .iter()
+            .flatten()
+            .map(|segment| segment.native)
+            .collect()
+    }
+
+    pub(super) fn loop_segment_counts(&self) -> Vec<u32> {
+        // A region holds at most MAX_PLANAR_REGION_SEGMENTS segments.
+        self.loops
+            .iter()
+            .map(|segments| segments.len() as u32)
+            .collect()
+    }
+
+    /// Order-independent form: each loop starts at its least segment and the holes
+    /// are sorted, so equal regions give one request digest and one native input.
+    pub(super) fn canonicalize(mut self) -> Self {
+        let positive_zero = |value: f64| if value == 0.0 { 0.0 } else { value };
+        let point = |point: ffi::NativePoint| ffi::NativePoint {
+            x: positive_zero(point.x),
+            y: positive_zero(point.y),
+            z: positive_zero(point.z),
+        };
+        for segment in self.loops.iter_mut().flatten() {
+            segment.digest = segment.digest.map(positive_zero);
+            let native = &mut segment.native;
+            *native = ffi::NativeSegment {
+                start: point(native.start),
+                end: point(native.end),
+                center: point(native.center),
+                normal: point(native.normal),
+                control_1: point(native.control_1),
+                control_2: point(native.control_2),
+                radius: positive_zero(native.radius),
+                ..*native
+            };
+        }
+        let digest_order = |left: &[RegionSegment], right: &[RegionSegment]| {
+            compare_planar_encoding(
+                &left
+                    .iter()
+                    .flat_map(|segment| segment.digest)
+                    .collect::<Vec<_>>(),
+                &right
+                    .iter()
+                    .flat_map(|segment| segment.digest)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for segments in &mut self.loops {
+            let rotated = |start: usize| {
+                segments[start..]
+                    .iter()
+                    .chain(&segments[..start])
+                    .copied()
+                    .collect::<Vec<_>>()
+            };
+            let canonical_start = (0..segments.len())
+                .min_by(|left, right| digest_order(&rotated(*left), &rotated(*right)))
+                .expect("validated planar region loop is non-empty");
+            segments.rotate_left(canonical_start);
+        }
+        self.loops[1..].sort_by(|left, right| digest_order(left, right));
+        self
+    }
+}
+
 pub(super) fn flatten_planar_region(
     outer: &PlanarProfileLoop,
     holes: &[PlanarProfileLoop],
     operation: &'static str,
     input: &str,
-) -> Result<(Vec<f64>, Vec<u32>), GeometryError> {
+) -> Result<PlanarRegionPayload, GeometryError> {
     if holes.is_empty() || holes.len() > MAX_PLANAR_REGION_HOLES {
         return Err(parameter_error(
             GeometryErrorCode::InvalidProfile,
@@ -736,10 +985,8 @@ pub(super) fn flatten_planar_region(
             "Planar region requires 1..=64 holes".to_owned(),
         ));
     }
-    let mut flattened = Vec::new();
-    let mut loop_segment_counts = Vec::with_capacity(holes.len() + 1);
+    let mut loops = Vec::with_capacity(holes.len() + 1);
     for (loop_index, planar_loop) in std::iter::once(outer).chain(holes).enumerate() {
-        let before = flattened.len();
         match planar_loop {
             PlanarProfileLoop::Segments(segments) => {
                 validate_mixed_profile(segments, operation, input)?;
@@ -761,45 +1008,35 @@ pub(super) fn flatten_planar_region(
                     ));
                 }
                 let should_reverse = (loop_index == 0) != (signed_area > 0.0);
-                if should_reverse {
-                    flattened.extend(flatten_planar_segments(&reverse_planar_segments(segments)));
+                let oriented = if should_reverse {
+                    reverse_planar_segments(segments)
                 } else {
-                    flattened.extend(flatten_planar_segments(segments));
-                }
+                    segments.clone()
+                };
+                loops.push(
+                    oriented
+                        .iter()
+                        .map(|segment| RegionSegment {
+                            digest: planar_segment_digest_values(segment),
+                            native: native_planar_segment(segment),
+                        })
+                        .collect(),
+                );
             }
             PlanarProfileLoop::Circle {
                 center_mm,
                 radius_mm,
             } => {
                 validate_circle(*center_mm, *radius_mm, operation, input)?;
-                flattened.extend([
-                    3.0,
-                    center_mm[0],
-                    center_mm[1],
-                    *radius_mm,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    f64::from(loop_index != 0),
-                ]);
+                let hole = loop_index != 0;
+                loops.push(vec![RegionSegment {
+                    digest: circle_digest_values(*center_mm, *radius_mm, hole),
+                    native: native_circle(*center_mm, *radius_mm, hole),
+                }]);
             }
         }
-        loop_segment_counts.push(
-            ((flattened.len() - before) / PLANAR_SEGMENT_STRIDE)
-                .try_into()
-                .map_err(|_| {
-                    parameter_error(
-                        GeometryErrorCode::InvalidProfile,
-                        operation,
-                        input,
-                        "Planar region exceeds the segment limit".to_owned(),
-                    )
-                })?,
-        );
     }
-    if flattened.len() / PLANAR_SEGMENT_STRIDE > MAX_PLANAR_REGION_SEGMENTS {
+    if loops.iter().map(Vec::len).sum::<usize>() > MAX_PLANAR_REGION_SEGMENTS {
         return Err(parameter_error(
             GeometryErrorCode::InvalidProfile,
             operation,
@@ -807,7 +1044,7 @@ pub(super) fn flatten_planar_region(
             "Planar region exceeds the segment limit".to_owned(),
         ));
     }
-    Ok((flattened, loop_segment_counts))
+    Ok(PlanarRegionPayload { loops })
 }
 
 pub(super) fn compare_planar_encoding(left: &[f64], right: &[f64]) -> std::cmp::Ordering {
@@ -816,48 +1053,4 @@ pub(super) fn compare_planar_encoding(left: &[f64], right: &[f64]) -> std::cmp::
         .map(|(left, right)| left.total_cmp(right))
         .find(|ordering| !ordering.is_eq())
         .unwrap_or_else(|| left.len().cmp(&right.len()))
-}
-
-pub(super) fn canonicalize_planar_region_encoding(
-    mut flattened: Vec<f64>,
-    loop_segment_counts: Vec<u32>,
-) -> (Vec<f64>, Vec<u32>) {
-    for value in &mut flattened {
-        if *value == 0.0 {
-            *value = 0.0;
-        }
-    }
-    let mut offset = 0;
-    let mut loops = loop_segment_counts
-        .into_iter()
-        .map(|segment_count| {
-            let value_count = segment_count as usize * PLANAR_SEGMENT_STRIDE;
-            let mut values = flattened[offset..offset + value_count].to_vec();
-            offset += value_count;
-            let canonical_start = (0..segment_count as usize)
-                .min_by(|left, right| {
-                    let left = left * PLANAR_SEGMENT_STRIDE;
-                    let right = right * PLANAR_SEGMENT_STRIDE;
-                    compare_planar_encoding(
-                        &values[left..]
-                            .iter()
-                            .chain(&values[..left])
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        &values[right..]
-                            .iter()
-                            .chain(&values[..right])
-                            .copied()
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .expect("validated planar region loop is non-empty");
-            values.rotate_left(canonical_start * PLANAR_SEGMENT_STRIDE);
-            (segment_count, values)
-        })
-        .collect::<Vec<_>>();
-    loops[1..].sort_by(|left, right| compare_planar_encoding(&left.1, &right.1));
-    let counts = loops.iter().map(|(count, _)| *count).collect();
-    let flattened = loops.into_iter().flat_map(|(_, values)| values).collect();
-    (flattened, counts)
 }

@@ -7,23 +7,21 @@ namespace {
 // One closed planar wire at height z; wire_edges gets every segment's edge as
 // stored in the wire, which is what sweep builders report history for.
 TopoDS_Face named_profile_face(
-    rust::Slice<const double> segments, double z, std::vector<TopoDS_Edge>& wire_edges) {
+    rust::Slice<const NativeSegment> segments, double z, std::vector<TopoDS_Edge>& wire_edges) {
   BRepBuilderAPI_MakeWire wire_builder;
-  for (std::size_t index = 0; index < segments.size() / 10; ++index) {
-    const std::size_t offset = index * 10;
-    const double kind = segments[offset];
-    const gp_Pnt start(segments[offset + 1], segments[offset + 2], z);
-    const gp_Pnt end(segments[offset + 3], segments[offset + 4], z);
+  for (const NativeSegment& segment : segments) {
+    const gp_Pnt start = planar_point(segment.start, z);
+    const gp_Pnt end = planar_point(segment.end, z);
     TopoDS_Edge edge;
-    if (kind == 0.0) {
+    if (segment.kind == NativeSegmentKind::Line) {
       if (start.Distance(end) <= tolerances().linear_mm) return {};
       BRepBuilderAPI_MakeEdge edge_builder(start, end);
       if (!edge_builder.IsDone()) return {};
       edge = edge_builder.Edge();
-    } else if (kind == 1.0) {
-      const double center_x = segments[offset + 5];
-      const double center_y = segments[offset + 6];
-      const bool clockwise = segments[offset + 9] != 0.0;
+    } else if (segment.kind == NativeSegmentKind::CircularArc) {
+      const double center_x = segment.center.x;
+      const double center_y = segment.center.y;
+      const bool clockwise = segment.clockwise;
       const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
       const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
       double sweep = end_angle - start_angle;
@@ -44,8 +42,8 @@ TopoDS_Face named_profile_face(
       BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
       if (!edge_builder.IsDone()) return {};
       edge = edge_builder.Edge();
-    } else if (kind == 2.0) {
-      edge = cubic_bezier_edge(segments, offset, z);
+    } else if (segment.kind == NativeSegmentKind::CubicBezier) {
+      edge = cubic_bezier_edge(segment, z);
     }
     if (edge.IsNull()) return {};
     wire_builder.Add(edge);
@@ -233,9 +231,9 @@ void name_finish_faces(
 } // namespace
 
 std::unique_ptr<NativeOperationResult> named_prism_native(
-    rust::Slice<const double> segments, double base_z, double height) noexcept {
+    rust::Slice<const NativeSegment> segments, double base_z, double height) noexcept {
   return guarded([&] {
-    if (segments.empty() || segments.size() % 10 != 0 || segments.size() > 10 * 4096
+    if (segments.empty() || segments.size() > 4096
         || !std::isfinite(base_z) || !std::isfinite(height) || height <= 0.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Named prism payload is malformed");
     }
@@ -263,13 +261,13 @@ std::unique_ptr<NativeOperationResult> named_prism_native(
 }
 
 std::unique_ptr<NativeOperationResult> named_revol_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept {
   return guarded([&] {
     const gp_Vec axis_vector(axis_end_x - axis_start_x, axis_end_y - axis_start_y, 0.0);
-    if (segments.empty() || segments.size() % 10 != 0 || segments.size() > 10 * 4096
+    if (segments.empty() || segments.size() > 4096
         || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0
         || !(axis_vector.Magnitude() > tolerances().negligible)) {
       return error_result(STATUS_INVALID_PARAMETER, "Named revolve payload is malformed");

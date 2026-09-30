@@ -18,6 +18,9 @@ struct NativeMeshVertex;
 struct NativeVolumeMeshTetrahedron;
 struct NativeTopologySummary;
 struct NativePairQuery;
+struct NativePoint;
+struct NativeSegment;
+struct NativeLoftSection;
 NativePairQuery query_body_pair_native(
     const class NativeOperationResult& left,
     const class NativeOperationResult& right) noexcept;
@@ -57,9 +60,9 @@ std::unique_ptr<NativeOperationResult> offset_rectangle_native(
     double min_x, double min_y, double max_x, double max_y,
     double distance) noexcept;
 std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
-    rust::Slice<const double> segments, double distance) noexcept;
+    rust::Slice<const NativeSegment> segments, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
-    rust::Slice<const double> segments) noexcept;
+    rust::Slice<const NativeSegment> segments) noexcept;
 std::unique_ptr<NativeOperationResult> trim_surface_native(
     const NativeOperationResult& target,
     const NativeOperationResult& cutter) noexcept;
@@ -75,42 +78,47 @@ std::unique_ptr<NativeOperationResult> thicken_surface_native(
     const NativeOperationResult& surface,
     double thickness, std::uint8_t direction) noexcept;
 std::unique_ptr<NativeOperationResult> offset_planar_region_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     rust::Slice<const std::uint32_t> loop_segment_counts,
     double distance) noexcept;
 std::unique_ptr<NativeOperationResult> offset_planar_circle_native(
     double center_x, double center_y, double radius, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
-    rust::Slice<const double> profile_segments,
-    rust::Slice<const double> path_segments) noexcept;
+    rust::Slice<const NativeSegment> profile_segments,
+    rust::Slice<const NativeSegment> path_segments) noexcept;
+std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
+    rust::Slice<const NativeSegment> profile_segments,
+    rust::Slice<const NativeSegment> path_segments) noexcept;
 std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
-    rust::Slice<const double> values,
-    rust::Slice<const double> guide_segments,
+    rust::Slice<const NativeLoftSection> sections,
+    rust::Slice<const NativeSegment> segments,
+    rust::Slice<const NativePoint> spline_points,
+    rust::Slice<const NativeSegment> guide_segments,
     std::uint8_t continuity,
     bool make_solid) noexcept;
 std::unique_ptr<NativeOperationResult> loft_spline_native(
     rust::Slice<const double> values) noexcept;
 std::unique_ptr<NativeOperationResult> loft_planar_profiles_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     rust::Slice<const std::uint32_t> section_segment_counts,
     rust::Slice<const double> elevations) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_circle_native(
     double center_x, double center_y, double radius, double height) noexcept;
 std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
-    rust::Slice<const double> values) noexcept;
+    const NativeSegment& motion, double radius, double axial_length) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
-    rust::Slice<const double> segments, double height) noexcept;
+    rust::Slice<const NativeSegment> segments, double height) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     rust::Slice<const std::uint32_t> loop_segment_counts,
     double height) noexcept;
 std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept;
 std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     rust::Slice<const std::uint32_t> loop_segment_counts,
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
@@ -156,9 +164,9 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
     const NativeOperationResult& target, const NativeOperationResult& tool,
     std::uint8_t operation) noexcept;
 std::unique_ptr<NativeOperationResult> named_prism_native(
-    rust::Slice<const double> segments, double base_z, double height) noexcept;
+    rust::Slice<const NativeSegment> segments, double base_z, double height) noexcept;
 std::unique_ptr<NativeOperationResult> named_revol_native(
-    rust::Slice<const double> segments,
+    rust::Slice<const NativeSegment> segments,
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept;

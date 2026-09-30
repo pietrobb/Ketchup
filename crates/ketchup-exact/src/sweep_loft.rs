@@ -7,18 +7,10 @@ impl ExactBackend {
         path: &[PlanarProfileSegment],
     ) -> Result<ExactOpOutput, GeometryError> {
         let operation = "sweep_planar_profile";
-        let profile_values = flatten_planar_segments(profile);
-        let path_values = flatten_planar_segments(path);
         let input = format!(
             "{operation}:{:?}:{:?}",
-            profile_values
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            path_values
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>()
+            digest_bits(&planar_segments_digest_values(profile)),
+            digest_bits(&planar_segments_digest_values(path))
         );
         validate_mixed_profile(profile, operation, &input)?;
         if !(2..=MAX_SWEEP_PATH_SEGMENTS).contains(&path.len()) {
@@ -190,7 +182,10 @@ impl ExactBackend {
             &input,
         )?;
         let output = collect_output(
-            ffi::sweep_planar_profile_native(&profile_values, &path_values),
+            ffi::sweep_planar_profile_native(
+                &native_planar_segments(profile),
+                &native_planar_segments(path),
+            ),
             operation,
             &input,
             HistoryConfidence::Partial,
@@ -215,24 +210,18 @@ impl ExactBackend {
         path: &[SpatialProfileSegment],
     ) -> Result<ExactOpOutput, GeometryError> {
         let operation = "sweep_spatial_profile";
-        let profile_values = flatten_planar_segments(profile);
-        let path_values = flatten_spatial_segments(path);
-        debug_assert_eq!(path_values.len(), path.len() * SPATIAL_SEGMENT_STRIDE);
         let input = format!(
             "{operation}:{:?}:{:?}",
-            profile_values
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            path_values
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>()
+            digest_bits(&planar_segments_digest_values(profile)),
+            digest_bits(&spatial_segments_digest_values(path))
         );
         validate_mixed_profile(profile, operation, &input)?;
         validate_spatial_sweep_path(path, operation, &input)?;
         let output = collect_output(
-            ffi::sweep_planar_profile_native(&profile_values, &path_values),
+            ffi::sweep_spatial_profile_native(
+                &native_planar_segments(profile),
+                &native_spatial_segments(path),
+            ),
             operation,
             &input,
             HistoryConfidence::Partial,
@@ -296,13 +285,14 @@ impl ExactBackend {
                 "Guided Loft does not support curvature continuity".to_owned(),
             ));
         }
-        let guide_values = if let Some(guide) = guide {
+        if let Some(guide) = guide {
             validate_spatial_sweep_path(guide, operation, operation)?;
-            flatten_spatial_segments(guide)
-        } else {
-            Vec::new()
-        };
+        }
+        let guide = guide.unwrap_or_default();
         let mut values = vec![spec.sections.len() as f64];
+        let mut sections = Vec::with_capacity(spec.sections.len());
+        let mut segments = Vec::new();
+        let mut spline_points = Vec::new();
         if !(2..=16).contains(&spec.sections.len()) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
@@ -360,20 +350,37 @@ impl ExactBackend {
                 ));
             }
             previous_elevation = section.elevation_mm;
+            let point = |index: usize| {
+                native_spatial_point([
+                    section.frame[index],
+                    section.frame[index + 1],
+                    section.frame[index + 2],
+                ])
+            };
+            let mut native_section = ffi::NativeLoftSection {
+                origin: point(0),
+                x_axis: point(3),
+                y_axis: point(6),
+                normal: point(9),
+                elevation: section.elevation_mm,
+                segment_count: 0,
+                spline_point_count: 0,
+            };
+            // Digest kinds of the frozen request encoding: boundary, circle, spline.
             let (kind, count, payload) = match &section.profile {
-                FramedLoftProfile::Planar(PlanarProfileLoop::Segments(segments)) => {
-                    validate_mixed_profile(segments, operation, operation)?;
-                    (
-                        0.0,
-                        segments.len(),
-                        flatten_planar_loop(&PlanarProfileLoop::Segments(segments.clone())),
-                    )
+                FramedLoftProfile::Planar(PlanarProfileLoop::Segments(profile)) => {
+                    validate_mixed_profile(profile, operation, operation)?;
+                    native_section.segment_count = profile.len() as u32;
+                    segments.extend(native_planar_segments(profile));
+                    (0.0, profile.len(), planar_segments_digest_values(profile))
                 }
                 FramedLoftProfile::Planar(PlanarProfileLoop::Circle {
                     center_mm,
                     radius_mm,
                 }) => {
                     validate_circle(*center_mm, *radius_mm, operation, operation)?;
+                    native_section.segment_count = 1;
+                    segments.push(native_circle(*center_mm, *radius_mm, false));
                     (1.0, 1, vec![center_mm[0], center_mm[1], *radius_mm])
                 }
                 FramedLoftProfile::Spline { control_points_mm } => {
@@ -396,13 +403,16 @@ impl ExactBackend {
                             )?;
                             payload.push(coordinate);
                         }
+                        spline_points.push(native_spatial_point([point[0], point[1], 0.0]));
                     }
+                    native_section.spline_point_count = control_points_mm.len() as u32;
                     (2.0, control_points_mm.len(), payload)
                 }
             };
             values.extend([kind, section.elevation_mm, count as f64]);
             values.extend(section.frame);
             values.extend(payload);
+            sections.push(native_section);
         }
         let continuity_code = match continuity {
             LoftSurfaceContinuity::Position => 0,
@@ -411,17 +421,18 @@ impl ExactBackend {
         };
         let input = format!(
             "{operation}:{:?}:{:?}:{continuity_code}:{make_solid}",
-            values
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            guide_values
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>()
+            digest_bits(&values),
+            digest_bits(&spatial_segments_digest_values(guide))
         );
         collect_output(
-            ffi::loft_framed_profiles_native(&values, &guide_values, continuity_code, make_solid),
+            ffi::loft_framed_profiles_native(
+                &sections,
+                &segments,
+                &spline_points,
+                &native_spatial_segments(guide),
+                continuity_code,
+                make_solid,
+            ),
             operation,
             &input,
             HistoryConfidence::Partial,
@@ -475,17 +486,13 @@ impl ExactBackend {
                     section_segment_counts.push(1);
                 }
             }
-            let flattened = flatten_planar_loop(&section.profile);
             input.push_str(&format!(
                 ":{}:{:016x}:{:?}",
                 section_segment_counts.last().unwrap(),
                 section.elevation_mm.to_bits(),
-                flattened
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>()
+                digest_bits(&planar_loop_digest_values(&section.profile))
             ));
-            segments.extend(flattened);
+            segments.extend(native_planar_loop(&section.profile));
             elevations.push(section.elevation_mm);
         }
         let output = collect_output(

@@ -219,12 +219,23 @@ std::unique_ptr<NativeOperationResult> success_result(
     std::vector<EdgeHistoryRecord> edge_history = {},
     bool allow_surface = false);
 
-TopoDS_Edge cubic_bezier_edge(
-    rust::Slice<const double> segments, std::size_t offset, double z);
+inline gp_Pnt planar_point(const NativePoint& point, double z) {
+  return gp_Pnt(point.x, point.y, z);
+}
 
-std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
-    rust::Slice<const double> profile_segments,
-    rust::Slice<const double> path_segments) noexcept;
+inline gp_Pnt spatial_point(const NativePoint& point) {
+  return gp_Pnt(point.x, point.y, point.z);
+}
+
+inline bool same_point(const NativePoint& left, const NativePoint& right) {
+  return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+// Every coordinate and the radius of the segment is finite and within limit.
+bool segment_bounded(const NativeSegment& segment, double limit);
+
+// The cubic Bezier of a planar segment, lifted to height z.
+TopoDS_Edge cubic_bezier_edge(const NativeSegment& segment, double z);
 
 template <typename Operation>
 std::unique_ptr<NativeOperationResult> guarded(Operation&& operation) noexcept {

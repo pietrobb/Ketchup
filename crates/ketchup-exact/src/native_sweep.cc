@@ -3,47 +3,39 @@
 namespace ketchup::exact {
 
 std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
-    rust::Slice<const double> profile_segments,
-    rust::Slice<const double> path_segments) noexcept {
-  if (!path_segments.empty() && path_segments[0] >= 10.0) {
-    return sweep_spatial_profile_native_impl(profile_segments, path_segments);
-  }
+    rust::Slice<const NativeSegment> profile_segments,
+    rust::Slice<const NativeSegment> path_segments) noexcept {
   return guarded([&] {
-    if (profile_segments.size() < 20 || profile_segments.size() % 10 != 0
-        || path_segments.size() < 20 || path_segments.size() % 10 != 0
-        || path_segments.size() > 640) {
+    if (profile_segments.size() < 2 || path_segments.size() < 2 || path_segments.size() > 64) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep payload is malformed");
     }
-    for (double value : profile_segments) {
-      if (!std::isfinite(value)) {
+    const double unbounded = std::numeric_limits<double>::max();
+    for (const NativeSegment& segment : profile_segments) {
+      if (!segment_bounded(segment, unbounded)) {
         return error_result(STATUS_NON_FINITE_PARAMETER, "OCCT curved Sweep profile is non-finite");
       }
     }
-    for (double value : path_segments) {
-      if (!std::isfinite(value)) {
+    for (const NativeSegment& segment : path_segments) {
+      if (!segment_bounded(segment, unbounded)) {
         return error_result(STATUS_NON_FINITE_PARAMETER, "OCCT curved Sweep path is non-finite");
       }
     }
-    for (std::size_t offset = 0; offset + 10 < path_segments.size(); offset += 10) {
-      if (path_segments[offset + 3] != path_segments[offset + 11]
-          || path_segments[offset + 4] != path_segments[offset + 12]) {
+    for (std::size_t index = 0; index + 1 < path_segments.size(); ++index) {
+      if (!same_point(path_segments[index].end, path_segments[index + 1].start)) {
         return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path is disconnected");
       }
     }
-    const std::size_t last_path_offset = path_segments.size() - 10;
-    if (path_segments[1] == path_segments[last_path_offset + 3]
-        && path_segments[2] == path_segments[last_path_offset + 4]) {
+    if (same_point(path_segments.front().start, path_segments.back().end)) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path must remain geometrically open");
     }
 
-    const auto path_metrics = [&](std::size_t offset, double& length,
+    const auto path_metrics = [&](const NativeSegment& segment, double& length,
                                   gp_Vec& start_tangent, gp_Vec& end_tangent) {
-      const double kind = path_segments[offset];
-      const double start_x = path_segments[offset + 1];
-      const double start_y = path_segments[offset + 2];
-      const double end_x = path_segments[offset + 3];
-      const double end_y = path_segments[offset + 4];
-      if (kind == 0.0) {
+      const double start_x = segment.start.x;
+      const double start_y = segment.start.y;
+      const double end_x = segment.end.x;
+      const double end_y = segment.end.y;
+      if (segment.kind == NativeSegmentKind::Line) {
         const gp_Vec direction(end_x - start_x, end_y - start_y, 0.0);
         length = direction.Magnitude();
         if (length <= tolerances().linear_mm) return false;
@@ -51,11 +43,11 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         end_tangent = start_tangent;
         return true;
       }
-      if (kind == 2.0) {
-        const double control_1_x = path_segments[offset + 5];
-        const double control_1_y = path_segments[offset + 6];
-        const double control_2_x = path_segments[offset + 7];
-        const double control_2_y = path_segments[offset + 8];
+      if (segment.kind == NativeSegmentKind::CubicBezier) {
+        const double control_1_x = segment.control_1.x;
+        const double control_1_y = segment.control_1.y;
+        const double control_2_x = segment.control_2.x;
+        const double control_2_y = segment.control_2.y;
         const gp_Vec chord(end_x - start_x, end_y - start_y, 0.0);
         const gp_Vec start_handle(control_1_x - start_x, control_1_y - start_y, 0.0);
         const gp_Vec middle(control_2_x - control_1_x, control_2_y - control_1_y, 0.0);
@@ -76,9 +68,9 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         end_tangent = end_handle.Normalized();
         return true;
       }
-      if (kind != 1.0) return false;
-      const double center_x = path_segments[offset + 5];
-      const double center_y = path_segments[offset + 6];
+      if (segment.kind != NativeSegmentKind::CircularArc) return false;
+      const double center_x = segment.center.x;
+      const double center_y = segment.center.y;
       const double start_dx = start_x - center_x;
       const double start_dy = start_y - center_y;
       const double end_dx = end_x - center_x;
@@ -89,7 +81,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
           || std::hypot(end_x - start_x, end_y - start_y) <= tolerances().linear_mm) {
         return false;
       }
-      const bool clockwise = path_segments[offset + 9] != 0.0;
+      const bool clockwise = segment.clockwise;
       const double start_angle = std::atan2(start_dy, start_dx);
       const double end_angle = std::atan2(end_dy, end_dx);
       double sweep = end_angle - start_angle;
@@ -107,14 +99,15 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       return true;
     };
 
-    const std::size_t path_segment_count = path_segments.size() / 10;
+    const std::size_t path_segment_count = path_segments.size();
     std::vector<gp_Vec> start_tangents(path_segment_count);
     std::vector<gp_Vec> end_tangents(path_segment_count);
     std::vector<double> segment_lengths(path_segment_count);
     double path_length = 0.0;
     for (std::size_t index = 0; index < path_segment_count; ++index) {
       if (!path_metrics(
-              index * 10, segment_lengths[index], start_tangents[index], end_tangents[index])) {
+              path_segments[index], segment_lengths[index], start_tangents[index],
+              end_tangents[index])) {
         return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path violates its bounded segment contract");
       }
       path_length += segment_lengths[index];
@@ -124,14 +117,12 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
                   > tolerances().rounding)) {
         return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path violates its bounded C1 contract");
       }
-      const std::size_t offset = index * 10;
-      const std::size_t previous = offset - 10;
-      if (index > 0 && path_segments[previous] == 1.0 && path_segments[offset] == 1.0
-          && path_segments[previous + 5] == path_segments[offset + 5]
-          && path_segments[previous + 6] == path_segments[offset + 6]) {
+      const NativeSegment& segment = path_segments[index];
+      if (index > 0 && path_segments[index - 1].kind == NativeSegmentKind::CircularArc
+          && segment.kind == NativeSegmentKind::CircularArc
+          && same_point(path_segments[index - 1].center, segment.center)) {
         const double radius = std::hypot(
-            path_segments[offset + 1] - path_segments[offset + 5],
-            path_segments[offset + 2] - path_segments[offset + 6]);
+            segment.start.x - segment.center.x, segment.start.y - segment.center.y);
         if (segment_lengths[index - 1] + segment_lengths[index]
             >= 2.0 * std::acos(-1.0) * radius - tolerances().linear_mm) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep adjacent arcs overlap");
@@ -142,22 +133,22 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path length is outside its bounded contract");
     }
 
-    const auto path_edge = [&](std::size_t offset) {
-      const gp_Pnt start(path_segments[offset + 1], path_segments[offset + 2], 0.0);
-      const gp_Pnt end(path_segments[offset + 3], path_segments[offset + 4], 0.0);
-      if (path_segments[offset] == 0.0) {
+    const auto path_edge = [&](const NativeSegment& segment) {
+      const gp_Pnt start = planar_point(segment.start, 0.0);
+      const gp_Pnt end = planar_point(segment.end, 0.0);
+      if (segment.kind == NativeSegmentKind::Line) {
         BRepBuilderAPI_MakeEdge builder(start, end);
         return builder.IsDone() ? builder.Edge() : TopoDS_Edge{};
       }
-      if (path_segments[offset] == 2.0) {
-        return cubic_bezier_edge(path_segments, offset, 0.0);
+      if (segment.kind == NativeSegmentKind::CubicBezier) {
+        return cubic_bezier_edge(segment, 0.0);
       }
-      const double center_x = path_segments[offset + 5];
-      const double center_y = path_segments[offset + 6];
+      const double center_x = segment.center.x;
+      const double center_y = segment.center.y;
       const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
       const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
       const double radius = start.Distance(gp_Pnt(center_x, center_y, 0.0));
-      const bool counterclockwise = path_segments[offset + 9] == 0.0;
+      const bool counterclockwise = !segment.clockwise;
       GC_MakeArcOfCircle arc_builder(
           gp_Circ(
               gp_Ax2(gp_Pnt(center_x, center_y, 0.0), gp_Dir(0.0, 0.0, 1.0)),
@@ -175,8 +166,8 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
     std::vector<Bnd_Box> path_edge_bounds;
     path_edges.reserve(path_segment_count);
     path_edge_bounds.reserve(path_segment_count);
-    for (std::size_t offset = 0; offset < path_segments.size(); offset += 10) {
-      const TopoDS_Edge edge = path_edge(offset);
+    for (const NativeSegment& segment : path_segments) {
+      const TopoDS_Edge edge = path_edge(segment);
       if (edge.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path edge is null");
       }
@@ -197,8 +188,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         if (distance.Value() <= tolerances().linear_mm) {
           bool shared_endpoint_only = false;
           if (right == left + 1 && distance.NbSolution() > 0) {
-            const gp_Pnt shared(
-                path_segments[right * 10 + 1], path_segments[right * 10 + 2], 0.0);
+            const gp_Pnt shared = planar_point(path_segments[right].start, 0.0);
             shared_endpoint_only = true;
             for (Standard_Integer solution = 1; solution <= distance.NbSolution(); ++solution) {
               if (distance.PointOnShape1(solution).Distance(shared) > tolerances().linear_mm
@@ -222,8 +212,8 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep spine wire is invalid");
     }
 
-    const double path_start_x = path_segments[1];
-    const double path_start_y = path_segments[2];
+    const double path_start_x = path_segments.front().start.x;
+    const double path_start_y = path_segments.front().start.y;
     const double section_x = start_tangents.front().Y();
     const double section_y = -start_tangents.front().X();
     const auto section_point = [&](double u, double v) {
@@ -233,35 +223,29 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
           v);
     };
     BRepBuilderAPI_MakeWire profile_builder;
-    for (std::size_t offset = 0; offset < profile_segments.size(); offset += 10) {
-      const double kind = profile_segments[offset];
-      const gp_Pnt start = section_point(
-          profile_segments[offset + 1], profile_segments[offset + 2]);
-      const gp_Pnt end = section_point(
-          profile_segments[offset + 3], profile_segments[offset + 4]);
+    for (const NativeSegment& segment : profile_segments) {
+      const gp_Pnt start = section_point(segment.start.x, segment.start.y);
+      const gp_Pnt end = section_point(segment.end.x, segment.end.y);
       TopoDS_Edge edge;
-      if (kind == 0.0) {
+      if (segment.kind == NativeSegmentKind::Line) {
         BRepBuilderAPI_MakeEdge edge_builder(start, end);
         if (edge_builder.IsDone()) edge = edge_builder.Edge();
-      } else if (kind == 1.0) {
-        const double center_u = profile_segments[offset + 5];
-        const double center_v = profile_segments[offset + 6];
+      } else if (segment.kind == NativeSegmentKind::CircularArc) {
+        const double center_u = segment.center.x;
+        const double center_v = segment.center.y;
         const double start_angle = std::atan2(
-            profile_segments[offset + 2] - center_v,
-            profile_segments[offset + 1] - center_u);
+            segment.start.y - center_v, segment.start.x - center_u);
         const double end_angle = std::atan2(
-            profile_segments[offset + 4] - center_v,
-            profile_segments[offset + 3] - center_u);
+            segment.end.y - center_v, segment.end.x - center_u);
         double sweep = end_angle - start_angle;
         const double tau = 2.0 * std::acos(-1.0);
-        if (profile_segments[offset + 9] != 0.0) {
+        if (segment.clockwise) {
           if (sweep >= 0.0) sweep -= tau;
         } else if (sweep <= 0.0) {
           sweep += tau;
         }
         const double radius = std::hypot(
-            profile_segments[offset + 1] - center_u,
-            profile_segments[offset + 2] - center_v);
+            segment.start.x - center_u, segment.start.y - center_v);
         const double middle_angle = start_angle + sweep / 2.0;
         const gp_Pnt middle = section_point(
             center_u + radius * std::cos(middle_angle),
@@ -271,13 +255,11 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
           BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
           if (edge_builder.IsDone()) edge = edge_builder.Edge();
         }
-      } else if (kind == 2.0) {
+      } else if (segment.kind == NativeSegmentKind::CubicBezier) {
         TColgp_Array1OfPnt poles(1, 4);
         poles.SetValue(1, start);
-        poles.SetValue(2, section_point(
-            profile_segments[offset + 5], profile_segments[offset + 6]));
-        poles.SetValue(3, section_point(
-            profile_segments[offset + 7], profile_segments[offset + 8]));
+        poles.SetValue(2, section_point(segment.control_1.x, segment.control_1.y));
+        poles.SetValue(3, section_point(segment.control_2.x, segment.control_2.y));
         poles.SetValue(4, end);
         occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
         BRepBuilderAPI_MakeEdge edge_builder(curve);
@@ -323,60 +305,48 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
   });
 }
 
-std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
-    rust::Slice<const double> profile_segments,
-    rust::Slice<const double> path_segments) noexcept {
+std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
+    rust::Slice<const NativeSegment> profile_segments,
+    rust::Slice<const NativeSegment> path_segments) noexcept {
   return guarded([&] {
-    constexpr std::size_t spatial_stride = 14;
     const double epsilon = tolerances().rounding;
     const double minimum_segment_length = tolerances().linear_mm;
     constexpr double coordinate_limit = 1000000.0;
     const double tau = 2.0 * std::acos(-1.0);
-    const auto bounded = [&](double value) {
-      return std::isfinite(value) && std::abs(value) <= coordinate_limit;
-    };
-    if (profile_segments.size() < 20 || profile_segments.size() > 640
-        || profile_segments.size() % 10 != 0
-        || path_segments.size() < spatial_stride
-        || path_segments.size() > 64 * spatial_stride
-        || path_segments.size() % spatial_stride != 0) {
+    if (profile_segments.size() < 2 || profile_segments.size() > 64
+        || path_segments.empty() || path_segments.size() > 64) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT spatial Sweep payload is malformed");
     }
-    for (double value : profile_segments) {
-      if (!bounded(value)) {
+    for (const NativeSegment& segment : profile_segments) {
+      if (!segment_bounded(segment, coordinate_limit)) {
         return error_result(
-            std::isfinite(value) ? STATUS_INVALID_PARAMETER : STATUS_NON_FINITE_PARAMETER,
+            segment_bounded(segment, std::numeric_limits<double>::max())
+                ? STATUS_INVALID_PARAMETER : STATUS_NON_FINITE_PARAMETER,
             "OCCT spatial Sweep profile value is outside its bounded contract");
       }
     }
-    for (double value : path_segments) {
-      if (!bounded(value)) {
+    for (const NativeSegment& segment : path_segments) {
+      if (!segment_bounded(segment, coordinate_limit)) {
         return error_result(
-            std::isfinite(value) ? STATUS_INVALID_PARAMETER : STATUS_NON_FINITE_PARAMETER,
+            segment_bounded(segment, std::numeric_limits<double>::max())
+                ? STATUS_INVALID_PARAMETER : STATUS_NON_FINITE_PARAMETER,
             "OCCT spatial Sweep path value is outside its bounded contract");
       }
     }
 
-    const std::size_t path_count = path_segments.size() / spatial_stride;
+    const std::size_t path_count = path_segments.size();
     std::vector<double> lengths(path_count);
     std::vector<gp_Vec> start_tangents(path_count);
     std::vector<gp_Vec> end_tangents(path_count);
-    const auto point_at = [&](std::size_t offset, std::size_t first) {
-      return gp_Pnt(
-          path_segments[offset + first],
-          path_segments[offset + first + 1],
-          path_segments[offset + first + 2]);
-    };
     const auto positive_remainder = [&](double value) {
       const double remainder = std::fmod(value, tau);
       return remainder < 0.0 ? remainder + tau : remainder;
     };
-    const auto metrics = [&](std::size_t offset, double& length,
+    const auto metrics = [&](const NativeSegment& segment, double& length,
                              gp_Vec& start_tangent, gp_Vec& end_tangent) {
-      const double kind = path_segments[offset];
-      const gp_Pnt start = point_at(offset, 1);
-      const gp_Pnt end = point_at(offset, 4);
-      if (kind == 10.0) {
+      const gp_Pnt start = spatial_point(segment.start);
+      const gp_Pnt end = spatial_point(segment.end);
+      if (segment.kind == NativeSegmentKind::Line) {
         const gp_Vec direction(start, end);
         length = direction.Magnitude();
         if (!std::isfinite(length) || length <= minimum_segment_length) return false;
@@ -384,9 +354,9 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
         end_tangent = start_tangent;
         return true;
       }
-      if (kind == 12.0) {
-        const gp_Pnt control_1 = point_at(offset, 7);
-        const gp_Pnt control_2 = point_at(offset, 10);
+      if (segment.kind == NativeSegmentKind::CubicBezier) {
+        const gp_Pnt control_1 = spatial_point(segment.control_1);
+        const gp_Pnt control_2 = spatial_point(segment.control_2);
         const gp_Vec chord(start, end);
         const gp_Vec first(start, control_1);
         const gp_Vec middle(control_1, control_2);
@@ -407,15 +377,11 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
         end_tangent = last.Normalized();
         return true;
       }
-      if (kind != 11.0 || (path_segments[offset + 13] != 0.0
-                           && path_segments[offset + 13] != 1.0)) {
+      if (segment.kind != NativeSegmentKind::CircularArc) {
         return false;
       }
-      const gp_Pnt center = point_at(offset, 7);
-      const gp_Vec normal(
-          path_segments[offset + 10],
-          path_segments[offset + 11],
-          path_segments[offset + 12]);
+      const gp_Pnt center = spatial_point(segment.center);
+      const gp_Vec normal(segment.normal.x, segment.normal.y, segment.normal.z);
       const double normal_length = normal.Magnitude();
       if (!std::isfinite(normal_length) || std::abs(normal_length - 1.0) > epsilon) {
         return false;
@@ -434,7 +400,7 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
       const double signed_angle = std::atan2(
           unit_normal.Dot(start_radius.Crossed(end_radius)),
           start_radius.Dot(end_radius));
-      const bool clockwise = path_segments[offset + 13] != 0.0;
+      const bool clockwise = segment.clockwise;
       const double angle = positive_remainder(clockwise ? -signed_angle : signed_angle);
       length = radius * angle;
       if (!std::isfinite(length) || length <= minimum_segment_length) return false;
@@ -446,16 +412,16 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
 
     double path_length = 0.0;
     for (std::size_t index = 0; index < path_count; ++index) {
-      const std::size_t offset = index * spatial_stride;
-      if (!metrics(offset, lengths[index], start_tangents[index], end_tangents[index])) {
+      const NativeSegment& segment = path_segments[index];
+      if (!metrics(segment, lengths[index], start_tangents[index], end_tangents[index])) {
         return error_result(
             STATUS_INVALID_PARAMETER,
             "OCCT spatial Sweep path violates its bounded segment contract");
       }
       path_length += lengths[index];
       if (index == 0) continue;
-      const std::size_t previous = offset - spatial_stride;
-      if (point_at(previous, 4).Distance(point_at(offset, 1)) != 0.0) {
+      const NativeSegment& previous = path_segments[index - 1];
+      if (spatial_point(previous.end).Distance(spatial_point(segment.start)) != 0.0) {
         return error_result(STATUS_INVALID_PARAMETER, "OCCT spatial Sweep path is disconnected");
       }
       if (end_tangents[index - 1].Dot(start_tangents[index]) < 1.0 - epsilon
@@ -464,9 +430,10 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
             STATUS_INVALID_PARAMETER,
             "OCCT spatial Sweep path violates its bounded C1 contract");
       }
-      if (path_segments[previous] == 11.0 && path_segments[offset] == 11.0
-          && point_at(previous, 7).Distance(point_at(offset, 7)) == 0.0) {
-        const double radius = point_at(offset, 1).Distance(point_at(offset, 7));
+      if (previous.kind == NativeSegmentKind::CircularArc
+          && segment.kind == NativeSegmentKind::CircularArc
+          && spatial_point(previous.center).Distance(spatial_point(segment.center)) == 0.0) {
+        const double radius = spatial_point(segment.start).Distance(spatial_point(segment.center));
         if (lengths[index - 1] + lengths[index] >= tau * radius - epsilon) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT spatial Sweep adjacent arcs overlap");
         }
@@ -477,8 +444,8 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
           STATUS_INVALID_PARAMETER,
           "OCCT spatial Sweep path length is outside its bounded contract");
     }
-    const bool closed =
-        point_at(0, 1).Distance(point_at((path_count - 1) * spatial_stride, 4)) == 0.0;
+    const bool closed = spatial_point(path_segments.front().start)
+                            .Distance(spatial_point(path_segments.back().end)) == 0.0;
     if (closed
         && (end_tangents.back().Dot(start_tangents.front()) < 1.0 - epsilon
             || end_tangents.back().Crossed(start_tangents.front()).Magnitude() > epsilon)) {
@@ -486,33 +453,30 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
           STATUS_INVALID_PARAMETER, "OCCT closed spatial Sweep seam violates its C1 contract");
     }
 
-    const auto make_path_edge = [&](std::size_t offset) {
-      const gp_Pnt start = point_at(offset, 1);
-      const gp_Pnt end = point_at(offset, 4);
-      if (path_segments[offset] == 10.0) {
+    const auto make_path_edge = [&](const NativeSegment& segment) {
+      const gp_Pnt start = spatial_point(segment.start);
+      const gp_Pnt end = spatial_point(segment.end);
+      if (segment.kind == NativeSegmentKind::Line) {
         BRepBuilderAPI_MakeEdge builder(start, end);
         return builder.IsDone() ? builder.Edge() : TopoDS_Edge{};
       }
-      if (path_segments[offset] == 12.0) {
+      if (segment.kind == NativeSegmentKind::CubicBezier) {
         TColgp_Array1OfPnt poles(1, 4);
         poles.SetValue(1, start);
-        poles.SetValue(2, point_at(offset, 7));
-        poles.SetValue(3, point_at(offset, 10));
+        poles.SetValue(2, spatial_point(segment.control_1));
+        poles.SetValue(3, spatial_point(segment.control_2));
         poles.SetValue(4, end);
         occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
         BRepBuilderAPI_MakeEdge builder(curve);
         return builder.IsDone() ? builder.Edge() : TopoDS_Edge{};
       }
-      const gp_Pnt center = point_at(offset, 7);
-      const gp_Vec normal(
-          path_segments[offset + 10],
-          path_segments[offset + 11],
-          path_segments[offset + 12]);
+      const gp_Pnt center = spatial_point(segment.center);
+      const gp_Vec normal(segment.normal.x, segment.normal.y, segment.normal.z);
       const gp_Vec start_radius(center, start);
       const gp_Vec end_radius(center, end);
       const double signed_angle = std::atan2(
           normal.Dot(start_radius.Crossed(end_radius)), start_radius.Dot(end_radius));
-      const bool clockwise = path_segments[offset + 13] != 0.0;
+      const bool clockwise = segment.clockwise;
       const double angle = positive_remainder(clockwise ? -signed_angle : signed_angle);
       const double rotation = clockwise ? -angle : angle;
       const gp_Vec middle_radius = start_radius.Rotated(
@@ -528,7 +492,7 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
     std::vector<TopoDS_Edge> path_edges;
     path_edges.reserve(path_count);
     for (std::size_t index = 0; index < path_count; ++index) {
-      const TopoDS_Edge edge = make_path_edge(index * spatial_stride);
+      const TopoDS_Edge edge = make_path_edge(path_segments[index]);
       if (edge.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT spatial Sweep path edge is null");
       }
@@ -548,9 +512,8 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
         const bool adjacent = right == left + 1
             || (closed && left == 0 && right + 1 == path_edges.size());
         if (adjacent && distance.NbSolution() > 0) {
-          const gp_Pnt shared = right == left + 1
-              ? point_at(right * spatial_stride, 1)
-              : point_at(0, 1);
+          const gp_Pnt shared = spatial_point(
+              right == left + 1 ? path_segments[right].start : path_segments.front().start);
           shared_endpoint_only = true;
           for (Standard_Integer solution = 1; solution <= distance.NbSolution(); ++solution) {
             if (distance.PointOnShape1(solution).Distance(shared) > minimum_segment_length
@@ -571,7 +534,7 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
     TopoDS_Wire spine = spine_builder.Wire();
     spine.Closed(closed);
 
-    const gp_Pnt path_start = point_at(0, 1);
+    const gp_Pnt path_start = spatial_point(path_segments.front().start);
     const gp_Vec tangent = start_tangents.front();
     gp_Vec reference(0.0, 0.0, 1.0);
     if (tangent.Crossed(reference).SquareMagnitude() <= epsilon * epsilon) {
@@ -584,37 +547,32 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
     };
 
     BRepBuilderAPI_MakeWire profile_builder;
-    for (std::size_t offset = 0; offset < profile_segments.size(); offset += 10) {
-      const std::size_t next = (offset + 10) % profile_segments.size();
-      if (profile_segments[offset + 3] != profile_segments[next + 1]
-          || profile_segments[offset + 4] != profile_segments[next + 2]) {
+    for (std::size_t index = 0; index < profile_segments.size(); ++index) {
+      const NativeSegment& segment = profile_segments[index];
+      if (!same_point(segment.end, profile_segments[(index + 1) % profile_segments.size()].start)) {
         return error_result(STATUS_INVALID_PARAMETER, "OCCT spatial Sweep profile is open");
       }
-      const double kind = profile_segments[offset];
-      const gp_Pnt start = section_point(profile_segments[offset + 1], profile_segments[offset + 2]);
-      const gp_Pnt end = section_point(profile_segments[offset + 3], profile_segments[offset + 4]);
+      const gp_Pnt start = section_point(segment.start.x, segment.start.y);
+      const gp_Pnt end = section_point(segment.end.x, segment.end.y);
       TopoDS_Edge edge;
-      if (kind == 0.0) {
+      if (segment.kind == NativeSegmentKind::Line) {
         BRepBuilderAPI_MakeEdge builder(start, end);
         if (builder.IsDone()) edge = builder.Edge();
-      } else if (kind == 1.0) {
-        const double center_u = profile_segments[offset + 5];
-        const double center_v = profile_segments[offset + 6];
+      } else if (segment.kind == NativeSegmentKind::CircularArc) {
+        const double center_u = segment.center.x;
+        const double center_v = segment.center.y;
         const double start_angle = std::atan2(
-            profile_segments[offset + 2] - center_v,
-            profile_segments[offset + 1] - center_u);
+            segment.start.y - center_v, segment.start.x - center_u);
         const double end_angle = std::atan2(
-            profile_segments[offset + 4] - center_v,
-            profile_segments[offset + 3] - center_u);
+            segment.end.y - center_v, segment.end.x - center_u);
         double sweep = end_angle - start_angle;
-        if (profile_segments[offset + 9] != 0.0) {
+        if (segment.clockwise) {
           if (sweep >= 0.0) sweep -= tau;
         } else if (sweep <= 0.0) {
           sweep += tau;
         }
         const double radius = std::hypot(
-            profile_segments[offset + 1] - center_u,
-            profile_segments[offset + 2] - center_v);
+            segment.start.x - center_u, segment.start.y - center_v);
         const gp_Pnt middle = section_point(
             center_u + radius * std::cos(start_angle + sweep / 2.0),
             center_v + radius * std::sin(start_angle + sweep / 2.0));
@@ -623,11 +581,11 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
           BRepBuilderAPI_MakeEdge builder(arc_builder.Value());
           if (builder.IsDone()) edge = builder.Edge();
         }
-      } else if (kind == 2.0) {
+      } else if (segment.kind == NativeSegmentKind::CubicBezier) {
         TColgp_Array1OfPnt poles(1, 4);
         poles.SetValue(1, start);
-        poles.SetValue(2, section_point(profile_segments[offset + 5], profile_segments[offset + 6]));
-        poles.SetValue(3, section_point(profile_segments[offset + 7], profile_segments[offset + 8]));
+        poles.SetValue(2, section_point(segment.control_1.x, segment.control_1.y));
+        poles.SetValue(3, section_point(segment.control_2.x, segment.control_2.y));
         poles.SetValue(4, end);
         occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
         BRepBuilderAPI_MakeEdge builder(curve);

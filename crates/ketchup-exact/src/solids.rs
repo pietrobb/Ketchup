@@ -9,26 +9,12 @@ impl ExactBackend {
         let input = format!("{operation}:{spec:?}");
         validate_length(spec.radius_mm, "radius_mm", operation, &input)?;
         validate_length(spec.axial_length_mm, "axial_length_mm", operation, &input)?;
-        let values = match spec.motion {
+        let motion = match spec.motion {
             AxialToolMotion::Line { start_mm, end_mm } => {
                 for (index, value) in start_mm.into_iter().chain(end_mm).enumerate() {
                     validate_coordinate(value, &format!("point_{index}"), operation, &input)?;
                 }
-                vec![
-                    0.0,
-                    start_mm[0],
-                    start_mm[1],
-                    start_mm[2],
-                    end_mm[0],
-                    end_mm[1],
-                    end_mm[2],
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    spec.radius_mm,
-                    spec.axial_length_mm,
-                ]
+                SpatialProfileSegment::Line { start_mm, end_mm }
             }
             AxialToolMotion::Arc {
                 start_mm,
@@ -60,25 +46,21 @@ impl ExactBackend {
                             .to_owned(),
                     ));
                 }
-                vec![
-                    1.0,
-                    start_mm[0],
-                    start_mm[1],
-                    start_mm[2],
-                    end_mm[0],
-                    end_mm[1],
-                    end_mm[2],
-                    center_mm[0],
-                    center_mm[1],
-                    center_mm[2],
-                    f64::from(clockwise),
-                    spec.radius_mm,
-                    spec.axial_length_mm,
-                ]
+                SpatialProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    normal: [0.0, 0.0, 1.0],
+                    clockwise,
+                }
             }
         };
         collect_output(
-            ffi::sweep_axial_tool_native(&values),
+            ffi::sweep_axial_tool_native(
+                &native_spatial_segment(&motion),
+                spec.radius_mm,
+                spec.axial_length_mm,
+            ),
             operation,
             &input,
             HistoryConfidence::Complete,
@@ -96,9 +78,8 @@ impl ExactBackend {
         );
         validate_mixed_profile(segments, "extrude_mixed_profile", &input)?;
         validate_length(height_mm, "height_mm", "extrude_mixed_profile", &input)?;
-        let flattened = flatten_planar_segments(segments);
         collect_output(
-            ffi::extrude_mixed_profile_native(&flattened, height_mm),
+            ffi::extrude_mixed_profile_native(&native_planar_segments(segments), height_mm),
             "extrude_mixed_profile",
             &input,
             HistoryConfidence::Complete,
@@ -116,10 +97,13 @@ impl ExactBackend {
             height_mm.to_bits()
         );
         validate_length(height_mm, "height_mm", "extrude_planar_region", &input)?;
-        let (flattened, loop_segment_counts) =
-            flatten_planar_region(outer, holes, "extrude_planar_region", &input)?;
+        let region = flatten_planar_region(outer, holes, "extrude_planar_region", &input)?;
         collect_output(
-            ffi::extrude_planar_region_native(&flattened, &loop_segment_counts, height_mm),
+            ffi::extrude_planar_region_native(
+                &region.native_segments(),
+                &region.loop_segment_counts(),
+                height_mm,
+            ),
             "extrude_planar_region",
             &input,
             HistoryConfidence::Complete,
@@ -144,10 +128,9 @@ impl ExactBackend {
             angle_degrees,
             &input,
         )?;
-        let flattened = flatten_planar_segments(segments);
         collect_output(
             ffi::revolve_general_profile_native(
-                &flattened,
+                &native_planar_segments(segments),
                 axis_start_mm[0],
                 axis_start_mm[1],
                 axis_end_mm[0],
@@ -179,12 +162,11 @@ impl ExactBackend {
             "revolve_planar_region",
             &input,
         )?;
-        let (flattened, loop_segment_counts) =
-            flatten_planar_region(outer, holes, "revolve_planar_region", &input)?;
+        let region = flatten_planar_region(outer, holes, "revolve_planar_region", &input)?;
         collect_output(
             ffi::revolve_planar_region_native(
-                &flattened,
-                &loop_segment_counts,
+                &region.native_segments(),
+                &region.loop_segment_counts(),
                 axis_start_mm[0],
                 axis_start_mm[1],
                 axis_end_mm[0],
