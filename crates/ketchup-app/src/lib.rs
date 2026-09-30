@@ -5,6 +5,7 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use gesture::{Gesture, PushPullAnchor, ZoomWindowDrag};
+use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_application::cam_workflow::{CamReviewRequest, CamReviewSummary, CamReviewWorkflow};
 use ketchup_application::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
@@ -77,7 +78,6 @@ use ketchup_core::fabrication::{
     BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
     project_general_fabrication,
 };
-use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_core::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
     sha256_reader_hex,
@@ -94,10 +94,6 @@ use ketchup_core::import::{
 #[cfg(test)]
 use ketchup_core::import::{
     StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
-};
-use ketchup_core::local_pdm::{
-    ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseConflictVerdict,
-    ReleaseDependencyInput, ReleaseManifest,
 };
 use ketchup_core::persistence::ContainerData;
 use ketchup_core::prismatic::JointId;
@@ -134,6 +130,10 @@ use ketchup_interaction::{
         CanonicalInteractionProjection, InteractionProjection, ProjectedBox,
         definition_requires_evaluated_geometry,
     },
+};
+use ketchup_pdm::local::{
+    ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseConflictVerdict,
+    ReleaseDependencyInput, ReleaseManifest,
 };
 use ketchup_scheduler::{ExactWorkerSupervisor, assistant::AssistantCancellation};
 use modal::Modal;

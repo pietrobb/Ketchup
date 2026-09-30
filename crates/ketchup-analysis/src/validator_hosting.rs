@@ -1,10 +1,10 @@
-use crate::document::Snapshot;
-use crate::graph::sha256_hex;
-use crate::validation::{
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ketchup_core::document::Snapshot;
+use ketchup_core::graph::sha256_hex;
+use ketchup_core::validation::{
     EvidenceClass, ReadScope, ValidationClass, ValidationInvocation, ValidationReport,
     ValidatorDescriptor,
 };
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

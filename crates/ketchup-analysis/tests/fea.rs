@@ -1,4 +1,4 @@
-use ketchup_core::fea::{
+use ketchup_analysis::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaConvergenceError, FeaElement, FeaElementKind, FeaError,
     FeaLoad, FeaMaterial, FeaModel, FeaNode, FeaSolveSettings, MAX_FEA_CONSTRAINTS,
     MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, solve_convergence_study,

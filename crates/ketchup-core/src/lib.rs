@@ -14,11 +14,9 @@ pub mod exact_brep_graph;
 pub mod exact_product;
 pub mod exact_validation;
 pub mod fabrication;
-pub mod fea;
 pub mod feature_history;
 pub mod graph;
 pub mod import;
-pub mod local_pdm;
 pub mod mechanical_contract;
 pub mod mechanical_coupling;
 pub mod mesh_recognition;
@@ -36,7 +34,6 @@ pub mod three_mf_export;
 pub use ketchup_tolerance as tolerance;
 pub mod topology;
 pub mod validation;
-pub mod validator_hosting;
 
 /// Returns the canonical application name for toolchain smoke tests.
 #[must_use]

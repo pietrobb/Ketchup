@@ -1,10 +1,10 @@
 use ketchup_core::document::Snapshot;
-use ketchup_core::local_pdm::{
+use ketchup_core::persistence::ContainerData;
+use ketchup_pdm::local::{
     LocalPdmError, ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseDependencyInput,
     ReleaseManifest, VerifiedRelease, compare_releases, create_child_release_with_container,
     create_release_with_container, open_release, release_catalog,
 };
-use ketchup_core::persistence::ContainerData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 

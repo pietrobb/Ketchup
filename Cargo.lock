@@ -2242,16 +2242,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ketchup-analysis"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "ketchup-core",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "ketchup-app"
 version = "0.1.0"
 dependencies = [
  "eframe",
  "egui_kittest",
  "getrandom 0.3.4",
+ "ketchup-analysis",
  "ketchup-application",
  "ketchup-assistant",
  "ketchup-core",
  "ketchup-interaction",
+ "ketchup-pdm",
  "ketchup-program",
  "ketchup-scheduler",
  "pollster",
@@ -2268,9 +2281,11 @@ dependencies = [
 name = "ketchup-application"
 version = "0.1.0"
 dependencies = [
+ "ketchup-analysis",
  "ketchup-assistant",
  "ketchup-core",
  "ketchup-interaction",
+ "ketchup-pdm",
  "ketchup-program",
  "ketchup-scheduler",
  "serde",
@@ -2317,9 +2332,11 @@ dependencies = [
 name = "ketchup-headless"
 version = "0.1.0"
 dependencies = [
+ "ketchup-analysis",
  "ketchup-application",
  "ketchup-assistant",
  "ketchup-core",
+ "ketchup-pdm",
  "ketchup-program",
  "serde",
  "serde_json",
@@ -2331,6 +2348,16 @@ name = "ketchup-interaction"
 version = "0.1.0"
 dependencies = [
  "ketchup-core",
+]
+
+[[package]]
+name = "ketchup-pdm"
+version = "0.1.0"
+dependencies = [
+ "ketchup-core",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2352,6 +2379,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
+ "ketchup-analysis",
  "ketchup-assistant",
  "ketchup-core",
  "ketchup-exact",

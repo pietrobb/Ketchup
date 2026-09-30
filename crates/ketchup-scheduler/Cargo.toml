@@ -13,6 +13,7 @@ default = []
 private-oauth = ["ketchup-assistant/private-oauth"]
 
 [dependencies]
+ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-assistant = { path = "../ketchup-assistant" }
 ciborium = "0.2"
 ketchup-core = { path = "../ketchup-core" }

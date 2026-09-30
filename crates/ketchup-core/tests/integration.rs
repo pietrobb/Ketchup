@@ -18,7 +18,6 @@ mod exact_brep_graph_resources;
 mod exact_parameter_editing;
 mod exact_parameter_editing_verifier;
 mod face_ref_migration;
-mod fea;
 mod feature_history;
 mod feature_history_verifier;
 mod free_workplane;
@@ -27,7 +26,6 @@ mod generic_sketch_pocket;
 mod graph_m2;
 mod import_contract;
 mod legacy_migration;
-mod local_pdm;
 mod mechanical_contract;
 mod mesh_recognition;
 mod occurrence_fork_impact;
@@ -48,7 +46,6 @@ mod suffix_suppress_resume_verifier;
 mod three_mf_export;
 mod topology_identity;
 mod validation_m17;
-mod validator_hosting_m7c;
 mod workplane_sketch;
 
 #[path = "support/integration_support.rs"]

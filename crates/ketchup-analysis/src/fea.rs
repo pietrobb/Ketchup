@@ -1,4 +1,4 @@
-use crate::tolerance::{NEGLIGIBLE, ROUNDING};
+use ketchup_core::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 

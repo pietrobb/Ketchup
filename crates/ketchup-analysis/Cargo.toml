@@ -1,6 +1,6 @@
 [package]
-name = "ketchup-headless"
-description = "GUI-free JSON-lines CAD document session CLI"
+name = "ketchup-analysis"
+description = "Engineering analysis over a Ketchup model: FEA and hosted validators"
 version.workspace = true
 edition.workspace = true
 autotests = false
@@ -9,17 +9,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ketchup-analysis = { path = "../ketchup-analysis" }
-ketchup-pdm = { path = "../ketchup-pdm" }
-ketchup-assistant = { path = "../ketchup-assistant" }
-ketchup-application = { path = "../ketchup-application" }
+ed25519-dalek = "2.2.0"
 ketchup-core = { path = "../ketchup-core" }
-ketchup-program = { path = "../ketchup-program" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10.9"
 
 [dev-dependencies]
-tempfile = "3.10"
+ed25519-dalek = "2.2.0"
 
 [lints]
 workspace = true

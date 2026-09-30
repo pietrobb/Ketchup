@@ -1,6 +1,6 @@
+use ketchup_analysis::validator_hosting::{InstalledValidatorPackage, ValidatorRuntime};
 use ketchup_core::document::{HighRiskClass, SideEffectAuthorizationReceipt};
 use ketchup_core::graph::sha256_hex;
-use ketchup_core::validator_hosting::{InstalledValidatorPackage, ValidatorRuntime};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};

@@ -13,6 +13,10 @@ mod worker_client;
 use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING};
 use worker_client::{WorkerResponse, WorkerWriteRequest};
 
+use ketchup_analysis::fea::{
+    FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaElement, FeaElementKind, FeaLoad, FeaMaterial, FeaModel,
+    FeaNode,
+};
 use ketchup_core::cam::{
     CAM_SIMULATION_SCHEMA_V1, CamCollisionEvidence, CamCollisionParticipant, CamCollisionTarget,
     CamFixture, CamMotionKind, CamMotionPath, CamPlan, CamSimulationEvidence, CamToolpath,
@@ -25,10 +29,6 @@ use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBRepGraphPackage,
     ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactProductError,
-};
-use ketchup_core::fea::{
-    FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaElement, FeaElementKind, FeaLoad, FeaMaterial, FeaModel,
-    FeaNode,
 };
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{

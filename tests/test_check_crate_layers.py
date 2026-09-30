@@ -40,8 +40,9 @@ def test_workspace_follows_the_layers():
     assert set(graph) == set(checker.LAYERS)
 
 
-def test_assistant_is_never_below_the_model():
+def test_assistant_pdm_and_analysis_are_never_below_the_model():
     layers = checker.LAYERS
-    assert layers["ketchup-assistant"] > layers["ketchup-core"]
     graph = checker.workspace_dependencies(ROOT)
-    assert "ketchup-assistant" not in graph["ketchup-core"]
+    for crate in ["ketchup-assistant", "ketchup-pdm", "ketchup-analysis"]:
+        assert layers[crate] > layers["ketchup-core"]
+        assert crate not in graph["ketchup-core"]

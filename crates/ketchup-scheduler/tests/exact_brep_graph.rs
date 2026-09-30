@@ -1,3 +1,4 @@
+use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_core::cam::{
     CamCollisionParticipant, CamCollisionTarget, CamCutParameters, CamFixture, CamMotionKind,
     CamOperation, CamPath2d, CamPathSegment2d, CamPlan, CamPlanId, CamPostprocessorDialect,
@@ -24,7 +25,6 @@ use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
     ExactProductError, ExactResultRegistry,
 };
-use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle, plan_iges_import, plan_step_import};
 use ketchup_core::persistence;

@@ -7,13 +7,13 @@ use ketchup_core::document::{
     OccurrenceId, Transform,
 };
 use ketchup_core::import::{ImportLengthUnit, StepImportEvidence, plan_step_import};
-use ketchup_core::local_pdm::{
+use ketchup_core::persistence;
+use ketchup_pdm::local::{
     DependencyChange, DependencyChangeKind, LocalPdmError, ReleaseAudit, ReleaseConflictVerdict,
     ReleaseDependencyInput, ReleaseRelationship, compare_releases, create_child_release,
     create_child_release_with_container, create_release, create_release_with_container,
     open_release, release_catalog, release_manifest_path, release_object_path,
 };
-use ketchup_core::persistence;
 
 fn released_document() -> DocumentStore {
     let mut document = DocumentStore::new();

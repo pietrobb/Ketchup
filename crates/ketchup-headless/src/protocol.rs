@@ -14,6 +14,7 @@ use ketchup_application::pdm_workflow::{
 };
 mod model_tools;
 mod production;
+use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
 };
@@ -31,8 +32,7 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, InstancePath, OccurrenceId, Snapshot,
 };
 use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
-use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
-use ketchup_core::local_pdm::{
+use ketchup_pdm::local::{
     DependencyChangeKind, LocalPdmError, ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison,
     ReleaseConflictVerdict, ReleaseDependencyInput, ReleaseManifest, ReleaseRelationship,
     VerifiedRelease,
@@ -2904,7 +2904,7 @@ mod tests {
         assert_eq!(malformed["error"]["code"], "invalid_params");
 
         let manifest_path =
-            ketchup_core::local_pdm::release_manifest_path(&repository, &child_id).unwrap();
+            ketchup_pdm::local::release_manifest_path(&repository, &child_id).unwrap();
         let tampered = std::fs::read_to_string(&manifest_path)
             .unwrap()
             .replace("reviewer", "intruder");

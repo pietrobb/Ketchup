@@ -1,6 +1,6 @@
 [package]
-name = "ketchup-headless"
-description = "GUI-free JSON-lines CAD document session CLI"
+name = "ketchup-pdm"
+description = "Local product data management: content-addressed releases of Ketchup documents"
 version.workspace = true
 edition.workspace = true
 autotests = false
@@ -9,17 +9,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ketchup-analysis = { path = "../ketchup-analysis" }
-ketchup-pdm = { path = "../ketchup-pdm" }
-ketchup-assistant = { path = "../ketchup-assistant" }
-ketchup-application = { path = "../ketchup-application" }
 ketchup-core = { path = "../ketchup-core" }
-ketchup-program = { path = "../ketchup-program" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tempfile = "3.23.0"
 
 [dev-dependencies]
-tempfile = "3.10"
+
 
 [lints]
 workspace = true

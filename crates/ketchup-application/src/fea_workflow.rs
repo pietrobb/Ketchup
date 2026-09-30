@@ -1,6 +1,6 @@
+use ketchup_analysis::fea::FeaSolveSettings;
 use ketchup_core::document::{DefinitionId, FeatureId, Snapshot};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::fea::FeaSolveSettings;
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::tolerance::NEGLIGIBLE;
 use ketchup_scheduler::ExactWorkerSupervisor;

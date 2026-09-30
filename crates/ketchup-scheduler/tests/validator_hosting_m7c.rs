@@ -1,14 +1,14 @@
 use ed25519_dalek::{Signer, SigningKey};
+use ketchup_analysis::validator_hosting::{
+    InstalledValidatorPackage, SignedValidatorPackage, ValidatorLicense, ValidatorPackageHost,
+    ValidatorPackageManifest, ValidatorRuntime, validator_descriptor_digest,
+};
 use ketchup_core::document::{
     AuthenticatedApprover, DocumentStore, HighRiskClass, HighRiskScope, ProposalPrincipal,
     SideEffectAuthorizationReceipt, TrustedConfirmationSurface,
 };
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::validation::{ReadScope, ResourceLimits, ValidationClass, ValidatorDescriptor};
-use ketchup_core::validator_hosting::{
-    InstalledValidatorPackage, SignedValidatorPackage, ValidatorLicense, ValidatorPackageHost,
-    ValidatorPackageManifest, ValidatorRuntime, validator_descriptor_digest,
-};
 use ketchup_scheduler::validator_runtime::{
     EgressGrant, EgressLimits, EgressRequest, VALIDATOR_EGRESS_OPERATION, ValidatorRuntimeError,
     WasmRuntimeLimits, perform_host_mediated_egress, run_isolated_wasm_validator,
