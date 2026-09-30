@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use gesture::{Gesture, PushPullAnchor, ZoomWindowDrag};
 use ketchup_application::cam_workflow::{CamReviewRequest, CamReviewSummary, CamReviewWorkflow};
 use ketchup_application::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
@@ -147,6 +148,7 @@ pub mod dialogs;
 mod drawn_shape;
 mod face_workflow_ui;
 mod feature_history_ui;
+mod gesture;
 mod glb_import_ui;
 mod helix_thread_ui;
 pub mod live_bridge;
@@ -5178,9 +5180,6 @@ pub struct KetchupApp {
     previous_camera_view: Option<CameraViewState>,
     camera_drag_active: bool,
     camera_wheel_active: bool,
-    zoom_window_start: Option<Pos2>,
-    zoom_window_cursor: Option<Pos2>,
-    selection_window: Option<SelectionWindowDrag>,
     selection: SelectionState,
     hovered: Option<SelectionId>,
     /// The profile a drawing tool just created, with the revision it created;
@@ -5223,42 +5222,22 @@ pub struct KetchupApp {
     assistant_value_input: String,
     assistant_proposal: Option<AssistantPreviewPlan>,
     assistant_verification: Option<AssistantVerification>,
-    push_pull_drag: Option<PushPullDrag>,
-    push_pull_anchor: Option<PushPullDrag>,
     last_push_pull: Option<LastPushPull>,
     tool_session: Option<ToolSession>,
     transform_input: TransformInputInterpreter,
-    move_copy_mode: bool,
-    /// The axis the arrow keys pinned the Move tool to, kept across gestures the
-    /// same way the Rotate lock is.
-    move_axis_lock: Option<Axis>,
-    rotate_copy_mode: bool,
-    /// The axis the arrow keys pinned the Rotate tool to, kept across gestures
-    /// so a locked axis survives releasing and re-grabbing the same body.
-    rotate_axis_lock: Option<Axis>,
-    scale_axis_lock: Option<Axis>,
     correction_session: Option<CorrectionSession>,
-    sketch_mode: bool,
-    sketch_start: Option<Vec3>,
-    sketch_end: Option<Vec3>,
-    sketch_cursor: Option<Vec3>,
-    line_chain_origin: Option<Vec3>,
-    line_chain_points: Vec<Vec3>,
-    line_chain_items: Vec<(DefinitionId, OccurrenceId)>,
-    line_axis_lock: Option<Axis>,
     value_input: String,
     focus_value_box: bool,
     occurrence_clipboard: Vec<OccurrenceId>,
     cut_occurrence_clipboard: Vec<CutClipboardOccurrence>,
-    measure_start: Option<Vec3>,
-    measure_cursor: Option<Vec3>,
-    measure_end: Option<Vec3>,
     shortcuts_open: bool,
     about_open: bool,
     /// The dialog waiting for the user, if any.
     modal: Option<Modal>,
     /// The live tool preview shown before a commit, if any.
     tool_preview: Option<ToolPreview>,
+    /// The drawing, measurement, transform modifiers and pointer drag in progress.
+    gesture: Gesture,
     mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState,
     viewport_rect: Option<Rect>,
     /// Zoom Fit was requested before the viewport was laid out or had anything
@@ -5408,9 +5387,6 @@ impl KetchupApp {
             previous_camera_view: None,
             camera_drag_active: false,
             camera_wheel_active: false,
-            zoom_window_start: None,
-            zoom_window_cursor: None,
-            selection_window: None,
             selection: SelectionState::default(),
             hovered: None,
             drawn_profile: None,
@@ -5451,36 +5427,19 @@ impl KetchupApp {
             assistant_value_input: "35".to_owned(),
             assistant_proposal: None,
             assistant_verification: None,
-            push_pull_drag: None,
-            push_pull_anchor: None,
             last_push_pull: None,
             tool_session: None,
             transform_input: TransformInputInterpreter::default(),
-            move_copy_mode: false,
-            move_axis_lock: None,
-            rotate_copy_mode: false,
-            rotate_axis_lock: None,
-            scale_axis_lock: None,
             correction_session: None,
-            sketch_mode: false,
-            sketch_start: None,
-            sketch_end: None,
-            sketch_cursor: None,
-            line_chain_origin: None,
-            line_chain_points: Vec::new(),
-            line_chain_items: Vec::new(),
-            line_axis_lock: None,
             value_input: String::new(),
             focus_value_box: false,
             occurrence_clipboard: Vec::new(),
             cut_occurrence_clipboard: Vec::new(),
-            measure_start: None,
-            measure_cursor: None,
-            measure_end: None,
             shortcuts_open: false,
             about_open: false,
             modal: None,
             tool_preview: None,
+            gesture: Gesture::default(),
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
             viewport_rect: None,
             zoom_fit_pending: false,
@@ -5650,27 +5609,26 @@ impl KetchupApp {
         self.hover_overlap_index = 0;
         self.hover_pointer = None;
         self.interaction_projection_cache.get_mut().take();
-        self.zoom_window_start = None;
-        self.zoom_window_cursor = None;
+        self.gesture.drag.close::<ZoomWindowDrag>();
         self.active_tool = ActiveTool::Select;
         self.cancel_pending_assistant_work();
         self.assistant_verification = None;
         self.side_effect_receipts.clear();
-        self.push_pull_drag = None;
-        self.push_pull_anchor = None;
+        self.gesture.drag.close::<PushPullDrag>();
+        self.gesture.drag.close::<PushPullAnchor>();
         self.last_push_pull = None;
         self.reset_transform_interaction();
         self.end_transform_correction();
         self.occurrence_clipboard.clear();
         self.cut_occurrence_clipboard.clear();
-        self.sketch_mode = false;
-        self.sketch_start = None;
-        self.sketch_end = None;
-        self.sketch_cursor = None;
-        self.line_chain_origin = None;
-        self.line_chain_points.clear();
-        self.line_chain_items.clear();
-        self.line_axis_lock = None;
+        self.gesture.sketch.armed = false;
+        self.gesture.sketch.start = None;
+        self.gesture.sketch.end = None;
+        self.gesture.sketch.cursor = None;
+        self.gesture.sketch.chain_origin = None;
+        self.gesture.sketch.chain_points.clear();
+        self.gesture.sketch.chain_items.clear();
+        self.gesture.sketch.axis_lock = None;
         self.clear_measurement();
         self.value_input.clear();
         self.focus_value_box = false;
@@ -8780,7 +8738,7 @@ impl KetchupApp {
 
     #[must_use]
     pub const fn line_axis_lock(&self) -> Option<Axis> {
-        self.line_axis_lock
+        self.gesture.sketch.axis_lock
     }
 
     #[must_use]
@@ -13313,15 +13271,15 @@ impl KetchupApp {
     fn cancel_transform_session(&mut self) {
         self.tool_session = None;
         self.transform_input.reset();
-        self.move_copy_mode = false;
-        self.rotate_copy_mode = false;
+        self.gesture.transform.move_copy = false;
+        self.gesture.transform.rotate_copy = false;
     }
 
     fn reset_transform_interaction(&mut self) {
         self.cancel_transform_session();
-        self.move_axis_lock = None;
-        self.rotate_axis_lock = None;
-        self.scale_axis_lock = None;
+        self.gesture.transform.move_axis_lock = None;
+        self.gesture.transform.rotate_axis_lock = None;
+        self.gesture.transform.scale_axis_lock = None;
     }
 
     fn select_group(&mut self, group_id: GroupId) -> bool {
@@ -15474,23 +15432,23 @@ impl KetchupApp {
         if let Some(tool) = spec.tool {
             let tool_changed = self.active_tool != tool;
             let retained_move_axis = (tool == ActiveTool::Move && self.active_tool == tool)
-                .then_some(self.move_axis_lock);
+                .then_some(self.gesture.transform.move_axis_lock);
             let retained_rotate_axis = (tool == ActiveTool::Rotate && self.active_tool == tool)
-                .then_some(self.rotate_axis_lock);
+                .then_some(self.gesture.transform.rotate_axis_lock);
             let retained_scale_axis = (tool == ActiveTool::Scale && self.active_tool == tool)
-                .then_some(self.scale_axis_lock);
+                .then_some(self.gesture.transform.scale_axis_lock);
             self.clear_ephemeral_edit_state();
             if tool_changed {
                 self.end_transform_correction();
             }
             if let Some(axis) = retained_move_axis {
-                self.move_axis_lock = axis;
+                self.gesture.transform.move_axis_lock = axis;
             }
             if let Some(axis) = retained_rotate_axis {
-                self.rotate_axis_lock = axis;
+                self.gesture.transform.rotate_axis_lock = axis;
             }
             if let Some(axis) = retained_scale_axis {
-                self.scale_axis_lock = axis;
+                self.gesture.transform.scale_axis_lock = axis;
             }
             self.cancel_rectangle_sketch();
             self.active_tool = tool;
@@ -15552,7 +15510,7 @@ impl KetchupApp {
                 tool,
                 ActiveTool::Line | ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Arc
             ) {
-                self.sketch_mode = true;
+                self.gesture.sketch.armed = true;
                 self.status_key = match tool {
                     ActiveTool::Line => "status-line-start",
                     ActiveTool::Circle => "status-circle-center",
@@ -17802,13 +17760,13 @@ impl KetchupApp {
     #[doc(hidden)]
     #[must_use]
     pub fn move_copy_mode_active(&self) -> bool {
-        self.move_copy_mode
+        self.gesture.transform.move_copy
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn rotate_copy_mode_active(&self) -> bool {
-        self.rotate_copy_mode
+        self.gesture.transform.rotate_copy
     }
 
     #[doc(hidden)]
@@ -17830,12 +17788,15 @@ impl KetchupApp {
             || self.tool_preview.get::<LoftPreview>().is_some()
             || self.tool_preview.get::<GeneralFinishPreview>().is_some()
             || self
-                .push_pull_drag
-                .as_ref()
+                .gesture
+                .drag
+                .get::<PushPullDrag>()
                 .is_some_and(|drag| self.push_pull_gesture_is_current(drag))
             || self
-                .push_pull_anchor
-                .as_ref()
+                .gesture
+                .drag
+                .get::<PushPullAnchor>()
+                .map(|anchor| &anchor.0)
                 .is_some_and(|anchor| self.push_pull_gesture_is_current(anchor))
             || self.transform_gesture_active()
     }
@@ -17844,7 +17805,7 @@ impl KetchupApp {
     #[must_use]
     pub fn circle_preview_geometry(&self) -> Option<(Vec3, f64)> {
         (self.active_tool == ActiveTool::Circle)
-            .then_some((self.sketch_start?, self.sketch_cursor?))
+            .then_some((self.gesture.sketch.start?, self.gesture.sketch.cursor?))
             .map(|(center, cursor)| {
                 (
                     center,
@@ -17905,12 +17866,12 @@ impl KetchupApp {
     pub fn arc_preview_geometry(&self) -> Option<(Vec3, Vec3, Vec3, bool)> {
         (self.active_tool == ActiveTool::Arc)
             .then_some(self.drawing_arc(
-                self.sketch_start?,
-                self.sketch_end?,
-                self.sketch_cursor?,
+                self.gesture.sketch.start?,
+                self.gesture.sketch.end?,
+                self.gesture.sketch.cursor?,
             )?)
             .map(|arc| {
-                let start = self.sketch_start.unwrap();
+                let start = self.gesture.sketch.start.unwrap();
                 (
                     start,
                     self.drawing_world_delta(start, arc.end),
@@ -19330,7 +19291,7 @@ impl KetchupApp {
     }
 
     fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
-        self.move_copy_mode = false;
+        self.gesture.transform.move_copy = false;
         self.transform_input.reset();
         if !self.move_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
@@ -19434,7 +19395,7 @@ impl KetchupApp {
     }
 
     fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
-        self.rotate_copy_mode = false;
+        self.gesture.transform.rotate_copy = false;
         self.transform_input.reset();
         if !self.rotate_preview_is_current(drag) {
             self.digest = self.catalog.text("error-preview-stale");
@@ -19680,7 +19641,7 @@ impl KetchupApp {
         };
         self.rotate_selected_around(
             centre_mm,
-            self.rotate_axis_lock.unwrap_or(Axis::Z),
+            self.gesture.transform.rotate_axis_lock.unwrap_or(Axis::Z),
             angle_degrees,
         )
     }
@@ -19725,7 +19686,7 @@ impl KetchupApp {
         };
         // Picking a different axis means the user wants another turn, not a
         // different value for the one already made.
-        if previous.axis != self.rotate_axis_lock.unwrap_or(Axis::Z) {
+        if previous.axis != self.gesture.transform.rotate_axis_lock.unwrap_or(Axis::Z) {
             return false;
         }
         let Ok(parent) = self.document.tip_replacement_parent() else {
@@ -19855,7 +19816,7 @@ impl KetchupApp {
         let Some((selection, previous)) = self.current_scale_correction() else {
             return false;
         };
-        if previous.axis != self.scale_axis_lock
+        if previous.axis != self.gesture.transform.scale_axis_lock
             || !factor.is_finite()
             || factor <= 0.0
             || factor > 1_000.0
@@ -23383,12 +23344,11 @@ impl KetchupApp {
         self.solid_tool_target = None;
         self.revolve_tool = None;
         self.clear_helix_thread_preview();
-        self.push_pull_drag = None;
-        self.push_pull_anchor = None;
+        self.gesture.drag.close::<PushPullDrag>();
+        self.gesture.drag.close::<PushPullAnchor>();
         self.reset_transform_interaction();
-        self.zoom_window_start = None;
-        self.zoom_window_cursor = None;
-        self.selection_window = None;
+        self.gesture.drag.close::<ZoomWindowDrag>();
+        self.gesture.drag.close::<SelectionWindowDrag>();
         self.clear_measurement();
     }
 
@@ -23997,8 +23957,8 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub const fn push_pull_click_anchor_active(&self) -> bool {
-        self.push_pull_anchor.is_some()
+    pub fn push_pull_click_anchor_active(&self) -> bool {
+        self.gesture.drag.get::<PushPullAnchor>().is_some()
     }
 
     fn push_pull_pointer_target(&self) -> Option<SelectionId> {
@@ -24847,7 +24807,7 @@ impl KetchupApp {
         // The press itself is where the travel starts. Waiting for the first
         // pointer sample instead would silently drop the opening slice of the
         // gesture, and the body would land short of where it was dragged.
-        let axis_reference = self.move_axis_lock.and_then(|axis| {
+        let axis_reference = self.gesture.transform.move_axis_lock.and_then(|axis| {
             let ray = self.view_ray(pointer, rect)?;
             axis_travel_along(&ray, pointer_start_world, axis)
         });
@@ -24867,7 +24827,7 @@ impl KetchupApp {
                 profile_target,
                 pointer_start_world,
                 plane_z: pointer_start_world.z,
-                axis: self.move_axis_lock,
+                axis: self.gesture.transform.move_axis_lock,
                 axis_reference,
                 delta_mm: Vec3::ZERO,
                 copy: group_id.is_none() && copy,
@@ -24935,8 +24895,9 @@ impl KetchupApp {
         match (tool, event) {
             (ActiveTool::Move, TransformInputEvent::ToggleCopy) => {
                 let copy_allowed = self.selection.selected_group.is_none();
-                self.move_copy_mode = copy_allowed && !self.move_copy_mode;
-                let copy_mode = self.move_copy_mode;
+                self.gesture.transform.move_copy =
+                    copy_allowed && !self.gesture.transform.move_copy;
+                let copy_mode = self.gesture.transform.move_copy;
                 if let Some(drag) = self.move_session_mut() {
                     drag.copy = drag.group_id.is_none() && copy_mode;
                 }
@@ -24944,7 +24905,7 @@ impl KetchupApp {
                     .move_session()
                     .map_or(Vec3::ZERO, |(drag, _)| drag.delta_mm);
                 self.digest = self.catalog.format(
-                    if self.move_copy_mode {
+                    if self.gesture.transform.move_copy {
                         "digest-copy-live"
                     } else {
                         "digest-move-live"
@@ -24957,17 +24918,21 @@ impl KetchupApp {
             }
             (ActiveTool::Rotate, TransformInputEvent::ToggleCopy) => {
                 let copy_allowed = self.selection.selected_group.is_none();
-                self.rotate_copy_mode = copy_allowed && !self.rotate_copy_mode;
-                let copy_mode = self.rotate_copy_mode;
+                self.gesture.transform.rotate_copy =
+                    copy_allowed && !self.gesture.transform.rotate_copy;
+                let copy_mode = self.gesture.transform.rotate_copy;
                 if let Some(drag) = self.rotate_session_mut() {
                     drag.copy = drag.group_id.is_none() && copy_mode;
                 }
                 let (angle, axis) = self.rotate_session().map_or(
-                    (0.0, self.rotate_axis_lock.unwrap_or(Axis::Z)),
+                    (
+                        0.0,
+                        self.gesture.transform.rotate_axis_lock.unwrap_or(Axis::Z),
+                    ),
                     |(drag, _)| (drag.angle_degrees, drag.axis),
                 );
                 self.digest = self.catalog.format(
-                    if self.rotate_copy_mode {
+                    if self.gesture.transform.rotate_copy {
                         "digest-rotate-copy-live"
                     } else {
                         "digest-rotate-live"
@@ -25010,7 +24975,7 @@ impl KetchupApp {
     /// Pin the Move tool to `axis`, or release the pin when `axis` is `None`.
     fn set_move_axis_lock(&mut self, axis: Option<Axis>) {
         self.end_transform_correction();
-        self.move_axis_lock = axis;
+        self.gesture.transform.move_axis_lock = axis;
         if let Some(drag) = self.move_session_mut() {
             drag.axis = axis;
             drag.axis_reference = None;
@@ -25036,7 +25001,7 @@ impl KetchupApp {
         ) {
             self.end_transform_correction();
         }
-        self.scale_axis_lock = axis;
+        self.gesture.transform.scale_axis_lock = axis;
         if let Some(drag) = self.scale_session_mut() {
             drag.axis = axis;
         }
@@ -25093,7 +25058,7 @@ impl KetchupApp {
             centre_mm,
             centre_screen: Pos2::ZERO,
             reference_radius_points: 1.0,
-            axis: self.scale_axis_lock,
+            axis: self.gesture.transform.scale_axis_lock,
             factor,
         };
         self.commit_scale_drag(&drag)
@@ -25146,7 +25111,7 @@ impl KetchupApp {
             centre_mm,
             centre_screen,
             reference_radius_points,
-            axis: self.scale_axis_lock,
+            axis: self.gesture.transform.scale_axis_lock,
             factor: 1.0,
         });
         true
@@ -25451,7 +25416,7 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
         let occurrence_paths = self.selected_instance_paths();
-        let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
+        let axis = self.gesture.transform.rotate_axis_lock.unwrap_or(Axis::Z);
         let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
             Some(group_id) => {
                 let snapshot = snapshot.clone();
@@ -25497,7 +25462,7 @@ impl KetchupApp {
                 axis,
                 reference_mm,
                 angle_degrees: 0.0,
-                copy: group_id.is_none() && (copy || self.rotate_copy_mode),
+                copy: group_id.is_none() && (copy || self.gesture.transform.rotate_copy),
             },
         );
         true
@@ -25516,7 +25481,7 @@ impl KetchupApp {
         ) {
             self.end_transform_correction();
         }
-        self.rotate_axis_lock = axis;
+        self.gesture.transform.rotate_axis_lock = axis;
         let resolved = axis.unwrap_or(Axis::Z);
         if let Some(drag) = self.rotate_session_mut() {
             drag.axis = resolved;
@@ -25561,7 +25526,7 @@ impl KetchupApp {
                 angle_degrees: drag.angle_degrees,
             });
         }
-        let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
+        let axis = self.gesture.transform.rotate_axis_lock.unwrap_or(Axis::Z);
         let bounds = if let Some(group_id) = self.selection.selected_group {
             let snapshot = self.document.current();
             self.rotation_bounds_for(&|path: &InstancePath| {
@@ -25608,7 +25573,7 @@ impl KetchupApp {
                 self.project(guide.centre_mm + reach, rect),
             ],
             Stroke::new(
-                if self.rotate_axis_lock.is_some() {
+                if self.gesture.transform.rotate_axis_lock.is_some() {
                     2.4_f32
                 } else {
                     1.4_f32
@@ -25852,7 +25817,7 @@ impl KetchupApp {
 
     /// The first measured point while a measurement is being taken.
     const fn measure_anchor(&self) -> Option<Vec3> {
-        match (self.measure_start, self.measure_end) {
+        match (self.gesture.measure.start, self.gesture.measure.end) {
             (start, None) => start,
             _ => None,
         }
@@ -25860,22 +25825,22 @@ impl KetchupApp {
 
     /// The measured segment, either finished or following the pointer.
     fn measure_span(&self) -> Option<(Vec3, Vec3)> {
-        let start = self.measure_start?;
-        let end = self.measure_end.or(self.measure_cursor)?;
+        let start = self.gesture.measure.start?;
+        let end = self.gesture.measure.end.or(self.gesture.measure.cursor)?;
         Some((start, end))
     }
 
     /// Record a measured point. Measuring never changes the document.
     fn add_measured_point(&mut self, point: Vec3) {
         if let Some(start) = self.measure_anchor() {
-            self.measure_end = Some(point);
-            self.measure_cursor = Some(point);
+            self.gesture.measure.end = Some(point);
+            self.gesture.measure.cursor = Some(point);
             self.status_key = "status-ready";
             self.digest = self.measurement_text(start, point, "digest-measured");
         } else {
-            self.measure_start = Some(point);
-            self.measure_cursor = Some(point);
-            self.measure_end = None;
+            self.gesture.measure.start = Some(point);
+            self.gesture.measure.cursor = Some(point);
+            self.gesture.measure.end = None;
             self.value_input.clear();
             self.status_key = "status-measure-second-point";
         }
@@ -25893,15 +25858,15 @@ impl KetchupApp {
     }
 
     fn clear_measurement(&mut self) {
-        self.measure_start = None;
-        self.measure_cursor = None;
-        self.measure_end = None;
+        self.gesture.measure.start = None;
+        self.gesture.measure.cursor = None;
+        self.gesture.measure.end = None;
     }
 
     /// The measured distance in millimetres, once both points are placed.
     #[must_use]
     pub fn measured_points(&self) -> Option<(Vec3, Vec3)> {
-        Some((self.measure_start?, self.measure_end?))
+        Some((self.gesture.measure.start?, self.gesture.measure.end?))
     }
 
     /// The measured distance in millimetres, once both points are placed.
@@ -25916,14 +25881,14 @@ impl KetchupApp {
     }
 
     fn cancel_rectangle_sketch(&mut self) {
-        self.sketch_mode = false;
-        self.sketch_start = None;
-        self.sketch_end = None;
-        self.sketch_cursor = None;
-        self.line_chain_origin = None;
-        self.line_chain_points.clear();
-        self.line_chain_items.clear();
-        self.line_axis_lock = None;
+        self.gesture.sketch.armed = false;
+        self.gesture.sketch.start = None;
+        self.gesture.sketch.end = None;
+        self.gesture.sketch.cursor = None;
+        self.gesture.sketch.chain_origin = None;
+        self.gesture.sketch.chain_points.clear();
+        self.gesture.sketch.chain_items.clear();
+        self.gesture.sketch.axis_lock = None;
         self.status_key = "status-ready";
     }
 
@@ -25979,14 +25944,14 @@ impl KetchupApp {
     }
 
     fn complete_line_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
-        if let Some(origin) = self.line_chain_origin {
+        if let Some(origin) = self.gesture.sketch.chain_origin {
             let close_distance = vector_length(Vec3::new(
                 end.x - origin.x,
                 end.y - origin.y,
                 end.z - origin.z,
             ));
             if close_distance.is_finite() && close_distance <= 0.1 {
-                return self.line_chain_points.len() >= 3 && self.close_line_chain();
+                return self.gesture.sketch.chain_points.len() >= 3 && self.close_line_chain();
             }
         }
 
@@ -26009,15 +25974,15 @@ impl KetchupApp {
         );
         if created {
             if let Some(selection) = self.selection.primary.as_ref() {
-                self.line_chain_items.push((
+                self.gesture.sketch.chain_items.push((
                     selection.definition_id,
                     selection.instance_path.root_occurrence(),
                 ));
             }
-            self.line_chain_points.push(end);
-            self.sketch_mode = true;
-            self.sketch_start = Some(end);
-            self.sketch_cursor = Some(end);
+            self.gesture.sketch.chain_points.push(end);
+            self.gesture.sketch.armed = true;
+            self.gesture.sketch.start = Some(end);
+            self.gesture.sketch.cursor = Some(end);
             self.value_input.clear();
             self.status_key = "status-line-end";
             self.digest = self.catalog.format(
@@ -26029,7 +25994,8 @@ impl KetchupApp {
     }
 
     fn close_line_chain(&mut self) -> bool {
-        let Some((transform, points)) = line_geometry::planar_points(&self.line_chain_points)
+        let Some((transform, points)) =
+            line_geometry::planar_points(&self.gesture.sketch.chain_points)
         else {
             return false;
         };
@@ -26060,7 +26026,9 @@ impl KetchupApp {
 
         let snapshot = self.document.current();
         if self
-            .line_chain_items
+            .gesture
+            .sketch
+            .chain_items
             .iter()
             .any(|(definition_id, occurrence_id)| {
                 snapshot
@@ -26109,14 +26077,20 @@ impl KetchupApp {
             &BTreeMap::from([("name", name.clone())]),
         );
         let mut commands = self
-            .line_chain_items
+            .gesture
+            .sketch
+            .chain_items
             .iter()
             .map(|(_, occurrence_id)| CanonicalCommand::DeleteOccurrence { id: *occurrence_id })
             .collect::<Vec<_>>();
         commands.extend(
-            self.line_chain_items.iter().map(|(definition_id, _)| {
-                CanonicalCommand::DeleteDefinition { id: *definition_id }
-            }),
+            self.gesture
+                .sketch
+                .chain_items
+                .iter()
+                .map(|(definition_id, _)| CanonicalCommand::DeleteDefinition {
+                    id: *definition_id,
+                }),
         );
         commands.extend([
             CanonicalCommand::CreateDefinition {
@@ -26149,14 +26123,14 @@ impl KetchupApp {
         {
             return false;
         }
-        let segment_count = self.line_chain_points.len();
+        let segment_count = self.gesture.sketch.chain_points.len();
         self.clear_ephemeral_edit_state();
-        self.sketch_mode = false;
-        self.sketch_start = None;
-        self.sketch_cursor = None;
-        self.line_chain_origin = None;
-        self.line_chain_points.clear();
-        self.line_chain_items.clear();
+        self.gesture.sketch.armed = false;
+        self.gesture.sketch.start = None;
+        self.gesture.sketch.cursor = None;
+        self.gesture.sketch.chain_origin = None;
+        self.gesture.sketch.chain_points.clear();
+        self.gesture.sketch.chain_items.clear();
         self.value_input.clear();
         self.select_drawn_profile(definition_id, occurrence_id);
         self.status_key = "status-line-closed";
@@ -26168,7 +26142,7 @@ impl KetchupApp {
     }
 
     fn complete_exact_line(&mut self) -> bool {
-        let Some(start) = self.sketch_start else {
+        let Some(start) = self.gesture.sketch.start else {
             return false;
         };
         let Some(length_mm) = parse_distance_mm(&self.value_input).filter(|value| *value > 0.01)
@@ -26176,7 +26150,9 @@ impl KetchupApp {
             return false;
         };
         let direction = self
-            .sketch_cursor
+            .gesture
+            .sketch
+            .cursor
             .map(|cursor| cursor - start)
             .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
         let direction_length = vector_length(direction);
@@ -26235,9 +26211,9 @@ impl KetchupApp {
             "model-circle-profile",
         );
         if created {
-            self.sketch_mode = self.uses_drawing_plane();
-            self.sketch_start = None;
-            self.sketch_cursor = None;
+            self.gesture.sketch.armed = self.uses_drawing_plane();
+            self.gesture.sketch.start = None;
+            self.gesture.sketch.cursor = None;
             self.value_input = format_height(radius_mm);
             self.status_key = "status-circle-created";
             self.digest = self.catalog.format(
@@ -26249,7 +26225,7 @@ impl KetchupApp {
     }
 
     fn complete_exact_circle(&mut self) -> bool {
-        let Some(center) = self.sketch_start else {
+        let Some(center) = self.gesture.sketch.start else {
             return false;
         };
         let Some(radius_mm) = parse_distance_mm(&self.value_input).filter(|radius| *radius > 0.01)
@@ -26257,7 +26233,9 @@ impl KetchupApp {
             return false;
         };
         let direction = self
-            .sketch_cursor
+            .gesture
+            .sketch
+            .cursor
             .map(|cursor| cursor - center)
             .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
         self.complete_circle(center, radius_mm, direction)
@@ -26289,10 +26267,10 @@ impl KetchupApp {
         );
         if created {
             let bulge_mm = self.drawing_bulge(start, end, bulge_point).abs();
-            self.sketch_mode = self.uses_drawing_plane();
-            self.sketch_start = None;
-            self.sketch_end = None;
-            self.sketch_cursor = None;
+            self.gesture.sketch.armed = self.uses_drawing_plane();
+            self.gesture.sketch.start = None;
+            self.gesture.sketch.end = None;
+            self.gesture.sketch.cursor = None;
             self.value_input = format_height(bulge_mm);
             self.status_key = "status-arc-created";
             self.digest = self.catalog.format(
@@ -26304,7 +26282,7 @@ impl KetchupApp {
     }
 
     fn complete_exact_arc(&mut self) -> bool {
-        let (Some(start), Some(end)) = (self.sketch_start, self.sketch_end) else {
+        let (Some(start), Some(end)) = (self.gesture.sketch.start, self.gesture.sketch.end) else {
             return false;
         };
         let Some(bulge_mm) =
@@ -26327,7 +26305,7 @@ impl KetchupApp {
                 0.0,
             ),
         );
-        let cursor_side = self.sketch_cursor.map_or(1.0, |cursor| {
+        let cursor_side = self.gesture.sketch.cursor.map_or(1.0, |cursor| {
             if self.drawing_bulge(start, end, cursor) < 0.0 {
                 -1.0
             } else {
@@ -26364,9 +26342,9 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.sketch_mode = self.uses_drawing_plane();
-        self.sketch_start = None;
-        self.sketch_cursor = None;
+        self.gesture.sketch.armed = self.uses_drawing_plane();
+        self.gesture.sketch.start = None;
+        self.gesture.sketch.cursor = None;
         self.value_input.clear();
         self.status_key = "status-sketch-first-point";
         self.digest = self.catalog.format(
@@ -26407,9 +26385,9 @@ impl KetchupApp {
             vec![[0.0, 0.0], [size.x, 0.0], [size.x, size.y], [0.0, size.y]],
         );
         if created {
-            self.sketch_mode = self.uses_drawing_plane();
-            self.sketch_start = None;
-            self.sketch_cursor = None;
+            self.gesture.sketch.armed = self.uses_drawing_plane();
+            self.gesture.sketch.start = None;
+            self.gesture.sketch.cursor = None;
             self.value_input.clear();
             self.status_key = "status-sketch-first-point";
             self.digest = self.catalog.format(
@@ -26424,7 +26402,7 @@ impl KetchupApp {
     }
 
     fn complete_exact_rectangle(&mut self) -> bool {
-        let Some(start) = self.sketch_start else {
+        let Some(start) = self.gesture.sketch.start else {
             return false;
         };
         let Some([width, depth]) = parse_rectangle_dimensions(&self.value_input) else {
@@ -26433,7 +26411,11 @@ impl KetchupApp {
         let frame = self.drawing_frame(Some(start));
         let frame_x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
         let frame_y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);
-        let cursor = self.sketch_cursor.unwrap_or(start + frame_x + frame_y);
+        let cursor = self
+            .gesture
+            .sketch
+            .cursor
+            .unwrap_or(start + frame_x + frame_y);
         let x_direction = if dot(cursor - start, frame_x) < 0.0 {
             -1.0
         } else {
@@ -26451,7 +26433,7 @@ impl KetchupApp {
     }
 
     fn apply_value_input(&mut self) -> bool {
-        if self.sketch_mode && self.sketch_start.is_some() {
+        if self.gesture.sketch.armed && self.gesture.sketch.start.is_some() {
             return match self.active_tool {
                 ActiveTool::Line => self.complete_exact_line(),
                 ActiveTool::Circle => self.complete_exact_circle(),
@@ -26548,8 +26530,8 @@ impl KetchupApp {
                 .map_or(SmartPushPullPlanning::Append, |parent| {
                     SmartPushPullPlanning::TipReplacement(parent)
                 });
-            self.push_pull_drag = None;
-            self.push_pull_anchor = None;
+            self.gesture.drag.close::<PushPullDrag>();
+            self.gesture.drag.close::<PushPullAnchor>();
             self.push_pull_distance_input = self.value_input.clone();
             if self.start_preview_for(planning) && self.confirm_push_pull_preview() {
                 self.digest = self.catalog.format(
@@ -26580,7 +26562,7 @@ impl KetchupApp {
             // which is how a part gets set down exactly 25 mm higher.
             let exact_vector = parse_move_vector(&self.value_input);
             let typed = exact_vector.or_else(|| {
-                let axis = self.move_axis_lock?;
+                let axis = self.gesture.transform.move_axis_lock?;
                 let distance = parse_distance_mm(&self.value_input)?;
                 (distance.abs() >= 0.01).then(|| axis_direction(axis) * distance)
             });
@@ -26856,7 +26838,8 @@ impl KetchupApp {
 
     fn sketch_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
         if self.active_tool == ActiveTool::Line
-            && let (Some(start), Some(axis)) = (self.sketch_start, self.line_axis_lock)
+            && let (Some(start), Some(axis)) =
+                (self.gesture.sketch.start, self.gesture.sketch.axis_lock)
         {
             let ray = self.view_ray(pointer, rect)?;
             let travel = axis_travel_along(&ray, start, axis)?;
@@ -27263,23 +27246,25 @@ impl KetchupApp {
             && let Some(pointer) = primary_press
         {
             self.face_workflow.set_xray_preview(false);
-            self.push_pull_drag = None;
+            self.gesture.drag.close::<PushPullDrag>();
             self.take_move_session(Some(ToolSessionPhase::Gesture));
             if self.active_tool == ActiveTool::ZoomWindow {
-                self.zoom_window_start = Some(pointer);
-                self.zoom_window_cursor = Some(pointer);
-            } else if self.sketch_mode {
+                self.gesture.drag.open(ZoomWindowDrag {
+                    start: pointer,
+                    cursor: pointer,
+                });
+            } else if self.gesture.sketch.armed {
                 let point = if self.uses_drawing_plane() {
                     self.drawing_input_point(pointer, response.rect)
                 } else {
-                    let plane_z = self.sketch_start.map_or_else(
+                    let plane_z = self.gesture.sketch.start.map_or_else(
                         || self.rectangle_plane_z(pointer, response.rect),
                         |start| start.z,
                     );
                     self.sketch_point_at_screen(pointer, response.rect, plane_z)
                 };
                 if let Some(point) = point {
-                    if let Some(start) = self.sketch_start {
+                    if let Some(start) = self.gesture.sketch.start {
                         match self.active_tool {
                             ActiveTool::Line => {
                                 self.complete_line_sketch(start, point);
@@ -27288,11 +27273,11 @@ impl KetchupApp {
                                 self.complete_circle_sketch(start, point);
                             }
                             ActiveTool::Arc => {
-                                if let Some(end) = self.sketch_end {
+                                if let Some(end) = self.gesture.sketch.end {
                                     self.complete_arc_sketch(start, end, point);
                                 } else if vector_length(point - start) > 0.01 {
-                                    self.sketch_end = Some(point);
-                                    self.sketch_cursor = Some(point);
+                                    self.gesture.sketch.end = Some(point);
+                                    self.gesture.sketch.cursor = Some(point);
                                     self.value_input.clear();
                                     self.status_key = "status-arc-bulge";
                                 }
@@ -27302,13 +27287,13 @@ impl KetchupApp {
                             }
                         }
                     } else {
-                        self.sketch_start = Some(point);
-                        self.sketch_cursor = Some(point);
+                        self.gesture.sketch.start = Some(point);
+                        self.gesture.sketch.cursor = Some(point);
                         if self.active_tool == ActiveTool::Line {
-                            self.line_chain_origin = Some(point);
-                            self.line_chain_points.clear();
-                            self.line_chain_points.push(point);
-                            self.line_chain_items.clear();
+                            self.gesture.sketch.chain_origin = Some(point);
+                            self.gesture.sketch.chain_points.clear();
+                            self.gesture.sketch.chain_points.push(point);
+                            self.gesture.sketch.chain_items.clear();
                         }
                         self.value_input.clear();
                         self.status_key = match self.active_tool {
@@ -27356,7 +27341,7 @@ impl KetchupApp {
                     .map(|snap| snap.reference.clone())
                     .or_else(|| self.hovered.clone());
                 if target.is_none() {
-                    self.selection_window = Some(SelectionWindowDrag {
+                    self.gesture.drag.open(SelectionWindowDrag {
                         start: pointer,
                         cursor: pointer,
                         additive,
@@ -27404,13 +27389,18 @@ impl KetchupApp {
                     || ui.input(|input| input.modifiers.ctrl);
                 self.select_solid_tool_occurrence(selection, keep_tool);
             } else if self.active_tool == ActiveTool::PushPull {
-                if let Some(anchor) = self.push_pull_anchor.take() {
+                if let Some(anchor) = self
+                    .gesture
+                    .drag
+                    .remove::<PushPullAnchor>()
+                    .map(|anchor| anchor.0)
+                {
                     if self.update_push_pull_gesture(&anchor, pointer)
                         && (self.has_preview() || self.has_occurrence_operation_preview())
                     {
                         self.confirm_push_pull_preview();
                     } else if self.push_pull_gesture_is_current(&anchor) {
-                        self.push_pull_anchor = Some(anchor);
+                        self.gesture.drag.open(PushPullAnchor(anchor));
                     }
                 } else {
                     if let Some(target) = self.push_pull_pointer_target() {
@@ -27425,7 +27415,7 @@ impl KetchupApp {
                         let snapshot = self.document.current();
                         self.push_pull_distance_input = "0".to_owned();
                         self.value_input = "0".to_owned();
-                        self.push_pull_drag = Some(PushPullDrag {
+                        self.gesture.drag.open(PushPullDrag {
                             source_document_id: snapshot.document_id(),
                             source_revision: snapshot.revision_id(),
                             source_digest: snapshot.canonical_digest(),
@@ -27447,7 +27437,7 @@ impl KetchupApp {
                         ) == Some(TransformInputEvent::CopyRequested)
                         {
                             anchor.copy = anchor.group_id.is_none();
-                            self.move_copy_mode = anchor.copy;
+                            self.gesture.transform.move_copy = anchor.copy;
                         }
                         self.advance_move(
                             &mut anchor,
@@ -27468,7 +27458,7 @@ impl KetchupApp {
                     self.begin_move_drag_at(
                         pointer,
                         response.rect,
-                        self.move_copy_mode || copy_requested,
+                        self.gesture.transform.move_copy || copy_requested,
                     );
                 }
             } else if self.active_tool == ActiveTool::Rotate {
@@ -27478,7 +27468,7 @@ impl KetchupApp {
                     ) == Some(TransformInputEvent::CopyRequested)
                     {
                         anchor.copy = anchor.group_id.is_none();
-                        self.rotate_copy_mode = anchor.copy;
+                        self.gesture.transform.rotate_copy = anchor.copy;
                     }
                     if !self.rotate_preview_is_current(&anchor) {
                         self.commit_rotate_drag(&anchor);
@@ -27609,9 +27599,13 @@ impl KetchupApp {
         }
 
         if self.active_tool == ActiveTool::PushPull
-            && self.push_pull_drag.is_none()
+            && self.gesture.drag.get::<PushPullDrag>().is_none()
             && !self.value_box_is_being_typed_into(ui.ctx())
-            && let Some(anchor) = self.push_pull_anchor.clone()
+            && let Some(anchor) = self
+                .gesture
+                .drag
+                .get::<PushPullAnchor>()
+                .map(|anchor| anchor.0.clone())
             && let Some(pointer) = response.hover_pos()
         {
             self.update_push_pull_gesture(&anchor, pointer);
@@ -27632,21 +27626,25 @@ impl KetchupApp {
         } else if response.dragged_by(egui::PointerButton::Primary) {
             if self.active_tool == ActiveTool::Select {
                 if let Some(pointer) = response.interact_pointer_pos()
-                    && let Some(drag) = self.selection_window.as_mut()
+                    && let Some(drag) = self.gesture.drag.get_mut::<SelectionWindowDrag>()
                 {
                     drag.cursor = pointer;
                 }
             } else if self.active_tool == ActiveTool::ZoomWindow {
-                self.zoom_window_cursor = response.interact_pointer_pos();
+                if let Some(pointer) = response.interact_pointer_pos()
+                    && let Some(window) = self.gesture.drag.get_mut::<ZoomWindowDrag>()
+                {
+                    window.cursor = pointer;
+                }
             } else if self.active_tool == ActiveTool::Orbit {
                 self.orbit(pointer_delta);
             } else if self.active_tool == ActiveTool::Pan {
                 self.pan += pointer_delta;
-            } else if self.sketch_mode {
+            } else if self.gesture.sketch.armed {
                 if let (Some(start), Some(pointer)) =
-                    (self.sketch_start, response.interact_pointer_pos())
+                    (self.gesture.sketch.start, response.interact_pointer_pos())
                 {
-                    self.sketch_cursor = if self.uses_drawing_plane() {
+                    self.gesture.sketch.cursor = if self.uses_drawing_plane() {
                         self.drawing_input_point(pointer, response.rect)
                     } else {
                         self.sketch_point_at_screen(pointer, response.rect, start.z)
@@ -27728,9 +27726,10 @@ impl KetchupApp {
                         ),
                     ]),
                 );
-            } else if let (Some(drag), Some(pointer)) =
-                (self.push_pull_drag.clone(), response.interact_pointer_pos())
-            {
+            } else if let (Some(drag), Some(pointer)) = (
+                self.gesture.drag.get::<PushPullDrag>().cloned(),
+                response.interact_pointer_pos(),
+            ) {
                 self.update_push_pull_gesture(&drag, pointer);
             }
         }
@@ -27742,15 +27741,15 @@ impl KetchupApp {
         if response.drag_stopped_by(egui::PointerButton::Primary)
             || (response.hovered() && primary_release)
         {
-            if self.active_tool == ActiveTool::Select && self.selection_window.is_some() {
-                if let Some(drag) = self.selection_window.take() {
+            if self.active_tool == ActiveTool::Select
+                && self.gesture.drag.get::<SelectionWindowDrag>().is_some()
+            {
+                if let Some(drag) = self.gesture.drag.remove::<SelectionWindowDrag>() {
                     self.complete_selection_window(drag, response.rect);
                 }
             } else if self.active_tool == ActiveTool::ZoomWindow {
-                let start = self.zoom_window_start.take();
-                let end = self.zoom_window_cursor.take();
-                if let (Some(start), Some(end)) = (start, end)
-                    && self.zoom_window(start, end, response.rect)
+                if let Some(window) = self.gesture.drag.remove::<ZoomWindowDrag>()
+                    && self.zoom_window(window.start, window.cursor, response.rect)
                 {
                     self.active_tool = ActiveTool::Select;
                     self.status_key = "status-ready";
@@ -27761,7 +27760,7 @@ impl KetchupApp {
                 ) == Some(TransformInputEvent::CopyRequested)
                 {
                     drag.copy = drag.group_id.is_none();
-                    self.move_copy_mode = drag.copy;
+                    self.gesture.transform.move_copy = drag.copy;
                 }
                 if !self.move_preview_is_current(&drag) || vector_length(drag.delta_mm) >= 0.01 {
                     self.commit_move_drag(&drag);
@@ -27780,24 +27779,24 @@ impl KetchupApp {
                 }
             } else if let Some(drag) = self.take_scale_session() {
                 self.commit_scale_drag(&drag);
-            } else if let Some(drag) = self.push_pull_drag.take() {
+            } else if let Some(drag) = self.gesture.drag.remove::<PushPullDrag>() {
                 if self.has_preview() || self.has_occurrence_operation_preview() {
                     self.confirm_push_pull_preview();
                 } else if self.push_pull_gesture_is_current(&drag) {
-                    self.push_pull_anchor = Some(drag);
+                    self.gesture.drag.open(PushPullAnchor(drag));
                     self.digest = self.catalog.text("digest-push-pull-anchor-set");
                 }
             }
         }
-        if self.sketch_mode
-            && self.sketch_start.is_some()
+        if self.gesture.sketch.armed
+            && self.gesture.sketch.start.is_some()
             && response.hovered()
             && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
         {
-            self.sketch_cursor = if self.uses_drawing_plane() {
+            self.gesture.sketch.cursor = if self.uses_drawing_plane() {
                 self.drawing_input_point(pointer, response.rect)
             } else {
-                let plane_z = self.sketch_start.map_or(0.0, |start| start.z);
+                let plane_z = self.gesture.sketch.start.map_or(0.0, |start| start.z);
                 self.sketch_point_at_screen(pointer, response.rect, plane_z)
             };
             // Once the user starts typing, the value box owns the value: the
@@ -27805,7 +27804,8 @@ impl KetchupApp {
             // text would otherwise be overwritten by the hovered dimensions.
             if !ui.ctx().wants_keyboard_input()
                 && !self.focus_value_box
-                && let (Some(start), Some(cursor)) = (self.sketch_start, self.sketch_cursor)
+                && let (Some(start), Some(cursor)) =
+                    (self.gesture.sketch.start, self.gesture.sketch.cursor)
             {
                 self.value_input = match self.active_tool {
                     ActiveTool::Line => format_height(vector_length(Vec3::new(
@@ -27818,7 +27818,7 @@ impl KetchupApp {
                         cursor.y - start.y,
                         cursor.z - start.z,
                     ))),
-                    ActiveTool::Arc => self.sketch_end.map_or_else(
+                    ActiveTool::Arc => self.gesture.sketch.end.map_or_else(
                         || format_height(vector_length(cursor - start)),
                         |end| format_height(self.drawing_bulge(start, end, cursor).abs()),
                     ),
@@ -27845,7 +27845,7 @@ impl KetchupApp {
             && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
             && let Some(cursor) = self.measurement_point_at_screen(pointer, response.rect, start.z)
         {
-            self.measure_cursor = Some(cursor);
+            self.gesture.measure.cursor = Some(cursor);
             self.digest = self.measurement_text(start, cursor, "digest-measure-live");
         }
         if let Some((start, end)) = self.measure_span()
@@ -28513,7 +28513,7 @@ impl KetchupApp {
             }
         }
 
-        if let (Some(start), Some(cursor)) = (self.zoom_window_start, self.zoom_window_cursor) {
+        if let Some(&ZoomWindowDrag { start, cursor }) = self.gesture.drag.get::<ZoomWindowDrag>() {
             let window = Rect::from_two_pos(start, cursor).intersect(response.rect);
             painter.rect_filled(
                 window,
@@ -28527,8 +28527,10 @@ impl KetchupApp {
                 egui::StrokeKind::Inside,
             );
         }
-        if let Some(drag) = self
-            .selection_window
+        if let Some(&drag) = self
+            .gesture
+            .drag
+            .get::<SelectionWindowDrag>()
             .filter(|drag| drag.start.distance(drag.cursor) >= 4.0)
         {
             let window = Rect::from_two_pos(drag.start, drag.cursor).intersect(response.rect);
@@ -28578,11 +28580,12 @@ impl KetchupApp {
             }
         }
 
-        if let (Some(start), Some(cursor)) = (self.sketch_start, self.sketch_cursor) {
+        if let (Some(start), Some(cursor)) = (self.gesture.sketch.start, self.gesture.sketch.cursor)
+        {
             if self.active_tool == ActiveTool::Line {
                 let from = self.project(start, response.rect);
                 let to = self.project(cursor, response.rect);
-                let color = match self.line_axis_lock {
+                let color = match self.gesture.sketch.axis_lock {
                     Some(Axis::X) => Color32::from_rgb(230, 80, 80),
                     Some(Axis::Y) => Color32::from_rgb(80, 205, 120),
                     Some(Axis::Z) => Color32::from_rgb(80, 145, 255),
@@ -28590,7 +28593,9 @@ impl KetchupApp {
                 };
                 painter.line_segment([from, to], Stroke::new(2.5_f32, color));
                 let axis_label = self
-                    .line_axis_lock
+                    .gesture
+                    .sketch
+                    .axis_lock
                     .map(|axis| format!("{} · ", self.catalog.text(axis_name_key(axis))))
                     .unwrap_or_default();
                 painter.text(
@@ -28608,7 +28613,7 @@ impl KetchupApp {
                     Color32::WHITE,
                 );
             } else if self.active_tool == ActiveTool::Arc {
-                if let Some(end) = self.sketch_end
+                if let Some(end) = self.gesture.sketch.end
                     && let Some(arc) = self.drawing_arc(start, end, cursor)
                 {
                     let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
@@ -29367,10 +29372,11 @@ impl KetchupApp {
         }
         if self.active_tool == ActiveTool::PushPull {
             self.hover_snap = self.push_pull_target_snap();
-            if let Some(drag) = self
-                .push_pull_drag
-                .as_ref()
-                .or(self.push_pull_anchor.as_ref())
+            if let Some(drag) = self.gesture.drag.get::<PushPullDrag>().or(self
+                .gesture
+                .drag
+                .get::<PushPullAnchor>()
+                .map(|anchor| &anchor.0))
                 && self.push_pull_snap_distance(drag).is_none()
             {
                 self.hover_snap = None;
@@ -29397,9 +29403,16 @@ impl KetchupApp {
             ]),
         );
         if let Some(drag) = self
-            .push_pull_drag
-            .clone()
-            .or_else(|| self.push_pull_anchor.clone())
+            .gesture
+            .drag
+            .get::<PushPullDrag>()
+            .cloned()
+            .or_else(|| {
+                self.gesture
+                    .drag
+                    .get::<PushPullAnchor>()
+                    .map(|anchor| anchor.0.clone())
+            })
             && self.push_pull_snap_distance(&drag).is_some()
         {
             self.update_push_pull_gesture(&drag, drag.pointer_start);
@@ -29779,15 +29792,15 @@ impl KetchupApp {
                     .memory(|memory| memory.has_focus(egui::Id::new("value-box-input")))
                     .then(|| self.value_input.clone());
                 let held = match self.active_tool {
-                    ActiveTool::Move => self.move_axis_lock,
-                    ActiveTool::Scale => self.scale_axis_lock,
-                    ActiveTool::Line => self.line_axis_lock,
+                    ActiveTool::Move => self.gesture.transform.move_axis_lock,
+                    ActiveTool::Scale => self.gesture.transform.scale_axis_lock,
+                    ActiveTool::Line => self.gesture.sketch.axis_lock,
                     _ if self.uses_drawing_plane() => Some(match self.face_workflow_datum() {
                         PrincipalPlane::Xy => Axis::Z,
                         PrincipalPlane::Xz => Axis::Y,
                         PrincipalPlane::Yz => Axis::X,
                     }),
-                    _ => self.rotate_axis_lock,
+                    _ => self.gesture.transform.rotate_axis_lock,
                 };
                 // Pressing the axis already held releases it, so one key both
                 // locks and unlocks.
@@ -29800,7 +29813,7 @@ impl KetchupApp {
                     ActiveTool::Move => self.set_move_axis_lock(axis),
                     ActiveTool::Scale => self.set_scale_axis_lock(axis),
                     ActiveTool::Line => {
-                        self.line_axis_lock = axis;
+                        self.gesture.sketch.axis_lock = axis;
                         self.digest = self.catalog.format(
                             "digest-line-axis-locked",
                             &BTreeMap::from([(
@@ -29910,12 +29923,11 @@ impl KetchupApp {
                 self.status_key = "status-ready";
                 self.digest = self.catalog.text("digest-cancelled");
             } else if self.active_tool == ActiveTool::ZoomWindow {
-                self.zoom_window_start = None;
-                self.zoom_window_cursor = None;
+                self.gesture.drag.close::<ZoomWindowDrag>();
                 self.active_tool = ActiveTool::Select;
                 self.status_key = "status-ready";
                 self.digest = self.catalog.text("digest-cancelled");
-            } else if self.measure_start.is_some() {
+            } else if self.gesture.measure.start.is_some() {
                 self.clear_measurement();
                 self.digest = self.catalog.text("digest-measure-cleared");
                 self.status_key = "status-measure-first-point";
@@ -29928,9 +29940,9 @@ impl KetchupApp {
                 || self.tool_preview.get::<LoftPreview>().is_some()
                 || self.tool_preview.get::<GeneralFinishPreview>().is_some()
                 || self.solid_tool_target.is_some()
-                || self.push_pull_anchor.is_some()
+                || self.gesture.drag.get::<PushPullAnchor>().is_some()
                 || self.tool_session.is_some()
-                || self.sketch_mode
+                || self.gesture.sketch.armed
             {
                 self.clear_ephemeral_edit_state();
                 self.cancel_rectangle_sketch();

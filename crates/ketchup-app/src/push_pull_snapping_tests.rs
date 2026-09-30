@@ -29,7 +29,7 @@ fn push_pull_clears_exact_preview_on_zero_or_failed_replan() {
             ordinal: 1,
         }));
         let drag = drag(&app, app.selection.primary.clone().unwrap());
-        app.push_pull_anchor = Some(drag.clone());
+        app.gesture.drag.open(PushPullAnchor(drag.clone()));
         let before = app.canonical_digest();
         let steps = app.undo_step_count();
         assert!(app.update_push_pull_gesture(&drag, Pos2::new(0.0, -2.0)));

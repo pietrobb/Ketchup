@@ -797,7 +797,7 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         .project(hit.position_mm + hit.outward_normal, rect)
         - harness.state().project(hit.position_mm, rect);
     let expected_screen_normal = expected_screen_normal.normalized();
-    let drag = harness.state().push_pull_drag.as_ref().unwrap();
+    let drag = harness.state().gesture.drag.get::<PushPullDrag>().unwrap();
     assert!(drag.screen_normal.dot(expected_screen_normal) > 0.999_999);
     let before_package = package(harness.state());
     let before_support = before_package
@@ -922,7 +922,14 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         hit.outward_normal
     );
     assert!(harness.state().face_offset_evaluation.is_none());
-    assert!(harness.state().push_pull_anchor.is_none());
+    assert!(
+        harness
+            .state()
+            .gesture
+            .drag
+            .get::<PushPullAnchor>()
+            .is_none()
+    );
 }
 
 #[test]

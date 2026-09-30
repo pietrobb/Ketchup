@@ -1740,8 +1740,11 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 assert!(!app.has_preview());
             }
             1 => {
-                app.sketch_mode = true;
-                app.line_chain_points.push(crate::Vec3::new(1.0, 2.0, 3.0));
+                app.gesture.sketch.armed = true;
+                app.gesture
+                    .sketch
+                    .chain_points
+                    .push(crate::Vec3::new(1.0, 2.0, 3.0));
                 app.value_input = "unfinished sketch".into();
             }
             2 => {
@@ -1786,7 +1789,10 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 );
             }
             6 => {
-                app.zoom_window_start = Some(egui::pos2(12.0, 34.0));
+                app.gesture.drag.open(crate::gesture::ZoomWindowDrag {
+                    start: egui::pos2(12.0, 34.0),
+                    cursor: egui::pos2(12.0, 34.0),
+                });
             }
             _ => unreachable!(),
         }
@@ -1809,8 +1815,11 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
         match state {
             0 => assert!(app.tool_preview.is_some()),
             1 => {
-                assert!(app.sketch_mode);
-                assert_eq!(app.line_chain_points, vec![crate::Vec3::new(1.0, 2.0, 3.0)]);
+                assert!(app.gesture.sketch.armed);
+                assert_eq!(
+                    app.gesture.sketch.chain_points,
+                    vec![crate::Vec3::new(1.0, 2.0, 3.0)]
+                );
                 assert_eq!(app.value_input, "unfinished sketch");
             }
             2 => {
@@ -1835,7 +1844,13 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 app.move_session().unwrap().0.delta_mm,
                 crate::Vec3::new(1.0, 2.0, 3.0)
             ),
-            6 => assert_eq!(app.zoom_window_start, Some(egui::pos2(12.0, 34.0))),
+            6 => assert_eq!(
+                app.gesture
+                    .drag
+                    .get::<crate::gesture::ZoomWindowDrag>()
+                    .map(|window| window.start),
+                Some(egui::pos2(12.0, 34.0))
+            ),
             _ => unreachable!(),
         }
     }

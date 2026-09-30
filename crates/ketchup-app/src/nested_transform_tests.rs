@@ -226,7 +226,7 @@ fn nested_world_rotate_copy_and_angle_correction_use_the_same_pivot() {
             let original = world(&app, 1);
             let sibling = world(&app, 2);
             let centre = Vec3::new(26.0, 44.0, -17.0);
-            app.rotate_axis_lock = Some(Axis::Y);
+            app.gesture.transform.rotate_axis_lock = Some(Axis::Y);
             if group {
                 assert!(app.select_group(GroupId(30)));
                 assert!(app.rotate_selected_around(centre, Axis::Y, 35.0));

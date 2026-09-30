@@ -96,7 +96,7 @@ fn drawing_plane_first_point_accepts_z_axis() {
             let mut harness = shell(app);
             let expected = Vec3::new(0.0, 0.0, 25.0);
             click(&mut harness, expected);
-            near(harness.state().sketch_start.unwrap(), expected);
+            near(harness.state().gesture.sketch.start.unwrap(), expected);
         }
     }
 }
@@ -114,7 +114,7 @@ fn drawing_plane_arrows_anchor_every_plane_at_object_corner() {
         app.update_viewport_inference(Some(pointer), rect);
         assert_eq!(app.hovered_snap_position(), Some(start));
         assert_eq!(app.drawing_input_point(pointer, rect), Some(start));
-        app.sketch_start = Some(start);
+        app.gesture.sketch.start = Some(start);
         let expected = app.drawing_world_delta(start, Vec3::new(30.0, 20.0, 0.0));
         let actual = app
             .drawing_input_point(app.project(expected, rect), rect)
@@ -132,10 +132,10 @@ fn drawing_plane_rectangle_tool_remains_ready_after_completion() {
     assert!(app.complete_rectangle_sketch(Vec3::ZERO, Vec3::new(60.0, 40.0, 0.0)));
     assert_eq!(app.active_tool, ActiveTool::Rectangle);
     assert!(
-        app.sketch_mode,
+        app.gesture.sketch.armed,
         "visible Rectangle tool must accept the next first corner"
     );
-    assert!(app.sketch_start.is_none());
+    assert!(app.gesture.sketch.start.is_none());
 }
 
 #[test]
@@ -146,17 +146,17 @@ fn drawing_plane_rectangle_headless_preview_commit_repeat_and_history() {
         let mut harness = shell(app);
         let start = Vec3::new(80.0, 60.0, 40.0);
         click(&mut harness, start);
-        near(harness.state().sketch_start.unwrap(), start);
+        near(harness.state().gesture.sketch.start.unwrap(), start);
         press(&mut harness, key_code);
         assert_eq!(harness.state().face_workflow_datum(), plane);
-        near(harness.state().sketch_start.unwrap(), start);
+        near(harness.state().gesture.sketch.start.unwrap(), start);
         let end = harness
             .state()
             .drawing_world_delta(start, Vec3::new(30.0, 25.0, 0.0));
         let before = harness.state().canonical_digest();
         let undo = harness.state().undo_step_count();
         pointer(&mut harness, end);
-        near(harness.state().sketch_cursor.unwrap(), end);
+        near(harness.state().gesture.sketch.cursor.unwrap(), end);
         let corners = harness.state().drawing_rectangle_corners(start, end);
         let pixels = corners.map(|p| harness.state().viewport_position(p).unwrap());
         for i in 0..4 {
@@ -180,7 +180,7 @@ fn drawing_plane_rectangle_headless_preview_commit_repeat_and_history() {
             );
         }
         click(&mut harness, end);
-        near(harness.state().sketch_start.unwrap(), end);
+        near(harness.state().gesture.sketch.start.unwrap(), end);
         press(&mut harness, egui::Key::Escape);
         assert_eq!(harness.state().canonical_digest(), after);
         assert!(harness.state_mut().undo());
@@ -266,7 +266,10 @@ fn drawing_plane_rotation_axis_keys_preserve_typed_angle() {
     harness.step();
     assert_eq!(harness.state().value_input(), "90");
     press(&mut harness, egui::Key::ArrowRight);
-    assert_eq!(harness.state().rotate_axis_lock, Some(Axis::X));
+    assert_eq!(
+        harness.state().gesture.transform.rotate_axis_lock,
+        Some(Axis::X)
+    );
     assert_eq!(harness.state().value_input(), "90");
     press(&mut harness, egui::Key::Enter);
     let size = harness.state().occurrence_box_geometry(1).unwrap().1;
@@ -300,7 +303,7 @@ fn drawing_plane_axis_keys_do_not_steal_foreign_text_focus() {
             app.handle_shortcuts(ctx);
         },
     );
-    assert_eq!(app.rotate_axis_lock, None);
+    assert_eq!(app.gesture.transform.rotate_axis_lock, None);
 }
 #[test]
 fn drawing_plane_axis_keys_are_shared_and_toggle_for_all_free_tools() {
@@ -321,16 +324,18 @@ fn drawing_plane_axis_keys_are_shared_and_toggle_for_all_free_tools() {
         ] {
             key(&mut app, key_code);
             match command {
-                AppCommand::Line => assert_eq!(app.line_axis_lock, Some(axis)),
-                AppCommand::Move => assert_eq!(app.move_axis_lock, Some(axis)),
-                AppCommand::Rotate => assert_eq!(app.rotate_axis_lock, Some(axis)),
+                AppCommand::Line => assert_eq!(app.gesture.sketch.axis_lock, Some(axis)),
+                AppCommand::Move => assert_eq!(app.gesture.transform.move_axis_lock, Some(axis)),
+                AppCommand::Rotate => {
+                    assert_eq!(app.gesture.transform.rotate_axis_lock, Some(axis))
+                }
                 _ => assert_eq!(app.face_workflow_datum(), plane),
             };
             key(&mut app, egui::Key::ArrowDown);
             match command {
-                AppCommand::Line => assert_eq!(app.line_axis_lock, None),
-                AppCommand::Move => assert_eq!(app.move_axis_lock, None),
-                AppCommand::Rotate => assert_eq!(app.rotate_axis_lock, None),
+                AppCommand::Line => assert_eq!(app.gesture.sketch.axis_lock, None),
+                AppCommand::Move => assert_eq!(app.gesture.transform.move_axis_lock, None),
+                AppCommand::Rotate => assert_eq!(app.gesture.transform.rotate_axis_lock, None),
                 _ => assert_eq!(app.face_workflow_datum(), PrincipalPlane::Xy),
             };
         }

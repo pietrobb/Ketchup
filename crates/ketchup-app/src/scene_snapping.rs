@@ -608,11 +608,16 @@ impl KetchupApp {
         let pointer_ray = self.view_ray(pointer, rect)?;
         let frame = frame.or_else(|| {
             self.uses_drawing_plane()
-                .then(|| self.sketch_start.map(|p| self.drawing_frame(Some(p))))
+                .then(|| {
+                    self.gesture
+                        .sketch
+                        .start
+                        .map(|p| self.drawing_frame(Some(p)))
+                })
                 .flatten()
         });
         let line_axis = (self.active_tool == ActiveTool::Line)
-            .then(|| self.sketch_start.zip(self.line_axis_lock))
+            .then(|| self.gesture.sketch.start.zip(self.gesture.sketch.axis_lock))
             .flatten();
         let move_drag = self.move_session().map(|(drag, _)| drag);
         if self.active_tool == ActiveTool::Move && move_drag.is_some_and(|d| d.axis.is_some()) {
@@ -704,8 +709,8 @@ impl KetchupApp {
             add(reference, SnapKind::Edge, at((low + high) * 0.5));
         }
         if self.active_tool == ActiveTool::Arc
-            && self.sketch_end.is_none()
-            && let Some(anchor) = self.sketch_start
+            && self.gesture.sketch.end.is_none()
+            && let Some(anchor) = self.gesture.sketch.start
         {
             for (reference, center, x, y, radius) in &geometry.circles {
                 let xx = dot(*x, *x);

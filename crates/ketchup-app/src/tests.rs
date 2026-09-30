@@ -8872,7 +8872,7 @@ fn rectangle_drag_preview_preserves_signed_bounds_until_release() {
         modifiers: egui::Modifiers::NONE,
     });
     harness.step();
-    let drag = harness.state().push_pull_drag.as_ref().unwrap();
+    let drag = harness.state().gesture.drag.get::<PushPullDrag>().unwrap();
     let screen_delta = drag.screen_normal * drag.pixels_per_mm;
     let mut release = pointer;
     for distance in [15.0_f64, -20.0, 10.0, -30.0] {
@@ -12823,7 +12823,7 @@ fn rotate_previews_commits_and_corrects_the_entire_multi_selection_atomically() 
     assert_eq!(app.canonical_digest(), base_digest);
     assert_eq!(app.undo_step_count(), base_steps);
 
-    app.rotate_axis_lock = Some(Axis::Z);
+    app.gesture.transform.rotate_axis_lock = Some(Axis::Z);
     assert!(app.rotate_selected(90.0));
     assert_eq!(app.document_revision(), base_revision + 1);
     assert_eq!(app.undo_step_count(), base_steps + 1);
@@ -12966,8 +12966,8 @@ fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
 fn exact_rectangle_and_push_pull_are_atomic_undo_steps() {
     let mut app = KetchupApp::new();
     app.dispatch_command(AppCommand::Rectangle);
-    app.sketch_start = Some(Vec3::new(40.0, 30.0, 20.0));
-    app.sketch_cursor = Some(Vec3::new(20.0, 10.0, 20.0));
+    app.gesture.sketch.start = Some(Vec3::new(40.0, 30.0, 20.0));
+    app.gesture.sketch.cursor = Some(Vec3::new(20.0, 10.0, 20.0));
     app.value_input = "300,200".to_owned();
 
     assert!(app.apply_value_input());
@@ -13217,14 +13217,14 @@ fn move_ctrl_is_a_persistent_copy_toggle_during_an_active_gesture() {
     );
 
     app.update_move_copy_modifier(true);
-    assert!(!app.move_copy_mode);
+    assert!(!app.gesture.transform.move_copy);
     app.update_move_copy_modifier(false);
-    assert!(app.move_copy_mode);
+    assert!(app.gesture.transform.move_copy);
     assert!(app.move_session().unwrap().0.copy);
 
     app.update_move_copy_modifier(true);
     app.update_move_copy_modifier(false);
-    assert!(!app.move_copy_mode);
+    assert!(!app.gesture.transform.move_copy);
     assert!(!app.move_session().unwrap().0.copy);
 }
 
@@ -13256,14 +13256,14 @@ fn rotate_ctrl_is_a_persistent_copy_toggle_during_an_active_gesture() {
     );
 
     app.update_rotate_copy_modifier(true);
-    assert!(!app.rotate_copy_mode);
+    assert!(!app.gesture.transform.rotate_copy);
     app.update_rotate_copy_modifier(false);
-    assert!(app.rotate_copy_mode);
+    assert!(app.gesture.transform.rotate_copy);
     assert!(app.rotate_session().unwrap().0.copy);
 
     app.update_rotate_copy_modifier(true);
     app.update_rotate_copy_modifier(false);
-    assert!(!app.rotate_copy_mode);
+    assert!(!app.gesture.transform.rotate_copy);
     assert!(!app.rotate_session().unwrap().0.copy);
 }
 
@@ -13290,11 +13290,11 @@ fn transform_copy_toggle_ends_with_the_committed_gesture() {
         delta_mm: Vec3::new(25.0, 0.0, 0.0),
         copy: true,
     }));
-    assert!(!move_app.move_copy_mode);
+    assert!(!move_app.gesture.transform.move_copy);
     move_app.update_move_copy_modifier(true);
     move_app.update_move_copy_modifier(false);
     assert!(
-        move_app.move_copy_mode,
+        move_app.gesture.transform.move_copy,
         "the next standalone Ctrl gesture must enable Copy"
     );
 
@@ -13320,11 +13320,11 @@ fn transform_copy_toggle_ends_with_the_committed_gesture() {
         angle_degrees: 45.0,
         copy: true,
     }));
-    assert!(!rotate_app.rotate_copy_mode);
+    assert!(!rotate_app.gesture.transform.rotate_copy);
     rotate_app.update_rotate_copy_modifier(true);
     rotate_app.update_rotate_copy_modifier(false);
     assert!(
-        rotate_app.rotate_copy_mode,
+        rotate_app.gesture.transform.rotate_copy,
         "the next standalone Ctrl gesture must enable Rotate-Copy"
     );
 }
@@ -13361,7 +13361,7 @@ fn escape_and_tool_change_clear_transform_constraints_without_mutation() {
     );
     app.dispatch_command(AppCommand::Rotate);
     assert!(app.move_session().is_none());
-    assert_eq!(app.move_axis_lock, None);
+    assert_eq!(app.gesture.transform.move_axis_lock, None);
 
     app.set_rotate_axis_lock(Some(Axis::Y));
     app.set_rotate_session(
@@ -13381,7 +13381,7 @@ fn escape_and_tool_change_clear_transform_constraints_without_mutation() {
     );
     app.cancel_preview();
     assert!(app.rotate_session().is_none());
-    assert_eq!(app.rotate_axis_lock, None);
+    assert_eq!(app.gesture.transform.rotate_axis_lock, None);
 
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
@@ -13420,7 +13420,7 @@ fn stale_numeric_transform_confirmation_ends_the_copy_toggle_without_mutation() 
     move_app.value_input = "25, 0, 0".to_owned();
 
     assert!(!move_app.apply_value_input());
-    assert!(!move_app.move_copy_mode);
+    assert!(!move_app.gesture.transform.move_copy);
     assert_eq!(move_app.canonical_digest(), digest);
     assert_eq!(move_app.undo_step_count(), undo_steps);
 
@@ -13455,7 +13455,7 @@ fn stale_numeric_transform_confirmation_ends_the_copy_toggle_without_mutation() 
     rotate_app.value_input = "45".to_owned();
 
     assert!(!rotate_app.apply_value_input());
-    assert!(!rotate_app.rotate_copy_mode);
+    assert!(!rotate_app.gesture.transform.rotate_copy);
     assert_eq!(rotate_app.canonical_digest(), digest);
     assert_eq!(rotate_app.undo_step_count(), undo_steps);
 }
@@ -13502,8 +13502,8 @@ fn transform_gestures_fail_closed_after_selection_drift() {
     app.update_move_copy_modifier(false);
     app.update_rotate_copy_modifier(true);
     app.update_rotate_copy_modifier(false);
-    assert!(app.move_copy_mode);
-    assert!(app.rotate_copy_mode);
+    assert!(app.gesture.transform.move_copy);
+    assert!(app.gesture.transform.rotate_copy);
 
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
     let digest = app.canonical_digest();
@@ -13513,9 +13513,9 @@ fn transform_gestures_fail_closed_after_selection_drift() {
     assert!(!app.move_preview_is_current(&move_drag));
     assert!(!app.rotate_preview_is_current(&rotate_drag));
     assert!(!app.commit_move_drag(&move_drag));
-    assert!(!app.move_copy_mode);
+    assert!(!app.gesture.transform.move_copy);
     assert!(!app.commit_rotate_drag(&rotate_drag));
-    assert!(!app.rotate_copy_mode);
+    assert!(!app.gesture.transform.rotate_copy);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
     assert_eq!(app.selected_occurrence_ids(), selected);
@@ -13609,13 +13609,13 @@ fn directional_selection_window_contains_left_to_right_and_crosses_right_to_left
         ])
     );
 
-    app.selection_window = Some(SelectionWindowDrag {
+    app.gesture.drag.open(SelectionWindowDrag {
         start: viewport.left_top(),
         cursor: viewport.center(),
         additive: false,
     });
     app.cancel_preview();
-    assert!(app.selection_window.is_none());
+    assert!(app.gesture.drag.get::<SelectionWindowDrag>().is_none());
     assert_eq!(app.selection.occurrences.len(), 2);
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
@@ -18008,10 +18008,10 @@ fn command_registry_exposes_only_complete_modeling_tools() {
 
     app.dispatch_command(AppCommand::Rectangle);
     assert_eq!(app.active_tool, ActiveTool::Rectangle);
-    assert!(app.sketch_mode);
+    assert!(app.gesture.sketch.armed);
     app.dispatch_command(AppCommand::PushPull);
     assert_eq!(app.active_tool, ActiveTool::PushPull);
-    assert!(!app.sketch_mode);
+    assert!(!app.gesture.sketch.armed);
 }
 
 #[test]
@@ -18175,4 +18175,35 @@ fn a_new_tool_preview_replaces_the_shown_one_and_cancel_clears_it() {
     app.cancel_preview();
     assert!(app.tool_preview.is_none());
     assert!(!app.has_occurrence_operation_preview());
+}
+
+#[test]
+fn starting_a_pointer_drag_ends_the_one_that_was_running() {
+    let mut app = KetchupApp::new();
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+    app.gesture.drag.open(ZoomWindowDrag {
+        start: viewport.left_top(),
+        cursor: viewport.center(),
+    });
+    app.gesture.drag.open(SelectionWindowDrag {
+        start: viewport.center(),
+        cursor: viewport.right_bottom(),
+        additive: false,
+    });
+    assert!(app.gesture.drag.get::<ZoomWindowDrag>().is_none());
+    assert!(app.gesture.drag.get::<SelectionWindowDrag>().is_some());
+
+    app.gesture.drag.close::<ZoomWindowDrag>();
+    assert!(
+        app.gesture.drag.get::<SelectionWindowDrag>().is_some(),
+        "closing a drag that is not running leaves the running one alone"
+    );
+
+    app.gesture.drag.open(ZoomWindowDrag {
+        start: viewport.left_top(),
+        cursor: viewport.left_top(),
+    });
+    assert!(app.gesture.drag.get::<SelectionWindowDrag>().is_none());
+    app.gesture.drag.close::<ZoomWindowDrag>();
+    assert!(app.gesture.drag.is_none());
 }

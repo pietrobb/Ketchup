@@ -129,11 +129,13 @@ impl KetchupApp {
         rect: Rect,
     ) {
         let Some(pointer) = pointer else { return };
-        if !self.sketch_mode {
+        if !self.gesture.sketch.armed {
             return;
         }
         let plane_z = self
-            .sketch_start
+            .gesture
+            .sketch
+            .start
             .map_or_else(|| self.rectangle_plane_z(pointer, rect), |start| start.z);
         let frame = if self.uses_drawing_plane() {
             self.drawing_input_frame(pointer, rect)
@@ -146,7 +148,7 @@ impl KetchupApp {
             }
         };
         let frame = (self.active_tool != ActiveTool::Line
-            && (!self.uses_drawing_plane() || self.sketch_start.is_some()))
+            && (!self.uses_drawing_plane() || self.gesture.sketch.start.is_some()))
         .then_some(frame);
         let Some((origin, axis)) = self.datum_snap_at_screen(pointer, rect, frame) else {
             return;
@@ -592,10 +594,10 @@ mod tests {
     fn locked_vertical_line_preview_is_blue_and_keeps_its_spatial_length() {
         let mut app = KetchupApp::new();
         app.active_tool = ActiveTool::Line;
-        app.sketch_mode = true;
-        app.sketch_start = Some(Vec3::new(0.0, 0.0, 20.0));
-        app.sketch_cursor = Some(Vec3::new(0.0, 0.0, 55.0));
-        app.line_axis_lock = Some(Axis::Z);
+        app.gesture.sketch.armed = true;
+        app.gesture.sketch.start = Some(Vec3::new(0.0, 0.0, 20.0));
+        app.gesture.sketch.cursor = Some(Vec3::new(0.0, 0.0, 55.0));
+        app.gesture.sketch.axis_lock = Some(Axis::Z);
         let context = egui::Context::default();
         let output = context.run(
             egui::RawInput {

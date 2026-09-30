@@ -36,7 +36,9 @@ impl KetchupApp {
     pub(super) fn drawing_input_frame(&self, pointer: Pos2, rect: Rect) -> WorkplaneFrame {
         // The first point locates the plane; only later points are constrained by it.
         let point = self
-            .sketch_start
+            .gesture
+            .sketch
+            .start
             .or_else(|| {
                 self.scene_snap_at_screen(pointer, rect, 8.0, None)
                     .map(|snap| snap.position_mm)
@@ -56,7 +58,10 @@ impl KetchupApp {
         self.datum_snap_at_screen(
             pointer,
             rect,
-            self.sketch_start.map(|p| self.drawing_frame(Some(p))),
+            self.gesture
+                .sketch
+                .start
+                .map(|p| self.drawing_frame(Some(p))),
         )
         .filter(|(_, axis)| axis.is_none())
         .map(|(point, _)| point)
@@ -70,7 +75,10 @@ impl KetchupApp {
             pointer,
             rect,
             8.0,
-            self.sketch_start.map(|p| self.drawing_frame(Some(p))),
+            self.gesture
+                .sketch
+                .start
+                .map(|p| self.drawing_frame(Some(p))),
         )
     }
 
@@ -82,7 +90,7 @@ impl KetchupApp {
                     .map(|snap| snap.position_mm)
             })
             .or_else(|| {
-                self.datum_snap_at_screen(pointer, rect, self.sketch_start.map(|_| frame))
+                self.datum_snap_at_screen(pointer, rect, self.gesture.sketch.start.map(|_| frame))
                     .map(|(point, _)| point)
             })
             .or_else(|| self.screen_to_workplane(pointer, rect, frame))
@@ -135,14 +143,20 @@ impl KetchupApp {
     }
 
     pub(super) fn set_drawing_plane(&mut self, plane: PrincipalPlane) {
-        let start = self.sketch_start.unwrap_or(Vec3::ZERO);
-        let end = self.sketch_end.map(|p| self.drawing_local_delta(start, p));
+        let start = self.gesture.sketch.start.unwrap_or(Vec3::ZERO);
+        let end = self
+            .gesture
+            .sketch
+            .end
+            .map(|p| self.drawing_local_delta(start, p));
         let cursor = self
-            .sketch_cursor
+            .gesture
+            .sketch
+            .cursor
             .map(|p| self.drawing_local_delta(start, p));
         self.face_workflow.set_datum(plane);
-        self.sketch_end = end.map(|p| self.drawing_world_delta(start, p));
-        self.sketch_cursor = cursor.map(|p| self.drawing_world_delta(start, p));
+        self.gesture.sketch.end = end.map(|p| self.drawing_world_delta(start, p));
+        self.gesture.sketch.cursor = cursor.map(|p| self.drawing_world_delta(start, p));
         self.hover_snap = None;
     }
 }

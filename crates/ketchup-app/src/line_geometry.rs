@@ -123,7 +123,7 @@ mod tests {
             let points = selected_line_points(&app);
             assert_point(points[0], start);
             assert_point(points[1], end);
-            assert_eq!(app.sketch_start, Some(end));
+            assert_eq!(app.gesture.sketch.start, Some(end));
             assert_eq!(app.undo_step_count(), undo + 1);
             assert!(app.undo());
             assert_eq!(app.canonical_digest(), before);
@@ -137,8 +137,8 @@ mod tests {
         for delta in [Vec3::new(0.0, 0.0, -10.0), Vec3::new(3.0, 4.0, 12.0)] {
             let mut app = KetchupApp::new();
             let start = Vec3::new(2.0, 3.0, 5.0);
-            app.sketch_start = Some(start);
-            app.sketch_cursor = Some(start + delta);
+            app.gesture.sketch.start = Some(start);
+            app.gesture.sketch.cursor = Some(start + delta);
             app.value_input = "26".into();
             assert!(app.complete_exact_line());
             let points = selected_line_points(&app);
@@ -162,8 +162,8 @@ mod tests {
             ],
         ] {
             let mut app = KetchupApp::new();
-            app.line_chain_origin = Some(points[0]);
-            app.line_chain_points.push(points[0]);
+            app.gesture.sketch.chain_origin = Some(points[0]);
+            app.gesture.sketch.chain_points.push(points[0]);
             assert!(app.complete_line_sketch(points[0], points[1]));
             assert!(app.complete_line_sketch(points[1], points[2]));
             let open = app.canonical_digest();
@@ -191,8 +191,8 @@ mod tests {
             Vec3::new(20.0, 20.0, 0.0),
             Vec3::new(0.0, 20.0, 10.0),
         ];
-        app.line_chain_origin = Some(points[0]);
-        app.line_chain_points.push(points[0]);
+        app.gesture.sketch.chain_origin = Some(points[0]);
+        app.gesture.sketch.chain_points.push(points[0]);
         for pair in points.windows(2) {
             assert!(app.complete_line_sketch(pair[0], pair[1]));
         }
