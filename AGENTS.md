@@ -24,10 +24,16 @@ Plan and rationale: `docs/plan-upratovania-2026-09-24.md`, `docs/analyza-fundame
 
 ## 2. Errors must tell the caller what to fix
 
-- Every rejection carries `code`, `path` (the field or program line), `message` in plain language,
-  and `hint` (a concrete fix). Geometric failures also name the parts and a location in mm.
-- Never discard an error's content: no `map_err(|_| "...")`, no rewriting of messages in the SDK
-  or skills, no collapsing many causes into one code.
+- Every rejection is a `ketchup_rejection::Rejection`: `code`, `phase`, `target` (the field, part
+  or program line), `reason` in plain language, `fix_hint` (a concrete fix) and the causing error
+  (`caused_by`). Geometric failures also name the parts and a location in mm. Host error codes
+  and their hints live in one catalog, `ketchup_application::rejections`.
+- Never discard an error's content: no `map_err(|_| "...")`, no `Err("...".to_owned())`, no
+  rewriting of messages in the SDK or skills, no collapsing many causes into one code.
+  Only an error type that carries nothing but its type (`TryFromIntError`, `PoisonError`, …; the
+  list is `CONTENT_FREE` in `scripts/check_error_hygiene.py`) may be dropped, and the closure names
+  it: `map_err(|_: std::num::TryFromIntError| …)`. The script is a CI ratchet: counts per file may
+  only shrink (`--update` locks progress in).
 - Rules the caller must satisfy (for example derived hole depths) belong in the schema/library
   documentation, not only in the rejection.
 
