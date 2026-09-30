@@ -335,7 +335,8 @@ w = extrude(\"w\", distance = 20, profile = [[\"base\", [0, 0], [100, 0]], \
 [\"slope\", [100, 0], [0, 50]], [\"back\", [0, 50], [0, 0]]])
 hole(w, \"base\", at = (70, 10), diameter = 5, depth = 10)
 mirror(w, axis = \"x\")
-post = box(\"post\", (30, 50, 20), at = (100, 0, 0))
+post = box(\"post\", (30, 50, 20))
+on(post, w, face = \"back\")
 c = contact(w, post)
 if (c.face_a, c.face_b) != (\"back\", \"x-\"):
     fail(\"faces %s %s\" % (c.face_a, c.face_b))
@@ -347,8 +348,8 @@ dowels(w, post, dowel = \"6x30\", margin = 10)
         evaluated.model.part("w").unwrap(),
         evaluated.model.part("post").unwrap(),
     );
-    // The mirror across x = 50 turned the back from x = 0 to x = 100, where
-    // the post stands; a bounding box would call it x+.
+    // The mirror across x = 50 turned the back from x = 0 to x = 100; on()
+    // stood the post there, and a bounding box would call the face x+.
     let found = contact(w, post).expect("touching");
     assert_eq!(
         [found.face_a.as_str(), found.face_b.as_str()],
@@ -371,6 +372,7 @@ dowels(w, post, dowel = \"6x30\", margin = 10)
         assert_near(inward, [-1.0, 0.0, 0.0], "into the mirrored back");
     }
     assert_eq!(post.holes.iter().filter(|h| h.face == "x-").count(), 2);
+    assert!((post.at_mm[0] - 100.0).abs() < 1e-9, "{:?}", post.at_mm);
 }
 
 #[test]

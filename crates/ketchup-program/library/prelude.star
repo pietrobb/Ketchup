@@ -158,12 +158,18 @@ def member(name, start, end, section, across = None, material = "timber", grain 
 #     "x+", "segment2" or "<boolean>.z+" for the face a cut left
 
 def face_normal(part, face):
-    """World outward normal of `face` ("x-" ... "z+") in the part's own frame,
-    or a world direction (x, y, z) given as it is."""
+    """World outward normal of the part's face named `face` (see faces(); on
+    a round face its normal at angle 0), or a world direction (x, y, z) given
+    as it is. A part without named faces (swept, lofted) takes "x-" ... "z+"
+    as the faces of its box."""
     if type(face) != "string":
         return vec_scale(face, 1.0 / vec_length(face))
+    named = [f for f in faces(part) if f.name == face]
+    if named:
+        return named[0].normal
     if len(face) != 2 or face[0] not in AXES or face[1] not in "+-":
-        fail("face must be one of x-, x+, y-, y+, z-, z+ or a world direction; got %r" % face)
+        fail("face %r does not exist on %s; its faces are %s, or give a world direction" %
+             (face, part_info(part).name, [f.name for f in faces(part)]))
     axis = getattr(part_info(part), face[0])
     return axis if face[1] == "+" else vec_scale(axis, -1)
 
@@ -712,10 +718,10 @@ def _mm(value):
     return int(value) if value == int(value) else value
 
 def _drill_room(part, face, rest):
-    """(thickness behind `face`, deepest hole leaving `rest` of it) of a part."""
-    if len(face) != 2 or face[0] not in AXES:
-        return None
-    thickness = part_info(part).size[AXES[face[0]]]
+    """(thickness behind `face`, deepest hole leaving `rest` of it) of a part:
+    how far the part reaches across the face's normal."""
+    n = face_normal(part, face)
+    thickness = reach(part, n) + reach(part, vec_scale(n, -1))
     return (thickness, thickness - max(rest, thickness / 3.0))
 
 def _dowel_depths(a, b, face_a, face_b, dowel, length, clearance, rest):
@@ -723,8 +729,6 @@ def _dowel_depths(a, b, face_a, face_b, dowel, length, clearance, rest):
     else the thinner side as deep as its rest allows and the rest of the
     dowel in the other; each hole `clearance` longer than its dowel end."""
     room_a, room_b = _drill_room(a, face_a, rest), _drill_room(b, face_b, rest)
-    if room_a == None or room_b == None:
-        return (length / 2.0 + clearance, length / 2.0 + clearance)
     grip = [int((room[1] - clearance) * 2) / 2.0 for room in (room_a, room_b)]
     if min(grip) >= length / 2.0:
         return (length / 2.0 + clearance, length / 2.0 + clearance)
