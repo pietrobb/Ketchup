@@ -35,16 +35,16 @@ use ketchup_core::exact_validation::{
     GeneralClearanceCase, GravitySupportInput, GravitySupportParticipant, general_body_input_bytes,
     general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
-use ketchup_core::fabrication::{
-    FABRICATION_ROLE_DIMENSION_V1, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
-    TIMBER_MEMBER_ROLE_V1,
-};
 use ketchup_core::persistence::{self, ContainerData};
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
     ValidationState,
+};
+use ketchup_manufacturing::fabrication::{
+    FABRICATION_ROLE_DIMENSION_V1, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
+    TIMBER_MEMBER_ROLE_V1,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::path::PathBuf;
@@ -1291,7 +1291,7 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     );
     assert_eq!(static_validation["static_load"]["issue_count"], 0);
 
-    let fabrication = ketchup_core::fabrication::project_general_fabrication(
+    let fabrication = ketchup_manufacturing::fabrication::project_general_fabrication(
         &committed,
         &registry,
         &collision_cases,
@@ -1547,13 +1547,13 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
         report.diagnostics
     );
 
-    let projection = ketchup_core::fabrication::project_general_fabrication(
+    let projection = ketchup_manufacturing::fabrication::project_general_fabrication(
         &snapshot, &registry, &cases, &report, tolerance,
     )
     .unwrap();
     assert_eq!(
         projection,
-        ketchup_core::fabrication::project_general_fabrication(
+        ketchup_manufacturing::fabrication::project_general_fabrication(
             &snapshot, &registry, &cases, &report, tolerance,
         )
         .unwrap(),
@@ -1738,7 +1738,7 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
     let fabrication_started = Instant::now();
     let validation = general_report(&final_snapshot, &cases, tolerance);
     assert_eq!(validation.state, ValidationState::Passed);
-    let projection = ketchup_core::fabrication::project_general_fabrication(
+    let projection = ketchup_manufacturing::fabrication::project_general_fabrication(
         &final_snapshot,
         &registry,
         &cases,

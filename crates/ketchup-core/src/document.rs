@@ -2460,7 +2460,9 @@ pub struct SceneOccurrence {
 }
 
 impl SceneOccurrence {
-    pub(crate) fn matches_snapshot(&self, snapshot: &Snapshot) -> bool {
+    /// Whether this projection still describes `snapshot`.
+    #[must_use]
+    pub fn matches_snapshot(&self, snapshot: &Snapshot) -> bool {
         let Ok(resolved) = snapshot.resolve_instance_path(&self.instance_path) else {
             return false;
         };

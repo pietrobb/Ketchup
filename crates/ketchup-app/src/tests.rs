@@ -2676,21 +2676,23 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
                 },
                 CanonicalCommand::UpsertClassificationDimension {
                     id: ClassificationDimensionId(200),
-                    name: ketchup_core::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                    name: ketchup_manufacturing::fabrication::FABRICATION_ROLE_DIMENSION_V1
+                        .to_owned(),
                     categories: vec![
                         (
                             ClassificationCategoryId(201),
-                            ketchup_core::fabrication::MANUFACTURED_ITEM_ROLE_V1.to_owned(),
+                            ketchup_manufacturing::fabrication::MANUFACTURED_ITEM_ROLE_V1
+                                .to_owned(),
                         ),
                         (
                             ClassificationCategoryId(202),
-                            ketchup_core::fabrication::PURCHASED_ITEM_ROLE_V1.to_owned(),
+                            ketchup_manufacturing::fabrication::PURCHASED_ITEM_ROLE_V1.to_owned(),
                         ),
                     ],
                 },
                 CanonicalCommand::UpsertClassificationDimension {
                     id: ClassificationDimensionId(210),
-                    name: ketchup_core::fabrication::MATERIAL_DIMENSION_V1.to_owned(),
+                    name: ketchup_manufacturing::fabrication::MATERIAL_DIMENSION_V1.to_owned(),
                     categories: vec![
                         (
                             ClassificationCategoryId(211),
@@ -2876,10 +2878,10 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertClassificationDimension {
                 id: ClassificationDimensionId(100),
-                name: ketchup_core::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                name: ketchup_manufacturing::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
                 categories: vec![(
                     ClassificationCategoryId(101),
-                    ketchup_core::fabrication::TIMBER_MEMBER_ROLE_V1.to_owned(),
+                    ketchup_manufacturing::fabrication::TIMBER_MEMBER_ROLE_V1.to_owned(),
                 )],
             },
             CanonicalCommand::SetOccurrenceClassification {

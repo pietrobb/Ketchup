@@ -14,14 +14,6 @@ use ketchup_core::exact_validation::{
     GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
     general_body_validation_policy,
 };
-use ketchup_core::fabrication::{
-    BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
-    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
-    GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
-    GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
-    MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus, TIMBER_MATERIAL_V1,
-    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
-};
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::persistence;
@@ -36,6 +28,14 @@ use ketchup_core::validation::{
     EvidenceClass, EvidenceCounts, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
     ValidatorRoleIndex,
+};
+use ketchup_manufacturing::fabrication::{
+    BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
+    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
+    GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
+    GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
+    MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus, TIMBER_MATERIAL_V1,
+    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
 };
 use std::sync::Arc;
 
@@ -1363,7 +1363,7 @@ fn production_preserves_proper_rotations_and_translations() {
 }
 #[test]
 fn production_adapters_share_saved_codes_and_are_opt_in() {
-    use ketchup_core::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
+    use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
     let (snapshot, projection) = circular_drill_fabrication_projection();
     let neutral = projection.production_job(&snapshot, &[]).unwrap();
     assert_eq!(neutral["outputs"], serde_json::json!({}));
@@ -1524,7 +1524,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     let package = projection
         .woodwop_mpr_4_0_production_package(
             &snapshot,
-            ketchup_core::fabrication::WoodwopMprOptions::default(),
+            ketchup_manufacturing::fabrication::WoodwopMprOptions::default(),
         )
         .unwrap();
     assert_eq!(

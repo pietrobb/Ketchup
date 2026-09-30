@@ -118,11 +118,11 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
         ParameterValueType,
     };
     use ketchup_core::exact_validation::GeneralBodyParticipant;
-    use ketchup_core::fabrication::{
-        FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
-    };
     use ketchup_core::pin_joint::{PinJointId, project_pin_joint_contract};
     use ketchup_core::tolerance::TolerancePolicy;
+    use ketchup_manufacturing::fabrication::{
+        FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
+    };
 
     let key = |name: &str| RecipeKey::new(name).unwrap();
     let mut session = worker_session();

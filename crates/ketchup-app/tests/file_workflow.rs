@@ -980,15 +980,15 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
             },
             CanonicalCommand::UpsertClassificationDimension {
                 id: ClassificationDimensionId(200),
-                name: ketchup_core::fabrication::FABRICATION_ROLE_DIMENSION_V1.into(),
+                name: ketchup_manufacturing::fabrication::FABRICATION_ROLE_DIMENSION_V1.into(),
                 categories: vec![(
                     ClassificationCategoryId(201),
-                    ketchup_core::fabrication::MANUFACTURED_ITEM_ROLE_V1.into(),
+                    ketchup_manufacturing::fabrication::MANUFACTURED_ITEM_ROLE_V1.into(),
                 )],
             },
             CanonicalCommand::UpsertClassificationDimension {
                 id: ClassificationDimensionId(210),
-                name: ketchup_core::fabrication::MATERIAL_DIMENSION_V1.into(),
+                name: ketchup_manufacturing::fabrication::MATERIAL_DIMENSION_V1.into(),
                 categories: vec![(
                     ClassificationCategoryId(211),
                     "ketchup.material.steel.s355.v1".into(),
@@ -1174,11 +1174,11 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
     assert!(drawing.is_file());
     let csv = std::fs::read_to_string(&cut_list).unwrap();
     let svg = std::fs::read_to_string(&drawing).unwrap();
-    assert!(csv.contains(ketchup_core::fabrication::WELDMENT_CUT_LIST_EXPORT_V1));
+    assert!(csv.contains(ketchup_manufacturing::fabrication::WELDMENT_CUT_LIST_EXPORT_V1));
     assert!(csv.contains("position=1"));
     assert!(csv.contains("position=2"));
     assert!(csv.contains("material=ketchup.material.steel.s355.v1"));
-    assert!(svg.contains(ketchup_core::fabrication::WELDMENT_DRAWING_SVG_V1));
+    assert!(svg.contains(ketchup_manufacturing::fabrication::WELDMENT_DRAWING_SVG_V1));
     assert_eq!(
         shell.app().last_side_effect_receipt().unwrap().operation(),
         "release-weldment-cut-list-and-drawing"

@@ -18,6 +18,7 @@ LAYERS = {
     "ketchup-assistant": 2,
     "ketchup-analysis": 2,
     "ketchup-pdm": 2,
+    "ketchup-manufacturing": 2,
     "ketchup-program": 3,
     "ketchup-scheduler": 3,
     "ketchup-application": 4,

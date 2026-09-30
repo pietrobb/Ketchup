@@ -1,10 +1,10 @@
 use super::*;
 use ketchup_core::document::{InstancePathStep, LocalGroupId, LocalOccurrenceId};
 use ketchup_core::exact_validation::GeneralBodyParticipant;
-use ketchup_core::fabrication::production::{
+use ketchup_manufacturing::fabrication::production::{
     HomagWoodwopAdapter, ProductionAdapter, instance_path_value,
 };
-use ketchup_core::fabrication::{WoodwopMprOptions, project_general_fabrication};
+use ketchup_manufacturing::fabrication::{WoodwopMprOptions, project_general_fabrication};
 use std::time::Duration;
 
 #[derive(Deserialize)]

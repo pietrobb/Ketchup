@@ -27,6 +27,7 @@ tempfile = "3.23.0"
 workspace = true
 
 [dev-dependencies]
+ketchup-manufacturing = { path = "../ketchup-manufacturing" }
 ketchup-core = { path = "../ketchup-core", features = ["testing"] }
 
 [[test]]

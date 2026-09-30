@@ -4,7 +4,7 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactProductError};
 use ketchup_core::testing::box_package;
-use ketchup_core::three_mf_export::{
+use ketchup_manufacturing::three_mf_export::{
     ExactThreeMfInstance, MAX_THREE_MF_EXPORT_INSTANCES, exact_model_three_mf_export,
 };
 use std::collections::BTreeMap;

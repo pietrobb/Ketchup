@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
-use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
+use ketchup_core::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
-use crate::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
-use crate::import::{DxfImportOptions, inspect_dxf};
-use crate::sketch::{
+use ketchup_core::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
+use ketchup_core::import::{DxfImportOptions, inspect_dxf};
+use ketchup_core::sketch::{
     SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
 

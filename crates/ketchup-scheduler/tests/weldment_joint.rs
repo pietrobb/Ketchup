@@ -11,15 +11,15 @@ use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::{
     BuiltinGeneralBodyValidator, general_body_input_bytes, general_body_validation_policy,
 };
-use ketchup_core::fabrication::{
-    FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
-    MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, WELDMENT_CUT_LIST_EXPORT_V1,
-    WELDMENT_DRAWING_SVG_V1, WeldmentCutTreatment, project_general_fabrication,
-};
 use ketchup_core::persistence::{self, ContainerData};
 use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationState,
+};
+use ketchup_manufacturing::fabrication::{
+    FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
+    MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, WELDMENT_CUT_LIST_EXPORT_V1,
+    WELDMENT_DRAWING_SVG_V1, WeldmentCutTreatment, project_general_fabrication,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::sync::Arc;

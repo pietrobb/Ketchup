@@ -1,6 +1,3 @@
-use ketchup_core::blender_export::{
-    ExactGlbInstance, MAX_GLB_EXPORT_INSTANCES, exact_model_glb_export,
-};
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, MeshAuthority, OccurrenceId, Transform,
@@ -17,6 +14,9 @@ use ketchup_core::mesh_recognition::{
 };
 use ketchup_core::persistence;
 use ketchup_core::testing::box_package;
+use ketchup_manufacturing::blender_export::{
+    ExactGlbInstance, MAX_GLB_EXPORT_INSTANCES, exact_model_glb_export,
+};
 use serde_json::Value;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -154,7 +154,9 @@ fn rewrite_glb_json(glb: &[u8], mutate: impl FnOnce(&mut Value)) -> Vec<u8> {
 
 #[test]
 fn model_exports_reject_stale_scene_occurrences_with_current_geometry() {
-    use ketchup_core::three_mf_export::{ExactThreeMfInstance, exact_model_three_mf_export};
+    use ketchup_manufacturing::three_mf_export::{
+        ExactThreeMfInstance, exact_model_three_mf_export,
+    };
 
     for change in [
         CanonicalCommand::SetOccurrenceVisibility {
@@ -212,7 +214,9 @@ fn model_exports_reject_stale_scene_occurrences_with_current_geometry() {
 
 #[test]
 fn model_exports_bind_nested_instances_and_inherited_appearance() {
-    use ketchup_core::three_mf_export::{ExactThreeMfInstance, exact_model_three_mf_export};
+    use ketchup_manufacturing::three_mf_export::{
+        ExactThreeMfInstance, exact_model_three_mf_export,
+    };
 
     for mutation in 0..3 {
         let mut document = seeded_document(Some([255, 0, 0]), None);

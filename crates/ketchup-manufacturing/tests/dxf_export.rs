@@ -2,12 +2,12 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     OccurrenceId, ProfileSegment, Transform,
 };
-use ketchup_core::dxf_export::{DxfProfileExportError, export_visible_profiles_dxf};
 use ketchup_core::import::{DxfImportOptions, inspect_dxf, plan_dxf_import};
 use ketchup_core::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
+use ketchup_manufacturing::dxf_export::{DxfProfileExportError, export_visible_profiles_dxf};
 
 fn representative_dxf() -> Vec<u8> {
     b"0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\

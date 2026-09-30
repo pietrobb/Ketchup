@@ -41,7 +41,6 @@ use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadLoftContinuity,
 };
-use ketchup_core::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
 use ketchup_core::cam::{CamPlanId, CamPostprocessorDialect};
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand,
@@ -62,7 +61,6 @@ use ketchup_core::document::{
     OverrideParameterSpec, ParameterValueType, PersistentDimension, PersistentDimensionTarget,
     SlotResolution,
 };
-use ketchup_core::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole, ExactMeshExport,
@@ -73,10 +71,6 @@ use ketchup_core::exact_product::{
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
 use ketchup_core::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
-};
-use ketchup_core::fabrication::{
-    BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
-    project_general_fabrication,
 };
 use ketchup_core::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
@@ -109,9 +103,6 @@ use ketchup_core::sketch::{
 use ketchup_core::space::ClearanceOwner;
 use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use ketchup_core::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
-use ketchup_core::three_mf_export::{
-    ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
-};
 use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM,
@@ -130,6 +121,15 @@ use ketchup_interaction::{
         CanonicalInteractionProjection, InteractionProjection, ProjectedBox,
         definition_requires_evaluated_geometry,
     },
+};
+use ketchup_manufacturing::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
+use ketchup_manufacturing::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
+use ketchup_manufacturing::fabrication::{
+    BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
+    project_general_fabrication,
+};
+use ketchup_manufacturing::three_mf_export::{
+    ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
 };
 use ketchup_pdm::local::{
     ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseConflictVerdict,

@@ -6,12 +6,10 @@ mod assembly_joint_types;
 mod assembly_kinematics_contract;
 mod assembly_motion_couplings;
 mod assembly_recipe;
-mod blender_glb_export;
 mod body_contract;
 mod cam_plan;
 mod component_replacement_impact;
 mod component_replacement_impact_verifier;
-mod dxf_export;
 mod dxf_import;
 mod exact_brep_graph;
 mod exact_brep_graph_resources;
@@ -43,9 +41,7 @@ mod state_view;
 mod stl_import;
 mod suffix_suppress_resume;
 mod suffix_suppress_resume_verifier;
-mod three_mf_export;
 mod topology_identity;
-mod validation_m17;
 mod workplane_sketch;
 
 #[path = "support/integration_support.rs"]
