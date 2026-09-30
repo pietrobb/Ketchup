@@ -1080,7 +1080,7 @@ fn evaluate_exact_brep_graph(
                 {
                     let (tool, tool_names) =
                         exact_brep_named_profile_body(backend, profile, interval)?;
-                    // Generated cuts (e.g. dowel holes) carry display names no
+                    // Generated cuts (e.g. pin holes) carry display names no
                     // program can reference; a node-derived token keeps the
                     // target's other face names alive instead of failing.
                     let tool_name = if valid_name(tool_name) {

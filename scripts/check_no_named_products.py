@@ -16,28 +16,42 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's unit tests)
+
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "named_products_baseline.txt"
 SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/include/**/*.hxx",
            "sdk/python/**/*.py", "skills/**/*.py"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
+# Readers of old file formats must name the old fields and role categories they convert;
+# they are the one exception.
+OLD_FORMAT_READERS = {
+    "crates/ketchup-core/src/document/digest_v3.rs",
+    "crates/ketchup-core/src/persistence/legacy.rs",
+    "crates/ketchup-core/src/persistence/snapshot_codec.rs",
+}
 WORDS = [
     "bottle", "teapot", "balloon_text", "balloon_glyph", "gable_roof", "staircase",
     "oriented_beam", "hettich", "quadro", "nightstand", "capsule", "d_profile",
-    "squeeze", "ketchup_bottle", "drawer", "cabinet", "wardrobe",
+    "squeeze", "ketchup_bottle", "drawer", "cabinet", "wardrobe", "dowel", "hinge",
+    "shelf", "shelves", "furniture",
 ]
 PATTERN = re.compile("(?<![A-Za-z])(?:" + "|".join(re.escape(word) for word in WORDS) + ")",
                      re.IGNORECASE)
 
 
-def current_counts() -> dict[str, int]:
+def current_counts(root: Path = ROOT) -> dict[str, int]:
     counts: dict[str, int] = {}
     for pattern in SOURCES:
-        for path in sorted(ROOT.glob(pattern)):
-            relative = path.relative_to(ROOT)
-            if EXCLUDED_PARTS & set(relative.parts[:-1]) or path.stem.endswith("tests"):
+        for path in sorted(root.glob(pattern)):
+            relative = path.relative_to(root)
+            if (EXCLUDED_PARTS & set(relative.parts[:-1]) or path.stem.endswith("tests")
+                    or relative.as_posix() in OLD_FORMAT_READERS):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
+            if path.suffix == ".rs":
+                text = TEST_MODULE.sub("", text)
             for match in PATTERN.finditer(text):
                 key = f"{relative.as_posix()}:{match.group(0).lower()}"
                 counts[key] = counts.get(key, 0) + 1

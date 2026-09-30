@@ -1,4 +1,15 @@
 # Remaining named-product occurrences; may only shrink.
 crates/ketchup-app/src/lib.rs:drawer 1
-crates/ketchup-headless/src/protocol/model_tools.rs:nightstand 1
-crates/ketchup-scheduler/src/bin/pair_query/mod.rs:nightstand 1
+crates/ketchup-app/src/lib.rs:furniture 1
+crates/ketchup-app/src/lib.rs:hinge 1
+crates/ketchup-app/src/lib.rs:shelf 1
+crates/ketchup-program/src/eval.rs:dowel 2
+crates/ketchup-program/src/lib.rs:dowel 1
+crates/ketchup-program/src/model.rs:dowel 1
+crates/ketchup-program/src/model.rs:shelf 1
+crates/ketchup-program/src/validate.rs:dowel 3
+crates/ketchup-program/src/validate.rs:hinge 1
+skills/ketchup_live.py:dowel 2
+skills/ketchup_live.py:furniture 1
+skills/ketchup_model.py:dowel 1
+skills/ketchup_model.py:furniture 1

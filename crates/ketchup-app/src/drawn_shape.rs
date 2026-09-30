@@ -524,7 +524,7 @@ impl KetchupApp {
         }
         // Pushing into a part mills it. Pulled out of a plain part the shape
         // stays a part of its own (the other Push/Pull paths make it), as
-        // furniture parts are separate boards, not bosses on each other.
+        // assembled parts are separate bodies, not bosses on each other.
         let (host, to_host, facing, target) = *hosts
             .iter()
             .find(|(_, _, facing, _)| distance_mm * facing < 0.0)?;
