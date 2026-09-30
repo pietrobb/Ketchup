@@ -4322,7 +4322,7 @@ fn read_product(
             let path = read_instance_path(reader)?;
             let length = reader.count_with_limit(64)? as usize;
             let code = std::str::from_utf8(reader.take(length)?)
-                .map_err(|_| PersistenceError::InvalidUtf8)?
+                .map_err(PersistenceError::InvalidUtf8)?
                 .to_owned();
             crate::document::validate_production_code(&code)?;
             if !codes.insert(code.to_ascii_uppercase()) {
@@ -4441,7 +4441,7 @@ impl<'a> Reader<'a> {
             return Err(PersistenceError::ResourceLimit);
         }
         let value =
-            std::str::from_utf8(self.take(length)?).map_err(|_| PersistenceError::InvalidUtf8)?;
+            std::str::from_utf8(self.take(length)?).map_err(PersistenceError::InvalidUtf8)?;
         let mut owned = String::new();
         owned
             .try_reserve_exact(length)

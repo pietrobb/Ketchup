@@ -4076,15 +4076,13 @@ fn assistant_conversation_round_trips_with_its_document() {
             role: AssistantMessageRole::Error,
             text: "Výskyt 999 neexistuje.".to_owned(),
             source: "Codex OAuth · gpt-test".to_owned(),
-            diagnostic: Some(AssistantRejectionDiagnostic {
-                phase: AssistantRejectionPhase::CanonicalValidation,
-                code: "canonical.occurrence_not_found".to_owned(),
-                operation: "translate_occurrence".to_owned(),
-                target: "occurrence:999".to_owned(),
-                failed_invariant: "occurrence 999 does not exist".to_owned(),
-                repair_hint: "Choose an occurrence that exists.".to_owned(),
-                retryable: true,
-            }),
+            diagnostic: Some(
+                *ketchup_application::diagnostics::assistant_canonical_rejection(
+                    ketchup_model::document::CanonicalError::OccurrenceNotFound(OccurrenceId(999)),
+                    "translate_occurrence",
+                    "occurrence:999",
+                ),
+            ),
         },
     ];
 

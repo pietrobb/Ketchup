@@ -4065,9 +4065,58 @@ pub struct AssistantRejectionDiagnostic {
     pub failed_invariant: String,
     pub repair_hint: String,
     pub retryable: bool,
+    /// Messages of the errors that caused the rejection, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub causes: Vec<String>,
 }
 
 impl AssistantRejectionDiagnostic {
+    /// Records `error` and its sources, outermost first. Control characters become
+    /// spaces and the whole chain shares the text budget of one field, so the
+    /// diagnostic stays valid.
+    #[must_use]
+    pub fn caused_by(mut self: Box<Self>, error: &(dyn std::error::Error + 'static)) -> Box<Self> {
+        let mut budget = MAX_ASSISTANT_REJECTION_TEXT_BYTES
+            .saturating_sub(self.causes.iter().map(String::len).sum());
+        let mut next = Some(error);
+        while let Some(error) = next {
+            next = error.source();
+            let nested = error
+                .downcast_ref::<Self>()
+                .map(|nested| nested.causes.clone());
+            let message: String = error
+                .to_string()
+                .chars()
+                .map(|character| {
+                    if character.is_control() {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
+                .collect();
+            let message = message.trim();
+            let mut end = message.len().min(budget);
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            if end == 0 {
+                continue;
+            }
+            self.causes.push(message[..end].trim_end().to_owned());
+            budget -= end;
+            // A nested diagnostic carries its own chain as text.
+            for cause in nested.into_iter().flatten() {
+                if cause.len() > budget {
+                    break;
+                }
+                budget -= cause.len();
+                self.causes.push(cause);
+            }
+        }
+        self
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let machine_identifier_is_valid = |value: &str, max_bytes: usize| {
             !value.is_empty()
@@ -4091,6 +4140,12 @@ impl AssistantRejectionDiagnostic {
             || !bounded_text_is_valid(&self.target, MAX_ASSISTANT_REJECTION_TARGET_BYTES)
             || !bounded_text_is_valid(&self.failed_invariant, MAX_ASSISTANT_REJECTION_TEXT_BYTES)
             || !bounded_text_is_valid(&self.repair_hint, MAX_ASSISTANT_REJECTION_TEXT_BYTES)
+            || !self
+                .causes
+                .iter()
+                .all(|cause| bounded_text_is_valid(cause, MAX_ASSISTANT_REJECTION_TEXT_BYTES))
+            || self.causes.iter().map(String::len).sum::<usize>()
+                > MAX_ASSISTANT_REJECTION_TEXT_BYTES
             || serde_json::to_vec(self)
                 .map_or(true, |bytes| bytes.len() > MAX_ASSISTANT_REJECTION_BYTES)
         {
@@ -4099,6 +4154,18 @@ impl AssistantRejectionDiagnostic {
         Ok(())
     }
 }
+
+impl fmt::Display for AssistantRejectionDiagnostic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} at {}: {}",
+            self.code, self.target, self.failed_invariant
+        )
+    }
+}
+
+impl std::error::Error for AssistantRejectionDiagnostic {}
 
 impl From<AssistantRejectionPhase> for ketchup_rejection::RejectionPhase {
     fn from(phase: AssistantRejectionPhase) -> Self {
@@ -4124,6 +4191,7 @@ impl From<AssistantRejectionDiagnostic> for ketchup_rejection::Rejection {
                 diagnostic.operation, diagnostic.failed_invariant
             ))
             .fix_hint(diagnostic.repair_hint)
+            .caused_by_messages(diagnostic.causes)
     }
 }
 

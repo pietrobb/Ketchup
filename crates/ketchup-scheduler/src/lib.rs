@@ -26,7 +26,7 @@ use ketchup_model::document::{
     BodyKind, DerivedIdentity, GroupId, InstancePath, InstancePathStep, LocalGroupKey,
     LocalOccurrenceKey, NodeId, SceneOccurrence, SlotPath, SlotSegment, Snapshot, Transform,
 };
-use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
 use ketchup_model::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBRepGraphPackage,
     ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactProductError,
@@ -186,15 +186,15 @@ impl EvaluationScheduler {
             return Err(SchedulerError::EmptyInputDigest);
         }
         let segment = SlotSegment::new(node_id, "value", "root")
-            .map_err(|_| SchedulerError::InvalidAcceptanceIdentity)?;
+            .map_err(|error| SchedulerError::InvalidSlotPath(error.into()))?;
         let identity = AcceptanceIdentity {
             document_scope: 1,
             derived_identity: DerivedIdentity::new(
                 node_id,
                 SlotPath::new(vec![segment])
-                    .map_err(|_| SchedulerError::InvalidAcceptanceIdentity)?,
+                    .map_err(|error| SchedulerError::InvalidSlotPath(error.into()))?,
             )
-            .map_err(|_| SchedulerError::InvalidAcceptanceIdentity)?,
+            .map_err(|error| SchedulerError::InvalidSlotPath(error.into()))?,
             input_digest,
             evaluator: ketchup_model::graph::EVALUATOR_ID_V1.to_owned(),
             backend: Some(ketchup_model::graph::DEFAULT_BACKEND_ID.to_owned()),
@@ -384,6 +384,7 @@ pub enum SchedulerError {
     NonMonotonicRevision { current: u64, proposed: u64 },
     EmptyInputDigest,
     InvalidAcceptanceIdentity,
+    InvalidSlotPath(ketchup_model::graph::GraphError),
 }
 
 impl fmt::Display for SchedulerError {
@@ -397,11 +398,21 @@ impl fmt::Display for SchedulerError {
             Self::InvalidAcceptanceIdentity => {
                 formatter.write_str("scheduler acceptance identity is incomplete")
             }
+            Self::InvalidSlotPath(error) => {
+                write!(formatter, "scheduler slot path is invalid: {error}")
+            }
         }
     }
 }
 
-impl std::error::Error for SchedulerError {}
+impl std::error::Error for SchedulerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidSlotPath(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkerExactBRepGraphFaceEvidence {
@@ -511,7 +522,7 @@ impl ExactBRepVolumeMeshPackage {
         }
         if snapshot
             .resolve_instance_path(&setup.instance_path)
-            .map_err(|_| ExactFeaSetupError::OccurrenceMismatch)?
+            .map_err(ExactFeaSetupError::InvalidInstancePath)?
             .definition_id
             != self.source.identity.definition_id
         {
@@ -658,9 +669,10 @@ pub struct OccurrenceBoundFeaModel {
     pub model: FeaModel,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExactFeaSetupError {
     StaleGeometry,
+    InvalidInstancePath(ketchup_model::document::CanonicalError),
     OccurrenceMismatch,
     IncompleteSetup,
     InvalidBoundarySelection,
@@ -2170,8 +2182,7 @@ impl ExactWorkerSupervisor {
             snapshot,
             expected.identity.definition_id,
             expected.identity.producer_feature_id,
-        )
-        .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+        )?;
         if graph != *expected.graph {
             return Err(ExactProductError::InvalidWorkerEvidence.into());
         }
@@ -2718,6 +2729,7 @@ fn build_step_assembly_nodes(
 pub enum M6EvaluationError {
     Worker(WorkerError),
     Product(ExactProductError),
+    Graph(ExactBRepGraphError),
 }
 
 impl fmt::Display for M6EvaluationError {
@@ -2725,11 +2737,26 @@ impl fmt::Display for M6EvaluationError {
         match self {
             Self::Worker(error) => error.fmt(formatter),
             Self::Product(error) => error.fmt(formatter),
+            Self::Graph(error) => error.fmt(formatter),
         }
     }
 }
 
-impl std::error::Error for M6EvaluationError {}
+impl std::error::Error for M6EvaluationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Worker(error) => error.source(),
+            Self::Product(error) => error.source(),
+            Self::Graph(error) => error.source(),
+        }
+    }
+}
+
+impl From<ExactBRepGraphError> for M6EvaluationError {
+    fn from(error: ExactBRepGraphError) -> Self {
+        Self::Graph(error)
+    }
+}
 
 impl From<WorkerError> for M6EvaluationError {
     fn from(error: WorkerError) -> Self {

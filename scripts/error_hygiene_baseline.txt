@@ -25,7 +25,6 @@ crates/ketchup-application/src/evaluation.rs string 7
 crates/ketchup-application/src/evaluation_task.rs string 5
 crates/ketchup-application/src/mesh_conversion.rs discard 8
 crates/ketchup-application/src/model_query.rs discard 8
-crates/ketchup-application/src/planner.rs discard 19
 crates/ketchup-application/src/session.rs discard 1
 crates/ketchup-application/src/validation_rules.rs string 1
 crates/ketchup-assistant/src/intent.rs discard 4
@@ -66,8 +65,7 @@ crates/ketchup-model/src/import/dxf.rs discard 41
 crates/ketchup-model/src/import/glb.rs discard 17
 crates/ketchup-model/src/import/iges.rs discard 6
 crates/ketchup-model/src/import/sketchup_scene.rs discard 8
-crates/ketchup-model/src/persistence.rs discard 15
-crates/ketchup-model/src/persistence/legacy.rs discard 43
+crates/ketchup-model/src/persistence/legacy.rs discard 41
 crates/ketchup-model/src/pin_joint.rs discard 5
 crates/ketchup-model/src/shared_change.rs discard 4
 crates/ketchup-model/src/space.rs discard 1
@@ -78,5 +76,4 @@ crates/ketchup-program/src/eval.rs discard 12
 crates/ketchup-program/src/path.rs string 1
 crates/ketchup-scheduler/src/assistant.rs discard 2
 crates/ketchup-scheduler/src/exact_worker.rs discard 2
-crates/ketchup-scheduler/src/lib.rs discard 5
 crates/ketchup-scheduler/src/plugin.rs discard 4

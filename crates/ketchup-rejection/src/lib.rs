@@ -84,6 +84,21 @@ impl Rejection {
         self
     }
 
+    /// Keeps a cause chain that arrived as text, outermost message first (for example
+    /// from another process or a wire diagnostic).
+    #[must_use]
+    pub fn caused_by_messages(mut self, messages: impl IntoIterator<Item = String>) -> Self {
+        let messages: Vec<String> = messages.into_iter().collect();
+        self.source = messages
+            .into_iter()
+            .rev()
+            .fold(None, |source, message| {
+                Some(Box::new(ReportedCause { message, source }))
+            })
+            .map(|cause| Arc::new(*cause) as Arc<dyn Error + Send + Sync>);
+        self
+    }
+
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code
@@ -222,21 +237,11 @@ impl Serialize for Rejection {
 impl<'de> Deserialize<'de> for Rejection {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let record = RejectionRecord::deserialize(deserializer)?;
-        let source = record
-            .causes
-            .into_iter()
-            .rev()
-            .fold(None, |source, message| {
-                Some(Box::new(ReportedCause { message, source }))
-            });
-        Ok(Self {
-            code: Cow::Owned(record.code),
-            phase: record.phase,
-            target: record.target,
-            reason: record.reason,
-            fix_hint: record.fix_hint,
-            source: source.map(|cause| Arc::new(*cause) as Arc<dyn Error + Send + Sync>),
-        })
+        Ok(Self::new(record.code, record.phase)
+            .target(record.target)
+            .reason(record.reason)
+            .fix_hint(record.fix_hint)
+            .caused_by_messages(record.causes))
     }
 }
 

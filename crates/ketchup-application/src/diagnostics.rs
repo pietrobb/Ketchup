@@ -21,6 +21,7 @@ pub fn assistant_rejection(
         failed_invariant: failed_invariant.into(),
         repair_hint: repair_hint.into(),
         retryable,
+        causes: Vec::new(),
     };
     debug_assert_eq!(diagnostic.validate(), Ok(()));
     Box::new(diagnostic)

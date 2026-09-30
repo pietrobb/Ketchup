@@ -2272,6 +2272,7 @@ fn assistant_rejection_diagnostic_is_typed_bounded_and_strict() {
             .to_owned(),
         repair_hint: "Delete or replace assembly mate 42 before retrying the deletion.".to_owned(),
         retryable: true,
+        causes: Vec::new(),
     };
 
     assert_eq!(diagnostic.validate(), Ok(()));
@@ -2309,6 +2310,7 @@ fn assistant_rejection_diagnostic_reads_as_the_shared_rejection() {
         failed_invariant: "The panel must evaluate to one closed solid.".to_owned(),
         repair_hint: "Give the panel a positive thickness.".to_owned(),
         retryable: true,
+        causes: Vec::new(),
     });
     assert_eq!(rejection.code(), "exact.solid_invalid");
     assert_eq!(
@@ -2327,6 +2329,71 @@ fn assistant_rejection_diagnostic_reads_as_the_shared_rejection() {
 }
 
 #[test]
+fn assistant_rejection_diagnostic_keeps_a_bounded_cause_chain() {
+    #[derive(Debug)]
+    struct Outer(std::num::ParseIntError);
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("thickness\nis not a number")
+        }
+    }
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+    let diagnostic = || {
+        Box::new(AssistantRejectionDiagnostic {
+            phase: AssistantRejectionPhase::ProposalPlanning,
+            code: "planning.invalid_parameter".to_owned(),
+            operation: "create_panel".to_owned(),
+            target: "thickness".to_owned(),
+            failed_invariant: "The thickness must be a number.".to_owned(),
+            repair_hint: "Write the thickness as digits.".to_owned(),
+            retryable: true,
+            causes: Vec::new(),
+        })
+    };
+    let rejection_with_cause = || diagnostic().caused_by(&Outer("12x".parse::<u32>().unwrap_err()));
+    let rejection = rejection_with_cause();
+    assert_eq!(
+        rejection.causes,
+        ["thickness is not a number", "invalid digit found in string"]
+    );
+    assert_eq!(rejection.validate(), Ok(()));
+    let json = serde_json::to_value(&*rejection).unwrap();
+    assert_eq!(
+        serde_json::from_value::<AssistantRejectionDiagnostic>(json).unwrap(),
+        *rejection
+    );
+    let shared = ketchup_rejection::Rejection::from(*rejection);
+    assert_eq!(
+        shared.causes(),
+        ["thickness is not a number", "invalid digit found in string"]
+    );
+
+    let outer = diagnostic().caused_by(&*rejection_with_cause());
+    assert_eq!(
+        outer.causes,
+        [
+            "planning.invalid_parameter at thickness: The thickness must be a number.",
+            "thickness is not a number",
+            "invalid digit found in string",
+        ],
+        "a wrapped diagnostic keeps its own reason and its causes"
+    );
+
+    let huge = std::io::Error::other("é".repeat(5_000));
+    let bounded = diagnostic().caused_by(&huge);
+    assert_eq!(bounded.validate(), Ok(()));
+    assert_eq!(bounded.causes.len(), 1);
+    assert!(bounded.causes[0].starts_with("éé"));
+
+    let without_causes = serde_json::to_value(&*diagnostic()).unwrap();
+    assert!(without_causes.get("causes").is_none());
+}
+
+#[test]
 fn assistant_rejection_diagnostic_rejects_unstable_codes_and_unbounded_text() {
     let valid = AssistantRejectionDiagnostic {
         phase: AssistantRejectionPhase::ProposalPlanning,
@@ -2336,6 +2403,7 @@ fn assistant_rejection_diagnostic_rejects_unstable_codes_and_unbounded_text() {
         failed_invariant: "The target occurrence must exist.".to_owned(),
         repair_hint: "Refresh the document context and choose an existing occurrence.".to_owned(),
         retryable: true,
+        causes: Vec::new(),
     };
 
     assert!(

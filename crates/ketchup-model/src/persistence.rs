@@ -463,8 +463,9 @@ fn append_revision_history_record(
     }
     if let Some(source) = revision.rule_program() {
         push_u8(bytes, 1);
-        let encoded =
-            serde_json::to_vec(source).map_err(|_| PersistenceError::InvalidRevisionHistory)?;
+        let encoded = serde_json::to_vec(source).map_err(|error| {
+            PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
+        })?;
         if encoded.len() > crate::document::MAX_RULE_PROGRAM_BYTES {
             return Err(PersistenceError::ResourceLimit);
         }
@@ -483,13 +484,13 @@ fn append_revision_history_record(
 }
 
 fn encode_revision_history(document: &DocumentStore) -> Result<Vec<u8>, PersistenceError> {
-    let count =
-        u32::try_from(document.revision_count()).map_err(|_| PersistenceError::ResourceLimit)?;
+    let count = u32::try_from(document.revision_count())
+        .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
     if count == 0 || count > MAX_HISTORY_REVISIONS {
         return Err(PersistenceError::ResourceLimit);
     }
-    let cursor =
-        u32::try_from(document.history_cursor()).map_err(|_| PersistenceError::ResourceLimit)?;
+    let cursor = u32::try_from(document.history_cursor())
+        .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(HISTORY_MAGIC);
     push_u16(&mut bytes, HISTORY_SCHEMA);
@@ -1282,15 +1283,15 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let path = reader.string()?;
         validate_container_path(&path)?;
         let required = reader.boolean()?;
-        let length =
-            usize::try_from(reader.u64()?).map_err(|_| PersistenceError::LengthOverflow)?;
+        let length = usize::try_from(reader.u64()?)
+            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         if length > MAX_SIDECAR_BYTES && path != "document.bin" {
             return Err(PersistenceError::ResourceLimit);
         }
         let checksum: [u8; 32] = reader
             .take(32)?
             .try_into()
-            .map_err(|_| PersistenceError::Truncated)?;
+            .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
         let content = reader.take(length)?.to_vec();
         if crate::graph::sha256_bytes(&content) != checksum {
             return Err(PersistenceError::ContainerChecksumMismatch(path));
@@ -1449,8 +1450,11 @@ fn decode_revision_history(
                         return Err(PersistenceError::ResourceLimit);
                     }
                     let source: crate::document::RuleProgramSource =
-                        serde_json::from_slice(reader.take(length)?)
-                            .map_err(|_| PersistenceError::InvalidRevisionHistory)?;
+                        serde_json::from_slice(reader.take(length)?).map_err(|error| {
+                            PersistenceError::InvalidPayload(format!(
+                                "revision rule program: {error}"
+                            ))
+                        })?;
                     if source.source.is_empty()
                         || source.overrides.values().any(|value| !value.is_finite())
                     {
@@ -1483,15 +1487,15 @@ fn decode_revision_history(
         {
             return Err(PersistenceError::InvalidRevisionHistory);
         }
-        let length =
-            usize::try_from(reader.u64()?).map_err(|_| PersistenceError::LengthOverflow)?;
+        let length = usize::try_from(reader.u64()?)
+            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         if length > MAX_FILE_BYTES {
             return Err(PersistenceError::ResourceLimit);
         }
         let checksum: [u8; 32] = reader
             .take(32)?
             .try_into()
-            .map_err(|_| PersistenceError::Truncated)?;
+            .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
         let encoded_snapshot = reader.take(length)?;
         if crate::graph::sha256_bytes(encoded_snapshot) != checksum {
             return Err(PersistenceError::HistoryChecksumMismatch);
@@ -1501,17 +1505,15 @@ fn decode_revision_history(
             container_data.clone(),
             &mut migrated_digests,
         )?;
-        if !loaded.is_editable() {
-            return Err(PersistenceError::InvalidRevisionHistory);
-        }
         let source_schema = loaded.source_schema();
         if index == cursor {
             current_source_digest = Some(loaded.audit().source_canonical_digest.clone());
         }
-        let snapshot = loaded
-            .into_editable()
-            .map_err(|_| PersistenceError::InvalidRevisionHistory)?
-            .current();
+        // A snapshot that loads only for review cannot be a revision to return to.
+        let Ok(store) = loaded.into_editable() else {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        };
+        let snapshot = store.current();
         if snapshot.revision_id() != revision_id
             || (source_schema == CURRENT_SCHEMA && save(&snapshot) != encoded_snapshot)
         {
@@ -1764,7 +1766,7 @@ pub enum PersistenceError {
     UnsupportedContainerEntry(String),
     ContainerChecksumMismatch(String),
     InvalidBlobHash,
-    InvalidUtf8,
+    InvalidUtf8(std::str::Utf8Error),
     LengthOverflow,
     TrailingBytes,
     InvalidBoolean(u8),
@@ -1829,7 +1831,7 @@ impl fmt::Display for PersistenceError {
             Self::InvalidBlobHash => {
                 formatter.write_str("container blob content hash does not match its path")
             }
-            Self::InvalidUtf8 => formatter.write_str("document string is not UTF-8"),
+            Self::InvalidUtf8(error) => write!(formatter, "document string is not UTF-8: {error}"),
             Self::LengthOverflow => formatter.write_str("document length exceeds this platform"),
             Self::TrailingBytes => formatter.write_str("document has trailing bytes"),
             Self::InvalidBoolean(value) => write!(formatter, "document boolean {value} is invalid"),
@@ -1856,7 +1858,15 @@ impl fmt::Display for PersistenceError {
     }
 }
 
-impl std::error::Error for PersistenceError {}
+impl std::error::Error for PersistenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidUtf8(error) => Some(error),
+            Self::InvalidCanonicalData(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 impl From<ketchup_geometry::dimension::DimensionError> for PersistenceError {
     fn from(error: ketchup_geometry::dimension::DimensionError) -> Self {
         CanonicalError::from(error).into()
@@ -1901,25 +1911,19 @@ impl<'a> Reader<'a> {
         Ok(self.take(1)?[0])
     }
     fn u16(&mut self) -> Result<u16, PersistenceError> {
-        Ok(u16::from_le_bytes(
-            self.take(2)?
-                .try_into()
-                .map_err(|_| PersistenceError::Truncated)?,
-        ))
+        Ok(u16::from_le_bytes(self.take(2)?.try_into().map_err(
+            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+        )?))
     }
     fn u32(&mut self) -> Result<u32, PersistenceError> {
-        Ok(u32::from_le_bytes(
-            self.take(4)?
-                .try_into()
-                .map_err(|_| PersistenceError::Truncated)?,
-        ))
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(
+            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+        )?))
     }
     fn u64(&mut self) -> Result<u64, PersistenceError> {
-        Ok(u64::from_le_bytes(
-            self.take(8)?
-                .try_into()
-                .map_err(|_| PersistenceError::Truncated)?,
-        ))
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(
+            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+        )?))
     }
     fn count_with_limit(&mut self, limit: u32) -> Result<u32, PersistenceError> {
         let value = self.u32()?;
@@ -1935,7 +1939,7 @@ impl<'a> Reader<'a> {
     }
     fn string(&mut self) -> Result<String, PersistenceError> {
         let length = usize::try_from(self.count_with_limit(MAX_STRING_BYTES as u32)?)
-            .map_err(|_| PersistenceError::LengthOverflow)?;
+            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         self.string_bytes = self
             .string_bytes
             .checked_add(length)
@@ -1944,13 +1948,9 @@ impl<'a> Reader<'a> {
             return Err(PersistenceError::ResourceLimit);
         }
         let value =
-            std::str::from_utf8(self.take(length)?).map_err(|_| PersistenceError::InvalidUtf8)?;
-        let mut owned = String::new();
-        owned
-            .try_reserve_exact(length)
-            .map_err(|_| PersistenceError::ResourceLimit)?;
-        owned.push_str(value);
-        Ok(owned)
+            std::str::from_utf8(self.take(length)?).map_err(PersistenceError::InvalidUtf8)?;
+        // The running string budget above bounds this allocation.
+        Ok(value.to_owned())
     }
     fn boolean(&mut self) -> Result<bool, PersistenceError> {
         match self.u8()? {

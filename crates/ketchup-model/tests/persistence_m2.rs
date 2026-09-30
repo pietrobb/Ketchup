@@ -354,6 +354,22 @@ fn schema_46_document_without_cubic_data_loads_losslessly_after_schema_47_bump()
 }
 
 #[test]
+fn invalid_utf8_names_the_byte_where_the_string_breaks() {
+    let mut bytes = b"KETCHUPCTR".to_vec();
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&3_u32.to_le_bytes());
+    bytes.extend_from_slice(&[b'a', 0xff, b'b']);
+    let error = load_error(&bytes);
+    assert!(matches!(error, PersistenceError::InvalidUtf8(cause) if cause.valid_up_to() == 1));
+    assert_eq!(
+        error.to_string(),
+        "document string is not UTF-8: invalid utf-8 sequence of 1 bytes from index 1"
+    );
+    assert!(std::error::Error::source(&error).is_some());
+}
+
+#[test]
 fn schema_three_checks_checksum_before_payload_decode_and_rejects_envelopes() {
     // A document written by the retired field-by-field codec (schema 97).
     let legacy = include_bytes!("fixtures/persistence/legacy/graph-schema97.bin").to_vec();

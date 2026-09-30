@@ -1522,6 +1522,7 @@ fn unsupported_planning_diagnostic_is_a_bounded_capability_gap() {
         failed_invariant: "unsupported exact result".into(),
         repair_hint: "use a supported exact operation".into(),
         retryable: true,
+        causes: Vec::new(),
     };
     assert!(LiveBridge::is_capability_gap(&diagnostic));
     let response = Response::error(19, planning_failure("capability_gap", &diagnostic));

@@ -354,7 +354,7 @@ impl StagedPlanningContext {
             )),
             AssistantCadFeatureReference::ProgramOutput(reference) => self
                 .resolve_program_output(reference, expected_output, operation)
-                .map_err(|_| {
+                .map_err(|error| {
                     assistant_planning_rejection(
                         "planning.cad_program_feature_reference_unavailable",
                         operation,
@@ -362,6 +362,7 @@ impl StagedPlanningContext {
                         "The referenced earlier operation did not produce the required typed feature.",
                         "Reference a compatible typed output from an earlier operation in this CAD program.",
                     )
+                    .caused_by(&*error)
                 }),
         }
     }
@@ -1259,7 +1260,7 @@ fn resolve_assistant_axis_spec(
     {
         let packages = topology_results
             .body_values(original_snapshot)
-            .map_err(|_| {
+            .map_err(|error| {
                 assistant_planning_rejection(
                     "planning.cad_axis_reference_unavailable",
                     operation,
@@ -1267,6 +1268,7 @@ fn resolve_assistant_axis_spec(
                     "The current exact topology evidence is unavailable.",
                     "Evaluate the current document and use a listed line or circle edge reference.",
                 )
+                .caused_by(&error)
             })?;
         let mut matches = Vec::new();
         for package in packages.into_values() {
@@ -1313,7 +1315,7 @@ fn resolve_assistant_axis_spec(
                 MAX_AXIS_INSTANCE_PATH_STEPS,
                 MAX_AXIS_INSTANCE_TEXT_BYTES,
             )
-            .map_err(|_| {
+            .map_err(|error| {
                 assistant_planning_rejection(
                     "planning.cad_axis_instance_path_unavailable",
                     operation,
@@ -1321,6 +1323,7 @@ fn resolve_assistant_axis_spec(
                     "The bounded visible instance index is unavailable.",
                     "Reduce instance nesting or model size, then retry with one current instance_path.",
                 )
+                .caused_by(&error)
             })?;
         let resolved_path = if let Some(path) = instance_path {
             resolve_assistant_instance_path(path, original_snapshot)
@@ -1343,7 +1346,7 @@ fn resolve_assistant_axis_spec(
         })?;
         let resolved = original_snapshot
             .resolve_instance_path(&resolved_path)
-            .map_err(|_| {
+            .map_err(|error| {
                 assistant_planning_rejection(
                     "planning.cad_axis_instance_path_unavailable",
                     operation,
@@ -1351,6 +1354,7 @@ fn resolve_assistant_axis_spec(
                     "The edge axis instance path is not current.",
                     "Refresh instance inspection and copy one current instance_path.",
                 )
+                .caused_by(&error)
             })?;
         if resolved.definition_id != *definition_id
             || !occurrences
@@ -2613,15 +2617,20 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     )
                 })?;
                 let source_definition_id = occurrence.definition_id();
-                let instances = current.scene_query_bounded(
-                    MAX_AXIS_INSTANCE_OCCURRENCES,
-                    MAX_AXIS_INSTANCE_PATH_STEPS,
-                    MAX_AXIS_INSTANCE_TEXT_BYTES,
-                ).map_err(|_| assistant_planning_rejection(
-                    "planning.make_unique_scope_incomplete", operation_name, &document_target,
-                    "The bounded instance query could not establish whether the part is shared.",
-                    "Reduce the assembly scope before making this occurrence unique.",
-                ))?;
+                let instances = current
+                    .scene_query_bounded(
+                        MAX_AXIS_INSTANCE_OCCURRENCES,
+                        MAX_AXIS_INSTANCE_PATH_STEPS,
+                        MAX_AXIS_INSTANCE_TEXT_BYTES,
+                    )
+                    .map_err(|error| {
+                        assistant_planning_rejection(
+                            "planning.make_unique_scope_incomplete", operation_name, &document_target,
+                            "The bounded instance query could not establish whether the part is shared.",
+                            "Reduce the assembly scope before making this occurrence unique.",
+                        )
+                        .caused_by(&error)
+                    })?;
                 let was_shared_at_start = staged_planning
                     .base_snapshot()
                     .occurrence(occurrence_id)
@@ -2634,11 +2643,11 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         )
                     })
                     .transpose()
-                    .map_err(|_| assistant_planning_rejection(
+                    .map_err(|error| assistant_planning_rejection(
                         "planning.make_unique_scope_incomplete", operation_name, &document_target,
                         "The bounded original instance query could not establish whether the part was shared.",
                         "Reduce the assembly scope before making this occurrence unique.",
-                    ))?
+                    ).caused_by(&error))?
                     .is_some_and(|original| original.iter().any(|instance| {
                         instance.definition_id == source_definition_id
                             && instance.shared_occurrence_count > 1
@@ -2840,12 +2849,13 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     staged_planning
                         .staged_snapshot()
                         .resolve_instance_path(&instance_path)
-                        .map_err(|_| {
+                        .map_err(|error| {
                             assistant_canonical_rejection(
                                 CanonicalError::InvalidInstancePath,
                                 operation_name,
                                 &input.occurrence.name,
                             )
+                            .caused_by(&error)
                         })?;
                     Ok(PinJointFace {
                         instance_path,
@@ -3027,34 +3037,36 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 let first_definition = staged_planning
                     .staged_snapshot()
                     .resolve_instance_path(&contract.first.instance_path)
-                    .map_err(|_| {
+                    .map_err(|error| {
                         assistant_canonical_rejection(
                             CanonicalError::InvalidInstancePath,
                             operation_name,
                             "first.instance_path",
                         )
+                        .caused_by(&error)
                     })?
                     .definition_id;
                 let second_definition = staged_planning
                     .staged_snapshot()
                     .resolve_instance_path(&contract.second.instance_path)
-                    .map_err(|_| {
+                    .map_err(|error| {
                         assistant_canonical_rejection(
                             CanonicalError::InvalidInstancePath,
                             operation_name,
                             "second.instance_path",
                         )
+                        .caused_by(&error)
                     })?
                     .definition_id;
                 let instances = staged_planning.staged_snapshot().scene_query_bounded(
                     MAX_AXIS_INSTANCE_OCCURRENCES,
                     MAX_AXIS_INSTANCE_PATH_STEPS,
                     MAX_AXIS_INSTANCE_TEXT_BYTES,
-                ).map_err(|_| assistant_planning_rejection(
+                ).map_err(|error| assistant_planning_rejection(
                     "planning.physical_pin_scope_incomplete", operation_name, &document_target,
                     "The bounded instance query could not establish exclusive ownership of the drilled parts.",
                     "Reduce the assembly scope before creating physical holes.",
-                ))?;
+                ).caused_by(&error))?;
                 if instances.iter().any(|instance| {
                     [first_definition, second_definition].contains(&instance.definition_id)
                         && instance.shared_occurrence_count > 1
@@ -3196,7 +3208,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         MAX_AXIS_INSTANCE_PATH_STEPS,
                         MAX_AXIS_INSTANCE_TEXT_BYTES,
                     )
-                    .map_err(|_| {
+                    .map_err(|error| {
                         assistant_planning_rejection(
                             "planning.physical_pin_scope_incomplete",
                             operation_name,
@@ -3204,6 +3216,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             "The bounded instance query could not prove exclusive part ownership.",
                             "Reduce the assembly scope before moving physical holes.",
                         )
+                        .caused_by(&error)
                     })?;
                 let mut moves = Vec::new();
                 for (face, old_hole, new_hole, pocket_id) in [
@@ -3222,7 +3235,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 ] {
                     let definition_id = current
                         .resolve_instance_path(&face.instance_path)
-                        .map_err(|_| {
+                        .map_err(|error| {
                             assistant_planning_rejection(
                                 "planning.physical_pin_pair_invalid",
                                 operation_name,
@@ -3230,6 +3243,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                 "The joint participant cannot be resolved.",
                                 "Inspect the joint participants.",
                             )
+                            .caused_by(&error)
                         })?
                         .definition_id;
                     if instances.iter().any(|instance| {
@@ -3394,12 +3408,13 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     .iter()
                     .enumerate()
                     .map(|(index, path)| {
-                        let resolved = snapshot.resolve_instance_path(path).map_err(|_| {
+                        let resolved = snapshot.resolve_instance_path(path).map_err(|error| {
                             assistant_canonical_rejection(
                                 CanonicalError::InvalidInstancePath,
                                 operation_name,
                                 "instance_paths",
                             )
+                            .caused_by(&error)
                         })?;
                         let position =
                             *positions.entry(resolved.definition_id).or_insert_with(|| {
@@ -3658,7 +3673,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         )
                     })
                     .transpose()
-                    .map_err(|_| {
+                    .map_err(|error| {
                         assistant_planning_rejection(
                             "planning.cad_transform_invalid",
                             operation_name,
@@ -3666,6 +3681,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             "The requested rigid transform could not be represented.",
                             "Use a finite translation and a non-zero finite rotation axis.",
                         )
+                        .caused_by(&error)
                     })?;
                 for id in targets {
                     let occurrence = staged_planning
@@ -3673,7 +3689,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         .occurrence(id)
                         .expect("resolved CAD selector targets a staged occurrence");
                     let translated =
-                        translated_transform(occurrence.transform(), delta).map_err(|_| {
+                        translated_transform(occurrence.transform(), delta).map_err(|error| {
                             assistant_planning_rejection(
                                 "planning.cad_transform_invalid",
                                 operation_name,
@@ -3681,6 +3697,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                 "The requested translation could not be represented.",
                                 "Use a finite bounded translation.",
                             )
+                            .caused_by(&error)
                         })?;
                     let transform = if let Some(world_rotation) = world_rotation {
                         let parent_transform = occurrence
@@ -3807,7 +3824,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         .cloned()
                         .expect("resolved CAD selector targets a staged occurrence");
                     let transform =
-                        translated_transform(source.transform(), delta).map_err(|_| {
+                        translated_transform(source.transform(), delta).map_err(|error| {
                             assistant_planning_rejection(
                                 "planning.cad_copy_invalid",
                                 operation_name,
@@ -3815,6 +3832,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                 "The requested copy transform could not be represented.",
                                 "Use a finite bounded translation.",
                             )
+                            .caused_by(&error)
                         })?;
                     let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
                         assistant_canonical_rejection(
@@ -3854,7 +3872,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             .cloned()
                             .expect("resolved CAD selector targets a staged occurrence");
                         let transform =
-                            translated_transform(source.transform(), delta).map_err(|_| {
+                            translated_transform(source.transform(), delta).map_err(|error| {
                                 assistant_planning_rejection(
                                     "planning.cad_pattern_invalid",
                                     operation_name,
@@ -3862,6 +3880,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                     "The requested pattern transform could not be represented.",
                                     "Use a finite bounded pattern step and instance count.",
                                 )
+                                .caused_by(&error)
                             })?;
                         let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
                             assistant_canonical_rejection(
@@ -3906,7 +3925,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         direction,
                         angle_step_degrees * f64::from(instance),
                     )
-                    .map_err(|_| {
+                    .map_err(|error| {
                         assistant_planning_rejection(
                             "planning.cad_pattern_invalid",
                             operation_name,
@@ -3914,6 +3933,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             "The requested circular pattern transform could not be represented.",
                             "Use a valid shared axis, finite angle step, and instance count.",
                         )
+                        .caused_by(&error)
                     })?;
                     for id in &targets {
                         let source = staged_planning
@@ -3986,7 +4006,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     Vec3::new(plane_origin_mm[0], plane_origin_mm[1], plane_origin_mm[2]),
                     Vec3::new(plane_normal[0], plane_normal[1], plane_normal[2]),
                 )
-                .map_err(|_| {
+                .map_err(|error| {
                     assistant_planning_rejection(
                         "planning.cad_mirror_invalid",
                         operation_name,
@@ -3994,6 +4014,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         "The requested mirror plane could not be represented.",
                         "Use a finite plane origin and non-zero finite normal.",
                     )
+                    .caused_by(&error)
                 })?;
                 for id in targets {
                     let source = staged_planning

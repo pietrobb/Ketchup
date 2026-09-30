@@ -70,6 +70,23 @@ impl fmt::Display for SceneQueryError {
 
 impl std::error::Error for SceneQueryError {}
 
+impl fmt::Display for SceneQueryBudgetExceeded {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let budget = match self.kind {
+            SceneQueryBudgetKind::Occurrences => "occurrences",
+            SceneQueryBudgetKind::PathSteps => "instance path steps",
+            SceneQueryBudgetKind::TextBytes => "name text bytes",
+        };
+        write!(
+            formatter,
+            "scene query found at least {} {budget}, more than its limit of {}",
+            self.observed_at_least, self.limit
+        )
+    }
+}
+
+impl std::error::Error for SceneQueryBudgetExceeded {}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneOccurrence {
     pub occurrence_id: OccurrenceId,
