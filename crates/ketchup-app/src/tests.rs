@@ -1369,8 +1369,8 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
                 name: "Overlong path".to_owned(),
                 kind: FeatureKind::Profile {
                     segments: vec![ProfileSegment::Line {
-                        start_mm: [0.0, 0.0],
-                        end_mm: [100_001.0, 0.0],
+                        start_mm: [-600_000.0, 0.0],
+                        end_mm: [600_000.0, 0.0],
                     }],
                     closed: false,
                 },

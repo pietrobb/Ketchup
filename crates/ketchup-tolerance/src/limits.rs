@@ -18,3 +18,29 @@ pub const REGION_HOLES: usize = 64;
 
 /// Most segments across all loops of one planar region.
 pub const REGION_SEGMENTS: usize = PATH_SEGMENTS * REGION_HOLES;
+
+/// Most vertices in one mesh: a mesh body, one imported STL, glTF primitive or scene
+/// definition.
+pub const MESH_VERTICES: usize = 100_000;
+
+/// Most triangles in one mesh, including a tessellated display mesh.
+pub const MESH_TRIANGLES: usize = 2 * MESH_VERTICES;
+
+/// Most steps in one instance path (nesting depth of definitions).
+pub const INSTANCE_PATH_STEPS: usize = 256;
+
+/// Most placed instances one export or drawing writes.
+pub const EXPORT_INSTANCES: usize = 8_000;
+
+/// Most vertices one mesh export writes.
+pub const EXPORT_VERTICES: usize = 2_000_000;
+
+/// Most triangles one mesh export writes.
+pub const EXPORT_TRIANGLES: usize = 2 * EXPORT_VERTICES;
+
+/// Largest serialized report one query returns (a scene, index, workset or
+/// validation report), in bytes.
+pub const REPORT_TEXT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Most batch jobs one host keeps open at a time.
+pub const BATCH_JOBS: usize = 16;

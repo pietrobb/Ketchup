@@ -40,6 +40,7 @@ use ketchup_model::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
 use ketchup_model::sheet_metal::{SheetMetalError, SheetMetalShape};
+use ketchup_model::tolerance::limits;
 use ketchup_model::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM};
 use ketchup_model::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
@@ -170,8 +171,6 @@ fn handle_request(
     }
 }
 
-const MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES: u32 = 200_000;
-
 /// The typed graph arrives decoded, so its structure and digest are re-proven here.
 fn validated_graph(graph: &ExactBRepGraph) -> Result<(), WorkerFailure> {
     graph.validate().map_err(|error| WorkerFailure {
@@ -295,7 +294,7 @@ fn exact_brep_graph_mesh_response(
             &output.body,
             deflection,
             STEP_MESH_ANGULAR_DEFLECTION,
-            MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES,
+            u32::try_from(limits::MESH_TRIANGLES).unwrap_or(u32::MAX),
         )
         .map_err(|error| geometry_failure(&error))?;
     write_display_mesh(

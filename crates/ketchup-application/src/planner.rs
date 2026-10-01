@@ -54,14 +54,13 @@ use ketchup_model::pin_joint::{
     project_pin_joint_contract,
 };
 use ketchup_model::tolerance::ROUNDING;
+use ketchup_model::tolerance::limits;
 use ketchup_model::topology::TopologicalElementKind;
 use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_AXIS_INSTANCE_OCCURRENCES: usize = 10_000;
-const MAX_AXIS_INSTANCE_PATH_STEPS: usize = 256;
-const MAX_AXIS_INSTANCE_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1297,8 +1296,8 @@ fn resolve_assistant_axis_spec(
         let occurrences = original_snapshot
             .scene_query_bounded(
                 MAX_AXIS_INSTANCE_OCCURRENCES,
-                MAX_AXIS_INSTANCE_PATH_STEPS,
-                MAX_AXIS_INSTANCE_TEXT_BYTES,
+                limits::INSTANCE_PATH_STEPS,
+                limits::REPORT_TEXT_BYTES,
             )
             .map_err(|error| {
                 assistant_planning_rejection(
@@ -2432,8 +2431,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 let instances = current
                     .scene_query_bounded(
                         MAX_AXIS_INSTANCE_OCCURRENCES,
-                        MAX_AXIS_INSTANCE_PATH_STEPS,
-                        MAX_AXIS_INSTANCE_TEXT_BYTES,
+                        limits::INSTANCE_PATH_STEPS,
+                        limits::REPORT_TEXT_BYTES,
                     )
                     .map_err(|error| {
                         assistant_planning_rejection(
@@ -2450,8 +2449,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     .map(|_| {
                         staged_planning.base_snapshot().scene_query_bounded(
                             MAX_AXIS_INSTANCE_OCCURRENCES,
-                            MAX_AXIS_INSTANCE_PATH_STEPS,
-                            MAX_AXIS_INSTANCE_TEXT_BYTES,
+                            limits::INSTANCE_PATH_STEPS,
+                            limits::REPORT_TEXT_BYTES,
                         )
                     })
                     .transpose()
@@ -2729,8 +2728,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     .definition_id;
                 let instances = staged_planning.staged_snapshot().scene_query_bounded(
                     MAX_AXIS_INSTANCE_OCCURRENCES,
-                    MAX_AXIS_INSTANCE_PATH_STEPS,
-                    MAX_AXIS_INSTANCE_TEXT_BYTES,
+                    limits::INSTANCE_PATH_STEPS,
+                    limits::REPORT_TEXT_BYTES,
                 ).map_err(|error| assistant_planning_rejection(
                     "planning.physical_pin_scope_incomplete", operation_name, &document_target,
                     "The bounded instance query could not establish exclusive ownership of the drilled parts.",
@@ -2874,8 +2873,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 let instances = current
                     .scene_query_bounded(
                         MAX_AXIS_INSTANCE_OCCURRENCES,
-                        MAX_AXIS_INSTANCE_PATH_STEPS,
-                        MAX_AXIS_INSTANCE_TEXT_BYTES,
+                        limits::INSTANCE_PATH_STEPS,
+                        limits::REPORT_TEXT_BYTES,
                     )
                     .map_err(|error| {
                         assistant_planning_rejection(

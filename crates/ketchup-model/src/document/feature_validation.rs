@@ -1263,15 +1263,13 @@ pub(super) fn validate_imported_exact_body(
     Ok(())
 }
 
-pub(super) const MAX_MESH_VERTICES: usize = 100_000;
-pub(super) const MAX_MESH_TRIANGLES: usize = 200_000;
 pub(super) const MESH_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
 pub(super) const MESH_VOLUME_EPSILON: f64 = APPROXIMATION;
 
 pub(super) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
     if spec.schema != MESH_BODY_SCHEMA_V1
-        || !(4..=MAX_MESH_VERTICES).contains(&spec.vertices_mm.len())
-        || !(4..=MAX_MESH_TRIANGLES).contains(&spec.triangles.len())
+        || !(4..=limits::MESH_VERTICES).contains(&spec.vertices_mm.len())
+        || !(4..=limits::MESH_TRIANGLES).contains(&spec.triangles.len())
         || spec
             .vertices_mm
             .iter()

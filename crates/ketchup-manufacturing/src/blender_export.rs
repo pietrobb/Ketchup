@@ -5,6 +5,7 @@ use ketchup_model::document::{
 };
 use ketchup_model::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
 use ketchup_model::import::{gltf_point_from_ketchup, gltf_transform_from_ketchup};
+use ketchup_model::tolerance::limits;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::num::TryFromIntError;
@@ -16,9 +17,6 @@ const GLTF_ARRAY_BUFFER: u32 = 34_962;
 const GLTF_ELEMENT_ARRAY_BUFFER: u32 = 34_963;
 const GLTF_FLOAT: u32 = 5_126;
 const GLTF_UNSIGNED_INT: u32 = 5_125;
-pub const MAX_GLB_EXPORT_INSTANCES: usize = 8_000;
-const MAX_GLB_EXPORT_VERTICES: usize = 2_000_000;
-const MAX_GLB_EXPORT_TRIANGLES: usize = 4_000_000;
 const MAX_GLB_EXPORT_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,7 +95,7 @@ pub fn model_glb_export(
     if instances.is_empty() {
         return Err(ExactProductError::EmptyModelExport);
     }
-    if instances.len() > MAX_GLB_EXPORT_INSTANCES {
+    if instances.len() > limits::EXPORT_INSTANCES {
         return Err(ExactProductError::ExportResourceLimit);
     }
     if instances
@@ -133,12 +131,12 @@ pub fn model_glb_export(
         vertex_count = add_with_limit(
             vertex_count,
             instance.source.vertex_count(),
-            MAX_GLB_EXPORT_VERTICES,
+            limits::EXPORT_VERTICES,
         )?;
         triangle_count = add_with_limit(
             triangle_count,
             instance.source.triangle_count(),
-            MAX_GLB_EXPORT_TRIANGLES,
+            limits::EXPORT_TRIANGLES,
         )?;
         let layout = append_geometry(
             instance.source,
@@ -224,11 +222,13 @@ pub fn model_glb_export(
         .filter(|instance| instance.source.is_canonical())
         .count();
     let loss_report = format!(
-        "authority=validated exact tessellations and canonical mesh bodies\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nmaterials=resolved occurrence sRGB colors\nblender_background_import_verified=false\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\nmesh_count={}\nresource_vertex_limit={MAX_GLB_EXPORT_VERTICES}\nresource_triangle_limit={MAX_GLB_EXPORT_TRIANGLES}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nmaterials=resolved occurrence sRGB colors\nblender_background_import_verified=false\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\nmesh_count={}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
         snapshot.canonical_digest(),
         instances.len(),
         geometries.len(),
         mesh_indices.len(),
+        limits::EXPORT_VERTICES,
+        limits::EXPORT_TRIANGLES,
     );
     Ok(ExactGlbExport { glb, loss_report })
 }

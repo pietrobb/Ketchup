@@ -3,12 +3,10 @@ use ketchup_model::document::{
     SceneOccurrence, Snapshot, Transform,
 };
 use ketchup_model::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
+use ketchup_model::tolerance::limits;
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 
-pub const MAX_THREE_MF_EXPORT_INSTANCES: usize = 8_000;
-const MAX_THREE_MF_EXPORT_VERTICES: usize = 2_000_000;
-const MAX_THREE_MF_EXPORT_TRIANGLES: usize = 4_000_000;
 const MAX_THREE_MF_EXPORT_XML_BYTES: usize = 256 * 1024 * 1024;
 const MAX_THREE_MF_EXPORT_ARCHIVE_BYTES: usize = 257 * 1024 * 1024;
 
@@ -22,9 +20,9 @@ struct ThreeMfExportLimits {
 }
 
 const THREE_MF_EXPORT_LIMITS: ThreeMfExportLimits = ThreeMfExportLimits {
-    instances: MAX_THREE_MF_EXPORT_INSTANCES,
-    vertices: MAX_THREE_MF_EXPORT_VERTICES,
-    triangles: MAX_THREE_MF_EXPORT_TRIANGLES,
+    instances: limits::EXPORT_INSTANCES,
+    vertices: limits::EXPORT_VERTICES,
+    triangles: limits::EXPORT_TRIANGLES,
     xml_bytes: MAX_THREE_MF_EXPORT_XML_BYTES,
     archive_bytes: MAX_THREE_MF_EXPORT_ARCHIVE_BYTES,
 };

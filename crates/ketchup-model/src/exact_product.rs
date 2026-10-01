@@ -1263,8 +1263,6 @@ fn mesh_export_from_view(
     }
 }
 
-pub const MAX_STL_EXPORT_INSTANCES: usize = 8_000;
-pub const MAX_STL_EXPORT_TRIANGLES: usize = 4_000_000;
 const MAX_STL_EXPORT_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn exact_model_stl_export(
@@ -1288,7 +1286,7 @@ pub fn model_stl_export(
     if bodies.is_empty() {
         return Err(ExactProductError::EmptyModelExport);
     }
-    if bodies.len() > MAX_STL_EXPORT_INSTANCES {
+    if bodies.len() > limits::EXPORT_INSTANCES {
         return Err(ExactProductError::ExportResourceLimit);
     }
     if bodies.iter().any(|body| !body.source.is_current(snapshot)) {
@@ -1297,7 +1295,7 @@ pub fn model_stl_export(
     let total_triangles = bodies.iter().try_fold(0_usize, |count, body| {
         count
             .checked_add(body.source.triangle_count())
-            .filter(|total| *total <= MAX_STL_EXPORT_TRIANGLES)
+            .filter(|total| *total <= limits::EXPORT_TRIANGLES)
             .ok_or(ExactProductError::ExportResourceLimit)
     })?;
 
@@ -1368,9 +1366,10 @@ pub fn model_stl_export(
         .filter(|body| body.source.is_canonical())
         .count();
     let loss_report = format!(
-        "authority=validated exact tessellations and canonical mesh bodies\nformat=ASCII STL\nconversion=current-visible-model-to-world-space-mesh\ncolor_loss=STL does not preserve occurrence colors\neditability_loss=canonical features, rules, dimensions, hierarchy, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, assembly identity, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nfacet_count={facet_count}\nsource_identities={source_identities}\nresource_triangle_limit={MAX_STL_EXPORT_TRIANGLES}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=ASCII STL\nconversion=current-visible-model-to-world-space-mesh\ncolor_loss=STL does not preserve occurrence colors\neditability_loss=canonical features, rules, dimensions, hierarchy, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, assembly identity, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nfacet_count={facet_count}\nsource_identities={source_identities}\nresource_triangle_limit={}\n",
         snapshot.canonical_digest(),
         bodies.len(),
+        limits::EXPORT_TRIANGLES,
     );
     debug_assert_eq!(facet_count, total_triangles);
     Ok(ExactStlExport {

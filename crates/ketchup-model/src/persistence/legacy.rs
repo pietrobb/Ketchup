@@ -481,7 +481,7 @@ impl ProductSchemaCapabilities {
     }
 }
 
-const MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
+use super::MAX_FILE_BYTES;
 const HEADER_BYTES: usize = 16;
 const MANIFEST_BYTES: usize = 8
     + 32

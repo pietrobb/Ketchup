@@ -1,5 +1,6 @@
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use ketchup_geometry::linalg::{Affine3, Mat3, Vec3};
+use ketchup_tolerance::limits;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -62,8 +63,6 @@ const MAX_NODES: usize = 512;
 const MAX_TOTAL_VERTICES: usize = 200_000;
 const MAX_TOTAL_TRIANGLES: usize = 400_000;
 const MAX_GLB_COMMANDS: usize = 1_024;
-const MAX_VERTICES_PER_PRIMITIVE: usize = 100_000;
-const MAX_TRIANGLES_PER_PRIMITIVE: usize = 200_000;
 const MAX_TEXT_BYTES: usize = 1_024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -810,7 +809,7 @@ fn decode_positions(
         .ok_or(GlbImportError::InvalidReference)?;
     if accessor.kind != AccessorKind::Vec3
         || accessor.component_type != FLOAT
-        || accessor.count > MAX_VERTICES_PER_PRIMITIVE
+        || accessor.count > limits::MESH_VERTICES
         || accessor.count < 4
     {
         return Err(GlbImportError::InvalidAccessor);
@@ -869,7 +868,7 @@ fn decode_triangles(
             UNSIGNED_BYTE | UNSIGNED_SHORT | UNSIGNED_INT
         )
         || accessor.count % 3 != 0
-        || !(12..=MAX_TRIANGLES_PER_PRIMITIVE * 3).contains(&accessor.count)
+        || !(12..=limits::MESH_TRIANGLES * 3).contains(&accessor.count)
     {
         return Err(GlbImportError::InvalidAccessor);
     }

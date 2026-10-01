@@ -41,7 +41,6 @@ const MAX_ASSISTANT_REJECTION_TEXT_BYTES: usize = 2_048;
 const MAX_ASSISTANT_REJECTION_BYTES: usize = 8 * 1_024;
 const MAX_ASSISTANT_HELIX_TURNS: f64 = 16.0;
 const MAX_ASSISTANT_PROFILE_COPIES: usize = 16;
-const MAX_ASSISTANT_INSTANCE_PATH_STEPS: usize = 256;
 // Four quarter-ellipse cubics using kappa have peak normalized radial error < 0.000273.
 const ELLIPSE_CUBIC_MAX_NORMALIZED_RADIAL_DEVIATION: f64 = 0.000_273;
 
@@ -387,7 +386,7 @@ impl AssistantAxisSpec {
                     .all(|byte| byte.is_ascii_hexdigit())
                 && instance_path.as_ref().is_none_or(|path| {
                     path.root_occurrence_id > 0
-                        && path.steps.len() <= MAX_ASSISTANT_INSTANCE_PATH_STEPS
+                        && path.steps.len() <= limits::INSTANCE_PATH_STEPS
                         && path.steps.iter().all(|step| match step {
                             AssistantInstancePathStep::Group {
                                 owner_definition_id,
@@ -2148,7 +2147,7 @@ fn assistant_cad_vectors_are_perpendicular(left: [f64; 3], right: [f64; 3]) -> b
 impl AssistantInstancePath {
     fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         if self.root_occurrence_id == 0
-            || self.steps.len() > MAX_ASSISTANT_INSTANCE_PATH_STEPS
+            || self.steps.len() > limits::INSTANCE_PATH_STEPS
             || self.steps.iter().any(|step| match step {
                 AssistantInstancePathStep::Group {
                     owner_definition_id,

@@ -1,13 +1,10 @@
-use ketchup_manufacturing::blender_export::{
-    ExactGlbInstance, MAX_GLB_EXPORT_INSTANCES, exact_model_glb_export,
-};
+use ketchup_manufacturing::blender_export::{ExactGlbInstance, exact_model_glb_export};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, MeshAuthority, OccurrenceId, Transform,
 };
 use ketchup_model::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactProductError, MAX_STL_EXPORT_INSTANCES,
-    exact_model_stl_export,
+    ExactBodyPackage, ExactFaceRole, ExactProductError, exact_model_stl_export,
 };
 use ketchup_model::import::{
     GlbImportError, ImportFormat, ImportLengthUnit, inspect_glb, plan_glb_import,
@@ -17,6 +14,7 @@ use ketchup_model::mesh_recognition::{
 };
 use ketchup_model::persistence;
 use ketchup_model::testing::box_package;
+use ketchup_model::tolerance::limits;
 use serde_json::Value;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -675,14 +673,14 @@ fn mesh_exports_reject_instance_expansion_beyond_bounded_limits() {
             package: &package,
             occurrence: &occurrence,
         };
-        MAX_GLB_EXPORT_INSTANCES + 1
+        limits::EXPORT_INSTANCES + 1
     ];
     assert_eq!(
         exact_model_glb_export(&snapshot, &glb_instances),
         Err(ExactProductError::ExportResourceLimit)
     );
 
-    let stl_bodies = vec![(&package, Transform::identity()); MAX_STL_EXPORT_INSTANCES + 1];
+    let stl_bodies = vec![(&package, Transform::identity()); limits::EXPORT_INSTANCES + 1];
     assert_eq!(
         exact_model_stl_export(&snapshot, &stl_bodies),
         Err(ExactProductError::ExportResourceLimit)

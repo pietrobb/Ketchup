@@ -20,6 +20,7 @@ use ketchup_model::exact_validation::{
 };
 use ketchup_model::persistence::ContainerData;
 use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::tolerance::limits;
 use ketchup_model::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     ValidationDiagnostic, ValidationInvocation, ValidationReport, ValidationState,
@@ -42,8 +43,6 @@ const MAX_COLLISION_BODIES: usize = 512;
 const MAX_SCOPED_COLLISION_OCCURRENCES: usize = 10_000;
 const MAX_SCOPED_COLLISION_BODIES: usize = 10_000;
 const MAX_SCOPED_COLLISION_CANDIDATES: usize = 10_000;
-const MAX_COLLISION_SCENE_PATH_STEPS: usize = 256;
-const MAX_COLLISION_SCENE_TEXT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_COLLISION_GRAPH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_COLLISION_UNIQUE_GRAPHS: usize = 512;
 const MAX_COLLISION_SOURCE_BYTES: usize = 64 * 1024 * 1024;
@@ -464,8 +463,8 @@ fn collision_report(
             "max_scoped_occurrences": MAX_SCOPED_COLLISION_OCCURRENCES,
             "max_scoped_bodies": MAX_SCOPED_COLLISION_BODIES,
             "max_scoped_candidates": MAX_SCOPED_COLLISION_CANDIDATES,
-            "max_scene_path_steps": MAX_COLLISION_SCENE_PATH_STEPS,
-            "max_scene_text_bytes": MAX_COLLISION_SCENE_TEXT_BYTES,
+            "max_scene_path_steps": limits::INSTANCE_PATH_STEPS,
+            "max_scene_text_bytes": limits::REPORT_TEXT_BYTES,
             "max_graph_bytes": MAX_COLLISION_GRAPH_BYTES,
             "max_unique_graphs": MAX_COLLISION_UNIQUE_GRAPHS,
             "max_graphs_per_batch": MAX_EXACT_PAIR_GRAPHS,
@@ -534,8 +533,8 @@ fn collision_report(
     };
     let visible = match snapshot.scene_query_bounded(
         scene_limit,
-        MAX_COLLISION_SCENE_PATH_STEPS,
-        MAX_COLLISION_SCENE_TEXT_BYTES,
+        limits::INSTANCE_PATH_STEPS,
+        limits::REPORT_TEXT_BYTES,
     ) {
         Ok(occurrences) => occurrences
             .into_iter()

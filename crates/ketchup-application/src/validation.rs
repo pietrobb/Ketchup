@@ -7,6 +7,7 @@ use ketchup_model::document::{ClassificationError, InstancePath, OccurrenceId, S
 use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_model::exact_validation::*;
 use ketchup_model::pin_joint::project_pin_joint_contract;
+use ketchup_model::tolerance::limits;
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, TolerancePolicy};
 use ketchup_model::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, MATERIAL_DIMENSION_V1,
@@ -14,10 +15,8 @@ use ketchup_model::validation::{
     ValidatorRoleError, ValidatorRoleIndex,
 };
 use std::collections::{BTreeMap, BTreeSet};
-const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
-const MAX_ASSISTANT_VALIDATION_PATH_STEPS: usize = 256;
-const MAX_ASSISTANT_VALIDATION_TEXT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
+pub const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
+pub const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
 const MAX_STRUCTURAL_SCOPE_OCCURRENCES: usize = 10_000;
 const MAX_STRUCTURAL_SCOPE_LOADS: usize = MAX_ASSISTANT_VALIDATION_ISSUES;
 const MAX_STRUCTURAL_SCOPE_ROLE_ASSIGNMENTS: usize = 10_000;
@@ -174,7 +173,7 @@ fn scoped_static_load_unavailable(
                 "evaluator_parameters": MAX_STRUCTURAL_SCOPE_PARAMETERS,
                 "classification_dimensions": MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS,
                 "role_categories": MAX_STRUCTURAL_ROLE_CATEGORIES,
-                "text_bytes": MAX_ASSISTANT_VALIDATION_TEXT_BYTES,
+                "text_bytes": limits::REPORT_TEXT_BYTES,
             },
         },
     })
@@ -331,7 +330,7 @@ pub fn scoped_static_load_report(
             && snapshot.occurrence_effectively_visible(*occurrence_id) == Some(true)
         {
             text_bytes = text_bytes.saturating_add(occurrence.name().len());
-            if text_bytes > MAX_ASSISTANT_VALIDATION_TEXT_BYTES {
+            if text_bytes > limits::REPORT_TEXT_BYTES {
                 return scoped_static_load_unavailable(
                     snapshot,
                     scope,
@@ -385,7 +384,7 @@ pub fn scoped_static_load_report(
                     "evaluator_parameters": MAX_STRUCTURAL_SCOPE_PARAMETERS,
                     "classification_dimensions": MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS,
                     "role_categories": MAX_STRUCTURAL_ROLE_CATEGORIES,
-                "text_bytes": MAX_ASSISTANT_VALIDATION_TEXT_BYTES,
+                "text_bytes": limits::REPORT_TEXT_BYTES,
                 },
             }),
         );
@@ -3372,8 +3371,8 @@ pub(crate) fn assistant_validation_context_base(
     let (visible_occurrences, scene_query_error) = if needs_participant_projection {
         match snapshot.scene_query_bounded(
             MAX_ASSISTANT_VALIDATION_OCCURRENCES,
-            MAX_ASSISTANT_VALIDATION_PATH_STEPS,
-            MAX_ASSISTANT_VALIDATION_TEXT_BYTES,
+            limits::INSTANCE_PATH_STEPS,
+            limits::REPORT_TEXT_BYTES,
         ) {
             Ok(occurrences) => (
                 occurrences

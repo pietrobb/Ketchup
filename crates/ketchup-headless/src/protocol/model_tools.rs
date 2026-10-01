@@ -1,6 +1,7 @@
 use super::*;
 use ketchup_application::model_query::{self, EditContextRequest, EntityKind, PageRequest};
 use ketchup_assistant::sidecar::AssistantInstancePath;
+use ketchup_model::tolerance::limits;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -270,7 +271,7 @@ impl Server {
                         .map_err(|e| {
                             Error::new(e.code(), format!("batch workset rejected: {e:?}"))
                         })?;
-                    if self.batch_jobs.len() == MAX_BATCH_JOBS {
+                    if self.batch_jobs.len() == limits::BATCH_JOBS {
                         let terminal = self
                             .batch_jobs
                             .iter()
@@ -708,7 +709,7 @@ mod tests {
             json!({"handle":cancelled_handle}),
         );
         assert_eq!(cancelled["result"]["status"]["state"], "cancelled");
-        for _ in 1..MAX_BATCH_JOBS {
+        for _ in 1..limits::BATCH_JOBS {
             assert_eq!(start(&mut server)["result"]["status"]["state"], "pending");
         }
         let rejected = call(
@@ -720,7 +721,7 @@ mod tests {
                 "operation":{"type":"set_color","color":[10,20,30]}}),
         );
         assert_eq!(rejected["error"]["code"], "workset_not_found");
-        assert_eq!(server.batch_jobs.len(), MAX_BATCH_JOBS);
+        assert_eq!(server.batch_jobs.len(), limits::BATCH_JOBS);
         assert_eq!(
             call(
                 &mut server,

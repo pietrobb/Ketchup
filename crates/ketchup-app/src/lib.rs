@@ -265,8 +265,9 @@ const MAX_ASSISTANT_MEMORY_TEXT_BYTES: usize = 1024;
 const MAX_ASSISTANT_MEMORY_RETRIEVAL_ENTRIES: usize = 4;
 const MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES: usize = 8 * 1024;
 const MAX_ASSISTANT_MEMORY_STORAGE_BYTES: usize = 320 * 1024;
-const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
-const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
+use ketchup_application::validation::{
+    MAX_ASSISTANT_VALIDATION_ISSUES, MAX_ASSISTANT_VALIDATION_OCCURRENCES,
+};
 pub const ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1: &str = "ketchup.assistant-repair-program.v1";
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AssistantValidationSelection {

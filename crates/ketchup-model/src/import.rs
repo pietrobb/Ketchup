@@ -1,4 +1,5 @@
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING};
+use ketchup_tolerance::limits;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -1081,15 +1082,13 @@ fn validate_text(value: &str) -> Result<(), ImportContractError> {
 
 pub const STL_PARSER_ID: &str = "ketchup-stl";
 pub const STL_PARSER_VERSION: &str = "1";
-const MAX_STL_TRIANGLES: usize = 200_000;
 const MAX_STL_ASCII_LINE_BYTES: usize = 128;
 const MAX_STL_ASCII_LINES_PER_TRIANGLE: usize = 8;
-const MAX_STL_ASCII_LINES: usize = (MAX_STL_TRIANGLES * MAX_STL_ASCII_LINES_PER_TRIANGLE) + 2;
+const MAX_STL_ASCII_LINES: usize = (limits::MESH_TRIANGLES * MAX_STL_ASCII_LINES_PER_TRIANGLE) + 2;
 // Each facet requires seven structural lines. The bounded ASCII subset permits
 // one additional blank line per facet and CRLF endings without unbounded input.
 pub const MAX_STL_SOURCE_BYTES: u64 =
     MAX_STL_ASCII_LINES as u64 * (MAX_STL_ASCII_LINE_BYTES as u64 + 2);
-const MAX_STL_VERTICES: usize = 100_000;
 const STL_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
 const STL_VOLUME_EPSILON: f64 = APPROXIMATION;
 
@@ -1225,7 +1224,7 @@ pub fn parse_stl(
     if facets.is_empty() {
         return Err(StlImportError::NoTriangles);
     }
-    if facets.len() > MAX_STL_TRIANGLES {
+    if facets.len() > limits::MESH_TRIANGLES {
         return Err(StlImportError::TooManyTriangles);
     }
     normalize_and_validate_stl(facets, units.millimetres_per_unit(), encoding)
@@ -1344,7 +1343,7 @@ fn next_product_id(ids: impl Iterator<Item = u64>) -> Result<u64, StlImportPlanE
 type StlFacet = ([[f64; 3]; 3], [f64; 3]);
 
 fn parse_binary_stl(source: &[u8], count: usize) -> Result<Vec<StlFacet>, StlImportError> {
-    if count > MAX_STL_TRIANGLES {
+    if count > limits::MESH_TRIANGLES {
         return Err(StlImportError::TooManyTriangles);
     }
     let mut facets = Vec::with_capacity(count);
@@ -1402,7 +1401,7 @@ fn parse_ascii_stl(source: &[u8]) -> Result<Vec<StlFacet>, StlImportError> {
             }
             return Ok(facets);
         }
-        if facets.len() == MAX_STL_TRIANGLES {
+        if facets.len() == limits::MESH_TRIANGLES {
             return Err(StlImportError::TooManyTriangles);
         }
         let normal = parse_ascii_vector(line, "facet normal")?;
@@ -1465,7 +1464,7 @@ fn normalize_and_validate_stl(
                 destination[axis] = if value == 0.0 { 0.0 } else { value };
             }
             unique.insert(destination.map(f64::to_bits), *destination);
-            if unique.len() > MAX_STL_VERTICES {
+            if unique.len() > limits::MESH_VERTICES {
                 return Err(StlImportError::TooManyVertices);
             }
         }
@@ -1474,7 +1473,7 @@ fn normalize_and_validate_stl(
         }
         scaled_facets.push(scaled);
     }
-    if unique.len() > MAX_STL_VERTICES {
+    if unique.len() > limits::MESH_VERTICES {
         return Err(StlImportError::TooManyVertices);
     }
     let vertices_mm = unique.values().copied().collect::<Vec<_>>();

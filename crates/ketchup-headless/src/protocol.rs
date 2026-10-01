@@ -12,6 +12,7 @@ use ketchup_application::fea_workflow::{
 use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmWorkflowError,
 };
+use ketchup_model::tolerance::limits;
 mod model_tools;
 mod production;
 use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
@@ -50,7 +51,6 @@ use std::{
 
 pub const PROTOCOL: &str = "ketchup.headless.v1";
 pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_BATCH_JOBS: usize = 16;
 pub const MAX_VERIFY_JOBS: usize = 16;
 const METHODS: &[&str] = &[
     "capabilities",
@@ -898,7 +898,7 @@ impl Server {
             "capabilities" => Ok(
                 json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":method_requires_guard(name)})).collect::<Vec<_>>(),
                 "cad_program_schema":ketchup_assistant::catalog::cad_program_schema(),
-                "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"max_verify_jobs":MAX_VERIFY_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
+                "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":limits::BATCH_JOBS,"max_verify_jobs":MAX_VERIFY_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
                 "optional_mutation_preconditions":["expected_revision","expected_digest","expected_mutation_epoch"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),

@@ -1,5 +1,6 @@
 use crate::tolerance::MAX_COORDINATE_MM;
 use ketchup_geometry::linalg::Affine3;
+use ketchup_tolerance::limits;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -23,8 +24,6 @@ const MAX_DEFINITIONS: usize = 128;
 const MAX_INSTANCES: usize = 512;
 const MAX_TOTAL_VERTICES: usize = 200_000;
 const MAX_TOTAL_TRIANGLES: usize = 400_000;
-const MAX_VERTICES_PER_DEFINITION: usize = 100_000;
-const MAX_TRIANGLES_PER_DEFINITION: usize = 200_000;
 const MAX_TEXT_BYTES: usize = 1_024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -216,8 +215,8 @@ struct SceneFile {
 struct DefinitionFile {
     id: String,
     name: String,
-    vertices: BoundedVec<[f64; 3], MAX_VERTICES_PER_DEFINITION>,
-    triangles: BoundedVec<[u32; 3], MAX_TRIANGLES_PER_DEFINITION>,
+    vertices: BoundedVec<[f64; 3], { limits::MESH_VERTICES }>,
+    triangles: BoundedVec<[u32; 3], { limits::MESH_TRIANGLES }>,
 }
 
 #[derive(Deserialize)]
@@ -378,10 +377,10 @@ pub fn inspect_sketchup_scene(
         if !ids.insert(definition.id.clone()) {
             return Err(SketchupSceneImportError::DuplicateDefinition);
         }
-        if !(4..=MAX_VERTICES_PER_DEFINITION).contains(&definition.vertices.len()) {
+        if !(4..=limits::MESH_VERTICES).contains(&definition.vertices.len()) {
             return Err(SketchupSceneImportError::TooManyVertices);
         }
-        if !(4..=MAX_TRIANGLES_PER_DEFINITION).contains(&definition.triangles.len()) {
+        if !(4..=limits::MESH_TRIANGLES).contains(&definition.triangles.len()) {
             return Err(SketchupSceneImportError::TooManyTriangles);
         }
         total_vertices = total_vertices

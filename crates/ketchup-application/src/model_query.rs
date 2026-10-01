@@ -18,6 +18,7 @@ use ketchup_model::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBodyPackage, ExactResultRegistry,
 };
 use ketchup_model::pin_joint::project_pin_joint_contract;
+use ketchup_model::tolerance::limits;
 use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -29,10 +30,7 @@ pub const MAX_PAGE: usize = 100;
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 pub const MAX_TEXT_BYTES: usize = 128;
 pub const MAX_INSTANCE_INDEX_ITEMS: usize = 10_000;
-pub const MAX_INSTANCE_PATH_STEPS: usize = 256;
-pub const MAX_INSTANCE_INDEX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_WORKSET_ITEMS: usize = 10_000;
-pub const MAX_WORKSET_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_ACTIVE_WORKSETS: usize = 16;
 pub const MAX_EDIT_CONTEXT_TARGETS: usize = 16;
 pub const MAX_EDIT_CONTEXT_FEATURES: usize = 256;
@@ -260,8 +258,8 @@ impl ModelQuery {
             let state = CanonicalInteractionProjection::from_snapshot_bounded(
                 snapshot,
                 MAX_INSTANCE_INDEX_ITEMS,
-                MAX_INSTANCE_PATH_STEPS,
-                MAX_INSTANCE_INDEX_TEXT_BYTES,
+                limits::INSTANCE_PATH_STEPS,
+                limits::REPORT_TEXT_BYTES,
             )
             .map_or_else(
                 InstanceIndexState::BudgetExceeded,
@@ -301,8 +299,8 @@ impl ModelQuery {
             "limits":{"max_page":MAX_PAGE,"max_output_bytes":MAX_OUTPUT_BYTES,
                 "max_name_bytes":MAX_TEXT_BYTES,"max_search_bytes":128,
                 "max_instance_index_items":MAX_INSTANCE_INDEX_ITEMS,
-                "max_instance_path_steps":MAX_INSTANCE_PATH_STEPS,
-                "max_instance_index_text_bytes":MAX_INSTANCE_INDEX_TEXT_BYTES}})
+                "max_instance_path_steps":limits::INSTANCE_PATH_STEPS,
+                "max_instance_index_text_bytes":limits::REPORT_TEXT_BYTES}})
     }
 
     pub fn edit_context(
@@ -1054,7 +1052,7 @@ impl ModelQuery {
                     incomplete_reason = Some("item_count");
                     break;
                 }
-                if identity_text_bytes.saturating_add(bytes) > MAX_WORKSET_TEXT_BYTES {
+                if identity_text_bytes.saturating_add(bytes) > limits::REPORT_TEXT_BYTES {
                     incomplete_reason = Some("identity_text_bytes");
                     break;
                 }
@@ -1501,7 +1499,7 @@ fn workset_value(snapshot: &Snapshot, handle: &str, workset: &Workset) -> Value 
             "usable_for_batch":workset.complete,
             "reason":workset.incomplete_reason},
         "resource_budget":{"status":if workset.complete {"within_budget"} else {"incomplete"},
-            "max_items":MAX_WORKSET_ITEMS,"max_identity_text_bytes":MAX_WORKSET_TEXT_BYTES,
+            "max_items":MAX_WORKSET_ITEMS,"max_identity_text_bytes":limits::REPORT_TEXT_BYTES,
             "identity_text_bytes":workset.identity_text_bytes,
             "max_active_worksets":MAX_ACTIVE_WORKSETS}})
 }
@@ -1582,16 +1580,16 @@ fn instance_budget_value(
 ) -> Value {
     match exceeded {
         None => json!({"status":"within_budget","resource":"expanded_instance_index",
-            "max_items":MAX_INSTANCE_INDEX_ITEMS,"max_path_steps":MAX_INSTANCE_PATH_STEPS,
-            "max_text_bytes":MAX_INSTANCE_INDEX_TEXT_BYTES,"allocated_items":allocated_items}),
+            "max_items":MAX_INSTANCE_INDEX_ITEMS,"max_path_steps":limits::INSTANCE_PATH_STEPS,
+            "max_text_bytes":limits::REPORT_TEXT_BYTES,"allocated_items":allocated_items}),
         Some(exceeded) => json!({"status":"exceeded","resource":"expanded_instance_index",
             "reason":match exceeded.kind {
                 SceneQueryBudgetKind::Occurrences => "occurrence_count",
                 SceneQueryBudgetKind::PathSteps => "path_steps",
                 SceneQueryBudgetKind::TextBytes => "text_bytes",
             },"limit":exceeded.limit,"observed_at_least":exceeded.observed_at_least,
-            "max_items":MAX_INSTANCE_INDEX_ITEMS,"max_path_steps":MAX_INSTANCE_PATH_STEPS,
-            "max_text_bytes":MAX_INSTANCE_INDEX_TEXT_BYTES,"allocated_items":allocated_items}),
+            "max_items":MAX_INSTANCE_INDEX_ITEMS,"max_path_steps":limits::INSTANCE_PATH_STEPS,
+            "max_text_bytes":limits::REPORT_TEXT_BYTES,"allocated_items":allocated_items}),
     }
 }
 
@@ -1740,7 +1738,7 @@ fn canonical_instance_path(
     snapshot: &Snapshot,
     requested: &AssistantInstancePath,
 ) -> Result<InstancePath, QueryError> {
-    if requested.root_occurrence_id == 0 || requested.steps.len() > MAX_INSTANCE_PATH_STEPS {
+    if requested.root_occurrence_id == 0 || requested.steps.len() > limits::INSTANCE_PATH_STEPS {
         return Err(QueryError::InvalidInput);
     }
     let root_id = OccurrenceId(requested.root_occurrence_id);

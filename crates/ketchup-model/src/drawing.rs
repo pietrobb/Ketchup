@@ -12,6 +12,7 @@ use crate::document::{
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
 use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use ketchup_geometry::linalg::{cross, cross2, dot, dot2, sub};
+use ketchup_tolerance::limits;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -24,7 +25,6 @@ pub const DRAWING_SHEET_LAYOUT_SCHEMA_V1: &str = "ketchup.drawing-sheet-layout.v
 pub const DRAWING_SHEET_LAYOUT_SCHEMA_V2: &str = "ketchup.drawing-sheet-layout.v2";
 const VISIBILITY_EPSILON: f64 = ROUNDING;
 const INTERSECTION_EPSILON: f64 = ROUNDING;
-const MAX_DRAWING_INSTANCES: usize = 8_000;
 const MAX_DRAWING_TRIANGLES: usize = 100_000;
 const MAX_DRAWING_EDGES: usize = 300_000;
 const MAX_DRAWING_OCCLUSION_TESTS: usize = 4_000_000;
@@ -2369,7 +2369,7 @@ fn validate_rigid_source(
     snapshot: &Snapshot,
     instance_paths: &[InstancePath],
 ) -> Result<(), DrawingError> {
-    if instance_paths.len() > MAX_DRAWING_INSTANCES {
+    if instance_paths.len() > limits::EXPORT_INSTANCES {
         return Err(DrawingError::ResourceLimit);
     }
     if instance_paths.is_empty()

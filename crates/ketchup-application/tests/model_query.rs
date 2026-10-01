@@ -9,6 +9,7 @@ use ketchup_model::exact_product::{
     BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ExactResultRegistry,
     ReferenceStability, canonical_reference_lineage_digest,
 };
+use ketchup_model::tolerance::limits;
 use serde_json::{Value, json};
 
 fn fixture(count: u64, long_names: bool) -> DocumentStore {
@@ -431,8 +432,8 @@ fn instance_index_stops_before_over_budget_projection_and_reports_incomplete() {
     assert_eq!(
         snapshot.scene_query_bounded(
             MAX_INSTANCE_INDEX_ITEMS,
-            MAX_INSTANCE_PATH_STEPS,
-            MAX_INSTANCE_INDEX_TEXT_BYTES,
+            limits::INSTANCE_PATH_STEPS,
+            limits::REPORT_TEXT_BYTES,
         ),
         Err(SceneQueryBudgetExceeded {
             kind: SceneQueryBudgetKind::Occurrences,
@@ -474,7 +475,7 @@ fn instance_index_text_amplification_is_rejected_before_name_clone() {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RenameDefinition {
                 id: DefinitionId(1),
-                name: "x".repeat(MAX_INSTANCE_INDEX_TEXT_BYTES + 1),
+                name: "x".repeat(limits::REPORT_TEXT_BYTES + 1),
             },
         ]))
         .unwrap();
@@ -482,13 +483,13 @@ fn instance_index_text_amplification_is_rejected_before_name_clone() {
     let exceeded = snapshot
         .scene_query_bounded(
             MAX_INSTANCE_INDEX_ITEMS,
-            MAX_INSTANCE_PATH_STEPS,
-            MAX_INSTANCE_INDEX_TEXT_BYTES,
+            limits::INSTANCE_PATH_STEPS,
+            limits::REPORT_TEXT_BYTES,
         )
         .unwrap_err();
     assert_eq!(exceeded.kind, SceneQueryBudgetKind::TextBytes);
-    assert_eq!(exceeded.limit, MAX_INSTANCE_INDEX_TEXT_BYTES);
-    assert!(exceeded.observed_at_least > MAX_INSTANCE_INDEX_TEXT_BYTES);
+    assert_eq!(exceeded.limit, limits::REPORT_TEXT_BYTES);
+    assert!(exceeded.observed_at_least > limits::REPORT_TEXT_BYTES);
 
     let query = ModelQuery::default();
     let summary = query.summary(&snapshot);
@@ -775,7 +776,7 @@ fn nested_instance_pages_return_qualified_paths_and_fail_stale_without_mutation(
     let snapshot = document.current();
     let mut query = ModelQuery::default();
     assert_eq!(
-        snapshot.scene_query_bounded(MAX_INSTANCE_INDEX_ITEMS, 0, MAX_INSTANCE_INDEX_TEXT_BYTES),
+        snapshot.scene_query_bounded(MAX_INSTANCE_INDEX_ITEMS, 0, limits::REPORT_TEXT_BYTES),
         Err(SceneQueryBudgetExceeded {
             kind: SceneQueryBudgetKind::PathSteps,
             limit: 0,

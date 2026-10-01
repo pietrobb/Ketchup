@@ -32,6 +32,7 @@ use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantInstancePath, AssistantRejectionDiagnostic,
 };
+use ketchup_model::tolerance::limits;
 use ketchup_model::{
     document::{
         CommandBatch, DocumentStore, OccurrenceId, Proposal, Snapshot, VerifiedProposalCommit,
@@ -77,7 +78,6 @@ pub const DEFAULT_APPLY_VERIFY_TIMEOUT_MS: u64 = 60_000;
 const fn default_apply_verify_timeout_ms() -> u64 {
     DEFAULT_APPLY_VERIFY_TIMEOUT_MS
 }
-pub const MAX_BATCH_JOBS: usize = 16;
 pub const IMAGE_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1921,7 +1921,7 @@ impl LiveBridge {
                 "selected_context":Self::selected_context(app),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
-                "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":MAX_BATCH_JOBS},
+                "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
                 "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","apply_program","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
@@ -1972,7 +1972,7 @@ impl LiveBridge {
                     .query
                     .create_occurrence_batch_task(&app.document, &workset_handle, operation)
                     .map_err(|e| e.code())?;
-                if self.batch_jobs.len() == MAX_BATCH_JOBS {
+                if self.batch_jobs.len() == limits::BATCH_JOBS {
                     let terminal = self
                         .batch_jobs
                         .iter()

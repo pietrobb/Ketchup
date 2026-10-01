@@ -1,12 +1,11 @@
-use ketchup_manufacturing::three_mf_export::{
-    ExactThreeMfInstance, MAX_THREE_MF_EXPORT_INSTANCES, exact_model_three_mf_export,
-};
+use ketchup_manufacturing::three_mf_export::{ExactThreeMfInstance, exact_model_three_mf_export};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, OccurrenceId, Transform,
 };
 use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole, ExactProductError};
 use ketchup_model::testing::box_package;
+use ketchup_model::tolerance::limits;
 use std::collections::BTreeMap;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -212,7 +211,7 @@ fn three_mf_refuses_excessive_instances_before_encoding() {
             package: &package,
             occurrence: &occurrence,
         };
-        MAX_THREE_MF_EXPORT_INSTANCES + 1
+        limits::EXPORT_INSTANCES + 1
     ];
 
     assert_eq!(
