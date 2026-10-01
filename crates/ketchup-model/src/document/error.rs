@@ -141,6 +141,7 @@ pub enum CanonicalError {
     EvaluationEvidenceMismatch,
     FailedEvaluation(NodeId),
     RevisionExhausted,
+    RuleProgram(RuleProgramError),
     Graph(GraphError),
     Prismatic(PrismaticError),
     Space(SpaceError),
@@ -332,6 +333,7 @@ impl CanonicalError {
             Self::EvaluationEvidenceMismatch => "canonical.evaluation_evidence_mismatch",
             Self::FailedEvaluation(..) => "canonical.failed_evaluation",
             Self::RevisionExhausted => "canonical.revision_exhausted",
+            Self::RuleProgram(_) => "canonical.rule_program",
             Self::Graph(..) => "canonical.graph",
             Self::Prismatic(..) => "canonical.prismatic",
             Self::Space(..) => "canonical.space",
@@ -721,6 +723,7 @@ impl fmt::Display for CanonicalError {
             }
             Self::FailedEvaluation(id) => write!(formatter, "node {} evaluation failed", id.0),
             Self::RevisionExhausted => formatter.write_str("revision ID space is exhausted"),
+            Self::RuleProgram(error) => write!(formatter, "rule program not accepted: {error}"),
             Self::Graph(error) => error.fmt(formatter),
             Self::Prismatic(error) => error.fmt(formatter),
             Self::Space(error) => error.fmt(formatter),
@@ -733,6 +736,7 @@ impl std::error::Error for CanonicalError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::UnsolvedAssemblySolvePublication(error) => Some(error.as_ref()),
+            Self::RuleProgram(error) => Some(error),
             _ => None,
         }
     }
@@ -753,6 +757,47 @@ impl From<PrismaticError> for CanonicalError {
 impl From<crate::tolerance::InvalidTolerance> for CanonicalError {
     fn from(error: crate::tolerance::InvalidTolerance) -> Self {
         Self::Prismatic(error.into())
+    }
+}
+
+/// Why a rule program source cannot be bound to or published as a revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleProgramError {
+    /// Binding attaches a source to the revision just committed at the head of history.
+    NoNewHeadRevision,
+    AlreadyBound,
+    /// A source-only edit needs a document a program already owns.
+    NotProgramOwned,
+    EmptySource,
+    NonFiniteOverride,
+    TooLarge {
+        bytes: usize,
+    },
+}
+
+impl fmt::Display for RuleProgramError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoNewHeadRevision => {
+                formatter.write_str("no newly committed revision at the head of history")
+            }
+            Self::AlreadyBound => formatter.write_str("the revision already has a rule program"),
+            Self::NotProgramOwned => formatter.write_str("no rule program owns the document"),
+            Self::EmptySource => formatter.write_str("the program source is empty"),
+            Self::NonFiniteOverride => formatter.write_str("a parameter override is not finite"),
+            Self::TooLarge { bytes } => write!(
+                formatter,
+                "the encoded program is {bytes} bytes, more than {MAX_RULE_PROGRAM_BYTES}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RuleProgramError {}
+
+impl From<RuleProgramError> for CanonicalError {
+    fn from(error: RuleProgramError) -> Self {
+        Self::RuleProgram(error)
     }
 }
 

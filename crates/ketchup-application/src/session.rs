@@ -63,7 +63,7 @@ pub enum SessionError {
     ReviewOnly(Box<persistence::LoadAudit>),
     NoUndo,
     NoRedo,
-    Evaluation(String),
+    Evaluation(ExactEvaluationError),
 }
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -463,12 +463,9 @@ impl DocumentSession {
             document
                 .commit_verified_proposal(&proposal)
                 .map_err(SessionError::Commit)?;
-            if !document.bind_rule_program(source) {
-                return Err(SessionError::Persistence(
-                    "cannot bind rule program to revision".into(),
-                ));
-            }
-            Ok(())
+            document
+                .bind_rule_program(source)
+                .map_err(SessionError::Canonical)
         })?;
         self.update_incremental_exact_plan(&before);
         self.rebind();
@@ -563,13 +560,9 @@ impl DocumentSession {
             return Ok(self.snapshot());
         }
         self.mutate_with_work_recovery(|document| {
-            if document.replace_rule_program_source(source) {
-                Ok(())
-            } else {
-                Err(SessionError::Persistence(
-                    "cannot replace rule program source".into(),
-                ))
-            }
+            document
+                .replace_rule_program_source(source)
+                .map_err(SessionError::Canonical)
         })?;
         Ok(self.snapshot())
     }
@@ -698,9 +691,7 @@ impl DocumentSession {
     ) -> Result<EvaluationReport, SessionError> {
         let started = Instant::now();
         if timeout.is_zero() {
-            return Err(SessionError::Evaluation(
-                "exact evaluation timed out".into(),
-            ));
+            return Err(SessionError::Evaluation(ExactEvaluationError::TimedOut));
         }
         let task = self.start_incremental_exact_evaluation_task();
         let products = task
@@ -708,9 +699,7 @@ impl DocumentSession {
             .map_err(SessionError::Evaluation)?;
         if started.elapsed() >= timeout {
             task.cancel();
-            return Err(SessionError::Evaluation(
-                "exact evaluation timed out".into(),
-            ));
+            return Err(SessionError::Evaluation(ExactEvaluationError::TimedOut));
         }
         self.publish_exact_evaluation(&task, products)
     }
@@ -722,9 +711,7 @@ impl DocumentSession {
     ) -> Result<EvaluationReport, SessionError> {
         let started = Instant::now();
         if timeout.is_zero() {
-            return Err(SessionError::Evaluation(
-                "exact evaluation timed out".into(),
-            ));
+            return Err(SessionError::Evaluation(ExactEvaluationError::TimedOut));
         }
         let task = self.start_exact_evaluation_task();
         let products = task
@@ -736,9 +723,7 @@ impl DocumentSession {
             .map_err(SessionError::Evaluation)?;
         if started.elapsed() >= timeout {
             task.cancel();
-            return Err(SessionError::Evaluation(
-                "exact evaluation timed out".into(),
-            ));
+            return Err(SessionError::Evaluation(ExactEvaluationError::TimedOut));
         }
         self.publish_exact_evaluation(&task, products)
     }

@@ -14,9 +14,9 @@ use ketchup_model::document::{
 use ketchup_model::exact_brep_graph::ExactBRepOperation;
 use ketchup_model::exact_product::{ExactResultRegistry, ExactSnapshotPreparation};
 use ketchup_model::exact_validation::{
-    GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, GeneralClearanceCase,
-    GravitySupportContact, general_body_input_bytes, general_body_narrow_phase,
-    general_body_validation_policy, general_body_validator_descriptor,
+    GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, GeneralBodyValidationError,
+    GeneralClearanceCase, GravitySupportContact, general_body_input_bytes,
+    general_body_narrow_phase, general_body_validation_policy, general_body_validator_descriptor,
 };
 use ketchup_model::persistence::ContainerData;
 use ketchup_model::tolerance::TolerancePolicy;
@@ -166,6 +166,53 @@ pub struct FabricationCollisionValidation {
     pub report: ValidationReport,
 }
 
+/// Why the fabrication participants cannot be bound to a collision check.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FabricationCollisionError {
+    /// The same body of the same instance was listed twice.
+    DuplicateParticipant(InstancePath),
+    /// A participant pair is not a valid clearance case.
+    InvalidClearance(GeneralBodyValidationError),
+}
+
+impl std::fmt::Display for FabricationCollisionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateParticipant(path) => {
+                write!(f, "duplicate fabrication collision participant {path:?}")
+            }
+            Self::InvalidClearance(error) => write!(f, "invalid fabrication clearance: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for FabricationCollisionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DuplicateParticipant(_) => None,
+            Self::InvalidClearance(error) => Some(error),
+        }
+    }
+}
+
+/// Why the imported exact sources of a collision check cannot be loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CollisionSourceError {
+    MissingBlob,
+    ResourceLimit,
+    InvalidBlob,
+}
+
+impl CollisionSourceError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::MissingBlob => "missing_imported_source_blob",
+            Self::ResourceLimit => "imported_source_resource_limit",
+            Self::InvalidBlob => "invalid_imported_source_blob",
+        }
+    }
+}
+
 /// Bind the ordinary full-model native BRep collision result to the complete,
 /// deterministic set of manufacturing participants consumed by fabrication.
 pub fn fabrication_collision_validation_with_worker(
@@ -174,17 +221,19 @@ pub fn fabrication_collision_validation_with_worker(
     container: &ContainerData,
     worker_path: Option<PathBuf>,
     timeout: Duration,
-) -> Result<FabricationCollisionValidation, String> {
+) -> Result<FabricationCollisionValidation, FabricationCollisionError> {
     let mut participants = participants.to_vec();
     participants.sort_by(|left, right| {
         left.instance_path()
             .cmp(right.instance_path())
             .then_with(|| left.source().cmp(right.source()))
     });
-    if participants.windows(2).any(|pair| {
+    if let Some(pair) = participants.windows(2).find(|pair| {
         pair[0].instance_path() == pair[1].instance_path() && pair[0].source() == pair[1].source()
     }) {
-        return Err("duplicate fabrication collision participant".to_owned());
+        return Err(FabricationCollisionError::DuplicateParticipant(
+            pair[0].instance_path().clone(),
+        ));
     }
     let mut cases =
         Vec::with_capacity(participants.len() * participants.len().saturating_sub(1) / 2);
@@ -196,7 +245,7 @@ pub fn fabrication_collision_validation_with_worker(
                     participants[right].clone(),
                     0.0,
                 )
-                .map_err(|error| format!("invalid fabrication clearance: {error:?}"))?,
+                .map_err(FabricationCollisionError::InvalidClearance)?,
             );
         }
     }
@@ -787,7 +836,7 @@ fn collision_report(
                 "timeout_ms": timeout.as_millis()}]);
             return report;
         }
-        let sources = (|| -> Result<BTreeMap<String, Vec<u8>>, String> {
+        let sources = (|| -> Result<BTreeMap<String, Vec<u8>>, CollisionSourceError> {
             let mut sources = BTreeMap::new();
             let mut bytes = 0usize;
             for graph in &graphs {
@@ -808,17 +857,17 @@ fn collision_report(
                         let source = container
                             .blobs()
                             .get(&hash)
-                            .ok_or("missing_imported_source_blob")?;
+                            .ok_or(CollisionSourceError::MissingBlob)?;
                         bytes = bytes
                             .checked_add(source.len())
-                            .ok_or("imported_source_resource_limit")?;
+                            .ok_or(CollisionSourceError::ResourceLimit)?;
                         if bytes > MAX_COLLISION_SOURCE_BYTES {
-                            return Err("imported_source_resource_limit".into());
+                            return Err(CollisionSourceError::ResourceLimit);
                         }
                         if source.len() as u64 != *source_byte_len
                             || ketchup_model::graph::sha256_bytes(source) != *source_sha256
                         {
-                            return Err("invalid_imported_source_blob".into());
+                            return Err(CollisionSourceError::InvalidBlob);
                         }
                         sources.insert(hash, source.clone());
                     }
@@ -1040,7 +1089,7 @@ fn collision_report(
                 .find(|path| path.is_file())
         });
         match (sources, path) {
-            (Err(reason), _) => failures.push(json!({"reason": reason})),
+            (Err(error), _) => failures.push(json!({"reason": error.code()})),
             (Ok(_), _) if pairs.is_empty() => {}
             (Ok(_), None) => failures.push(json!({"reason": "exact_worker_unavailable"})),
             (Ok(sources), Some(path)) => {

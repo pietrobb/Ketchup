@@ -7,7 +7,7 @@ use ketchup_application::{
         assistant_assembly_constraints_report, assistant_assembly_retention_report,
         assistant_static_load_report, assistant_validation_context,
     },
-    validation_rules::ValidationRules,
+    validation_rules::{ValidationRules, occurrence_materials},
 };
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
@@ -1462,6 +1462,32 @@ fn structural_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
     assert_eq!(
         beam["not_evaluated"][0]["reason"],
         "the part's material has no elastic modulus in the validation rules"
+    );
+
+    // Two dimensions both claiming to be the material leave every part's
+    // material undecided; the report names the ambiguous dimension.
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(3),
+                name: MATERIAL_DIMENSION_V1.into(),
+                categories: vec![(ClassificationCategoryId(2), "steel".into())],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        occurrence_materials(&document.current()),
+        Err(ClassificationError::DimensionAmbiguous {
+            name: MATERIAL_DIMENSION_V1.to_owned()
+        })
+    );
+    let ambiguous = assistant_validation_context(&document.current(), &exact_results, &selection);
+    assert_eq!(ambiguous["beam_deflection"]["state"], "not_evaluated");
+    assert_eq!(
+        ambiguous["beam_deflection"]["material_error"],
+        format!(
+            "classification dimension {MATERIAL_DIMENSION_V1:?} is ambiguous: more than one dimension has this name"
+        )
     );
 }
 

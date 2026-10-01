@@ -8,6 +8,44 @@ pub struct ResolvedInstance {
     pub world_transform: Transform,
 }
 
+/// Why the categories of one named classification dimension cannot be read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClassificationError {
+    /// A required dimension with this name does not exist.
+    DimensionMissing { name: String },
+    /// More than one dimension has this name.
+    DimensionAmbiguous { name: String },
+    /// An occurrence is assigned a category its dimension does not define.
+    CategoryMissing {
+        dimension_id: ClassificationDimensionId,
+        category_id: ClassificationCategoryId,
+    },
+}
+
+impl fmt::Display for ClassificationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DimensionMissing { name } => {
+                write!(formatter, "classification dimension {name:?} is missing")
+            }
+            Self::DimensionAmbiguous { name } => write!(
+                formatter,
+                "classification dimension {name:?} is ambiguous: more than one dimension has this name"
+            ),
+            Self::CategoryMissing {
+                dimension_id,
+                category_id,
+            } => write!(
+                formatter,
+                "classification category {} is missing from dimension {}",
+                category_id.0, dimension_id.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ClassificationError {}
+
 #[derive(Clone)]
 pub struct Snapshot {
     pub(super) revision_id: u64,
@@ -385,6 +423,55 @@ impl Snapshot {
             .classification_dimensions
             .values()
             .map(Arc::as_ref)
+    }
+
+    /// The one dimension called `name`, or `None` when no dimension has that name.
+    pub fn classification_dimension_named(
+        &self,
+        name: &str,
+    ) -> Result<Option<&ClassificationDimension>, ClassificationError> {
+        let mut named = self
+            .classification_dimensions()
+            .filter(|dimension| dimension.name() == name);
+        match (named.next(), named.next()) {
+            (dimension, None) => Ok(dimension),
+            (_, Some(_)) => Err(ClassificationError::DimensionAmbiguous {
+                name: name.to_owned(),
+            }),
+        }
+    }
+
+    /// Like [`Snapshot::classification_dimension_named`], but the dimension must exist.
+    pub fn required_classification_dimension(
+        &self,
+        name: &str,
+    ) -> Result<&ClassificationDimension, ClassificationError> {
+        self.classification_dimension_named(name)?.ok_or_else(|| {
+            ClassificationError::DimensionMissing {
+                name: name.to_owned(),
+            }
+        })
+    }
+
+    /// The category name every classified occurrence takes in `dimension`.
+    pub fn occurrence_category_names<'a>(
+        &'a self,
+        dimension: &'a ClassificationDimension,
+    ) -> impl Iterator<
+        Item = Result<(OccurrenceId, ClassificationCategoryId, &'a str), ClassificationError>,
+    > + 'a {
+        self.occurrences().filter_map(move |occurrence| {
+            let category_id = self.occurrence_classification(occurrence.id(), dimension.id())?;
+            Some(
+                dimension
+                    .category(category_id)
+                    .map(|category| (occurrence.id(), category_id, category.name()))
+                    .ok_or(ClassificationError::CategoryMissing {
+                        dimension_id: dimension.id(),
+                        category_id,
+                    }),
+            )
+        })
     }
 
     #[must_use]

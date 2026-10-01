@@ -93,7 +93,54 @@ pub struct ExactEvaluationProducts {
     pub(super) topology_packages: Vec<Arc<ExactBodyPackage>>,
     pub(super) report: EvaluationReport,
 }
-pub type ExactEvaluationResult = Result<ExactEvaluationProducts, String>;
+pub type ExactEvaluationResult = Result<ExactEvaluationProducts, ExactEvaluationError>;
+
+/// Why an exact evaluation task produced nothing that can be published.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactEvaluationError {
+    Cancelled,
+    TimedOut,
+    WorkerDisconnected,
+    /// The products belong to another canonical state than the one being published.
+    Stale,
+    Package(ExactProductError),
+    /// The document refused the exact reference evidence; `reference` names it when
+    /// a single reference was refused.
+    ReferenceEvidence {
+        reference: Option<String>,
+        error: ReferenceEvidenceError,
+    },
+}
+
+impl std::fmt::Display for ExactEvaluationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("exact evaluation cancelled"),
+            Self::TimedOut => f.write_str("exact evaluation timed out"),
+            Self::WorkerDisconnected => f.write_str("exact evaluation worker disconnected"),
+            Self::Stale => f.write_str("exact evaluation products are stale"),
+            Self::Package(error) => write!(f, "exact package cannot be registered: {error}"),
+            Self::ReferenceEvidence {
+                reference: Some(reference),
+                error,
+            } => write!(f, "{error}: {reference}"),
+            Self::ReferenceEvidence {
+                reference: None,
+                error,
+            } => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ExactEvaluationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Package(error) => Some(error),
+            Self::ReferenceEvidence { error, .. } => Some(error),
+            Self::Cancelled | Self::TimedOut | Self::WorkerDisconnected | Self::Stale => None,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactEvaluationProgress {
     pub total_producers: usize,
@@ -144,18 +191,16 @@ impl ExactEvaluationTask {
     }
     pub fn wait(&self, timeout: Duration) -> ExactEvaluationResult {
         if self.cancelled.load(Ordering::Acquire) {
-            return Err("exact evaluation cancelled".into());
+            return Err(ExactEvaluationError::Cancelled);
         }
         match self.receiver.recv_timeout(timeout) {
             Ok(result) if !self.cancelled.load(Ordering::Acquire) => result,
-            Ok(_) => Err("exact evaluation cancelled".into()),
+            Ok(_) => Err(ExactEvaluationError::Cancelled),
             Err(RecvTimeoutError::Timeout) => {
                 self.cancel();
-                Err("exact evaluation timed out".into())
+                Err(ExactEvaluationError::TimedOut)
             }
-            Err(RecvTimeoutError::Disconnected) => {
-                Err("exact evaluation worker disconnected".into())
-            }
+            Err(RecvTimeoutError::Disconnected) => Err(ExactEvaluationError::WorkerDisconnected),
         }
     }
 }
@@ -182,24 +227,24 @@ pub fn materialize_exact_products(
     topology: &ExactResultRegistry,
     task: &ExactEvaluationTask,
     products: ExactEvaluationProducts,
-) -> Result<(ExactResultRegistry, ExactResultRegistry, EvaluationReport), String> {
-    if task.cancelled.load(Ordering::Acquire)
-        || products.source != task.source
-        || products.source != exact_source(snapshot)
-    {
-        return Err("stale or cancelled exact evaluation".into());
+) -> Result<(ExactResultRegistry, ExactResultRegistry, EvaluationReport), ExactEvaluationError> {
+    if task.cancelled.load(Ordering::Acquire) {
+        return Err(ExactEvaluationError::Cancelled);
+    }
+    if products.source != task.source || products.source != exact_source(snapshot) {
+        return Err(ExactEvaluationError::Stale);
     }
     let mut results = ExactResultRegistry::carried_forward(snapshot, render);
     let mut topology_results = ExactResultRegistry::carried_forward(snapshot, topology);
     for package in products.render_packages {
         results
             .insert_current(snapshot, package)
-            .map_err(|error| error.to_string())?;
+            .map_err(ExactEvaluationError::Package)?;
     }
     for package in products.topology_packages {
         topology_results
             .insert_current(snapshot, package)
-            .map_err(|error| error.to_string())?;
+            .map_err(ExactEvaluationError::Package)?;
     }
     Ok((results, topology_results, products.report))
 }
@@ -212,7 +257,7 @@ pub fn publish_exact_products(
     topology: &mut ExactResultRegistry,
     task: &ExactEvaluationTask,
     products: ExactEvaluationProducts,
-) -> Result<EvaluationReport, String> {
+) -> Result<EvaluationReport, ExactEvaluationError> {
     let snapshot = document.current();
     let (results, topology_results, report) =
         materialize_exact_products(&snapshot, render, topology, task, products)?;
@@ -233,11 +278,17 @@ pub fn publish_exact_products(
                 );
                 document
                     .register_exact_reference_evidence(reference)
-                    .map_err(|error| format!("{error}: {identity}"))?;
+                    .map_err(|error| ExactEvaluationError::ReferenceEvidence {
+                        reference: Some(identity),
+                        error,
+                    })?;
             }
             document
                 .register_exact_reference_evidence(&results)
-                .map_err(|error| error.to_string())
+                .map_err(|error| ExactEvaluationError::ReferenceEvidence {
+                    reference: None,
+                    error,
+                })
         },
         |_| Ok(()),
     )?;

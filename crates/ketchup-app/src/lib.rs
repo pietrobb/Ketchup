@@ -178,7 +178,9 @@ pub use helix_thread_ui::{
     AxisSpec, HelixHandedness, HelixToolParameters, ThreadProfile, ThreadToolParameters,
     helix_segments,
 };
-pub use native_document_inspection::{NativeDocumentInspection, inspect_native_document};
+pub use native_document_inspection::{
+    NativeDocumentInspection, NativeDocumentInspectionError, inspect_native_document,
+};
 use transform_operation::{TransformPlan, TransformRequest, TransformTarget};
 mod drawing_plane;
 mod line_geometry;
@@ -7432,7 +7434,8 @@ impl KetchupApp {
                 &self.file.container_data,
                 self.validator_worker_path(),
                 Duration::from_secs(30),
-            )?;
+            )
+            .map_err(|error| error.to_string())?;
         project_general_fabrication(
             &snapshot,
             &self.exact.results,
@@ -23599,12 +23602,9 @@ impl KetchupApp {
                     proposal
                         .commit(document)
                         .map_err(|error| error.to_string())?;
-                    if let Some(source) = rule_program
-                        && !document.bind_rule_program(source)
-                    {
-                        return Err("cannot bind Push/Pull to rule program revision".to_owned());
-                    }
-                    Ok::<(), String>(())
+                    rule_program
+                        .map_or(Ok(()), |source| document.bind_rule_program(source))
+                        .map_err(|error| error.to_string())
                 })
                 .is_err()
         {

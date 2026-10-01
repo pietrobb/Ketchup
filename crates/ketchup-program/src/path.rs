@@ -149,13 +149,63 @@ pub fn arc_about(
     })
 }
 
+/// Why a point list cannot become a sweep path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PolylineError {
+    TooFewPoints,
+    /// Inner corners left sharp because no bend radius was given.
+    SharpCorners {
+        corners: usize,
+    },
+    /// The path turns back on itself at this 1-based point.
+    Reverses {
+        point: usize,
+        at: Vec3,
+    },
+    /// The roundings at both ends of a side need more than the side's length.
+    BendDoesNotFit {
+        bend_mm: f64,
+        from_point: usize,
+        needed_mm: f64,
+        side_mm: f64,
+    },
+}
+
+impl std::fmt::Display for PolylineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooFewPoints => f.write_str("a path needs at least two distinct points"),
+            Self::SharpCorners { corners } => write!(
+                f,
+                "the path turns at {corners} corner(s), but a sweep path must be smooth; pass bend=<radius> to round them"
+            ),
+            Self::Reverses { point, at } => write!(
+                f,
+                "the path reverses at point {point} {at:?}; a sweep cannot turn back on itself"
+            ),
+            Self::BendDoesNotFit {
+                bend_mm,
+                from_point,
+                needed_mm,
+                side_mm,
+            } => write!(
+                f,
+                "bend={bend_mm} does not fit between points {from_point} and {}: the roundings need {needed_mm} mm of the {side_mm} mm side",
+                from_point + 1
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PolylineError {}
+
 /// A polyline through `points`, every inner corner rounded by a tangent arc
 /// of radius `bend_mm` (0 keeps corners, which the sweep then rejects).
-pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>, String> {
+pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>, PolylineError> {
     let mut points = points.to_vec();
     points.dedup_by(|next, previous| length(sub(*next, *previous)) <= KERNEL_EPSILON);
     if points.len() < 2 {
-        return Err("a path needs at least two distinct points".to_owned());
+        return Err(PolylineError::TooFewPoints);
     }
     let direction = |from: Vec3, to: Vec3| unit(sub(to, from)).expect("deduplicated points");
     // Drop inner points that do not turn the path.
@@ -173,9 +223,7 @@ pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>
     }
     let corners = points.len() - 2;
     if corners > 0 && bend_mm <= 0.0 {
-        return Err(format!(
-            "the path turns at {corners} corner(s), but a sweep path must be smooth; pass bend=<radius> to round them"
-        ));
+        return Err(PolylineError::SharpCorners { corners });
     }
     // Tangent length taken from each side of every inner corner.
     let trims = (1..points.len() - 1)
@@ -186,11 +234,10 @@ pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>
             );
             let turn = dot(a, b).clamp(-1.0, 1.0).acos();
             if turn >= std::f64::consts::PI - APPROXIMATION {
-                return Err(format!(
-                    "the path reverses at point {} {:?}; a sweep cannot turn back on itself",
-                    index + 1,
-                    points[index]
-                ));
+                return Err(PolylineError::Reverses {
+                    point: index + 1,
+                    at: points[index],
+                });
             }
             Ok(bend_mm * (turn / 2.0).tan())
         })
@@ -209,11 +256,12 @@ pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>
         let span = length(sub(to, from));
         let (before, after) = (trim(index - 1), trim(index));
         if before + after > span + KERNEL_EPSILON {
-            return Err(format!(
-                "bend={bend_mm} does not fit between points {index} and {}: the roundings need {} mm of the {span} mm side",
-                index + 1,
-                before + after
-            ));
+            return Err(PolylineError::BendDoesNotFit {
+                bend_mm,
+                from_point: index,
+                needed_mm: before + after,
+                side_mm: span,
+            });
         }
         let a = direction(from, to);
         let line_end = sub(to, scale(a, after));

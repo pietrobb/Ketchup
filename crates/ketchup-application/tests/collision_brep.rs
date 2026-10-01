@@ -1,5 +1,6 @@
 use ketchup_application::validation::{
-    CollisionScope, assistant_validation_context, assistant_validation_context_with_worker,
+    CollisionScope, FabricationCollisionError, assistant_validation_context,
+    assistant_validation_context_with_worker,
     assistant_validation_context_with_worker_cancellation,
     fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
 };
@@ -160,6 +161,34 @@ fn fabrication_collision_is_complete_order_independent_and_native() {
         reversed.report.invocation.input_digest
     );
     assert_eq!(validation.report.state, reversed.report.state);
+}
+
+#[test]
+fn a_repeated_fabrication_participant_is_refused_with_its_instance() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    let snapshot = document.current();
+    let participant = ketchup_model::exact_validation::GeneralBodyParticipant::accept(
+        &snapshot,
+        &ExactResultRegistry::default(),
+        InstancePath::root(OccurrenceId(1)),
+        TolerancePolicy::default(),
+    )
+    .unwrap();
+
+    let error = fabrication_collision_validation_with_worker(
+        &snapshot,
+        &[participant.clone(), participant],
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+    )
+    .err()
+    .expect("a repeated participant must be refused");
+    assert_eq!(
+        error,
+        FabricationCollisionError::DuplicateParticipant(InstancePath::root(OccurrenceId(1)))
+    );
 }
 
 #[test]

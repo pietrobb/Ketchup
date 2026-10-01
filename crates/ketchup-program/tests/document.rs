@@ -1,4 +1,7 @@
-use ketchup_model::document::{CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId};
+use ketchup_model::document::{
+    CanonicalCommand, CanonicalError, CommandBatch, Dimension, DocumentStore, NodeId,
+    RuleProgramError,
+};
 use ketchup_model::persistence::{self, ContainerData};
 use ketchup_program::document::{PartChanges, ProgramDocument, ProgramSource, UNDO_LIMIT};
 use std::collections::BTreeMap;
@@ -191,13 +194,13 @@ fn source_only_change_keeps_geometry_and_ids_in_one_canonical_history() {
             },
         ]))
         .unwrap();
-    assert!(store.bind_rule_program(original.clone()));
+    store.bind_rule_program(original.clone()).unwrap();
     let before = store.current();
     let before_ids = before
         .definitions()
         .map(|definition| definition.id())
         .collect::<Vec<_>>();
-    assert!(store.replace_rule_program_source(changed.clone()));
+    store.replace_rule_program_source(changed.clone()).unwrap();
     assert_eq!(
         store.current().canonical_digest(),
         before.canonical_digest()
@@ -212,7 +215,7 @@ fn source_only_change_keeps_geometry_and_ids_in_one_canonical_history() {
     );
     assert_ne!(store.current().revision_id(), before.revision_id());
     let revision = store.current().revision_id();
-    assert!(store.replace_rule_program_source(changed.clone()));
+    store.replace_rule_program_source(changed.clone()).unwrap();
     assert_eq!(store.current().revision_id(), revision);
     store.undo().unwrap();
     assert_eq!(store.current_rule_program(), Some(&original));
@@ -242,7 +245,7 @@ fn source_belongs_to_canonical_revision_through_save_open_and_manual_edit() {
             },
         ]))
         .unwrap();
-    assert!(store.bind_rule_program(original.clone()));
+    store.bind_rule_program(original.clone()).unwrap();
     let authored_id = store.current().revision_id();
     store
         .apply_batch(&CommandBatch::new(vec![
@@ -279,4 +282,56 @@ fn source_belongs_to_canonical_revision_through_save_open_and_manual_edit() {
     assert_eq!(only_current.visible_undo_steps(), 0);
     reopened.redo().unwrap();
     assert!(reopened.current_rule_program().is_none());
+}
+
+#[test]
+fn a_refused_rule_program_names_why() {
+    let mut store = DocumentStore::new();
+    assert_eq!(
+        store.bind_rule_program(source(100.0)),
+        Err(CanonicalError::RuleProgram(
+            RuleProgramError::NoNewHeadRevision
+        ))
+    );
+    assert_eq!(
+        store.replace_rule_program_source(source(100.0)),
+        Err(CanonicalError::RuleProgram(
+            RuleProgramError::NotProgramOwned
+        ))
+    );
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(1),
+                name: "width".into(),
+                dimension: Dimension::new("100", 100.0).unwrap(),
+                dependencies: vec![],
+            },
+        ]))
+        .unwrap();
+    let mut not_finite = source(100.0);
+    not_finite.overrides.insert("width".to_owned(), f64::NAN);
+    assert_eq!(
+        store.bind_rule_program(not_finite),
+        Err(CanonicalError::RuleProgram(
+            RuleProgramError::NonFiniteOverride
+        ))
+    );
+    let mut empty = source(100.0);
+    empty.source.clear();
+    assert_eq!(
+        store.bind_rule_program(empty),
+        Err(CanonicalError::RuleProgram(RuleProgramError::EmptySource))
+    );
+    store.bind_rule_program(source(100.0)).unwrap();
+    let error = store.bind_rule_program(source(120.0)).unwrap_err();
+    assert_eq!(
+        error,
+        CanonicalError::RuleProgram(RuleProgramError::AlreadyBound)
+    );
+    assert_eq!(error.code(), "canonical.rule_program");
+    assert!(
+        std::error::Error::source(&error).is_some(),
+        "the refusal must keep its reason as the cause"
+    );
 }

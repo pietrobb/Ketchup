@@ -1,5 +1,6 @@
 use crate::document::{
-    ClassificationCategoryId, ClassificationDimensionId, DocumentId, OccurrenceId, Snapshot,
+    ClassificationCategoryId, ClassificationDimensionId, ClassificationError, DocumentId,
+    OccurrenceId, Snapshot,
 };
 use crate::exact_product::BodyResultIdentity;
 use crate::graph::{DerivedIdentity, sha256_hex};
@@ -57,45 +58,25 @@ pub struct ValidatorRoleIndex {
 
 impl ValidatorRoleIndex {
     pub fn from_snapshot(snapshot: &Snapshot) -> Result<Self, ValidatorRoleError> {
-        let dimensions = snapshot
-            .classification_dimensions()
-            .filter(|dimension| dimension.name() == VALIDATOR_ROLE_DIMENSION_V1)
-            .collect::<Vec<_>>();
-        let [dimension] = dimensions.as_slice() else {
-            return Err(if dimensions.is_empty() {
-                ValidatorRoleError::DimensionMissing
-            } else {
-                ValidatorRoleError::DimensionAmbiguous
-            });
-        };
+        let dimension = snapshot.required_classification_dimension(VALIDATOR_ROLE_DIMENSION_V1)?;
         let roles = dimension
             .categories()
             .map(|category| ValidatorRole::new(category.name()).map(|role| (category.id(), role)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let assignments = snapshot
-            .occurrences()
-            .filter_map(|occurrence| {
-                snapshot
-                    .occurrence_classification(occurrence.id(), dimension.id())
-                    .map(|category_id| (occurrence.id(), category_id))
-            })
-            .map(|(occurrence_id, category_id)| {
-                let role = roles.get(&category_id).cloned().ok_or(
-                    ValidatorRoleError::CategoryMissing {
-                        dimension_id: dimension.id(),
-                        category_id,
-                    },
-                )?;
+            .occurrence_category_names(dimension)
+            .map(|assigned| {
+                let (occurrence_id, category_id, _) = assigned?;
                 Ok((
                     occurrence_id,
                     ValidatorRoleAssignment {
                         occurrence_id,
                         category_id,
-                        role,
+                        role: roles[&category_id].clone(),
                     },
                 ))
             })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+            .collect::<Result<BTreeMap<_, _>, ValidatorRoleError>>()?;
         Ok(Self {
             dimension_id: dimension.id(),
             assignments,
@@ -135,36 +116,35 @@ impl ValidatorRoleIndex {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ValidatorRoleError {
-    DimensionMissing,
-    DimensionAmbiguous,
+    Classification(ClassificationError),
     InvalidRole(String),
-    CategoryMissing {
-        dimension_id: ClassificationDimensionId,
-        category_id: ClassificationCategoryId,
-    },
+}
+
+impl From<ClassificationError> for ValidatorRoleError {
+    fn from(error: ClassificationError) -> Self {
+        Self::Classification(error)
+    }
 }
 
 impl fmt::Display for ValidatorRoleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DimensionMissing => formatter.write_str("validator role dimension is missing"),
-            Self::DimensionAmbiguous => {
-                formatter.write_str("validator role dimension is ambiguous")
+            Self::Classification(error) => {
+                write!(formatter, "validator roles cannot be read: {error}")
             }
             Self::InvalidRole(role) => write!(formatter, "validator role {role:?} is invalid"),
-            Self::CategoryMissing {
-                dimension_id,
-                category_id,
-            } => write!(
-                formatter,
-                "validator role category {} is missing from dimension {}",
-                category_id.0, dimension_id.0
-            ),
         }
     }
 }
 
-impl std::error::Error for ValidatorRoleError {}
+impl std::error::Error for ValidatorRoleError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Classification(error) => Some(error),
+            Self::InvalidRole(_) => None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ValidationClass {

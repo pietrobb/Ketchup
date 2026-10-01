@@ -1,9 +1,9 @@
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CanonicalOverride, ClassificationCategoryId,
-    ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, NodeId, OccurrenceId, OverrideParameterSpec, PortSpec, ProposalContext,
-    ProposalPrincipal, RevisionHistoryError, RevisionOrigin, RuleOutput, SlotPath, SlotResolution,
-    SlotSegment, Transform,
+    ClassificationDimensionId, ClassificationError, CommandBatch, DefinitionId, Dimension,
+    DocumentStore, FeatureId, FeatureKind, NodeId, OccurrenceId, OverrideParameterSpec, PortSpec,
+    ProposalContext, ProposalPrincipal, RevisionHistoryError, RevisionOrigin, RuleOutput, SlotPath,
+    SlotResolution, SlotSegment, Transform,
 };
 use ketchup_model::persistence::LegacyFeatureKind;
 use ketchup_model::persistence::{self, LoadDisposition, PersistenceError};
@@ -148,6 +148,73 @@ fn migration_required_primary_is_not_replaced_by_a_recovery_document() {
             }
         ))
     ));
+}
+
+#[test]
+fn a_named_classification_dimension_is_found_once_or_refused_as_missing_or_ambiguous() {
+    let dimension = |id: u64, name: &str| CanonicalCommand::UpsertClassificationDimension {
+        id: ClassificationDimensionId(id),
+        name: name.to_owned(),
+        categories: vec![(ClassificationCategoryId(id), format!("category {id}"))],
+    };
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Part".to_owned(),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Part occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            dimension(1, "side"),
+            dimension(2, "system"),
+            dimension(3, "system"),
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(1),
+                category_id: Some(ClassificationCategoryId(1)),
+            },
+        ]))
+        .unwrap();
+    let snapshot = store.current();
+
+    let side = snapshot.required_classification_dimension("side").unwrap();
+    assert_eq!(side.id(), ClassificationDimensionId(1));
+    assert_eq!(
+        snapshot
+            .occurrence_category_names(side)
+            .collect::<Result<Vec<_>, _>>(),
+        Ok(vec![(
+            OccurrenceId(1),
+            ClassificationCategoryId(1),
+            "category 1"
+        )])
+    );
+    assert!(
+        snapshot
+            .classification_dimension_named("absent")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        snapshot.required_classification_dimension("absent").err(),
+        Some(ClassificationError::DimensionMissing {
+            name: "absent".to_owned()
+        })
+    );
+    assert_eq!(
+        snapshot.classification_dimension_named("system").err(),
+        Some(ClassificationError::DimensionAmbiguous {
+            name: "system".to_owned()
+        })
+    );
 }
 
 #[test]

@@ -1407,7 +1407,32 @@ fn native_document_inspection_rejects_an_oversized_sparse_file() {
 
     let error = ketchup_app::inspect_native_document(&path).unwrap_err();
     assert!(
-        error.contains("document exceeds a resource limit"),
+        error
+            .to_string()
+            .contains("document exceeds a resource limit"),
+        "{error}"
+    );
+}
+
+#[test]
+fn native_document_inspection_refuses_a_lossy_legacy_file_with_its_audit() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("legacy-inspection.ketchup");
+    std::fs::write(&path, lossy_legacy_document()).unwrap();
+
+    let error = ketchup_app::inspect_native_document(&path).unwrap_err();
+    let ketchup_app::NativeDocumentInspectionError::NotCurrentLossless(audit) = &error else {
+        panic!("a legacy file must be refused with its load audit: {error:?}");
+    };
+    assert_ne!(
+        audit.source_schema,
+        ketchup_model::persistence::CURRENT_SCHEMA
+    );
+    assert!(!audit.migration_losses.is_empty(), "{audit:?}");
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("schema {}", audit.source_schema)),
         "{error}"
     );
 }

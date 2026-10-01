@@ -88,13 +88,9 @@ impl KetchupApp {
             }
             RuleProgramChange::SourceOnly => {
                 self.complete_mutation_with_work_recovery(|document| {
-                    if document.replace_rule_program_source(source) {
-                        Ok(())
-                    } else {
-                        Err(SessionError::Persistence(
-                            "cannot replace rule program source".into(),
-                        ))
-                    }
+                    document
+                        .replace_rule_program_source(source)
+                        .map_err(SessionError::Canonical)
                 })
                 .map_err(session_error)?;
                 self.finish_program_edit();
@@ -133,13 +129,9 @@ impl KetchupApp {
             document
                 .commit_verified_proposal(&proposal)
                 .map_err(SessionError::Commit)?;
-            if document.bind_rule_program(source) {
-                Ok(())
-            } else {
-                Err(SessionError::Persistence(
-                    "cannot bind rule program to revision".into(),
-                ))
-            }
+            document
+                .bind_rule_program(source)
+                .map_err(SessionError::Canonical)
         })
         .map_err(session_error)?;
         self.finish_program_edit();

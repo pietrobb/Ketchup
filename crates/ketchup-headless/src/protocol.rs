@@ -695,7 +695,9 @@ impl Server {
                     Err(error) => VerifyJobState::Failed(error.to_string()),
                 };
             }
-            Ok(Err(reason)) => self.verify_jobs[index].state = VerifyJobState::Failed(reason),
+            Ok(Err(error)) => {
+                self.verify_jobs[index].state = VerifyJobState::Failed(error.to_string())
+            }
             Err(std::sync::mpsc::TryRecvError::Empty)
                 if self.verify_jobs[index].elapsed_ms >= self.verify_jobs[index].timeout_ms =>
             {

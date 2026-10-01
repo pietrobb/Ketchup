@@ -1,5 +1,6 @@
 use ketchup_application::evaluation::{
-    EvidenceStatus, ExactEvaluationSelection, exact_source, exact_worker_candidates,
+    EvidenceStatus, ExactEvaluationError, ExactEvaluationSelection, exact_source,
+    exact_worker_candidates,
 };
 use ketchup_application::{DocumentSession, SessionError, SessionSettings};
 use ketchup_assistant::sidecar::{
@@ -102,7 +103,7 @@ fn assert_timeout_unchanged(session: &mut DocumentSession, timeout: Duration) {
     let topology = format!("{:?}", session.topology_results());
     assert!(matches!(
         session.evaluate_with_timeout(timeout),
-        Err(SessionError::Evaluation(reason)) if reason == "exact evaluation timed out"
+        Err(SessionError::Evaluation(ExactEvaluationError::TimedOut))
     ));
     assert_eq!(canonical_state(session), before);
     assert_eq!(format!("{:?}", session.exact_results()), render);
@@ -791,7 +792,7 @@ fn cancelled_incremental_task_cannot_publish_or_establish_baseline() {
     let before_topology = format!("{:?}", session.topology_results());
     assert!(matches!(
         session.evaluate_incremental_with_timeout(Duration::from_nanos(1)),
-        Err(SessionError::Evaluation(reason)) if reason == "exact evaluation timed out"
+        Err(SessionError::Evaluation(ExactEvaluationError::TimedOut))
     ));
     assert_eq!(format!("{:?}", session.exact_results()), before_render);
     assert_eq!(format!("{:?}", session.topology_results()), before_topology);
@@ -801,7 +802,7 @@ fn cancelled_incremental_task_cannot_publish_or_establish_baseline() {
     task.cancel();
     assert!(matches!(
         task.wait(Duration::from_secs(30)),
-        Err(reason) if reason == "exact evaluation cancelled"
+        Err(ExactEvaluationError::Cancelled)
     ));
     assert_eq!(format!("{:?}", session.exact_results()), before_render);
     assert_eq!(format!("{:?}", session.topology_results()), before_topology);

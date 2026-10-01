@@ -1,5 +1,6 @@
 //! `sweep()` along smooth paths and `loft()` through stacked sections.
 use ketchup_program::model::{Part, ProgramPartBody, ProgramPathSegment};
+use ketchup_program::path::{PolylineError, polyline};
 use ketchup_program::run;
 use std::collections::BTreeMap;
 
@@ -135,4 +136,29 @@ fn a_loft_tapers_between_its_sections_and_orders_them_upwards() {
          cut(leg, profile = [(0, 0), (5, 0), (5, 5)], depth = 2, name = \"c\")",
     );
     assert!(cut.contains("subtract()"), "{cut}");
+}
+
+#[test]
+fn a_point_path_refusal_names_its_kind_and_the_offending_point() {
+    let flat = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0]];
+    assert_eq!(polyline(&flat[..1], 0.0), Err(PolylineError::TooFewPoints));
+    assert_eq!(
+        polyline(&flat, 0.0),
+        Err(PolylineError::SharpCorners { corners: 1 })
+    );
+    let back = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [50.0, 0.0, 0.0]];
+    assert!(matches!(
+        polyline(&back, 10.0),
+        Err(PolylineError::Reverses { point: 2, at }) if at == [100.0, 0.0, 0.0]
+    ));
+    let Err(PolylineError::BendDoesNotFit {
+        from_point: 1,
+        needed_mm,
+        side_mm,
+        ..
+    }) = polyline(&flat, 200.0)
+    else {
+        panic!("a 200 mm bend cannot fit a 100 mm side");
+    };
+    assert!(needed_mm > side_mm, "{needed_mm} <= {side_mm}");
 }

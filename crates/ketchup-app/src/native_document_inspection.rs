@@ -2,6 +2,9 @@ use std::{collections::BTreeSet, path::Path};
 
 use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec};
 use ketchup_model::document::FeatureKind;
+use ketchup_model::persistence::{
+    CURRENT_SCHEMA, FilePersistenceError, LoadAudit, LoadDisposition, load_file_with_source,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDocumentInspection {
@@ -38,15 +41,50 @@ impl NativeDocumentInspection {
     }
 }
 
-pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, String> {
-    let loaded_file = ketchup_model::persistence::load_file_with_source(path)
-        .map_err(|error| error.to_string())?;
+#[derive(Debug)]
+pub enum NativeDocumentInspectionError {
+    Load(FilePersistenceError),
+    /// Inspection counts what a current-schema file stores without loss; the audit names
+    /// the source schema and what a migration would change or lose.
+    NotCurrentLossless(Box<LoadAudit>),
+}
+
+impl std::fmt::Display for NativeDocumentInspectionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Load(error) => error.fmt(formatter),
+            Self::NotCurrentLossless(audit) => write!(
+                formatter,
+                "document is not a lossless current-schema document (schema {}, current {CURRENT_SCHEMA}; {} migration losses, {} unknown extensions)",
+                audit.source_schema,
+                audit.migration_losses.len(),
+                audit.unknown_extensions.len()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NativeDocumentInspectionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Load(error) => Some(error),
+            Self::NotCurrentLossless(_) => None,
+        }
+    }
+}
+
+pub fn inspect_native_document(
+    path: &Path,
+) -> Result<NativeDocumentInspection, NativeDocumentInspectionError> {
+    let loaded_file = load_file_with_source(path).map_err(NativeDocumentInspectionError::Load)?;
     let container_sha256 = ketchup_model::graph::sha256_hex(loaded_file.source_bytes());
     let loaded = loaded_file.outcome();
-    if loaded.source_schema() != ketchup_model::persistence::CURRENT_SCHEMA
-        || loaded.disposition() != ketchup_model::persistence::LoadDisposition::EditableLossless
+    if loaded.source_schema() != CURRENT_SCHEMA
+        || loaded.disposition() != LoadDisposition::EditableLossless
     {
-        return Err("document is not a lossless current-schema document".to_owned());
+        return Err(NativeDocumentInspectionError::NotCurrentLossless(Box::new(
+            loaded.audit().clone(),
+        )));
     }
     let snapshot = loaded.snapshot();
     let profiles = snapshot

@@ -2,7 +2,7 @@ pub use crate::part_role::{PartRole, RoleFrame, RoleFunction};
 use crate::validation_rules::{ValidationRules, occurrence_materials};
 use ketchup_model::assembly_joint::AssemblyJointKind;
 use ketchup_model::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
-use ketchup_model::document::{InstancePath, OccurrenceId, Snapshot};
+use ketchup_model::document::{ClassificationError, InstancePath, OccurrenceId, Snapshot};
 use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_model::exact_validation::*;
 use ketchup_model::pin_joint::project_pin_joint_contract;
@@ -959,26 +959,22 @@ pub fn assistant_assembly_retention_report(
         });
     }
 
-    let dimensions = snapshot
-        .classification_dimensions()
-        .filter(|dimension| dimension.name() == ASSEMBLY_RETENTION_ROLE_DIMENSION_V1)
-        .collect::<Vec<_>>();
-    let [dimension] = dimensions.as_slice() else {
-        return serde_json::json!({
-            "state": "not_evaluated",
-            "complete": false,
-            "applicable_count": 0,
-            "issue_count": 0,
-            "issues_complete": true,
-            "role_error": if dimensions.is_empty() {
-                "assembly retention role dimension is missing"
-            } else {
-                "assembly retention role dimension is ambiguous"
-            },
-            "evaluations": [],
-            "issues": [],
-        });
-    };
+    let dimension =
+        match snapshot.required_classification_dimension(ASSEMBLY_RETENTION_ROLE_DIMENSION_V1) {
+            Ok(dimension) => dimension,
+            Err(error) => {
+                return serde_json::json!({
+                    "state": "not_evaluated",
+                    "complete": false,
+                    "applicable_count": 0,
+                    "issue_count": 0,
+                    "issues_complete": true,
+                    "role_error": error.to_string(),
+                    "evaluations": [],
+                    "issues": [],
+                });
+            }
+        };
     let mut category_groups = BTreeMap::new();
     for category in dimension.categories() {
         let Some(group) = category.name().strip_prefix("part:") else {
@@ -1406,7 +1402,7 @@ pub fn assistant_beam_deflection_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
     roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
-    materials: &Result<BTreeMap<OccurrenceId, String>, String>,
+    materials: &Result<BTreeMap<OccurrenceId, String>, ClassificationError>,
     rules: &ValidationRules,
     selected: bool,
     coverage_complete: bool,
@@ -1441,7 +1437,7 @@ pub fn assistant_beam_deflection_report(
     };
     let materials = match materials {
         Ok(materials) => materials,
-        Err(error) => return not_evaluated_report("material_error", error.clone()),
+        Err(error) => return not_evaluated_report("material_error", error.to_string()),
     };
     let rule = &rules.beam_deflection;
 
@@ -3296,8 +3292,8 @@ fn assistant_static_load_report_filtered(
 }
 
 pub use crate::collision::{
-    CollisionScope, FabricationCollisionValidation, assistant_validation_context,
-    assistant_validation_context_with_worker,
+    CollisionScope, FabricationCollisionError, FabricationCollisionValidation,
+    assistant_validation_context, assistant_validation_context_with_worker,
     assistant_validation_context_with_worker_cancellation,
     fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
 };

@@ -195,7 +195,7 @@ impl KetchupApp {
         self.complete_mutation_with_work_recovery(|document| {
             document.apply_batch(batch)?;
             if let Some(program) = program {
-                document.bind_rule_program(program);
+                document.bind_rule_program(program)?;
             }
             Ok::<(), CanonicalError>(())
         })

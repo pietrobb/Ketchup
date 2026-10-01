@@ -134,11 +134,20 @@ impl DocumentStore {
         self.revisions[self.cursor].rule_program()
     }
 
-    pub(super) fn valid_rule_program_source(source: &RuleProgramSource) -> bool {
-        !source.source.is_empty()
-            && source.overrides.values().all(|value| value.is_finite())
-            && serde_json::to_vec(source)
-                .is_ok_and(|encoded| encoded.len() <= MAX_RULE_PROGRAM_BYTES)
+    fn validate_rule_program_source(source: &RuleProgramSource) -> Result<(), RuleProgramError> {
+        if source.source.is_empty() {
+            return Err(RuleProgramError::EmptySource);
+        }
+        if !source.overrides.values().all(|value| value.is_finite()) {
+            return Err(RuleProgramError::NonFiniteOverride);
+        }
+        let bytes = serde_json::to_vec(source)
+            .expect("strings and finite numbers always encode")
+            .len();
+        if bytes > MAX_RULE_PROGRAM_BYTES {
+            return Err(RuleProgramError::TooLarge { bytes });
+        }
+        Ok(())
     }
 
     pub(super) fn limit_rule_program_history(&mut self) {
@@ -151,32 +160,36 @@ impl DocumentStore {
 
     /// Associates the source with the current newly committed revision, within the same transaction.
     /// A later manual revision does not inherit it.
-    pub fn bind_rule_program(&mut self, source: RuleProgramSource) -> bool {
-        if self.cursor == 0
-            || self.cursor + 1 != self.revisions.len()
-            || self.revisions[self.cursor].rule_program.is_some()
-            || !Self::valid_rule_program_source(&source)
-        {
-            return false;
+    pub fn bind_rule_program(&mut self, source: RuleProgramSource) -> Result<(), CanonicalError> {
+        if self.cursor == 0 || self.cursor + 1 != self.revisions.len() {
+            return Err(RuleProgramError::NoNewHeadRevision.into());
         }
+        if self.revisions[self.cursor].rule_program.is_some() {
+            return Err(RuleProgramError::AlreadyBound.into());
+        }
+        Self::validate_rule_program_source(&source)?;
         Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(source);
         self.limit_rule_program_history();
-        true
+        Ok(())
     }
 
     /// Publishes a source-only edit as a canonical revision without changing any geometry or IDs.
     /// Only an already source-owned document can be edited this way.
-    pub fn replace_rule_program_source(&mut self, source: RuleProgramSource) -> bool {
-        if self.current_rule_program().is_none() || !Self::valid_rule_program_source(&source) {
-            return false;
+    pub fn replace_rule_program_source(
+        &mut self,
+        source: RuleProgramSource,
+    ) -> Result<(), CanonicalError> {
+        if self.current_rule_program().is_none() {
+            return Err(RuleProgramError::NotProgramOwned.into());
         }
+        Self::validate_rule_program_source(&source)?;
         if self.current_rule_program() == Some(&source) {
-            return true;
+            return Ok(());
         }
         let revision_id = self.next_revision_id;
-        let Some(next_revision_id) = revision_id.checked_add(1) else {
-            return false;
-        };
+        let next_revision_id = revision_id
+            .checked_add(1)
+            .ok_or(CanonicalError::RevisionExhausted)?;
         let current = &self.revisions[self.cursor];
         let encoded = serde_json::to_vec(&source).expect("validated rule program source");
         let digest = Sha256::digest([b"ketchup.rule-source.v1".as_slice(), &encoded].concat());
@@ -201,7 +214,7 @@ impl DocumentStore {
         self.limit_rule_program_history();
         self.next_revision_id = next_revision_id;
         self.mutation_epoch = Self::fresh_mutation_epoch();
-        true
+        Ok(())
     }
 
     pub(crate) fn from_revision_history(

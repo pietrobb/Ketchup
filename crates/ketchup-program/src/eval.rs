@@ -819,7 +819,7 @@ fn sweep_path<'v>(
             .into_iter()
             .map(|point| numbers::<3>(point, heap, "path point"))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        crate::path::polyline(&points, bend.unwrap_or(0.0)).map_err(anyhow::Error::msg)?
+        crate::path::polyline(&points, bend.unwrap_or(0.0))?
     } else {
         if bend.is_some() {
             anyhow::bail!("bend rounds the corners of a point path; segments give their arcs");

@@ -7,7 +7,7 @@
 //! and travel into every report, so a result always names the rule values it
 //! was judged against.
 
-use ketchup_model::document::{OccurrenceId, Snapshot};
+use ketchup_model::document::{ClassificationError, OccurrenceId, Snapshot};
 use ketchup_model::validation::MATERIAL_DIMENSION_V1;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -125,38 +125,14 @@ fn check_positive(path: &str, value: &serde_json::Value) -> Result<(), String> {
 /// The material each occurrence declares through the `ketchup.material.v1`
 /// classification dimension. A document without that dimension declares
 /// none, so every part takes the rules' default material.
-pub fn occurrence_materials(snapshot: &Snapshot) -> Result<BTreeMap<OccurrenceId, String>, String> {
-    let dimensions = snapshot
-        .classification_dimensions()
-        .filter(|dimension| dimension.name() == MATERIAL_DIMENSION_V1)
-        .collect::<Vec<_>>();
-    let dimension = match dimensions.as_slice() {
-        [] => return Ok(BTreeMap::new()),
-        [dimension] => dimension,
-        _ => return Err("material classification dimension is ambiguous".to_owned()),
+pub fn occurrence_materials(
+    snapshot: &Snapshot,
+) -> Result<BTreeMap<OccurrenceId, String>, ClassificationError> {
+    let Some(dimension) = snapshot.classification_dimension_named(MATERIAL_DIMENSION_V1)? else {
+        return Ok(BTreeMap::new());
     };
-    let names = dimension
-        .categories()
-        .map(|category| (category.id(), category.name().to_owned()))
-        .collect::<BTreeMap<_, _>>();
     snapshot
-        .occurrences()
-        .filter_map(|occurrence| {
-            snapshot
-                .occurrence_classification(occurrence.id(), dimension.id())
-                .map(|category_id| (occurrence.id(), category_id))
-        })
-        .map(|(occurrence_id, category_id)| {
-            names
-                .get(&category_id)
-                .map(|name| (occurrence_id, name.clone()))
-                .ok_or_else(|| {
-                    format!(
-                        "material category {} is missing from dimension {}",
-                        category_id.0,
-                        dimension.id().0
-                    )
-                })
-        })
+        .occurrence_category_names(dimension)
+        .map(|assigned| assigned.map(|(occurrence_id, _, name)| (occurrence_id, name.to_owned())))
         .collect()
 }

@@ -9,9 +9,9 @@ use ketchup_manufacturing::fabrication::{
 };
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
-    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId,
-    InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId,
-    ProfileSegment, Snapshot, Transform,
+    ClassificationError, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+    FeatureKind, GroupId, InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
+    OccurrenceId, ProfileSegment, Snapshot, Transform,
 };
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{
@@ -228,7 +228,11 @@ fn validator_role_schema_fails_closed_when_missing_ambiguous_or_invalid() {
     let missing = exact_only_document();
     assert_eq!(
         ValidatorRoleIndex::from_snapshot(&missing.current()),
-        Err(ValidatorRoleError::DimensionMissing)
+        Err(ValidatorRoleError::Classification(
+            ClassificationError::DimensionMissing {
+                name: VALIDATOR_ROLE_DIMENSION_V1.to_owned()
+            }
+        ))
     );
 
     let mut invalid = exact_only_document();
@@ -268,7 +272,11 @@ fn validator_role_schema_fails_closed_when_missing_ambiguous_or_invalid() {
         .unwrap();
     assert_eq!(
         ValidatorRoleIndex::from_snapshot(&ambiguous.current()),
-        Err(ValidatorRoleError::DimensionAmbiguous)
+        Err(ValidatorRoleError::Classification(
+            ClassificationError::DimensionAmbiguous {
+                name: VALIDATOR_ROLE_DIMENSION_V1.to_owned()
+            }
+        ))
     );
 }
 
@@ -740,7 +748,11 @@ fn general_fabrication_requires_explicit_unambiguous_timber_marking() {
         .unwrap();
     assert_eq!(
         exact_document_fabrication_projection(&missing_dimension),
-        Err(GeneralFabricationError::FabricationRoleDimensionMissing)
+        Err(GeneralFabricationError::Classification(
+            ClassificationError::DimensionMissing {
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned()
+            }
+        ))
     );
 
     let mut ambiguous_dimension = exact_only_document();
@@ -758,7 +770,11 @@ fn general_fabrication_requires_explicit_unambiguous_timber_marking() {
         .unwrap();
     assert_eq!(
         exact_document_fabrication_projection(&ambiguous_dimension),
-        Err(GeneralFabricationError::FabricationRoleDimensionAmbiguous)
+        Err(GeneralFabricationError::Classification(
+            ClassificationError::DimensionAmbiguous {
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned()
+            }
+        ))
     );
 
     let mut ambiguous_material = exact_only_document();
@@ -784,7 +800,11 @@ fn general_fabrication_requires_explicit_unambiguous_timber_marking() {
         .unwrap();
     assert_eq!(
         exact_document_fabrication_projection(&ambiguous_material),
-        Err(GeneralFabricationError::MaterialDimensionAmbiguous)
+        Err(GeneralFabricationError::Classification(
+            ClassificationError::DimensionAmbiguous {
+                name: MATERIAL_DIMENSION_V1.to_owned()
+            }
+        ))
     );
 }
 

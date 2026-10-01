@@ -1,6 +1,6 @@
 use super::*;
 use ketchup_application::evaluation::{
-    exact_source, exact_worker_candidates, start_exact_evaluation,
+    ExactEvaluationError, exact_source, exact_worker_candidates, start_exact_evaluation,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -58,8 +58,8 @@ fn assert_idle_retry(failure: Failure) {
             // Consume the only result, then confirm the real sender has closed.
             task.wait(Duration::from_secs(10)).unwrap();
             assert_eq!(
-                task.wait(Duration::from_secs(10)).err().as_deref(),
-                Some("exact evaluation worker disconnected")
+                task.wait(Duration::from_secs(10)).err(),
+                Some(ExactEvaluationError::WorkerDisconnected)
             );
         }
     }

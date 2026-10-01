@@ -1,11 +1,12 @@
 use ketchup_geometry::sketch::{WorkplaneSpec, WorkplaneSupport};
 use ketchup_model::document::{
-    DefinitionId, DocumentStore, FeatureId, FeatureKind, OccurrenceId, SceneOccurrence, Snapshot,
+    CanonicalError, DefinitionId, DocumentStore, FeatureId, FeatureKind, OccurrenceId,
+    ReferenceEvidenceError, SceneOccurrence, Snapshot,
 };
-use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
 use ketchup_model::exact_product::{
     ExactBodyPackage, ExactProducerCompilation, ExactProducerEvidenceContext, ExactProducerPlan,
-    ExactResultRegistry, ImportedExactPackage, exact_body_terminal_features,
+    ExactProductError, ExactResultRegistry, ImportedExactPackage, exact_body_terminal_features,
 };
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
@@ -15,7 +16,7 @@ use ketchup_model::import::{
 };
 use ketchup_model::persistence::ContainerData;
 use ketchup_scheduler::{
-    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
+    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, WorkerError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -38,10 +39,159 @@ enum ExactEvaluationRequest {
     Imported(DefinitionId, Vec<u8>),
 }
 
+/// Why one exact producer cannot be prepared or evaluated. Its text becomes the
+/// producer's failed evidence reason.
+#[derive(Debug)]
+enum ExactProducerError {
+    Compilation(ExactBRepGraphError),
+    /// The graph's imported sources exceed the worker's count or byte envelope.
+    ImportedSourceEnvelope,
+    ImportedSourceMissing {
+        sha256: String,
+    },
+    ImportedSourceMismatch {
+        sha256: String,
+    },
+    DefinitionUnavailable(DefinitionId),
+    DefinitionNotSingular(DefinitionId),
+    FeatureUnavailable(FeatureId),
+    SpecificationUnavailable(FeatureId),
+    ReceiptUnavailable(FeatureId),
+    UnsupportedReceiptFormat(ImportFormat),
+    ReceiptNotAuthoritative {
+        format: &'static str,
+    },
+    EvidenceMismatch {
+        format: &'static str,
+        expected: Box<StepImportEvidence>,
+        actual: Box<StepImportEvidence>,
+    },
+    TemporaryFile(std::io::Error),
+    Worker(WorkerError),
+    Package(ExactProductError),
+}
+
+impl std::fmt::Display for ExactProducerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Compilation(error) => write!(f, "exact producer does not compile: {error}"),
+            Self::ImportedSourceEnvelope => {
+                f.write_str("imported exact sources exceed the worker's source envelope")
+            }
+            Self::ImportedSourceMissing { sha256 } => {
+                write!(f, "imported exact source blob {sha256} is missing")
+            }
+            Self::ImportedSourceMismatch { sha256 } => write!(
+                f,
+                "imported exact source blob {sha256} does not match its canonical identity"
+            ),
+            Self::DefinitionUnavailable(id) => {
+                write!(f, "imported exact definition {} is unavailable", id.0)
+            }
+            Self::DefinitionNotSingular(id) => write!(
+                f,
+                "imported exact definition {} does not consist of exactly one feature",
+                id.0
+            ),
+            Self::FeatureUnavailable(id) => {
+                write!(f, "imported exact feature {} is unavailable", id.0)
+            }
+            Self::SpecificationUnavailable(id) => write!(
+                f,
+                "feature {} has no imported exact body specification",
+                id.0
+            ),
+            Self::ReceiptUnavailable(id) => {
+                write!(f, "the import receipt of feature {} is unavailable", id.0)
+            }
+            Self::UnsupportedReceiptFormat(format) => {
+                write!(f, "imported exact receipt format {format:?} is unsupported")
+            }
+            Self::ReceiptNotAuthoritative { format } => {
+                write!(
+                    f,
+                    "imported {format} receipt provenance is not authoritative"
+                )
+            }
+            Self::EvidenceMismatch {
+                format,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "imported {format} worker evidence does not match canonical specification: expected={expected:?}, actual={actual:?}"
+            ),
+            Self::TemporaryFile(error) => {
+                write!(f, "imported exact source cannot be staged: {error}")
+            }
+            Self::Worker(error) => write!(f, "exact worker refused the producer: {error}"),
+            Self::Package(error) => write!(f, "exact package is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ExactProducerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Compilation(error) => Some(error),
+            Self::TemporaryFile(error) => Some(error),
+            Self::Worker(error) => Some(error),
+            Self::Package(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 type PreparedRequests = (
     Vec<(ProducerKey, ExactEvaluationRequest)>,
     Vec<ProducerCoverage>,
 );
+
+/// Why the exact producers affected by a change cannot be derived; the change is
+/// then evaluated in full.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IncrementalScopeError {
+    /// The two snapshots belong to different documents.
+    DifferentDocuments,
+    /// The exact bodies of a definition cannot be told apart before (`before`) or
+    /// after the change.
+    TerminalSet {
+        definition_id: DefinitionId,
+        before: bool,
+        error: ExactProductError,
+    },
+    FeatureGraph(CanonicalError),
+}
+
+impl std::fmt::Display for IncrementalScopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DifferentDocuments => {
+                f.write_str("incremental exact scope requires snapshots from one document")
+            }
+            Self::TerminalSet {
+                definition_id,
+                before,
+                error,
+            } => write!(
+                f,
+                "invalid {} exact terminal set for definition {definition_id:?}: {error}",
+                if *before { "previous" } else { "current" }
+            ),
+            Self::FeatureGraph(error) => write!(f, "feature dependencies are invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for IncrementalScopeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DifferentDocuments => None,
+            Self::TerminalSet { error, .. } => Some(error),
+            Self::FeatureGraph(error) => Some(error),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IncrementalExactScope {
@@ -85,7 +235,7 @@ pub fn plan_incremental_exact_evaluation(
     // in one body) is still editable: it is evaluated in full instead.
     let scope = match plan_incremental_exact_scope(before, after) {
         Ok(scope) => scope,
-        Err(reason) => return Ok(full(reason, 0, 0)),
+        Err(error) => return Ok(full(error.to_string(), 0, 0)),
     };
     let expected_baseline = exact_source(before);
     if full_baseline != Some(&expected_baseline) {
@@ -119,9 +269,9 @@ fn scene_geometry_matches(left: &SceneOccurrence, right: &SceneOccurrence) -> bo
 pub fn plan_incremental_exact_scope(
     before: &Snapshot,
     after: &Snapshot,
-) -> Result<IncrementalExactScope, String> {
+) -> Result<IncrementalExactScope, IncrementalScopeError> {
     if before.document_id() != after.document_id() {
-        return Err("incremental exact scope requires snapshots from one document".to_owned());
+        return Err(IncrementalScopeError::DifferentDocuments);
     }
 
     let before_features = before
@@ -152,18 +302,22 @@ pub fn plan_incremental_exact_scope(
     for definition_id in definition_ids {
         let before_definition_terminals = if before.definition(definition_id).is_some() {
             exact_body_terminal_features(before, definition_id).map_err(|error| {
-                format!(
-                    "invalid previous exact terminal set for definition {definition_id:?}: {error}"
-                )
+                IncrementalScopeError::TerminalSet {
+                    definition_id,
+                    before: true,
+                    error,
+                }
             })?
         } else {
             BTreeMap::new()
         };
         let after_definition_terminals = if after.definition(definition_id).is_some() {
             exact_body_terminal_features(after, definition_id).map_err(|error| {
-                format!(
-                    "invalid current exact terminal set for definition {definition_id:?}: {error}"
-                )
+                IncrementalScopeError::TerminalSet {
+                    definition_id,
+                    before: false,
+                    error,
+                }
             })?
         } else {
             BTreeMap::new()
@@ -189,7 +343,7 @@ pub fn plan_incremental_exact_scope(
         .filter(|id| after.feature(*id).is_some());
     let dirty_features = after
         .feature_dependency_graph()
-        .map_err(|error| error.to_string())?
+        .map_err(IncrementalScopeError::FeatureGraph)?
         .dependent_closure(current_changed_features);
 
     let after_scene = after
@@ -391,125 +545,93 @@ fn prepare_requests(
             });
             continue;
         }
-        let compiled = (|| -> Result<Option<(DefinitionId, ExactEvaluationRequest)>, String> {
-            let producer = ExactProducerCompilation::from_snapshot(
-                snapshot,
-                &evidence_context,
-                definition_id,
-                feature_id,
-            )
-            .map_err(|error| error.to_string())?;
-            let Some(plan) = producer.plan().map_err(|error| {
-                eprintln!(
-                    "exact producer compilation rejected producer {}: {error}",
-                    feature_id.0
-                );
-                "unsupported or unavailable exact producer/source".to_owned()
-            })?
-            else {
-                return Ok(None);
-            };
-            match plan {
-                ExactProducerPlan::Graph(graph) => {
-                    let mut imported_sources = Vec::new();
-                    let mut imported_hashes = Vec::new();
-                    let mut imported_source_bytes = 0_u64;
-                    for node in &graph.nodes {
-                        let ExactBRepOperation::ImportedExact {
-                            source_sha256,
-                            source_byte_len,
-                            ..
-                        } = &node.operation
-                        else {
-                            continue;
-                        };
-                        if imported_hashes.contains(source_sha256) {
-                            continue;
+        let compiled =
+            (|| -> Result<Option<(DefinitionId, ExactEvaluationRequest)>, ExactProducerError> {
+                let producer = ExactProducerCompilation::from_snapshot(
+                    snapshot,
+                    &evidence_context,
+                    definition_id,
+                    feature_id,
+                )
+                .map_err(ExactProducerError::Compilation)?;
+                let Some(plan) = producer.plan().map_err(ExactProducerError::Compilation)? else {
+                    return Ok(None);
+                };
+                match plan {
+                    ExactProducerPlan::Graph(graph) => {
+                        let mut imported_sources = Vec::new();
+                        let mut imported_hashes = Vec::new();
+                        let mut imported_source_bytes = 0_u64;
+                        for node in &graph.nodes {
+                            let ExactBRepOperation::ImportedExact {
+                                source_sha256,
+                                source_byte_len,
+                                ..
+                            } = &node.operation
+                            else {
+                                continue;
+                            };
+                            if imported_hashes.contains(source_sha256) {
+                                continue;
+                            }
+                            let next_source_bytes = imported_source_bytes
+                                .checked_add(*source_byte_len)
+                                .filter(|bytes| {
+                                    imported_hashes.len() < MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
+                                        && *bytes <= MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+                                })
+                                .ok_or(ExactProducerError::ImportedSourceEnvelope)?;
+                            imported_source_bytes = next_source_bytes;
+                            let hash = source_sha256
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>();
+                            let Some(source) = container_data.blobs().get(&hash).cloned() else {
+                                return Err(ExactProducerError::ImportedSourceMissing {
+                                    sha256: hash,
+                                });
+                            };
+                            if source.len() as u64 != *source_byte_len
+                                || sha256_bytes(&source) != *source_sha256
+                            {
+                                return Err(ExactProducerError::ImportedSourceMismatch {
+                                    sha256: hash,
+                                });
+                            }
+                            imported_hashes.push(*source_sha256);
+                            imported_sources.push(source);
                         }
-                        let Some(next_source_bytes) =
-                            imported_source_bytes.checked_add(*source_byte_len)
-                        else {
-                            eprintln!(
-                                "exact B-Rep graph producer {} exceeds the imported source byte envelope",
-                                feature_id.0
-                            );
-                            return Err(
-                                "unsupported or unavailable exact producer/source".to_owned()
-                            );
-                        };
-                        if imported_hashes.len() >= MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
-                            || next_source_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
-                        {
-                            eprintln!(
-                                "exact B-Rep graph producer {} exceeds the imported source envelope",
-                                feature_id.0
-                            );
-                            return Err(
-                                "unsupported or unavailable exact producer/source".to_owned()
-                            );
-                        }
-                        imported_source_bytes = next_source_bytes;
-                        let hash = source_sha256
+                        Ok(Some((
+                            definition_id,
+                            ExactEvaluationRequest::Graph {
+                                graph,
+                                imported_sources,
+                            },
+                        )))
+                    }
+                    ExactProducerPlan::Imported(spec) => {
+                        let hash = spec
+                            .source_sha256
                             .iter()
                             .map(|byte| format!("{byte:02x}"))
                             .collect::<String>();
                         let Some(source) = container_data.blobs().get(&hash).cloned() else {
-                            eprintln!(
-                                "exact B-Rep graph producer {} is missing an imported source blob",
-                                feature_id.0
-                            );
-                            return Err(
-                                "unsupported or unavailable exact producer/source".to_owned()
-                            );
+                            return Err(ExactProducerError::ImportedSourceMissing { sha256: hash });
                         };
-                        if source.len() as u64 != *source_byte_len
-                            || sha256_bytes(&source) != *source_sha256
+                        if source.len() as u64 != spec.source_byte_len
+                            || sha256_bytes(&source) != spec.source_sha256
                         {
-                            eprintln!(
-                                "exact B-Rep graph producer {} has a mismatched imported source blob",
-                                feature_id.0
-                            );
-                            return Err(
-                                "unsupported or unavailable exact producer/source".to_owned()
-                            );
+                            return Err(ExactProducerError::ImportedSourceMismatch {
+                                sha256: hash,
+                            });
                         }
-                        imported_hashes.push(*source_sha256);
-                        imported_sources.push(source);
+                        Ok(Some((
+                            definition_id,
+                            ExactEvaluationRequest::Imported(definition_id, source),
+                        )))
                     }
-                    Ok(Some((
-                        definition_id,
-                        ExactEvaluationRequest::Graph {
-                            graph,
-                            imported_sources,
-                        },
-                    )))
                 }
-                ExactProducerPlan::Imported(spec) => {
-                    let hash = spec
-                        .source_sha256
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>();
-                    let source = container_data
-                        .blobs()
-                        .get(&hash)
-                        .cloned()
-                        .ok_or_else(|| "imported STEP source blob is missing".to_owned())?;
-                    if source.len() as u64 != spec.source_byte_len
-                        || sha256_bytes(&source) != spec.source_sha256
-                    {
-                        return Err(
-                            "imported STEP source blob does not match canonical identity"
-                                .to_owned(),
-                        );
-                    }
-                    Ok(Some((
-                        definition_id,
-                        ExactEvaluationRequest::Imported(definition_id, source),
-                    )))
-                }
-            }
-        })();
+            })();
         let compiled = if render_current {
             match compiled {
                 Ok(Some((
@@ -533,7 +655,9 @@ fn prepare_requests(
                         key,
                         render: EvidenceStatus::Current,
                         topology: match other {
-                            Err(reason) => EvidenceStatus::Failed { reason },
+                            Err(error) => EvidenceStatus::Failed {
+                                reason: error.to_string(),
+                            },
                             _ => EvidenceStatus::not_evaluated(
                                 "topology not provided by this request",
                             ),
@@ -563,13 +687,14 @@ fn prepare_requests(
                 render: EvidenceStatus::not_evaluated("unsupported producer"),
                 topology: EvidenceStatus::not_evaluated("unsupported producer"),
             }),
-            Err(reason) => coverage.push(ProducerCoverage {
-                key,
-                render: EvidenceStatus::Failed {
-                    reason: reason.clone(),
-                },
-                topology: EvidenceStatus::not_evaluated(&reason),
-            }),
+            Err(error) => {
+                let reason = error.to_string();
+                coverage.push(ProducerCoverage {
+                    key,
+                    topology: EvidenceStatus::not_evaluated(&reason),
+                    render: EvidenceStatus::Failed { reason },
+                });
+            }
         }
     }
     Ok((requests, coverage))
@@ -764,7 +889,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                     .expect("selected producer");
                                 let topology_only = entry.render.is_evaluated();
                                 let evaluated =
-    (|| -> Result<(ExactBodyPackage, Option<ExactBodyPackage>), String> {
+    (|| -> Result<(ExactBodyPackage, Option<ExactBodyPackage>), ExactProducerError> {
         Ok(match request {
             ExactEvaluationRequest::Graph {
                 graph,
@@ -781,34 +906,25 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 &worker_cancelled,
                     )
                     .map(ExactBodyPackage::Graph)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(ExactProducerError::Worker)?;
                 (package.clone(), Some(package))
             }
             ExactEvaluationRequest::Imported(definition_id, source) => {
-                let definition =
-                    snapshot.definition(definition_id).ok_or_else(|| {
-                        "imported STEP definition is unavailable".to_owned()
-                    })?;
+                let definition = snapshot
+                    .definition(definition_id)
+                    .ok_or(ExactProducerError::DefinitionUnavailable(definition_id))?;
                 let [feature_id] = definition.feature_ids() else {
-                    return Err(
-                        "imported STEP definition is not singular".to_owned()
-                    );
+                    return Err(ExactProducerError::DefinitionNotSingular(definition_id));
                 };
-                let feature =
-                    snapshot.feature(*feature_id).ok_or_else(|| {
-                        "imported STEP feature is unavailable".to_owned()
-                    })?;
-                let FeatureKind::ImportedExactBody(spec) = feature.kind()
-                else {
-                    return Err(
-                        "imported STEP canonical specification is unavailable"
-                            .to_owned(),
-                    );
+                let feature = snapshot
+                    .feature(*feature_id)
+                    .ok_or(ExactProducerError::FeatureUnavailable(*feature_id))?;
+                let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
+                    return Err(ExactProducerError::SpecificationUnavailable(*feature_id));
                 };
-                let receipt =
-                    snapshot.import_receipt(spec.import_id).ok_or_else(
-                        || "imported STEP receipt is unavailable".to_owned(),
-                    )?;
+                let receipt = snapshot
+                    .import_receipt(spec.import_id)
+                    .ok_or(ExactProducerError::ReceiptUnavailable(*feature_id))?;
                 let (format_name, parser_id, parser_version, suffix) = match receipt.format() {
                     ImportFormat::Step => (
                         "STEP",
@@ -830,15 +946,13 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                         },
                         ".iges",
                     ),
-                    _ => return Err("imported exact receipt format is unsupported".to_owned()),
+                    format => return Err(ExactProducerError::UnsupportedReceiptFormat(format)),
                 };
                 if receipt.units().authority() != ImportUnitAuthority::FileDeclared
                     || receipt.parser_id() != parser_id
                     || receipt.parser_version() != parser_version
                 {
-                    return Err(format!(
-                        "imported {format_name} receipt provenance is not authoritative"
-                    ));
+                    return Err(ExactProducerError::ReceiptNotAuthoritative { format: format_name });
                 }
                 let source_unit = receipt.units().source_unit();
                 let mut expected = StepImportEvidence {
@@ -859,11 +973,11 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     .prefix("ketchup-imported-exact-")
                     .suffix(suffix)
                     .tempfile()
-                    .map_err(|error| error.to_string())?;
+                    .map_err(ExactProducerError::TemporaryFile)?;
                 temporary
                     .write_all(&source)
                     .and_then(|_| temporary.flush())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(ExactProducerError::TemporaryFile)?;
                 let source_sha256 = ketchup_model::graph::sha256_hex(&source);
                 let actual = match receipt.format() {
                     ImportFormat::Step => match spec.source_part_index {
@@ -909,7 +1023,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     },
                     _ => unreachable!("receipt format was validated above"),
                 }
-                .map_err(|error| error.to_string())?;
+                .map_err(ExactProducerError::Worker)?;
                 if spec.topology_counts.is_none() {
                     expected.topology_counts = actual.topology_counts;
                 }
@@ -917,15 +1031,17 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     expected.area_mm2 = actual.area_mm2;
                 }
                 if actual != expected {
-                    return Err(format!(
-                        "imported {format_name} worker evidence does not match canonical specification: expected={expected:?}, actual={actual:?}"
-                    ));
+                    return Err(ExactProducerError::EvidenceMismatch {
+                        format: format_name,
+                        expected: Box::new(expected),
+                        actual: Box::new(actual),
+                    });
                 }
                 let mesh_target = tempfile::Builder::new()
                     .prefix("ketchup-imported-step-mesh-")
                     .suffix(".bin")
                     .tempfile()
-                    .map_err(|error| error.to_string())?;
+                    .map_err(ExactProducerError::TemporaryFile)?;
                 let mesh = match receipt.format() {
                     ImportFormat::Step => match spec.source_part_index {
                         Some(index) => worker.tessellate_step_xde_part_with_cancellation(
@@ -963,7 +1079,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     },
                     _ => unreachable!("receipt format was validated above"),
                 }
-                .map_err(|error| error.to_string())?;
+                .map_err(ExactProducerError::Worker)?;
                 let package = ImportedExactPackage::from_snapshot(
                     &snapshot,
                     definition_id,
@@ -971,7 +1087,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     &mesh,
                 )
                 .map(ExactBodyPackage::Imported)
-                .map_err(|error| error.to_string())?;
+                .map_err(ExactProducerError::Package)?;
                 (package.clone(), Some(package))
             }
         })
@@ -984,11 +1100,11 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                             definition_id.0
                                         );
                                         worker_healthy = false;
+                                        let reason = error.to_string();
                                         if topology_only {
-                                            entry.topology =
-                                                EvidenceStatus::Failed { reason: error };
+                                            entry.topology = EvidenceStatus::Failed { reason };
                                         } else {
-                                            entry.render = EvidenceStatus::Failed { reason: error };
+                                            entry.render = EvidenceStatus::Failed { reason };
                                             entry.topology = EvidenceStatus::not_evaluated(
                                                 "render evaluation failed",
                                             );

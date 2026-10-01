@@ -175,7 +175,7 @@ impl Server {
                 self.settings.exact_worker_path.clone(),
                 remaining,
             )
-            .map_err(|error| Error::new("production_blocked", error))?;
+            .map_err(|error| Error::new("production_blocked", error.to_string()))?;
         let projection = project_general_fabrication(
             &snapshot,
             self.session.exact_results(),

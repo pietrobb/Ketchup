@@ -5247,11 +5247,11 @@ fn assistant_chat_does_not_claim_spatial_validation_without_canonical_roles() {
     assert_eq!(validation["complete"], false);
     assert_eq!(
         validation["room_placement"]["role_error"],
-        "validator role dimension is missing"
+        "validator roles cannot be read: classification dimension \"ketchup.validator-role.v1\" is missing"
     );
     assert_eq!(
         validation["passage_clearance"]["role_error"],
-        "validator role dimension is missing"
+        "validator roles cannot be read: classification dimension \"ketchup.validator-role.v1\" is missing"
     );
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);

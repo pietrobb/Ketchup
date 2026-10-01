@@ -645,10 +645,10 @@ impl KetchupApp {
                     proposal
                         .commit(document)
                         .map_err(|error| error.to_string())?;
-                    if let Some(source) = rule_program
-                        && !document.bind_rule_program(source)
-                    {
-                        return Err("cannot bind Push/Pull to rule program revision".to_owned());
+                    if let Some(source) = rule_program {
+                        document
+                            .bind_rule_program(source)
+                            .map_err(|error| error.to_string())?;
                     }
                     document
                         .register_exact_reference_evidence(&render)

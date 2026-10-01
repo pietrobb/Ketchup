@@ -1,8 +1,8 @@
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
-    CanonicalError, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
-    InstancePathStep, OccurrenceId, Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy,
-    WeldmentJointPrimary,
+    CanonicalError, ClassificationError, DefinitionId, DocumentId, FeatureId, FeatureKind,
+    InstancePath, InstancePathStep, OccurrenceId, Snapshot, SpatialPathSegment, Transform,
+    WeldmentJointPolicy, WeldmentJointPrimary,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepGraphError, ExactBRepLinearInterval,
@@ -242,11 +242,9 @@ impl Default for BtlxExportOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GeneralFabricationError {
     ValidationBindingMismatch,
-    FabricationRoleDimensionMissing,
-    FabricationRoleDimensionAmbiguous,
+    Classification(ClassificationError),
     TimberMemberRoleMissing,
     TimberMemberRoleAmbiguous,
-    MaterialDimensionAmbiguous,
     InvalidBomMetadata,
     UnsupportedOrUnavailableGeometry,
     BodyValidation(GeneralBodyValidationError),
@@ -270,20 +268,14 @@ impl fmt::Display for GeneralFabricationError {
             Self::ValidationBindingMismatch => formatter.write_str(
                 "general fabrication requires current complete general-body validation coverage",
             ),
-            Self::FabricationRoleDimensionMissing => {
-                formatter.write_str("the fabrication role dimension is missing")
-            }
-            Self::FabricationRoleDimensionAmbiguous => {
-                formatter.write_str("the fabrication role dimension is ambiguous")
+            Self::Classification(error) => {
+                write!(formatter, "fabrication roles or BOM materials cannot be read: {error}")
             }
             Self::TimberMemberRoleMissing => {
                 formatter.write_str("the timber-member fabrication role is missing")
             }
             Self::TimberMemberRoleAmbiguous => {
                 formatter.write_str("the timber-member fabrication role is ambiguous")
-            }
-            Self::MaterialDimensionAmbiguous => {
-                formatter.write_str("the BOM material dimension is ambiguous")
             }
             Self::InvalidBomMetadata => {
                 formatter.write_str("a BOM role or material token is invalid")
@@ -317,8 +309,15 @@ impl std::error::Error for GeneralFabricationError {
             Self::PinJoint(error) => Some(error),
             Self::ExactGraph(error) => Some(error),
             Self::BodyValidation(error) => Some(error),
+            Self::Classification(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+impl From<ClassificationError> for GeneralFabricationError {
+    fn from(error: ClassificationError) -> Self {
+        Self::Classification(error)
     }
 }
 
@@ -2346,26 +2345,9 @@ struct BomOccurrenceMetadata {
 fn bom_occurrence_metadata(
     snapshot: &Snapshot,
 ) -> Result<BTreeMap<OccurrenceId, BomOccurrenceMetadata>, GeneralFabricationError> {
-    let role_dimensions = snapshot
-        .classification_dimensions()
-        .filter(|dimension| dimension.name() == FABRICATION_ROLE_DIMENSION_V1)
-        .collect::<Vec<_>>();
-    let [role_dimension] = role_dimensions.as_slice() else {
-        return Err(if role_dimensions.is_empty() {
-            GeneralFabricationError::FabricationRoleDimensionMissing
-        } else {
-            GeneralFabricationError::FabricationRoleDimensionAmbiguous
-        });
-    };
-    let material_dimensions = snapshot
-        .classification_dimensions()
-        .filter(|dimension| dimension.name() == MATERIAL_DIMENSION_V1)
-        .collect::<Vec<_>>();
-    let material_dimension = match material_dimensions.as_slice() {
-        [] => None,
-        [dimension] => Some(*dimension),
-        _ => return Err(GeneralFabricationError::MaterialDimensionAmbiguous),
-    };
+    let role_dimension =
+        snapshot.required_classification_dimension(FABRICATION_ROLE_DIMENSION_V1)?;
+    let material_dimension = snapshot.classification_dimension_named(MATERIAL_DIMENSION_V1)?;
 
     let mut metadata = BTreeMap::new();
     for occurrence in snapshot.occurrences() {

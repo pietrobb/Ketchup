@@ -19,9 +19,9 @@ use ketchup_application::{
         OccurrenceBatchState, OccurrenceBatchTask,
     },
     evaluation::{
-        EvaluationReport, ExactEvaluationSelection, ExactEvaluationTask, exact_source,
-        exact_worker_candidates, materialize_exact_products, plan_incremental_exact_evaluation,
-        start_exact_evaluation_scoped_with_cancellation,
+        EvaluationReport, ExactEvaluationError, ExactEvaluationSelection, ExactEvaluationTask,
+        exact_source, exact_worker_candidates, materialize_exact_products,
+        plan_incremental_exact_evaluation, start_exact_evaluation_scoped_with_cancellation,
     },
     model_query::{EditContextRequest, EntityKind, ModelQuery, PageRequest},
     validation::{
@@ -1389,24 +1389,18 @@ impl LiveBridge {
             .checked_sub(started.elapsed())
             .filter(|remaining| !remaining.is_zero())
             .ok_or("job_timeout")?;
-        let products = exact_task.wait(remaining).map_err(|error| {
+        let products = exact_task.wait(remaining).map_err(|error| match error {
             // A wait timeout also raises the shared cancel flag; report it as a timeout.
-            if error.contains("timed out") {
-                "job_timeout"
-            } else if cancelled.load(Ordering::Acquire) || error.contains("cancelled") {
-                "request_cancelled"
-            } else if error.contains("disconnected") {
-                "exact_worker_disconnected"
-            } else if error.contains("unavailable") {
-                "exact_worker_unavailable"
-            } else {
-                "exact_evaluation_rejected"
-            }
+            ExactEvaluationError::TimedOut => "job_timeout",
+            _ if cancelled.load(Ordering::Acquire) => "request_cancelled",
+            ExactEvaluationError::Cancelled => "request_cancelled",
+            ExactEvaluationError::WorkerDisconnected => "exact_worker_disconnected",
+            _ => "exact_evaluation_rejected",
         })?;
         Self::require_request_authority(&cancelled)?;
         let (candidate_exact, candidate_topology, exact_report) =
             materialize_exact_products(candidate, render, topology, &exact_task, products)
-                .map_err(|error| failure("exact_evaluation_rejected", error, json!({})))?;
+                .map_err(|error| failed_because("exact_evaluation_rejected", error))?;
         // A candidate without exact geometry (e.g. a cleared document) has
         // nothing to verify; every producer it does have must be evaluated.
         if exact_report
@@ -1484,7 +1478,7 @@ impl LiveBridge {
         } = request;
         let started = Instant::now();
         if timeout_ms == 0 || timeout_ms > MAX_APPLY_VERIFY_TIMEOUT_MS {
-            return Err("invalid_job_timeout".into());
+            return Err(PlanRejection::Code("invalid_job_timeout"));
         }
         let save_path = match save {
             None => None,
@@ -1497,7 +1491,7 @@ impl LiveBridge {
                     || path.contains('\0')
                     || !Path::new(&path).is_absolute()
                 {
-                    return Err("invalid_path".into());
+                    return Err(PlanRejection::Code("invalid_path"));
                 }
                 Some(PathBuf::from(path))
             }
@@ -1512,7 +1506,7 @@ impl LiveBridge {
         Self::program_scope(app, &program)?;
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Planning) {
-            return Err("planning_rejected".into());
+            return Err(PlanRejection::Code("planning_rejected"));
         }
         let proposal = app
             .derive_assistant_cad_edit_proposal(&program)
@@ -1525,7 +1519,7 @@ impl LiveBridge {
             })?;
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Candidate) {
-            return Err("candidate_rejected".into());
+            return Err(PlanRejection::Code("candidate_rejected"));
         }
         let candidate = app
             .document
