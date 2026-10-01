@@ -809,8 +809,6 @@ fn new_part(name: &str, size_mm: [f64; 3], at_mm: [f64; 3], body: ProgramPartBod
         body,
         operations: Vec::new(),
         features: Vec::new(),
-        holes: Vec::new(),
-        pockets: Vec::new(),
     }
 }
 
@@ -1036,7 +1034,7 @@ fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result
         .any(|existing| existing.name() == name)
     {
         anyhow::bail!(
-            "feature name {name:?} is already used on {:?}; pass a unique name=",
+            "feature name {name:?} is already used on {:?}; pass a unique name= (id= for a hole or pocket)",
             part.name
         );
     }
@@ -1841,7 +1839,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             let state = state(eval)?;
             let model = state.model.borrow();
             if let Some(other) = model.part(&joined).or_else(|| model.tool(&joined))
-                && !(other.holes.is_empty() && other.pockets.is_empty())
+                && (other.holes().next().is_some() || other.pockets().next().is_some())
             {
                 anyhow::bail!(
                     "union({target:?}, {joined:?}): {joined:?} has holes or pockets; drill and mill after the union, on {target:?}"
@@ -1912,22 +1910,19 @@ fn builtins(builder: &mut GlobalsBuilder) {
                     "hole in {name:?}: give exactly one of at=(u, v) or world=(x, y, z)"
                 ),
             };
-            let (entry_mm, inward) =
-                part.before_operations((frame.point(at), frame.normal_at(at).map(|value| -value)));
-            let id = id.unwrap_or_else(|| format!("h{}", part.holes.len() + 1));
-            if part.holes.iter().any(|hole| hole.id == id) {
-                anyhow::bail!("hole id {id:?} is used twice on part {name:?}");
-            }
-            part.holes.push(Hole {
-                id,
-                face,
-                at_mm: at,
-                entry_mm,
-                inward,
-                diameter_mm: diameter,
-                depth_mm: depth,
-            });
-            part.refresh_feature_tree();
+            let id = id.unwrap_or_else(|| format!("h{}", part.holes().count() + 1));
+            add_operation(
+                part,
+                ProgramOperation::Hole(Hole {
+                    id,
+                    face,
+                    at_mm: at,
+                    entry_mm: frame.point(at),
+                    inward: frame.normal_at(at).map(|value| -value),
+                    diameter_mm: diameter,
+                    depth_mm: depth,
+                }),
+            )?;
             Ok(NoneType)
         })
     }
@@ -1966,27 +1961,20 @@ fn builtins(builder: &mut GlobalsBuilder) {
                     "pocket in {name:?}: face {face:?} is curved; a pocket is milled into a flat face"
                 );
             }
-            let (corner_mm, inward) = part.before_operations((
-                frame.point([u_min, v_min]),
-                frame.normal.map(|value| -value),
-            ));
-            let (_, u) = part.before_operations(([0.0; 3], frame.u));
-            let (_, v) = part.before_operations(([0.0; 3], frame.v));
-            let id = id.unwrap_or_else(|| format!("p{}", part.pockets.len() + 1));
-            if part.pockets.iter().any(|pocket| pocket.id == id) {
-                anyhow::bail!("pocket id {id:?} is used twice on part {name:?}");
-            }
-            part.pockets.push(Pocket {
-                id,
-                face,
-                rect_mm,
-                corner_mm,
-                u,
-                v,
-                inward,
-                depth_mm: depth,
-            });
-            part.refresh_feature_tree();
+            let id = id.unwrap_or_else(|| format!("p{}", part.pockets().count() + 1));
+            add_operation(
+                part,
+                ProgramOperation::Pocket(Pocket {
+                    id,
+                    face,
+                    rect_mm,
+                    corner_mm: frame.point([u_min, v_min]),
+                    u: frame.u,
+                    v: frame.v,
+                    inward: frame.normal.map(|value| -value),
+                    depth_mm: depth,
+                }),
+            )?;
             Ok(NoneType)
         })
     }

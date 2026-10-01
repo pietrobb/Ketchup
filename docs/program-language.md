@@ -65,7 +65,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
 | `hole(part, face, at=(u, v) or world=(x, y, z), diameter=, depth=, id=)` | a hole drilled along the face's inward normal; `face` is a name or a `face()` value; on a round face `at=(angle, v)` |
-| `pocket(part, face, rect=(u0, v0, u1, v1), depth=, id=)` | a rectangular pocket in a flat face; may run off the face edges |
+| `pocket(part, face, rect=(u0, v0, u1, v1), depth=, id=)` | a rectangular pocket in a flat face; may run off the face edges. Holes and pockets are operations like `cut` and `push_pull`: each is machined where the part is when the program writes it, in that order, and its `id` shares the part's operation names |
 | `contact(a, b)` | where two parts touch: `axis`, `face_a`, `face_b`, `min`, `max`, or `None` |
 | `joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=, name=)` | a declared connection |
 | `expect(name, terms=, op=, value=, tolerance=, unit=, hint=)` | a condition on the final model: a sum of `reach`/`distance`/`contact_area` measures compared with a value; the library's `expect_contact`, `expect_gap`, `expect_flush`, `expect_symmetric` and `expect_inside` are built on it |

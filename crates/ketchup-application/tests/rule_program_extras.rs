@@ -222,6 +222,47 @@ fn a_mirrored_copy_is_the_reflection_across_a_world_plane() {
 }
 
 #[test]
+fn holes_and_pockets_are_machined_in_the_order_the_program_writes_them() {
+    use ketchup_program::model::ProgramOperation;
+    let mut worker = worker();
+    let drill = "hole(block, \"z+\", at=(20, 30), diameter=8, depth=10)";
+    // Written after the face moved out, the hole starts on the moved face;
+    // drilled first it would start in the air above the box and remove nothing.
+    let raised =
+        format!("{BLOCK}push_pull(block, face=\"z+\", distance=10, name=\"raise\")\n{drill}");
+    assert_volume(
+        volume(&mut worker, &raised, "block"),
+        A * B * (C + 10.0) - PI * 16.0 * 10.0,
+    );
+    // A hole after a cut and a pocket after the hole stay in that order, and
+    // only the box's leading machining goes into the panel itself.
+    let program = format!(
+        "{BLOCK}{drill}\ncut(block, profile=[[\"a\", [50, -1], [60, -1]], [\"b\", [60, -1], [60, 61]], \
+         [\"c\", [60, 61], [50, 61]], [\"d\", [50, 61], [50, -1]]], depth=5, name=\"groove\")\n\
+         hole(block, \"z+\", at=(80, 30), diameter=8, depth=10)\n\
+         pocket(block, \"z+\", rect=(0, 0, 10, 60), depth=4)"
+    );
+    let model = program_model(&program);
+    let block = model.part("block").unwrap();
+    let order: Vec<_> = block
+        .operations
+        .iter()
+        .map(|operation| match operation {
+            ProgramOperation::Hole(_) => "hole",
+            ProgramOperation::Pocket(_) => "pocket",
+            ProgramOperation::Cut(_) => "cut",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(order, ["hole", "cut", "hole", "pocket"]);
+    assert_eq!(block.panel_machining(), 1);
+    assert_volume(
+        volume(&mut worker, &program, "block"),
+        A * B * C - 2.0 * PI * 16.0 * 10.0 - 10.0 * B * 5.0 - 10.0 * B * 4.0,
+    );
+}
+
+#[test]
 fn a_mirror_can_come_before_or_after_holes_and_finishes() {
     let mut worker = worker();
     let drilled = A * B * C - PI * 16.0 * 10.0;
@@ -233,11 +274,8 @@ fn a_mirror_can_come_before_or_after_holes_and_finishes() {
         // The mirror carries the hole from x = 20 to x = 80 either way.
         let model = program_model(&program);
         let block = model.part("block").unwrap();
-        let hole = &block.holes[0];
-        assert_point(
-            block.after_operations((hole.entry_mm, hole.inward)).0,
-            [80.0, 30.0, 40.0],
-        );
+        let (_, (entry, _)) = block.finished_holes().next().unwrap();
+        assert_point(entry, [80.0, 30.0, 40.0]);
     }
     let rounded =
         format!("{BLOCK}mirror(block)\nfillet(block, edges=[[\"x+\", \"y+\"]], radius=3)");

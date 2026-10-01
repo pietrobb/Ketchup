@@ -90,11 +90,11 @@ pub(crate) fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3]))
 }
 
 pub(crate) fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
-    part.pockets.iter().map(|pocket| {
-        pocket.corners().iter().fold(
+    part.finished_pockets().map(|(_, corners)| {
+        corners.iter().fold(
             ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
             |(min, max), corner| {
-                let point = part.to_world(part.after_operations((*corner, [0.0; 3])).0);
+                let point = part.to_world(*corner);
                 (
                     std::array::from_fn(|i| min[i].min(point[i])),
                     std::array::from_fn(|i| max[i].max(point[i])),
@@ -345,9 +345,8 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
 
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for part in &model.parts {
-        for hole in &part.holes {
+        for (hole, (local_entry, local_inward)) in part.finished_holes() {
             let radius = hole.diameter_mm / 2.0;
-            let (local_entry, local_inward) = part.after_operations((hole.entry_mm, hole.inward));
             let entry = part.to_world(local_entry);
             let inward = frame::apply(&part.rotation, local_inward);
             let thickness = part.reach(inward) - dot(entry, inward);

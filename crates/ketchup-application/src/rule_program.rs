@@ -323,8 +323,6 @@ fn feature_level_changes(
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();
         comparable.operations = before.operations.clone();
-        comparable.holes = before.holes.clone();
-        comparable.pockets = before.pockets.clone();
         comparable.features = before.features.clone();
         // Tools are placed in the part's frame, so moving a part with booleans rebuilds it.
         if &comparable != before
@@ -371,8 +369,6 @@ fn part_replacements(
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.operations = before.operations.clone();
-        comparable.holes = before.holes.clone();
-        comparable.pockets = before.pockets.clone();
         comparable.body = before.body.clone();
         comparable.features = before.features.clone();
         if comparable != *before {
@@ -562,14 +558,38 @@ fn program_feature_references_match(
         (ProgramOperation::Boolean(left), ProgramOperation::Boolean(right)) => left == right,
         (ProgramOperation::Mirror(left), ProgramOperation::Mirror(right)) => left == right,
         (ProgramOperation::Shell(left), ProgramOperation::Shell(right)) => left == right,
+        (ProgramOperation::Hole(left), ProgramOperation::Hole(right)) => {
+            left.id == right.id && left.face == right.face
+        }
+        (ProgramOperation::Pocket(left), ProgramOperation::Pocket(right)) => {
+            left.id == right.id && left.face == right.face
+        }
         _ => false,
     };
-    body_matches
-        && before.operations.len() == after.operations.len()
-        && before
-            .operations
+    // The holes and pockets a panel drills itself are its features, found by
+    // id whatever order the program writes them in; they remove material
+    // independently of one another.
+    let (drilled_before, drilled_after) = (before.panel_machining(), after.panel_machining());
+    let panel_machining = |part: &ketchup_program::model::Part, drilled: usize| {
+        let mut run = part.operations[..drilled]
             .iter()
-            .zip(&after.operations)
+            .filter_map(|operation| match operation {
+                ProgramOperation::Hole(hole) => Some(("hole", hole.id.clone(), hole.face.clone())),
+                ProgramOperation::Pocket(pocket) => {
+                    Some(("pocket", pocket.id.clone(), pocket.face.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        run.sort_unstable();
+        run
+    };
+    body_matches
+        && panel_machining(before, drilled_before) == panel_machining(after, drilled_after)
+        && before.operations.len() == after.operations.len()
+        && before.operations[drilled_before..]
+            .iter()
+            .zip(&after.operations[drilled_after..])
             .all(|(left, right)| same_operation(left, right))
 }
 

@@ -9,8 +9,8 @@
 
 use crate::frame::{self, Mat3};
 use crate::model::{
-    Part, ProgramArc, ProgramBoolean, ProgramBooleanKind, ProgramOperation, ProgramPartBody,
-    ProgramProfileSegment, profile_bounds,
+    Hole, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind, ProgramOperation,
+    ProgramPartBody, ProgramProfileSegment, profile_bounds,
 };
 use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_model::tolerance::APPROXIMATION;
@@ -494,7 +494,10 @@ impl Part {
                         .collect::<Vec<_>>();
                     faces.extend(inner);
                 }
-                ProgramOperation::Cut(_) | ProgramOperation::Finish(_) => {}
+                ProgramOperation::Cut(_)
+                | ProgramOperation::Finish(_)
+                | ProgramOperation::Hole(_)
+                | ProgramOperation::Pocket(_) => {}
             }
         }
         faces
@@ -552,121 +555,141 @@ impl Part {
 type Placement = ([f64; 3], [f64; 3]);
 
 impl Part {
-    fn mirrors(&self) -> impl DoubleEndedIterator<Item = (usize, f64)> + '_ {
+    /// Where a point and direction written before operation `index` end up on
+    /// the finished part: the mirrors written after it carry them.
+    #[must_use]
+    pub fn after_operation(
+        &self,
+        index: usize,
+        (mut point, mut direction): Placement,
+    ) -> Placement {
+        for operation in self.operations.iter().skip(index + 1) {
+            if let ProgramOperation::Mirror(mirror) = operation {
+                point[mirror.axis] = 2.0 * mirror.center_mm - point[mirror.axis];
+                direction[mirror.axis] = -direction[mirror.axis];
+            }
+        }
+        (point, direction)
+    }
+
+    /// Each hole with its entry point and inward direction on the finished part.
+    pub fn finished_holes(&self) -> impl Iterator<Item = (&Hole, Placement)> {
         self.operations
             .iter()
-            .filter_map(|operation| match operation {
-                ProgramOperation::Mirror(mirror) => Some((mirror.axis, mirror.center_mm)),
+            .enumerate()
+            .filter_map(|(index, operation)| match operation {
+                ProgramOperation::Hole(hole) => Some((
+                    hole,
+                    self.after_operation(index, (hole.entry_mm, hole.inward)),
+                )),
                 _ => None,
             })
     }
 
-    /// Where a point and direction of the body before its operations end up
-    /// after them (its mirrors).
-    #[must_use]
-    pub fn after_operations(&self, (mut point, mut direction): Placement) -> Placement {
-        for (axis, center) in self.mirrors() {
-            point[axis] = 2.0 * center - point[axis];
-            direction[axis] = -direction[axis];
-        }
-        (point, direction)
+    /// Each pocket with its eight corners on the finished part.
+    pub fn finished_pockets(&self) -> impl Iterator<Item = (&Pocket, [[f64; 3]; 8])> {
+        self.operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operation)| match operation {
+                ProgramOperation::Pocket(pocket) => Some((
+                    pocket,
+                    pocket
+                        .corners()
+                        .map(|corner| self.after_operation(index, (corner, [0.0; 3])).0),
+                )),
+                _ => None,
+            })
     }
 
-    /// The body point and direction that the part's operations carry to
-    /// `placement`: holes and pockets are drilled into the body before them.
-    #[must_use]
-    pub fn before_operations(&self, (mut point, mut direction): Placement) -> Placement {
-        for (axis, center) in self.mirrors().rev() {
-            point[axis] = 2.0 * center - point[axis];
-            direction[axis] = -direction[axis];
-        }
-        (point, direction)
-    }
-
-    /// Holes and pockets as subtracted tools, in the body's frame, for a
-    /// part built from a profile; a cuboid carries them itself (`crate::cad`).
-    #[must_use]
-    pub fn machining_tools(&self) -> Vec<ProgramBoolean> {
-        if self.body.cuboid_size().is_some() {
-            return Vec::new();
-        }
-        let tool = |name: String, size_mm: [f64; 3], corner: [f64; 3], axes: Mat3, body| {
-            let mut part = Part {
-                name,
-                size_mm,
-                at_mm: self.to_world(corner),
-                rotation: frame::multiply(&self.rotation, &axes),
-                material: None,
-                color: None,
-                attributes: BTreeMap::new(),
-                body,
-                operations: Vec::new(),
-                features: Vec::new(),
-                holes: Vec::new(),
-                pockets: Vec::new(),
-            };
-            part.refresh_feature_tree();
-            ProgramBoolean {
-                name: part.name.clone(),
-                kind: ProgramBooleanKind::Subtract,
-                tool: part,
-            }
+    /// A subtracted tool in world placed where `corner` of the part's frame is,
+    /// with local axes `axes`.
+    fn machining_tool(
+        &self,
+        name: String,
+        size_mm: [f64; 3],
+        corner: [f64; 3],
+        axes: Mat3,
+        body: ProgramPartBody,
+    ) -> ProgramBoolean {
+        let mut part = Part {
+            name,
+            size_mm,
+            at_mm: self.to_world(corner),
+            rotation: frame::multiply(&self.rotation, &axes),
+            material: None,
+            color: None,
+            attributes: BTreeMap::new(),
+            body,
+            operations: Vec::new(),
+            features: Vec::new(),
         };
+        part.refresh_feature_tree();
+        ProgramBoolean {
+            name: part.name.clone(),
+            kind: ProgramBooleanKind::Subtract,
+            tool: part,
+        }
+    }
+
+    /// `hole` as a subtracted cylinder.
+    #[must_use]
+    pub fn hole_tool(&self, hole: &Hole) -> ProgramBoolean {
+        let radius = hole.diameter_mm * 0.5;
+        let arc = Some(ProgramArc {
+            center_mm: [0.0; 2],
+            clockwise: false,
+        });
+        let half = |name: &str, start_mm: [f64; 2], end_mm: [f64; 2]| ProgramProfileSegment {
+            arc,
+            ..ProgramProfileSegment::line(name, start_mm, end_mm)
+        };
+        let across = if hole.inward[0].abs() < 0.9 {
+            unit(0)
+        } else {
+            unit(1)
+        };
+        let axes = frame::from_axes(across, hole.inward).unwrap_or(frame::IDENTITY);
+        self.machining_tool(
+            format!("hole {}", hole.id),
+            [hole.diameter_mm, hole.diameter_mm, hole.depth_mm],
+            hole.entry_mm,
+            axes,
+            ProgramPartBody::extrusion(
+                vec![
+                    half("wall_1", [radius, 0.0], [-radius, 0.0]),
+                    half("wall_2", [-radius, 0.0], [radius, 0.0]),
+                ],
+                hole.depth_mm,
+            ),
+        )
+    }
+
+    /// `pocket` as a subtracted box.
+    #[must_use]
+    pub fn pocket_tool(&self, pocket: &Pocket) -> ProgramBoolean {
         let columns = |x: [f64; 3], y: [f64; 3], z: [f64; 3]| -> Mat3 {
             std::array::from_fn(|row| [x[row], y[row], z[row]])
         };
-        let holes = self.holes.iter().map(|hole| {
-            let radius = hole.diameter_mm * 0.5;
-            let arc = Some(ProgramArc {
-                center_mm: [0.0; 2],
-                clockwise: false,
-            });
-            let half = |name: &str, start_mm: [f64; 2], end_mm: [f64; 2]| ProgramProfileSegment {
-                arc,
-                ..ProgramProfileSegment::line(name, start_mm, end_mm)
-            };
-            let across = if hole.inward[0].abs() < 0.9 {
-                unit(0)
-            } else {
-                unit(1)
-            };
-            let axes = frame::from_axes(across, hole.inward).unwrap_or(frame::IDENTITY);
-            tool(
-                format!("hole {}", hole.id),
-                [hole.diameter_mm, hole.diameter_mm, hole.depth_mm],
-                hole.entry_mm,
-                axes,
-                ProgramPartBody::extrusion(
-                    vec![
-                        half("wall_1", [radius, 0.0], [-radius, 0.0]),
-                        half("wall_2", [-radius, 0.0], [radius, 0.0]),
-                    ],
-                    hole.depth_mm,
-                ),
+        let [du, dv] = pocket.extent_mm();
+        // A box frame is right-handed: u, v, inward or v, u, inward.
+        let (axes, size) = if dot(cross(pocket.u, pocket.v), pocket.inward) > 0.0 {
+            (
+                columns(pocket.u, pocket.v, pocket.inward),
+                [du, dv, pocket.depth_mm],
             )
-        });
-        let pockets = self.pockets.iter().map(|pocket| {
-            let [du, dv] = pocket.extent_mm();
-            // A box frame is right-handed: u, v, inward or v, u, inward.
-            let (axes, size) = if dot(cross(pocket.u, pocket.v), pocket.inward) > 0.0 {
-                (
-                    columns(pocket.u, pocket.v, pocket.inward),
-                    [du, dv, pocket.depth_mm],
-                )
-            } else {
-                (
-                    columns(pocket.v, pocket.u, pocket.inward),
-                    [dv, du, pocket.depth_mm],
-                )
-            };
-            tool(
-                format!("pocket {}", pocket.id),
-                size,
-                pocket.corner_mm,
-                axes,
-                ProgramPartBody::cuboid(size),
+        } else {
+            (
+                columns(pocket.v, pocket.u, pocket.inward),
+                [dv, du, pocket.depth_mm],
             )
-        });
-        holes.chain(pockets).collect()
+        };
+        self.machining_tool(
+            format!("pocket {}", pocket.id),
+            size,
+            pocket.corner_mm,
+            axes,
+            ProgramPartBody::cuboid(size),
+        )
     }
 }

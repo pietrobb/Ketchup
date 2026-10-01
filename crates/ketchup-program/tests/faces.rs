@@ -302,13 +302,18 @@ fn holes_go_into_the_caps_and_the_round_side_of_a_revolved_part() {
         ),
         "knob",
     );
-    let [cap, radial] = [&knob.holes[0], &knob.holes[1]];
+    let holes: Vec<_> = knob.holes().collect();
+    let [cap, radial] = [holes[0], holes[1]];
     assert_near(cap.entry_mm, [0.0, 100.0, 0.0], "cap entry");
     assert_near(cap.inward, [0.0, -1.0, 0.0], "cap inward");
     // 90 degrees round from +x about +y is -z; the drill points at the axis.
     assert_near(radial.entry_mm, [0.0, 50.0, -30.0], "radial entry");
     assert_near(radial.inward, [0.0, 0.0, 1.0], "radial inward");
-    let tools = knob.machining_tools();
+    let tools: Vec<_> = knob
+        .holes()
+        .map(|hole| knob.hole_tool(hole))
+        .chain(knob.pockets().map(|pocket| knob.pocket_tool(pocket)))
+        .collect();
     let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
     assert_eq!(names, ["hole h1", "hole h2", "pocket p1"]);
     let drill = &tools[1].tool;
@@ -352,18 +357,21 @@ fn a_hole_drilled_after_a_mirror_lands_where_the_face_now_is() {
          hole(b, \"x+\", at = (20, 10), diameter = 8, depth = 30)\n",
         "b",
     );
+    // Written before the mirror, the hole is drilled at the body's x+ end ...
+    let written = before.holes().next().unwrap();
+    assert_near(written.entry_mm, [100.0, 20.0, 10.0], "body entry");
+    assert_near(written.inward, [-1.0, 0.0, 0.0], "body inward");
+    // ... written after it, where the mirrored x+ face is.
+    let written = after.holes().next().unwrap();
+    assert_near(written.entry_mm, [0.0, 20.0, 10.0], "mirrored entry");
+    assert_near(written.inward, [1.0, 0.0, 0.0], "mirrored inward");
+    // Either way the finished part has it at x = 0, on the face still named x+.
     for b in [&before, &after] {
-        let hole = &b.holes[0];
-        // Drilled into the body before the mirror, from its x+ end ...
-        assert_near(hole.entry_mm, [100.0, 20.0, 10.0], "body entry");
-        assert_near(hole.inward, [-1.0, 0.0, 0.0], "body inward");
-        // ... which the mirror carries to x = 0, still named x+.
-        let (entry, inward) = b.after_operations((hole.entry_mm, hole.inward));
+        let (_, (entry, inward)) = b.finished_holes().next().unwrap();
         assert_near(entry, [0.0, 20.0, 10.0], "final entry");
         assert_near(inward, [1.0, 0.0, 0.0], "final inward");
         assert_near(world(b, "x+").origin_mm, [0.0, 0.0, 0.0], "mirrored face");
     }
-    assert_eq!(before.holes, after.holes);
 }
 
 #[test]
@@ -402,14 +410,16 @@ dowels(w, post, dowel = \"6x30\", margin = 10)
     );
     assert!(found.points_mm.iter().all(|p| (p[0] - 100.0).abs() < 1e-9));
     // The dowel holes go into that face: after the base hole, two in the back.
-    let dowels: Vec<_> = w.holes.iter().filter(|h| h.face == "back").collect();
+    let dowels: Vec<_> = w
+        .finished_holes()
+        .filter(|(hole, _)| hole.face == "back")
+        .collect();
     assert_eq!(dowels.len(), 2);
-    for hole in dowels {
-        let (entry, inward) = w.after_operations((hole.entry_mm, hole.inward));
+    for (_, (entry, inward)) in dowels {
         assert!((entry[0] - 100.0).abs() < 1e-9, "{entry:?}");
         assert_near(inward, [-1.0, 0.0, 0.0], "into the mirrored back");
     }
-    assert_eq!(post.holes.iter().filter(|h| h.face == "x-").count(), 2);
+    assert_eq!(post.holes().filter(|h| h.face == "x-").count(), 2);
     assert!((post.at_mm[0] - 100.0).abs() < 1e-9, "{:?}", post.at_mm);
 }
 
@@ -447,7 +457,7 @@ dowels(leg, base, dowel = \"8x30\", margin = 25)
         found.size_mm
     );
     assert!(found.points_mm.iter().all(|p| p[2].abs() < 1e-9));
-    let dowels: Vec<_> = leg.holes.iter().filter(|h| h.face == "cut.z+").collect();
+    let dowels: Vec<_> = leg.holes().filter(|h| h.face == "cut.z+").collect();
     assert_eq!(dowels.len(), 2);
     for hole in &dowels {
         // Square to the base, so at 20 degrees to the leg's own axes.
@@ -459,5 +469,5 @@ dowels(leg, base, dowel = \"8x30\", margin = 25)
         assert_near(inward, [0.0, 0.0, 1.0], "up into the leg");
         assert!(leg.to_world(hole.entry_mm)[2].abs() < 1e-9);
     }
-    assert_eq!(base.holes.iter().filter(|h| h.face == "z+").count(), 2);
+    assert_eq!(base.holes().filter(|h| h.face == "z+").count(), 2);
 }

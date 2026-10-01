@@ -21,11 +21,10 @@ fn kinds(source: &str) -> Vec<&'static str> {
 fn world_holes(model: &ProgramModel, part: &str, prefix: &str) -> Vec<[i64; 3]> {
     let part = model.part(part).unwrap();
     let mut points: Vec<[i64; 3]> = part
-        .holes
-        .iter()
-        .filter(|hole| hole.id.starts_with(prefix))
-        .map(|hole| {
-            let world = part.to_world(part.after_operations((hole.entry_mm, hole.inward)).0);
+        .finished_holes()
+        .filter(|(hole, _)| hole.id.starts_with(prefix))
+        .map(|(_, (entry, _))| {
+            let world = part.to_world(entry);
             #[allow(clippy::cast_possible_truncation)]
             world.map(|value| (value * 1000.0).round() as i64)
         })
@@ -106,13 +105,11 @@ fn dowel_holes_enter_the_shared_face_of_each_board() {
     let side = model.part("carcass/left").unwrap();
     let bottom = model.part("carcass/bottom").unwrap();
     let side_hole = side
-        .holes
-        .iter()
+        .holes()
         .find(|hole| hole.id.starts_with("dowel:"))
         .unwrap();
     let bottom_hole = bottom
-        .holes
-        .iter()
+        .holes()
         .find(|hole| hole.id.starts_with("dowel:carcass/left"))
         .unwrap();
     assert_eq!(side_hole.face, "x+");
@@ -137,7 +134,7 @@ fn side_and_shelf(thickness: f64, dowel: &str) -> String {
 fn dowel_depths(model: &ProgramModel) -> (f64, f64) {
     let depth = |part: &str| {
         let part = model.part(part).unwrap();
-        let depths: Vec<f64> = part.holes.iter().map(|hole| hole.depth_mm).collect();
+        let depths: Vec<f64> = part.holes().map(|hole| hole.depth_mm).collect();
         assert!(
             depths.windows(2).all(|pair| pair[0] == pair[1]),
             "{depths:?}"
@@ -208,8 +205,7 @@ fn holes_of<'a>(model: &'a ProgramModel, part: &str) -> Vec<&'a ketchup_program:
     model
         .part(part)
         .unwrap()
-        .holes
-        .iter()
+        .holes()
         .filter(|hole| hole.id.starts_with("hinge:"))
         .collect()
 }
@@ -797,8 +793,8 @@ fn contact_and_dowels_work_on_rotated_parts_in_their_own_frames() {
     assert!(turned_report.ok, "{:#?}", turned_report.issues);
     assert_eq!(turned_report.warnings, 0, "{:#?}", turned_report.issues);
     for name in ["side", "shelf"] {
-        let flat = &flat.model.part(name).unwrap().holes;
-        let turned = &turned.model.part(name).unwrap().holes;
+        let flat: Vec<_> = flat.model.part(name).unwrap().holes().collect();
+        let turned: Vec<_> = turned.model.part(name).unwrap().holes().collect();
         assert_eq!(flat.len(), 2);
         assert_eq!(flat.len(), turned.len());
         for (a, b) in flat.iter().zip(turned) {
@@ -992,7 +988,12 @@ for name, faces in [("front-left", ["x-", "y-"]), ("front-right", ["x+", "y-"]),
         for part in &expected.model.parts {
             let placed = actual.model.part(&part.name).unwrap();
             assert_close(placed.at_mm, part.at_mm);
-            assert_eq!(placed.holes.len(), part.holes.len(), "{}", part.name);
+            assert_eq!(
+                placed.holes().count(),
+                part.holes().count(),
+                "{}",
+                part.name
+            );
         }
     }
 }

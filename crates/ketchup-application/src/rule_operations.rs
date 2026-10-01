@@ -204,18 +204,15 @@ impl<'a> OperationPlanner<'a> {
         }
     }
 
-    /// Drills `part`'s holes and pockets into its body solid `target` (a box
-    /// carries its own), then applies its operations in program order;
-    /// returns the final solid.
+    /// Applies `part`'s operations to its body solid `target` in program
+    /// order, after the holes and pockets its panel drilled itself
+    /// (`Part::panel_machining`); returns the final solid.
     pub fn apply(
         &mut self,
         part: &Part,
-        mut target: FeatureId,
+        target: FeatureId,
     ) -> Result<FeatureId, AssistantRejection> {
-        for boolean in part.machining_tools() {
-            target = self.boolean(part, &boolean, target, PART_BODY)?;
-        }
-        self.apply_in(part, target, PART_BODY)
+        self.apply_in(part, target, PART_BODY, part.panel_machining())
     }
 
     fn apply_in(
@@ -223,9 +220,16 @@ impl<'a> OperationPlanner<'a> {
         part: &Part,
         mut target: FeatureId,
         body: BodyId,
+        drilled: usize,
     ) -> Result<FeatureId, AssistantRejection> {
-        for operation in &part.operations {
+        for operation in part.operations.iter().skip(drilled) {
             target = match operation {
+                ProgramOperation::Hole(hole) => {
+                    self.boolean(part, &part.hole_tool(hole), target, body)?
+                }
+                ProgramOperation::Pocket(pocket) => {
+                    self.boolean(part, &part.pocket_tool(pocket), target, body)?
+                }
                 ProgramOperation::Cut(cut) => self.cut(cut, target)?,
                 ProgramOperation::Finish(finish) => self.finish(part, finish, target)?,
                 ProgramOperation::FaceOffset(offset) => self.face_offset(part, offset, target)?,
@@ -248,7 +252,7 @@ impl<'a> OperationPlanner<'a> {
         whole: bool,
     ) -> Result<FeatureId, AssistantRejection> {
         if whole {
-            return self.apply_in(tool, target, body);
+            return self.apply_in(tool, target, body, 0);
         }
         for operation in &tool.operations {
             target = match operation {

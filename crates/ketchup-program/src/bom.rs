@@ -84,13 +84,12 @@ pub fn bom(model: &ProgramModel) -> Bom {
     let machining = model
         .parts
         .iter()
-        .filter(|part| !part.holes.is_empty() || !part.pockets.is_empty())
+        .filter(|part| part.holes().next().is_some() || part.pockets().next().is_some())
         .map(|part| PartMachining {
             part: part.name.clone(),
             size_mm: part.size_mm,
             operations: part
-                .holes
-                .iter()
+                .holes()
                 .map(|hole| Operation {
                     id: hole.id.clone(),
                     kind: "drill",
@@ -99,7 +98,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
                     diameter_mm: Some(hole.diameter_mm),
                     depth_mm: hole.depth_mm,
                 })
-                .chain(part.pockets.iter().map(|pocket| Operation {
+                .chain(part.pockets().map(|pocket| Operation {
                     id: pocket.id.clone(),
                     kind: "pocket",
                     face: pocket.face.clone(),

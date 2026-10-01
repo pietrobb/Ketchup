@@ -72,7 +72,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 572,
     "crates/ketchup-model/src/shared_change.rs::project_component_replacement_impact_for_principal": 823,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 484,
-    "crates/ketchup-program/src/eval.rs::builtins": 1071,
+    "crates/ketchup-program/src/eval.rs::builtins": 1061,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 562,
 }
 
@@ -274,6 +274,28 @@ def named_program_bodies(source):
     ]
 
 
+# A part applies its operations in the order the program wrote them; a kind of
+# operation kept in a list of its own beside them (as holes and pockets were)
+# is applied out of that order.
+PROGRAM_OPERATION = re.compile(r"pub enum ProgramOperation \{(.*?)\n\}", re.DOTALL)
+OPERATION_PAYLOAD = re.compile(r"^\s*\w+\((?:Box<)?(\w+)>?\),\s*$", re.MULTILINE)
+PROGRAM_PART = re.compile(r"pub struct Part \{(.*?)\n\}", re.DOTALL)
+LIST_FIELD = re.compile(r"^\s*pub (\w+): Vec<(\w+)>,\s*$", re.MULTILINE)
+
+
+def operations_beside_operations(source):
+    operations, part = PROGRAM_OPERATION.search(source), PROGRAM_PART.search(source)
+    if operations is None or part is None:
+        return ["ketchup-program model.rs: enum ProgramOperation or struct Part not found"]
+    kinds = set(OPERATION_PAYLOAD.findall(operations.group(1)))
+    return [
+        f"Part.{field}: Vec<{kind}> keeps {kind} operations outside Part.operations; "
+        "add them to the operations in program order"
+        for field, kind in LIST_FIELD.findall(part.group(1))
+        if kind in kinds
+    ]
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
@@ -281,9 +303,9 @@ def main():
     problems += oversized_functions(long_functions(root))
     problems += milestone_named_tests(test_files(root))
     problems += hand_written_linear_algebra(linear_algebra_counts(root))
-    problems += named_program_bodies(
-        (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
-    )
+    model = (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
+    problems += named_program_bodies(model)
+    problems += operations_beside_operations(model)
     for problem in problems:
         print(problem)
     if not problems:

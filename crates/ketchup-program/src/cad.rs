@@ -3,38 +3,43 @@
 //! The operations carry only the part's origin; the planner places each
 //! occurrence with the part's exact frame (`Part::transform_matrix`).
 
-use crate::model::{Part, ProgramModel, ProgramPartBody, ProgramProfileSegment};
+use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment};
 use ketchup_assistant::sidecar::{
     AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantPanelHole,
     AssistantPanelPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 
-/// A cuboid is the document's rectangle-and-pad panel and carries its holes
-/// and pockets, in its frame before its operations;
-/// other bodies get them as subtracted tools (`Part::machining_tools`).
+/// A cuboid is the document's rectangle-and-pad panel and drills the holes
+/// and pockets written before its other operations (`Part::panel_machining`);
+/// the planner subtracts the rest in program order.
 fn panel(part: &Part) -> AssistantCadEditOperation {
-    let holes = part
-        .holes
+    let drilled = &part.operations[..part.panel_machining()];
+    let holes = drilled
         .iter()
-        .map(|hole| AssistantPanelHole {
-            id: hole.id.clone(),
-            entry_local_mm: hole.entry_mm,
-            inward_unit_local: hole.inward,
-            diameter_mm: hole.diameter_mm,
-            depth_mm: hole.depth_mm,
+        .filter_map(|operation| match operation {
+            ProgramOperation::Hole(hole) => Some(AssistantPanelHole {
+                id: hole.id.clone(),
+                entry_local_mm: hole.entry_mm,
+                inward_unit_local: hole.inward,
+                diameter_mm: hole.diameter_mm,
+                depth_mm: hole.depth_mm,
+            }),
+            _ => None,
         })
         .collect();
-    let pockets = part
-        .pockets
+    let pockets = drilled
         .iter()
-        .map(|pocket| {
-            let (min, max) = pocket.local_box();
-            AssistantPanelPocket {
-                id: pocket.id.clone(),
-                min_local_mm: min,
-                max_local_mm: max,
-                inward_unit_local: pocket.inward,
+        .filter_map(|operation| match operation {
+            ProgramOperation::Pocket(pocket) => {
+                let (min, max) = pocket.local_box();
+                Some(AssistantPanelPocket {
+                    id: pocket.id.clone(),
+                    min_local_mm: min,
+                    max_local_mm: max,
+                    inward_unit_local: pocket.inward,
+                })
             }
+            _ => None,
         })
         .collect();
     AssistantCadEditOperation::CreatePanel {

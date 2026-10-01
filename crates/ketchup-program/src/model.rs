@@ -2,9 +2,9 @@
 //!
 //! Every part has a rigid frame: its local origin `at_mm` in world millimetres
 //! and a rotation (identity for axis-aligned parts). A panel occupies
-//! `0..size_mm` in its own frame. Holes and pockets are machined into a named
-//! face (see `crate::faces`) and are kept in the frame of the body before its
-//! operations, where they are drilled.
+//! `0..size_mm` in its own frame. Holes and pockets are operations machined
+//! into a named face (see `crate::faces`), kept where the part is when the
+//! program writes them.
 
 use crate::frame::{self, Mat3, Obb};
 use ketchup_geometry::linalg::{CubicBezier, dot};
@@ -66,8 +66,8 @@ pub struct ProgramFeature {
 
 /// A cylindrical hole drilled into a face along its inward normal at face
 /// coordinates `at_mm` (u, v on a plane; angle in degrees, v on a cylinder).
-/// `entry_mm` and `inward` are in the body's frame before the part's
-/// operations, where the hole is drilled.
+/// `entry_mm` and `inward` are in the part's frame as the operations written
+/// before the hole left it; the operations after it carry it on.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Hole {
     pub id: String,
@@ -82,7 +82,8 @@ pub struct Hole {
 /// A rectangular pocket milled into a flat face (grooves, rabbets, notches):
 /// `rect_mm` = (u_min, v_min, u_max, v_max) in face coordinates, which may run
 /// off the face edges. `corner_mm` (the rectangle's (u_min, v_min) corner),
-/// `u`, `v` and `inward` are in the body's frame before its operations.
+/// `u`, `v` and `inward` are in the part's frame as the operations written
+/// before the pocket left it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Pocket {
     pub id: String,
@@ -426,12 +427,18 @@ pub enum ProgramOperation {
     Boolean(Box<ProgramBoolean>),
     Mirror(ProgramMirror),
     Shell(ProgramShell),
+    /// Drilled where the part is when the program writes it.
+    Hole(Hole),
+    /// Milled where the part is when the program writes it.
+    Pocket(Pocket),
 }
 
 impl ProgramOperation {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
+            Self::Hole(hole) => &hole.id,
+            Self::Pocket(pocket) => &pocket.id,
             Self::Cut(cut) => &cut.name,
             Self::Finish(finish) => &finish.name,
             Self::FaceOffset(offset) => &offset.name,
@@ -568,16 +575,51 @@ pub struct Part {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, String>,
     pub body: ProgramPartBody,
-    /// Cuts, finishes, moved faces and booleans in program order.
+    /// Cuts, finishes, moved faces, booleans, holes and pockets in program order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<ProgramOperation>,
     /// Stable, operation-class-level source tree used by incremental reconciliation.
     pub features: Vec<ProgramFeature>,
-    pub holes: Vec<Hole>,
-    pub pockets: Vec<Pocket>,
 }
 
 impl Part {
+    pub fn holes(&self) -> impl Iterator<Item = &Hole> {
+        self.operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ProgramOperation::Hole(hole) => Some(hole),
+                _ => None,
+            })
+    }
+
+    pub fn pockets(&self) -> impl Iterator<Item = &Pocket> {
+        self.operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ProgramOperation::Pocket(pocket) => Some(pocket),
+                _ => None,
+            })
+    }
+
+    /// How many operations a cuboid's document panel drills itself: the holes
+    /// and pockets written before any other operation (`crate::cad`). The
+    /// rest, and all of a profile body's, are subtracted in program order.
+    #[must_use]
+    pub fn panel_machining(&self) -> usize {
+        if self.body.cuboid_size().is_none() {
+            return 0;
+        }
+        self.operations
+            .iter()
+            .take_while(|operation| {
+                matches!(
+                    operation,
+                    ProgramOperation::Hole(_) | ProgramOperation::Pocket(_)
+                )
+            })
+            .count()
+    }
+
     pub fn cuts(&self) -> impl Iterator<Item = &ProgramCut> {
         self.operations
             .iter()
@@ -757,12 +799,17 @@ impl Part {
         }
     }
 
-    /// Whether any operation other than a boolean shapes the body.
+    /// Whether any operation other than a boolean, hole or pocket shapes the body.
     #[must_use]
     pub fn has_shaping(&self) -> bool {
-        self.operations
-            .iter()
-            .any(|operation| !matches!(operation, ProgramOperation::Boolean(_)))
+        self.operations.iter().any(|operation| {
+            !matches!(
+                operation,
+                ProgramOperation::Boolean(_)
+                    | ProgramOperation::Hole(_)
+                    | ProgramOperation::Pocket(_)
+            )
+        })
     }
 
     /// Bounds of the body in its own frame, before cuts and finishes, grown
@@ -1183,6 +1230,8 @@ impl Part {
                 ProgramOperation::Boolean(_)
                 | ProgramOperation::Mirror(_)
                 | ProgramOperation::Shell(_) => continue,
+                // Listed after the operations, as the document panel drills them.
+                ProgramOperation::Hole(_) | ProgramOperation::Pocket(_) => continue,
             };
             features.push(feature(
                 format!("{} sketch", cut.name),
@@ -1211,7 +1260,7 @@ impl Part {
                 vec![length("extent.distance", cut.depth_mm)],
             ));
         }
-        for hole in &self.holes {
+        for hole in self.holes() {
             let prefix = format!("{} hole {}", self.name, hole.id);
             let origin = hole.entry_mm;
             features.push(feature(
@@ -1234,7 +1283,7 @@ impl Part {
                 vec![length("extent.distance", hole.depth_mm)],
             ));
         }
-        for pocket in &self.pockets {
+        for pocket in self.pockets() {
             let prefix = format!("{} pocket {}", self.name, pocket.id);
             let [du, dv] = pocket.extent_mm();
             let origin: [f64; 3] = std::array::from_fn(|i| {

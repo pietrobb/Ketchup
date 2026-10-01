@@ -190,3 +190,20 @@ def test_a_program_body_without_geometry_fails():
 def test_workspace_program_bodies_carry_their_geometry():
     source = (ROOT / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
     assert checker.named_program_bodies(source) == []
+
+
+def test_an_operation_kind_kept_beside_the_operations_fails():
+    source = (
+        "pub enum ProgramOperation {\n    Cut(ProgramCut),\n    Boolean(Box<ProgramBoolean>),\n"
+        "    /// Drilled.\n    Hole(Hole),\n}\n"
+        "pub struct Part {\n    pub operations: Vec<ProgramOperation>,\n"
+        "    pub features: Vec<ProgramFeature>,\n    pub holes: Vec<Hole>,\n"
+        "    pub tools: Vec<ProgramBoolean>,\n}\n"
+    )
+    problems = checker.operations_beside_operations(source)
+    assert [problem.split(":")[0] for problem in problems] == ["Part.holes", "Part.tools"]
+
+
+def test_workspace_part_keeps_every_operation_in_program_order():
+    source = (ROOT / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
+    assert checker.operations_beside_operations(source) == []
