@@ -38,7 +38,7 @@ fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
 }
 
 #[test]
-fn manual_helix_and_thread_tools_use_selected_geometry_form_preview_undo_and_save_open() {
+fn manual_helix_tool_makes_a_path_or_sweeps_a_profile_with_preview_undo_and_save_open() {
     let directory = tempfile::tempdir().unwrap();
     let saved = directory.path().join("helix-thread.ketchup");
     let dialogs = ScriptedFileDialogs::new()
@@ -160,24 +160,58 @@ fn manual_helix_and_thread_tools_use_selected_geometry_form_preview_undo_and_sav
     assert!(shell.app_mut().undo());
     assert!(shell.app_mut().redo());
 
-    open_from_command_search(&mut shell, AppCommand::Thread);
-    assert!(shell.has_visible_label(&shell.catalog().text("thread-panel-title")));
-    assert!(shell.has_visible_label(&shell.catalog().text("thread-profile")));
+    // The same tool sweeps a custom tooth (a trapezoid, crest > 0) into a thread body.
+    open_from_command_search(&mut shell, AppCommand::Helix);
+    assert!(shell.has_visible_label(&shell.catalog().text("helix-panel-title")));
     assert!(shell.has_visible_label(&shell.catalog().text("helix-selected-edge-ready")));
     shell.click_button_label(&shell.catalog().text("helix-use-selected-edge"));
     replace_text(&mut shell, "helix-radius", "8");
     replace_text(&mut shell, "helix-pitch", "6");
     replace_text(&mut shell, "helix-turns", "2");
-    replace_text(&mut shell, "thread-profile-radius", "0.65");
+    let tooth = format!(
+        "{}: {}",
+        shell.catalog().text("helix-profile"),
+        shell.catalog().text("helix-profile-tooth")
+    );
+    shell.click_button_label(&tooth);
+    replace_text(&mut shell, "helix-tooth-depth", "1.5");
+    replace_text(&mut shell, "helix-tooth-width", "7");
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-helix-invalid"),
+        "a tooth wider than the pitch does not fit between the turns"
+    );
+    replace_text(&mut shell, "helix-tooth-width", "4");
+    replace_text(&mut shell, "helix-tooth-crest", "1");
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-helix-live")
+    );
     let undo_before_thread = shell.app().undo_step_count();
-    shell.click_button_label(&shell.catalog().text("action-create-thread"));
+    shell.click_button_label(&shell.catalog().text("action-create-helix"));
     assert_eq!(shell.app().undo_step_count(), undo_before_thread + 1);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-helix-body-committed")
+    );
+    let snapshot = shell.app().document_snapshot();
+    let profile = snapshot
+        .features()
+        .filter_map(|feature| match feature.kind() {
+            FeatureKind::Profile { segments, closed } => Some((segments.len(), *closed)),
+            _ => None,
+        })
+        .last()
+        .unwrap();
+    assert_eq!(
+        profile,
+        (4, true),
+        "the trapezoid tooth is four closed lines"
+    );
     assert!(
-        shell
-            .app()
-            .document_snapshot()
+        snapshot
             .features()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Sweep { .. }))
+            .any(|feature| matches!(feature.kind(), FeatureKind::Sweep { up: Some(_), .. }))
     );
     wait_for_exact_bodies(&mut shell, 2);
 

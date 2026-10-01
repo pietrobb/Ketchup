@@ -23,50 +23,59 @@ enum ConstructionKind {
     Plane,
 }
 
-/// The cross-sections the thread tool offers, sized by one radius.
+/// What the helix tool sweeps along the helix: nothing (a path), a tooth or a circle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThreadProfile {
-    Round,
-    V,
-    Trapezoid,
+enum HelixProfile {
+    None,
+    Tooth,
+    Circle,
 }
 
-impl ThreadProfile {
-    /// The closed profile drawn across the helix start, `radius` from its centre to the tip.
-    #[must_use]
-    pub fn entities(self, radius: f64) -> Vec<AssistantSketchEntity> {
-        let line_loop = |points: &[[f64; 2]]| {
-            (0..points.len())
-                .map(|index| AssistantSketchEntity::Line {
-                    id: index as u64 + 1,
-                    start_mm: points[index],
-                    end_mm: points[(index + 1) % points.len()],
-                })
-                .collect()
-        };
+impl HelixProfile {
+    const ALL: [Self; 3] = [Self::None, Self::Tooth, Self::Circle];
+
+    const fn label_key(self) -> &'static str {
         match self {
-            Self::Round => vec![AssistantSketchEntity::Circle {
-                id: 1,
-                center_mm: [0.0, 0.0],
-                radius_mm: radius,
-            }],
-            Self::V => line_loop(&[
-                [-radius, -radius * 0.72],
-                [radius, 0.0],
-                [-radius, radius * 0.72],
-            ]),
-            Self::Trapezoid => line_loop(&[
-                [-radius, -radius * 0.72],
-                [radius * 0.65, -radius * 0.42],
-                [radius * 0.65, radius * 0.42],
-                [-radius, radius * 0.72],
-            ]),
+            Self::None => "helix-profile-none",
+            Self::Tooth => "helix-profile-tooth",
+            Self::Circle => "helix-profile-circle",
         }
     }
 }
 
+/// A closed polygon through `points` as sketch lines.
+fn line_loop(points: &[[f64; 2]]) -> Vec<AssistantSketchEntity> {
+    (0..points.len())
+        .map(|index| AssistantSketchEntity::Line {
+            id: index as u64 + 1,
+            start_mm: points[index],
+            end_mm: points[(index + 1) % points.len()],
+        })
+        .collect()
+}
+
+/// A tooth in the helix's axial section (u away from the axis, v along it):
+/// base `width` wide on the path, `crest` wide at `depth` along u; a zero
+/// crest closes it to a point. `None` unless `depth > 0` and `0 <= crest < width`.
+fn tooth(depth: f64, width: f64, crest: f64) -> Option<Vec<AssistantSketchEntity>> {
+    (depth.is_finite() && depth > 0.0 && crest.is_finite() && crest >= 0.0 && crest < width).then(
+        || {
+            if crest == 0.0 {
+                line_loop(&[[0.0, -width / 2.0], [depth, 0.0], [0.0, width / 2.0]])
+            } else {
+                line_loop(&[
+                    [0.0, -width / 2.0],
+                    [depth, -crest / 2.0],
+                    [depth, crest / 2.0],
+                    [0.0, width / 2.0],
+                ])
+            }
+        },
+    )
+}
+
 #[derive(Clone, Debug)]
-pub(super) struct HelixThreadUiState {
+pub(super) struct HelixUiState {
     origin: [String; 3],
     axis: [String; 3],
     radius: String,
@@ -74,13 +83,16 @@ pub(super) struct HelixThreadUiState {
     turns: String,
     start_angle: String,
     handedness: HelixHandedness,
-    profile_radius: String,
-    profile: ThreadProfile,
+    profile: HelixProfile,
+    tooth_depth: String,
+    tooth_width: String,
+    tooth_crest: String,
+    circle_radius: String,
     preview_segments: Vec<SpatialPathSegment>,
     valid: bool,
 }
 
-impl Default for HelixThreadUiState {
+impl Default for HelixUiState {
     fn default() -> Self {
         Self {
             origin: ["0".into(), "0".into(), "0".into()],
@@ -90,15 +102,18 @@ impl Default for HelixThreadUiState {
             turns: "3".into(),
             start_angle: "0".into(),
             handedness: HelixHandedness::Right,
-            profile_radius: "0.8".into(),
-            profile: ThreadProfile::Round,
+            profile: HelixProfile::None,
+            tooth_depth: "2".into(),
+            tooth_width: "4".into(),
+            tooth_crest: "0".into(),
+            circle_radius: "1".into(),
             preview_segments: Vec::new(),
             valid: false,
         }
     }
 }
 
-impl HelixThreadUiState {
+impl HelixUiState {
     fn parse_vector(values: &[String; 3]) -> Option<[f64; 3]> {
         Some([
             values[0].trim().parse().ok()?,
@@ -121,21 +136,46 @@ impl HelixThreadUiState {
         })
     }
 
-    /// The thread's cross-section; it must stay narrower than the pitch.
-    fn thread_profile(&self) -> Option<Vec<AssistantSketchEntity>> {
-        let radius: f64 = self.profile_radius.trim().parse().ok()?;
-        let pitch: f64 = self.pitch.trim().parse().ok()?;
-        (radius.is_finite() && radius > 0.0 && radius * 2.0 < pitch)
-            .then(|| self.profile.entities(radius))
+    /// The profile swept along the helix, empty for a bare path; `None` when its
+    /// numbers do not describe one that fits between two turns (narrower than the pitch).
+    fn profile_entities(&self) -> Option<Vec<AssistantSketchEntity>> {
+        let number = |text: &String| text.trim().parse::<f64>().ok();
+        let pitch = number(&self.pitch)?;
+        let (entities, width) = match self.profile {
+            HelixProfile::None => return Some(Vec::new()),
+            HelixProfile::Tooth => {
+                let width = number(&self.tooth_width)?;
+                (
+                    tooth(
+                        number(&self.tooth_depth)?,
+                        width,
+                        number(&self.tooth_crest)?,
+                    )?,
+                    width,
+                )
+            }
+            HelixProfile::Circle => {
+                let radius = number(&self.circle_radius)?;
+                (radius.is_finite() && radius > 0.0).then_some(())?;
+                (
+                    vec![AssistantSketchEntity::Circle {
+                        id: 1,
+                        center_mm: [0.0, 0.0],
+                        radius_mm: radius,
+                    }],
+                    radius * 2.0,
+                )
+            }
+        };
+        (width < pitch).then_some(entities)
     }
 
-    fn refresh(&mut self, thread: bool) {
+    fn refresh(&mut self) {
         let parameters = self.helix_parameters();
         self.preview_segments = parameters
             .and_then(|parameters| helix_segments(&parameters).ok())
             .unwrap_or_default();
-        self.valid =
-            !self.preview_segments.is_empty() && (!thread || self.thread_profile().is_some());
+        self.valid = !self.preview_segments.is_empty() && self.profile_entities().is_some();
     }
 }
 
@@ -188,17 +228,16 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-helix-axis-selection-required");
             return false;
         };
-        self.helix_thread.origin = origin.map(format_coordinate);
-        self.helix_thread.axis = direction.map(format_coordinate);
-        self.helix_thread
-            .refresh(self.active_tool == ActiveTool::Thread);
+        self.helix_tool.origin = origin.map(format_coordinate);
+        self.helix_tool.axis = direction.map(format_coordinate);
+        self.helix_tool.refresh();
         self.digest = self.catalog.text("digest-helix-axis-selected");
         true
     }
 
     fn construction_input(&self) -> Option<([f64; 3], [f64; 3])> {
-        let origin = HelixThreadUiState::parse_vector(&self.helix_thread.origin)?;
-        let direction = HelixThreadUiState::parse_vector(&self.helix_thread.axis)?;
+        let origin = HelixUiState::parse_vector(&self.helix_tool.origin)?;
+        let direction = HelixUiState::parse_vector(&self.helix_tool.axis)?;
         let length_squared = direction.iter().map(|value| value * value).sum::<f64>();
         (origin
             .iter()
@@ -209,7 +248,7 @@ impl KetchupApp {
     }
 
     fn create_construction_geometry(&mut self, kind: ConstructionKind) -> bool {
-        let origin = HelixThreadUiState::parse_vector(&self.helix_thread.origin)
+        let origin = HelixUiState::parse_vector(&self.helix_tool.origin)
             .filter(|origin| origin.iter().all(|value| value.is_finite()));
         let direction = self.construction_input().map(|(_, direction)| direction);
         let Some(origin) = origin else {
@@ -295,23 +334,19 @@ impl KetchupApp {
         true
     }
 
-    pub(super) fn begin_helix_thread_tool(&mut self, tool: ActiveTool) {
-        self.helix_thread = HelixThreadUiState::default();
-        self.helix_thread.refresh(tool == ActiveTool::Thread);
-        self.status_key = if tool == ActiveTool::Helix {
-            "status-helix-preview"
-        } else {
-            "status-thread-preview"
-        };
+    pub(super) fn begin_helix_tool(&mut self) {
+        self.helix_tool = HelixUiState::default();
+        self.helix_tool.refresh();
+        self.status_key = "status-helix-preview";
     }
 
-    pub(super) fn clear_helix_thread_preview(&mut self) {
-        self.helix_thread.preview_segments.clear();
-        self.helix_thread.valid = false;
+    pub(super) fn clear_helix_preview(&mut self) {
+        self.helix_tool.preview_segments.clear();
+        self.helix_tool.valid = false;
     }
 
-    pub(super) fn helix_thread_preview_points(&self) -> Vec<Vec3> {
-        self.helix_thread
+    pub(super) fn helix_preview_points(&self) -> Vec<Vec3> {
+        self.helix_tool
             .preview_segments
             .iter()
             .flat_map(|segment| match segment {
@@ -349,13 +384,9 @@ impl KetchupApp {
         else {
             return false;
         };
-        let thread = !profile.is_empty();
+        let swept = !profile.is_empty();
         let name = self.catalog.format(
-            if thread {
-                "model-thread-definition"
-            } else {
-                "model-helix-definition"
-            },
+            "model-helix-definition",
             &BTreeMap::from([("number", number.to_string())]),
         );
         let program = AssistantCadEditProgram {
@@ -365,39 +396,33 @@ impl KetchupApp {
                 profile,
             }],
         };
-        let refused = if thread { "Thread" } else { "Helix" };
         let batch = match self.plan_assistant_cad_edit_program(&program) {
             Ok(batch) => batch,
             Err(error) => {
-                self.digest = format!("{refused} refused: {}", error.failed_invariant);
+                self.digest = format!("Helix refused: {}", error.failed_invariant);
                 return false;
             }
         };
         if let Err(error) = self.apply_batch_with_work_recovery(&batch) {
-            self.digest = format!("{refused} refused: {error}");
+            self.digest = format!("Helix refused: {error}");
             return false;
         }
         self.clear_ephemeral_edit_state();
         self.active_tool = ActiveTool::Select;
         self.status_key = "status-ready";
-        self.digest = self.catalog.text(if thread {
-            "digest-thread-committed"
+        self.digest = self.catalog.text(if swept {
+            "digest-helix-body-committed"
         } else {
             "digest-helix-committed"
         });
         true
     }
 
-    pub(super) fn show_helix_thread_tool(&mut self, ui: &mut egui::Ui) {
-        if !matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread) {
+    pub(super) fn show_helix_tool(&mut self, ui: &mut egui::Ui) {
+        if self.active_tool != ActiveTool::Helix {
             return;
         }
-        let thread = self.active_tool == ActiveTool::Thread;
-        ui.heading(self.catalog.text(if thread {
-            "thread-panel-title"
-        } else {
-            "helix-panel-title"
-        }));
+        ui.heading(self.catalog.text("helix-panel-title"));
         ui.small(self.catalog.text("helix-panel-help"));
         let selected_edge_available = self.selected_edge_axis().is_some();
         if ui
@@ -420,15 +445,15 @@ impl KetchupApp {
         changed |= vector_row(
             ui,
             self.catalog.text("helix-origin"),
-            &mut self.helix_thread.origin,
+            &mut self.helix_tool.origin,
         );
         changed |= vector_row(
             ui,
             self.catalog.text("helix-axis"),
-            &mut self.helix_thread.axis,
+            &mut self.helix_tool.axis,
         );
         ui.label(self.catalog.text("construction-tools"));
-        let point_valid = HelixThreadUiState::parse_vector(&self.helix_thread.origin)
+        let point_valid = HelixUiState::parse_vector(&self.helix_tool.origin)
             .is_some_and(|origin| origin.iter().all(|value| value.is_finite()));
         let axis_valid = self.construction_input().is_some();
         let mut construction = None;
@@ -467,29 +492,29 @@ impl KetchupApp {
         changed |= scalar_row(
             ui,
             self.catalog.text("helix-radius"),
-            &mut self.helix_thread.radius,
+            &mut self.helix_tool.radius,
         );
         changed |= scalar_row(
             ui,
             self.catalog.text("helix-pitch"),
-            &mut self.helix_thread.pitch,
+            &mut self.helix_tool.pitch,
         );
         changed |= scalar_row(
             ui,
             self.catalog.text("helix-turns"),
-            &mut self.helix_thread.turns,
+            &mut self.helix_tool.turns,
         );
         changed |= scalar_row(
             ui,
             self.catalog.text("helix-start-angle"),
-            &mut self.helix_thread.start_angle,
+            &mut self.helix_tool.start_angle,
         );
         let handedness_label = self.catalog.text("helix-handedness");
         ui.label(&handedness_label);
         ui.horizontal(|ui| {
             let right_label = self.catalog.text("helix-right-handed");
             let right = ui.selectable_value(
-                &mut self.helix_thread.handedness,
+                &mut self.helix_tool.handedness,
                 HelixHandedness::Right,
                 &right_label,
             );
@@ -497,60 +522,18 @@ impl KetchupApp {
             changed |= right.changed();
             let left_label = self.catalog.text("helix-left-handed");
             let left = ui.selectable_value(
-                &mut self.helix_thread.handedness,
+                &mut self.helix_tool.handedness,
                 HelixHandedness::Left,
                 &left_label,
             );
             super::name_widget(&left, true, &format!("{handedness_label}: {left_label}"));
             changed |= left.changed();
         });
-        if thread {
-            changed |= scalar_row(
-                ui,
-                self.catalog.text("thread-profile-radius"),
-                &mut self.helix_thread.profile_radius,
-            );
-            ui.label(self.catalog.text("thread-profile"));
-            egui::ComboBox::from_id_salt("thread-profile")
-                .selected_text(self.catalog.text(match self.helix_thread.profile {
-                    ThreadProfile::Round => "thread-profile-round",
-                    ThreadProfile::V => "thread-profile-v",
-                    ThreadProfile::Trapezoid => "thread-profile-trapezoid",
-                }))
-                .show_ui(ui, |ui| {
-                    changed |= ui
-                        .selectable_value(
-                            &mut self.helix_thread.profile,
-                            ThreadProfile::Round,
-                            self.catalog.text("thread-profile-round"),
-                        )
-                        .changed();
-                    changed |= ui
-                        .selectable_value(
-                            &mut self.helix_thread.profile,
-                            ThreadProfile::V,
-                            self.catalog.text("thread-profile-v"),
-                        )
-                        .changed();
-                    changed |= ui
-                        .selectable_value(
-                            &mut self.helix_thread.profile,
-                            ThreadProfile::Trapezoid,
-                            self.catalog.text("thread-profile-trapezoid"),
-                        )
-                        .changed();
-                });
-        }
+        changed |= self.show_helix_profile(ui);
         if changed {
-            self.helix_thread.refresh(thread);
-            self.digest = self.catalog.text(if self.helix_thread.valid {
-                if thread {
-                    "digest-thread-live"
-                } else {
-                    "digest-helix-live"
-                }
-            } else if thread {
-                "digest-thread-invalid"
+            self.helix_tool.refresh();
+            self.digest = self.catalog.text(if self.helix_tool.valid {
+                "digest-helix-live"
             } else {
                 "digest-helix-invalid"
             });
@@ -558,30 +541,51 @@ impl KetchupApp {
         ui.separator();
         let create = ui
             .add_enabled(
-                self.helix_thread.valid,
-                egui::Button::new(self.catalog.text(if thread {
-                    "action-create-thread"
-                } else {
-                    "action-create-helix"
-                })),
+                self.helix_tool.valid,
+                egui::Button::new(self.catalog.text("action-create-helix")),
             )
             .clicked();
         if ui.button(self.catalog.text("action-cancel")).clicked() {
             self.clear_ephemeral_edit_state();
             self.active_tool = ActiveTool::Select;
             self.status_key = "status-ready";
-        } else if create {
-            let profile = if thread {
-                self.helix_thread.thread_profile()
-            } else {
-                Some(Vec::new())
-            };
-            if let (Some(parameters), Some(profile)) =
-                (self.helix_thread.helix_parameters(), profile)
-            {
-                self.create_helix(parameters, profile);
-            }
+        } else if create
+            && let (Some(parameters), Some(profile)) = (
+                self.helix_tool.helix_parameters(),
+                self.helix_tool.profile_entities(),
+            )
+        {
+            self.create_helix(parameters, profile);
         }
+    }
+
+    /// The profile chooser and its sizes; true when any of them changed.
+    fn show_helix_profile(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let profile_label = self.catalog.text("helix-profile");
+        ui.label(&profile_label);
+        ui.horizontal_wrapped(|ui| {
+            for profile in HelixProfile::ALL {
+                let label = self.catalog.text(profile.label_key());
+                let response = ui.selectable_value(&mut self.helix_tool.profile, profile, &label);
+                super::name_widget(&response, true, &format!("{profile_label}: {label}"));
+                changed |= response.changed();
+            }
+        });
+        let state = &mut self.helix_tool;
+        let rows: Vec<(&str, &mut String)> = match state.profile {
+            HelixProfile::None => Vec::new(),
+            HelixProfile::Tooth => vec![
+                ("helix-tooth-depth", &mut state.tooth_depth),
+                ("helix-tooth-width", &mut state.tooth_width),
+                ("helix-tooth-crest", &mut state.tooth_crest),
+            ],
+            HelixProfile::Circle => vec![("helix-circle-radius", &mut state.circle_radius)],
+        };
+        for (key, value) in rows {
+            changed |= scalar_row(ui, self.catalog.text(key), value);
+        }
+        changed
     }
 }
 
@@ -657,6 +661,44 @@ mod tests {
         let end = segments.last().unwrap().end_mm();
         let rise = dot(sub(end, start), axis);
         assert!((rise - parameters.pitch_mm * parameters.turns).abs() < 1.0e-8);
+    }
+
+    #[test]
+    fn tooth_is_a_closed_triangle_or_trapezoid_and_refuses_impossible_sizes() {
+        let corners = |entities: Vec<AssistantSketchEntity>| {
+            entities
+                .into_iter()
+                .map(|entity| match entity {
+                    AssistantSketchEntity::Line { start_mm, .. } => start_mm,
+                    other => panic!("a tooth is made of lines, got {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            corners(tooth(0.8, 1.3, 0.0).unwrap()),
+            [[0.0, -0.65], [0.8, 0.0], [0.0, 0.65]]
+        );
+        assert_eq!(
+            corners(tooth(2.0, 4.0, 1.0).unwrap()),
+            [[0.0, -2.0], [2.0, -0.5], [2.0, 0.5], [0.0, 2.0]]
+        );
+        assert!(tooth(0.0, 4.0, 1.0).is_none());
+        assert!(tooth(2.0, 4.0, 4.0).is_none());
+        assert!(tooth(2.0, 4.0, -1.0).is_none());
+    }
+
+    #[test]
+    fn profile_must_fit_between_two_turns() {
+        let mut state = HelixUiState {
+            profile: HelixProfile::Circle,
+            circle_radius: "2.5".into(),
+            ..HelixUiState::default()
+        };
+        assert!(state.profile_entities().is_none(), "diameter 5 == pitch 5");
+        state.circle_radius = "2.4".into();
+        assert_eq!(state.profile_entities().unwrap().len(), 1);
+        state.profile = HelixProfile::None;
+        assert!(state.profile_entities().unwrap().is_empty());
     }
 
     #[test]

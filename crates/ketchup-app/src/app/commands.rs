@@ -212,8 +212,8 @@ impl KetchupApp {
             if tool == ActiveTool::PlanarOffset {
                 self.value_box.input = "5".to_owned();
                 self.refresh_planar_offset_preview();
-            } else if matches!(tool, ActiveTool::Helix | ActiveTool::Thread) {
-                self.begin_helix_thread_tool(tool);
+            } else if tool == ActiveTool::Helix {
+                self.begin_helix_tool();
             } else if tool == ActiveTool::Sweep {
                 self.refresh_sweep_preview();
             } else if tool == ActiveTool::Loft {
@@ -452,7 +452,6 @@ impl KetchupApp {
             | AppCommand::SolidSplit
             | AppCommand::PlanarOffset
             | AppCommand::Helix
-            | AppCommand::Thread
             | AppCommand::Sweep
             | AppCommand::Loft
             | AppCommand::Revolve
@@ -483,10 +482,10 @@ impl KetchupApp {
         if !self.ephemeral_edit_active() {
             return false;
         }
-        let helix_or_thread = matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread);
+        let helix = self.active_tool == ActiveTool::Helix;
         self.clear_ephemeral_edit_state();
         self.cancel_rectangle_sketch();
-        if helix_or_thread {
+        if helix {
             self.active_tool = ActiveTool::Select;
         }
         true

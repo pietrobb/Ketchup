@@ -3560,8 +3560,8 @@ fn new_and_open_cancel_active_assistant_requests() {
 #[test]
 fn new_document_starts_empty_without_an_inactive_tool_preview() {
     let mut app = KetchupApp::new();
-    app.begin_helix_thread_tool(ActiveTool::Helix);
-    assert!(!app.helix_thread_preview_points().is_empty());
+    app.begin_helix_tool();
+    assert!(!app.helix_preview_points().is_empty());
 
     app.new_document();
 
@@ -3570,7 +3570,7 @@ fn new_document_starts_empty_without_an_inactive_tool_preview() {
     assert_eq!(snapshot.occurrences().count(), 0);
     assert_eq!(snapshot.features().count(), 0);
     assert_eq!(app.document.visible_undo_steps(), 0);
-    assert!(app.helix_thread_preview_points().is_empty());
+    assert!(app.helix_preview_points().is_empty());
     assert_eq!(app.active_tool, ActiveTool::Select);
 }
 

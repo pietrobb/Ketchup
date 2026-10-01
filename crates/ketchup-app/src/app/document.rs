@@ -60,7 +60,7 @@ impl KetchupApp {
         self.push_pull.smart_planning = None;
         self.solid_tools.target = None;
         self.solid_tools.revolve = None;
-        self.clear_helix_thread_preview();
+        self.clear_helix_preview();
         self.solid_tools.loft_input_sections = None;
         self.solid_tools.pocket_editor_feature = None;
         self.solid_tools.pocket_depth_input.clear();

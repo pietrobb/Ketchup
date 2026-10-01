@@ -155,7 +155,7 @@ mod face_workflow_ui;
 mod feature_history_ui;
 mod gesture;
 mod glb_import_ui;
-mod helix_thread_ui;
+mod helix_ui;
 use export_bundle::{
     ExportBundlePrecondition, ExportConsent, ExportError, export_target_sha256,
     write_export_artifact_if_unchanged, write_export_bundle,
@@ -184,9 +184,7 @@ pub use assistant_runtime::{
     public_assistant_launch_for_install_root, verify_public_assistant_runtime,
 };
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
-pub use helix_thread_ui::{
-    AxisSpec, HelixHandedness, HelixToolParameters, ThreadProfile, helix_segments,
-};
+pub use helix_ui::{AxisSpec, HelixHandedness, HelixToolParameters, helix_segments};
 pub use native_document_inspection::{
     NativeDocumentInspection, NativeDocumentInspectionError, inspect_native_document,
 };
@@ -1719,7 +1717,6 @@ enum ActiveTool {
     SolidSplit,
     PlanarOffset,
     Helix,
-    Thread,
     Sweep,
     Loft,
     Revolve,
@@ -1751,7 +1748,6 @@ impl ActiveTool {
             Self::SolidSplit => "solid-tool-split",
             Self::PlanarOffset => "feature-planar-offset",
             Self::Helix => "feature-helix",
-            Self::Thread => "feature-thread",
             Self::Sweep => "feature-sweep",
             Self::Loft => "feature-loft",
             Self::Revolve => "feature-revolve",
@@ -1783,7 +1779,6 @@ impl ActiveTool {
             Self::SolidSplit => "hint-solid-split",
             Self::PlanarOffset => "hint-planar-offset",
             Self::Helix => "hint-helix",
-            Self::Thread => "hint-thread",
             Self::Sweep => "hint-sweep",
             Self::Loft => "hint-loft",
             Self::Revolve => "hint-revolve",
@@ -1847,7 +1842,6 @@ pub enum AppCommand {
     SolidSplit,
     PlanarOffset,
     Helix,
-    Thread,
     Sweep,
     Loft,
     Revolve,
@@ -4241,7 +4235,7 @@ pub struct KetchupApp {
     feature_history: feature_history_ui::FeatureHistoryUiState,
     push_pull: app_state::PushPullState,
     solid_tools: app_state::SolidToolInputs,
-    helix_thread: helix_thread_ui::HelixThreadUiState,
+    helix_tool: helix_ui::HelixUiState,
     parameter: app_state::ParameterEditor,
     validator_panel: app_state::ValidatorPanel,
     status_key: &'static str,

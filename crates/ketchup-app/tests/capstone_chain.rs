@@ -674,15 +674,21 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
             .any(|feature| matches!(feature.kind(), FeatureKind::SpatialPath { .. }))
     );
 
-    open_from_command_search(&mut shell, AppCommand::Thread);
+    open_from_command_search(&mut shell, AppCommand::Helix);
     assert!(shell.has_visible_label(&shell.catalog().text("helix-selected-edge-ready")));
     shell.click_button_label(&shell.catalog().text("helix-use-selected-edge"));
     replace_text(&mut shell, "helix-radius", "8");
     replace_text(&mut shell, "helix-pitch", "6");
     replace_text(&mut shell, "helix-turns", "2");
-    replace_text(&mut shell, "thread-profile-radius", "0.65");
+    let circle = format!(
+        "{}: {}",
+        shell.catalog().text("helix-profile"),
+        shell.catalog().text("helix-profile-circle")
+    );
+    shell.click_button_label(&circle);
+    replace_text(&mut shell, "helix-circle-radius", "0.65");
     let exact_before_thread = shell.app().exact_render_body_count();
-    shell.click_button_label(&shell.catalog().text("action-create-thread"));
+    shell.click_button_label(&shell.catalog().text("action-create-helix"));
     assert!(
         shell
             .app()

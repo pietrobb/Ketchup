@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 123] = [
+    pub(crate) const COMMANDS: [CommandSpec; 122] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -224,12 +224,6 @@ impl CommandRegistry {
             id: AppCommand::Helix,
             label_key: "feature-helix",
             tool: Some(ActiveTool::Helix),
-            implemented: true,
-        },
-        CommandSpec {
-            id: AppCommand::Thread,
-            label_key: "feature-thread",
-            tool: Some(ActiveTool::Thread),
             implemented: true,
         },
         CommandSpec {

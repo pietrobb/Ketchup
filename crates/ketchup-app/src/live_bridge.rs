@@ -958,7 +958,7 @@ impl LiveBridge {
             || app.push_pull.smart_planning.is_some()
             || app.solid_tools.target.is_some()
             || app.solid_tools.revolve.is_some()
-            || matches!(app.active_tool, ActiveTool::Helix | ActiveTool::Thread)
+            || app.active_tool == ActiveTool::Helix
             || app.solid_tools.loft_input_sections.is_some()
             || app.solid_tools.pocket_editor_feature.is_some()
             || app.parameter.editor_node.is_some()

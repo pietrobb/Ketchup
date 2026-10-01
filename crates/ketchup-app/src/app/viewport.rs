@@ -3309,7 +3309,7 @@ impl KetchupApp {
             }
         }
 
-        let helix_preview = self.helix_thread_preview_points();
+        let helix_preview = self.helix_preview_points();
         if helix_preview.len() >= 2 {
             painter.add(egui::Shape::line(
                 helix_preview

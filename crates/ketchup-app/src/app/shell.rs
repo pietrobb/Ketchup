@@ -102,7 +102,7 @@ impl KetchupApp {
                 pocket_editor_feature: None,
                 pocket_depth_input: String::new(),
             },
-            helix_thread: helix_thread_ui::HelixThreadUiState::default(),
+            helix_tool: helix_ui::HelixUiState::default(),
             parameter: app_state::ParameterEditor {
                 editor_node: None,
                 expression_input: String::new(),
@@ -465,7 +465,7 @@ impl KetchupApp {
             || self.solid_tools.revolve.is_some()
             || self.tool_preview.get::<RevolvePreview>().is_some()
             || self.tool_preview.get::<PlanarOffsetPreview>().is_some()
-            || matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread)
+            || self.active_tool == ActiveTool::Helix
             || self.tool_preview.get::<SweepPreview>().is_some()
             || self.tool_preview.get::<LoftPreview>().is_some()
             || self.tool_preview.get::<GeneralFinishPreview>().is_some()
@@ -511,7 +511,7 @@ impl KetchupApp {
         self.tool_preview = None;
         self.solid_tools.target = None;
         self.solid_tools.revolve = None;
-        self.clear_helix_thread_preview();
+        self.clear_helix_preview();
         self.gesture.drag.close::<PushPullDrag>();
         self.gesture.drag.close::<PushPullAnchor>();
         self.reset_transform_interaction();
@@ -921,7 +921,6 @@ impl KetchupApp {
             ui.menu_button(self.catalog.text("menu-model"), |ui| {
                 self.menu_command(ui, AppCommand::PlanarOffset);
                 self.menu_command(ui, AppCommand::Helix);
-                self.menu_command(ui, AppCommand::Thread);
                 self.menu_command(ui, AppCommand::Sweep);
                 self.menu_command(ui, AppCommand::Loft);
                 self.menu_command(ui, AppCommand::Revolve);
@@ -1181,7 +1180,7 @@ impl KetchupApp {
                         self.show_program_source(ui);
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
-                        self.show_helix_thread_tool(ui);
+                        self.show_helix_tool(ui);
                         self.show_parameter_editor(ui);
                         if !Self::is_manual_alpha_build() {
                             self.show_assistant(ui);
@@ -1213,7 +1212,7 @@ impl KetchupApp {
                         self.show_outliner_without_assistant(ui);
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
-                        self.show_helix_thread_tool(ui);
+                        self.show_helix_tool(ui);
                         self.show_parameter_editor(ui);
                         self.show_validator_panel(ui);
                     });

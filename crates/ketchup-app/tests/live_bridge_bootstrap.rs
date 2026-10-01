@@ -1034,19 +1034,9 @@ fn file_open_clears_line_chain_and_measurement_before_live_mutation() {
 }
 
 #[test]
-fn unfinished_helix_and_thread_previews_block_live_mutations_without_losing_human_work() {
-    for (tool, panel_key, create_key) in [
-        (
-            AppCommand::Helix,
-            "helix-panel-title",
-            "action-create-helix",
-        ),
-        (
-            AppCommand::Thread,
-            "thread-panel-title",
-            "action-create-thread",
-        ),
-    ] {
+fn unfinished_helix_previews_block_live_mutations_without_losing_human_work() {
+    let (panel_key, create_key) = ("helix-panel-title", "action-create-helix");
+    for profile_key in ["helix-profile-none", "helix-profile-tooth"] {
         let mut shell = Shell::new();
         pending()
             .enable(
@@ -1085,7 +1075,13 @@ fn unfinished_helix_and_thread_previews_block_live_mutations_without_losing_huma
         let baseline_digest = shell.app().canonical_digest();
         let baseline_undo = shell.app().undo_step_count();
 
-        shell.click_menu_command("menu-model", tool);
+        shell.click_menu_command("menu-model", AppCommand::Helix);
+        let profile = format!(
+            "{}: {}",
+            shell.catalog().text("helix-profile"),
+            shell.catalog().text(profile_key)
+        );
+        shell.click_button_label(&profile);
         assert!(shell.has_visible_label(&shell.catalog().text(panel_key)));
         assert!(shell.has_visible_label(&shell.catalog().text(create_key)));
 
