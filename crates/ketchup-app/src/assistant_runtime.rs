@@ -43,6 +43,99 @@ namespace = {"__name__": "__main__", "__file__": script_path, "__package__": Non
 exec(compile(checked_source(script_path, script_hash, script_size), script_path, "exec"), namespace)
 "#;
 
+/// Why the Assistant process could not be launched or verified.
+#[derive(Debug)]
+pub enum AssistantLaunchError {
+    /// A launch input or setting breaks its rule; nothing was started.
+    InvalidSetting {
+        setting: &'static str,
+        requirement: &'static str,
+    },
+    /// A launch component is missing or unreadable; the I/O error is the cause when one exists.
+    Unavailable {
+        component: String,
+        cause: Option<io::Error>,
+    },
+    /// A runtime file differs from the identity this build was released with.
+    IdentityMismatch {
+        component: String,
+    },
+    /// A runtime file resolves outside the trusted install root.
+    OutsideInstallRoot {
+        component: String,
+    },
+    UnsupportedProvider {
+        provider: String,
+    },
+    /// Starting or stopping the Assistant process failed; its error is the cause.
+    Failed(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl AssistantLaunchError {
+    fn unavailable(component: &str) -> Self {
+        Self::Unavailable {
+            component: component.to_owned(),
+            cause: None,
+        }
+    }
+
+    fn io(component: &str) -> impl FnOnce(io::Error) -> Self + '_ {
+        move |cause| Self::Unavailable {
+            component: component.to_owned(),
+            cause: Some(cause),
+        }
+    }
+
+    fn failed(cause: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self::Failed(cause.into())
+    }
+}
+
+impl std::fmt::Display for AssistantLaunchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSetting {
+                setting,
+                requirement,
+            } => write!(formatter, "{setting} must be {requirement}"),
+            Self::Unavailable {
+                component,
+                cause: None,
+            } => write!(formatter, "{component} is unavailable"),
+            Self::Unavailable {
+                component,
+                cause: Some(cause),
+            } => write!(formatter, "{component} is unavailable: {cause}"),
+            Self::IdentityMismatch { component } => {
+                write!(formatter, "{component} identity mismatch")
+            }
+            Self::OutsideInstallRoot { component } => write!(
+                formatter,
+                "{component} escapes the trusted Assistant install root"
+            ),
+            Self::UnsupportedProvider { provider } => {
+                write!(
+                    formatter,
+                    "unsupported public Assistant provider {provider}"
+                )
+            }
+            Self::Failed(cause) => cause.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for AssistantLaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unavailable {
+                cause: Some(cause), ..
+            } => Some(cause),
+            Self::Failed(cause) => cause.source(),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) struct ProcessAssistantTransport;
 
 #[derive(Debug)]
@@ -94,7 +187,8 @@ impl AssistantTransport for ProcessAssistantTransport {
     ) -> Result<AssistantTransportResponse, String> {
         let mut client = match handshake.distribution {
             AssistantDistribution::PublicApi => {
-                let launch = public_assistant_launch(&handshake.provider)?;
+                let launch = public_assistant_launch(&handshake.provider)
+                    .map_err(|error| error.to_string())?;
                 AssistantProcessClient::spawn_isolated_with_cancellation(
                     &launch,
                     handshake,
@@ -103,7 +197,7 @@ impl AssistantTransport for ProcessAssistantTransport {
                 )
             }
             AssistantDistribution::PrivateOauth => {
-                let launch = private_assistant_launch()?;
+                let launch = private_assistant_launch().map_err(|error| error.to_string())?;
                 AssistantProcessClient::spawn_isolated_with_cancellation(
                     &launch,
                     handshake,
@@ -154,7 +248,7 @@ fn persistent_user_environment_path(_name: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn private_assistant_launch() -> Result<AssistantProcessLaunch, String> {
+pub fn private_assistant_launch() -> Result<AssistantProcessLaunch, AssistantLaunchError> {
     let beside_app = std::env::current_exe().ok().and_then(|path| {
         path.parent()
             .map(|parent| parent.join("KetchupPrivateAssistant.exe"))
@@ -164,28 +258,35 @@ pub fn private_assistant_launch() -> Result<AssistantProcessLaunch, String> {
         beside_app,
         persistent_user_environment_path("KETCHUP_PRIVATE_ASSISTANT"),
     ])
-    .ok_or_else(|| "KetchupPrivateAssistant.exe was not found in a trusted location".to_owned())?;
+    .ok_or_else(|| {
+        AssistantLaunchError::unavailable("KetchupPrivateAssistant.exe in a trusted location")
+    })?;
     private_assistant_launch_for_executable(&executable)
 }
 
 #[doc(hidden)]
 pub fn private_assistant_launch_for_executable(
     executable: &Path,
-) -> Result<AssistantProcessLaunch, String> {
+) -> Result<AssistantProcessLaunch, AssistantLaunchError> {
     if !executable.is_absolute() {
-        return Err("private OAuth Assistant executable must be absolute".to_owned());
+        return Err(AssistantLaunchError::InvalidSetting {
+            setting: "private OAuth Assistant executable",
+            requirement: "an absolute path",
+        });
     }
     let executable = executable
         .canonicalize()
-        .map_err(|error| format!("private OAuth Assistant is unavailable: {error}"))?;
+        .map_err(AssistantLaunchError::io("private OAuth Assistant"))?;
     let bytes = read_bounded_regular_file(
         &executable,
         ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES,
     )
-    .map_err(|error| format!("private OAuth Assistant is not a bounded file: {error}"))?;
+    .map_err(AssistantLaunchError::io(
+        "private OAuth Assistant as a bounded file",
+    ))?;
     let working_directory = executable
         .parent()
-        .ok_or_else(|| "private OAuth Assistant install root is unavailable".to_owned())?
+        .ok_or_else(|| AssistantLaunchError::unavailable("private OAuth Assistant install root"))?
         .to_path_buf();
     let environment = [
         "SYSTEMROOT",
@@ -214,7 +315,7 @@ pub fn private_assistant_launch_for_executable(
     })
 }
 
-pub fn verify_public_assistant_runtime() -> Result<(), String> {
+pub fn verify_public_assistant_runtime() -> Result<(), AssistantLaunchError> {
     let handshake = AssistantHandshake {
         protocol_version: ASSISTANT_PROTOCOL_VERSION,
         distribution: AssistantDistribution::PublicApi,
@@ -234,11 +335,11 @@ pub fn verify_public_assistant_runtime() -> Result<(), String> {
         Duration::from_secs(30),
         AssistantCancellation::default(),
     )
-    .map_err(|error| error.to_string())?;
-    client.shutdown().map_err(|error| error.to_string())
+    .map_err(AssistantLaunchError::failed)?;
+    client.shutdown().map_err(AssistantLaunchError::failed)
 }
 
-fn public_assistant_launch(provider: &str) -> Result<AssistantProcessLaunch, String> {
+fn public_assistant_launch(provider: &str) -> Result<AssistantProcessLaunch, AssistantLaunchError> {
     let install_root = public_install_root()?;
     let interpreter = installed_public_python(&install_root)?;
     public_assistant_launch_for_install_root(
@@ -249,16 +350,16 @@ fn public_assistant_launch(provider: &str) -> Result<AssistantProcessLaunch, Str
     )
 }
 
-fn public_install_root() -> Result<PathBuf, String> {
+fn public_install_root() -> Result<PathBuf, AssistantLaunchError> {
     std::env::current_exe()
-        .map_err(|error| format!("current executable is unavailable: {error}"))?
+        .map_err(AssistantLaunchError::io("current executable"))?
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| "application install root is unavailable".to_owned())
+        .ok_or_else(|| AssistantLaunchError::unavailable("application install root"))
 }
 
 #[cfg(windows)]
-fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
+fn installed_public_python(install_root: &Path) -> Result<PathBuf, AssistantLaunchError> {
     use winreg::RegKey;
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 
@@ -287,24 +388,28 @@ fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
             return Ok(path);
         }
     }
-    Err("the pinned installer-managed Python 3.11 runtime is unavailable".to_owned())
+    Err(AssistantLaunchError::unavailable(
+        "the pinned installer-managed Python 3.11 runtime",
+    ))
 }
 
 #[cfg(not(windows))]
-fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
+fn installed_public_python(install_root: &Path) -> Result<PathBuf, AssistantLaunchError> {
     let candidate = install_root.join("python3");
-    let path = candidate
-        .canonicalize()
-        .map_err(|error| format!("the co-located pinned Python runtime is unavailable: {error}"))?;
+    let path = candidate.canonicalize().map_err(AssistantLaunchError::io(
+        "the co-located pinned Python runtime",
+    ))?;
     let bytes = read_bounded_regular_file(
         &path,
         ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES,
     )
-    .map_err(|error| format!("the co-located pinned Python runtime is unavailable: {error}"))?;
+    .map_err(AssistantLaunchError::io(
+        "the co-located pinned Python runtime",
+    ))?;
     if sha256_hex(&bytes) != PINNED_PUBLIC_PYTHON_SHA256 {
-        return Err(
-            "the co-located Python runtime identity does not match the release pin".to_owned(),
-        );
+        return Err(AssistantLaunchError::IdentityMismatch {
+            component: "the co-located Python runtime".to_owned(),
+        });
     }
     Ok(path)
 }
@@ -315,27 +420,36 @@ pub fn public_assistant_launch_for_install_root(
     interpreter: &Path,
     interpreter_sha256: &str,
     provider: &str,
-) -> Result<AssistantProcessLaunch, String> {
+) -> Result<AssistantProcessLaunch, AssistantLaunchError> {
     if !interpreter.is_absolute() {
-        return Err("public Assistant interpreter must be absolute".to_owned());
+        return Err(AssistantLaunchError::InvalidSetting {
+            setting: "public Assistant interpreter",
+            requirement: "an absolute path",
+        });
     }
     if interpreter_sha256.len() != 64
         || !interpreter_sha256
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     {
-        return Err("public Assistant interpreter identity must be lowercase SHA-256".to_owned());
+        return Err(AssistantLaunchError::InvalidSetting {
+            setting: "public Assistant interpreter identity",
+            requirement: "a lowercase SHA-256",
+        });
     }
     let executable = interpreter
         .canonicalize()
-        .map_err(|error| format!("public Assistant interpreter is unavailable: {error}"))?;
+        .map_err(AssistantLaunchError::io("public Assistant interpreter"))?;
     if !executable.is_file() {
-        return Err("public Assistant interpreter is not a file".to_owned());
+        return Err(AssistantLaunchError::InvalidSetting {
+            setting: "public Assistant interpreter",
+            requirement: "a regular file",
+        });
     }
 
     let root = install_root
         .canonicalize()
-        .map_err(|error| format!("public Assistant install root is unavailable: {error}"))?;
+        .map_err(AssistantLaunchError::io("public Assistant install root"))?;
     let script = verified_runtime_file(&root, Path::new("ketchup_assistant.py"), PUBLIC_ASSISTANT)?;
     let protocol = verified_runtime_file(
         &root,
@@ -373,11 +487,19 @@ pub fn public_assistant_launch_for_install_root(
 fn public_assistant_environment(
     provider: &str,
     source: impl Fn(&str) -> Option<OsString>,
-) -> Result<PublicAssistantEnvironment, String> {
+) -> Result<PublicAssistantEnvironment, AssistantLaunchError> {
     let api_key = match provider {
         "anthropic-api" => "ANTHROPIC_API_KEY",
         "openai-api" => "OPENAI_API_KEY",
-        _ => return Err("unsupported public Assistant provider".to_owned()),
+        _ => {
+            return Err(AssistantLaunchError::UnsupportedProvider {
+                provider: provider.to_owned(),
+            });
+        }
+    };
+    let invalid = |setting, requirement| AssistantLaunchError::InvalidSetting {
+        setting,
+        requirement,
     };
     let mut environment = Vec::new();
     let mut environment_files = Vec::new();
@@ -387,48 +509,55 @@ fn public_assistant_environment(
     if let Some(value) = source("KETCHUP_ASSISTANT_HTTPS_PROXY").filter(|value| !value.is_empty()) {
         let text = value
             .to_str()
-            .ok_or_else(|| "Assistant HTTPS proxy must be UTF-8".to_owned())?;
+            .ok_or_else(|| invalid("Assistant HTTPS proxy", "UTF-8 text"))?;
         let endpoint = text
             .strip_prefix("https://")
             .or_else(|| text.strip_prefix("http://"))
-            .ok_or_else(|| "Assistant HTTPS proxy must use http:// or https://".to_owned())?;
+            .ok_or_else(|| invalid("Assistant HTTPS proxy", "an http:// or https:// URL"))?;
         if endpoint.is_empty()
             || text.len() > 2_048
             || text.contains('@')
             || text.chars().any(char::is_whitespace)
         {
-            return Err("Assistant HTTPS proxy is invalid or contains credentials".to_owned());
+            return Err(invalid(
+                "Assistant HTTPS proxy",
+                "a bounded URL without credentials or whitespace",
+            ));
         }
         environment.push((OsString::from("HTTPS_PROXY"), value));
     }
     if let Some(value) = source("KETCHUP_ASSISTANT_NO_PROXY").filter(|value| !value.is_empty()) {
         let text = value
             .to_str()
-            .ok_or_else(|| "Assistant NO_PROXY must be UTF-8".to_owned())?;
+            .ok_or_else(|| invalid("Assistant NO_PROXY", "UTF-8 text"))?;
         if text.len() > 2_048 || text.chars().any(|character| character.is_control()) {
-            return Err("Assistant NO_PROXY is invalid".to_owned());
+            return Err(invalid(
+                "Assistant NO_PROXY",
+                "at most 2048 bytes without control characters",
+            ));
         }
         environment.push((OsString::from("NO_PROXY"), value));
     }
     if let Some(value) = source("KETCHUP_ASSISTANT_CA_BUNDLE").filter(|value| !value.is_empty()) {
         let configured = PathBuf::from(value);
         if !configured.is_absolute() {
-            return Err("Assistant CA bundle must be an absolute file".to_owned());
+            return Err(invalid("Assistant CA bundle", "an absolute file path"));
         }
         let canonical = configured
             .canonicalize()
-            .map_err(|error| format!("Assistant CA bundle is unavailable: {error}"))?;
-        let bytes = read_bounded_regular_file(&canonical, MAX_ASSISTANT_CA_BUNDLE_BYTES)
-            .map_err(|error| format!("Assistant CA bundle must be a bounded file: {error}"))?;
+            .map_err(AssistantLaunchError::io("Assistant CA bundle"))?;
+        let bytes = read_bounded_regular_file(&canonical, MAX_ASSISTANT_CA_BUNDLE_BYTES).map_err(
+            AssistantLaunchError::io("Assistant CA bundle as a bounded file"),
+        )?;
         let mut snapshot = tempfile::Builder::new()
             .prefix("ketchup-assistant-ca-")
             .suffix(".pem")
             .tempfile()
-            .map_err(|error| format!("Assistant CA bundle snapshot is unavailable: {error}"))?;
+            .map_err(AssistantLaunchError::io("Assistant CA bundle snapshot"))?;
         snapshot
             .write_all(&bytes)
             .and_then(|()| snapshot.flush())
-            .map_err(|error| format!("Assistant CA bundle snapshot failed: {error}"))?;
+            .map_err(AssistantLaunchError::io("Assistant CA bundle snapshot"))?;
         let snapshot = Arc::new(snapshot);
         environment.push((
             OsString::from("SSL_CERT_FILE"),
@@ -446,21 +575,23 @@ fn public_assistant_environment(
     })
 }
 
-fn verified_runtime_file(root: &Path, relative: &Path, expected: &[u8]) -> Result<PathBuf, String> {
+fn verified_runtime_file(
+    root: &Path,
+    relative: &Path,
+    expected: &[u8],
+) -> Result<PathBuf, AssistantLaunchError> {
+    let component = relative.display().to_string();
     let path = root.join(relative);
     let canonical = path
         .canonicalize()
-        .map_err(|error| format!("{} is unavailable: {error}", relative.display()))?;
+        .map_err(AssistantLaunchError::io(&component))?;
     if !canonical.starts_with(root) || !canonical.is_file() {
-        return Err(format!(
-            "{} escapes the trusted Assistant install root",
-            relative.display()
-        ));
+        return Err(AssistantLaunchError::OutsideInstallRoot { component });
     }
     let actual = read_bounded_regular_file(&canonical, expected.len() as u64)
-        .map_err(|error| format!("{} identity is unreadable: {error}", relative.display()))?;
+        .map_err(AssistantLaunchError::io(&component))?;
     if actual != expected {
-        return Err(format!("{} identity mismatch", relative.display()));
+        return Err(AssistantLaunchError::IdentityMismatch { component });
     }
     Ok(canonical)
 }
@@ -612,13 +743,25 @@ mod tests {
                 (name == "KETCHUP_ASSISTANT_HTTPS_PROXY").then(|| OsString::from(proxy))
             })
             .unwrap_err();
-            assert!(error.contains("proxy"));
+            assert!(matches!(
+                error,
+                super::AssistantLaunchError::InvalidSetting {
+                    setting: "Assistant HTTPS proxy",
+                    ..
+                }
+            ));
         }
         let error = public_assistant_environment("openai-api", |name| {
             (name == "KETCHUP_ASSISTANT_CA_BUNDLE")
                 .then(|| OsString::from("relative-company-ca.pem"))
         })
         .unwrap_err();
-        assert!(error.contains("absolute"));
+        assert!(matches!(
+            error,
+            super::AssistantLaunchError::InvalidSetting {
+                setting: "Assistant CA bundle",
+                requirement: "an absolute file path",
+            }
+        ));
     }
 }

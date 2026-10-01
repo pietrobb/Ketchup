@@ -7,7 +7,7 @@
 //! runtime and require a completed handshake.
 
 use ketchup_app::{
-    private_assistant_launch, private_assistant_launch_for_executable,
+    AssistantLaunchError, private_assistant_launch, private_assistant_launch_for_executable,
     public_assistant_launch_for_install_root,
 };
 use ketchup_assistant::sidecar::{
@@ -165,7 +165,13 @@ fn public_sidecar_launch_rejects_relative_interpreter_and_changed_runtime() {
         "anthropic-api",
     )
     .unwrap_err();
-    assert!(relative.contains("absolute"));
+    assert!(matches!(
+        relative,
+        AssistantLaunchError::InvalidSetting {
+            requirement: "an absolute path",
+            ..
+        }
+    ));
 
     let temp = TempDir::new().unwrap();
     let runtime = temp.path();
@@ -186,7 +192,12 @@ fn public_sidecar_launch_rejects_relative_interpreter_and_changed_runtime() {
         "anthropic-api",
     )
     .unwrap_err();
-    assert!(changed.contains("identity mismatch"));
+    assert!(matches!(
+        &changed,
+        AssistantLaunchError::IdentityMismatch { component }
+            if component == "ketchup_assistant_protocol.py"
+    ));
+    assert!(changed.to_string().contains("identity mismatch"));
 }
 
 #[test]
@@ -261,7 +272,13 @@ fn private_oauth_launch_rejects_relative_executables_and_pins_identity() {
     let relative =
         private_assistant_launch_for_executable(&PathBuf::from("KetchupPrivateAssistant.exe"))
             .unwrap_err();
-    assert!(relative.contains("absolute"));
+    assert!(matches!(
+        relative,
+        AssistantLaunchError::InvalidSetting {
+            requirement: "an absolute path",
+            ..
+        }
+    ));
 
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
         .canonicalize()

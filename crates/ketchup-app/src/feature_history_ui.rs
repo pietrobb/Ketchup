@@ -122,6 +122,82 @@ enum FeatureHistoryPreviewSource {
     Replacement(ComponentReplacementImpactRequest),
 }
 
+impl FeatureHistoryPreviewSource {
+    /// The document revision and digest this source was captured from; a component
+    /// replacement request carries its own identity checks.
+    fn document_seal(&self) -> Option<(u64, &str)> {
+        match self {
+            Self::ExactEdit {
+                source_revision,
+                source_digest,
+                ..
+            }
+            | Self::ProfileTranslation {
+                source_revision,
+                source_digest,
+                ..
+            }
+            | Self::Mutation {
+                source_revision,
+                source_digest,
+                ..
+            }
+            | Self::SketchConstruction {
+                source_revision,
+                source_digest,
+                ..
+            }
+            | Self::SketchConstraint {
+                source_revision,
+                source_digest,
+                ..
+            } => Some((*source_revision, source_digest.as_str())),
+            Self::Replacement(_) => None,
+        }
+    }
+}
+
+/// Why a feature history preview could not be derived or confirmed.
+#[derive(Debug)]
+pub(super) enum FeatureHistoryPreviewError {
+    /// The document changed after the preview source was captured.
+    Stale,
+    /// The derivation produced no proposal the user could review.
+    NoReviewedProposal,
+    /// Deriving the preview again at confirmation gives a different plan.
+    PlanChanged,
+    /// A projection, preview or sketch check refused; its error is the cause.
+    Failed(super::import_source::BoxedCause),
+}
+
+impl FeatureHistoryPreviewError {
+    fn failed(cause: impl Into<super::import_source::BoxedCause>) -> Self {
+        Self::Failed(cause.into())
+    }
+}
+
+impl std::fmt::Display for FeatureHistoryPreviewError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale => formatter.write_str("feature history preview source is stale"),
+            Self::NoReviewedProposal => {
+                formatter.write_str("feature history preview has no reviewed proposal")
+            }
+            Self::PlanChanged => formatter.write_str("feature history preview plan changed"),
+            Self::Failed(cause) => cause.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for FeatureHistoryPreviewError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Failed(cause) => cause.source(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct FeatureHistoryUiPreview {
     source: FeatureHistoryPreviewSource,
@@ -509,20 +585,16 @@ impl KetchupApp {
     fn derive_feature_history_preview(
         &self,
         source: &FeatureHistoryPreviewSource,
-    ) -> Result<FeatureHistoryUiPreview, String> {
+    ) -> Result<FeatureHistoryUiPreview, FeatureHistoryPreviewError> {
         let snapshot = self.document.current();
+        if let Some((source_revision, source_digest)) = source.document_seal()
+            && (snapshot.revision_id() != source_revision
+                || snapshot.canonical_digest() != source_digest)
+        {
+            return Err(FeatureHistoryPreviewError::Stale);
+        }
         let (execution, kind, affected_feature_ids, suppressed_feature_ids, action) = match source {
-            FeatureHistoryPreviewSource::ExactEdit {
-                source_revision,
-                source_digest,
-                request,
-                fork,
-            } => {
-                if snapshot.revision_id() != *source_revision
-                    || snapshot.canonical_digest() != source_digest.as_str()
-                {
-                    return Err("feature history preview source is stale".to_owned());
-                }
+            FeatureHistoryPreviewSource::ExactEdit { request, fork, .. } => {
                 let (execution, affected) = if let Some((occurrence_id, fork_name)) = fork {
                     let impact = project_occurrence_fork_impact(
                         &self.document,
@@ -535,7 +607,7 @@ impl KetchupApp {
                         ),
                         ProposalPrincipal::ManualClient,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(FeatureHistoryPreviewError::failed)?;
                     let affected = impact.affected_fork_feature_ids.clone();
                     (FeatureHistoryExecutionPlan::Fork(impact), affected)
                 } else {
@@ -558,13 +630,13 @@ impl KetchupApp {
                                 request.clone(),
                                 ProposalPrincipal::ManualClient,
                             )
-                            .map_err(|error| error.to_string())?;
+                            .map_err(FeatureHistoryPreviewError::failed)?;
                             (
                                 FeatureHistoryExecutionPlan::Local(preview.proposal),
                                 preview.affected_feature_ids,
                             )
                         }
-                        Err(error) => return Err(error.to_string()),
+                        Err(error) => return Err(FeatureHistoryPreviewError::failed(error)),
                     }
                 };
                 (
@@ -575,22 +647,13 @@ impl KetchupApp {
                     self.catalog.text("feature-history-action-edit"),
                 )
             }
-            FeatureHistoryPreviewSource::ProfileTranslation {
-                source_revision,
-                source_digest,
-                request,
-            } => {
-                if snapshot.revision_id() != *source_revision
-                    || snapshot.canonical_digest() != source_digest.as_str()
-                {
-                    return Err("feature history preview source is stale".to_owned());
-                }
+            FeatureHistoryPreviewSource::ProfileTranslation { request, .. } => {
                 let preview = prepare_body_profile_translation(
                     &self.document,
                     request.clone(),
                     ProposalPrincipal::ManualClient,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(FeatureHistoryPreviewError::failed)?;
                 (
                     FeatureHistoryExecutionPlan::Local(preview.proposal),
                     FeatureHistoryPreviewKind::ProfileTranslation,
@@ -599,17 +662,7 @@ impl KetchupApp {
                     self.catalog.text("feature-history-action-move-profile"),
                 )
             }
-            FeatureHistoryPreviewSource::Mutation {
-                source_revision,
-                source_digest,
-                request,
-                fork,
-            } => {
-                if snapshot.revision_id() != *source_revision
-                    || snapshot.canonical_digest() != source_digest.as_str()
-                {
-                    return Err("feature history preview source is stale".to_owned());
-                }
+            FeatureHistoryPreviewSource::Mutation { request, fork, .. } => {
                 let kind = match request.mutation {
                     BodyHistoryMutation::SuppressFrom(boundary) => {
                         FeatureHistoryPreviewKind::Suppress { boundary }
@@ -630,7 +683,7 @@ impl KetchupApp {
                         ),
                         ProposalPrincipal::ManualClient,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(FeatureHistoryPreviewError::failed)?;
                     let affected = impact.affected_fork_feature_ids.clone();
                     let suppressed = match kind {
                         FeatureHistoryPreviewKind::Suppress { .. } => affected.clone(),
@@ -680,14 +733,14 @@ impl KetchupApp {
                                 *request,
                                 ProposalPrincipal::ManualClient,
                             )
-                            .map_err(|error| error.to_string())?;
+                            .map_err(FeatureHistoryPreviewError::failed)?;
                             (
                                 FeatureHistoryExecutionPlan::Local(preview.proposal),
                                 preview.affected_feature_ids,
                                 preview.suppressed_feature_ids,
                             )
                         }
-                        Err(error) => return Err(error.to_string()),
+                        Err(error) => return Err(FeatureHistoryPreviewError::failed(error)),
                     }
                 };
                 let action = self.catalog.text(match kind {
@@ -702,18 +755,12 @@ impl KetchupApp {
                 (execution, kind, affected, suppressed, action)
             }
             FeatureHistoryPreviewSource::SketchConstruction {
-                source_revision,
-                source_digest,
                 feature_id,
                 entity_id,
                 construction,
                 constraint_id,
+                ..
             } => {
-                if snapshot.revision_id() != *source_revision
-                    || snapshot.canonical_digest() != source_digest.as_str()
-                {
-                    return Err("feature history preview source is stale".to_owned());
-                }
                 let proposal = self
                     .document
                     .prepare_proposal_with_context(
@@ -725,7 +772,7 @@ impl KetchupApp {
                         }]),
                         ProposalContext::canonical_preview(),
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(FeatureHistoryPreviewError::failed)?;
                 (
                     FeatureHistoryExecutionPlan::Local(proposal),
                     FeatureHistoryPreviewKind::SketchConstruction,
@@ -739,24 +786,18 @@ impl KetchupApp {
                 )
             }
             FeatureHistoryPreviewSource::SketchConstraint {
-                source_revision,
-                source_digest,
                 feature_id,
                 command,
                 action,
+                ..
             } => {
-                if snapshot.revision_id() != *source_revision
-                    || snapshot.canonical_digest() != source_digest.as_str()
-                {
-                    return Err("feature history preview source is stale".to_owned());
-                }
                 let proposal = self
                     .document
                     .prepare_proposal_with_context(
                         CommandBatch::new(vec![command.as_ref().clone()]),
                         ProposalContext::canonical_preview(),
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(FeatureHistoryPreviewError::failed)?;
                 (
                     FeatureHistoryExecutionPlan::Local(proposal),
                     FeatureHistoryPreviewKind::SketchConstraint,
@@ -771,9 +812,9 @@ impl KetchupApp {
                     &self.exact.results,
                     request.clone(),
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(FeatureHistoryPreviewError::failed)?;
                 if impact.proposal.is_none() {
-                    return Err("component replacement has no reviewed proposal".to_owned());
+                    return Err(FeatureHistoryPreviewError::NoReviewedProposal);
                 }
                 let affected = impact
                     .feature_correspondence
@@ -792,14 +833,14 @@ impl KetchupApp {
         };
         let proposal = execution
             .proposal()
-            .ok_or_else(|| "feature history preview has no reviewed proposal".to_owned())?;
+            .ok_or(FeatureHistoryPreviewError::NoReviewedProposal)?;
         let candidate = if matches!(execution, FeatureHistoryExecutionPlan::Shared(_)) {
             self.document
                 .preview_dependency_staging_batch(proposal.batch())
         } else {
             self.document.preview_batch(proposal.batch())
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(FeatureHistoryPreviewError::failed)?;
         let sketch_diagnostic = affected_feature_ids
             .iter()
             .filter_map(|feature_id| candidate.feature(*feature_id))
@@ -808,7 +849,7 @@ impl KetchupApp {
                 _ => None,
             })
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(FeatureHistoryPreviewError::failed)?;
         Ok(FeatureHistoryUiPreview {
             source: source.clone(),
             execution,
@@ -1368,14 +1409,16 @@ impl KetchupApp {
         let Some(preview) = self.feature_history.preview.take() else {
             return false;
         };
-        let rederived = self.derive_feature_history_preview(&preview.source);
-        if rederived.as_ref() != Ok(&preview) {
-            self.feature_history_error(
-                rederived
-                    .err()
-                    .unwrap_or_else(|| "feature history preview plan changed".to_owned()),
-            );
-            return false;
+        match self.derive_feature_history_preview(&preview.source) {
+            Ok(rederived) if rederived == preview => {}
+            Ok(_) => {
+                self.feature_history_error(FeatureHistoryPreviewError::PlanChanged);
+                return false;
+            }
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
         }
         let propagated = preview.execution.is_propagated();
         let result = match &preview.execution {
@@ -3095,6 +3138,45 @@ mod tests {
             fork: None,
         })
         .expect("initial feature suppression is previewable")
+    }
+
+    #[test]
+    fn a_preview_refusal_names_its_typed_reason() {
+        let mut app = KetchupApp::new();
+        let snapshot = app.document.current();
+        let request = BodyHistoryMutationRequest {
+            definition_id: DefinitionId(1),
+            body_id: ketchup_model::document::BodyId(1),
+            mutation: BodyHistoryMutation::SuppressFrom(FeatureId(2)),
+        };
+        let stale_source = FeatureHistoryPreviewSource::Mutation {
+            source_revision: snapshot.revision_id() + 1,
+            source_digest: snapshot.canonical_digest().to_owned(),
+            request,
+            fork: None,
+        };
+        assert_eq!(
+            stale_source.document_seal(),
+            Some((
+                snapshot.revision_id() + 1,
+                snapshot.canonical_digest().as_str()
+            ))
+        );
+        let error = app
+            .derive_feature_history_preview(&stale_source)
+            .unwrap_err();
+        assert!(matches!(error, FeatureHistoryPreviewError::Stale));
+        assert_eq!(error.to_string(), "feature history preview source is stale");
+
+        let mut tampered = local_mutation_preview(&app, FeatureId(2));
+        tampered.action.push_str(" changed");
+        app.feature_history.preview = Some(tampered);
+        assert!(!app.confirm_feature_history_preview());
+        assert!(
+            app.digest.contains("feature history preview plan changed"),
+            "{}",
+            app.digest
+        );
     }
 
     #[test]

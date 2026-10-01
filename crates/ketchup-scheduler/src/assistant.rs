@@ -363,13 +363,12 @@ impl AssistantProcessClient {
                 if let Err(error) = result.validate() {
                     return self.fail(AssistantProcessError::Protocol(error));
                 }
-                let response_action_count = usize::from(result.model_intent.is_some())
-                    + usize::from(cad_edit_program.is_some())
-                    + usize::from(fea_review.is_some());
-                if response_action_count > 1 {
-                    return self.fail(AssistantProcessError::Protocol(
-                        "assistant returned multiple action programs".to_owned(),
-                    ));
+                if let Err(error) = ensure_single_assistant_action([
+                    result.model_intent.is_some(),
+                    cad_edit_program.is_some(),
+                    fea_review.is_some(),
+                ]) {
+                    return self.fail(error);
                 }
                 if let Some(program) = cad_edit_program.as_ref()
                     && let Err(error) = program.validate()
@@ -631,6 +630,17 @@ fn receive_line(
             }
         }
     }
+}
+
+/// One response carries at most one action: a model intent, a CAD edit program or an FEA
+/// review request. Every transport applies this one rule.
+pub fn ensure_single_assistant_action(actions: [bool; 3]) -> Result<(), AssistantProcessError> {
+    if actions.into_iter().filter(|present| *present).count() > 1 {
+        return Err(AssistantProcessError::Protocol(
+            "assistant returned multiple action programs".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

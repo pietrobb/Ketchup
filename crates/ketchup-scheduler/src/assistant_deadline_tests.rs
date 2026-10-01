@@ -84,3 +84,28 @@ fn non_utf8_response_line_keeps_the_decoding_position_as_its_cause() {
         .expect("the UTF-8 decoding error is the cause");
     assert_eq!(cause.valid_up_to(), 2);
 }
+
+#[test]
+fn one_response_carries_at_most_one_action() {
+    for actions in [
+        [false; 3],
+        [true, false, false],
+        [false, true, false],
+        [false, false, true],
+    ] {
+        assert_eq!(ensure_single_assistant_action(actions), Ok(()));
+    }
+    for actions in [
+        [true, true, false],
+        [true, false, true],
+        [false, true, true],
+        [true; 3],
+    ] {
+        assert_eq!(
+            ensure_single_assistant_action(actions),
+            Err(AssistantProcessError::Protocol(
+                "assistant returned multiple action programs".to_owned()
+            ))
+        );
+    }
+}

@@ -1,5 +1,2 @@
 # Remaining errors that drop their cause (<file> <discard|string> <count>); may only shrink.
-crates/ketchup-app/src/assistant_runtime.rs string 9
-crates/ketchup-app/src/feature_history_ui.rs string 6
-crates/ketchup-app/src/lib.rs string 28
 crates/ketchup-assistant/src/sidecar.rs string 117
