@@ -77,6 +77,43 @@ def test_workspace_modules_fit_the_limit():
         assert module not in checker.OVERSIZED
 
 
+def test_function_lengths_skip_inline_test_modules_and_bodiless_functions(tmp_path):
+    module = tmp_path / "m.rs"
+    module.write_text(
+        "pub(crate) fn short(\n    a: u8,\n) -> u8 {\n    a\n}\n"
+        "trait T {\n    fn declared(&self);\n}\n"
+        "impl T for u8 {\n    fn declared(&self) {\n        let _ = 1;\n    }\n}\n"
+        "#[cfg(test)]\nmod tests {\n    fn very_long_test() {\n\n\n\n    }\n}\n",
+        encoding="utf-8",
+    )
+    assert checker.function_lengths(module) == {"short": 5, "declared": 3}
+
+
+def test_function_over_the_limit_fails_and_long_ones_only_shrink():
+    recorded = {"m.rs::long": 30}
+    assert checker.oversized_functions({"m.rs::long": 30}, recorded, 10) == []
+    assert checker.oversized_functions({"m.rs::new": 11, "m.rs::long": 30}, recorded, 10) == [
+        "m.rs::new: 11 lines, limit 10; split it into named steps"
+    ]
+    assert checker.oversized_functions({"m.rs::long": 31}, recorded, 10) == [
+        "m.rs::long: 31 lines, limit 30; split it into named steps"
+    ]
+    assert checker.oversized_functions({"m.rs::long": 20}, recorded, 10) == [
+        "m.rs::long: shrank to 20 lines; lower LONG_FUNCTIONS to it"
+    ]
+    assert checker.oversized_functions({}, recorded, 10) == [
+        "m.rs::long: fits 10 lines now; remove it from LONG_FUNCTIONS"
+    ]
+
+
+def test_app_shell_has_no_oversized_module_or_function():
+    lengths = checker.long_functions(ROOT)
+    assert checker.oversized_functions(lengths) == []
+    assert not [name for name in lengths if name.startswith("crates/ketchup-app/src/app")]
+    assert "crates/ketchup-app/src/lib.rs" not in checker.OVERSIZED
+    assert checker.module_sizes(ROOT)["crates/ketchup-app/src/lib.rs"] <= checker.MAX_MODULE_LINES
+
+
 def test_geometry_depends_on_nothing_but_the_tolerances():
     graph = checker.workspace_dependencies(ROOT)
     assert graph["ketchup-geometry"] == ["ketchup-tolerance"]

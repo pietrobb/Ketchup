@@ -7,7 +7,9 @@ Only normal `[dependencies]` count; tests may use any crate.
 
 No source module of any crate may exceed MAX_MODULE_LINES. Modules that were
 already larger are listed in OVERSIZED with their size: they may shrink but not
-grow, and an entry must be removed once its module fits the limit.
+grow, and an entry must be removed once its module fits the limit. Production
+functions follow the same rule with MAX_FUNCTION_LINES and LONG_FUNCTIONS: a
+long function is split into named steps, never extended.
 
 Test files are named after the behavior they check (push_pull, save_reopen),
 never after a milestone, gate or slice (gate_d, m120_, assistant_m7, live_bridge_s4).
@@ -39,8 +41,39 @@ LAYERS = {
 MAX_MODULE_LINES = 5_000
 
 OVERSIZED = {
-    "crates/ketchup-app/src/lib.rs": 36_480,
     "crates/ketchup-app/src/tests.rs": 17_975,
+}
+
+MAX_FUNCTION_LINES = 400
+
+# Production functions that were already longer, with their length. They may
+# shrink but not grow; an entry is removed once its function fits the limit.
+LONG_FUNCTIONS = {
+    "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 756,
+    "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 672,
+    "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 815,
+    "crates/ketchup-application/src/collision.rs::collision_report": 853,
+    "crates/ketchup-application/src/creation.rs::plan_creation": 425,
+    "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 2365,
+    "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
+    "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 432,
+    "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 653,
+    "crates/ketchup-assistant/src/intent.rs::propose_intent": 1011,
+    "crates/ketchup-assistant/src/sidecar.rs::validate": 935,
+    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 726,
+    "crates/ketchup-model/src/document/feature_validation.rs::validate_feature_kind": 412,
+    "crates/ketchup-model/src/document/product_validation.rs::validate_product_with_drawing_sources": 1132,
+    "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 969,
+    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 538,
+    "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2141,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 634,
+    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1424,
+    "crates/ketchup-model/src/shared_change.rs::commit_component_replacement": 430,
+    "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 572,
+    "crates/ketchup-model/src/shared_change.rs::project_component_replacement_impact_for_principal": 823,
+    "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 484,
+    "crates/ketchup-program/src/eval.rs::builtins": 1078,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 562,
 }
 
 
@@ -101,6 +134,63 @@ def oversized_modules(sizes, limit=MAX_MODULE_LINES, oversized=OVERSIZED):
     return problems
 
 
+# A function item, rustfmt-formatted: its body closes on a `}` at the same indent.
+FUNCTION = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))? )?(?:(?:const|async|unsafe|extern "C")\s+)*fn (\w+)')
+TEST_MODULE = re.compile(r"^(\s*)mod \w+ \{$")
+
+
+def function_lengths(path):
+    """{name: lines} for every function of one module, inline test modules skipped."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lengths = {}
+    index = 0
+    while index < len(lines):
+        test_module = TEST_MODULE.match(lines[index])
+        if test_module and index and lines[index - 1].strip() == "#[cfg(test)]":
+            index = lines.index(test_module.group(1) + "}", index + 1) + 1
+            continue
+        function = FUNCTION.match(lines[index])
+        if function:
+            indent, name = function.groups()
+            opening = index
+            while not lines[opening].rstrip().endswith(("{", ";", "}")):
+                opening += 1
+            if lines[opening].rstrip().endswith("{"):
+                closing = lines.index(indent + "}", opening + 1)
+                lengths[name] = max(lengths.get(name, 0), closing - index + 1)
+        index += 1
+    return lengths
+
+
+def long_functions(root, limit=MAX_FUNCTION_LINES):
+    """{"crates/<crate>/src/...rs::name": lines} for production functions over the limit."""
+    return {
+        f"{path.relative_to(root).as_posix()}::{name}": length
+        for path in sorted((root / "crates").glob("*/src/**/*.rs"))
+        if "tests" not in path.stem
+        for name, length in function_lengths(path).items()
+        if length > limit
+    }
+
+
+def oversized_functions(lengths, recorded=LONG_FUNCTIONS, limit=MAX_FUNCTION_LINES):
+    problems = []
+    for function, length in lengths.items():
+        allowed = recorded.get(function, limit)
+        if length > allowed:
+            problems.append(
+                f"{function}: {length} lines, limit {allowed}; split it into named steps"
+            )
+    for function, length in recorded.items():
+        if function not in lengths:
+            problems.append(f"{function}: fits {limit} lines now; remove it from LONG_FUNCTIONS")
+        elif lengths[function] < length:
+            problems.append(
+                f"{function}: shrank to {lengths[function]} lines; lower LONG_FUNCTIONS to it"
+            )
+    return problems
+
+
 def test_files(root):
     """Every Rust test file: integration tests and unit-test modules of each crate."""
     return [
@@ -122,6 +212,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
     problems += oversized_modules(module_sizes(root))
+    problems += oversized_functions(long_functions(root))
     problems += milestone_named_tests(test_files(root))
     for problem in problems:
         print(problem)
