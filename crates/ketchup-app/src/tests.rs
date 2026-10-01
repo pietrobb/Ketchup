@@ -4137,7 +4137,7 @@ fn switching_theme_repaints_the_shell_without_touching_the_document() {
     );
 }
 
-fn lossy_legacy_document() -> Vec<u8> {
+pub(super) fn lossy_legacy_document() -> Vec<u8> {
     let mut bytes = b"KETCHUPDOC".to_vec();
     bytes.extend_from_slice(&0_u16.to_le_bytes());
     bytes.extend_from_slice(&7_u64.to_le_bytes());
@@ -4496,15 +4496,13 @@ fn exact_occurrence_reference_and_mesh_export_use_the_canonical_world_transform(
 fn sketchup_scene_import_confirmation_rederives_the_exact_reviewed_plan_atomically() {
     fn pending_for(app: &KetchupApp, path: &Path, source: &[u8]) -> PendingSketchupSceneImport {
         let snapshot = app.document.current();
-        let source = SketchupSceneImportSourcePlan {
-            path: path.to_owned(),
-            source: source.to_vec(),
-            document_id: snapshot.document_id(),
-            revision_id: snapshot.revision_id(),
-            canonical_digest: snapshot.canonical_digest(),
-            source_sha256: sha256_bytes(source),
-            source_byte_len: source.len() as u64,
-        };
+        let source = ImportSourcePlan::seal(
+            ImportFormat::SketchupScene,
+            path.to_owned(),
+            source.to_vec(),
+            (),
+            &snapshot,
+        );
         PendingSketchupSceneImport {
             plan: app
                 .prepare_sketchup_scene_import_preview_plan(source)
@@ -4589,15 +4587,7 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
     let mut app = KetchupApp::new();
     app.connect_exact_worker(executable).unwrap();
     let snapshot = app.document.current();
-    let source_plan = StepImportSourcePlan {
-        path,
-        source_sha256: sha256_bytes(&source),
-        source_byte_len: source.len() as u64,
-        source,
-        document_id: snapshot.document_id(),
-        revision_id: snapshot.revision_id(),
-        canonical_digest: snapshot.canonical_digest(),
-    };
+    let source_plan = ImportSourcePlan::seal(ImportFormat::Step, path, source, (), &snapshot);
     let pending = PendingStepImport {
         plan: app.prepare_step_import_preview_plan(source_plan).unwrap(),
         invalidated: false,
@@ -4674,16 +4664,13 @@ fn stl_import_confirmation_rederives_the_exact_reviewed_plan_atomically() {
         unit: ImportLengthUnit,
     ) -> PendingStlImport {
         let snapshot = app.document.current();
-        let source = StlImportSourcePlan {
-            path: path.to_owned(),
-            source: source.to_vec(),
+        let source = ImportSourcePlan::seal(
+            ImportFormat::Stl,
+            path.to_owned(),
+            source.to_vec(),
             unit,
-            document_id: snapshot.document_id(),
-            revision_id: snapshot.revision_id(),
-            canonical_digest: snapshot.canonical_digest(),
-            source_sha256: sha256_bytes(source),
-            source_byte_len: source.len() as u64,
-        };
+            &snapshot,
+        );
         PendingStlImport {
             plan: app.prepare_stl_import_preview_plan(source).unwrap(),
             review_error: None,
@@ -4762,16 +4749,13 @@ endsolid tetrahedron\n";
     let mut app = KetchupApp::new();
     app.document = DocumentStore::new();
     let snapshot = app.document.current();
-    let source_plan = StlImportSourcePlan {
+    let source_plan = ImportSourcePlan::seal(
+        ImportFormat::Stl,
         path,
-        source: source.to_vec(),
-        unit: ImportLengthUnit::Millimetre,
-        document_id: snapshot.document_id(),
-        revision_id: snapshot.revision_id(),
-        canonical_digest: snapshot.canonical_digest(),
-        source_sha256: sha256_bytes(source),
-        source_byte_len: source.len() as u64,
-    };
+        source.to_vec(),
+        ImportLengthUnit::Millimetre,
+        &snapshot,
+    );
     let pending = PendingStlImport {
         plan: app.prepare_stl_import_preview_plan(source_plan).unwrap(),
         review_error: None,
@@ -4874,16 +4858,13 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
     let mut app = KetchupApp::new();
     app.document = DocumentStore::new();
     let snapshot = app.document.current();
-    let source_plan = StlImportSourcePlan {
+    let source_plan = ImportSourcePlan::seal(
+        ImportFormat::Stl,
         path,
-        source: source.clone(),
-        unit: ImportLengthUnit::Millimetre,
-        document_id: snapshot.document_id(),
-        revision_id: snapshot.revision_id(),
-        canonical_digest: snapshot.canonical_digest(),
-        source_sha256: sha256_bytes(&source),
-        source_byte_len: source.len() as u64,
-    };
+        source.clone(),
+        ImportLengthUnit::Millimetre,
+        &snapshot,
+    );
     let pending = PendingStlImport {
         plan: app.prepare_stl_import_preview_plan(source_plan).unwrap(),
         review_error: None,
@@ -4945,16 +4926,13 @@ fn dxf_import_confirmation_rederives_the_exact_reviewed_plan_atomically() {
         unit: ImportLengthUnit,
     ) -> PendingDxfImport {
         let snapshot = app.document.current();
-        let source = DxfImportSourcePlan {
-            path: path.to_owned(),
-            source: source.to_vec(),
+        let source = ImportSourcePlan::seal(
+            ImportFormat::Dxf,
+            path.to_owned(),
+            source.to_vec(),
             unit,
-            document_id: snapshot.document_id(),
-            revision_id: snapshot.revision_id(),
-            canonical_digest: snapshot.canonical_digest(),
-            source_sha256: sha256_bytes(source),
-            source_byte_len: source.len() as u64,
-        };
+            &snapshot,
+        );
         PendingDxfImport {
             plan: app.prepare_dxf_import_preview_plan(source).unwrap(),
             unit_confirmed: true,
@@ -5070,16 +5048,13 @@ fn imported_dxf_profiles_remain_projected_and_pickable_after_persistence() {
     let mut app = KetchupApp::new();
     app.document = DocumentStore::new();
     let snapshot = app.document.current();
-    let source_plan = DxfImportSourcePlan {
+    let source_plan = ImportSourcePlan::seal(
+        ImportFormat::Dxf,
         path,
-        source: source.to_vec(),
-        unit: ImportLengthUnit::Millimetre,
-        document_id: snapshot.document_id(),
-        revision_id: snapshot.revision_id(),
-        canonical_digest: snapshot.canonical_digest(),
-        source_sha256: sha256_bytes(source),
-        source_byte_len: source.len() as u64,
-    };
+        source.to_vec(),
+        ImportLengthUnit::Millimetre,
+        &snapshot,
+    );
     let pending = PendingDxfImport {
         plan: app.prepare_dxf_import_preview_plan(source_plan).unwrap(),
         unit_confirmed: true,
@@ -5140,16 +5115,13 @@ fn hovering_and_selecting_a_canonical_mesh_body_paints_its_outline() {
     let snapshot = app.document.current();
     let pending = PendingStlImport {
         plan: app
-            .prepare_stl_import_preview_plan(StlImportSourcePlan {
+            .prepare_stl_import_preview_plan(ImportSourcePlan::seal(
+                ImportFormat::Stl,
                 path,
-                source: source.clone(),
-                unit: ImportLengthUnit::Millimetre,
-                document_id: snapshot.document_id(),
-                revision_id: snapshot.revision_id(),
-                canonical_digest: snapshot.canonical_digest(),
-                source_sha256: sha256_bytes(&source),
-                source_byte_len: source.len() as u64,
-            })
+                source.clone(),
+                ImportLengthUnit::Millimetre,
+                &snapshot,
+            ))
             .unwrap(),
         review_error: None,
         invalidated: false,
@@ -17873,6 +17845,12 @@ fn migration_confirmation_rejects_review_candidate_tamper_atomically() {
     app.file.review_candidate = Some(ketchup_model::persistence::load(&alternate_source).unwrap());
 
     assert!(!app.confirm_review_candidate_migration_to(&destination));
+    assert!(
+        app.action_digest()
+            .contains(&migration_review::MigrationError::ReviewMismatch.to_string()),
+        "{}",
+        app.action_digest()
+    );
     assert!(!destination.exists());
     assert!(app.has_review_candidate());
     let after = app.document.current();

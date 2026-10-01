@@ -1,19 +1,8 @@
 use super::*;
 
 #[derive(Clone, Debug, PartialEq)]
-struct GlbImportSourcePlan {
-    path: PathBuf,
-    source: Vec<u8>,
-    document_id: DocumentId,
-    revision_id: u64,
-    canonical_digest: String,
-    source_sha256: [u8; 32],
-    source_byte_len: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct GlbImportPreviewPlan {
-    source: GlbImportSourcePlan,
+    source: ImportSourcePlan,
     review: ParsedGlbScene,
     batch: CommandBatch,
 }
@@ -34,54 +23,22 @@ impl KetchupApp {
         })
     }
 
-    fn read_glb_source(path: &Path) -> Result<Vec<u8>, String> {
-        if std::fs::metadata(path)
-            .map_err(|error| error.to_string())?
-            .len()
-            > MAX_GLB_SOURCE_BYTES
-        {
-            return Err("GLB source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut source = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_GLB_SOURCE_BYTES + 1)
-            .read_to_end(&mut source)
-            .map_err(|error| error.to_string())?;
-        if source.len() as u64 > MAX_GLB_SOURCE_BYTES {
-            return Err("GLB source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        Ok(source)
-    }
-
     fn prepare_glb_import_preview_plan(
         &self,
-        source: GlbImportSourcePlan,
-    ) -> Result<GlbImportPreviewPlan, String> {
+        source: ImportSourcePlan,
+    ) -> Result<GlbImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
-        if snapshot.document_id() != source.document_id
-            || snapshot.revision_id() != source.revision_id
-            || snapshot.canonical_digest() != source.canonical_digest
-        {
-            return Err("GLB import review is stale for the active document".to_owned());
-        }
-        if source.source.len() as u64 != source.source_byte_len
-            || sha256_bytes(&source.source) != source.source_sha256
-        {
-            return Err("sealed GLB source identity does not match its bytes".to_owned());
-        }
-        let source_name = source
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "GLB source name is not valid UTF-8".to_owned())?;
-        let review =
-            crate::bounded_parser::run_bounded_parser("GLB", || inspect_glb(&source.source))?
-                .map_err(|error| error.to_string())?;
-        let batch = crate::bounded_parser::run_bounded_parser("GLB", || {
+        let source_name = source.verify_seal(&snapshot)?;
+        let review = crate::bounded_parser::run_bounded_parser(source.format, || {
+            inspect_glb(&source.source)
+        })
+        .map_err(|error| source.failed(error))?
+        .map_err(|error| source.failed(error))?;
+        let batch = crate::bounded_parser::run_bounded_parser(source.format, || {
             plan_glb_import(&snapshot, &source.source, source_name)
-        })?
-        .map_err(|error| error.to_string())?;
+        })
+        .map_err(|error| source.failed(error))?
+        .map_err(|error| source.failed(error))?;
         Ok(GlbImportPreviewPlan {
             source,
             review,
@@ -90,59 +47,34 @@ impl KetchupApp {
     }
 
     fn import_glb_from(&mut self, pending: &PendingGlbImport) -> bool {
-        let path = &pending.plan.source.path;
+        let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
-                return Err("GLB import review is stale for the active document".to_owned());
+                return Err(source.error(ImportFailure::ReviewStale));
             }
-            let source = Self::read_glb_source(path)?;
-            if source.len() as u64 != pending.plan.source.source_byte_len
-                || sha256_bytes(&source) != pending.plan.source.source_sha256
-                || source != pending.plan.source.source
-            {
-                return Err("GLB source changed after it was selected for review".to_owned());
-            }
-            let rederived = self.prepare_glb_import_preview_plan(pending.plan.source.clone())?;
-            if rederived != pending.plan {
-                return Err("GLB review or canonical batch changed after preview".to_owned());
+            source.reread_unchanged()?;
+            if self.prepare_glb_import_preview_plan(source.clone())? != pending.plan {
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             self.apply_batch_with_work_recovery(&pending.plan.batch)
-                .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
+                .map_err(|error| source.failed(error))?;
+            Ok(())
         })();
-        match result {
-            Ok(()) => {
-                self.digest = self.catalog.format(
-                    "digest-imported-glb",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
-                true
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-import-glb",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
-                false
-            }
-        }
+        self.report_import_outcome(source, result)
     }
 
     pub(super) fn begin_glb_import(&mut self) {
         let Some(path) = self.choose_glb_import_path() else {
             return;
         };
-        let result = Self::read_glb_source(&path).and_then(|source| {
-            let snapshot = self.document.current();
-            let source_plan = GlbImportSourcePlan {
-                path: path.clone(),
-                source_sha256: sha256_bytes(&source),
-                source_byte_len: source.len() as u64,
+        let result = read_import_source(ImportFormat::Glb, &path).and_then(|source| {
+            let source_plan = ImportSourcePlan::seal(
+                ImportFormat::Glb,
+                path.clone(),
                 source,
-                document_id: snapshot.document_id(),
-                revision_id: snapshot.revision_id(),
-                canonical_digest: snapshot.canonical_digest(),
-            };
+                (),
+                &self.document.current(),
+            );
             let plan = self.prepare_glb_import_preview_plan(source_plan)?;
             Ok(PendingGlbImport {
                 plan,
@@ -153,10 +85,7 @@ impl KetchupApp {
             Ok(pending) => self.modal.open(pending),
             Err(reason) => {
                 self.modal.close::<PendingGlbImport>();
-                self.digest = self.catalog.format(
-                    "error-import-glb",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
+                self.report_import_failure(&path, &reason);
             }
         }
     }

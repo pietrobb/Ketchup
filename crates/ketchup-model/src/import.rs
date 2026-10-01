@@ -30,6 +30,33 @@ pub enum ImportFormat {
     Glb,
 }
 
+impl ImportFormat {
+    /// The bounded source envelope every reader of this format enforces before parsing.
+    pub const fn source_limit_bytes(self) -> u64 {
+        match self {
+            Self::Stl => MAX_STL_SOURCE_BYTES,
+            Self::Dxf => dxf::MAX_DXF_SOURCE_BYTES,
+            Self::Step => MAX_STEP_SOURCE_BYTES,
+            Self::Iges => iges::MAX_IGES_SOURCE_BYTES,
+            Self::SketchupScene => sketchup_scene::MAX_SKETCHUP_SCENE_SOURCE_BYTES,
+            Self::Glb => glb::MAX_GLB_SOURCE_BYTES,
+        }
+    }
+}
+
+impl fmt::Display for ImportFormat {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Stl => "STL",
+            Self::Dxf => "DXF",
+            Self::Step => "STEP",
+            Self::Iges => "IGES",
+            Self::SketchupScene => "SketchUp scene",
+            Self::Glb => "GLB",
+        })
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
 )]

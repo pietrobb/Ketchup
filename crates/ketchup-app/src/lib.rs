@@ -105,12 +105,10 @@ use ketchup_model::graph::{
 };
 use ketchup_model::import::{
     DxfImportOptions, IgesXdeImportEvidence, ImportDiagnosticSeverity, ImportFormat,
-    ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES,
-    MAX_GLB_SOURCE_BYTES, MAX_IGES_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES,
-    MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf, ParsedGlbScene, ParsedSketchupScene,
-    ParsedStlMesh, StepXdeImportEvidence, inspect_dxf, inspect_glb, inspect_sketchup_scene,
-    parse_stl, plan_dxf_import, plan_glb_import, plan_iges_xde_import, plan_sketchup_scene_import,
-    plan_step_xde_import, plan_stl_import,
+    ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, ParsedDxf, ParsedGlbScene,
+    ParsedSketchupScene, ParsedStlMesh, StepXdeImportEvidence, inspect_dxf, inspect_glb,
+    inspect_sketchup_scene, parse_stl, plan_dxf_import, plan_glb_import, plan_iges_xde_import,
+    plan_sketchup_scene_import, plan_step_xde_import, plan_stl_import,
 };
 #[cfg(test)]
 use ketchup_model::import::{
@@ -153,6 +151,9 @@ mod feature_history_ui;
 mod gesture;
 mod glb_import_ui;
 mod helix_thread_ui;
+mod import_source;
+mod migration_review;
+use import_source::{ImportError, ImportFailure, ImportSourcePlan, read_import_source};
 mod keymap;
 pub mod live_bridge;
 mod mesh_conversion_ui;
@@ -4793,20 +4794,8 @@ struct PendingCircularPattern {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StlImportSourcePlan {
-    path: PathBuf,
-    source: Vec<u8>,
-    unit: ImportLengthUnit,
-    document_id: DocumentId,
-    revision_id: u64,
-    canonical_digest: String,
-    source_sha256: [u8; 32],
-    source_byte_len: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct StlImportPreviewPlan {
-    source: StlImportSourcePlan,
+    source: ImportSourcePlan<ImportLengthUnit>,
     review: ParsedStlMesh,
     proposal: Proposal,
 }
@@ -4819,19 +4808,8 @@ struct PendingStlImport {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StepImportSourcePlan {
-    path: PathBuf,
-    source: Vec<u8>,
-    document_id: DocumentId,
-    revision_id: u64,
-    canonical_digest: String,
-    source_sha256: [u8; 32],
-    source_byte_len: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct StepImportPreviewPlan {
-    source: StepImportSourcePlan,
+    source: ImportSourcePlan,
     evidence: StepXdeImportEvidence,
     proposal: Proposal,
     blob_hash: String,
@@ -4839,7 +4817,7 @@ struct StepImportPreviewPlan {
 
 #[derive(Clone, Debug, PartialEq)]
 struct IgesImportPreviewPlan {
-    source: StepImportSourcePlan,
+    source: ImportSourcePlan,
     evidence: IgesXdeImportEvidence,
     proposal: Proposal,
     blob_hash: String,
@@ -4858,20 +4836,8 @@ struct PendingIgesImport {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct DxfImportSourcePlan {
-    path: PathBuf,
-    source: Vec<u8>,
-    unit: ImportLengthUnit,
-    document_id: DocumentId,
-    revision_id: u64,
-    canonical_digest: String,
-    source_sha256: [u8; 32],
-    source_byte_len: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct DxfImportPreviewPlan {
-    source: DxfImportSourcePlan,
+    source: ImportSourcePlan<ImportLengthUnit>,
     review: ParsedDxf,
     proposal: Proposal,
 }
@@ -4885,19 +4851,8 @@ struct PendingDxfImport {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct SketchupSceneImportSourcePlan {
-    path: PathBuf,
-    source: Vec<u8>,
-    document_id: DocumentId,
-    revision_id: u64,
-    canonical_digest: String,
-    source_sha256: [u8; 32],
-    source_byte_len: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct SketchupSceneImportPreviewPlan {
-    source: SketchupSceneImportSourcePlan,
+    source: ImportSourcePlan,
     review: ParsedSketchupScene,
     proposal: Proposal,
 }
@@ -4990,6 +4945,7 @@ enum MutationReadiness {
     Pending,
 }
 
+#[derive(Debug)]
 enum WorkRecoveryMutationError<E> {
     Mutation(E),
     Recovery(ketchup_model::persistence::FilePersistenceError),
@@ -5000,6 +4956,15 @@ impl<E: std::fmt::Display> std::fmt::Display for WorkRecoveryMutationError<E> {
         match self {
             Self::Mutation(error) => error.fmt(formatter),
             Self::Recovery(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: std::error::Error> std::error::Error for WorkRecoveryMutationError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Mutation(error) => error.source(),
+            Self::Recovery(error) => error.source(),
         }
     }
 }
@@ -5508,56 +5473,6 @@ impl KetchupApp {
         self.digest = self.catalog.text("digest-new-document");
     }
 
-    fn migration_review_identity(
-        outcome: &ketchup_model::persistence::LoadOutcome,
-    ) -> Result<MigrationReviewIdentity, String> {
-        let candidate = outcome
-            .review_candidate()
-            .ok_or_else(|| "loaded document is not a review-only migration candidate".to_owned())?;
-        let snapshot = candidate.snapshot();
-        let mut audit = candidate.audit().clone();
-        audit.recovered_from_backup = false;
-        let container =
-            ketchup_model::persistence::save_container(snapshot, candidate.container_data())
-                .map_err(|error| error.to_string())?;
-        Ok(MigrationReviewIdentity {
-            document_id: snapshot.document_id(),
-            revision_id: snapshot.revision_id(),
-            canonical_digest: snapshot.canonical_digest(),
-            audit,
-            container_sha256: sha256_bytes(&container),
-        })
-    }
-
-    fn prepare_migration_review_plan(
-        &self,
-        path: &Path,
-        effective_path: PathBuf,
-        source: Vec<u8>,
-        outcome: &ketchup_model::persistence::LoadOutcome,
-    ) -> Result<MigrationReviewPlan, String> {
-        let rederived =
-            ketchup_model::persistence::load(&source).map_err(|error| error.to_string())?;
-        let review = Self::migration_review_identity(outcome)?;
-        if Self::migration_review_identity(&rederived)? != review {
-            return Err("migration review does not match the exact loaded source bytes".to_owned());
-        }
-        let active = self.document.current();
-        Ok(MigrationReviewPlan {
-            source: MigrationReviewSourcePlan {
-                path: path.to_owned(),
-                effective_path,
-                source_sha256: sha256_bytes(&source),
-                source_byte_len: source.len() as u64,
-                source,
-                active_document_id: active.document_id(),
-                active_revision_id: active.revision_id(),
-                active_canonical_digest: active.canonical_digest(),
-            },
-            review,
-        })
-    }
-
     fn open_document_from(&mut self, path: &Path) -> bool {
         self.cancel_pending_assistant_work();
         match ketchup_model::persistence::load_file_with_source(path) {
@@ -5579,7 +5494,7 @@ impl KetchupApp {
                                 "error-open-document",
                                 &BTreeMap::from([
                                     ("path", path.display().to_string()),
-                                    ("reason", reason),
+                                    ("reason", reason.to_string()),
                                 ]),
                             );
                             return false;
@@ -6147,59 +6062,26 @@ impl KetchupApp {
         })
     }
 
-    fn read_stl_source(path: &Path) -> Result<Vec<u8>, String> {
-        if std::fs::metadata(path)
-            .map_err(|error| error.to_string())?
-            .len()
-            > MAX_STL_SOURCE_BYTES
-        {
-            return Err("STL source exceeds the bounded 200,000-facet text envelope".to_owned());
-        }
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut source = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_STL_SOURCE_BYTES + 1)
-            .read_to_end(&mut source)
-            .map_err(|error| error.to_string())?;
-        if source.len() as u64 > MAX_STL_SOURCE_BYTES {
-            return Err("STL source exceeds the bounded 200,000-facet text envelope".to_owned());
-        }
-        Ok(source)
-    }
-
     fn prepare_stl_import_preview_plan(
         &self,
-        source: StlImportSourcePlan,
-    ) -> Result<StlImportPreviewPlan, String> {
+        source: ImportSourcePlan<ImportLengthUnit>,
+    ) -> Result<StlImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
-        if snapshot.document_id() != source.document_id
-            || snapshot.revision_id() != source.revision_id
-            || snapshot.canonical_digest() != source.canonical_digest
-        {
-            return Err("STL import review is stale for the active document".to_owned());
-        }
-        if source.source.len() as u64 != source.source_byte_len
-            || sha256_bytes(&source.source) != source.source_sha256
-        {
-            return Err("sealed STL source identity does not match its bytes".to_owned());
-        }
-        let source_name = source
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "STL source name is not valid UTF-8".to_owned())?;
+        let source_name = source.verify_seal(&snapshot)?;
         let units = ImportUnitDecision::new(source.unit, ImportUnitAuthority::UserDeclared);
         let review =
-            bounded_parser::run_bounded_parser("STL", || parse_stl(&source.source, units))?
-                .map_err(|error| error.to_string())?;
-        let batch = bounded_parser::run_bounded_parser("STL", || {
+            bounded_parser::run_bounded_parser(source.format, || parse_stl(&source.source, units))
+                .map_err(|error| source.failed(error))?
+                .map_err(|error| source.failed(error))?;
+        let batch = bounded_parser::run_bounded_parser(source.format, || {
             plan_stl_import(&snapshot, &source.source, source_name, units)
-        })?
-        .map_err(|error| error.to_string())?;
+        })
+        .map_err(|error| source.failed(error))?
+        .map_err(|error| source.failed(error))?;
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         Ok(StlImportPreviewPlan {
             source,
             review,
@@ -6208,42 +6090,23 @@ impl KetchupApp {
     }
 
     fn import_stl_from(&mut self, pending: &PendingStlImport) -> bool {
-        let path = &pending.plan.source.path;
+        let source = &pending.plan.source;
         let result = (|| {
-            if pending.invalidated || pending.review_error.is_some() {
-                return Err("STL import review is incomplete or invalidated".to_owned());
+            if pending.invalidated {
+                return Err(source.error(ImportFailure::ReviewStale));
             }
-            let source = Self::read_stl_source(path)?;
-            if source.len() as u64 != pending.plan.source.source_byte_len
-                || sha256_bytes(&source) != pending.plan.source.source_sha256
-                || source != pending.plan.source.source
-            {
-                return Err("STL source changed after it was selected for review".to_owned());
+            if pending.review_error.is_some() {
+                return Err(source.error(ImportFailure::ReviewIncomplete));
             }
-            let rederived = self.prepare_stl_import_preview_plan(pending.plan.source.clone())?;
-            if rederived != pending.plan {
-                return Err("STL import unit, review, or proposal changed after preview".to_owned());
+            source.reread_unchanged()?;
+            if self.prepare_stl_import_preview_plan(source.clone())? != pending.plan {
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             self.commit_verified_proposal_with_work_recovery(&pending.plan.proposal)
-                .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
+                .map_err(|error| source.failed(error))?;
+            Ok(())
         })();
-        match result {
-            Ok(()) => {
-                self.digest = self.catalog.format(
-                    "digest-imported-stl",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
-                true
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-import-stl",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
-                false
-            }
-        }
+        self.report_import_outcome(source, result)
     }
 
     fn choose_dxf_import_path(&mut self) -> Option<PathBuf> {
@@ -6255,37 +6118,21 @@ impl KetchupApp {
         })
     }
 
-    fn read_dxf_source(path: &Path) -> Result<Vec<u8>, String> {
+    fn read_dxf_source(path: &Path) -> Result<Vec<u8>, ImportError> {
         if !path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("dxf"))
         {
-            return Err(
-                "native DWG import is unavailable; convert through an audited DXF workflow"
-                    .to_owned(),
-            );
+            return Err(ImportError::failed(
+                ImportFormat::Dxf,
+                "native DWG import is unavailable; convert through an audited DXF workflow",
+            ));
         }
-        if std::fs::metadata(path)
-            .map_err(|error| error.to_string())?
-            .len()
-            > MAX_DXF_SOURCE_BYTES
-        {
-            return Err("DXF source exceeds the bounded 8 MiB envelope".to_owned());
-        }
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut source = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_DXF_SOURCE_BYTES + 1)
-            .read_to_end(&mut source)
-            .map_err(|error| error.to_string())?;
-        if source.len() as u64 > MAX_DXF_SOURCE_BYTES {
-            return Err("DXF source exceeds the bounded 8 MiB envelope".to_owned());
-        }
-        Ok(source)
+        read_import_source(ImportFormat::Dxf, path)
     }
 
-    fn inspect_dxf_for_review(source: &[u8]) -> Result<ParsedDxf, String> {
+    fn inspect_dxf_for_review(source: &[u8]) -> Result<ParsedDxf, ImportError> {
         let mut last_error = None;
         for unit in [
             ImportLengthUnit::Millimetre,
@@ -6294,49 +6141,44 @@ impl KetchupApp {
             ImportLengthUnit::Inch,
             ImportLengthUnit::Foot,
         ] {
-            match bounded_parser::run_bounded_parser("DXF", || {
+            match bounded_parser::run_bounded_parser(ImportFormat::Dxf, || {
                 inspect_dxf(source, DxfImportOptions::new(Some(unit)))
-            })? {
+            })
+            .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?
+            {
                 Ok(review) => return Ok(review),
-                Err(error) => last_error = Some(error.to_string()),
+                Err(error) => last_error = Some(error),
             }
         }
-        Err(last_error.unwrap_or_else(|| "DXF review could not be prepared".to_owned()))
+        Err(ImportError {
+            format: ImportFormat::Dxf,
+            failure: last_error.map_or(ImportFailure::ReviewIncomplete, |error| {
+                ImportFailure::Failed(error.into())
+            }),
+        })
     }
 
     fn prepare_dxf_import_preview_plan(
         &self,
-        source: DxfImportSourcePlan,
-    ) -> Result<DxfImportPreviewPlan, String> {
+        source: ImportSourcePlan<ImportLengthUnit>,
+    ) -> Result<DxfImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
-        if snapshot.document_id() != source.document_id
-            || snapshot.revision_id() != source.revision_id
-            || snapshot.canonical_digest() != source.canonical_digest
-        {
-            return Err("DXF import review is stale for the active document".to_owned());
-        }
-        if source.source.len() as u64 != source.source_byte_len
-            || sha256_bytes(&source.source) != source.source_sha256
-        {
-            return Err("sealed DXF source identity does not match its bytes".to_owned());
-        }
-        let source_name = source
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "DXF source name is not valid UTF-8".to_owned())?;
+        let source_name = source.verify_seal(&snapshot)?;
         let options = DxfImportOptions::new(Some(source.unit));
-        let review =
-            bounded_parser::run_bounded_parser("DXF", || inspect_dxf(&source.source, options))?
-                .map_err(|error| error.to_string())?;
-        let batch = bounded_parser::run_bounded_parser("DXF", || {
+        let review = bounded_parser::run_bounded_parser(source.format, || {
+            inspect_dxf(&source.source, options)
+        })
+        .map_err(|error| source.failed(error))?
+        .map_err(|error| source.failed(error))?;
+        let batch = bounded_parser::run_bounded_parser(source.format, || {
             plan_dxf_import(&snapshot, &source.source, source_name, options)
-        })?
-        .map_err(|error| error.to_string())?;
+        })
+        .map_err(|error| source.failed(error))?
+        .map_err(|error| source.failed(error))?;
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         Ok(DxfImportPreviewPlan {
             source,
             review,
@@ -6345,42 +6187,23 @@ impl KetchupApp {
     }
 
     fn import_dxf_from(&mut self, pending: &PendingDxfImport) -> bool {
-        let path = &pending.plan.source.path;
+        let source = &pending.plan.source;
         let result = (|| {
-            if pending.invalidated || !pending.unit_confirmed || pending.review_error.is_some() {
-                return Err("DXF import review is incomplete or invalidated".to_owned());
+            if pending.invalidated {
+                return Err(source.error(ImportFailure::ReviewStale));
             }
-            let source = Self::read_dxf_source(path)?;
-            if source.len() as u64 != pending.plan.source.source_byte_len
-                || sha256_bytes(&source) != pending.plan.source.source_sha256
-                || source != pending.plan.source.source
-            {
-                return Err("DXF source changed after it was selected for review".to_owned());
+            if !pending.unit_confirmed || pending.review_error.is_some() {
+                return Err(source.error(ImportFailure::ReviewIncomplete));
             }
-            let rederived = self.prepare_dxf_import_preview_plan(pending.plan.source.clone())?;
-            if rederived != pending.plan {
-                return Err("DXF import review or proposal changed after preview".to_owned());
+            source.reread_unchanged()?;
+            if self.prepare_dxf_import_preview_plan(source.clone())? != pending.plan {
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             self.commit_verified_proposal_with_work_recovery(&pending.plan.proposal)
-                .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
+                .map_err(|error| source.failed(error))?;
+            Ok(())
         })();
-        match result {
-            Ok(()) => {
-                self.digest = self.catalog.format(
-                    "digest-imported-dxf",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
-                true
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-import-dxf",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
-                false
-            }
-        }
+        self.report_import_outcome(source, result)
     }
 
     fn choose_step_import_path(&mut self) -> Option<PathBuf> {
@@ -6392,25 +6215,10 @@ impl KetchupApp {
         })
     }
 
-    fn read_step_source(path: &Path) -> Result<Vec<u8>, String> {
-        Self::validate_exact_exchange_extension(path, "STEP import", &["step", "stp"])?;
-        if std::fs::metadata(path)
-            .map_err(|error| error.to_string())?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
-            return Err("STEP source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut source = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_STEP_SOURCE_BYTES + 1)
-            .read_to_end(&mut source)
-            .map_err(|error| error.to_string())?;
-        if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
-            return Err("STEP source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        Ok(source)
+    fn read_step_source(path: &Path) -> Result<Vec<u8>, ImportError> {
+        Self::validate_exact_exchange_extension(path, "STEP import", &["step", "stp"])
+            .map_err(|error| ImportError::failed(ImportFormat::Step, error))?;
+        read_import_source(ImportFormat::Step, path)
     }
 
     fn exact_worker_executable(&mut self) -> Result<PathBuf, String> {
@@ -6430,62 +6238,49 @@ impl KetchupApp {
         &mut self,
         path: &Path,
         source_sha256: &[u8; 32],
-    ) -> Result<StepXdeImportEvidence, String> {
-        let executable = self.exact_worker_executable()?;
+    ) -> Result<StepXdeImportEvidence, ImportError> {
+        let executable = self
+            .exact_worker_executable()
+            .map_err(|error| ImportError::failed(ImportFormat::Step, error))?;
         let source_sha256 = source_sha256
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let cancelled = AtomicBool::new(false);
         let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ImportError::failed(ImportFormat::Step, error))?;
         worker
             .inspect_step_xde_import_with_cancellation(path, &source_sha256, &cancelled)
-            .map_err(|error| error.to_string())
+            .map_err(|error| ImportError::failed(ImportFormat::Step, error))
     }
 
     fn prepare_step_import_preview_plan(
         &mut self,
-        source: StepImportSourcePlan,
-    ) -> Result<StepImportPreviewPlan, String> {
+        source: ImportSourcePlan,
+    ) -> Result<StepImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
-        if snapshot.document_id() != source.document_id
-            || snapshot.revision_id() != source.revision_id
-            || snapshot.canonical_digest() != source.canonical_digest
-        {
-            return Err("STEP import review is stale for the active document".to_owned());
-        }
-        if source.source.len() as u64 != source.source_byte_len
-            || sha256_bytes(&source.source) != source.source_sha256
-        {
-            return Err("sealed STEP source identity does not match its bytes".to_owned());
-        }
-        let source_name = source
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "STEP source name is not valid UTF-8".to_owned())?;
+        let source_name = source.verify_seal(&snapshot)?;
         let mut temporary = tempfile::Builder::new()
             .suffix(".step")
             .tempfile()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         temporary
             .write_all(&source.source)
-            .map_err(|error| error.to_string())?;
-        temporary.flush().map_err(|error| error.to_string())?;
+            .and_then(|()| temporary.flush())
+            .map_err(|error| source.failed(error))?;
         let evidence = self.inspect_step_for_review(temporary.path(), &source.source_sha256)?;
         let batch = plan_step_xde_import(&snapshot, &source.source, source_name, &evidence)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         let mut staged_container = self.file.container_data.clone();
         let blob_hash = staged_container
             .insert_import_blob(source.source.clone())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         if blob_hash != ketchup_model::graph::sha256_hex(&source.source) {
-            return Err("STEP content-addressed blob identity mismatch".to_owned());
+            return Err(source.error(ImportFailure::SealBroken));
         }
         Ok(StepImportPreviewPlan {
             source,
@@ -6496,54 +6291,30 @@ impl KetchupApp {
     }
 
     fn import_step_from(&mut self, pending: &PendingStepImport) -> bool {
-        let path = &pending.plan.source.path;
+        let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
-                return Err("STEP import review is stale for the active document".to_owned());
+                return Err(source.error(ImportFailure::ReviewStale));
             }
-            let source = Self::read_step_source(path)?;
-            if source.len() as u64 != pending.plan.source.source_byte_len
-                || sha256_bytes(&source) != pending.plan.source.source_sha256
-                || source != pending.plan.source.source
-            {
-                return Err("STEP source changed after it was selected for review".to_owned());
-            }
-            let rederived = self.prepare_step_import_preview_plan(pending.plan.source.clone())?;
-            if rederived != pending.plan {
-                return Err(
-                    "STEP import evidence, proposal, or blob changed after review".to_owned(),
-                );
+            source.reread_unchanged()?;
+            if self.prepare_step_import_preview_plan(source.clone())? != pending.plan {
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             let mut staged_container = self.file.container_data.clone();
             let blob_hash = staged_container
-                .insert_import_blob(pending.plan.source.source.clone())
-                .map_err(|error| error.to_string())?;
+                .insert_import_blob(source.source.clone())
+                .map_err(|error| source.failed(error))?;
             if blob_hash != pending.plan.blob_hash {
-                return Err("STEP content-addressed blob identity changed after review".to_owned());
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             self.commit_verified_proposal_with_container_work_recovery(
                 &pending.plan.proposal,
                 staged_container,
             )
-            .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
+            .map_err(|error| source.failed(error))?;
+            Ok(())
         })();
-        match result {
-            Ok(()) => {
-                self.digest = self.catalog.format(
-                    "digest-imported-step",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
-                true
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-import-step",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
-                false
-            }
-        }
+        self.report_import_outcome(source, result)
     }
 
     fn choose_iges_import_path(&mut self) -> Option<PathBuf> {
@@ -6555,57 +6326,29 @@ impl KetchupApp {
         })
     }
 
-    fn read_iges_source(path: &Path) -> Result<Vec<u8>, String> {
-        Self::validate_exact_exchange_extension(path, "IGES import", &["iges", "igs"])?;
-        if std::fs::metadata(path)
-            .map_err(|error| error.to_string())?
-            .len()
-            > MAX_IGES_SOURCE_BYTES
-        {
-            return Err("IGES source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut source = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_IGES_SOURCE_BYTES + 1)
-            .read_to_end(&mut source)
-            .map_err(|error| error.to_string())?;
-        if source.len() as u64 > MAX_IGES_SOURCE_BYTES {
-            return Err("IGES source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        Ok(source)
+    fn read_iges_source(path: &Path) -> Result<Vec<u8>, ImportError> {
+        Self::validate_exact_exchange_extension(path, "IGES import", &["iges", "igs"])
+            .map_err(|error| ImportError::failed(ImportFormat::Iges, error))?;
+        read_import_source(ImportFormat::Iges, path)
     }
 
     fn prepare_iges_import_preview_plan(
         &mut self,
-        source: StepImportSourcePlan,
-    ) -> Result<IgesImportPreviewPlan, String> {
+        source: ImportSourcePlan,
+    ) -> Result<IgesImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
-        if snapshot.document_id() != source.document_id
-            || snapshot.revision_id() != source.revision_id
-            || snapshot.canonical_digest() != source.canonical_digest
-        {
-            return Err("IGES import review is stale for the active document".to_owned());
-        }
-        if source.source.len() as u64 != source.source_byte_len
-            || sha256_bytes(&source.source) != source.source_sha256
-        {
-            return Err("sealed IGES source identity does not match its bytes".to_owned());
-        }
-        let source_name = source
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "IGES source name is not valid UTF-8".to_owned())?;
+        let source_name = source.verify_seal(&snapshot)?;
         let mut temporary = tempfile::Builder::new()
             .suffix(".iges")
             .tempfile()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         temporary
             .write_all(&source.source)
             .and_then(|()| temporary.flush())
-            .map_err(|error| error.to_string())?;
-        let executable = self.exact_worker_executable()?;
+            .map_err(|error| source.failed(error))?;
+        let executable = self
+            .exact_worker_executable()
+            .map_err(|error| source.failed(error))?;
         let source_sha256 = source
             .source_sha256
             .iter()
@@ -6613,20 +6356,20 @@ impl KetchupApp {
             .collect::<String>();
         let cancelled = AtomicBool::new(false);
         let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         let evidence = worker
             .inspect_iges_xde_import_with_cancellation(temporary.path(), &source_sha256, &cancelled)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         let batch = plan_iges_xde_import(&snapshot, &source.source, source_name, &evidence)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         let mut staged_container = self.file.container_data.clone();
         let blob_hash = staged_container
             .insert_import_blob(source.source.clone())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         Ok(IgesImportPreviewPlan {
             source,
             evidence,
@@ -6636,50 +6379,31 @@ impl KetchupApp {
     }
 
     fn import_iges_from(&mut self, pending: &PendingIgesImport) -> bool {
-        let path = &pending.plan.source.path;
+        let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
-                return Err("IGES import review is stale for the active document".to_owned());
+                return Err(source.error(ImportFailure::ReviewStale));
             }
-            let source = Self::read_iges_source(path)?;
-            if source != pending.plan.source.source {
-                return Err("IGES source changed after it was selected for review".to_owned());
-            }
-            let rederived = self.prepare_iges_import_preview_plan(pending.plan.source.clone())?;
-            if rederived != pending.plan {
-                return Err("IGES import evidence or proposal changed after review".to_owned());
+            let bytes = source.reread_unchanged()?;
+            if self.prepare_iges_import_preview_plan(source.clone())? != pending.plan {
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             let mut staged_container = self.file.container_data.clone();
             if staged_container
-                .insert_import_blob(source)
-                .map_err(|error| error.to_string())?
+                .insert_import_blob(bytes)
+                .map_err(|error| source.failed(error))?
                 != pending.plan.blob_hash
             {
-                return Err("IGES content-addressed blob identity changed".to_owned());
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             self.commit_verified_proposal_with_container_work_recovery(
                 &pending.plan.proposal,
                 staged_container,
             )
-            .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
+            .map_err(|error| source.failed(error))?;
+            Ok(())
         })();
-        match result {
-            Ok(()) => {
-                self.digest = self.catalog.format(
-                    "digest-imported-iges",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
-                true
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-import-iges",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
-                false
-            }
-        }
+        self.report_import_outcome(source, result)
     }
 
     fn choose_sketchup_scene_import_path(&mut self) -> Option<PathBuf> {
@@ -6691,61 +6415,26 @@ impl KetchupApp {
         })
     }
 
-    fn read_sketchup_scene_source(path: &Path) -> Result<Vec<u8>, String> {
-        if std::fs::metadata(path)
-            .map_err(|error| error.to_string())?
-            .len()
-            > MAX_SKETCHUP_SCENE_SOURCE_BYTES
-        {
-            return Err("SketchUp scene package exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut source = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_SKETCHUP_SCENE_SOURCE_BYTES + 1)
-            .read_to_end(&mut source)
-            .map_err(|error| error.to_string())?;
-        if source.len() as u64 > MAX_SKETCHUP_SCENE_SOURCE_BYTES {
-            return Err("SketchUp scene package exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        Ok(source)
-    }
-
     fn prepare_sketchup_scene_import_preview_plan(
         &self,
-        source: SketchupSceneImportSourcePlan,
-    ) -> Result<SketchupSceneImportPreviewPlan, String> {
+        source: ImportSourcePlan,
+    ) -> Result<SketchupSceneImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
-        if snapshot.document_id() != source.document_id
-            || snapshot.revision_id() != source.revision_id
-            || snapshot.canonical_digest() != source.canonical_digest
-        {
-            return Err("SketchUp scene import review is stale for the active document".to_owned());
-        }
-        if source.source.len() as u64 != source.source_byte_len
-            || sha256_bytes(&source.source) != source.source_sha256
-        {
-            return Err(
-                "sealed SketchUp scene source identity does not match its bytes".to_owned(),
-            );
-        }
-        let source_name = source
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "SketchUp scene source name is not valid UTF-8".to_owned())?;
-        let review = bounded_parser::run_bounded_parser("SketchUp scene", || {
+        let source_name = source.verify_seal(&snapshot)?;
+        let review = bounded_parser::run_bounded_parser(source.format, || {
             inspect_sketchup_scene(&source.source)
-        })?
-        .map_err(|error| error.to_string())?;
-        let batch = bounded_parser::run_bounded_parser("SketchUp scene", || {
+        })
+        .map_err(|error| source.failed(error))?
+        .map_err(|error| source.failed(error))?;
+        let batch = bounded_parser::run_bounded_parser(source.format, || {
             plan_sketchup_scene_import(&snapshot, &source.source, source_name)
-        })?
-        .map_err(|error| error.to_string())?;
+        })
+        .map_err(|error| source.failed(error))?
+        .map_err(|error| source.failed(error))?;
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| source.failed(error))?;
         Ok(SketchupSceneImportPreviewPlan {
             source,
             review,
@@ -6754,47 +6443,20 @@ impl KetchupApp {
     }
 
     fn import_sketchup_scene_from(&mut self, pending: &PendingSketchupSceneImport) -> bool {
-        let path = &pending.plan.source.path;
+        let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
-                return Err(
-                    "SketchUp scene import review is stale for the active document".to_owned(),
-                );
+                return Err(source.error(ImportFailure::ReviewStale));
             }
-            let source = Self::read_sketchup_scene_source(path)?;
-            if source.len() as u64 != pending.plan.source.source_byte_len
-                || sha256_bytes(&source) != pending.plan.source.source_sha256
-                || source != pending.plan.source.source
-            {
-                return Err(
-                    "SketchUp scene package changed after it was selected for review".to_owned(),
-                );
-            }
-            let rederived =
-                self.prepare_sketchup_scene_import_preview_plan(pending.plan.source.clone())?;
-            if rederived != pending.plan {
-                return Err("SketchUp scene review or proposal changed after preview".to_owned());
+            source.reread_unchanged()?;
+            if self.prepare_sketchup_scene_import_preview_plan(source.clone())? != pending.plan {
+                return Err(source.error(ImportFailure::ReviewChanged));
             }
             self.commit_verified_proposal_with_work_recovery(&pending.plan.proposal)
-                .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
+                .map_err(|error| source.failed(error))?;
+            Ok(())
         })();
-        match result {
-            Ok(()) => {
-                self.digest = self.catalog.format(
-                    "digest-imported-sketchup-scene",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
-                true
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-import-sketchup-scene",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
-                false
-            }
-        }
+        self.report_import_outcome(source, result)
     }
 
     fn current_visible_exact_scene(
@@ -8063,18 +7725,14 @@ impl KetchupApp {
             }
             AppCommand::ImportMeshStl => {
                 if let Some(path) = self.choose_stl_import_path() {
-                    match Self::read_stl_source(&path).and_then(|source| {
-                        let snapshot = self.document.current();
-                        let source_plan = StlImportSourcePlan {
-                            path: path.clone(),
-                            source_sha256: sha256_bytes(&source),
-                            source_byte_len: source.len() as u64,
+                    match read_import_source(ImportFormat::Stl, &path).and_then(|source| {
+                        let source_plan = ImportSourcePlan::seal(
+                            ImportFormat::Stl,
+                            path.clone(),
                             source,
-                            unit: ImportLengthUnit::Millimetre,
-                            document_id: snapshot.document_id(),
-                            revision_id: snapshot.revision_id(),
-                            canonical_digest: snapshot.canonical_digest(),
-                        };
+                            ImportLengthUnit::Millimetre,
+                            &self.document.current(),
+                        );
                         let plan = self.prepare_stl_import_preview_plan(source_plan)?;
                         Ok(PendingStlImport {
                             plan,
@@ -8085,13 +7743,7 @@ impl KetchupApp {
                         Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
                             self.modal.close::<PendingStlImport>();
-                            self.digest = self.catalog.format(
-                                "error-import-stl",
-                                &BTreeMap::from([
-                                    ("path", path.display().to_string()),
-                                    ("reason", reason),
-                                ]),
-                            );
+                            self.report_import_failure(&path, &reason);
                         }
                     }
                 }
@@ -8099,16 +7751,13 @@ impl KetchupApp {
             AppCommand::ImportExactStep => {
                 if let Some(path) = self.choose_step_import_path() {
                     let result = Self::read_step_source(&path).and_then(|source| {
-                        let snapshot = self.document.current();
-                        let source_plan = StepImportSourcePlan {
-                            path: path.clone(),
-                            source_sha256: sha256_bytes(&source),
-                            source_byte_len: source.len() as u64,
+                        let source_plan = ImportSourcePlan::seal(
+                            ImportFormat::Step,
+                            path.clone(),
                             source,
-                            document_id: snapshot.document_id(),
-                            revision_id: snapshot.revision_id(),
-                            canonical_digest: snapshot.canonical_digest(),
-                        };
+                            (),
+                            &self.document.current(),
+                        );
                         let plan = self.prepare_step_import_preview_plan(source_plan)?;
                         Ok(PendingStepImport {
                             plan,
@@ -8119,13 +7768,7 @@ impl KetchupApp {
                         Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
                             self.modal.close::<PendingStepImport>();
-                            self.digest = self.catalog.format(
-                                "error-import-step",
-                                &BTreeMap::from([
-                                    ("path", path.display().to_string()),
-                                    ("reason", reason),
-                                ]),
-                            );
+                            self.report_import_failure(&path, &reason);
                         }
                     }
                 }
@@ -8133,16 +7776,13 @@ impl KetchupApp {
             AppCommand::ImportExactIges => {
                 if let Some(path) = self.choose_iges_import_path() {
                     let result = Self::read_iges_source(&path).and_then(|source| {
-                        let snapshot = self.document.current();
-                        let source_plan = StepImportSourcePlan {
-                            path: path.clone(),
-                            source_sha256: sha256_bytes(&source),
-                            source_byte_len: source.len() as u64,
+                        let source_plan = ImportSourcePlan::seal(
+                            ImportFormat::Iges,
+                            path.clone(),
                             source,
-                            document_id: snapshot.document_id(),
-                            revision_id: snapshot.revision_id(),
-                            canonical_digest: snapshot.canonical_digest(),
-                        };
+                            (),
+                            &self.document.current(),
+                        );
                         let plan = self.prepare_iges_import_preview_plan(source_plan)?;
                         Ok(PendingIgesImport {
                             plan,
@@ -8153,47 +7793,34 @@ impl KetchupApp {
                         Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
                             self.modal.close::<PendingIgesImport>();
-                            self.digest = self.catalog.format(
-                                "error-import-iges",
-                                &BTreeMap::from([
-                                    ("path", path.display().to_string()),
-                                    ("reason", reason),
-                                ]),
-                            );
+                            self.report_import_failure(&path, &reason);
                         }
                     }
                 }
             }
             AppCommand::ImportSketchupScene => {
                 if let Some(path) = self.choose_sketchup_scene_import_path() {
-                    let result = Self::read_sketchup_scene_source(&path).and_then(|source| {
-                        let snapshot = self.document.current();
-                        let source_plan = SketchupSceneImportSourcePlan {
-                            path: path.clone(),
-                            source_sha256: sha256_bytes(&source),
-                            source_byte_len: source.len() as u64,
-                            source,
-                            document_id: snapshot.document_id(),
-                            revision_id: snapshot.revision_id(),
-                            canonical_digest: snapshot.canonical_digest(),
-                        };
-                        let plan = self.prepare_sketchup_scene_import_preview_plan(source_plan)?;
-                        Ok(PendingSketchupSceneImport {
-                            plan,
-                            invalidated: false,
-                        })
-                    });
+                    let result =
+                        read_import_source(ImportFormat::SketchupScene, &path).and_then(|source| {
+                            let source_plan = ImportSourcePlan::seal(
+                                ImportFormat::SketchupScene,
+                                path.clone(),
+                                source,
+                                (),
+                                &self.document.current(),
+                            );
+                            let plan =
+                                self.prepare_sketchup_scene_import_preview_plan(source_plan)?;
+                            Ok(PendingSketchupSceneImport {
+                                plan,
+                                invalidated: false,
+                            })
+                        });
                     match result {
                         Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
                             self.modal.close::<PendingSketchupSceneImport>();
-                            self.digest = self.catalog.format(
-                                "error-import-sketchup-scene",
-                                &BTreeMap::from([
-                                    ("path", path.display().to_string()),
-                                    ("reason", reason),
-                                ]),
-                            );
+                            self.report_import_failure(&path, &reason);
                         }
                     }
                 }
@@ -8206,17 +7833,13 @@ impl KetchupApp {
                         let unit = initial_review.units().source_unit();
                         let unit_confirmed =
                             initial_review.units().authority() == ImportUnitAuthority::FileDeclared;
-                        let snapshot = self.document.current();
-                        let source_plan = DxfImportSourcePlan {
-                            path: path.clone(),
-                            source_sha256: sha256_bytes(&source),
-                            source_byte_len: source.len() as u64,
+                        let source_plan = ImportSourcePlan::seal(
+                            ImportFormat::Dxf,
+                            path.clone(),
                             source,
                             unit,
-                            document_id: snapshot.document_id(),
-                            revision_id: snapshot.revision_id(),
-                            canonical_digest: snapshot.canonical_digest(),
-                        };
+                            &self.document.current(),
+                        );
                         let plan = self.prepare_dxf_import_preview_plan(source_plan)?;
                         Ok(PendingDxfImport {
                             plan,
@@ -8228,13 +7851,7 @@ impl KetchupApp {
                     match result {
                         Ok(pending) => self.modal.open(pending),
                         Err(reason) => {
-                            self.digest = self.catalog.format(
-                                "error-import-dxf",
-                                &BTreeMap::from([
-                                    ("path", path.display().to_string()),
-                                    ("reason", reason),
-                                ]),
-                            );
+                            self.report_import_failure(&path, &reason);
                         }
                     }
                 }
@@ -8582,120 +8199,6 @@ impl KetchupApp {
     #[must_use]
     pub fn has_review_candidate(&self) -> bool {
         self.file.review_candidate.is_some()
-    }
-
-    pub fn confirm_review_candidate_migration_to(&mut self, destination: &Path) -> bool {
-        let Some(plan) = self.file.migration_review_plan.clone() else {
-            return false;
-        };
-        let result = (|| {
-            let comparable_path = |path: &Path| {
-                std::fs::canonicalize(path).unwrap_or_else(|_| {
-                    path.parent()
-                        .and_then(|parent| std::fs::canonicalize(parent).ok())
-                        .and_then(|parent| path.file_name().map(|name| parent.join(name)))
-                        .unwrap_or_else(|| path.to_owned())
-                })
-            };
-            if comparable_path(&plan.source.path) == comparable_path(destination)
-                || comparable_path(&plan.source.effective_path) == comparable_path(destination)
-            {
-                return Err("migration destination must be a new copy".to_owned());
-            }
-            if destination.exists() {
-                return Err("migration destination already exists".to_owned());
-            }
-
-            let active = self.document.current();
-            if active.document_id() != plan.source.active_document_id
-                || active.revision_id() != plan.source.active_revision_id
-                || active.canonical_digest() != plan.source.active_canonical_digest
-            {
-                return Err("active document changed after migration review".to_owned());
-            }
-            let pending = self
-                .file
-                .review_candidate
-                .as_ref()
-                .ok_or_else(|| "no review candidate is pending".to_owned())?;
-            if Self::migration_review_identity(pending)? != plan.review {
-                return Err(
-                    "pending migration review no longer matches the sealed review".to_owned(),
-                );
-            }
-            if plan.source.source.len() as u64 != plan.source.source_byte_len
-                || sha256_bytes(&plan.source.source) != plan.source.source_sha256
-            {
-                return Err("sealed migration source identity does not match its bytes".to_owned());
-            }
-            let current_source =
-                ketchup_model::persistence::read_native_document_file(&plan.source.effective_path)
-                    .map_err(|error| error.to_string())?;
-            if current_source != plan.source.source
-                || current_source.len() as u64 != plan.source.source_byte_len
-                || sha256_bytes(&current_source) != plan.source.source_sha256
-            {
-                return Err("migration source changed after review".to_owned());
-            }
-
-            let rederived = ketchup_model::persistence::load(&current_source)
-                .map_err(|error| error.to_string())?;
-            if Self::migration_review_identity(&rederived)? != plan.review {
-                return Err(
-                    "rederived migration review does not match the sealed review".to_owned(),
-                );
-            }
-            let confirmed = rederived
-                .review_candidate()
-                .ok_or_else(|| "rederived source is not review-only".to_owned())?
-                .confirm_semantic_migration()
-                .map_err(|error| error.to_string())?;
-            let (document, container_data) = confirmed.into_parts();
-            let snapshot = document.current();
-            let bytes = ketchup_model::persistence::save_container(&snapshot, &container_data)
-                .map_err(|error| error.to_string())?;
-            let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-            let mut temporary =
-                tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-            temporary
-                .write_all(&bytes)
-                .and_then(|()| temporary.as_file_mut().sync_all())
-                .map_err(|error| error.to_string())?;
-            temporary
-                .persist_noclobber(destination)
-                .map_err(|error| error.error.to_string())?;
-            let file_identity = ketchup_model::persistence::FileIdentity::from_bytes(&bytes);
-            Ok((document, container_data, file_identity))
-        })();
-        let (mut document, container_data, file_identity) = match result {
-            Ok(confirmed) => confirmed,
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-migrate-document",
-                    &BTreeMap::from([("reason", reason)]),
-                );
-                return false;
-            }
-        };
-
-        document.discard_history_before_current();
-        let saved_digest = document.history_digest();
-        self.document = document;
-        self.file.container_data = container_data;
-        self.file.review_candidate = None;
-        self.file.migration_review_plan = None;
-        self.file.recovery_open = None;
-        self.file.path = Some(destination.to_owned());
-        self.file.identity = Some(file_identity);
-        self.file.work_recovery_identity = None;
-        self.file.work_recovery_digest = None;
-        self.file.saved_digest = saved_digest;
-        self.reset_document_presentation();
-        self.digest = self.catalog.format(
-            "digest-migrated-document",
-            &BTreeMap::from([("path", destination.display().to_string())]),
-        );
-        true
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -34840,7 +34343,7 @@ impl KetchupApp {
                     pending.plan = plan;
                     pending.review_error = None;
                 }
-                Err(error) => pending.review_error = Some(error),
+                Err(error) => pending.review_error = Some(error.to_string()),
             }
         }
         if cancel {
@@ -34981,7 +34484,7 @@ impl KetchupApp {
                     pending.plan = plan;
                     pending.review_error = None;
                 }
-                Err(error) => pending.review_error = Some(error),
+                Err(error) => pending.review_error = Some(error.to_string()),
             }
         }
         if cancel {

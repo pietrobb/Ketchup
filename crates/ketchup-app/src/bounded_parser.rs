@@ -5,7 +5,7 @@ use std::panic::{UnwindSafe, catch_unwind};
 
 /// Runs one parser step; a panic becomes a rejection naming the parser and the panic message.
 pub(crate) fn run_bounded_parser<T>(
-    parser: &str,
+    parser: impl std::fmt::Display,
     step: impl FnOnce() -> T + UnwindSafe,
 ) -> Result<T, String> {
     catch_unwind(step).map_err(|payload| {
