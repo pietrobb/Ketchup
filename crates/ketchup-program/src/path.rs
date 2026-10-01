@@ -134,14 +134,119 @@ impl ProgramPathSegment {
     }
 }
 
+/// Why arc or path points cannot become an exact sweep path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PathError {
+    /// The through point of an arc lies on the line from its start to its end.
+    ThroughOnLine,
+    ZeroArcNormal,
+    /// Start and end lie at different distances from the arc center.
+    UnequalRadii {
+        start_mm: f64,
+        end_mm: f64,
+    },
+    /// An arc end lies off the plane through the center square to the normal.
+    OffArcPlane {
+        end: ArcEnd,
+        off_mm: f64,
+    },
+    SegmentCount {
+        count: usize,
+    },
+    /// The 1-based `segment` has no length or no direction.
+    NoLength {
+        segment: usize,
+    },
+    /// Segment `segment` (1-based) does not end where the next one starts.
+    Disconnected {
+        segment: usize,
+        end: Vec3,
+        next_start: Vec3,
+    },
+    /// Segments `segment` and `segment + 1` meet at a corner.
+    Corner {
+        segment: usize,
+        degrees: f64,
+        at: Vec3,
+    },
+    /// A fixed sweep `up` runs along the 1-based `segment` at `at`.
+    UpAlongPath {
+        segment: usize,
+        up: Vec3,
+        at: Vec3,
+    },
+}
+
+/// Which end of an arc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArcEnd {
+    Start,
+    End,
+}
+
+impl std::fmt::Display for PathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ThroughOnLine => {
+                f.write_str("the through point lies on the line from start to end; use a line")
+            }
+            Self::ZeroArcNormal => f.write_str("the arc normal must be a non-zero direction"),
+            Self::UnequalRadii { start_mm, end_mm } => write!(
+                f,
+                "start and end must lie equally far from the arc center ({start_mm} mm vs {end_mm} mm)"
+            ),
+            Self::OffArcPlane { end, off_mm } => write!(
+                f,
+                "the arc {} lies {off_mm} mm off the plane through the center square to the normal",
+                match end {
+                    ArcEnd::Start => "start",
+                    ArcEnd::End => "end",
+                }
+            ),
+            Self::SegmentCount { count } => write!(
+                f,
+                "a path has 1 to {} segments, got {count}",
+                limits::PATH_SEGMENTS
+            ),
+            Self::NoLength { segment } => write!(f, "path segment {segment} has no length"),
+            Self::Disconnected {
+                segment,
+                end,
+                next_start,
+            } => write!(
+                f,
+                "path segment {segment} ends at {end:?} but segment {} starts at {next_start:?}",
+                segment + 1
+            ),
+            Self::Corner {
+                segment,
+                degrees,
+                at,
+            } => write!(
+                f,
+                "path segments {segment} and {} meet at a {degrees:.6}° corner at {at:?}; a sweep path must be smooth: give the points with bend=<radius>, or make the arc tangent",
+                segment + 1
+            ),
+            Self::UpAlongPath { segment, up, at } => write!(
+                f,
+                "path segment {segment} runs along up {up:?} at {at:?}; up must stay off the path direction"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PathError {}
+
 /// The arc from `start` to `end` passing through `through`.
-pub fn arc_through(start: Vec3, end: Vec3, through: Vec3) -> Result<ProgramPathArc, String> {
+///
+/// # Errors
+/// [`PathError::ThroughOnLine`] when the three points are collinear.
+pub fn arc_through(start: Vec3, end: Vec3, through: Vec3) -> Result<ProgramPathArc, PathError> {
     let (a, b) = (sub(through, start), sub(end, start));
     let normal = unit(cross(a, b))
         .filter(|_| length(cross(a, b)) > APPROXIMATION * length(a) * length(b))
-        .ok_or("the through point lies on the line from start to end; use a line")?;
-    let center_mm = circumcenter(start, through, end)
-        .ok_or("the through point lies on the line from start to end; use a line")?;
+        .ok_or(PathError::ThroughOnLine)?;
+    let center_mm = circumcenter(start, through, end).ok_or(PathError::ThroughOnLine)?;
     Ok(ProgramPathArc {
         center_mm,
         // Start, through, end run counter-clockwise about a × b.
@@ -150,26 +255,29 @@ pub fn arc_through(start: Vec3, end: Vec3, through: Vec3) -> Result<ProgramPathA
 }
 
 /// The arc about `center`, counter-clockwise about `normal`.
+///
+/// # Errors
+/// When the normal is zero or start and end do not lie on one circle about
+/// `center` square to it.
 pub fn arc_about(
     start: Vec3,
     end: Vec3,
     center: Vec3,
     normal: Vec3,
-) -> Result<ProgramPathArc, String> {
-    let normal = unit(normal).ok_or("the arc normal must be a non-zero direction")?;
+) -> Result<ProgramPathArc, PathError> {
+    let normal = unit(normal).ok_or(PathError::ZeroArcNormal)?;
     let (from, to) = (sub(start, center), sub(end, center));
     let (r_start, r_end) = (length(from), length(to));
     if (r_start - r_end).abs() > KERNEL_EPSILON.max(ROUNDING * r_start) {
-        return Err(format!(
-            "start and end must lie equally far from the arc center ({r_start} mm vs {r_end} mm)"
-        ));
+        return Err(PathError::UnequalRadii {
+            start_mm: r_start,
+            end_mm: r_end,
+        });
     }
-    for (point, radius) in [("start", from), ("end", to)] {
-        let off_plane = dot(radius, normal);
-        if off_plane.abs() > KERNEL_EPSILON.max(ROUNDING * r_start) {
-            return Err(format!(
-                "the arc {point} lies {off_plane} mm off the plane through the center square to the normal"
-            ));
+    for (end, radius) in [(ArcEnd::Start, from), (ArcEnd::End, to)] {
+        let off_mm = dot(radius, normal);
+        if off_mm.abs() > KERNEL_EPSILON.max(ROUNDING * r_start) {
+            return Err(PathError::OffArcPlane { end, off_mm });
         }
     }
     Ok(ProgramPathArc {
@@ -319,41 +427,36 @@ pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>
 
 /// Checks a path the exact kernel will accept: connected, at most 64
 /// non-degenerate pieces, tangent-continuous joins.
-pub fn validate(path: &[ProgramPathSegment]) -> Result<(), String> {
+///
+/// # Errors
+/// The first rule the path breaks.
+pub fn validate(path: &[ProgramPathSegment]) -> Result<(), PathError> {
     if !(1..=limits::PATH_SEGMENTS).contains(&path.len()) {
-        return Err(format!(
-            "a path has 1 to {} segments, got {}",
-            limits::PATH_SEGMENTS,
-            path.len()
-        ));
+        return Err(PathError::SegmentCount { count: path.len() });
     }
     for (index, segment) in path.iter().enumerate() {
         if segment.length() <= APPROXIMATION || segment.start_tangent().is_none() {
-            return Err(format!("path segment {} has no length", index + 1));
+            return Err(PathError::NoLength { segment: index + 1 });
         }
     }
     for (index, pair) in path.windows(2).enumerate() {
         if pair[0].end_mm != pair[1].start_mm {
-            return Err(format!(
-                "path segment {} ends at {:?} but segment {} starts at {:?}",
-                index + 1,
-                pair[0].end_mm,
-                index + 2,
-                pair[1].start_mm
-            ));
+            return Err(PathError::Disconnected {
+                segment: index + 1,
+                end: pair[0].end_mm,
+                next_start: pair[1].start_mm,
+            });
         }
         let (out, into) = (
             pair[0].end_tangent().expect("validated"),
             pair[1].start_tangent().expect("validated"),
         );
         if dot(out, into) < 1.0 - KERNEL_EPSILON || length(cross(out, into)) > KERNEL_EPSILON {
-            let degrees = length(cross(out, into)).atan2(dot(out, into)).to_degrees();
-            return Err(format!(
-                "path segments {} and {} meet at a {degrees:.6}° corner at {:?}; a sweep path must be smooth: give the points with bend=<radius>, or make the arc tangent",
-                index + 1,
-                index + 2,
-                pair[0].end_mm
-            ));
+            return Err(PathError::Corner {
+                segment: index + 1,
+                degrees: length(cross(out, into)).atan2(dot(out, into)).to_degrees(),
+                at: pair[0].end_mm,
+            });
         }
     }
     Ok(())
@@ -364,17 +467,21 @@ const UP_SAMPLES: usize = 64;
 
 /// Checks that a fixed sweep `up` (unit) never runs along `path`, where the
 /// profile's u = t × up would vanish.
-pub fn validate_up(path: &[ProgramPathSegment], up: Vec3) -> Result<(), String> {
+///
+/// # Errors
+/// [`PathError::UpAlongPath`] at the first sample where it does.
+pub fn validate_up(path: &[ProgramPathSegment], up: Vec3) -> Result<(), PathError> {
     for (index, segment) in path.iter().enumerate() {
         for step in 0..=UP_SAMPLES {
             let s = step as f64 / UP_SAMPLES as f64;
-            if let (point, Some(tangent)) = segment.point_and_tangent(s)
+            if let (at, Some(tangent)) = segment.point_and_tangent(s)
                 && length(cross(tangent, up)) <= KERNEL_EPSILON
             {
-                return Err(format!(
-                    "path segment {} runs along up {up:?} at {point:?}; up must stay off the path direction",
-                    index + 1
-                ));
+                return Err(PathError::UpAlongPath {
+                    segment: index + 1,
+                    up,
+                    at,
+                });
             }
         }
     }

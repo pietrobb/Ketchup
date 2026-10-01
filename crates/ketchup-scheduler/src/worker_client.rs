@@ -9,7 +9,7 @@ use crate::protocol::{
 
 pub(crate) struct WorkerWriteRequest {
     pub(crate) frame: Vec<u8>,
-    pub(crate) acknowledgment: Sender<Result<(), String>>,
+    pub(crate) acknowledgment: Sender<std::io::Result<()>>,
 }
 
 pub(crate) enum WorkerResponse {
@@ -803,7 +803,7 @@ impl ExactWorkerClient {
                     self.ensure_not_cancelled(cancelled)?;
                     return match result {
                         Ok(()) => Ok(()),
-                        Err(message) => self.fail(WorkerError::Transport(message)),
+                        Err(error) => self.fail(WorkerError::Transport(error.to_string())),
                     };
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -968,10 +968,7 @@ fn xde_part_evidence(
 fn spawn_worker_writer(mut stdin: ChildStdin, receiver: Receiver<WorkerWriteRequest>) {
     let _ = std::thread::spawn(move || {
         while let Ok(request) = receiver.recv() {
-            let result = stdin
-                .write_all(&request.frame)
-                .and_then(|()| stdin.flush())
-                .map_err(|error| error.to_string());
+            let result = stdin.write_all(&request.frame).and_then(|()| stdin.flush());
             let failed = result.is_err();
             let _ = request.acknowledgment.send(result);
             if failed {

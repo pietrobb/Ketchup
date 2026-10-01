@@ -992,9 +992,11 @@ impl KetchupApp {
         source: String,
         replan_attempted: bool,
         replan_diagnostic: Option<AssistantRejectionDiagnostic>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Rejection> {
         let handshake = self.assistant_handshake();
-        handshake.validate().map_err(|error| error.to_string())?;
+        handshake
+            .validate()
+            .map_err(|error| failed("assistant.handshake", error))?;
         let request_document_id = self.document.current().document_id();
         let request_revision_id = self.document.current().revision_id();
         let request_canonical_digest = self.document.current().canonical_digest();
@@ -1010,7 +1012,7 @@ impl KetchupApp {
         std::thread::spawn(move || {
             let result = request_snapshot
                 .build(&worker_cancellation, true)
-                .map_err(|error| error.to_string())
+                .map_err(|error| failed("assistant.context", error))
                 .map(|mut document_context| {
                     if let Some(diagnostic) = replan_diagnostic {
                         document_context["assistant_replan"] = serde_json::json!({
@@ -1032,7 +1034,9 @@ impl KetchupApp {
                     )
                 })
                 .and_then(|response| {
-                    response.validate().map_err(|error| error.to_string())?;
+                    response
+                        .validate()
+                        .map_err(|error| failed("assistant.response", error))?;
                     Ok(response)
                 });
             if sender.send(result).is_ok() {
@@ -1113,7 +1117,7 @@ impl KetchupApp {
         ) {
             self.assistant.messages.push(AssistantChatMessage {
                 role: AssistantMessageRole::Error,
-                text: error,
+                text: error.reason_text().to_owned(),
                 source,
                 diagnostic: None,
             });
@@ -1861,7 +1865,7 @@ impl KetchupApp {
                         "planning.assembly_kinematics_invalid",
                         "assembly_kinematics",
                         "current_selection",
-                        error,
+                        error.reason_text(),
                         "Restore the original two-occurrence selection and retry the preview.",
                     )
                 })?,
@@ -2096,7 +2100,7 @@ impl KetchupApp {
                         if replan_will_run {
                             let request_snapshot =
                                 self.assistant_request_snapshot(&pending.message);
-                            if let Err(text) = self.start_assistant_request(
+                            if let Err(refusal) = self.start_assistant_request(
                                 context,
                                 pending.message,
                                 request_snapshot,
@@ -2106,7 +2110,7 @@ impl KetchupApp {
                             ) {
                                 self.assistant.messages.push(AssistantChatMessage {
                                     role: AssistantMessageRole::Error,
-                                    text,
+                                    text: refusal.reason_text().to_owned(),
                                     source: pending.source,
                                     diagnostic: None,
                                 });
@@ -2179,7 +2183,7 @@ impl KetchupApp {
                         cad_edit_program.is_some(),
                         response.fea_review.is_some(),
                     ])
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| failed("assistant.single_action", error))?;
                     Ok((response.result, cad_edit_program, response.fea_review))
                 });
                 match result {
@@ -2229,9 +2233,9 @@ impl KetchupApp {
                             diagnostic: None,
                         });
                     }
-                    Err(text) => self.assistant.messages.push(AssistantChatMessage {
+                    Err(refusal) => self.assistant.messages.push(AssistantChatMessage {
                         role: AssistantMessageRole::Error,
-                        text,
+                        text: refusal.reason_text().to_owned(),
                         source,
                         diagnostic: None,
                     }),
@@ -2273,7 +2277,12 @@ impl KetchupApp {
     pub(crate) fn assistant_selection_summary(&self) -> String {
         let selected = match self.selected_root_occurrence_ids() {
             Ok(selected) => selected,
-            Err(error) => return self.root_occurrence_selection_error(&error),
+            Err(error) => {
+                return self
+                    .root_occurrence_selection_error(&error)
+                    .reason_text()
+                    .to_owned();
+            }
         };
         match selected.len() {
             0 => self.catalog.text("assistant-selection-none"),

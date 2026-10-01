@@ -6,14 +6,16 @@ impl KetchupApp {
     pub fn current_sheet_metal_manufacturing_projection(
         &self,
         feature_id: FeatureId,
-    ) -> Result<SheetMetalManufacturingProjection, String> {
+    ) -> Result<
+        SheetMetalManufacturingProjection,
+        ketchup_model::sheet_metal::SheetMetalManufacturingExportError,
+    > {
         project_sheet_metal_manufacturing(&self.document.current(), feature_id)
-            .map_err(|error| error.to_string())
     }
 
     pub fn current_general_fabrication_projection(
         &mut self,
-    ) -> Result<GeneralFabricationProjection, String> {
+    ) -> Result<GeneralFabricationProjection, Rejection> {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let tolerance = snapshot.tolerance();
@@ -37,10 +39,12 @@ impl KetchupApp {
             .iter()
             .find(|occurrence| definition_mesh_body(&snapshot, occurrence.definition_id).is_some())
         {
-            return Err(format!(
-                "visible occurrence {:?} is a mesh body without verified exact geometry; general fabrication projection is unavailable until explicit exact conversion",
-                occurrence.instance_path
-            ));
+            return Err(
+                Rejection::new("fabrication.mesh_body", RejectionPhase::Validation)
+                    .target(format!("{:?}", occurrence.instance_path))
+                    .reason("a visible occurrence is a mesh body without verified exact geometry; general fabrication projection is unavailable until explicit exact conversion")
+                    .fix_hint("Convert the mesh body to exact geometry first."),
+            );
         }
         let participants = occurrences
             .into_iter()
@@ -51,7 +55,7 @@ impl KetchupApp {
                     occurrence.instance_path,
                     tolerance,
                 )
-                .map_err(|error| format!("visible exact body is not fabrication-ready: {error:?}"))
+                .map_err(|error| failed("fabrication.participant", error))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let collision_validation =
@@ -62,7 +66,7 @@ impl KetchupApp {
                 self.validator_worker_path(),
                 Duration::from_secs(30),
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("fabrication.collision_validation", error))?;
         project_general_fabrication(
             &snapshot,
             &self.exact.results,
@@ -70,7 +74,7 @@ impl KetchupApp {
             &collision_validation.report,
             tolerance,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| failed("fabrication.projection", error))
     }
 
     /// Screen rectangle of the 3D viewport, or `None` before the first frame

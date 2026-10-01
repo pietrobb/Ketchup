@@ -570,10 +570,10 @@ impl KetchupApp {
         }
     }
 
-    fn assembly_error(&mut self, reason: impl ToString) {
+    fn assembly_error(&mut self, refusal: Rejection) {
         self.digest = self.catalog.format(
             "assembly-error",
-            &BTreeMap::from([("reason", reason.to_string())]),
+            &BTreeMap::from([("reason", refusal.reason_text().to_owned())]),
         );
     }
 
@@ -589,24 +589,24 @@ impl KetchupApp {
     fn derive_assembly_preview_solve(
         &self,
         proposal: &Proposal,
-    ) -> Result<Option<AssemblySolveResult>, String> {
+    ) -> Result<Option<AssemblySolveResult>, Rejection> {
         let current = self.document.current();
         if proposal.document_id() != current.document_id()
             || proposal.provenance_revision() != current.revision_id()
             || proposal.provenance_digest() != current.canonical_digest()
         {
-            return Err(self.catalog.text("error-preview-stale"));
+            return Err(self.catalog.refusal("error-preview-stale"));
         }
         let candidate = self
             .document
             .preview_batch(proposal.batch())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("assembly.preview_batch", error))?;
         if candidate.assembly_mates().next().is_none() {
             return Ok(None);
         }
         solve_rigid_assembly(&candidate, AssemblySolverPolicy::default())
             .map(Some)
-            .map_err(|error| error.to_string())
+            .map_err(|error| failed("assembly.solve", error))
     }
 
     fn placement_point(transform: Transform, local: [f64; 3]) -> Vec3 {
@@ -621,7 +621,10 @@ impl KetchupApp {
         (length.is_finite() && length > f64::EPSILON).then_some(direction * (1.0 / length))
     }
 
-    fn derive_one_time_placement_proposal(&self, mate: &AssemblyMate) -> Result<Proposal, String> {
+    fn derive_one_time_placement_proposal(
+        &self,
+        mate: &AssemblyMate,
+    ) -> Result<Proposal, Rejection> {
         let snapshot = self.document.current();
         let reference_id = mate.endpoint_a().occurrence_id();
         let moving_id = mate.endpoint_b().occurrence_id();
@@ -629,19 +632,19 @@ impl KetchupApp {
             snapshot.occurrence(reference_id),
             snapshot.occurrence(moving_id),
         ) else {
-            return Err(self.catalog.text("assembly-error-endpoints"));
+            return Err(self.catalog.refusal("assembly-error-endpoints"));
         };
         if reference_id == moving_id || snapshot.assembly_mate(mate.id()).is_some() {
-            return Err(self.catalog.text("assembly-error-endpoints"));
+            return Err(self.catalog.refusal("assembly-error-endpoints"));
         }
         if snapshot.occurrence_is_grounded(moving_id) {
-            return Err(self.catalog.text("assembly-error-place-grounded"));
+            return Err(self.catalog.refusal("assembly-error-place-grounded"));
         }
         if snapshot.assembly_mates().any(|existing| {
             existing.endpoint_a().occurrence_id() == moving_id
                 || existing.endpoint_b().occurrence_id() == moving_id
         }) {
-            return Err(self.catalog.text("assembly-error-place-constrained"));
+            return Err(self.catalog.refusal("assembly-error-place-constrained"));
         }
         let (
             AssemblyMateKind::CoincidentPlanar {
@@ -656,7 +659,7 @@ impl KetchupApp {
             mate.endpoint_b().planar_face_attachment(),
         )
         else {
-            return Err(self.catalog.text("assembly-error-references"));
+            return Err(self.catalog.refusal("assembly-error-references"));
         };
         if self
             .exact
@@ -669,20 +672,20 @@ impl KetchupApp {
                 .planar_face_attachment(&snapshot, source.reference())
                 != Some(source)
         {
-            return Err(self.catalog.text("assembly-error-references"));
+            return Err(self.catalog.refusal("assembly-error-references"));
         }
         let target_world = snapshot
             .world_transform_for_occurrence(reference_id)
-            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-endpoints"))?;
         let moving_world = snapshot
             .world_transform_for_occurrence(moving_id)
-            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-endpoints"))?;
         let target_origin = Self::placement_point(target_world, target.local_origin_mm());
         let moving_origin = Self::placement_point(moving_world, source.local_origin_mm());
         let target_normal = Self::placement_direction(target_world, target.local_unit_normal())
-            .ok_or_else(|| self.catalog.text("assembly-error-references"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-references"))?;
         let moving_normal = Self::placement_direction(moving_world, source.local_unit_normal())
-            .ok_or_else(|| self.catalog.text("assembly-error-references"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-references"))?;
         let desired_normal = target_normal * if reversed { 1.0 } else { -1.0 };
         let cross = Vec3::new(
             moving_normal.y * desired_normal.z - moving_normal.z * desired_normal.y,
@@ -700,7 +703,7 @@ impl KetchupApp {
                 cross,
                 cross_length.atan2(dot).to_degrees(),
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("assembly.place_rotation", error))?;
             let parent_world = moving
                 .parent()
                 .map_or(Some(Transform::identity()), |parent| {
@@ -708,10 +711,10 @@ impl KetchupApp {
                 });
             rotation_in_parent_space(
                 rotation,
-                parent_world.ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?,
+                parent_world.ok_or_else(|| self.catalog.refusal("assembly-error-endpoints"))?,
                 moving.transform(),
             )
-            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?
+            .ok_or_else(|| self.catalog.refusal("assembly-error-endpoints"))?
         } else if dot < 0.0 {
             let basis = if moving_normal.x.abs() < 0.9 {
                 Vec3::new(1.0, 0.0, 0.0)
@@ -724,7 +727,7 @@ impl KetchupApp {
                 moving_normal.x * basis.y - moving_normal.y * basis.x,
             );
             let rotation = world_axis_rotation_transform(moving_origin, axis, 180.0)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| failed("assembly.place_rotation", error))?;
             let parent_world = moving
                 .parent()
                 .map_or(Some(Transform::identity()), |parent| {
@@ -732,10 +735,10 @@ impl KetchupApp {
                 });
             rotation_in_parent_space(
                 rotation,
-                parent_world.ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?,
+                parent_world.ok_or_else(|| self.catalog.refusal("assembly-error-endpoints"))?,
                 moving.transform(),
             )
-            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?
+            .ok_or_else(|| self.catalog.refusal("assembly-error-endpoints"))?
         } else {
             moving.transform()
         };
@@ -743,9 +746,9 @@ impl KetchupApp {
         let delta = target_position - moving_origin;
         let transform =
             translated_in_parent_space(&snapshot, moving.parent(), rotated_local, delta)
-                .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?;
+                .ok_or_else(|| self.catalog.refusal("assembly-error-endpoints"))?;
         if moving.transform() == transform {
-            return Err(self.catalog.text("assembly-error-place-no-change"));
+            return Err(self.catalog.refusal("assembly-error-place-no-change"));
         }
         self.document
             .prepare_proposal_with_context(
@@ -755,13 +758,13 @@ impl KetchupApp {
                 }]),
                 ProposalContext::canonical_preview(),
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| failed("assembly.prepare_proposal", error))
     }
 
     pub(super) fn derive_assembly_preview_proposal(
         &self,
         source: &AssemblyPreviewSource,
-    ) -> Result<Proposal, String> {
+    ) -> Result<Proposal, Rejection> {
         let snapshot = self.document.current();
         let batch = match source {
             AssemblyPreviewSource::InsertOccurrence {
@@ -771,7 +774,7 @@ impl KetchupApp {
                 transform,
             } => {
                 if name.trim().is_empty() || snapshot.definition(*definition_id).is_none() {
-                    return Err(self.catalog.text("assembly-error-name"));
+                    return Err(self.catalog.refusal("assembly-error-name"));
                 }
                 CommandBatch::new(vec![CanonicalCommand::CreateOccurrence {
                     id: *id,
@@ -799,7 +802,7 @@ impl KetchupApp {
             AssemblyPreviewSource::Mate { mate, editing } => {
                 let existing = snapshot.assembly_mate(mate.id());
                 if *editing != existing.is_some() {
-                    return Err(self.catalog.text("error-preview-stale"));
+                    return Err(self.catalog.refusal("error-preview-stale"));
                 }
                 let commands = if let Some(existing) = existing {
                     if existing.endpoint_a() == mate.endpoint_a()
@@ -840,7 +843,7 @@ impl KetchupApp {
                     || snapshot.occurrence(selected_occurrences[1]).is_none()
                     || *editing != snapshot.assembly_joint(joint.id()).is_some()
                 {
-                    return Err(self.catalog.text("error-preview-stale"));
+                    return Err(self.catalog.refusal("error-preview-stale"));
                 }
                 if *editing {
                     let existing = snapshot
@@ -849,7 +852,7 @@ impl KetchupApp {
                     let position = joint
                         .kind()
                         .position()
-                        .ok_or_else(|| self.catalog.text("assembly-error-joint-position"))?;
+                        .ok_or_else(|| self.catalog.refusal("assembly-error-joint-position"))?;
                     let position_only =
                         existing.kind().with_position(position) == Some(joint.kind());
                     let solution = if position_only {
@@ -863,7 +866,7 @@ impl KetchupApp {
                             &BTreeMap::from([(joint.id(), joint.kind())]),
                         )
                     }
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| failed("assembly.joint_kinematics", error))?;
                     let transforms = solution
                         .poses()
                         .iter()
@@ -917,7 +920,7 @@ impl KetchupApp {
             }
             AssemblyPreviewSource::Coupling { coupling, editing } => {
                 if *editing != snapshot.assembly_motion_coupling(coupling.id()).is_some() {
-                    return Err(self.catalog.text("error-preview-stale"));
+                    return Err(self.catalog.refusal("error-preview-stale"));
                 }
                 let command = if *editing {
                     CanonicalCommand::UpdateAssemblyMotionCoupling(coupling.clone())
@@ -942,9 +945,9 @@ impl KetchupApp {
             .publication_batch(&snapshot)
             .map_err(|error| match error {
                 AssemblyKinematicPublishError::NoCanonicalChanges => {
-                    self.catalog.text("assembly-error-drag-no-change")
+                    self.catalog.refusal("assembly-error-drag-no-change")
                 }
-                error => error.to_string(),
+                error => failed("assembly.drag_publication", error),
             })?,
             AssemblyPreviewSource::MotionStudy {
                 study,
@@ -962,7 +965,7 @@ impl KetchupApp {
                         .iter()
                         .any(|driver| snapshot.assembly_joint(driver.joint_id()).is_none())
                 {
-                    return Err(self.catalog.text("error-preview-stale"));
+                    return Err(self.catalog.refusal("error-preview-stale"));
                 }
                 let command = if *editing {
                     CanonicalCommand::UpdateAssemblyMotionStudy(study.clone())
@@ -975,48 +978,45 @@ impl KetchupApp {
         };
         self.document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| error.to_string())
+            .map_err(|error| failed("assembly.prepare_proposal", error))
     }
 
-    fn localized_kinematic_error(&self, error: AssemblyKinematicSolveError) -> String {
-        match error {
-            AssemblyKinematicSolveError::UnknownDriverJoint(id) => self.catalog.format(
-                "assembly-error-drag-missing-joint",
-                &BTreeMap::from([("id", id.0.to_string())]),
-            ),
-            AssemblyKinematicSolveError::FixedJointDriven(id) => self.catalog.format(
-                "assembly-error-drag-fixed-joint",
-                &BTreeMap::from([("id", id.0.to_string())]),
-            ),
-            AssemblyKinematicSolveError::InvalidDriverPosition(id) => self.catalog.format(
-                "assembly-error-drag-unreachable",
-                &BTreeMap::from([("id", id.0.to_string())]),
-            ),
-            AssemblyKinematicSolveError::OverConstrainedDriver(id) => self.catalog.format(
-                "assembly-error-kinematic-conflict-joint",
-                &BTreeMap::from([("id", id.0.to_string())]),
-            ),
-            AssemblyKinematicSolveError::CouplingConflict(id) => self.catalog.format(
-                "assembly-error-kinematic-conflict-coupling",
-                &BTreeMap::from([("id", id.0.to_string())]),
-            ),
-            AssemblyKinematicSolveError::CoupledPositionOutsideLimits(id) => self.catalog.format(
-                "assembly-error-kinematic-limit-joint",
-                &BTreeMap::from([("id", id.0.to_string())]),
-            ),
-            error => error.to_string(),
-        }
+    fn localized_kinematic_error(&self, error: AssemblyKinematicSolveError) -> Rejection {
+        let (key, id) = match &error {
+            AssemblyKinematicSolveError::UnknownDriverJoint(id) => {
+                ("assembly-error-drag-missing-joint", id.0)
+            }
+            AssemblyKinematicSolveError::FixedJointDriven(id) => {
+                ("assembly-error-drag-fixed-joint", id.0)
+            }
+            AssemblyKinematicSolveError::InvalidDriverPosition(id) => {
+                ("assembly-error-drag-unreachable", id.0)
+            }
+            AssemblyKinematicSolveError::OverConstrainedDriver(id) => {
+                ("assembly-error-kinematic-conflict-joint", id.0)
+            }
+            AssemblyKinematicSolveError::CouplingConflict(id) => {
+                ("assembly-error-kinematic-conflict-coupling", id.0)
+            }
+            AssemblyKinematicSolveError::CoupledPositionOutsideLimits(id) => {
+                ("assembly-error-kinematic-limit-joint", id.0)
+            }
+            _ => return failed("assembly.kinematics", error),
+        };
+        self.catalog
+            .refusal_with(key, &BTreeMap::from([("id", id.to_string())]))
+            .caused_by(error)
     }
 
     fn derive_assembly_preview_kinematics(
         &self,
         source: &AssemblyPreviewSource,
         proposal: &Proposal,
-    ) -> Result<Option<AssemblyKinematicSolution>, String> {
+    ) -> Result<Option<AssemblyKinematicSolution>, Rejection> {
         let candidate = self
             .document
             .preview_batch(proposal.batch())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("assembly.preview_batch", error))?;
         match source {
             AssemblyPreviewSource::Joint { .. } | AssemblyPreviewSource::Coupling { .. } => {
                 solve_assembly_joint_kinematics_with_drivers(&candidate, &[])
@@ -1080,7 +1080,7 @@ impl KetchupApp {
     fn derive_assembly_drag_clearance(
         &self,
         source: &AssemblyPreviewSource,
-    ) -> Result<Option<AssemblyMotionClearanceAnalysis>, String> {
+    ) -> Result<Option<AssemblyMotionClearanceAnalysis>, Rejection> {
         let AssemblyPreviewSource::Drag {
             joint_id,
             requested_position,
@@ -1096,7 +1096,7 @@ impl KetchupApp {
         if bodies.len() < 2 {
             return Err(self
                 .catalog
-                .text("assembly-error-drag-collision-unavailable"));
+                .refusal("assembly-error-drag-collision-unavailable"));
         }
         preview_assembly_joint_drag_clearance(
             &snapshot,
@@ -1108,19 +1108,19 @@ impl KetchupApp {
             0.0,
         )
         .map(|preview| Some(preview.clearance().clone()))
-        .map_err(|error| error.to_string())
+        .map_err(|error| failed("assembly.drag_clearance", error))
     }
 
     fn derive_assembly_preview_plan(
         &self,
         source: &AssemblyPreviewSource,
-    ) -> Result<AssemblyPreviewPlan, String> {
+    ) -> Result<AssemblyPreviewPlan, Rejection> {
         let proposal = self.derive_assembly_preview_proposal(source)?;
         let solve_result = self.derive_assembly_preview_solve(&proposal)?;
         let kinematic_result = self.derive_assembly_preview_kinematics(source, &proposal)?;
         let drag_clearance = self.derive_assembly_drag_clearance(source)?;
         if !Self::assembly_preview_solve_is_acceptable(solve_result.as_ref()) {
-            return Err(self.catalog.text("assembly-error-solve-refused"));
+            return Err(self.catalog.refusal("assembly-error-solve-refused"));
         }
         Ok(AssemblyPreviewPlan {
             source: source.clone(),
@@ -1163,7 +1163,7 @@ impl KetchupApp {
         };
         self.assembly_editor.solve_result = solve_result.clone();
         if !Self::assembly_preview_solve_is_acceptable(solve_result.as_ref()) {
-            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            self.assembly_error(self.catalog.refusal("assembly-error-solve-refused"));
             return false;
         }
         let action = self.catalog.text(source.action_key());
@@ -1189,16 +1189,16 @@ impl KetchupApp {
     fn preview_insert_occurrence(&mut self) -> bool {
         let snapshot = self.document.current();
         let Some(definition_id) = self.assembly_editor.definition else {
-            self.assembly_error(self.catalog.text("assembly-error-definition"));
+            self.assembly_error(self.catalog.refusal("assembly-error-definition"));
             return false;
         };
         if snapshot.definition(definition_id).is_none() {
-            self.assembly_error(self.catalog.text("assembly-error-definition"));
+            self.assembly_error(self.catalog.refusal("assembly-error-definition"));
             return false;
         }
         let name = self.assembly_editor.occurrence_name.trim().to_owned();
         if name.is_empty() {
-            self.assembly_error(self.catalog.text("assembly-error-name"));
+            self.assembly_error(self.catalog.refusal("assembly-error-name"));
             return false;
         }
         let id = OccurrenceId(
@@ -1224,14 +1224,16 @@ impl KetchupApp {
         self.prepare_assembly_preview(AssemblyPreviewSource::GroundOccurrence { id, grounded })
     }
 
-    fn assembly_kinematic_selection_result(&self) -> Result<[OccurrenceId; 2], String> {
+    fn assembly_kinematic_selection_result(&self) -> Result<[OccurrenceId; 2], Rejection> {
         let selected = self
             .selected_root_occurrence_ids()
             .map_err(|error| self.root_occurrence_selection_error(&error))?
             .into_iter()
             .collect::<Vec<_>>();
         <[OccurrenceId; 2]>::try_from(selected.as_slice()).map_err(
-            |_: std::array::TryFromSliceError| self.catalog.text("assembly-error-joint-selection"),
+            |_: std::array::TryFromSliceError| {
+                self.catalog.refusal("assembly-error-joint-selection")
+            },
         )
     }
 
@@ -1239,7 +1241,7 @@ impl KetchupApp {
         self.assembly_kinematic_selection_result().ok()
     }
 
-    fn assembly_joint_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+    fn assembly_joint_preview_source(&self) -> Result<AssemblyPreviewSource, Rejection> {
         let selected_occurrences = self.assembly_kinematic_selection_result()?;
         let snapshot = self.document.current();
         let existing = snapshot.assembly_joints().find(|joint| {
@@ -1253,7 +1255,7 @@ impl KetchupApp {
             .parse::<f64>()
             .map_err(|error| {
                 self.catalog
-                    .text_because("assembly-error-joint-position", error)
+                    .refusal_because("assembly-error-joint-position", error)
             })?;
         let kind = match self.assembly_editor.joint_kind {
             AssemblyJointKindChoice::Prismatic => AssemblyJointKind::Prismatic {
@@ -1269,10 +1271,10 @@ impl KetchupApp {
                     .parse::<f64>()
                     .map_err(|error| {
                         self.catalog
-                            .text_because("assembly-error-joint-lead", error)
+                            .refusal_because("assembly-error-joint-lead", error)
                     })?;
                 if !lead_mm_per_revolution.is_finite() || lead_mm_per_revolution <= 0.0 {
-                    return Err(self.catalog.text("assembly-error-joint-lead"));
+                    return Err(self.catalog.refusal("assembly-error-joint-lead"));
                 }
                 AssemblyJointKind::Helical {
                     axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
@@ -1302,21 +1304,21 @@ impl KetchupApp {
         })
     }
 
-    fn assembly_coupling_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+    fn assembly_coupling_preview_source(&self) -> Result<AssemblyPreviewSource, Rejection> {
         let snapshot = self.document.current();
         let input_joint_id = self
             .assembly_editor
             .coupling_input_joint
-            .ok_or_else(|| self.catalog.text("assembly-error-coupling-joints"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-coupling-joints"))?;
         let output_joint_id = self
             .assembly_editor
             .coupling_output_joint
-            .ok_or_else(|| self.catalog.text("assembly-error-coupling-joints"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-coupling-joints"))?;
         if input_joint_id == output_joint_id
             || snapshot.assembly_joint(input_joint_id).is_none()
             || snapshot.assembly_joint(output_joint_id).is_none()
         {
-            return Err(self.catalog.text("assembly-error-coupling-joints"));
+            return Err(self.catalog.refusal("assembly-error-coupling-joints"));
         }
         let input_reference_position = self
             .assembly_editor
@@ -1325,7 +1327,7 @@ impl KetchupApp {
             .parse::<f64>()
             .map_err(|error| {
                 self.catalog
-                    .text_because("assembly-error-coupling-parameter", error)
+                    .refusal_because("assembly-error-coupling-parameter", error)
             })?;
         let output_reference_position = self
             .assembly_editor
@@ -1334,25 +1336,21 @@ impl KetchupApp {
             .parse::<f64>()
             .map_err(|error| {
                 self.catalog
-                    .text_because("assembly-error-coupling-parameter", error)
+                    .refusal_because("assembly-error-coupling-parameter", error)
             })?;
         let first = &self.assembly_editor.coupling_first_parameter;
         let second = &self.assembly_editor.coupling_second_parameter;
         let option = self.assembly_editor.coupling_option;
-        let parameter_error = |error: &dyn std::fmt::Display| {
-            self.catalog
-                .text_because("assembly-error-coupling-parameter", error)
-        };
         let transmission = match self.assembly_editor.coupling_kind {
             AssemblyCouplingKindChoice::GearPair => AssemblyTransmissionKind::GearPair {
-                input_teeth: first
-                    .trim()
-                    .parse::<u32>()
-                    .map_err(|error| parameter_error(&error))?,
-                output_teeth: second
-                    .trim()
-                    .parse::<u32>()
-                    .map_err(|error| parameter_error(&error))?,
+                input_teeth: first.trim().parse::<u32>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
+                output_teeth: second.trim().parse::<u32>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
                 mesh: if option {
                     GearMeshKind::Internal
                 } else {
@@ -1360,31 +1358,31 @@ impl KetchupApp {
                 },
             },
             AssemblyCouplingKindChoice::Belt => AssemblyTransmissionKind::Belt {
-                input_pitch_diameter_mm: first
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|error| parameter_error(&error))?,
-                output_pitch_diameter_mm: second
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|error| parameter_error(&error))?,
+                input_pitch_diameter_mm: first.trim().parse::<f64>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
+                output_pitch_diameter_mm: second.trim().parse::<f64>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
                 crossed: option,
             },
             AssemblyCouplingKindChoice::Chain => AssemblyTransmissionKind::Chain {
-                input_sprocket_teeth: first
-                    .trim()
-                    .parse::<u32>()
-                    .map_err(|error| parameter_error(&error))?,
-                output_sprocket_teeth: second
-                    .trim()
-                    .parse::<u32>()
-                    .map_err(|error| parameter_error(&error))?,
+                input_sprocket_teeth: first.trim().parse::<u32>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
+                output_sprocket_teeth: second.trim().parse::<u32>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
             },
             AssemblyCouplingKindChoice::RackAndPinion => AssemblyTransmissionKind::RackAndPinion {
-                pinion_pitch_diameter_mm: first
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|error| parameter_error(&error))?,
+                pinion_pitch_diameter_mm: first.trim().parse::<f64>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
                 direction: if option {
                     AssemblyMotionDirection::Opposite
                 } else {
@@ -1392,10 +1390,10 @@ impl KetchupApp {
                 },
             },
             AssemblyCouplingKindChoice::LeadScrew => AssemblyTransmissionKind::LeadScrew {
-                lead_mm_per_revolution: first
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|error| parameter_error(&error))?,
+                lead_mm_per_revolution: first.trim().parse::<f64>().map_err(|error| {
+                    self.catalog
+                        .refusal_because("assembly-error-coupling-parameter", error)
+                })?,
                 handedness: if option {
                     ScrewHandedness::Left
                 } else {
@@ -1428,24 +1426,24 @@ impl KetchupApp {
             transmission,
         );
         if !coupling.has_valid_shape() {
-            return Err(self.catalog.text("assembly-error-coupling-parameter"));
+            return Err(self.catalog.refusal("assembly-error-coupling-parameter"));
         }
         Ok(AssemblyPreviewSource::Coupling { coupling, editing })
     }
 
-    fn assembly_drag_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+    fn assembly_drag_preview_source(&self) -> Result<AssemblyPreviewSource, Rejection> {
         let joint_id = self
             .assembly_editor
             .drag_joint
-            .ok_or_else(|| self.catalog.text("assembly-error-drag-joint"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-drag-joint"))?;
         let joint = self
             .document
             .current()
             .assembly_joint(joint_id)
             .cloned()
-            .ok_or_else(|| self.catalog.text("assembly-error-drag-joint"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-drag-joint"))?;
         if joint.kind().position().is_none() {
-            return Err(self.catalog.text("assembly-error-drag-joint"));
+            return Err(self.catalog.refusal("assembly-error-drag-joint"));
         }
         let requested_position = self
             .assembly_editor
@@ -1454,10 +1452,10 @@ impl KetchupApp {
             .parse::<f64>()
             .map_err(|error| {
                 self.catalog
-                    .text_because("assembly-error-drag-position", error)
+                    .refusal_because("assembly-error-drag-position", error)
             })?;
         if !requested_position.is_finite() {
-            return Err(self.catalog.text("assembly-error-drag-position"));
+            return Err(self.catalog.refusal("assembly-error-drag-position"));
         }
         Ok(AssemblyPreviewSource::Drag {
             joint_id,
@@ -1468,7 +1466,7 @@ impl KetchupApp {
         })
     }
 
-    fn assembly_motion_study_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+    fn assembly_motion_study_preview_source(&self) -> Result<AssemblyPreviewSource, Rejection> {
         let selected_occurrences = self.assembly_kinematic_selection_result()?;
         let snapshot = self.document.current();
         let joint = snapshot
@@ -1477,7 +1475,7 @@ impl KetchupApp {
                 joint.parent_occurrence_id() == selected_occurrences[0]
                     && joint.child_occurrence_id() == selected_occurrences[1]
             })
-            .ok_or_else(|| self.catalog.text("assembly-error-motion-joint"))?;
+            .ok_or_else(|| self.catalog.refusal("assembly-error-motion-joint"))?;
         let position = self
             .assembly_editor
             .motion_position_input
@@ -1485,11 +1483,11 @@ impl KetchupApp {
             .parse::<f64>()
             .map_err(|error| {
                 self.catalog
-                    .text_because("assembly-error-motion-position", error)
+                    .refusal_because("assembly-error-motion-position", error)
             })?;
         let name = self.assembly_editor.motion_name_input.trim();
         if name.is_empty() {
-            return Err(self.catalog.text("assembly-error-motion-name"));
+            return Err(self.catalog.refusal("assembly-error-motion-name"));
         }
         let existing = snapshot.assembly_motion_studies().find(|study| {
             study
@@ -1704,7 +1702,7 @@ impl KetchupApp {
         instance_paths: &[InstancePath],
         sheet_id: DrawingSheetId,
         name: &str,
-    ) -> Result<Proposal, String> {
+    ) -> Result<Proposal, Rejection> {
         let snapshot = self.document.current();
         let selected = self.selected_instance_paths();
         if instance_paths.is_empty()
@@ -1714,14 +1712,14 @@ impl KetchupApp {
                 .iter()
                 .any(|path| snapshot.resolve_instance_path(path).is_err())
         {
-            return Err(self.catalog.text("error-preview-stale"));
+            return Err(self.catalog.refusal("error-preview-stale"));
         }
         let source = if let [instance_path] = instance_paths
             && instance_path.is_root()
         {
             let definition_id = snapshot
                 .resolve_instance_path(instance_path)
-                .map_err(|error| self.catalog.text_because("error-preview-stale", error))?
+                .map_err(|error| self.catalog.refusal_because("error-preview-stale", error))?
                 .definition_id;
             DrawingSource::Definition(definition_id)
         } else {
@@ -1738,7 +1736,9 @@ impl KetchupApp {
                 .map(|(index, path)| {
                     let definition_id = snapshot
                         .resolve_instance_path(path)
-                        .map_err(|error| self.catalog.text_because("error-preview-stale", error))?
+                        .map_err(|error| {
+                            self.catalog.refusal_because("error-preview-stale", error)
+                        })?
                         .definition_id;
                     let position = *positions.entry(definition_id).or_insert_with(|| {
                         let assigned = next_position;
@@ -1752,7 +1752,7 @@ impl KetchupApp {
                         position,
                         [8.0, 8.0],
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| failed("assembly.drawing_balloon", error))
                 })
                 .collect::<Result<Vec<_>, _>>()?
         } else {
@@ -1760,17 +1760,17 @@ impl KetchupApp {
         };
         let sheet = DrawingSheet::new(sheet_id, name, source)
             .and_then(|sheet| sheet.with_bom_balloons(balloons))
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("assembly.drawing_sheet", error))?;
         let (proposal, drawing) =
             prepare_create_drawing_sheet(&self.document, &self.exact.results, sheet)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| failed("assembly.drawing_proposal", error))?;
         if drawing.views.len() != 3
             || drawing
                 .views
                 .iter()
                 .any(|view| view.visible_lines.is_empty())
         {
-            return Err(self.catalog.text("assembly-error-solve-refused"));
+            return Err(self.catalog.refusal("assembly-error-solve-refused"));
         }
         Ok(proposal)
     }
@@ -1786,7 +1786,7 @@ impl KetchupApp {
                 .iter()
                 .any(|path| snapshot.resolve_instance_path(path).is_err())
         {
-            self.assembly_error(self.catalog.text("assembly-error-drawing-selection"));
+            self.assembly_error(self.catalog.refusal("assembly-error-drawing-selection"));
             return false;
         }
         let sheet_id = DrawingSheetId(
@@ -1803,7 +1803,7 @@ impl KetchupApp {
                 .into_iter()
                 .find(|occurrence| occurrence.instance_path == *instance_path)
             else {
-                self.assembly_error(self.catalog.text("assembly-error-drawing-selection"));
+                self.assembly_error(self.catalog.refusal("assembly-error-drawing-selection"));
                 return false;
             };
             self.catalog.format(
@@ -1863,34 +1863,34 @@ impl KetchupApp {
             self.assembly_editor.endpoint_a,
             self.assembly_editor.endpoint_b,
         ) else {
-            self.assembly_error(self.catalog.text("assembly-error-endpoints"));
+            self.assembly_error(self.catalog.refusal("assembly-error-endpoints"));
             return false;
         };
         if occurrence_a == occurrence_b {
-            self.assembly_error(self.catalog.text("assembly-error-endpoints"));
+            self.assembly_error(self.catalog.refusal("assembly-error-endpoints"));
             return false;
         }
         let (Some(reference_a_digest), Some(reference_b_digest)) = (
             self.assembly_editor.reference_a.as_deref(),
             self.assembly_editor.reference_b.as_deref(),
         ) else {
-            self.assembly_error(self.catalog.text("assembly-error-references"));
+            self.assembly_error(self.catalog.refusal("assembly-error-references"));
             return false;
         };
         let Some(reference_a) =
             self.selected_assembly_reference(&snapshot, occurrence_a, reference_a_digest)
         else {
-            self.assembly_error(self.catalog.text("assembly-error-references"));
+            self.assembly_error(self.catalog.refusal("assembly-error-references"));
             return false;
         };
         let Some(reference_b) =
             self.selected_assembly_reference(&snapshot, occurrence_b, reference_b_digest)
         else {
-            self.assembly_error(self.catalog.text("assembly-error-references"));
+            self.assembly_error(self.catalog.refusal("assembly-error-references"));
             return false;
         };
         let Some(kind) = self.editor_mate_kind() else {
-            self.assembly_error(self.catalog.text("assembly-error-value"));
+            self.assembly_error(self.catalog.refusal("assembly-error-value"));
             return false;
         };
         let id = self.assembly_editor.selected_mate.unwrap_or_else(|| {
@@ -1942,7 +1942,7 @@ impl KetchupApp {
                 }),
         };
         let Some((endpoint_a, endpoint_b)) = endpoints else {
-            self.assembly_error(self.catalog.text("assembly-error-references"));
+            self.assembly_error(self.catalog.refusal("assembly-error-references"));
             return false;
         };
         let mate = AssemblyMate::new(id, endpoint_a, endpoint_b, kind);
@@ -1954,7 +1954,7 @@ impl KetchupApp {
 
     fn preview_editor_placement(&mut self) -> bool {
         if self.assembly_editor.selected_mate.is_some() {
-            self.assembly_error(self.catalog.text("assembly-error-place-editing-mate"));
+            self.assembly_error(self.catalog.refusal("assembly-error-place-editing-mate"));
             return false;
         }
         if !self.preview_editor_mate() {
@@ -1968,7 +1968,7 @@ impl KetchupApp {
             editing: false,
         } = preview.plan.source
         else {
-            self.assembly_error(self.catalog.text("error-preview-stale"));
+            self.assembly_error(self.catalog.refusal("error-preview-stale"));
             return false;
         };
         self.assembly_editor.solve_result = None;
@@ -2018,19 +2018,19 @@ impl KetchupApp {
         self.prepare_assembly_preview(AssemblyPreviewSource::RemoveMate(id))
     }
 
-    fn plan_assembly_solve(&self) -> Result<Proposal, String> {
+    fn plan_assembly_solve(&self) -> Result<Proposal, Rejection> {
         let recomputed = recompute_rigid_assembly(
             &self.document,
             &self.exact.results,
             AssemblySolverPolicy::default(),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| failed("assembly.solve", error))?;
         if recomputed.status() != AssemblyRecomputeStatus::Solved {
-            return Err(self.catalog.text("assembly-error-solve-refused"));
+            return Err(self.catalog.refusal("assembly-error-solve-refused"));
         }
         recomputed
             .prepare_publication(&self.document)
-            .map_err(|error| error.to_string())
+            .map_err(|error| failed("assembly.solve_publication", error))
     }
 
     fn preview_assembly_solve(&mut self) -> bool {
@@ -2041,13 +2041,13 @@ impl KetchupApp {
         ) {
             Ok(result) => result,
             Err(error) => {
-                self.assembly_error(error);
+                self.assembly_error(failed("assembly.solve", error));
                 return false;
             }
         };
         self.assembly_editor.solve_result = recomputed.solve().cloned();
         if recomputed.status() != AssemblyRecomputeStatus::Solved {
-            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            self.assembly_error(self.catalog.refusal("assembly-error-solve-refused"));
             return false;
         }
         match recomputed.prepare_publication(&self.document) {
@@ -2057,7 +2057,7 @@ impl KetchupApp {
                 true
             }
             Err(error) => {
-                self.assembly_error(error);
+                self.assembly_error(failed("assembly.solve_publication", error));
                 false
             }
         }
@@ -2072,7 +2072,7 @@ impl KetchupApp {
             || preview.action != self.catalog.text(preview.plan.source.action_key())
             || preview.clear_occurrence_name != preview.plan.source.clear_occurrence_name()
         {
-            self.assembly_error(self.catalog.text("error-preview-stale"));
+            self.assembly_error(self.catalog.refusal("error-preview-stale"));
             return false;
         }
         match self.commit_verified_proposal_with_work_recovery(&preview.plan.proposal) {
@@ -2090,7 +2090,7 @@ impl KetchupApp {
                 true
             }
             Err(error) => {
-                self.assembly_error(error);
+                self.assembly_error(failed("assembly.commit", error));
                 false
             }
         }

@@ -1,6 +1,6 @@
 use ketchup_application::evaluation::{
-    EvidenceStatus, ExactEvaluationError, ExactEvaluationSelection, exact_source,
-    exact_worker_candidates,
+    EvidenceStatus, ExactEvaluationError, ExactEvaluationSelection, FullEvaluationReason,
+    exact_source, exact_worker_candidates,
 };
 use ketchup_application::{DocumentSession, SessionError, SessionSettings};
 use ketchup_assistant::sidecar::{
@@ -667,8 +667,8 @@ fn session_reuses_only_a_complete_full_baseline_for_incremental_exact() {
     assert!(!fallback.baseline_reused, "{fallback:?}");
     assert_eq!(fallback.selection, ExactEvaluationSelection::Full);
     assert_eq!(
-        fallback.fallback_reason.as_deref(),
-        Some("missing or stale complete exact baseline")
+        fallback.fallback_reason,
+        Some(FullEvaluationReason::MissingOrStaleBaseline)
     );
 }
 

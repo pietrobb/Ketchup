@@ -303,18 +303,17 @@ impl KetchupApp {
             let terminals = exact_body_terminal_features(snapshot, occurrence.definition_id)
                 .map_err(ExportError::failed)?;
             if terminals.is_empty() {
-                return Err(format!(
-                    "visible occurrence {:?} has no unambiguous terminal body",
-                    occurrence.instance_path
-                )
-                .into());
+                return Err(ExportError::OccurrenceNotExportable {
+                    occurrence: occurrence.instance_path.clone(),
+                    reason: "has no unambiguous terminal body",
+                });
             }
             for producer_feature_id in terminals.values() {
                 let feature = snapshot.feature(*producer_feature_id).ok_or_else(|| {
-                    format!(
-                        "visible occurrence {:?} has a missing terminal body feature",
-                        occurrence.instance_path
-                    )
+                    ExportError::OccurrenceNotExportable {
+                        occurrence: occurrence.instance_path.clone(),
+                        reason: "has a missing terminal body feature",
+                    }
                 })?;
                 let source = if let FeatureKind::MeshBody(mesh) = feature.kind() {
                     CurrentVisibleMeshSource::Canonical {
@@ -330,11 +329,9 @@ impl KetchupApp {
                             package.definition_id() == occurrence.definition_id
                                 && package.producer_feature_id() == *producer_feature_id
                         })
-                        .ok_or_else(|| {
-                            format!(
-                                "visible occurrence {:?} has no current accepted exact result for terminal feature {}",
-                                occurrence.instance_path, producer_feature_id.0
-                            )
+                        .ok_or_else(|| ExportError::OccurrenceNotExportable {
+                            occurrence: occurrence.instance_path.clone(),
+                            reason: "has no current accepted exact result for a terminal body feature",
                         })?;
                     CurrentVisibleMeshSource::Exact(Box::new((**package).clone()))
                 };

@@ -171,6 +171,33 @@ fn loop_bounds(segments: &[ProfileSegment]) -> ([f64; 2], [f64; 2]) {
     (low, high)
 }
 
+/// Why a drawn shape cannot be pushed or pulled into the part it lies on.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum DrawnShapeRefusal {
+    /// The shape holds a curve other than lines and arcs and lies on a program part.
+    CurveOnProgramPart,
+    /// The tool the distance asks for has no valid height.
+    ToolLength { length_mm: f64 },
+    /// The exact evaluator cannot build the cut into this part.
+    NotBuildable { part: String },
+}
+
+impl std::fmt::Display for DrawnShapeRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CurveOnProgramPart => formatter.write_str(
+                "a drawn curve cannot be pushed into a program part yet; draw it with lines and arcs",
+            ),
+            Self::ToolLength { length_mm } => write!(formatter, "cannot make a {length_mm} mm tool"),
+            Self::NotBuildable { part } => {
+                write!(formatter, "the drawn shape cannot be cut into part {part} yet")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DrawnShapeRefusal {}
+
 impl KetchupApp {
     /// Commits a batch that only adds a drawn shape. A program that owns the
     /// document keeps owning it: the shape is construction, not a part, and
@@ -194,7 +221,7 @@ impl KetchupApp {
         &self,
         selection: &SelectionId,
         distance_mm: f64,
-    ) -> Option<Result<DrawnShapeEdit, String>> {
+    ) -> Option<Result<DrawnShapeEdit, DrawnShapeRefusal>> {
         if !selection.instance_path.is_root() || distance_mm.abs() < 0.01 {
             return None;
         }
@@ -234,7 +261,7 @@ impl KetchupApp {
         occurrence: &Occurrence,
         segments: &[ProfileSegment],
         distance_mm: f64,
-    ) -> Option<Result<DrawnShapeEdit, String>> {
+    ) -> Option<Result<DrawnShapeEdit, DrawnShapeRefusal>> {
         let owned = ketchup_application::rule_program_part_sources(&program).ok()?;
         let transform = occurrence.transform();
         let to_world =
@@ -258,10 +285,7 @@ impl KetchupApp {
                     arc: Some((to_world(*center_mm), *clockwise)),
                 },
                 ProfileSegment::CubicBezier { .. } | ProfileSegment::Spline { .. } => {
-                    return Some(Err(
-                        "a drawn curve cannot be pushed into a program part yet; draw it with lines and arcs"
-                            .to_owned(),
-                    ));
+                    return Some(Err(DrawnShapeRefusal::CurveOnProgramPart));
                 }
             });
         }
@@ -428,7 +452,7 @@ impl KetchupApp {
         drawn: &Occurrence,
         segments: &[ProfileSegment],
         distance_mm: f64,
-    ) -> Option<Result<DrawnShapeEdit, String>> {
+    ) -> Option<Result<DrawnShapeEdit, DrawnShapeRefusal>> {
         let (low, high) = loop_bounds(segments);
         // A tessellated face lies in the drawing's plane within the model tolerance.
         let plane_mm = snapshot.tolerance().linear_mm();
@@ -540,7 +564,7 @@ impl KetchupApp {
             + 1;
         let [profile, prism, placed, boolean] = [0, 1, 2, 3].map(|index| FeatureId(first + index));
         let Ok(height) = Dimension::new(format_height(length), length) else {
-            return Some(Err(format!("cannot make a {length} mm tool")));
+            return Some(Err(DrawnShapeRefusal::ToolLength { length_mm: length }));
         };
         let placement = Transform::from_translation(0.0, 0.0, offset)
             .ok()
@@ -614,10 +638,9 @@ impl KetchupApp {
                 ExactBRepGraph::from_snapshot(&preview, definition_id, boolean).is_ok()
             });
         if !buildable {
-            return Some(Err(format!(
-                "the drawn shape cannot be cut into part {} yet",
-                host.name()
-            )));
+            return Some(Err(DrawnShapeRefusal::NotBuildable {
+                part: host.name().to_owned(),
+            }));
         }
         Some(Ok(DrawnShapeEdit {
             change: DrawnShapeChange::Definition(batch),
@@ -640,7 +663,7 @@ impl KetchupApp {
             Err(error) => {
                 self.clear_push_pull_preview();
                 self.status_key = "error-preview-stale";
-                self.digest = error;
+                self.digest = error.to_string();
                 return Some(false);
             }
         };
@@ -694,19 +717,21 @@ impl KetchupApp {
             DrawnShapeChange::Program { source, consumed } => self
                 .apply_program_source_with(source.clone(), false, consumed.clone())
                 .map(|_| ())
-                .map_err(|error| error.to_string()),
+                .map_err(|error| failed("program.apply", error)),
             DrawnShapeChange::Definition(batch) => {
                 match self.prepare_manual_push_pull_proposal(batch.clone()) {
                     Some(proposal) => self
                         .complete_mutation_with_work_recovery(|document| proposal.commit(document))
-                        .map_err(|error| self.catalog.text_because("error-preview-stale", error)),
-                    None => Err(self.catalog.text("error-preview-stale")),
+                        .map_err(|error| {
+                            self.catalog.refusal_because("error-preview-stale", error)
+                        }),
+                    None => Err(self.catalog.refusal("error-preview-stale")),
                 }
             }
         };
         if let Err(error) = applied {
             self.status_key = "error-preview-stale";
-            self.digest = error;
+            self.digest = error.reason_text().to_owned();
             return Some(false);
         }
         self.push_pull.smart_planning = None;

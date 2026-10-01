@@ -1529,7 +1529,6 @@ impl LiveBridge {
             &candidate,
             app.exact.source.as_ref(),
         )
-        .map_err(|error| failure("planning_rejected", format!("{error:?}"), json!({})))?
         .selection;
         let plan = ApplyAndVerifyPlan {
             before: app.live_bridge_stamp(),

@@ -158,21 +158,33 @@ impl KetchupApp {
         &self,
         source: &PushPullSourcePlan,
         distance_mm: f64,
-    ) -> Result<Option<ketchup_model::document::RuleProgramSource>, String> {
+    ) -> Result<Option<ketchup_model::document::RuleProgramSource>, Rejection> {
         let Some(program) = self.document.current_rule_program() else {
             return Ok(None);
         };
-        let reference = source
-            .topological_reference
-            .as_ref()
-            .ok_or_else(|| "Push/Pull on a program-owned part requires a named face".to_owned())?;
+        let refusal =
+            |code, reason| Rejection::new(code, RejectionPhase::Validation).reason(reason);
+        let reference = source.topological_reference.as_ref().ok_or_else(|| {
+            refusal(
+                "push_pull.program_face_unnamed",
+                "Push/Pull on a program-owned part requires a named face",
+            )
+        })?;
         let snapshot = self.document.current();
         let occurrence = snapshot
             .occurrence(source.target.instance_path.root_occurrence())
-            .ok_or_else(|| "Push/Pull program part is missing".to_owned())?;
-        let face = self
-            .selected_planar_face(&source.target)
-            .ok_or_else(|| "Push/Pull program face is no longer planar".to_owned())?;
+            .ok_or_else(|| {
+                refusal(
+                    "push_pull.program_part_missing",
+                    "Push/Pull program part is missing",
+                )
+            })?;
+        let face = self.selected_planar_face(&source.target).ok_or_else(|| {
+            refusal(
+                "push_pull.program_face_not_planar",
+                "Push/Pull program face is no longer planar",
+            )
+        })?;
         // The evaluator exposes a program extrusion's caps under the standard
         // extrusion roles; in the program they are `end` and `start`.
         let face_name = match reference.producer_element_id.as_str() {
@@ -187,7 +199,7 @@ impl KetchupApp {
             distance_mm / face.local_to_world_scale,
         )
         .map(Some)
-        .map_err(|error| error.to_string())
+        .map_err(|error| failed("push_pull.program_rewrite", error))
     }
 
     pub(super) fn derive_planar_preview(
@@ -600,7 +612,7 @@ impl KetchupApp {
         ) {
             Ok(source) => source,
             Err(error) => {
-                self.digest = error;
+                self.digest = error.reason_text().to_owned();
                 return false;
             }
         };

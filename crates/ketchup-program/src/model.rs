@@ -561,6 +561,123 @@ pub struct ProgramLoftSection {
     pub elevation_mm: f64,
 }
 
+/// The finish a `fillet(a,b)` or `chamfer(a,b)` face name comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishKind {
+    Fillet,
+    Chamfer,
+}
+
+impl FinishKind {
+    /// The name prefix up to the opening parenthesis.
+    #[must_use]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::Fillet => "fillet(",
+            Self::Chamfer => "chamfer(",
+        }
+    }
+}
+
+/// Why a program face name names no face of a part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FaceNameError {
+    /// `<face>#<n>` without a number after `#`.
+    SplitSuffix { name: String },
+    /// A finish face name without its closing parenthesis.
+    FinishForm { name: String, kind: FinishKind },
+    UnknownCutFace {
+        name: String,
+        cut: String,
+        faces: Vec<String>,
+    },
+    /// The tool face of a boolean does not exist.
+    ToolFace {
+        name: String,
+        operation: String,
+        cause: Box<FaceNameError>,
+    },
+    /// The face a shell's inner wall follows does not exist.
+    InnerWall {
+        name: String,
+        cause: Box<FaceNameError>,
+    },
+    /// `<operation>.<face>` names an operation that leaves no faces of its own.
+    NotAFaceOperation {
+        name: String,
+        operation: String,
+        part: String,
+    },
+    /// The part is swept or lofted: its own faces have no names.
+    Unnamed { part: String },
+    Unknown {
+        name: String,
+        part: String,
+        faces: Vec<String>,
+    },
+    /// The part has no flat or cylindrical named face to take a frame of.
+    NoFramedFaces { part: String },
+    /// The face exists but is neither flat nor cylindrical.
+    NotFramed {
+        name: String,
+        part: String,
+        faces: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for FaceNameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SplitSuffix { name } => write!(
+                f,
+                "face {name:?}: a split face is <face>#<number>, e.g. \"z+#2\""
+            ),
+            Self::FinishForm { name, kind } => {
+                write!(f, "face {name:?}: a finish face is {}a,b)", kind.prefix())
+            }
+            Self::UnknownCutFace { name, cut, faces } => write!(
+                f,
+                "face {name:?}: cut {cut:?} has faces start, end, {}",
+                faces.join(", ")
+            ),
+            Self::ToolFace {
+                name,
+                operation,
+                cause,
+            } => write!(f, "face {name:?}: tool of {operation:?}: {cause}"),
+            Self::InnerWall { name, cause } => write!(f, "inner wall {name:?}: {cause}"),
+            Self::NotAFaceOperation {
+                name,
+                operation,
+                part,
+            } => write!(
+                f,
+                "face {name:?}: {operation:?} is not a cut, boolean or shell on {part:?}; faces an operation leaves are <operation name>.<tool face>"
+            ),
+            Self::Unnamed { part } => write!(
+                f,
+                "{part:?} is swept or lofted and its faces have no names; faces left by subtract()/intersect() are <operation name>.<tool face>"
+            ),
+            Self::Unknown { name, part, faces } => write!(
+                f,
+                "face {name:?} does not exist on {part:?}; faces are: {}",
+                faces.join(", ")
+            ),
+            Self::NoFramedFaces { part } => write!(
+                f,
+                "{part:?} has no flat or cylindrical faces with names (swept and lofted bodies have none)"
+            ),
+            Self::NotFramed { name, part, faces } => write!(
+                f,
+                "face {name:?} is not a flat or cylindrical face on {part:?}; its faces are: {}",
+                faces.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FaceNameError {}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Part {
     /// Stable identity: the path given in the program, e.g. `korpus/bok_lavy`.
@@ -699,29 +816,31 @@ impl Part {
     ///
     /// # Errors
     /// Names the unknown face and lists the names that exist.
-    pub fn exact_face_label(&self, name: &str) -> Result<String, String> {
+    pub fn exact_face_label(&self, name: &str) -> Result<String, FaceNameError> {
         if let Some((base, suffix)) = name.rsplit_once('#') {
             if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(format!(
-                    "face {name:?}: a split face is <face>#<number>, e.g. \"z+#2\""
-                ));
+                return Err(FaceNameError::SplitSuffix {
+                    name: name.to_owned(),
+                });
             }
             return Ok(format!("{}#{suffix}", self.exact_face_label(base)?));
         }
-        if let Some(inner) = ["fillet(", "chamfer("]
+        if let Some((kind, rest)) = [FinishKind::Fillet, FinishKind::Chamfer]
             .into_iter()
-            .find_map(|kind| name.strip_prefix(kind).map(|rest| (kind, rest)))
+            .find_map(|kind| name.strip_prefix(kind.prefix()).map(|rest| (kind, rest)))
         {
-            let (kind, rest) = inner;
             let faces = rest
                 .strip_suffix(')')
-                .ok_or_else(|| format!("face {name:?}: a finish face is {kind}a,b)"))?;
+                .ok_or_else(|| FaceNameError::FinishForm {
+                    name: name.to_owned(),
+                    kind,
+                })?;
             let mut labels = faces
                 .split(',')
                 .map(|face| self.exact_face_label(face.trim()))
                 .collect::<Result<Vec<_>, _>>()?;
             labels.sort();
-            return Ok(format!("{kind}{})", labels.join(",")));
+            return Ok(format!("{}{})", kind.prefix(), labels.join(",")));
         }
         if let Some((operation, face)) = name.split_once('.') {
             return match self.operations.iter().find(|op| op.name() == operation) {
@@ -732,51 +851,57 @@ impl Part {
                         .iter()
                         .position(|segment| segment.name == face)
                         .map(|index| format!("{operation}.{}", segment_label(&cut.segments, index)))
-                        .ok_or_else(|| {
-                            format!(
-                                "face {name:?}: cut {operation:?} has faces start, end, {}",
-                                cut.segments
-                                    .iter()
-                                    .map(|segment| segment.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )
+                        .ok_or_else(|| FaceNameError::UnknownCutFace {
+                            name: name.to_owned(),
+                            cut: operation.to_owned(),
+                            faces: cut
+                                .segments
+                                .iter()
+                                .map(|segment| segment.name.clone())
+                                .collect(),
                         }),
                 },
                 Some(ProgramOperation::Boolean(boolean)) => Ok(format!(
                     "{operation}.{}",
-                    boolean.tool.body_face_label(face).map_err(|error| format!(
-                        "face {name:?}: tool of {operation:?}: {error}"
-                    ))?
+                    boolean.tool.body_face_label(face).map_err(|cause| {
+                        FaceNameError::ToolFace {
+                            name: name.to_owned(),
+                            operation: operation.to_owned(),
+                            cause: Box::new(cause),
+                        }
+                    })?
                 )),
                 Some(ProgramOperation::Shell(_)) => Ok(format!(
                     "{operation}.{}",
                     self.exact_face_label(face)
-                        .map_err(|error| format!("inner wall {name:?}: {error}"))?
+                        .map_err(|cause| FaceNameError::InnerWall {
+                            name: name.to_owned(),
+                            cause: Box::new(cause),
+                        })?
                 )),
-                _ => Err(format!(
-                    "face {name:?}: {operation:?} is not a cut, boolean or shell on {:?}; faces an operation leaves are <operation name>.<tool face>",
-                    self.name
-                )),
+                _ => Err(FaceNameError::NotAFaceOperation {
+                    name: name.to_owned(),
+                    operation: operation.to_owned(),
+                    part: self.name.clone(),
+                }),
             };
         }
         self.body_face_label(name)
     }
 
-    fn body_face_label(&self, name: &str) -> Result<String, String> {
+    fn body_face_label(&self, name: &str) -> Result<String, FaceNameError> {
         let unknown = || {
-            let names = self.body_face_names();
-            if names.is_empty() {
-                format!(
-                    "{:?} is swept or lofted and its faces have no names; faces left by subtract()/intersect() are <operation name>.<tool face>",
-                    self.name
-                )
+            let faces = self.body_face_names();
+            if faces.is_empty() {
+                FaceNameError::Unnamed {
+                    part: self.name.clone(),
+                }
             } else {
-                format!(
-                    "face {name:?} does not exist on {:?}; faces are: {}",
-                    self.name,
-                    names.join(", ")
-                )
+                FaceNameError::Unknown {
+                    name: name.to_owned(),
+                    part: self.name.clone(),
+                    faces,
+                }
             }
         };
         match &self.body {

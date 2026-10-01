@@ -6,7 +6,7 @@ use ketchup_model::document::RuleProgramSource;
 #[derive(Clone)]
 struct ProgramSourceView {
     source: RuleProgramSource,
-    parts: Result<BTreeMap<String, Vec<SourceLines>>, String>,
+    parts: Result<BTreeMap<String, Vec<SourceLines>>, ketchup_program::ProgramError>,
     /// Part whose first line has already been scrolled into view.
     scrolled_to: Option<String>,
 }
@@ -64,7 +64,7 @@ impl KetchupApp {
                     Err(error) => {
                         ui.label(self.catalog.format(
                             "program-source-error",
-                            &BTreeMap::from([("error", error.clone())]),
+                            &BTreeMap::from([("error", error.message.clone())]),
                         ));
                     }
                     Ok(parts) => {

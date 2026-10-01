@@ -1545,8 +1545,7 @@ fn local_edit_in_278_panel_fixture_scopes_one_producer_and_one_occurrence() {
         &before,
         &document.current(),
         Some(&exact_source(&before)),
-    )
-    .unwrap();
+    );
     let ExactEvaluationSelection::Scoped(producers) = &plan.selection else {
         panic!("valid full baseline must permit a scoped plan: {plan:?}");
     };

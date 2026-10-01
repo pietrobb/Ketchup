@@ -79,18 +79,52 @@ pub struct ValidationRules {
     pub passage_clearance: PassageClearanceRule,
 }
 
+/// Why a text is not a validation rule set.
+#[derive(Debug)]
+pub enum ValidationRulesError {
+    /// Not JSON of the rule-set shape.
+    Json(serde_json::Error),
+    /// The number at this dotted path is not finite and positive.
+    NotPositive { path: String },
+    /// `default_material` names no entry in `materials`.
+    UnknownDefaultMaterial { material: String },
+}
+
+impl std::fmt::Display for ValidationRulesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(error) => error.fmt(f),
+            Self::NotPositive { path } => write!(f, "{path} must be a finite positive number"),
+            Self::UnknownDefaultMaterial { material } => {
+                write!(f, "default_material {material:?} has no entry in materials")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidationRulesError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Json(error) => Some(error),
+            Self::NotPositive { .. } | Self::UnknownDefaultMaterial { .. } => None,
+        }
+    }
+}
+
 impl ValidationRules {
     /// Parses and checks a rule set: every number is finite and positive and
     /// the default material has properties.
-    pub fn from_json(text: &str) -> Result<Self, String> {
-        let rules: Self = serde_json::from_str(text).map_err(|error| error.to_string())?;
-        let value = serde_json::to_value(&rules).map_err(|error| error.to_string())?;
+    ///
+    /// # Errors
+    /// The first rule the text breaks.
+    pub fn from_json(text: &str) -> Result<Self, ValidationRulesError> {
+        let rules: Self = serde_json::from_str(text).map_err(ValidationRulesError::Json)?;
+        let value = serde_json::to_value(&rules).map_err(ValidationRulesError::Json)?;
         check_positive("", &value)?;
         if !rules.materials.contains_key(&rules.default_material) {
-            return Err(format!(
-                "default_material {:?} has no entry in materials",
-                rules.default_material
-            ));
+            return Err(ValidationRulesError::UnknownDefaultMaterial {
+                material: rules.default_material,
+            });
         }
         Ok(rules)
     }
@@ -106,7 +140,7 @@ impl ValidationRules {
     }
 }
 
-fn check_positive(path: &str, value: &serde_json::Value) -> Result<(), String> {
+fn check_positive(path: &str, value: &serde_json::Value) -> Result<(), ValidationRulesError> {
     match value {
         serde_json::Value::Object(fields) => fields.iter().try_for_each(|(key, field)| {
             check_positive(
@@ -116,7 +150,9 @@ fn check_positive(path: &str, value: &serde_json::Value) -> Result<(), String> {
         }),
         serde_json::Value::Number(number) => match number.as_f64() {
             Some(number) if number.is_finite() && number > 0.0 => Ok(()),
-            _ => Err(format!("{path} must be a finite positive number")),
+            _ => Err(ValidationRulesError::NotPositive {
+                path: path.to_owned(),
+            }),
         },
         _ => Ok(()),
     }

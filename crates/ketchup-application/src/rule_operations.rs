@@ -389,7 +389,7 @@ impl<'a> OperationPlanner<'a> {
                 "planning.rule_part_face_missing",
                 "rule_part",
                 &part.name,
-                error,
+                error.to_string(),
                 "Use a face the part has: the listed names, <operation>.<tool face> or <face>#<n>.",
             )
         })?;

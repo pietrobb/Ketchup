@@ -170,6 +170,9 @@ mod occurrence_color_ui;
 mod planar_push_pull;
 mod program_edit;
 mod program_source_ui;
+mod refusal;
+use ketchup_rejection::{Rejection, RejectionPhase};
+use refusal::{Refuse, failed, invalid_field};
 mod slot;
 mod tool_preview;
 mod transform_operation;
@@ -1085,16 +1088,41 @@ impl SmartPushPullProposal {
         }
     }
 
-    fn commit(&self, document: &mut DocumentStore) -> Result<(), String> {
+    fn commit(&self, document: &mut DocumentStore) -> Result<(), ManualProposalCommitError> {
         match self {
             Self::Append(proposal) => document
                 .commit_verified_proposal(proposal)
                 .map(|_| ())
-                .map_err(|error| error.to_string()),
+                .map_err(ManualProposalCommitError::Append),
             Self::TipReplacement(proposal) => document
                 .commit_tip_replacement_proposal(proposal)
                 .map(|_| ())
-                .map_err(|error| error.to_string()),
+                .map_err(ManualProposalCommitError::TipReplacement),
+        }
+    }
+}
+
+/// The store's refusal to commit a manual Push/Pull proposal, by proposal kind.
+#[derive(Debug)]
+enum ManualProposalCommitError {
+    Append(ProposalCommitError),
+    TipReplacement(ketchup_model::document::TipReplacementProposalError),
+}
+
+impl std::fmt::Display for ManualProposalCommitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Append(error) => error.fmt(formatter),
+            Self::TipReplacement(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ManualProposalCommitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Append(error) => error.source(),
+            Self::TipReplacement(error) => error.source(),
         }
     }
 }
@@ -2830,7 +2858,7 @@ pub trait AssistantTransport: Send + Sync {
         message: &str,
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
-    ) -> Result<AssistantChatResult, String>;
+    ) -> Result<AssistantChatResult, Rejection>;
 
     fn chat_with_diagnostics(
         &self,
@@ -2839,7 +2867,7 @@ pub trait AssistantTransport: Send + Sync {
         message: &str,
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
-    ) -> Result<AssistantTransportResponse, String> {
+    ) -> Result<AssistantTransportResponse, Rejection> {
         self.chat(handshake, request_id, message, context, cancellation)
             .map(|result| AssistantTransportResponse {
                 result,
@@ -2851,7 +2879,7 @@ pub trait AssistantTransport: Send + Sync {
 }
 
 struct AssistantChatTask {
-    receiver: Receiver<Result<AssistantTransportResponse, String>>,
+    receiver: Receiver<Result<AssistantTransportResponse, Rejection>>,
     request_id: String,
     message: String,
     replan_attempted: bool,

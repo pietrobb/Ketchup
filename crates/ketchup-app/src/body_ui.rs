@@ -89,7 +89,7 @@ impl KetchupApp {
     fn derive_body_preview_proposal(
         &self,
         source: &BodyExecutionSource,
-    ) -> Result<Proposal, String> {
+    ) -> Result<Proposal, ketchup_model::document::ProposalPrepareError> {
         match source {
             BodyExecutionSource::Activate {
                 definition_id,
@@ -118,7 +118,6 @@ impl KetchupApp {
                 .document
                 .plan_multibody_boolean(plan.clone(), ProposalContext::canonical_preview()),
         }
-        .map_err(|error| error.to_string())
     }
 
     fn derive_body_preview_action(&self, source: &BodyExecutionSource) -> Option<String> {

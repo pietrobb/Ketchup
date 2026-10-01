@@ -54,10 +54,12 @@ pub struct RuleProgramApplyResult {
 /// Program lines that created or changed each part, keyed by part (occurrence) name.
 pub fn rule_program_part_sources(
     source: &RuleProgramSource,
-) -> Result<std::collections::BTreeMap<String, Vec<ketchup_program::SourceLines>>, String> {
+) -> Result<
+    std::collections::BTreeMap<String, Vec<ketchup_program::SourceLines>>,
+    ketchup_program::ProgramError,
+> {
     ketchup_program::evaluate(&source.file_name, &source.source, &source.overrides)
         .map(|evaluated| evaluated.part_sources)
-        .map_err(|error| error.message)
 }
 
 /// Rewrites a manual Push/Pull into the program source that owns the part.

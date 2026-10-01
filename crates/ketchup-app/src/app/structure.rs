@@ -97,7 +97,7 @@ impl KetchupApp {
     pub(crate) fn root_occurrence_selection_error(
         &self,
         error: &RootOccurrenceSelectionError,
-    ) -> String {
+    ) -> Rejection {
         let (key, paths) = match error {
             RootOccurrenceSelectionError::Nested { paths } => {
                 ("selection-error-nested-instance-paths", paths)
@@ -106,7 +106,7 @@ impl KetchupApp {
                 ("selection-error-mixed-instance-paths", paths)
             }
         };
-        self.catalog.format(
+        self.catalog.refusal_with(
             key,
             &BTreeMap::from([(
                 "paths",
@@ -2095,7 +2095,10 @@ impl KetchupApp {
 
     pub(crate) fn begin_occurrence_align(&mut self) {
         if let Err(error) = self.selected_root_occurrence_ids() {
-            self.digest = self.root_occurrence_selection_error(&error);
+            self.digest = self
+                .root_occurrence_selection_error(&error)
+                .reason_text()
+                .to_owned();
             return;
         }
         let Some(source) = self.occurrence_alignment_source_plan() else {

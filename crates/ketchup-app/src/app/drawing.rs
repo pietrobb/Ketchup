@@ -987,7 +987,7 @@ impl KetchupApp {
         let amount_mm = f64::from_bits(preview.plan.amount_mm_bits);
         match self.program_general_finish(&preview.plan.source, amount_mm) {
             Some(Err(error)) => {
-                self.digest = error;
+                self.digest = error.reason_text().to_owned();
                 return false;
             }
             Some(Ok(())) => {}
@@ -1918,7 +1918,7 @@ impl KetchupApp {
         ) {
             Ok(source) => source,
             Err(error) => {
-                self.digest = error;
+                self.digest = error.reason_text().to_owned();
                 return false;
             }
         };

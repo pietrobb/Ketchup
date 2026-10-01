@@ -1546,7 +1546,7 @@ impl KetchupApp {
                 let parse_f64 = |value: &str, name: &str| {
                     value
                         .parse::<f64>()
-                        .map_err(|error| format!("{name} must be a finite number: {error}"))
+                        .map_err(|error| invalid_field(name, "a finite number", error))
                 };
                 let youngs_modulus_mpa = parse_f64(&pending.youngs_modulus_mpa, "Young's modulus")?;
                 let poisson_ratio = parse_f64(&pending.poisson_ratio, "Poisson ratio")?;
@@ -1557,8 +1557,10 @@ impl KetchupApp {
                     .map(str::trim)
                     .map(|value| {
                         value.parse::<u32>().map_err(|error| {
-                            format!(
-                                "Fixed face ordinals must be comma-separated u32 values: {error}"
+                            invalid_field(
+                                "Fixed face ordinals",
+                                "comma-separated u32 values",
+                                error,
                             )
                         })
                     })
@@ -1566,7 +1568,7 @@ impl KetchupApp {
                 let loaded_face_ordinal = pending
                     .loaded_face_ordinal
                     .parse::<u32>()
-                    .map_err(|error| format!("Loaded face ordinal must be u32: {error}"))?;
+                    .map_err(|error| invalid_field("Loaded face ordinal", "u32", error))?;
                 let traction = [
                     parse_f64(&pending.traction_x_n_per_mm2, "Traction X")?,
                     parse_f64(&pending.traction_y_n_per_mm2, "Traction Y")?,
@@ -1619,14 +1621,14 @@ impl KetchupApp {
                         true,
                         &AtomicBool::new(false),
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| failed("fea.review", error))
             })();
             match result {
                 Ok(review) => {
                     pending.review = Some(review);
                     self.digest = self.catalog.text("fea-review-ready");
                 }
-                Err(error) => self.digest = error,
+                Err(error) => self.digest = error.reason_text().to_owned(),
             }
         }
         if open && !cancel {

@@ -7,7 +7,7 @@ impl KetchupApp {
         path: &Path,
         format: &str,
         allowed_extensions: &[&str],
-    ) -> Result<(), String> {
+    ) -> Result<(), Rejection> {
         let extension = path
             .extension()
             .and_then(|value| value.to_str())
@@ -18,23 +18,24 @@ impl KetchupApp {
         {
             return Ok(());
         }
-        match extension.to_ascii_lowercase().as_str() {
-            "sldprt" | "sldasm" => Err(
-                "native SolidWorks part and assembly files are unsupported; use an audited STEP or IGES exchange file"
-                    .to_owned(),
+        let refusal = |code| {
+            Rejection::new(code, RejectionPhase::Validation).target(path.display().to_string())
+        };
+        Err(match extension.to_ascii_lowercase().as_str() {
+            "sldprt" | "sldasm" => refusal("exchange.native_format").reason(
+                "native SolidWorks part and assembly files are unsupported; use an audited STEP or IGES exchange file",
             ),
-            "x_t" | "x_b" => Err(
-                "native Parasolid files are unsupported; use an audited STEP or IGES exchange file"
-                    .to_owned(),
+            "x_t" | "x_b" => refusal("exchange.native_format").reason(
+                "native Parasolid files are unsupported; use an audited STEP or IGES exchange file",
             ),
-            _ => Err(format!(
+            _ => refusal("exchange.extension").reason(format!(
                 "{format} requires an explicit .{} file; content sniffing and extension substitution are refused",
                 allowed_extensions.join(" or .")
             )),
-        }
+        })
     }
 
-    pub(crate) fn exact_worker_executable(&mut self) -> Result<PathBuf, String> {
+    pub(crate) fn exact_worker_executable(&mut self) -> Result<PathBuf, Rejection> {
         if !self.exact.worker_attempted {
             self.exact.worker_attempted = true;
             self.exact.worker_path = exact_worker_candidates()
@@ -44,7 +45,7 @@ impl KetchupApp {
         self.exact
             .worker_path
             .clone()
-            .ok_or_else(|| "exact worker is unavailable".to_owned())
+            .ok_or_else(exact_worker_unavailable)
     }
 
     pub(crate) fn current_visible_exact_scene(
@@ -76,10 +77,10 @@ impl KetchupApp {
             .iter()
             .find(|occurrence| definition_mesh_body(snapshot, occurrence.definition_id).is_some())
         {
-            return Err(format!(
-                "visible occurrence {:?} is a mesh body without verified exact geometry; exact-derived export is unavailable until explicit exact conversion",
-                occurrence.instance_path
-            ).into());
+            return Err(ExportError::OccurrenceNotExportable {
+                occurrence: occurrence.instance_path.clone(),
+                reason: "is a mesh body without verified exact geometry; exact-derived export is unavailable until explicit exact conversion",
+            });
         }
         let mut scene = Vec::new();
         for occurrence in occurrences {
@@ -90,11 +91,10 @@ impl KetchupApp {
                 .filter(|package| package.definition_id() == occurrence.definition_id)
                 .collect::<Vec<_>>();
             if packages.is_empty() {
-                return Err(format!(
-                    "visible occurrence {:?} has no current accepted exact result",
-                    occurrence.instance_path
-                )
-                .into());
+                return Err(ExportError::OccurrenceNotExportable {
+                    occurrence: occurrence.instance_path.clone(),
+                    reason: "has no current accepted exact result",
+                });
             }
             scene.extend(
                 packages
@@ -1007,4 +1007,11 @@ impl KetchupApp {
             start + frame_x * width * x_direction + frame_y * depth * y_direction,
         )
     }
+}
+
+/// The one refusal for a missing exact worker executable.
+pub(crate) fn exact_worker_unavailable() -> Rejection {
+    Rejection::new("exact_worker.unavailable", RejectionPhase::Io)
+        .reason("exact worker is unavailable")
+        .fix_hint("Install or rebuild ketchup-exact-worker next to the application.")
 }

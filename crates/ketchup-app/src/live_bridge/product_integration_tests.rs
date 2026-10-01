@@ -135,8 +135,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         &app.document.current(),
         &candidate,
         app.exact.source.as_ref(),
-    )
-    .unwrap();
+    );
     assert!(incremental.baseline_reused, "{incremental:?}");
     assert!(
         matches!(

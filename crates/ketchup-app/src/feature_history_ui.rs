@@ -1327,7 +1327,7 @@ impl KetchupApp {
             let executable = match self.exact_worker_executable() {
                 Ok(executable) => executable,
                 Err(error) => {
-                    self.feature_history_error(error);
+                    self.feature_history_error(error.reason_text());
                     return false;
                 }
             };
@@ -1397,7 +1397,7 @@ impl KetchupApp {
         let executable = match self.exact_worker_executable() {
             Ok(executable) => executable,
             Err(error) => {
-                self.feature_history_error(error);
+                self.feature_history_error(error.reason_text());
                 return None;
             }
         };

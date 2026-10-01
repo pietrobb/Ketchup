@@ -201,12 +201,30 @@ pub struct IncrementalExactScope {
     pub changed_scene_occurrence_count: usize,
 }
 
+/// Why a change is evaluated in full rather than only where it reaches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FullEvaluationReason {
+    /// The producers the change reaches cannot be derived.
+    Scope(IncrementalScopeError),
+    /// No complete exact result of the snapshot before the change to build on.
+    MissingOrStaleBaseline,
+}
+
+impl std::fmt::Display for FullEvaluationReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scope(error) => error.fmt(f),
+            Self::MissingOrStaleBaseline => f.write_str("missing or stale complete exact baseline"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IncrementalExactPlan {
     pub selection: ExactEvaluationSelection,
     pub collision_occurrences: BTreeSet<OccurrenceId>,
     pub baseline_reused: bool,
-    pub fallback_reason: Option<String>,
+    pub fallback_reason: Option<FullEvaluationReason>,
     pub changed_feature_count: usize,
     pub changed_scene_occurrence_count: usize,
 }
@@ -215,9 +233,9 @@ pub fn plan_incremental_exact_evaluation(
     before: &Snapshot,
     after: &Snapshot,
     full_baseline: Option<&ExactSource>,
-) -> Result<IncrementalExactPlan, String> {
-    let full = |reason: String, changed_feature_count, changed_scene_occurrence_count| {
-        IncrementalExactPlan {
+) -> IncrementalExactPlan {
+    let full =
+        |reason, changed_feature_count, changed_scene_occurrence_count| IncrementalExactPlan {
             selection: ExactEvaluationSelection::Full,
             collision_occurrences: after
                 .scene_query()
@@ -229,30 +247,29 @@ pub fn plan_incremental_exact_evaluation(
             fallback_reason: Some(reason),
             changed_feature_count,
             changed_scene_occurrence_count,
-        }
-    };
+        };
     // A document the scope cannot be derived for (e.g. two independent solids
     // in one body) is still editable: it is evaluated in full instead.
     let scope = match plan_incremental_exact_scope(before, after) {
         Ok(scope) => scope,
-        Err(error) => return Ok(full(error.to_string(), 0, 0)),
+        Err(error) => return full(FullEvaluationReason::Scope(error), 0, 0),
     };
     let expected_baseline = exact_source(before);
     if full_baseline != Some(&expected_baseline) {
-        return Ok(full(
-            "missing or stale complete exact baseline".to_owned(),
+        return full(
+            FullEvaluationReason::MissingOrStaleBaseline,
             scope.changed_feature_count,
             scope.changed_scene_occurrence_count,
-        ));
+        );
     }
-    Ok(IncrementalExactPlan {
+    IncrementalExactPlan {
         selection: ExactEvaluationSelection::Scoped(scope.producers),
         collision_occurrences: scope.collision_occurrences,
         baseline_reused: true,
         fallback_reason: None,
         changed_feature_count: scope.changed_feature_count,
         changed_scene_occurrence_count: scope.changed_scene_occurrence_count,
-    })
+    }
 }
 
 fn scene_geometry_matches(left: &SceneOccurrence, right: &SceneOccurrence) -> bool {
@@ -425,10 +442,8 @@ fn prepare_requests(
     exact_results: &ExactResultRegistry,
     topology_results: &ExactResultRegistry,
     scope: Option<&BTreeSet<ProducerKey>>,
-) -> Result<PreparedRequests, String> {
-    let feature_graph = snapshot
-        .feature_dependency_graph()
-        .map_err(|error| error.to_string())?;
+) -> Result<PreparedRequests, CanonicalError> {
+    let feature_graph = snapshot.feature_dependency_graph()?;
     let referenced_producers = snapshot
         .features()
         .filter_map(|feature| match feature.kind() {
@@ -843,7 +858,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
         let mut render_packages = Vec::new();
         let mut topology_packages = Vec::new();
         match prepared {
-            Err(error) => report.not_evaluated = Some(error),
+            Err(error) => report.not_evaluated = Some(error.to_string()),
             Ok((requests, coverage)) => {
                 report.producers = coverage;
                 if !requests.is_empty() {
@@ -1275,15 +1290,14 @@ mod incremental_scope_tests {
             &before,
             &after_definition_edit,
             Some(&exact_source(&before)),
-        )
-        .unwrap();
+        );
         assert!(incremental.baseline_reused);
         assert_eq!(
             incremental.selection,
             ExactEvaluationSelection::Scoped(scope.producers.clone())
         );
         let without_baseline =
-            plan_incremental_exact_evaluation(&before, &after_definition_edit, None).unwrap();
+            plan_incremental_exact_evaluation(&before, &after_definition_edit, None);
         assert!(!without_baseline.baseline_reused);
         assert_eq!(without_baseline.selection, ExactEvaluationSelection::Full);
         assert_eq!(

@@ -471,12 +471,11 @@ impl DocumentSession {
         self.apply_proposal(&proposal)
     }
     fn update_incremental_exact_plan(&mut self, before: &Snapshot) {
-        self.incremental_exact_plan = plan_incremental_exact_evaluation(
+        self.incremental_exact_plan = Some(plan_incremental_exact_evaluation(
             before,
             &self.snapshot(),
             self.full_exact_baseline.as_ref(),
-        )
-        .ok();
+        ));
         self.full_exact_baseline = None;
     }
     fn rebind(&mut self) {

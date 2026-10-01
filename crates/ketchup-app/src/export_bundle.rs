@@ -154,6 +154,11 @@ pub(crate) enum ExportError {
     Ambiguous { subject: &'static str },
     /// The visible content holds bodies this format cannot carry.
     UnsupportedContent { reason: &'static str },
+    /// One visible occurrence cannot be exported; `reason` says what it lacks.
+    OccurrenceNotExportable {
+        occurrence: InstancePath,
+        reason: &'static str,
+    },
     /// The exported content changed while the human was asked for consent.
     ChangedDuringConsent,
     /// The produced artifact failed its read-back check.
@@ -176,9 +181,9 @@ impl From<ExportTransactionError> for ExportError {
     }
 }
 
-/// Steps that still answer in text (consent, fabrication projection) are kept as the cause.
-impl From<String> for ExportError {
-    fn from(error: String) -> Self {
+/// A refused consent, worker or projection step is kept as the cause.
+impl From<Rejection> for ExportError {
+    fn from(error: Rejection) -> Self {
         Self::Failed(error.into())
     }
 }
@@ -196,6 +201,9 @@ impl std::fmt::Display for ExportError {
                 write!(formatter, "the export requires exactly one {subject}")
             }
             Self::UnsupportedContent { reason } => formatter.write_str(reason),
+            Self::OccurrenceNotExportable { occurrence, reason } => {
+                write!(formatter, "visible occurrence {occurrence:?} {reason}")
+            }
             Self::ChangedDuringConsent => {
                 formatter.write_str("the export changed while consent was pending")
             }

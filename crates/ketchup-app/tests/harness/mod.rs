@@ -24,6 +24,7 @@ use ketchup_assistant::sidecar::{
     AssistantFeaReviewRequest, AssistantHandshake,
 };
 use ketchup_interaction::{LocaleCatalog, Vec3};
+use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_scheduler::assistant::AssistantCancellation;
 
 use crate::integration_support::{FileTurn, file_turn};
@@ -119,6 +120,11 @@ impl ScriptedAssistantTransport {
     }
 }
 
+fn scripted_cancellation() -> Rejection {
+    Rejection::new("scripted.cancelled", RejectionPhase::Io)
+        .reason("scripted assistant request was cancelled")
+}
+
 impl AssistantTransport for ScriptedAssistantTransport {
     fn chat(
         &self,
@@ -127,7 +133,7 @@ impl AssistantTransport for ScriptedAssistantTransport {
         message: &str,
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
-    ) -> Result<AssistantChatResult, String> {
+    ) -> Result<AssistantChatResult, Rejection> {
         self.request_ids.lock().unwrap().push(request_id.to_owned());
         self.contexts.lock().unwrap().push(context.clone());
         if self.cancellation_requests.contains(message) {
@@ -137,19 +143,23 @@ impl AssistantTransport for ScriptedAssistantTransport {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             self.completed_cancellations.fetch_add(1, Ordering::AcqRel);
-            return Err("scripted assistant request was cancelled".to_owned());
+            return Err(scripted_cancellation());
         }
         if cancellation.is_cancelled() {
-            return Err("scripted assistant request was cancelled".to_owned());
+            return Err(scripted_cancellation());
         }
         let mut responses = self.responses.lock().unwrap();
         if cancellation.is_cancelled() {
-            return Err("scripted assistant request was cancelled".to_owned());
+            return Err(scripted_cancellation());
         }
         let index = responses
             .iter()
             .position(|(expected, _)| expected == message)
-            .ok_or_else(|| format!("scripted assistant has no response for {message:?}"))?;
+            .ok_or_else(|| {
+                Rejection::new("scripted.no_response", RejectionPhase::Request).reason(format!(
+                    "scripted assistant has no response for {message:?}"
+                ))
+            })?;
         let (_, result) = responses
             .remove(index)
             .expect("the matching scripted response exists");
@@ -163,7 +173,7 @@ impl AssistantTransport for ScriptedAssistantTransport {
         message: &str,
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
-    ) -> Result<AssistantTransportResponse, String> {
+    ) -> Result<AssistantTransportResponse, Rejection> {
         let result = self.chat(handshake, request_id, message, context, cancellation)?;
         let cad_edit_program = {
             let mut programs = self.cad_edit_programs.lock().unwrap();

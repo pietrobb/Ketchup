@@ -85,14 +85,14 @@ pub struct AssistantProcessLaunch {
 
 struct AssistantWriteRequest {
     line: String,
-    acknowledgment: mpsc::Sender<Result<(), String>>,
+    acknowledgment: mpsc::Sender<io::Result<()>>,
 }
 
 #[derive(Debug)]
 pub struct AssistantProcessClient {
     child: Box<dyn ChildWrapper>,
     write_sender: Option<mpsc::Sender<AssistantWriteRequest>>,
-    receiver: Receiver<Result<Option<String>, String>>,
+    receiver: Receiver<io::Result<Option<String>>>,
     timeout: Duration,
     cancelled: AssistantCancellation,
     closed: bool,
@@ -455,7 +455,7 @@ impl AssistantProcessClient {
                 Ok(Ok(())) => return Ok(()),
                 Ok(Err(error)) => {
                     self.terminate();
-                    return Err(AssistantProcessError::Transport(error));
+                    return Err(AssistantProcessError::Transport(error.to_string()));
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
@@ -545,9 +545,7 @@ fn spawn_bounded_writer(stdin: ChildStdin) -> mpsc::Sender<AssistantWriteRequest
     let _ = std::thread::spawn(move || {
         let mut stdin = stdin;
         while let Ok(request) = receiver.recv() {
-            let result = writeln!(stdin, "{}", request.line)
-                .and_then(|()| stdin.flush())
-                .map_err(|error| error.to_string());
+            let result = writeln!(stdin, "{}", request.line).and_then(|()| stdin.flush());
             let failed = result.is_err();
             let _ = request.acknowledgment.send(result);
             if failed {
@@ -560,13 +558,12 @@ fn spawn_bounded_writer(stdin: ChildStdin) -> mpsc::Sender<AssistantWriteRequest
 
 fn spawn_bounded_reader(
     stdout: impl io::Read + Send + 'static,
-) -> Receiver<Result<Option<String>, String>> {
+) -> Receiver<io::Result<Option<String>>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let _ = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {
-            let line = read_bounded_line(&mut reader, MAX_ASSISTANT_RESPONSE_LINE_BYTES)
-                .map_err(|error| error.to_string());
+            let line = read_bounded_line(&mut reader, MAX_ASSISTANT_RESPONSE_LINE_BYTES);
             let terminal = !matches!(line, Ok(Some(_)));
             if sender.send(line).is_err() || terminal {
                 break;
@@ -609,7 +606,7 @@ fn read_bounded_line(reader: &mut impl BufRead, max_bytes: usize) -> io::Result<
 }
 
 fn receive_line(
-    receiver: &Receiver<Result<Option<String>, String>>,
+    receiver: &Receiver<io::Result<Option<String>>>,
     deadline: Instant,
     cancelled: &AssistantCancellation,
 ) -> Result<Option<String>, AssistantProcessError> {
@@ -622,7 +619,7 @@ fn receive_line(
         };
         match receiver.recv_timeout(remaining.min(POLL_INTERVAL)) {
             Ok(Ok(line)) => return Ok(line),
-            Ok(Err(error)) => return Err(AssistantProcessError::Transport(error)),
+            Ok(Err(error)) => return Err(AssistantProcessError::Transport(error.to_string())),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(AssistantProcessError::Transport(

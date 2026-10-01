@@ -643,7 +643,7 @@ impl KetchupApp {
                         .into_iter()
                         .find(|candidate| candidate.is_file())
                 })
-                .ok_or_else(|| "exact worker is unavailable".to_owned())?;
+                .ok_or_else(super::exact::exact_worker_unavailable)?;
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
             let prepared_directory = tempfile::Builder::new()
                 .prefix(".ketchup-prepared-export-")
@@ -729,7 +729,7 @@ impl KetchupApp {
                         .into_iter()
                         .find(|candidate| candidate.is_file())
                 })
-                .ok_or_else(|| "exact worker is unavailable".to_owned())?;
+                .ok_or_else(super::exact::exact_worker_unavailable)?;
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
             let prepared_directory = tempfile::Builder::new()
                 .prefix(".ketchup-prepared-iges-export-")
@@ -870,10 +870,10 @@ impl KetchupApp {
                 let mutation_epoch = self.document.mutation_epoch();
                 let plan = snapshot
                     .cam_plan(pending.plan_id)
-                    .ok_or_else(|| self.catalog.text("cam-review-no-plan"))?;
+                    .ok_or_else(|| self.catalog.refusal("cam-review-no-plan"))?;
                 let operation = plan
                     .default_facing_operation(&snapshot, 1)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| failed("cam.operation", error))?;
                 let worker_path = self.exact_worker_executable()?;
                 self.reviews.cam_reviews.set_worker_path(worker_path);
                 self.reviews
@@ -889,14 +889,14 @@ impl KetchupApp {
                         },
                         &AtomicBool::new(false),
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| failed("cam.review", error))
             })();
             match result {
                 Ok(review) => {
                     pending.review = Some(review);
                     self.digest = self.catalog.text("cam-review-ready");
                 }
-                Err(error) => self.digest = error,
+                Err(error) => self.digest = error.reason_text().to_owned(),
             }
         }
         if confirm

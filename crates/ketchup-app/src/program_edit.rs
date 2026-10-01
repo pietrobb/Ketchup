@@ -149,7 +149,7 @@ impl KetchupApp {
         &mut self,
         source: &GeneralFinishSourcePlan,
         amount_mm: f64,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<(), Rejection>> {
         let (call, amount) = match source.kind {
             GeneralFinishKind::Fillet => ("fillet", "radius"),
             GeneralFinishKind::Chamfer => ("chamfer", "distance"),
@@ -179,10 +179,15 @@ impl KetchupApp {
                     )
                 });
             let Some((_, [first, second])) = names else {
-                return Some(Err(format!(
+                return Some(Err(Rejection::new(
+                    "program.edge_unnamed",
+                    RejectionPhase::Validation,
+                )
+                .target(occurrence.name().to_owned())
+                .reason(format!(
                     "the picked edge of {:?} has no program name; round it with {call}() in the program",
                     occurrence.name()
-                )));
+                ))));
             };
             edges.push(format!("[{}, {}]", quote(&first), quote(&second)));
         }
@@ -195,7 +200,7 @@ impl KetchupApp {
         Some(
             self.apply_program_source(rewritten, false)
                 .map(|_| ())
-                .map_err(|error| error.to_string()),
+                .map_err(|error| failed("program.apply", error)),
         )
     }
 

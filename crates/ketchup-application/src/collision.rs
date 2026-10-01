@@ -12,7 +12,9 @@ use ketchup_model::document::{
     Snapshot,
 };
 use ketchup_model::exact_brep_graph::ExactBRepOperation;
-use ketchup_model::exact_product::{ExactResultRegistry, ExactSnapshotPreparation};
+use ketchup_model::exact_product::{
+    ExactProductError, ExactResultRegistry, ExactSnapshotPreparation,
+};
 use ketchup_model::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, GeneralBodyValidationError,
     GeneralClearanceCase, GravitySupportContact, general_body_input_bytes,
@@ -442,6 +444,9 @@ pub fn scoped_exact_pairs_with_worker(
     (report, facts)
 }
 
+/// The bodies a definition ends in, each with the feature producing it.
+type TerminalBodies = Result<Vec<(BodyId, FeatureId)>, ExactProductError>;
+
 fn collision_report(
     snapshot: &Snapshot,
     selection: &AssistantValidationSelection,
@@ -602,8 +607,7 @@ fn collision_report(
     let mut graph_failures = BTreeMap::new();
     let mut graph_bytes = 0usize;
     let mut graph_attempt_count = 0usize;
-    let mut terminal_cache: BTreeMap<DefinitionId, Result<Vec<(BodyId, FeatureId)>, String>> =
-        BTreeMap::new();
+    let mut terminal_cache: BTreeMap<DefinitionId, TerminalBodies> = BTreeMap::new();
     let mut unavailable = Vec::new();
     let mut failures = Vec::new();
     for occurrence in &visible {
@@ -631,14 +635,13 @@ fn collision_report(
                 exact_preparation
                     .terminal_features(occurrence.definition_id)
                     .map(|terminals| terminals.into_iter().collect())
-                    .map_err(|error| format!("unavailable_body_producers: {error:?}"))
             });
         let terminals = match terminals {
             Ok(terminals) => terminals,
-            Err(reason) => {
+            Err(error) => {
                 unavailable.push(json!({"occurrence_id": occurrence.instance_path.root_occurrence().0,
                     "instance_path": path_json(&occurrence.instance_path), "name": occurrence.occurrence_name,
-                    "reason": reason}));
+                    "reason": format!("unavailable_body_producers: {error:?}")}));
                 continue;
             }
         };

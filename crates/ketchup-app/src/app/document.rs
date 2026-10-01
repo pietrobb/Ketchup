@@ -274,9 +274,9 @@ impl KetchupApp {
         risk: &str,
         path: &Path,
         payload: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<(), Rejection> {
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("side_effect.scope", error))?;
         let proposal = self
             .document
             .prepare_high_risk_side_effect(
@@ -285,7 +285,7 @@ impl KetchupApp {
                 scope,
                 payload,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("side_effect.prepare", error))?;
         let description = format!(
             "Risk: {risk}\nPath: {}\nDocument revision: {}\nPayload SHA-256: {}\nOperation digest: {}",
             path.display(),
@@ -297,7 +297,10 @@ impl KetchupApp {
             title,
             description: &description,
         }) else {
-            return Err(format!("authenticated human declined {risk}"));
+            return Err(
+                Rejection::new("side_effect.declined", RejectionPhase::Validation)
+                    .reason(format!("authenticated human declined {risk}")),
+            );
         };
         let now_ms = current_unix_time_ms()?;
         let approval = self
@@ -308,13 +311,16 @@ impl KetchupApp {
                 now_ms,
                 now_ms
                     .checked_add(MAX_HUMAN_CONFIRMATION_LIFETIME_MS)
-                    .ok_or_else(|| "confirmation expiry exceeds the supported clock".to_owned())?,
+                    .ok_or_else(|| {
+                        Rejection::new("side_effect.clock", RejectionPhase::Planning)
+                            .reason("confirmation expiry exceeds the supported clock")
+                    })?,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("side_effect.approval", error))?;
         let receipt = self
             .document
             .authorize_high_risk_side_effect(&proposal, &approval, now_ms)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failed("side_effect.authorize", error))?;
         self.side_effect_receipts.push(receipt);
         Ok(())
     }
@@ -323,7 +329,7 @@ impl KetchupApp {
         &mut self,
         path: &Path,
         payload: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<(), Rejection> {
         self.side_effect_receipts.clear();
         self.authorize_path_side_effect(
             HighRiskClass::Overwrite,
@@ -335,12 +341,13 @@ impl KetchupApp {
         )
     }
 
-    pub(crate) fn retry_pending_work_recovery_cleanup(&mut self) -> Result<(), String> {
+    pub(crate) fn retry_pending_work_recovery_cleanup(
+        &mut self,
+    ) -> Result<(), ketchup_model::persistence::FilePersistenceError> {
         let Some((path, identity)) = self.file.pending_work_recovery_cleanup.clone() else {
             return Ok(());
         };
-        ketchup_model::persistence::clear_work_recovery(&path, Some(identity))
-            .map_err(|error| error.to_string())?;
+        ketchup_model::persistence::clear_work_recovery(&path, Some(identity))?;
         self.file.pending_work_recovery_cleanup = None;
         Ok(())
     }
@@ -412,7 +419,10 @@ impl KetchupApp {
         if let Err(error) = self.retry_pending_work_recovery_cleanup() {
             self.digest = self.catalog.format(
                 "error-save-document",
-                &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                &BTreeMap::from([
+                    ("path", path.display().to_string()),
+                    ("reason", error.to_string()),
+                ]),
             );
             return false;
         }
@@ -525,7 +535,10 @@ impl KetchupApp {
         {
             self.digest = self.catalog.format(
                 "error-save-document",
-                &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                &BTreeMap::from([
+                    ("path", path.display().to_string()),
+                    ("reason", error.reason_text().to_owned()),
+                ]),
             );
             return false;
         }
@@ -887,9 +900,11 @@ impl KetchupApp {
             }
             AppCommand::ReviewStaticFea => {
                 let result = (|| {
-                    let selected = self
-                        .selected_root_occurrence_ids()
-                        .map_err(|error| self.root_occurrence_selection_error(&error))?;
+                    let selected = self.selected_root_occurrence_ids().map_err(|error| {
+                        self.root_occurrence_selection_error(&error)
+                            .reason_text()
+                            .to_owned()
+                    })?;
                     if selected.len() != 1 {
                         return Err(self.catalog.text("fea-review-select-one"));
                     }
@@ -1426,12 +1441,14 @@ impl KetchupApp {
                             .filter(|(logical, source)| !logical.is_empty() && !source.is_empty())
                             .map(|(logical, source)| ReleaseDependencyInput::new(logical, source))
                             .ok_or_else(|| {
-                                format!(
-                                    "PDM dependency line {line:?} must use logical/path=source/path"
-                                )
+                                Rejection::new("pdm.dependency_line", RejectionPhase::Validation)
+                                    .target(line.to_owned())
+                                    .reason(format!(
+                                        "PDM dependency line {line:?} must use logical/path=source/path"
+                                    ))
                             })
                     })
-                    .collect::<Result<Vec<_>, String>>()?;
+                    .collect::<Result<Vec<_>, Rejection>>()?;
                 let request = PdmCreateReleaseRequest {
                     repository: PathBuf::from(pending.repository.trim()),
                     parent_release_id: (!pending.parent_release_id.trim().is_empty())
@@ -1453,7 +1470,7 @@ impl KetchupApp {
                         true,
                         &cancelled,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| failed("pdm.create", error))
             })();
             match result {
                 Ok(manifest) => {
@@ -1462,7 +1479,7 @@ impl KetchupApp {
                     pending.opened = Some(manifest);
                     self.digest = self.catalog.text("pdm-release-created");
                 }
-                Err(error) => self.digest = error,
+                Err(error) => self.digest = error.reason_text().to_owned(),
             }
         }
         if open && !cancel {
@@ -1471,12 +1488,10 @@ impl KetchupApp {
     }
 }
 
-fn current_unix_time_ms() -> Result<u64, String> {
+fn current_unix_time_ms() -> Result<u64, Rejection> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
+        .map_err(|error| failed("clock", error))?
         .as_millis();
-    u64::try_from(millis).map_err(|_: std::num::TryFromIntError| {
-        "system time is outside the supported range".to_owned()
-    })
+    u64::try_from(millis).map_err(|error| failed("clock", error))
 }

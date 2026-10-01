@@ -249,7 +249,7 @@ fn write_line(writer: &mut impl Write, line: &str) -> Result<(), PluginHostError
 
 struct PluginWriteRequest {
     line: String,
-    acknowledgment: mpsc::Sender<Result<(), String>>,
+    acknowledgment: mpsc::Sender<Result<(), PluginHostError>>,
 }
 
 fn spawn_bounded_writer(
@@ -258,7 +258,7 @@ fn spawn_bounded_writer(
     let (sender, receiver) = mpsc::channel::<PluginWriteRequest>();
     let _ = std::thread::spawn(move || {
         for request in receiver {
-            let result = write_line(&mut writer, &request.line).map_err(|error| error.to_string());
+            let result = write_line(&mut writer, &request.line);
             let terminal = result.is_err();
             if request.acknowledgment.send(result).is_err() || terminal {
                 break;
@@ -295,7 +295,7 @@ fn send_line(
         };
         match receiver.recv_timeout(remaining.min(POLL_INTERVAL)) {
             Ok(Ok(())) => return Ok(()),
-            Ok(Err(error)) => return Err(PluginHostError::Transport(error)),
+            Ok(Err(error)) => return Err(error),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(PluginHostError::Transport(
@@ -308,13 +308,12 @@ fn send_line(
 
 fn spawn_bounded_reader(
     stdout: impl io::Read + Send + 'static,
-) -> Receiver<Result<Option<String>, String>> {
+) -> Receiver<io::Result<Option<String>>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let _ = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {
-            let line = read_bounded_line(&mut reader, MAX_PLUGIN_REQUEST_LINE_BYTES)
-                .map_err(|error| error.to_string());
+            let line = read_bounded_line(&mut reader, MAX_PLUGIN_REQUEST_LINE_BYTES);
             let terminal = !matches!(line, Ok(Some(_)));
             if sender.send(line).is_err() || terminal {
                 break;
@@ -357,7 +356,7 @@ fn read_bounded_line(reader: &mut impl BufRead, max_bytes: usize) -> io::Result<
 }
 
 fn receive_line(
-    receiver: &Receiver<Result<Option<String>, String>>,
+    receiver: &Receiver<io::Result<Option<String>>>,
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<Option<String>, PluginHostError> {
@@ -370,7 +369,7 @@ fn receive_line(
         };
         match receiver.recv_timeout(remaining.min(POLL_INTERVAL)) {
             Ok(Ok(line)) => return Ok(line),
-            Ok(Err(error)) => return Err(PluginHostError::Transport(error)),
+            Ok(Err(error)) => return Err(PluginHostError::Transport(error.to_string())),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(PluginHostError::Transport(

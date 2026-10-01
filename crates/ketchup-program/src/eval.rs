@@ -960,7 +960,7 @@ fn sweep_path<'v>(
                             }
                             _ => return Err(anyhow::anyhow!("{FORMS}")),
                         }
-                        .map_err(anyhow::Error::msg)
+                        .map_err(anyhow::Error::new)
                     })
                     .transpose()
                     .map_err(|error| anyhow::anyhow!("{what}: {error}"))?;
@@ -973,7 +973,7 @@ fn sweep_path<'v>(
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     };
-    crate::path::validate(&path).map_err(anyhow::Error::msg)?;
+    crate::path::validate(&path)?;
     Ok(path)
 }
 
@@ -981,7 +981,7 @@ fn sweep_path<'v>(
 fn sweep_up(path: &[ProgramPathSegment], up: [f64; 3]) -> anyhow::Result<[f64; 3]> {
     let up = normalize_within(up, TOLERANCE_MM)
         .ok_or_else(|| anyhow::anyhow!("up must be a non-zero direction"))?;
-    crate::path::validate_up(path, up).map_err(anyhow::Error::msg)?;
+    crate::path::validate_up(path, up)?;
     Ok(up)
 }
 

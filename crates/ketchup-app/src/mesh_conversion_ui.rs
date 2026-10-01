@@ -45,21 +45,24 @@ impl KetchupApp {
 
     pub(super) fn begin_mesh_conversion_review(&mut self) {
         self.cancel_mesh_conversion();
-        let result = (|| {
-            let feature_id = self
-                .selected_mesh_feature_id()
-                .ok_or_else(|| "select exactly one mesh body occurrence".to_owned())?;
-            let executable = self.exact_worker_executable()?;
-            start_mesh_conversion(
-                &self.document,
-                feature_id,
-                MESH_CONVERSION_TOLERANCE_MM,
-                executable,
-                MESH_CONVERSION_TIMEOUT,
-                || {},
-            )
-        })();
-        match result {
+        let Some(feature_id) = self.selected_mesh_feature_id() else {
+            return self
+                .set_mesh_conversion_error("select exactly one mesh body occurrence".to_owned());
+        };
+        let executable = match self.exact_worker_executable() {
+            Ok(executable) => executable,
+            Err(refusal) => {
+                return self.set_mesh_conversion_error(refusal.reason_text().to_owned());
+            }
+        };
+        match start_mesh_conversion(
+            &self.document,
+            feature_id,
+            MESH_CONVERSION_TOLERANCE_MM,
+            executable,
+            MESH_CONVERSION_TIMEOUT,
+            || {},
+        ) {
             Ok(task) => {
                 self.mesh_conversion_state.task = Some(task);
                 self.mesh_conversion_state.progress = Some(MeshConversionProgress {
@@ -68,7 +71,7 @@ impl KetchupApp {
                     total: 3,
                 });
             }
-            Err(reason) => self.set_mesh_conversion_error(reason),
+            Err(error) => self.set_mesh_conversion_error(error.to_string()),
         }
     }
 

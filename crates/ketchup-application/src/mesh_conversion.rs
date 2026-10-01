@@ -310,7 +310,7 @@ pub fn start_mesh_conversion(
     executable: PathBuf,
     timeout: Duration,
     completed: impl FnOnce() + Send + 'static,
-) -> Result<MeshConversionTask, String> {
+) -> std::io::Result<MeshConversionTask> {
     let snapshot = document.current();
     let mutation_epoch = document.mutation_epoch();
     let next_revision_id = document.next_revision_id();
@@ -390,8 +390,7 @@ pub fn start_mesh_conversion(
                     .name("mesh-conversion-completed".to_owned())
                     .spawn(completed);
             }
-        })
-        .map_err(|error| error.to_string())?;
+        })?;
     Ok(MeshConversionTask {
         source,
         cancelled,

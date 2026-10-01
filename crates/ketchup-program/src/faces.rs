@@ -9,8 +9,8 @@
 
 use crate::frame::{self, Mat3};
 use crate::model::{
-    Hole, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind, ProgramOperation,
-    ProgramPartBody, ProgramProfileSegment, profile_bounds,
+    FaceNameError, Hole, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
+    ProgramOperation, ProgramPartBody, ProgramProfileSegment, profile_bounds,
 };
 use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_model::tolerance::APPROXIMATION;
@@ -507,31 +507,26 @@ impl Part {
     ///
     /// # Errors
     /// Names the face and lists the faces the part has.
-    pub fn face_frame(&self, name: &str) -> Result<FaceFrame, String> {
+    pub fn face_frame(&self, name: &str) -> Result<FaceFrame, FaceNameError> {
         let faces = self.face_frames();
         if let Some(face) = faces.iter().find(|face| face.name == name) {
             return Ok(face.clone());
         }
         if faces.is_empty() {
-            return Err(format!(
-                "{:?} has no flat or cylindrical faces with names (swept and lofted bodies have none)",
-                self.name
-            ));
+            return Err(FaceNameError::NoFramedFaces {
+                part: self.name.clone(),
+            });
         }
-        let kind = if self.exact_face_label(name).is_ok() {
-            "is not a flat or cylindrical face"
+        let (name, part, faces) = (
+            name.to_owned(),
+            self.name.clone(),
+            faces.into_iter().map(|face| face.name).collect(),
+        );
+        Err(if self.exact_face_label(&name).is_ok() {
+            FaceNameError::NotFramed { name, part, faces }
         } else {
-            "does not exist"
-        };
-        Err(format!(
-            "face {name:?} {kind} on {:?}; its faces are: {}",
-            self.name,
-            faces
-                .iter()
-                .map(|face| face.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
+            FaceNameError::Unknown { name, part, faces }
+        })
     }
 
     /// The frame placed in world.

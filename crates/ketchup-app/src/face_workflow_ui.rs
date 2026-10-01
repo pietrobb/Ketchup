@@ -188,31 +188,34 @@ impl KetchupApp {
     pub fn seed_headless_face_workflow_last_valid_output(
         &mut self,
         exact_worker: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<(), Rejection> {
         let snapshot = self.document.current();
         let graphs = ketchup_model::exact_product::terminal_body_exact_graphs(
             &snapshot,
             INITIAL_BOX_DEFINITION,
         )
-        .map_err(|error| error.to_string())?;
-        let mut worker =
-            ExactWorkerSupervisor::spawn(exact_worker).map_err(|error| error.to_string())?;
+        .map_err(|error| failed("exact.graphs", error))?;
+        let mut worker = ExactWorkerSupervisor::spawn(exact_worker)
+            .map_err(|error| failed("exact_worker.spawn", error))?;
         let package = graphs
             .values()
             .next()
-            .ok_or_else(|| "the initial box has no exact body".to_owned())
+            .ok_or_else(|| {
+                Rejection::new("exact.no_body", RejectionPhase::Evaluation)
+                    .reason("the initial box has no exact body")
+            })
             .and_then(|graph| {
                 worker
                     .evaluate_exact_brep_graph(graph)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| failed("exact.evaluate", error))
             })
             .map(ExactBodyPackage::from)
             .map(Arc::new)?;
         if let Some(task) = self.exact.task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
-        self.exact.results =
-            ExactResultRegistry::accept(&snapshot, [package]).map_err(|error| error.to_string())?;
+        self.exact.results = ExactResultRegistry::accept(&snapshot, [package])
+            .map_err(|error| failed("exact.accept", error))?;
         self.exact.worker_attempted = true;
         self.exact.worker_path = None;
         self.exact.source = Some(ketchup_application::evaluation::exact_source(&snapshot));

@@ -7,7 +7,7 @@ use ketchup_application::{
         assistant_assembly_constraints_report, assistant_assembly_retention_report,
         assistant_static_load_report, assistant_validation_context,
     },
-    validation_rules::{ValidationRules, occurrence_materials},
+    validation_rules::{ValidationRules, ValidationRulesError, occurrence_materials},
 };
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
@@ -1505,20 +1505,22 @@ fn library_validation_rules_are_the_single_source_of_validator_limits() {
 
     let mut value: serde_json::Value = serde_json::from_str(text).unwrap();
     value["passage_clearance"]["minimum_width_mm"] = serde_json::json!(0.0);
-    assert_eq!(
-        ValidationRules::from_json(&value.to_string()).unwrap_err(),
-        "passage_clearance.minimum_width_mm must be a finite positive number"
-    );
+    assert!(matches!(
+        ValidationRules::from_json(&value.to_string()),
+        Err(ValidationRulesError::NotPositive { path }) if path == "passage_clearance.minimum_width_mm"
+    ));
     let mut value: serde_json::Value = serde_json::from_str(text).unwrap();
     value["default_material"] = serde_json::json!("unobtainium");
-    assert!(
-        ValidationRules::from_json(&value.to_string())
-            .unwrap_err()
-            .contains("has no entry in materials")
-    );
+    assert!(matches!(
+        ValidationRules::from_json(&value.to_string()),
+        Err(ValidationRulesError::UnknownDefaultMaterial { material }) if material == "unobtainium"
+    ));
     let mut value: serde_json::Value = serde_json::from_str(text).unwrap();
     value["tipping"]["maximum_tip_angle_degrees"] = serde_json::json!(30.0);
-    assert!(ValidationRules::from_json(&value.to_string()).is_err());
+    assert!(matches!(
+        ValidationRules::from_json(&value.to_string()),
+        Err(ValidationRulesError::Json(_))
+    ));
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! part's placement.
 use ketchup_program::contact::contact;
 use ketchup_program::faces::{FaceFrame, FaceKind};
-use ketchup_program::model::Part;
+use ketchup_program::model::{FaceNameError, FinishKind, Part};
 use ketchup_program::run;
 
 fn part(source: &str, name: &str) -> Part {
@@ -65,12 +65,45 @@ fn box_faces_are_planes_that_follow_the_part_frame() {
         [-290.0, 420.0, 48.0],
         "x+ far corner",
     );
-    assert!(
-        panel
-            .face_frame("top")
-            .unwrap_err()
-            .contains("z-, z+, y-, x+, y+, x-")
+    assert_eq!(
+        panel.face_frame("top"),
+        Err(FaceNameError::Unknown {
+            name: "top".into(),
+            part: "p".into(),
+            faces: ["z-", "z+", "y-", "x+", "y+", "x-"]
+                .map(String::from)
+                .into(),
+        })
     );
+}
+
+#[test]
+fn a_wrong_face_name_says_which_rule_it_breaks() {
+    let block = part(
+        "b = box(\"b\", (400, 300, 18))\n\
+         subtract(b, box(\"t\", (50, 50, 50)), name = \"cut\")\n",
+        "b",
+    );
+    assert_eq!(
+        block.exact_face_label("z+#"),
+        Err(FaceNameError::SplitSuffix { name: "z+#".into() })
+    );
+    assert_eq!(
+        block.exact_face_label("fillet(z+,x+"),
+        Err(FaceNameError::FinishForm {
+            name: "fillet(z+,x+".into(),
+            kind: FinishKind::Fillet,
+        })
+    );
+    let Err(FaceNameError::ToolFace {
+        operation, cause, ..
+    }) = block.exact_face_label("cut.top")
+    else {
+        panic!("the tool of cut has no face top");
+    };
+    assert_eq!(operation, "cut");
+    assert!(matches!(*cause, FaceNameError::Unknown { ref part, .. } if part == "t"));
+    assert_eq!(block.exact_face_label("cut.z+").as_deref(), Ok("cut.end"));
 }
 
 #[test]
@@ -189,7 +222,10 @@ fn revolved_sides_are_cylinders_rings_and_turned_caps() {
         "knob",
     );
     let error = full.face_frame("start").unwrap_err();
-    assert!(error.contains("not a flat or cylindrical face"), "{error}");
+    assert!(
+        matches!(&error, FaceNameError::NotFramed { name, .. } if name == "start"),
+        "{error}"
+    );
     assert!(
         full.face_frames()
             .iter()

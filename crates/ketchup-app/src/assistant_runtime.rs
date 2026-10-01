@@ -1,4 +1,4 @@
-use crate::{AssistantTransport, AssistantTransportResponse};
+use crate::{AssistantTransport, AssistantTransportResponse, Rejection, failed};
 use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantCapability,
@@ -185,7 +185,7 @@ impl AssistantTransport for ProcessAssistantTransport {
         message: &str,
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
-    ) -> Result<ketchup_assistant::sidecar::AssistantChatResult, String> {
+    ) -> Result<ketchup_assistant::sidecar::AssistantChatResult, Rejection> {
         self.chat_with_diagnostics(handshake, request_id, message, context, cancellation)
             .map(|response| response.result)
     }
@@ -197,11 +197,11 @@ impl AssistantTransport for ProcessAssistantTransport {
         message: &str,
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
-    ) -> Result<AssistantTransportResponse, String> {
+    ) -> Result<AssistantTransportResponse, Rejection> {
         let mut client = match handshake.distribution {
             AssistantDistribution::PublicApi => {
                 let launch = public_assistant_launch(&handshake.provider)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| failed("assistant.launch", error))?;
                 AssistantProcessClient::spawn_isolated_with_cancellation(
                     &launch,
                     handshake,
@@ -210,7 +210,8 @@ impl AssistantTransport for ProcessAssistantTransport {
                 )
             }
             AssistantDistribution::PrivateOauth => {
-                let launch = private_assistant_launch().map_err(|error| error.to_string())?;
+                let launch = private_assistant_launch()
+                    .map_err(|error| failed("assistant.launch", error))?;
                 AssistantProcessClient::spawn_isolated_with_cancellation(
                     &launch,
                     handshake,
@@ -219,7 +220,7 @@ impl AssistantTransport for ProcessAssistantTransport {
                 )
             }
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| failed("assistant.spawn", error))?;
         let answer = client
             .chat_exchange(request_id, message, context)
             .map(|exchange| AssistantTransportResponse {
@@ -228,7 +229,7 @@ impl AssistantTransport for ProcessAssistantTransport {
                 fea_review: exchange.fea_review,
                 diagnostics: exchange.diagnostics,
             })
-            .map_err(|error| error.to_string());
+            .map_err(|error| failed("assistant.chat", error));
         let _ = client.shutdown();
         answer
     }
