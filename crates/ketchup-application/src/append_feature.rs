@@ -506,7 +506,7 @@ pub(crate) fn plan_feature_kind(
                     operation_name,
                     "feature",
                     "The requested sheet-metal dimensions or bend parameters are invalid.",
-                    "Use bounded positive dimensions, a K-factor from zero to one, canonical unique boundary edges, and no adjacent flanges without corner relief.",
+                    "Use a simple counter-clockwise base polygon, bounded positive dimensions, a K-factor from zero to one, bends ordered by face and edge that leave the base or an earlier flange's far edge, and no bends on edges sharing a corner.",
                 )
             })?;
             spec.validate().map_err(|error| {
@@ -515,7 +515,7 @@ pub(crate) fn plan_feature_kind(
                     operation_name,
                     "feature",
                     error.to_string(),
-                    "Use bounded positive dimensions, a K-factor from zero to one, canonical unique boundary edges, and no adjacent flanges without corner relief.",
+                    "Use a simple counter-clockwise base polygon, bounded positive dimensions, a K-factor from zero to one, bends ordered by face and edge that leave the base or an earlier flange's far edge, and no bends on edges sharing a corner.",
                 )
             })?;
             FeatureKind::SheetMetal(spec)

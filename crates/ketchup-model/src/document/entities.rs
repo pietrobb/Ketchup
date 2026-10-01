@@ -1282,33 +1282,33 @@ impl FeatureKind {
             ),
             Self::WeldmentJoint(_) => {}
             Self::SheetMetal(spec) => {
-                for path in ["width", "depth", "thickness", "k_factor"] {
-                    push_parameter_descriptor(
-                        &mut descriptors,
-                        path,
-                        if path == "k_factor" {
-                            ParameterValueType::Scalar
-                        } else {
-                            ParameterValueType::Length
-                        },
-                    );
+                push_parameter_descriptor(
+                    &mut descriptors,
+                    "thickness",
+                    ParameterValueType::Length,
+                );
+                push_parameter_descriptor(&mut descriptors, "k_factor", ParameterValueType::Scalar);
+                for index in 0..spec.base_mm.len() {
+                    for axis in ["x", "y"] {
+                        push_parameter_descriptor(
+                            &mut descriptors,
+                            format!("base.{index}.{axis}"),
+                            ParameterValueType::Length,
+                        );
+                    }
                 }
-                for (index, _) in spec.flanges.iter().enumerate() {
-                    push_parameter_descriptor(
-                        &mut descriptors,
-                        format!("flanges.{index}.length"),
-                        ParameterValueType::Length,
-                    );
-                    push_parameter_descriptor(
-                        &mut descriptors,
-                        format!("flanges.{index}.angle"),
-                        ParameterValueType::Angle,
-                    );
-                    push_parameter_descriptor(
-                        &mut descriptors,
-                        format!("flanges.{index}.inner_radius"),
-                        ParameterValueType::Length,
-                    );
+                for index in 0..spec.bends.len() {
+                    for (field, value_type) in [
+                        ("length", ParameterValueType::Length),
+                        ("angle", ParameterValueType::Angle),
+                        ("inner_radius", ParameterValueType::Length),
+                    ] {
+                        push_parameter_descriptor(
+                            &mut descriptors,
+                            format!("bends.{index}.{field}"),
+                            value_type,
+                        );
+                    }
                 }
             }
             Self::Loft { sections, .. }

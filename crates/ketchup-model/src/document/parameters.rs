@@ -143,27 +143,20 @@ pub(super) fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Op
             Some(spec.orientation_degrees)
         }
         FeatureKind::SheetMetal(spec) => match parts.as_slice() {
-            ["width"] => Some(spec.width.millimetres()),
-            ["depth"] => Some(spec.depth.millimetres()),
             ["thickness"] => Some(spec.thickness.millimetres()),
             ["k_factor"] => Some(spec.k_factor),
-            ["flanges", index, "length"] => Some(
-                spec.flanges
-                    .get(index.parse::<usize>().ok()?)?
-                    .length
-                    .millimetres(),
-            ),
-            ["flanges", index, "angle"] => Some(
-                spec.flanges
-                    .get(index.parse::<usize>().ok()?)?
-                    .angle_degrees,
-            ),
-            ["flanges", index, "inner_radius"] => Some(
-                spec.flanges
-                    .get(index.parse::<usize>().ok()?)?
-                    .inner_radius
-                    .millimetres(),
-            ),
+            ["base", index, axis] => {
+                point_coordinate(*spec.base_mm.get(index.parse::<usize>().ok()?)?, axis)
+            }
+            ["bends", index, field] => {
+                let bend = spec.bends.get(index.parse::<usize>().ok()?)?;
+                match *field {
+                    "length" => Some(bend.length.millimetres()),
+                    "angle" => Some(bend.angle_degrees),
+                    "inner_radius" => Some(bend.inner_radius.millimetres()),
+                    _ => None,
+                }
+            }
             _ => None,
         },
         FeatureKind::Loft { sections, .. } => match parts.as_slice() {
@@ -580,14 +573,6 @@ pub(super) fn set_feature_kind_parameter(
             true
         }
         FeatureKind::SheetMetal(spec) => match parts.as_slice() {
-            ["width"] => {
-                spec.width = dimension.clone();
-                true
-            }
-            ["depth"] => {
-                spec.depth = dimension.clone();
-                true
-            }
             ["thickness"] => {
                 spec.thickness = dimension.clone();
                 true
@@ -596,26 +581,29 @@ pub(super) fn set_feature_kind_parameter(
                 spec.k_factor = value;
                 true
             }
-            ["flanges", index, "length"] => spec
-                .flanges
-                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
-                .is_some_and(|flange| {
-                    flange.length = dimension.clone();
-                    true
-                }),
-            ["flanges", index, "angle"] => spec
-                .flanges
-                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
-                .is_some_and(|flange| {
-                    flange.angle_degrees = value;
-                    true
-                }),
-            ["flanges", index, "inner_radius"] => spec
-                .flanges
-                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
-                .is_some_and(|flange| {
-                    flange.inner_radius = dimension.clone();
-                    true
+            ["base", index, axis] => index
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| spec.base_mm.get_mut(index))
+                .is_some_and(|corner| set_point_coordinate(corner, axis, value)),
+            ["bends", index, field] => index
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| spec.bends.get_mut(index))
+                .is_some_and(|bend| match *field {
+                    "length" => {
+                        bend.length = dimension.clone();
+                        true
+                    }
+                    "angle" => {
+                        bend.angle_degrees = value;
+                        true
+                    }
+                    "inner_radius" => {
+                        bend.inner_radius = dimension.clone();
+                        true
+                    }
+                    _ => false,
                 }),
             _ => false,
         },

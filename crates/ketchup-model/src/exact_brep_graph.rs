@@ -10,7 +10,7 @@ use crate::exact_product::{
     MAX_EXACT_PLANAR_OFFSET_LENGTH_MM, accepts_planar_circle_offset_geometry,
     accepts_planar_offset_geometry, exact_planar_offset_profile_from_segments,
 };
-use crate::sheet_metal::SheetMetalEdge;
+use crate::sheet_metal::{BendShape, SheetMetalShape};
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use crate::topology::{TopologicalElementKind, TopologicalElementRef, TopologicalReferenceError};
 use ketchup_geometry::linalg::{Frame, cross, dot, sub};
@@ -377,33 +377,47 @@ pub struct ExactBRepSpatialPath {
     pub segments: Vec<ExactBRepSpatialPathSegment>,
 }
 
+/// A bend of [`ExactBRepOperation::SheetMetal`]; see [`crate::sheet_metal::SheetMetalBend`].
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExactBRepSheetMetalEdge {
-    MinX,
-    MaxX,
-    MinY,
-    MaxY,
+#[serde(deny_unknown_fields)]
+pub struct ExactBRepSheetMetalBend {
+    pub parent: Option<usize>,
+    pub edge: usize,
+    pub length_bits: u64,
+    pub angle_degrees_bits: u64,
+    pub inner_radius_bits: u64,
 }
 
-impl From<SheetMetalEdge> for ExactBRepSheetMetalEdge {
-    fn from(edge: SheetMetalEdge) -> Self {
-        match edge {
-            SheetMetalEdge::MinX => Self::MinX,
-            SheetMetalEdge::MaxX => Self::MaxX,
-            SheetMetalEdge::MinY => Self::MinY,
-            SheetMetalEdge::MaxY => Self::MaxY,
+impl ExactBRepSheetMetalBend {
+    #[must_use]
+    pub fn shape(&self) -> BendShape {
+        BendShape {
+            parent: self.parent,
+            edge: self.edge,
+            length_mm: f64::from_bits(self.length_bits),
+            angle_degrees: f64::from_bits(self.angle_degrees_bits),
+            inner_radius_mm: f64::from_bits(self.inner_radius_bits),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExactBRepSheetMetalFlange {
-    pub edge: ExactBRepSheetMetalEdge,
-    pub length_bits: u64,
-    pub angle_degrees_bits: u64,
-    pub inner_radius_bits: u64,
+/// The sheet [`ExactBRepOperation::SheetMetal`] describes.
+#[must_use]
+pub fn exact_sheet_metal_shape(
+    base_mm_bits: &[[u64; 2]],
+    thickness_bits: u64,
+    k_factor_bits: u64,
+    bends: &[ExactBRepSheetMetalBend],
+) -> SheetMetalShape {
+    SheetMetalShape {
+        base_mm: base_mm_bits
+            .iter()
+            .map(|corner| corner.map(f64::from_bits))
+            .collect(),
+        thickness_mm: f64::from_bits(thickness_bits),
+        k_factor: f64::from_bits(k_factor_bits),
+        bends: bends.iter().map(ExactBRepSheetMetalBend::shape).collect(),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -531,11 +545,10 @@ pub enum ExactBRepOperation {
         continuity: ExactBRepLoftContinuity,
     },
     SheetMetal {
-        width_bits: u64,
-        depth_bits: u64,
+        base_mm_bits: Vec<[u64; 2]>,
         thickness_bits: u64,
         k_factor_bits: u64,
-        flanges: Vec<ExactBRepSheetMetalFlange>,
+        bends: Vec<ExactBRepSheetMetalBend>,
     },
     ImportedExact {
         source_sha256: [u8; 32],

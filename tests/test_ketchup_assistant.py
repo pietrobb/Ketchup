@@ -1286,15 +1286,16 @@ def test_cad_append_planar_offset_matches_rust_boundaries_and_strict_fields():
 def test_cad_append_sheet_metal_matches_canonical_manufacturing_boundaries():
     feature = {
         "type": "sheet_metal",
-        "width_mm": 100,
-        "depth_mm": 50,
+        "base_mm": [[0, 0], [100, 0], [80, 50], [0, 50]],
         "thickness_mm": 2,
         "k_factor": 0.4,
-        "flanges": [
-            {"edge": "min_x", "length_mm": 20, "angle_degrees": 90, "inner_radius_mm": 3},
-            {"edge": "max_x", "length_mm": 30, "angle_degrees": -45, "inner_radius_mm": 3},
+        "bends": [
+            {"parent": None, "edge": 1, "length_mm": 20, "angle_degrees": 90, "inner_radius_mm": 3},
+            {"parent": None, "edge": 3, "length_mm": 30, "angle_degrees": -45, "inner_radius_mm": 3},
+            {"parent": 0, "edge": 2, "length_mm": 10, "angle_degrees": 90, "inner_radius_mm": 2},
         ],
     }
+    bends = feature["bends"]
     operation = {
         "operation": "append_feature",
         "definition_id": 2,
@@ -1304,19 +1305,24 @@ def test_cad_append_sheet_metal_matches_canonical_manufacturing_boundaries():
     assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
         "operations": [operation]
     }
-    assert "canonical unique boundary edges" in assistant.SYSTEM_PROMPT
+    assert "bends form a tree" in assistant.SYSTEM_PROMPT
 
     invalid_features = [
         {**feature, "thickness_mm": 50},
         {**feature, "thickness_mm": True},
         {**feature, "k_factor": 1.01},
-        {**feature, "width_mm": float("nan")},
-        {**feature, "flanges": [{**feature["flanges"][0], "angle_degrees": 180}]},
-        {**feature, "flanges": [{**feature["flanges"][0], "inner_radius_mm": 100_000}]},
-        {**feature, "flanges": list(reversed(feature["flanges"]))},
-        {**feature, "flanges": [feature["flanges"][0], {**feature["flanges"][1], "edge": "min_y"}]},
-        {**feature, "flanges": [feature["flanges"][0], feature["flanges"][0]]},
-        {**feature, "flanges": [{**feature["flanges"][0], "edge": "north"}]},
+        {**feature, "base_mm": list(reversed(feature["base_mm"]))},
+        {**feature, "base_mm": [[0, 0], [100, 0], [float("nan"), 50]]},
+        {**feature, "bends": [{**bends[0], "angle_degrees": 180}]},
+        {**feature, "bends": [{**bends[0], "inner_radius_mm": 100_000}]},
+        {**feature, "bends": list(reversed(bends))},
+        {**feature, "bends": [bends[0], bends[0]]},
+        {**feature, "bends": [bends[0], {**bends[1], "edge": 2}]},
+        {**feature, "bends": [bends[0], {**bends[2], "edge": 1}]},
+        {**feature, "bends": [{**bends[0], "parent": 0}]},
+        {**feature, "bends": [{**bends[0], "edge": 4}]},
+        {**feature, "bends": [{**bends[0], "edge": "min_x"}]},
+        {**feature, "flanges": bends},
         {**feature, "output_feature_id": 99},
     ]
     for invalid_feature in invalid_features:

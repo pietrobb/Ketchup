@@ -17,7 +17,7 @@ use ketchup_app::{AppCommand, AssistantMessageRole};
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantCadSheetMetalEdge, AssistantCadSheetMetalFlange,
+    AssistantCadProgramFeatureReference, AssistantCadSheetMetalBend,
     AssistantCadWeldmentJointPolicy, AssistantCadWeldmentJointPrimary, AssistantCamToolKind,
     AssistantCamWorkOffset, AssistantChatResult, AssistantFeaReviewRequest,
 };
@@ -479,21 +479,22 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
                 definition_id: 80,
                 name: "Opposite flanges".into(),
                 feature: AssistantCadBodyFeature::SheetMetal {
-                    width_mm: 100.0,
-                    depth_mm: 50.0,
+                    base_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
                     thickness_mm: 2.0,
                     k_factor: 0.4,
-                    flanges: vec![
-                        AssistantCadSheetMetalFlange {
-                            edge: AssistantCadSheetMetalEdge::MinX,
-                            length_mm: 20.0,
-                            angle_degrees: 90.0,
-                            inner_radius_mm: 3.0,
-                        },
-                        AssistantCadSheetMetalFlange {
-                            edge: AssistantCadSheetMetalEdge::MaxX,
+                    bends: vec![
+                        AssistantCadSheetMetalBend {
+                            parent: None,
+                            edge: 1,
                             length_mm: 30.0,
                             angle_degrees: -45.0,
+                            inner_radius_mm: 3.0,
+                        },
+                        AssistantCadSheetMetalBend {
+                            parent: None,
+                            edge: 3,
+                            length_mm: 20.0,
+                            angle_degrees: 90.0,
                             inner_radius_mm: 3.0,
                         },
                     ],
@@ -537,8 +538,8 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
     .unwrap();
     assert!(!parsed.profiles().is_empty());
     let bends = std::fs::read_to_string(&bend_table).unwrap();
-    assert!(bends.contains("min-x,up,90,3,"));
-    assert!(bends.contains("max-x,down,-45,3,"));
+    assert!(bends.contains("\n0,base,1,down,-45,3,"));
+    assert!(bends.contains("\n1,base,3,up,90,3,"));
     assert_state_and_history_unchanged(&mut shell, &before_export, &before_history);
 }
 

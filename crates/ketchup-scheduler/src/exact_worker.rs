@@ -29,16 +29,17 @@ use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection, ExactBRepOperation,
     ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
-    ExactBRepProfileFaceReference, ExactBRepSheetMetalEdge, ExactBRepSheetMetalFlange,
-    ExactBRepShellDirection, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
-    ExactBRepTopologyKind, ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy,
-    ExactBRepWeldmentJointPrimary, exact_brep_planar_rectangle_bounds,
+    ExactBRepProfileFaceReference, ExactBRepShellDirection, ExactBRepSpatialPath,
+    ExactBRepSpatialPathSegment, ExactBRepTopologyKind, ExactBRepTopologySelector,
+    ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
+    exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
 };
 use ketchup_model::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
 use ketchup_model::graph::sha256_hex;
 use ketchup_model::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
+use ketchup_model::sheet_metal::{SheetMetalError, SheetMetalShape};
 use ketchup_model::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM};
 use ketchup_model::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
@@ -555,143 +556,63 @@ fn exact_brep_graph_response(backend: &ExactBackend, input: &GraphInput) -> Work
 
 fn exact_brep_sheet_metal(
     backend: &ExactBackend,
-    width: f64,
-    depth: f64,
-    thickness: f64,
-    flanges: &[ExactBRepSheetMetalFlange],
+    graph: &ExactBRepGraph,
+    sheet: &SheetMetalShape,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let rectangle = |width: f64, depth: f64| {
-        vec![
-            PlanarProfileSegment::Line {
-                start_mm: [0.0, 0.0],
-                end_mm: [width, 0.0],
-            },
-            PlanarProfileSegment::Line {
-                start_mm: [width, 0.0],
-                end_mm: [width, depth],
-            },
-            PlanarProfileSegment::Line {
-                start_mm: [width, depth],
-                end_mm: [0.0, depth],
-            },
-            PlanarProfileSegment::Line {
-                start_mm: [0.0, depth],
-                end_mm: [0.0, 0.0],
-            },
-        ]
+    let invalid = |error: SheetMetalError| exact_brep_graph_error(graph, &error.to_string());
+    let folded = sheet.fold().map_err(invalid)?;
+    let polygon = |corners: Vec<[f64; 2]>| {
+        corners
+            .iter()
+            .zip(corners.iter().cycle().skip(1))
+            .map(|(start, end)| PlanarProfileSegment::Line {
+                start_mm: *start,
+                end_mm: *end,
+            })
+            .collect::<Vec<_>>()
     };
-    let transform = |body: &ketchup_exact::ExactBody,
-                     x: [f64; 3],
-                     y: [f64; 3],
-                     z: [f64; 3],
-                     origin: [f64; 3]| {
-        backend.transform_body(
-            body,
-            &[
-                x[0], y[0], z[0], origin[0], x[1], y[1], z[1], origin[1], x[2], y[2], z[2],
-                origin[2], 0.0, 0.0, 0.0, 1.0,
-            ],
-        )
+    let placed = |profile: &[PlanarProfileSegment], depth: f64, frame: linalg::Frame| {
+        let local = backend.extrude_mixed_profile(profile, depth)?;
+        backend.transform_body(&local.body, &frame.to_affine().to_row_major())
     };
-    let mut output = backend.extrude_mixed_profile(&rectangle(width, depth), thickness)?;
-    for flange in flanges {
-        let length = f64::from_bits(flange.length_bits);
-        let angle = f64::from_bits(flange.angle_degrees_bits);
-        let inner = f64::from_bits(flange.inner_radius_bits);
-        let beta = angle.abs().to_radians();
-        let sign = angle.signum();
-        let outer = inner + thickness;
-        let middle = inner + thickness * 0.5;
-        let (outward, edge_axis, bend_origin, flange_origin) = match flange.edge {
-            ExactBRepSheetMetalEdge::MinX => (
-                [-1.0, 0.0, 0.0],
-                [0.0, -1.0, 0.0],
-                [0.0, 0.0, 0.0],
-                [0.0, depth, 0.0],
-            ),
-            ExactBRepSheetMetalEdge::MaxX => (
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [width, depth, 0.0],
-                [width, 0.0, 0.0],
-            ),
-            ExactBRepSheetMetalEdge::MinY => (
-                [0.0, -1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [width, 0.0, 0.0],
-                [0.0, 0.0, 0.0],
-            ),
-            ExactBRepSheetMetalEdge::MaxY => (
-                [0.0, 1.0, 0.0],
-                [-1.0, 0.0, 0.0],
-                [0.0, depth, 0.0],
-                [width, depth, 0.0],
-            ),
-        };
-        let span = if matches!(
-            flange.edge,
-            ExactBRepSheetMetalEdge::MinX | ExactBRepSheetMetalEdge::MaxX
-        ) {
-            depth
-        } else {
-            width
-        };
-        let center_v = thickness * 0.5 + sign * middle;
-        let outer_start = [0.0, center_v - sign * outer];
-        let outer_end = [outer * beta.sin(), center_v - sign * outer * beta.cos()];
-        let inner_end = [inner * beta.sin(), center_v - sign * inner * beta.cos()];
-        let inner_start = [0.0, center_v - sign * inner];
-        let clockwise = sign < 0.0;
-        let bend_profile = vec![
+    let base = sheet.face_corners(None).map_err(invalid)?;
+    let mut output = backend.extrude_mixed_profile(&polygon(base), sheet.thickness_mm)?;
+    for (index, bend) in folded.iter().enumerate() {
+        let arc = bend.arc;
+        let section = vec![
             PlanarProfileSegment::CircularArc {
-                start_mm: outer_start,
-                end_mm: outer_end,
-                center_mm: [0.0, center_v],
-                clockwise,
+                start_mm: arc.outer_start_mm,
+                end_mm: arc.outer_end_mm,
+                center_mm: arc.center_mm,
+                clockwise: arc.clockwise,
             },
             PlanarProfileSegment::Line {
-                start_mm: outer_end,
-                end_mm: inner_end,
+                start_mm: arc.outer_end_mm,
+                end_mm: arc.inner_end_mm,
             },
             PlanarProfileSegment::CircularArc {
-                start_mm: inner_end,
-                end_mm: inner_start,
-                center_mm: [0.0, center_v],
-                clockwise: !clockwise,
+                start_mm: arc.inner_end_mm,
+                end_mm: arc.inner_start_mm,
+                center_mm: arc.center_mm,
+                clockwise: !arc.clockwise,
             },
             PlanarProfileSegment::Line {
-                start_mm: inner_start,
-                end_mm: outer_start,
+                start_mm: arc.inner_start_mm,
+                end_mm: arc.outer_start_mm,
             },
         ];
-        let local_bend = backend.extrude_mixed_profile(&bend_profile, span)?;
-        let bend_axis = [-edge_axis[0], -edge_axis[1], -edge_axis[2]];
-        let bend = transform(
-            &local_bend.body,
-            outward,
-            [0.0, 0.0, 1.0],
-            bend_axis,
-            bend_origin,
-        )?;
-        output =
-            backend.boolean_bodies(&output.body, &bend.body, ExactBodyBooleanOperation::Union)?;
-
-        let tangent = [
-            outward[0] * beta.cos(),
-            outward[1] * beta.cos(),
-            sign * beta.sin(),
-        ];
-        let normal = ketchup_geometry::linalg::cross(tangent, edge_axis);
-        let radial = if sign > 0.0 { outer_end } else { inner_end };
-        let panel_origin = [
-            flange_origin[0] + outward[0] * radial[0],
-            flange_origin[1] + outward[1] * radial[0],
-            radial[1],
-        ];
-        let local_panel = backend.extrude_mixed_profile(&rectangle(length, span), thickness)?;
-        let panel = transform(&local_panel.body, tangent, edge_axis, normal, panel_origin)?;
-        output =
-            backend.boolean_bodies(&output.body, &panel.body, ExactBodyBooleanOperation::Union)?;
+        let flange = sheet.face_corners(Some(index)).map_err(invalid)?;
+        for (profile, depth, frame) in [
+            (section, bend.span_mm, bend.frame),
+            (polygon(flange), sheet.thickness_mm, bend.flange),
+        ] {
+            let part = placed(&profile, depth, frame)?;
+            output = backend.boolean_bodies(
+                &output.body,
+                &part.body,
+                ExactBodyBooleanOperation::Union,
+            )?;
+        }
     }
     Ok(output)
 }
@@ -1526,17 +1447,14 @@ fn evaluate_exact_brep_graph(
                 }
             }
             ExactBRepOperation::SheetMetal {
-                width_bits,
-                depth_bits,
+                base_mm_bits,
                 thickness_bits,
-                flanges,
-                ..
+                k_factor_bits,
+                bends,
             } => exact_brep_sheet_metal(
                 backend,
-                f64::from_bits(*width_bits),
-                f64::from_bits(*depth_bits),
-                f64::from_bits(*thickness_bits),
-                flanges,
+                graph,
+                &exact_sheet_metal_shape(base_mm_bits, *thickness_bits, *k_factor_bits, bends),
             )?,
             ExactBRepOperation::ImportedExact {
                 source_sha256,

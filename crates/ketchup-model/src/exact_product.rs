@@ -3882,7 +3882,7 @@ impl ExactProductError {
     }
 }
 
-fn is_simple_linear_profile(segments: &[ProfileSegment], tolerance_mm: f64) -> bool {
+pub(crate) fn is_simple_linear_profile(segments: &[ProfileSegment], tolerance_mm: f64) -> bool {
     let points = segments
         .iter()
         .map(ProfileSegment::start_mm)

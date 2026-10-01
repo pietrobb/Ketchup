@@ -39,6 +39,10 @@ WORDS = [
 ]
 PATTERN = re.compile("(?<![A-Za-z])(?:" + "|".join(re.escape(word) for word in WORDS) + ")",
                      re.IGNORECASE)
+# Named shape types that a general operation replaced (sheet metal bends on any polygon edge,
+# threads as any profile swept along a helix); they may not come back under any prefix.
+NAMED_SHAPE_TYPES = re.compile(r"SheetMetalEdge|MAX_SHEET_METAL_FLANGES|ThreadProfile|CreateThread"
+                               r"|CreateHelixPath|AppCommand::Thread\b")
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
@@ -54,6 +58,9 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
                 text = TEST_MODULE.sub("", text)
             for match in PATTERN.finditer(text):
                 key = f"{relative.as_posix()}:{match.group(0).lower()}"
+                counts[key] = counts.get(key, 0) + 1
+            for match in NAMED_SHAPE_TYPES.finditer(text):
+                key = f"{relative.as_posix()}:{match.group(0)}"
                 counts[key] = counts.get(key, 0) + 1
     return counts
 

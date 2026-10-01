@@ -173,30 +173,16 @@ pub(super) fn operation_bounds(
             loft_bounds(sections, profiles).map(Some)
         }
         ExactBRepOperation::SheetMetal {
-            width_bits,
-            depth_bits,
+            base_mm_bits,
             thickness_bits,
-            flanges,
-            ..
-        } => {
-            let width = f64::from_bits(*width_bits);
-            let depth = f64::from_bits(*depth_bits);
-            let thickness = f64::from_bits(*thickness_bits);
-            let reach = flanges.iter().fold(0.0_f64, |reach, flange| {
-                reach.max(
-                    f64::from_bits(flange.length_bits)
-                        + f64::from_bits(flange.inner_radius_bits)
-                        + thickness,
-                )
-            });
-            let bounds = [
-                [-reach, -reach, -reach],
-                [width + reach, depth + reach, thickness + reach],
-            ];
-            valid_bounds(bounds)
-                .then_some(Some(bounds))
-                .ok_or(ExactBRepGraphError::ResourceLimit)
-        }
+            k_factor_bits,
+            bends,
+        } => exact_sheet_metal_shape(base_mm_bits, *thickness_bits, *k_factor_bits, bends)
+            .folded_bounds_mm()
+            .ok()
+            .filter(|bounds| valid_bounds(*bounds))
+            .map(Some)
+            .ok_or(ExactBRepGraphError::ResourceLimit),
         ExactBRepOperation::ImportedExact { .. } => Ok(None),
     }
 }

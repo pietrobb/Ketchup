@@ -7,6 +7,17 @@
 
 use super::stable_digest::{digest_feature, digest_snapshot};
 use super::*;
+use crate::persistence::sheet_metal_v1::SheetMetalV1;
+
+/// What a file written before native schema 98 stored differently from the product model
+/// it reads into.
+#[derive(Default)]
+pub(crate) struct OldRecords {
+    /// Features stored as a profile of corner points (read as closed chains of lines).
+    pub(crate) point_profiles: BTreeSet<FeatureId>,
+    /// Sheet metal stored as a rectangle with flanges on its sides.
+    pub(crate) sheet_metal: BTreeMap<FeatureId, SheetMetalV1>,
+}
 
 /// A product read from a file written before native schema 98, with its stored digests
 /// replaced by current ones.
@@ -23,22 +34,17 @@ pub(crate) struct MigratedDigests {
 /// what the old definition named differently; it runs after the old digests are taken.
 pub(crate) fn migrate_stored_digests(
     product: ProductModel,
-    point_profiles: &BTreeSet<FeatureId>,
+    old: &OldRecords,
     earlier: &mut BTreeMap<String, String>,
     to_current: impl FnOnce(&ProductModel) -> Result<ProductModel, ciborium::value::Error>,
 ) -> Result<MigratedDigests, ciborium::value::Error> {
-    let source_digest = document_digest(&product, point_profiles);
+    let source_digest = document_digest(&product, old);
     let migrated = replace_stored_text(&to_current(&product)?, earlier)?;
     let features = product
         .features
         .values()
         .zip(migrated.features.values())
-        .map(|(source, current)| {
-            (
-                feature_digest(source, point_profiles),
-                digest_feature(current),
-            )
-        })
+        .map(|(source, current)| (feature_digest(source, old), digest_feature(current)))
         .collect::<BTreeMap<_, _>>();
     let product = replace_stored_text(&migrated, &features)?;
     let current = digest_snapshot(&Snapshot {
@@ -86,7 +92,7 @@ fn replace_stored_text(
     value.deserialized()
 }
 
-fn document_digest(product: &ProductModel, point_profiles: &BTreeSet<FeatureId>) -> String {
+fn document_digest(product: &ProductModel, old: &OldRecords) -> String {
     let mut digest = DigestV3::new();
     digest.bytes(b"ketchup.document.v3");
     digest.u64(product.document_id.0);
@@ -181,7 +187,7 @@ fn document_digest(product: &ProductModel, point_profiles: &BTreeSet<FeatureId>)
     }
     digest.u64(product.features.len() as u64);
     for feature in product.features.values() {
-        digest.feature(feature, point_profiles);
+        digest.feature(feature, old);
     }
     digest.u64(product.body_feature_suppression.len() as u64);
     for ((definition_id, body_id), suppressed) in &product.body_feature_suppression {
@@ -277,10 +283,10 @@ fn document_digest(product: &ProductModel, point_profiles: &BTreeSet<FeatureId>)
     digest.finish()
 }
 
-fn feature_digest(feature: &Feature, point_profiles: &BTreeSet<FeatureId>) -> String {
+fn feature_digest(feature: &Feature, old: &OldRecords) -> String {
     let mut digest = DigestV3::new();
     digest.bytes(b"ketchup.feature.v1");
-    digest.feature(feature, point_profiles);
+    digest.feature(feature, old);
     digest.finish()
 }
 
@@ -1611,28 +1617,8 @@ impl DigestV3 {
                     self.u64(value.to_bits());
                 }
             }
-            FeatureKind::SheetMetal(spec) => {
-                self.byte(29);
-                for dimension in [&spec.width, &spec.depth, &spec.thickness] {
-                    self.bytes(dimension.source_token().as_bytes());
-                    self.u64(dimension.millimetres().to_bits());
-                }
-                self.u64(spec.k_factor.to_bits());
-                self.u64(spec.flanges.len() as u64);
-                for flange in &spec.flanges {
-                    self.byte(match flange.edge {
-                        crate::sheet_metal::SheetMetalEdge::MinX => 1,
-                        crate::sheet_metal::SheetMetalEdge::MaxX => 2,
-                        crate::sheet_metal::SheetMetalEdge::MinY => 3,
-                        crate::sheet_metal::SheetMetalEdge::MaxY => 4,
-                    });
-                    self.bytes(flange.length.source_token().as_bytes());
-                    self.u64(flange.length.millimetres().to_bits());
-                    self.u64(flange.angle_degrees.to_bits());
-                    self.bytes(flange.inner_radius.source_token().as_bytes());
-                    self.u64(flange.inner_radius.millimetres().to_bits());
-                }
-            }
+            // Read through `OldRecords::sheet_metal`; a legacy file holds no other.
+            FeatureKind::SheetMetal(_) => self.byte(29),
             FeatureKind::ImportedExactBody(spec) => {
                 self.byte(16);
                 self.bytes(spec.schema.as_bytes());
@@ -1727,11 +1713,32 @@ impl DigestV3 {
         }
     }
 
-    fn feature(&mut self, feature: &Feature, point_profiles: &BTreeSet<FeatureId>) {
+    fn sheet_metal(&mut self, record: &SheetMetalV1) {
+        self.byte(29);
+        for dimension in [&record.width, &record.depth, &record.thickness] {
+            self.bytes(dimension.source_token().as_bytes());
+            self.u64(dimension.millimetres().to_bits());
+        }
+        self.u64(record.k_factor.to_bits());
+        self.u64(record.flanges.len() as u64);
+        for flange in &record.flanges {
+            self.byte(flange.side().map_or(0, |side| side as u8 + 1));
+            self.bytes(flange.length.source_token().as_bytes());
+            self.u64(flange.length.millimetres().to_bits());
+            self.u64(flange.angle_degrees.to_bits());
+            self.bytes(flange.inner_radius.source_token().as_bytes());
+            self.u64(flange.inner_radius.millimetres().to_bits());
+        }
+    }
+
+    fn feature(&mut self, feature: &Feature, old: &OldRecords) {
         self.u64(feature.id.0);
         self.u64(feature.definition_id.0);
         self.bytes(feature.name.as_bytes());
-        self.feature_kind(&feature.kind, point_profiles.contains(&feature.id));
+        match (&feature.kind, old.sheet_metal.get(&feature.id)) {
+            (FeatureKind::SheetMetal(_), Some(record)) => self.sheet_metal(record),
+            (kind, _) => self.feature_kind(kind, old.point_profiles.contains(&feature.id)),
+        }
     }
 
     fn assembly_mate(&mut self, mate: &AssemblyMate) {

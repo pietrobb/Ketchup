@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
+use super::sheet_metal_v1::{FlangeV1, SheetMetalV1, bend_path, stored_side};
 use crate::assembly::{
     ASSEMBLY_MATE_SCHEMA_V1, AssemblyMate, AssemblyMateAttachment, AssemblyMateEndpoint,
     AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth, AxialAttachment,
@@ -27,6 +28,7 @@ use crate::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTarget, CamTool, CamToolKind,
     CamUnits, CamWorkOffset,
 };
+use crate::document::digest_v3::OldRecords;
 use crate::document::{
     Body, BodyId, BodyKind, BooleanOperation, CanonicalError, ChamferEdgeSide, ChamferMode,
     ClassificationCategory, ClassificationCategoryId, ClassificationDimension,
@@ -75,7 +77,6 @@ use crate::mechanical_coupling::{
     AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
 use crate::pin_joint::{PinJointContract, PinJointFace, PinJointId, PinPhysicalHolePair, PinSpec};
-use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceOwner, ClearanceSeverity, ClearanceVolumeId,
     SpaceId,
@@ -496,8 +497,7 @@ const MAX_STRING_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_ITEMS: u32 = 500_000;
 
 pub(super) struct Decoded {
-    /// Features stored as a profile of corner points (read as closed chains of lines).
-    pub(super) point_profiles: BTreeSet<FeatureId>,
+    pub(super) old: OldRecords,
     pub(super) revision_id: u64,
     pub(super) product: ProductModel,
     pub(super) migration_losses: Vec<MigrationLoss>,
@@ -513,7 +513,7 @@ pub(super) struct Decoded {
 /// target that points at such a feature.
 pub(super) fn complete_old_records(
     product: &ProductModel,
-    point_profiles: &BTreeSet<FeatureId>,
+    old: &OldRecords,
 ) -> Result<ProductModel, ciborium::value::Error> {
     let mut product = product.clone();
     let sketches = product
@@ -562,7 +562,11 @@ pub(super) fn complete_old_records(
         .filter(|feature| feature.kind.closed_spline_points().is_some())
         .map(|feature| feature.id)
         .collect::<BTreeSet<_>>();
-    if blind_pads.is_empty() && point_profiles.is_empty() && spline_profiles.is_empty() {
+    if blind_pads.is_empty()
+        && old.point_profiles.is_empty()
+        && old.sheet_metal.is_empty()
+        && spline_profiles.is_empty()
+    {
         return Ok(product);
     }
     rename_parameter_paths(&product, |feature, path| {
@@ -576,8 +580,11 @@ pub(super) fn complete_old_records(
                 _ => format!("segments.0.points.{index}.{axis}"),
             });
         }
+        if let Some(sheet_metal) = old.sheet_metal.get(&feature) {
+            return bend_path(path, &sheet_metal.to_current()?.1);
+        }
         let corner = path.strip_prefix("points.")?;
-        point_profiles
+        old.point_profiles
             .contains(&feature)
             .then(|| format!("segments.{}", corner.replacen('.', ".start.", 1)))
     })
@@ -587,43 +594,8 @@ fn rename_parameter_paths(
     product: &ProductModel,
     rename: impl Fn(FeatureId, &str) -> Option<String>,
 ) -> Result<ProductModel, ciborium::value::Error> {
-    fn visit(value: &mut ciborium::Value, rename: &dyn Fn(FeatureId, &str) -> Option<String>) {
-        match value {
-            ciborium::Value::Map(entries) => {
-                let field = |entries: &[(ciborium::Value, ciborium::Value)], name: &str| {
-                    entries
-                        .iter()
-                        .position(|(key, _)| key.as_text() == Some(name))
-                };
-                if let (Some(feature), Some(path), Some(_)) = (
-                    field(entries, "feature_id"),
-                    field(entries, "path"),
-                    field(entries, "value_type"),
-                ) && let Some(renamed) = entries[feature]
-                    .1
-                    .as_integer()
-                    .and_then(|id| u64::try_from(id).ok())
-                    .zip(entries[path].1.as_text())
-                    .and_then(|(id, path)| rename(FeatureId(id), path))
-                {
-                    entries[path].1 = ciborium::Value::Text(renamed);
-                }
-                for (key, item) in entries {
-                    visit(key, rename);
-                    visit(item, rename);
-                }
-            }
-            ciborium::Value::Array(items) => {
-                for item in items {
-                    visit(item, rename);
-                }
-            }
-            ciborium::Value::Tag(_, item) => visit(item, rename),
-            _ => {}
-        }
-    }
     let mut value = ciborium::Value::serialized(product)?;
-    visit(&mut value, &rename);
+    super::snapshot_codec::rename_parameter_paths(&mut value, &rename);
     value.deserialized()
 }
 
@@ -636,7 +608,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
         return Err(PersistenceError::InvalidMagic);
     }
     let schema = reader.u16()?;
-    let mut point_profiles = BTreeSet::new();
+    let mut old = OldRecords::default();
     if !matches!(
         schema,
         LEGACY_SCHEMA
@@ -780,7 +752,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
         let product = read_product(
             &mut payload_reader,
             ProductSchemaCapabilities::current(schema),
-            &mut point_profiles,
+            &mut old,
         )?;
         if !payload_reader.is_finished() {
             return Err(PersistenceError::TrailingBytes);
@@ -790,11 +762,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
         let revision_id = reader.u64()?;
         let nodes = read_nodes(&mut reader, schema == LEGACY_SCHEMA, &mut migration_losses)?;
         let mut product = if schema == PRODUCT_SCHEMA {
-            read_product(
-                &mut reader,
-                ProductSchemaCapabilities::PRODUCT_V2,
-                &mut point_profiles,
-            )?
+            read_product(&mut reader, ProductSchemaCapabilities::PRODUCT_V2, &mut old)?
         } else {
             let mut product = ProductModel::default();
             let source_digest = crate::graph::sha256_bytes(bytes);
@@ -810,7 +778,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
         (revision_id, product)
     };
     Ok(Decoded {
-        point_profiles,
+        old,
         revision_id,
         product,
         migration_losses,
@@ -2925,10 +2893,43 @@ fn read_assembly_recipe(reader: &mut Reader<'_>) -> Result<AssemblyRecipe, Persi
     })
 }
 
+/// A sheet-metal record of product schemas before snapshot format 101.
+fn read_sheet_metal_v1(reader: &mut Reader<'_>) -> Result<SheetMetalV1, PersistenceError> {
+    let dimension = |reader: &mut Reader<'_>| -> Result<Dimension, PersistenceError> {
+        Ok(Dimension::new(
+            reader.string()?,
+            f64::from_bits(reader.u64()?),
+        )?)
+    };
+    let width = dimension(reader)?;
+    let depth = dimension(reader)?;
+    let thickness = dimension(reader)?;
+    let k_factor = f64::from_bits(reader.u64()?);
+    let mut flanges = Vec::new();
+    for _ in 0..reader.count_with_limit(4)? {
+        let side = reader.u8()?;
+        flanges.push(FlangeV1 {
+            edge: stored_side(side).ok_or(PersistenceError::Legacy(
+                LegacyError::InvalidFeatureKind(side),
+            ))?,
+            length: dimension(reader)?,
+            angle_degrees: f64::from_bits(reader.u64()?),
+            inner_radius: dimension(reader)?,
+        });
+    }
+    Ok(SheetMetalV1 {
+        width,
+        depth,
+        thickness,
+        k_factor,
+        flanges,
+    })
+}
+
 fn read_product(
     reader: &mut Reader<'_>,
     capabilities: ProductSchemaCapabilities,
-    point_profiles: &mut BTreeSet<FeatureId>,
+    old: &mut OldRecords,
 ) -> Result<ProductModel, PersistenceError> {
     let mut product = ProductModel {
         document_id: crate::document::DocumentId(reader.u64()?),
@@ -3039,7 +3040,7 @@ fn read_product(
                 for _ in 0..reader.count()? {
                     points_mm.push([f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)]);
                 }
-                point_profiles.insert(id);
+                old.point_profiles.insert(id);
                 FeatureKind::polygon(&points_mm)
             }
             11 if capabilities.segment_profile => {
@@ -3558,39 +3559,12 @@ fn read_product(
                 }
             }
             29 if capabilities.sheet_metal => {
-                let width = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
-                let depth = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
-                let thickness = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
-                let k_factor = f64::from_bits(reader.u64()?);
-                let mut flanges = Vec::new();
-                for _ in 0..reader.count_with_limit(4)? {
-                    flanges.push(SheetMetalFlange {
-                        edge: match reader.u8()? {
-                            1 => SheetMetalEdge::MinX,
-                            2 => SheetMetalEdge::MaxX,
-                            3 => SheetMetalEdge::MinY,
-                            4 => SheetMetalEdge::MaxY,
-                            value => {
-                                return Err(PersistenceError::Legacy(
-                                    LegacyError::InvalidFeatureKind(value),
-                                ));
-                            }
-                        },
-                        length: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-                        angle_degrees: f64::from_bits(reader.u64()?),
-                        inner_radius: Dimension::new(
-                            reader.string()?,
-                            f64::from_bits(reader.u64()?),
-                        )?,
-                    });
-                }
-                FeatureKind::SheetMetal(SheetMetalSpec {
-                    width,
-                    depth,
-                    thickness,
-                    k_factor,
-                    flanges,
-                })
+                let record = read_sheet_metal_v1(reader)?;
+                let (spec, _) = record.to_current().ok_or(PersistenceError::Legacy(
+                    LegacyError::InvalidFeatureKind(29),
+                ))?;
+                old.sheet_metal.insert(id, record);
+                FeatureKind::SheetMetal(spec)
             }
             16 if capabilities.imported_exact_body => {
                 let schema = reader.string()?;

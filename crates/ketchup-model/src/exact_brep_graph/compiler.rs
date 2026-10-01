@@ -639,32 +639,30 @@ impl<'a> GraphCompiler<'a> {
                 continuity: (*continuity).into(),
             },
             FeatureKind::SheetMetal(spec) => ExactBRepOperation::SheetMetal {
-                width_bits: positive_distance(
-                    spec.width.millimetres(),
-                    self.snapshot.tolerance().linear_mm(),
-                )?,
-                depth_bits: positive_distance(
-                    spec.depth.millimetres(),
-                    self.snapshot.tolerance().linear_mm(),
-                )?,
+                base_mm_bits: spec
+                    .base_mm
+                    .iter()
+                    .map(|corner| corner.map(canonical_bits))
+                    .collect(),
                 thickness_bits: positive_distance(
                     spec.thickness.millimetres(),
                     self.snapshot.tolerance().linear_mm(),
                 )?,
                 k_factor_bits: canonical_bits(spec.k_factor),
-                flanges: spec
-                    .flanges
+                bends: spec
+                    .bends
                     .iter()
-                    .map(|flange| {
-                        Ok(ExactBRepSheetMetalFlange {
-                            edge: flange.edge.into(),
+                    .map(|bend| {
+                        Ok(ExactBRepSheetMetalBend {
+                            parent: bend.parent,
+                            edge: bend.edge,
                             length_bits: positive_distance(
-                                flange.length.millimetres(),
+                                bend.length.millimetres(),
                                 self.snapshot.tolerance().linear_mm(),
                             )?,
-                            angle_degrees_bits: canonical_bits(flange.angle_degrees),
+                            angle_degrees_bits: canonical_bits(bend.angle_degrees),
                             inner_radius_bits: positive_distance(
-                                flange.inner_radius.millimetres(),
+                                bend.inner_radius.millimetres(),
                                 self.snapshot.tolerance().linear_mm(),
                             )?,
                         })

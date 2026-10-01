@@ -7,7 +7,7 @@ use ketchup_model::document::{
 };
 use ketchup_model::persistence::LegacyFeatureKind;
 use ketchup_model::persistence::{self, LoadDisposition, PersistenceError};
-use ketchup_model::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::testing::with_document_id;
 use ketchup_model::tolerance::TolerancePolicy;
 
@@ -1517,13 +1517,14 @@ fn schema_52_occurrences_migrate_with_no_color() {
 fn sheet_metal_schema_81_remains_readable_and_current_schema_is_byte_stable() {
     let definition_id = DefinitionId(1);
     let feature_id = FeatureId(1);
+    // Schema 81 stored a 100 x 50 rectangle with a flange on its MaxX side: edge 1.
     let spec = SheetMetalSpec {
-        width: Dimension::new("100 mm", 100.0).unwrap(),
-        depth: Dimension::new("50 mm", 50.0).unwrap(),
+        base_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
         thickness: Dimension::new("2 mm", 2.0).unwrap(),
         k_factor: 0.4,
-        flanges: vec![SheetMetalFlange {
-            edge: SheetMetalEdge::MaxX,
+        bends: vec![SheetMetalBend {
+            parent: None,
+            edge: 1,
             length: Dimension::new("30 mm", 30.0).unwrap(),
             angle_degrees: -90.0,
             inner_radius: Dimension::new("3 mm", 3.0).unwrap(),

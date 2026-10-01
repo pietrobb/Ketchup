@@ -6,7 +6,7 @@ use ketchup_model::document::{
 };
 use ketchup_model::exact_product::EXACT_MIN_LENGTH_MM;
 use ketchup_model::pin_joint::PinSpec;
-use ketchup_model::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::tolerance::{
     APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
 };
@@ -959,30 +959,15 @@ pub struct AssistantCadFilletRadiusStation {
     pub radius_mm: f64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantCadSheetMetalEdge {
-    MinX,
-    MaxX,
-    MinY,
-    MaxY,
-}
-
-impl From<AssistantCadSheetMetalEdge> for SheetMetalEdge {
-    fn from(value: AssistantCadSheetMetalEdge) -> Self {
-        match value {
-            AssistantCadSheetMetalEdge::MinX => Self::MinX,
-            AssistantCadSheetMetalEdge::MaxX => Self::MaxX,
-            AssistantCadSheetMetalEdge::MinY => Self::MinY,
-            AssistantCadSheetMetalEdge::MaxY => Self::MaxY,
-        }
-    }
-}
-
+/// A bend of a sheet-metal body: `parent` none for the base face or the index of an
+/// earlier bend whose flange it leaves, `edge` the edge of that face from its corner
+/// `edge` to the next (a flange's far edge is 2).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantCadSheetMetalFlange {
-    pub edge: AssistantCadSheetMetalEdge,
+pub struct AssistantCadSheetMetalBend {
+    #[serde(default)]
+    pub parent: Option<u32>,
+    pub edge: u32,
     pub length_mm: f64,
     pub angle_degrees: f64,
     pub inner_radius_mm: f64,
@@ -1089,11 +1074,11 @@ pub enum AssistantCadBodyFeature {
         direction: AssistantCadShellDirection,
     },
     SheetMetal {
-        width_mm: f64,
-        depth_mm: f64,
+        /// Corners of the base face, counter-clockwise.
+        base_mm: Vec<[f64; 2]>,
         thickness_mm: f64,
         k_factor: f64,
-        flanges: Vec<AssistantCadSheetMetalFlange>,
+        bends: Vec<AssistantCadSheetMetalBend>,
     },
     TopologyShell {
         target_feature_id: u64,
@@ -1125,33 +1110,28 @@ impl AssistantCadBodyFeature {
     #[must_use]
     pub fn sheet_metal_spec(&self) -> Option<SheetMetalSpec> {
         let Self::SheetMetal {
-            width_mm,
-            depth_mm,
+            base_mm,
             thickness_mm,
             k_factor,
-            flanges,
+            bends,
         } = self
         else {
             return None;
         };
+        let length = |value: f64| Dimension::new(value.to_string(), value).ok();
         Some(SheetMetalSpec {
-            width: Dimension::new(width_mm.to_string(), *width_mm).ok()?,
-            depth: Dimension::new(depth_mm.to_string(), *depth_mm).ok()?,
-            thickness: Dimension::new(thickness_mm.to_string(), *thickness_mm).ok()?,
+            base_mm: base_mm.clone(),
+            thickness: length(*thickness_mm)?,
             k_factor: *k_factor,
-            flanges: flanges
+            bends: bends
                 .iter()
-                .map(|flange| {
-                    Some(SheetMetalFlange {
-                        edge: flange.edge.into(),
-                        length: Dimension::new(flange.length_mm.to_string(), flange.length_mm)
-                            .ok()?,
-                        angle_degrees: flange.angle_degrees,
-                        inner_radius: Dimension::new(
-                            flange.inner_radius_mm.to_string(),
-                            flange.inner_radius_mm,
-                        )
-                        .ok()?,
+                .map(|bend| {
+                    Some(SheetMetalBend {
+                        parent: bend.parent.map(usize::try_from).transpose().ok()?,
+                        edge: usize::try_from(bend.edge).ok()?,
+                        length: length(bend.length_mm)?,
+                        angle_degrees: bend.angle_degrees,
+                        inner_radius: length(bend.inner_radius_mm)?,
                     })
                 })
                 .collect::<Option<Vec<_>>>()?,

@@ -37,6 +37,24 @@ def test_counts_domain_words_in_production_source_only(tmp_path):
     }
 
 
+def test_counts_replaced_named_shape_types_under_any_prefix(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "enum ExactBRepSheetMetalEdge {}\nstruct AssistantThreadProfile;\n"
+        "AppCommand::Thread => {}\nAppCommand::ThreadSafe => {}\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs:SheetMetalEdge": 1,
+        "crates/a/src/lib.rs:ThreadProfile": 1,
+        "crates/a/src/lib.rs:AppCommand::Thread": 1,
+    }
+
+
+def test_no_named_sheet_metal_edge_or_thread_shape_remains():
+    assert [key for key in checker.current_counts() if key[key.rindex(":") + 1 :][0].isupper()] == []
+
+
 def test_core_and_application_crates_name_no_product_domain():
     assert [
         key

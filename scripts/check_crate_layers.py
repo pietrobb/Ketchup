@@ -41,7 +41,7 @@ LAYERS = {
 MAX_MODULE_LINES = 5_000
 
 OVERSIZED = {
-    "crates/ketchup-app/src/tests.rs": 17_974,
+    "crates/ketchup-app/src/tests.rs": 17_967,
 }
 
 MAX_FUNCTION_LINES = 400
@@ -60,20 +60,20 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 653,
     "crates/ketchup-assistant/src/intent.rs::propose_intent": 1011,
     "crates/ketchup-assistant/src/sidecar.rs::validate": 923,
-    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 722,
+    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 702,
     "crates/ketchup-model/src/document/feature_validation.rs::validate_feature_kind": 412,
     "crates/ketchup-model/src/document/product_validation.rs::validate_product_with_drawing_sources": 1132,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 969,
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 492,
     "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2141,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 617,
-    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1423,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 615,
+    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
     "crates/ketchup-model/src/shared_change.rs::commit_component_replacement": 430,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 572,
     "crates/ketchup-model/src/shared_change.rs::project_component_replacement_impact_for_principal": 823,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 484,
     "crates/ketchup-program/src/eval.rs::builtins": 1024,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 562,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 559,
 }
 
 

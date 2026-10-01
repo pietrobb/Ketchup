@@ -76,7 +76,7 @@ SYSTEM_PROMPT = (
     "Use fea_review only when the user asks to set up or run static FEA and only with host-published current exact face ordinals. It has definition_id, feature_id, occurrence_id, case_id, youngs_modulus_mpa, poisson_ratio, yield_strength_mpa, constrained_face_ordinals, loaded_face_ordinal, traction_local_n_per_mm2 [x,y,z], coarse_deflection_mm, and fine_deflection_mm. The host opens an editable review dialog and still requires the user to click explicit confirmation before meshing or solving. Never invent face ordinals or claim a solve before the host returns review evidence. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection, optional instance_path: the exact {root_occurrence_id, steps: [{owner_definition_id, kind: group|occurrence, local_id}]} copied from current instance inspection; instance_path is required when that definition has multiple visible instances}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
-    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: weldment_member, profile_feature_id, path_feature_id, orientation_degrees}, whose inputs are an unsuppressed closed profile and bounded SpatialPath in that definition and whose orientation is in [-180,180) degrees; feature {type: weldment_joint, first_member_id, second_member_id, policy: butt|miter, primary: first|second}, whose distinct member inputs may be existing IDs or earlier typed body_feature outputs and must meet at one manufacturable straight endpoint; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing or typed earlier sketch profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: sheet_metal, width_mm, depth_mm, thickness_mm, k_factor, flanges: [{edge: min_x|max_x|min_y|max_y, length_mm, angle_degrees, inner_radius_mm}, ...]}, with canonical unique boundary edges and no adjacent flanges without explicit corner relief; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Surface features are generic: surface_body uses source {type: planar, profile_feature_id} or {type: loft, sections, optional guide_feature_id, continuity}; surface_trim uses distinct surface target_feature_id and cutter_feature_id; surface_extend uses a surface target and positive distance_mm; surface_knit uses 2 to 256 unique surface_feature_ids, tolerance_mm from 0.0000001 to 10, and make_solid; surface_thicken uses a surface target, thickness_mm from 0.01 to 100000, and direction inward|outward|symmetric. Surface operands may be positive existing IDs or earlier typed body_feature outputs; the host rejects solid/surface kind mismatches. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: weldment_member, profile_feature_id, path_feature_id, orientation_degrees}, whose inputs are an unsuppressed closed profile and bounded SpatialPath in that definition and whose orientation is in [-180,180) degrees; feature {type: weldment_joint, first_member_id, second_member_id, policy: butt|miter, primary: first|second}, whose distinct member inputs may be existing IDs or earlier typed body_feature outputs and must meet at one manufacturable straight endpoint; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing or typed earlier sketch profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: sheet_metal, base_mm: [[x, y], ...], thickness_mm, k_factor, bends: [{parent, edge, length_mm, angle_degrees, inner_radius_mm}, ...]}, whose base is a simple counter-clockwise polygon whose every edge is longer than the thickness, and whose bends form a tree: parent null bends an edge of the base (edge i runs from corner i to the next), parent j bends the far edge 2 of the flange of an earlier bend j; bends are ordered by (parent, edge), at most one per edge, never on two edges that share a corner, and a positive angle bends toward the face normal; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Surface features are generic: surface_body uses source {type: planar, profile_feature_id} or {type: loft, sections, optional guide_feature_id, continuity}; surface_trim uses distinct surface target_feature_id and cutter_feature_id; surface_extend uses a surface target and positive distance_mm; surface_knit uses 2 to 256 unique surface_feature_ids, tolerance_mm from 0.0000001 to 10, and make_solid; surface_thicken uses a surface target, thickness_mm from 0.01 to 100000, and direction inward|outward|symmetric. Surface operands may be positive existing IDs or earlier typed body_feature outputs; the host rejects solid/surface kind mismatches. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; create_program_sketch has the same shape except definition is a typed earlier definition output. Workplane is principal with plane xy/yz/xz, an exact right-handed unit frame with origin_mm/x_axis/y_axis, offset with an existing base_feature_id and distance_mm for create_part/create_sketch, or construction_plane with plane as an existing feature ID or earlier create_construction_plane construction_feature output for create_program_sketch. "
     "append_program_pocket has definition, target_feature, and profile_feature typed references plus name and depth_mm. Reference the definition and body_feature of an earlier create_part, and the sketch_feature of that create_part or an earlier create_program_sketch; this creates the opening in the same atomic program without guessed host IDs. Loft profile_feature_id also accepts a typed sketch_feature output from an earlier create_part or create_program_sketch. "
     "Entities are typed line/arc/circle/cubic_bezier records with positive stable IDs and 2D millimetre coordinates; ellipse uses four positive unique segment_ids, center_mm, positive radius_x_mm/radius_y_mm, rotation_degrees, and a required positive maximum_deviation_mm that must cover its bounded cubic approximation error. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center/control1/control2}. "
@@ -1103,6 +1103,86 @@ def _valid_spatial_path_segments(value: object) -> bool:
     return True
 
 
+def _valid_sheet_metal(feature):
+    """Mirrors ketchup_model::sheet_metal::SheetMetalShape::validate."""
+
+    def number(value):
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        )
+
+    def index(value):
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFFFF
+
+    if set(feature) != {"type", "base_mm", "thickness_mm", "k_factor", "bends"}:
+        return False
+    base, thickness, k_factor, bends = (
+        feature["base_mm"],
+        feature["thickness_mm"],
+        feature["k_factor"],
+        feature["bends"],
+    )
+    if not (
+        isinstance(base, list)
+        and len(base) >= 3
+        and all(
+            isinstance(corner, list)
+            and len(corner) == 2
+            and all(number(value) and abs(value) <= 100_000 for value in corner)
+            for corner in base
+        )
+        and number(thickness)
+        and 0.0001 <= thickness <= 100_000
+        and number(k_factor)
+        and 0 <= k_factor <= 1
+        and isinstance(bends, list)
+    ):
+        return False
+    edges = list(zip(base, base[1:] + base[:1]))
+    area = sum(a[0] * b[1] - b[0] * a[1] for a, b in edges) / 2
+    if area <= 0 or any(math.hypot(b[0] - a[0], b[1] - a[1]) <= thickness for a, b in edges):
+        return False
+    keys = []
+    for position, bend in enumerate(bends):
+        if not isinstance(bend, dict) or not set(bend) <= {
+            "parent",
+            "edge",
+            "length_mm",
+            "angle_degrees",
+            "inner_radius_mm",
+        }:
+            return False
+        parent = bend.get("parent")
+        edge = bend.get("edge")
+        values = [bend.get(name) for name in ("length_mm", "angle_degrees", "inner_radius_mm")]
+        if not (
+            (parent is None or (index(parent) and parent < position))
+            and index(edge)
+            and all(number(value) for value in values)
+            and 0.0001 <= values[0] <= 100_000
+            and 0.1 <= abs(values[1]) <= 179.9
+            and 0.0001 <= values[2] <= 100_000
+            and values[2] + thickness <= 100_000
+        ):
+            return False
+        key = (-1 if parent is None else parent, edge)
+        if keys and keys[-1] >= key:
+            return False
+        keys.append(key)
+    for parent, edge in keys:
+        corners = len(base) if parent < 0 else 4
+        taken = [other for face, other in keys if face == parent and other != edge]
+        if parent >= 0:
+            taken.append(0)
+        if edge >= corners or any(
+            (edge + 1) % corners == other or (other + 1) % corners == edge for other in taken
+        ):
+            return False
+    return True
+
+
 def _validate_cad_edit_program(program: object) -> dict:
     if not isinstance(program, dict) or set(program) != {"operations"}:
         raise ProtocolError("provider CAD edit program contains missing or unknown fields")
@@ -1595,77 +1675,7 @@ def _validate_cad_edit_program(program: object) -> dict:
                     and feature.get("direction") in {"inward", "outward", "symmetric"}
                 )
             elif feature.get("type") == "sheet_metal":
-                width_mm = feature.get("width_mm")
-                depth_mm = feature.get("depth_mm")
-                thickness_mm = feature.get("thickness_mm")
-                k_factor = feature.get("k_factor")
-                flanges = feature.get("flanges")
-                numbers = [width_mm, depth_mm, thickness_mm, k_factor]
-                valid_feature = (
-                    set(feature)
-                    == {
-                        "type",
-                        "width_mm",
-                        "depth_mm",
-                        "thickness_mm",
-                        "k_factor",
-                        "flanges",
-                    }
-                    and all(
-                        isinstance(value, (int, float))
-                        and not isinstance(value, bool)
-                        and math.isfinite(value)
-                        for value in numbers
-                    )
-                    and 0.0001 <= width_mm <= 100_000
-                    and 0.0001 <= depth_mm <= 100_000
-                    and 0.0001 <= thickness_mm < min(width_mm, depth_mm)
-                    and 0 <= k_factor <= 1
-                    and isinstance(flanges, list)
-                    and len(flanges) <= 4
-                )
-                edge_order = {"min_x": 0, "max_x": 1, "min_y": 2, "max_y": 3}
-                parsed_edges = []
-                if valid_feature:
-                    for flange in flanges:
-                        if not isinstance(flange, dict) or set(flange) != {
-                            "edge",
-                            "length_mm",
-                            "angle_degrees",
-                            "inner_radius_mm",
-                        }:
-                            valid_feature = False
-                            break
-                        edge = flange["edge"]
-                        length_mm = flange["length_mm"]
-                        angle_degrees = flange["angle_degrees"]
-                        inner_radius_mm = flange["inner_radius_mm"]
-                        if (
-                            edge not in edge_order
-                            or any(
-                                not isinstance(value, (int, float))
-                                or isinstance(value, bool)
-                                or not math.isfinite(value)
-                                for value in [length_mm, angle_degrees, inner_radius_mm]
-                            )
-                            or not 0.0001 <= length_mm <= 100_000
-                            or not 0.1 <= abs(angle_degrees) <= 179.9
-                            or not 0.0001 <= inner_radius_mm <= 100_000
-                            or inner_radius_mm + thickness_mm > 100_000
-                        ):
-                            valid_feature = False
-                            break
-                        parsed_edges.append(edge)
-                    edge_values = [edge_order[edge] for edge in parsed_edges]
-                    valid_feature = valid_feature and all(
-                        left < right for left, right in zip(edge_values, edge_values[1:])
-                    )
-                    opposite = {frozenset(("min_x", "max_x")), frozenset(("min_y", "max_y"))}
-                    valid_feature = valid_feature and all(
-                        frozenset((left, right)) in opposite
-                        for index, left in enumerate(parsed_edges)
-                        for right in parsed_edges[index + 1 :]
-                    )
+                valid_feature = _valid_sheet_metal(feature)
             elif feature.get("type") == "topology_shell":
                 reference_ids = feature.get("removed_face_reference_ids")
                 thickness_mm = feature.get("thickness_mm")

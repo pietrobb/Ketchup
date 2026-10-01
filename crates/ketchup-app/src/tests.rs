@@ -2360,7 +2360,14 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
 
 #[test]
 fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent() {
-    use ketchup_model::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+    use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
+    let bend = |edge, length, angle_degrees| SheetMetalBend {
+        parent: None,
+        edge,
+        length: Dimension::from_decimal(length).unwrap(),
+        angle_degrees,
+        inner_radius: Dimension::from_decimal("3").unwrap(),
+    };
 
     let directory = tempfile::tempdir().unwrap();
     let flat_pattern = directory.path().join("bracket.dxf");
@@ -2388,24 +2395,10 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
                 definition_id: DefinitionId(80),
                 name: "Opposite flanges".into(),
                 kind: FeatureKind::SheetMetal(SheetMetalSpec {
-                    width: Dimension::from_decimal("100").unwrap(),
-                    depth: Dimension::from_decimal("50").unwrap(),
+                    base_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
                     thickness: Dimension::from_decimal("2").unwrap(),
                     k_factor: 0.4,
-                    flanges: vec![
-                        SheetMetalFlange {
-                            edge: SheetMetalEdge::MinX,
-                            length: Dimension::from_decimal("20").unwrap(),
-                            angle_degrees: 90.0,
-                            inner_radius: Dimension::from_decimal("3").unwrap(),
-                        },
-                        SheetMetalFlange {
-                            edge: SheetMetalEdge::MaxX,
-                            length: Dimension::from_decimal("30").unwrap(),
-                            angle_degrees: -45.0,
-                            inner_radius: Dimension::from_decimal("3").unwrap(),
-                        },
-                    ],
+                    bends: vec![bend(1, "30", -45.0), bend(3, "20", 90.0)],
                 }),
             },
         ]))

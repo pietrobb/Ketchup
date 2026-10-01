@@ -13,6 +13,7 @@ use crate::document::{
 use crate::graph::SlotResolution;
 
 mod legacy;
+pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
 
 pub use legacy::LegacyError;
@@ -1577,9 +1578,9 @@ fn load_document(
         let decoded = legacy::decode(bytes)?;
         let migrated = crate::document::digest_v3::migrate_stored_digests(
             decoded.product,
-            &decoded.point_profiles,
+            &decoded.old,
             migrated_digests,
-            |product| legacy::complete_old_records(product, &decoded.point_profiles),
+            |product| legacy::complete_old_records(product, &decoded.old),
         )
         .map_err(|error| PersistenceError::InvalidPayload(error.to_string()))?;
         (

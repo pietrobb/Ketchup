@@ -871,41 +871,13 @@ pub(super) fn valid_operation(
                 })
         }
         ExactBRepOperation::SheetMetal {
-            width_bits,
-            depth_bits,
+            base_mm_bits,
             thickness_bits,
             k_factor_bits,
-            flanges,
-        } => {
-            let width = f64::from_bits(*width_bits);
-            let depth = f64::from_bits(*depth_bits);
-            let thickness = f64::from_bits(*thickness_bits);
-            let k_factor = f64::from_bits(*k_factor_bits);
-            let edge_rank = |edge| match edge {
-                ExactBRepSheetMetalEdge::MinX => 0,
-                ExactBRepSheetMetalEdge::MaxX => 1,
-                ExactBRepSheetMetalEdge::MinY => 2,
-                ExactBRepSheetMetalEdge::MaxY => 3,
-            };
-            positive(*width_bits)
-                && positive(*depth_bits)
-                && positive(*thickness_bits)
-                && thickness < width.min(depth)
-                && k_factor.is_finite()
-                && (0.0..=1.0).contains(&k_factor)
-                && flanges.len() <= 4
-                && flanges
-                    .windows(2)
-                    .all(|pair| edge_rank(pair[0].edge) < edge_rank(pair[1].edge))
-                && flanges.iter().all(|flange| {
-                    let angle = f64::from_bits(flange.angle_degrees_bits);
-                    positive(flange.length_bits)
-                        && positive(flange.inner_radius_bits)
-                        && angle.is_finite()
-                        && (0.1..=179.9).contains(&angle.abs())
-                        && f64::from_bits(flange.inner_radius_bits) + thickness <= MAX_ABS_MM
-                })
-        }
+            bends,
+        } => exact_sheet_metal_shape(base_mm_bits, *thickness_bits, *k_factor_bits, bends)
+            .validate()
+            .is_ok(),
         ExactBRepOperation::ImportedExact {
             source_sha256,
             source_byte_len,
