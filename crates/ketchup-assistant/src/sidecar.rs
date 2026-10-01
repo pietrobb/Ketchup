@@ -4,7 +4,6 @@ use ketchup_model::document::{
     Dimension, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
 };
-use ketchup_model::exact_product::EXACT_MIN_LENGTH_MM;
 use ketchup_model::pin_joint::PinSpec;
 use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::tolerance::{
@@ -442,9 +441,9 @@ impl AssistantHelixParameters {
         self.axis.validate()?;
         let axial_length = self.pitch_mm * self.turns;
         if !self.radius_mm.is_finite()
-            || !(EXACT_MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&self.radius_mm)
+            || !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&self.radius_mm)
             || !self.pitch_mm.is_finite()
-            || !(EXACT_MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&self.pitch_mm)
+            || !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&self.pitch_mm)
             || !self.turns.is_finite()
             || !(0.01..=MAX_ASSISTANT_HELIX_TURNS).contains(&self.turns)
             || !self.start_angle_degrees.is_finite()
@@ -1271,7 +1270,7 @@ impl AssistantCadBodyFeature {
                 distance_mm,
             } if *profile_feature_id != 0
                 && distance_mm.is_finite()
-                && distance_mm.abs() >= EXACT_MIN_LENGTH_MM
+                && distance_mm.abs() >= limits::MIN_LENGTH_MM
                 && distance_mm.abs() <= MAX_COORDINATE_MM =>
             {
                 Ok(())
@@ -1388,7 +1387,7 @@ impl AssistantCadBodyFeature {
                 distance_mm,
             } if target_feature_id.validate().is_ok()
                 && distance_mm.is_finite()
-                && (EXACT_MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(distance_mm) =>
+                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(distance_mm) =>
             {
                 Ok(())
             }
@@ -1415,7 +1414,7 @@ impl AssistantCadBodyFeature {
                 ..
             } if target_feature_id.validate().is_ok()
                 && thickness_mm.is_finite()
-                && (EXACT_MIN_LENGTH_MM..=100_000.0).contains(thickness_mm) =>
+                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(thickness_mm) =>
             {
                 Ok(())
             }

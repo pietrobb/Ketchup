@@ -6,8 +6,7 @@ use crate::document::{
     solved_sketch_sweep_path,
 };
 use crate::exact_product::{
-    EXACT_MIN_LENGTH_MM, ExactCircleProfile, ExactPlanarOffsetRegion,
-    MAX_EXACT_PLANAR_OFFSET_LENGTH_MM, accepts_planar_circle_offset_geometry,
+    ExactCircleProfile, ExactPlanarOffsetRegion, accepts_planar_circle_offset_geometry,
     accepts_planar_offset_geometry, exact_planar_offset_profile_from_segments,
 };
 use crate::sheet_metal::{BendShape, SheetMetalShape};
@@ -56,11 +55,8 @@ pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
 pub const MAX_EXACT_BREP_LOFT_SECTIONS: usize = 16;
 pub const MAX_EXACT_BREP_LOFT_CONTROL_POINTS: usize = 64;
-pub const MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 0.01;
-pub const MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 100_000.0;
 pub const MAX_EXACT_BREP_GRAPH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_EXACT_BREP_TOPOLOGY_SELECTORS: usize = 64;
-const MAX_ABS_MM: f64 = MAX_COORDINATE_MM;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ExactBRepProfileId(pub u32);
@@ -1035,8 +1031,8 @@ impl ExactBRepGraph {
             bounds_mm[0][axis].is_finite()
                 && bounds_mm[1][axis].is_finite()
                 && bounds_mm[0][axis] <= bounds_mm[1][axis]
-                && bounds_mm[0][axis].abs() <= MAX_ABS_MM
-                && bounds_mm[1][axis].abs() <= MAX_ABS_MM
+                && bounds_mm[0][axis].abs() <= MAX_COORDINATE_MM
+                && bounds_mm[1][axis].abs() <= MAX_COORDINATE_MM
         }) {
             return false;
         }
@@ -1620,7 +1616,7 @@ mod tests {
             frame_bits: identity_frame(),
             segment_entity_ids: Vec::new(),
             geometry: ExactBRepPlanarGeometry::Circle {
-                center_bits: [MAX_ABS_MM - 5.0, 0.0].map(f64::to_bits),
+                center_bits: [MAX_COORDINATE_MM - 5.0, 0.0].map(f64::to_bits),
                 radius_bits: 10.0_f64.to_bits(),
             },
         };
@@ -1657,7 +1653,7 @@ mod tests {
         let skewed = profile([[0.0, 0.0], [10.0, 0.000_001_5], [10.0, 8.0], [0.0, 8.0]]);
         assert!(exact_brep_planar_rectangle_bounds(&skewed).is_none());
         assert_eq!(
-            planar_offset_profile_bounds(&skewed, 100_000.001),
+            planar_offset_profile_bounds(&skewed, MAX_COORDINATE_MM + 1.0),
             Err(ExactBRepGraphError::InvalidParameter)
         );
     }
@@ -1889,20 +1885,14 @@ mod tests {
             path: ExactBRepProfileId(1),
         };
         assert!(valid_operation_profiles(&sweep, &profiles, tolerance_mm));
-        for length in [
-            MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-            MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-        ] {
+        for length in [limits::MIN_LENGTH_MM, MAX_COORDINATE_MM] {
             profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
                 closed: false,
                 segments: vec![line([0.0, 0.0], [length, 0.0])],
             };
             assert!(valid_operation_profiles(&sweep, &profiles, tolerance_mm));
         }
-        for length in [
-            MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM - 0.001,
-            MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM + 0.001,
-        ] {
+        for length in [limits::MIN_LENGTH_MM - 0.001, MAX_COORDINATE_MM + 0.001] {
             profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
                 closed: false,
                 segments: vec![line([0.0, 0.0], [length, 0.0])],
@@ -2033,11 +2023,8 @@ mod tests {
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
             closed: false,
             segments: vec![
-                line([0.0, 0.0], [MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, 0.0]),
-                line(
-                    [MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, 0.0],
-                    [MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM + 1.0, 0.0],
-                ),
+                line([0.0, 0.0], [MAX_COORDINATE_MM, 0.0]),
+                line([MAX_COORDINATE_MM, 0.0], [MAX_COORDINATE_MM + 1.0, 0.0]),
             ],
         };
         assert!(!valid_operation_profiles(&sweep, &profiles, tolerance_mm));

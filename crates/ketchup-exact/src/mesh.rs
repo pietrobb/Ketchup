@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::{cross, dot};
+use ketchup_tolerance::MAX_COORDINATE_MM;
 
 impl ExactBackend {
     /// Tessellate an exact body into a display mesh.
@@ -111,7 +112,7 @@ impl ExactBackend {
         let input_digest = stable_digest(&input);
         let invalid_options = !options.surface_deflection_mm.is_finite()
             || options.surface_deflection_mm <= 0.0
-            || options.surface_deflection_mm > MAX_LENGTH_MM
+            || options.surface_deflection_mm > MAX_COORDINATE_MM
             || !options.angular_deflection_rad.is_finite()
             || options.angular_deflection_rad <= 0.0
             || options.angular_deflection_rad > std::f64::consts::PI

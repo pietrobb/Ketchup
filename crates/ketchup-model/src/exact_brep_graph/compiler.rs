@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::{cross, dot, normalize_within, sub};
+use ketchup_tolerance::MAX_COORDINATE_MM;
 
 pub(super) struct GraphCompiler<'a> {
     pub(super) snapshot: &'a Snapshot,
@@ -985,7 +986,7 @@ impl<'a> GraphCompiler<'a> {
         let distance = dot(sub(frame.origin_mm, origin_mm), frame.normal) / denominator;
         if !distance.is_finite()
             || distance <= self.snapshot.tolerance().linear_mm()
-            || distance > MAX_ABS_MM
+            || distance > MAX_COORDINATE_MM
         {
             return Err(ExactBRepGraphError::UnresolvedExtent);
         }

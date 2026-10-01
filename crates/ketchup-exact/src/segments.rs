@@ -988,7 +988,9 @@ pub(super) fn flatten_planar_region(
                     compensation = (next - signed_area) - adjusted;
                     signed_area = next;
                 }
-                if !signed_area.is_finite() || signed_area.abs() <= MIN_LENGTH_MM * MIN_LENGTH_MM {
+                if !signed_area.is_finite()
+                    || signed_area.abs() <= limits::MIN_LENGTH_MM * limits::MIN_LENGTH_MM
+                {
                     return Err(parameter_error(
                         GeometryErrorCode::InvalidProfile,
                         operation,

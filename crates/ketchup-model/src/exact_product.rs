@@ -40,8 +40,6 @@ pub use ketchup_geometry::reference::{
 
 pub const EXACT_PRODUCT_SCHEMA_V1: &str = "ketchup.exact-product.v1";
 pub const EXACT_BREP_GRAPH_EVALUATOR_V1: &str = "ketchup.exact-brep-graph-evaluator.v1";
-pub const EXACT_MIN_LENGTH_MM: f64 = 0.01;
-pub const MAX_EXACT_PLANAR_OFFSET_LENGTH_MM: f64 = 100_000.0;
 
 impl ExactBRepGraph {
     /// Whether `reference` names a face or edge of the body this graph builds,
@@ -2045,7 +2043,7 @@ pub struct ExactMixedProfile {
 fn exact_segment_tangents(segment: &ExactProfileSegment) -> Option<([f64; 2], [f64; 2])> {
     let normalized = |vector: [f64; 2]| {
         let length = vector[0].hypot(vector[1]);
-        (length.is_finite() && length >= EXACT_MIN_LENGTH_MM)
+        (length.is_finite() && length >= limits::MIN_LENGTH_MM)
             .then_some([vector[0] / length, vector[1] / length])
     };
     match segment {
@@ -2342,7 +2340,7 @@ pub(crate) fn accepts_planar_circle_offset_geometry(
         && [center_x, center_y, radius, distance_mm, area_mm2]
             .into_iter()
             .all(f64::is_finite)
-        && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+        && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&radius)
         && bounds_mm
             .into_iter()
             .flatten()
@@ -2442,7 +2440,7 @@ fn planar_offset_segment_tangents(
     let normalized = |vectors: [[f64; 2]; 3]| {
         vectors.into_iter().find_map(|vector| {
             let length = vector[0].hypot(vector[1]);
-            (length.is_finite() && length >= EXACT_MIN_LENGTH_MM)
+            (length.is_finite() && length >= limits::MIN_LENGTH_MM)
                 .then_some([vector[0] / length, vector[1] / length])
         })
     };
@@ -2602,7 +2600,7 @@ pub(crate) fn exact_planar_offset_profile_from_segments(
                 let length = (end[0] - start[0]).hypot(end[1] - start[1]);
                 if !valid_point(start)
                     || !valid_point(end)
-                    || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&length)
+                    || !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&length)
                 {
                     return None;
                 }
@@ -2625,7 +2623,7 @@ pub(crate) fn exact_planar_offset_profile_from_segments(
                 let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
                 let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
                 let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
-                if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+                if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&radius)
                     || (radius - end_radius).abs() > ROUNDING * radius.max(end_radius).max(1.0)
                 {
                     return None;
@@ -2664,9 +2662,7 @@ pub(crate) fn exact_planar_offset_profile_from_segments(
                     .hypot(cubic[1][1] - cubic[0][1])
                     + (cubic[2][0] - cubic[1][0]).hypot(cubic[2][1] - cubic[1][1])
                     + (cubic[3][0] - cubic[2][0]).hypot(cubic[3][1] - cubic[2][1]);
-                if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                    .contains(&control_polygon_length)
-                {
+                if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&control_polygon_length) {
                     return None;
                 }
                 points.extend([cubic[0], cubic[3]]);
@@ -3514,9 +3510,8 @@ fn planar_offset_loop_is_valid(planar_loop: &ExactBRepPlanarLoop, distance_mm: f
             let center = center_bits.map(f64::from_bits);
             let radius = f64::from_bits(*radius_bits);
             let output_radius = radius + distance_mm;
-            (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
-                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                    .contains(&output_radius)
+            (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&radius)
+                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&output_radius)
                 && [radius, output_radius].into_iter().all(f64::is_finite)
                 && [
                     center[0] - radius,
@@ -3536,8 +3531,8 @@ fn planar_offset_loop_is_valid(planar_loop: &ExactBRepPlanarLoop, distance_mm: f
 
 pub fn accepts_planar_offset_solved_region(region: &SolvedSketchRegion, distance_mm: f64) -> bool {
     if !distance_mm.is_finite()
-        || distance_mm.abs() < EXACT_MIN_LENGTH_MM
-        || distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+        || distance_mm.abs() < limits::MIN_LENGTH_MM
+        || distance_mm.abs() > MAX_COORDINATE_MM
     {
         return false;
     }
@@ -3553,7 +3548,7 @@ pub(crate) fn accepts_planar_offset_solved_profile(
     profile: &SolvedSketchRegionProfile,
     distance_mm: f64,
 ) -> bool {
-    if !distance_mm.is_finite() || distance_mm.abs() < EXACT_MIN_LENGTH_MM {
+    if !distance_mm.is_finite() || distance_mm.abs() < limits::MIN_LENGTH_MM {
         return false;
     }
     match profile {
@@ -3562,9 +3557,8 @@ pub(crate) fn accepts_planar_offset_solved_profile(
             radius_mm,
         } => {
             let output_radius = radius_mm + distance_mm;
-            (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(radius_mm)
-                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                    .contains(&output_radius)
+            (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(radius_mm)
+                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&output_radius)
                 && [*radius_mm, output_radius].into_iter().all(|radius| {
                     [
                         center_mm[0] - radius,
@@ -3582,7 +3576,7 @@ pub(crate) fn accepts_planar_offset_solved_profile(
             let Some(profile) = exact_planar_offset_profile_from_solved(profile) else {
                 return false;
             };
-            if distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM {
+            if distance_mm.abs() > MAX_COORDINATE_MM {
                 return false;
             }
             let bounds = profile.bounds_bits.map(f64::from_bits);
@@ -3978,7 +3972,7 @@ pub fn accepts_sweep_segment_profile(
 ) -> bool {
     exact_mixed_profile(segments, closed, tolerance).is_some()
         || exact_circle_profile(segments, closed)
-            .is_some_and(|circle| f64::from_bits(circle.radius_bits) >= EXACT_MIN_LENGTH_MM)
+            .is_some_and(|circle| f64::from_bits(circle.radius_bits) >= limits::MIN_LENGTH_MM)
 }
 
 pub(crate) fn exact_mixed_profile(

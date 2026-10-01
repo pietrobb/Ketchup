@@ -13,9 +13,8 @@ use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind,
     Proposal, ProposalContext, ProposalPrepareError, Snapshot,
 };
+use ketchup_tolerance::limits;
 use std::fmt;
-
-const MIN_RECTANGLE_SIZE_MM: f64 = 0.01;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RectangleFeatureIds {
@@ -75,8 +74,8 @@ impl RectangleSize {
     fn validate(&self) -> Result<(), RectangleAuthoringError> {
         if !self.width.millimetres().is_finite()
             || !self.depth.millimetres().is_finite()
-            || self.width.millimetres() <= MIN_RECTANGLE_SIZE_MM
-            || self.depth.millimetres() <= MIN_RECTANGLE_SIZE_MM
+            || self.width.millimetres() <= limits::MIN_LENGTH_MM
+            || self.depth.millimetres() <= limits::MIN_LENGTH_MM
         {
             return Err(RectangleAuthoringError::InvalidDimensions);
         }

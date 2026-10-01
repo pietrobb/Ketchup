@@ -11,10 +11,10 @@ use ketchup_model::document::{
     Proposal, ProposalContext, ProposalPrepareError, Snapshot,
 };
 use ketchup_model::exact_product::{BodySubshapeRef, ExactFaceRole};
+use ketchup_tolerance::limits;
 use std::collections::BTreeSet;
 use std::fmt;
 
-const MIN_EXTENT_MM: f64 = 0.01;
 const MAX_SNAP_CANDIDATES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -241,7 +241,7 @@ impl SmartPushPullGesture {
         };
         if feature.definition_id() != target.target.definition_id
             || profile != target_reference.profile_feature_id
-            || height.millimetres() <= MIN_EXTENT_MM
+            || height.millimetres() <= limits::MIN_LENGTH_MM
         {
             return Err(PushPullGestureError::UnsupportedFace);
         }
@@ -330,7 +330,7 @@ impl SmartPushPullGesture {
         {
             return Err(PushPullGestureError::ForeignPreview);
         }
-        if preview.signed_distance.millimetres().abs() < MIN_EXTENT_MM {
+        if preview.signed_distance.millimetres().abs() < limits::MIN_LENGTH_MM {
             return Err(PushPullGestureError::NoChange);
         }
         let definition_id = self.target.target.definition_id;
@@ -369,7 +369,7 @@ impl SmartPushPullGesture {
         snap_feedback: Option<PushPullSnapFeedback>,
     ) -> Result<PushPullPreview, PushPullGestureError> {
         let resulting_extent_mm = self.original_extent_mm + signed_distance.millimetres();
-        if !resulting_extent_mm.is_finite() || resulting_extent_mm <= MIN_EXTENT_MM {
+        if !resulting_extent_mm.is_finite() || resulting_extent_mm <= limits::MIN_LENGTH_MM {
             return Err(PushPullGestureError::InvalidDistance);
         }
         let resulting_extent =
@@ -414,7 +414,9 @@ fn resolve_snap(
         .iter()
         .chain(grid.iter())
         .filter(|candidate| settings.is_enabled(candidate.kind))
-        .filter(|candidate| original_extent_mm + candidate.signed_distance_mm > MIN_EXTENT_MM)
+        .filter(|candidate| {
+            original_extent_mm + candidate.signed_distance_mm > limits::MIN_LENGTH_MM
+        })
         .filter(|candidate| {
             (candidate.signed_distance_mm - raw_signed_distance_mm).abs() <= settings.tolerance_mm
         })

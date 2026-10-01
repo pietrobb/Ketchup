@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::{CubicBezier, Vec3, dot, sub};
+use ketchup_tolerance::MAX_COORDINATE_MM;
 use ketchup_tolerance::limits;
 
 pub(super) fn projected_bounds(
@@ -25,8 +26,8 @@ pub(super) fn projected_bounds(
     if !minimum.is_finite()
         || !maximum.is_finite()
         || maximum <= tolerance_mm
-        || minimum - 1.0 < -MAX_ABS_MM
-        || maximum + 1.0 > MAX_ABS_MM
+        || minimum - 1.0 < -MAX_COORDINATE_MM
+        || maximum + 1.0 > MAX_COORDINATE_MM
     {
         return Err(ExactBRepGraphError::UnresolvedExtent);
     }
@@ -413,7 +414,7 @@ pub(super) fn planar_offset_profile_bounds(
     bounds
         .iter()
         .flatten()
-        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         .then_some(bounds)
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
@@ -424,7 +425,7 @@ pub(super) fn local_planar_offset_profile_bounds(
 ) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
     if profile.frame_bits != identity_frame()
         || !distance_mm.is_finite()
-        || !(EXACT_MIN_LENGTH_MM..=MAX_ABS_MM).contains(&distance_mm.abs())
+        || !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&distance_mm.abs())
     {
         return Err(ExactBRepGraphError::InvalidParameter);
     }
@@ -436,10 +437,8 @@ pub(super) fn local_planar_offset_profile_bounds(
             let center = center_bits.map(f64::from_bits);
             let radius = f64::from_bits(*radius_bits);
             let output_radius = radius + distance_mm;
-            if distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
-                || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
-                || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                    .contains(&output_radius)
+            if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&radius)
+                || !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&output_radius)
                 || [
                     center[0] - radius,
                     center[1] - radius,
@@ -447,7 +446,7 @@ pub(super) fn local_planar_offset_profile_bounds(
                     center[1] + radius,
                 ]
                 .into_iter()
-                .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             {
                 return Err(ExactBRepGraphError::InvalidParameter);
             }
@@ -466,16 +465,13 @@ pub(super) fn local_planar_offset_profile_bounds(
                     [min_x - distance_mm, min_y - distance_mm, 0.0],
                     [max_x + distance_mm, max_y + distance_mm, 0.0],
                 ];
-                if bounds[1][0] - bounds[0][0] < EXACT_MIN_LENGTH_MM
-                    || bounds[1][1] - bounds[0][1] < EXACT_MIN_LENGTH_MM
+                if bounds[1][0] - bounds[0][0] < limits::MIN_LENGTH_MM
+                    || bounds[1][1] - bounds[0][1] < limits::MIN_LENGTH_MM
                 {
                     return Err(ExactBRepGraphError::InvalidParameter);
                 }
                 bounds
             } else {
-                if distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM {
-                    return Err(ExactBRepGraphError::InvalidParameter);
-                }
                 let exact = exact_planar_offset_profile_from_segments(segments.clone())
                     .ok_or(ExactBRepGraphError::InvalidParameter)?;
                 let [min_x, min_y, max_x, max_y] = exact.bounds_bits.map(f64::from_bits);
@@ -521,7 +517,7 @@ pub(super) fn local_planar_offset_profile_bounds(
     bounds
         .iter()
         .flatten()
-        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         .then_some(bounds)
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
@@ -659,7 +655,7 @@ pub(super) fn sweep_path_planar_bounds(
     bounds
         .iter()
         .flatten()
-        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         .then_some(bounds)
 }
 
@@ -851,8 +847,7 @@ pub(super) fn sweep_path_length(
         .map(|segment| sweep_path_segment_metrics(segment, tolerance_mm))
         .collect::<Option<Vec<_>>>()?;
     let total_length = metrics.iter().map(|metrics| metrics.0).sum::<f64>();
-    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
-        .contains(&total_length)
+    if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&total_length)
         || metrics.windows(2).any(|pair| {
             let outgoing = pair[0].2;
             let incoming = pair[1].1;
@@ -1335,7 +1330,7 @@ pub(super) fn valid_bounds(bounds: [[f64; 3]; 2]) -> bool {
     bounds
         .iter()
         .flatten()
-        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         && (0..3).all(|axis| bounds[0][axis] < bounds[1][axis])
 }
 
@@ -1343,7 +1338,7 @@ pub(super) fn valid_surface_bounds(bounds: [[f64; 3]; 2]) -> bool {
     bounds
         .iter()
         .flatten()
-        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         && (0..3).all(|axis| bounds[0][axis] <= bounds[1][axis])
         && (0..3)
             .filter(|axis| bounds[0][*axis] < bounds[1][*axis])

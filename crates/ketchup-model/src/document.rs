@@ -17,14 +17,12 @@ use crate::drawing::{
 };
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
-    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, spatial_sweep_bounds_are_valid, sweep_profile_is_valid,
+    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, spatial_sweep_bounds_are_valid, sweep_profile_is_valid,
 };
 use crate::exact_product::{
-    BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactProducerCompilation, ExactProducerEvidenceContext,
-    ExactReferenceResolution, ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
-    accepts_planar_offset_solved_region, accepts_sweep_segment_profile,
-    canonical_reference_lineage_digest, exact_planar_offset_profile,
+    BodySubshapeRef, ExactProducerCompilation, ExactProducerEvidenceContext,
+    ExactReferenceResolution, ExactResultRegistry, accepts_planar_offset_solved_region,
+    accepts_sweep_segment_profile, canonical_reference_lineage_digest, exact_planar_offset_profile,
 };
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,

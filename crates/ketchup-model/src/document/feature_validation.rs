@@ -942,9 +942,7 @@ pub(super) fn validate_feature_kind(
             ..
         } => {
             Dimension::new(amount.source_token(), amount.millimetres()).map(|_| ())?;
-            if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                .contains(&amount.millimetres())
-            {
+            if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&amount.millimetres()) {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
             match kind {
@@ -967,7 +965,7 @@ pub(super) fn validate_feature_kind(
                             second_distance.millimetres(),
                         )
                         .map(|_| ())?;
-                        if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                        if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM)
                             .contains(&second_distance.millimetres())
                         {
                             return Err(CanonicalError::DimensionOutsideEnvelope);
@@ -1015,7 +1013,7 @@ pub(super) fn validate_feature_kind(
                     if !station.position.is_finite()
                         || station.position <= previous
                         || station.position > 1.0
-                        || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                        || !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM)
                             .contains(&station.radius.millimetres())
                     {
                         return Err(CanonicalError::DimensionOutsideEnvelope);
@@ -1096,14 +1094,14 @@ pub(super) fn validate_feature_kind(
         }
         FeatureKind::PlanarOffset { distance, .. } => {
             Dimension::new(distance.source_token(), distance.millimetres()).map(|_| ())?;
-            if distance.millimetres().abs() < EXACT_MIN_LENGTH_MM {
+            if distance.millimetres().abs() < limits::MIN_LENGTH_MM {
                 return Err(CanonicalError::InvalidPlanarOffset);
             }
             Ok(())
         }
         FeatureKind::SurfaceExtend { distance, .. } => {
             Dimension::new(distance.source_token(), distance.millimetres()).map(|_| ())?;
-            if distance.millimetres() < EXACT_MIN_LENGTH_MM {
+            if distance.millimetres() < limits::MIN_LENGTH_MM {
                 return Err(CanonicalError::InvalidPlanarOffset);
             }
             Ok(())
@@ -1116,9 +1114,7 @@ pub(super) fn validate_feature_kind(
         }
         FeatureKind::SurfaceThicken { thickness, .. } => {
             Dimension::new(thickness.source_token(), thickness.millimetres()).map(|_| ())?;
-            if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                .contains(&thickness.millimetres())
-            {
+            if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&thickness.millimetres()) {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
             Ok(())
@@ -2072,8 +2068,7 @@ pub fn is_valid_sweep_path(segments: &[ProfileSegment], tolerance_mm: f64) -> bo
         return false;
     };
     let total_length = metrics.iter().map(|metrics| metrics.0).sum::<f64>();
-    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
-        .contains(&total_length)
+    if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&total_length)
         || sweep_path_self_intersects(segments, &metrics)
     {
         return false;
@@ -2265,9 +2260,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm
         return false;
     };
     let total_length = metrics.iter().map(|metric| metric.0).sum::<f64>();
-    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
-        .contains(&total_length)
-    {
+    if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&total_length) {
         return false;
     }
     let closed = segments.first().unwrap().start_mm() == segments.last().unwrap().end_mm();

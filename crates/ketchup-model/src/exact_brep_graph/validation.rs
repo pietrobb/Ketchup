@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_tolerance::MAX_COORDINATE_MM;
 use ketchup_tolerance::limits;
 
 pub(super) fn canonical_bits(value: f64) -> u64 {
@@ -10,7 +11,7 @@ pub(super) fn canonical_bits(value: f64) -> u64 {
 }
 
 pub(super) fn finite_coordinate(value: f64) -> Result<f64, ExactBRepGraphError> {
-    if value.is_finite() && value.abs() <= MAX_ABS_MM {
+    if value.is_finite() && value.abs() <= MAX_COORDINATE_MM {
         Ok(value)
     } else {
         Err(ExactBRepGraphError::InvalidParameter)
@@ -22,7 +23,7 @@ pub(super) fn valid_point(point: [f64; 2]) -> Result<[f64; 2], ExactBRepGraphErr
 }
 
 pub(super) fn positive_distance(value: f64, tolerance_mm: f64) -> Result<u64, ExactBRepGraphError> {
-    if value.is_finite() && value > tolerance_mm && value <= MAX_ABS_MM {
+    if value.is_finite() && value > tolerance_mm && value <= MAX_COORDINATE_MM {
         Ok(value.to_bits())
     } else {
         Err(ExactBRepGraphError::InvalidParameter)
@@ -30,7 +31,7 @@ pub(super) fn positive_distance(value: f64, tolerance_mm: f64) -> Result<u64, Ex
 }
 
 pub(super) fn signed_distance(value: f64, tolerance_mm: f64) -> Result<u64, ExactBRepGraphError> {
-    if value.is_finite() && value.abs() > tolerance_mm && value.abs() <= MAX_ABS_MM {
+    if value.is_finite() && value.abs() > tolerance_mm && value.abs() <= MAX_COORDINATE_MM {
         Ok(value.to_bits())
     } else {
         Err(ExactBRepGraphError::InvalidParameter)
@@ -38,7 +39,7 @@ pub(super) fn signed_distance(value: f64, tolerance_mm: f64) -> Result<u64, Exac
 }
 
 pub(super) fn planar_offset_distance(value: f64) -> Result<u64, ExactBRepGraphError> {
-    if value.is_finite() && (EXACT_MIN_LENGTH_MM..=MAX_ABS_MM).contains(&value.abs()) {
+    if value.is_finite() && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&value.abs()) {
         Ok(value.to_bits())
     } else {
         Err(ExactBRepGraphError::InvalidParameter)
@@ -48,7 +49,7 @@ pub(super) fn planar_offset_distance(value: f64) -> Result<u64, ExactBRepGraphEr
 pub(super) fn valid_frame(bits: [u64; 12]) -> bool {
     bits.map(f64::from_bits)
         .into_iter()
-        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
 }
 
 pub(super) fn loop_geometry(planar_loop: &ExactBRepPlanarLoop) -> ExactBRepPlanarGeometry {
@@ -74,7 +75,7 @@ pub(super) fn validate_geometry(
     let valid_bits = |bits: [u64; 2]| {
         bits.map(f64::from_bits)
             .into_iter()
-            .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+            .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
     };
     match geometry {
         ExactBRepPlanarGeometry::Boundary { closed, segments } => {
@@ -156,7 +157,7 @@ pub(super) fn validate_geometry(
             if !valid_bits(*center_bits)
                 || !radius.is_finite()
                 || radius <= tolerance_mm
-                || radius > MAX_ABS_MM
+                || radius > MAX_COORDINATE_MM
             {
                 return Err(ExactBRepGraphError::InvalidGraph);
             }
@@ -202,8 +203,8 @@ pub(super) fn valid_linear_interval(interval: ExactBRepLinearInterval, tolerance
         && (length - 1.0).abs() <= ROUNDING
         && start.is_finite()
         && end.is_finite()
-        && start.abs() <= MAX_ABS_MM
-        && end.abs() <= MAX_ABS_MM
+        && start.abs() <= MAX_COORDINATE_MM
+        && end.abs() <= MAX_COORDINATE_MM
         && end - start > tolerance_mm
 }
 
@@ -524,11 +525,11 @@ pub(super) fn valid_operation(
 ) -> bool {
     let positive = |bits| {
         let value = f64::from_bits(bits);
-        value.is_finite() && value > tolerance_mm && value <= MAX_ABS_MM
+        value.is_finite() && value > tolerance_mm && value <= MAX_COORDINATE_MM
     };
     let signed = |bits| {
         let value = f64::from_bits(bits);
-        value.is_finite() && value.abs() > tolerance_mm && value.abs() <= MAX_ABS_MM
+        value.is_finite() && value.abs() > tolerance_mm && value.abs() <= MAX_COORDINATE_MM
     };
     let is_surface_node = |id: ExactBRepNodeId| {
         prior_nodes.get(id.0 as usize).is_some_and(|node| {
@@ -615,7 +616,7 @@ pub(super) fn valid_operation(
             first != second
                 && point
                     .into_iter()
-                    .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+                    .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
                 && first_direction
                     .into_iter()
                     .chain(second_direction)
@@ -633,7 +634,7 @@ pub(super) fn valid_operation(
                 .is_some()
                 && [matrix[3], matrix[7], matrix[11]]
                     .into_iter()
-                    .all(|value| value.abs() <= MAX_ABS_MM)
+                    .all(|value| value.abs() <= MAX_COORDINATE_MM)
         }
         ExactBRepOperation::Shell {
             target,
@@ -829,7 +830,7 @@ pub(super) fn valid_operation(
             start
                 .into_iter()
                 .chain(end)
-                .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
                 && start != end
                 && angle.is_finite()
                 && angle > 0.0
@@ -861,8 +862,8 @@ pub(super) fn valid_operation(
                     let upper = f64::from_bits(pair[1].elevation_bits);
                     lower.is_finite()
                         && upper.is_finite()
-                        && lower.abs() <= MAX_ABS_MM
-                        && upper.abs() <= MAX_ABS_MM
+                        && lower.abs() <= MAX_COORDINATE_MM
+                        && upper.abs() <= MAX_COORDINATE_MM
                         && lower < upper
                         && pair[0].profile != pair[1].profile
                 })

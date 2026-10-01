@@ -29,8 +29,6 @@ pub use validation::*;
 const BACKEND_FINGERPRINT: &str = env!("KETCHUP_OCCT_BUILD_FINGERPRINT");
 // not a tolerance: the evidence identity naming the kernel checks.
 const TOLERANCE_PROFILE: &str = "r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel=1e-10";
-const MIN_LENGTH_MM: f64 = 0.01;
-const MAX_LENGTH_MM: f64 = 100_000.0;
 const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 
 #[must_use]

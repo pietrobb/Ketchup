@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 ketchup-model = { path = "../ketchup-model" }
 ketchup-geometry = { path = "../ketchup-geometry" }
+ketchup-tolerance = { path = "../ketchup-tolerance" }
 
 [lints]
 workspace = true

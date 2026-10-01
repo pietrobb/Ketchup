@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_tolerance::MAX_COORDINATE_MM;
 use ketchup_tolerance::limits;
 
 impl ExactBackend {
@@ -45,11 +46,11 @@ impl ExactBackend {
             spec.max_mm[1] + spec.distance_mm,
         ];
         if !spec.distance_mm.is_finite()
-            || spec.distance_mm.abs() < MIN_LENGTH_MM
+            || spec.distance_mm.abs() < limits::MIN_LENGTH_MM
             || spec.max_mm[0] <= spec.min_mm[0]
             || spec.max_mm[1] <= spec.min_mm[1]
-            || output_max[0] - output_min[0] < MIN_LENGTH_MM
-            || output_max[1] - output_min[1] < MIN_LENGTH_MM
+            || output_max[0] - output_min[0] < limits::MIN_LENGTH_MM
+            || output_max[1] - output_min[1] < limits::MIN_LENGTH_MM
         {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
@@ -324,7 +325,7 @@ impl ExactBackend {
                 "Planar offset distance must be finite".to_owned(),
             ));
         }
-        if !(MIN_LENGTH_MM..=MAX_LENGTH_MM).contains(&distance_mm.abs()) {
+        if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&distance_mm.abs()) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
                 "offset_planar_profile",
@@ -422,7 +423,9 @@ impl ExactBackend {
             compensation = (next - signed_area) - adjusted;
             signed_area = next;
         }
-        if !signed_area.is_finite() || signed_area.abs() <= MIN_LENGTH_MM * MIN_LENGTH_MM {
+        if !signed_area.is_finite()
+            || signed_area.abs() <= limits::MIN_LENGTH_MM * limits::MIN_LENGTH_MM
+        {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidProfile,
                 "offset_planar_profile",
@@ -498,7 +501,7 @@ impl ExactBackend {
                 "Planar region offset distance must be finite".to_owned(),
             ));
         }
-        if !(MIN_LENGTH_MM..=MAX_LENGTH_MM).contains(&distance_mm.abs()) {
+        if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&distance_mm.abs()) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidParameter,
                 operation,

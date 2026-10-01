@@ -3,8 +3,7 @@ use ketchup_exact::{
     GeometryErrorCode, PlanarLoftSection, PlanarLoftSpec, PlanarProfileLoop, PlanarProfileSegment,
     Point3, Size3, SplineLoftSection, SplineLoftSpec,
 };
-
-const COORDINATE_LIMIT_MM: f64 = 1_000_000.0;
+use ketchup_tolerance::MAX_COORDINATE_MM;
 
 fn assert_close(actual: f64, expected: f64) {
     let absolute = (actual - expected).abs();
@@ -82,7 +81,7 @@ fn boxes_may_touch_positive_and_negative_coordinate_limits() {
     let negative = backend
         .make_box(BoxSpec {
             origin_mm: Point3 {
-                x: -COORDINATE_LIMIT_MM,
+                x: -MAX_COORDINATE_MM,
                 y: 20.0,
                 z: -30.0,
             },
@@ -96,8 +95,8 @@ fn boxes_may_touch_positive_and_negative_coordinate_limits() {
 
     assert_valid(&positive);
     assert_valid(&negative);
-    assert_close(positive.body.topology.bounds_mm.max.x, COORDINATE_LIMIT_MM);
-    assert_close(negative.body.topology.bounds_mm.min.x, -COORDINATE_LIMIT_MM);
+    assert_close(positive.body.topology.bounds_mm.max.x, MAX_COORDINATE_MM);
+    assert_close(negative.body.topology.bounds_mm.min.x, -MAX_COORDINATE_MM);
 }
 
 #[test]
@@ -194,7 +193,7 @@ fn maximum_length_may_end_exactly_at_positive_coordinate_limit() {
 
     assert_valid(&output);
     assert_close(output.body.topology.bounds_mm.min.x, 900_000.0);
-    assert_close(output.body.topology.bounds_mm.max.x, COORDINATE_LIMIT_MM);
+    assert_close(output.body.topology.bounds_mm.max.x, MAX_COORDINATE_MM);
     assert_close(output.body.topology.volume_mm3, 10_000_000.0);
 }
 
@@ -857,7 +856,7 @@ fn spline_loft_rejects_elevation_beyond_coordinate_limit() {
     };
     let backend = ExactBackend::new();
     let error = backend
-        .loft_spline(&spec(COORDINATE_LIMIT_MM + 0.001))
+        .loft_spline(&spec(MAX_COORDINATE_MM + 0.001))
         .expect_err("Loft elevation outside the exact coordinate envelope must fail closed");
     assert_eq!(error.code, GeometryErrorCode::InvalidParameter);
     let error = backend

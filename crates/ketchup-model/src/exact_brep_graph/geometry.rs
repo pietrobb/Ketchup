@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_tolerance::MAX_COORDINATE_MM;
 
 pub(super) fn rotate_planar_geometry(
     geometry: &mut ExactBRepPlanarGeometry,
@@ -35,7 +36,7 @@ impl PlanarRigidMap {
             [0, 1].map(|row| self.linear[row][0] * x + self.linear[row][1] * y + self.offset[row]);
         if mapped
             .iter()
-            .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+            .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
         {
             return Err(ExactBRepGraphError::InvalidParameter);
         }
@@ -526,8 +527,8 @@ pub(super) fn linear_interval(
         || (length - 1.0).abs() > ROUNDING
         || !start_mm.is_finite()
         || !end_mm.is_finite()
-        || start_mm.abs() > MAX_ABS_MM
-        || end_mm.abs() > MAX_ABS_MM
+        || start_mm.abs() > MAX_COORDINATE_MM
+        || end_mm.abs() > MAX_COORDINATE_MM
         || end_mm - start_mm <= tolerance_mm
     {
         return Err(ExactBRepGraphError::InvalidParameter);
@@ -557,7 +558,7 @@ pub(super) fn through_all_distance(
 ) -> Result<f64, ExactBRepGraphError> {
     let [_minimum, maximum] = projected_bounds(origin_mm, direction, target_bounds, tolerance_mm)?;
     let distance = maximum + 1.0;
-    if distance > MAX_ABS_MM {
+    if distance > MAX_COORDINATE_MM {
         return Err(ExactBRepGraphError::ResourceLimit);
     }
     Ok(distance)

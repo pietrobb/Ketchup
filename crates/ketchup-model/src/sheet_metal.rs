@@ -5,11 +5,10 @@
 use crate::document::{Dimension, DocumentId, FeatureId, FeatureKind, Snapshot, polygon_segments};
 use crate::graph::sha256_hex;
 use ketchup_geometry::linalg::{Frame, Vec3};
+use ketchup_tolerance::MAX_COORDINATE_MM;
+use ketchup_tolerance::limits;
 use std::fmt;
 
-// not a tolerance: the smallest thickness, radius or flange a sheet may have.
-pub const MIN_SHEET_METAL_LENGTH_MM: f64 = 1.0e-4;
-pub const MAX_SHEET_METAL_LENGTH_MM: f64 = 100_000.0;
 pub const MIN_SHEET_METAL_BEND_ANGLE_DEGREES: f64 = 0.1;
 pub const MAX_SHEET_METAL_BEND_ANGLE_DEGREES: f64 = 179.9;
 
@@ -116,7 +115,7 @@ fn place(placement: &Placement, point: [f64; 2]) -> [f64; 2] {
 }
 
 fn in_envelope(value: f64) -> bool {
-    value.is_finite() && (MIN_SHEET_METAL_LENGTH_MM..=MAX_SHEET_METAL_LENGTH_MM).contains(&value)
+    value.is_finite() && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&value)
 }
 
 fn shoelace_area(corners: &[[f64; 2]]) -> f64 {
@@ -186,11 +185,11 @@ impl SheetMetalShape {
             || base
                 .iter()
                 .flatten()
-                .any(|value| !value.is_finite() || value.abs() > MAX_SHEET_METAL_LENGTH_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             || shoelace_area(base) <= 0.0
             || !crate::exact_product::is_simple_linear_profile(
                 &polygon_segments(base),
-                MIN_SHEET_METAL_LENGTH_MM,
+                limits::MIN_LENGTH_MM,
             )
         {
             return Err(SheetMetalError::InvalidBase);
@@ -222,7 +221,7 @@ impl SheetMetalShape {
         }
         if !in_envelope(bend.length_mm)
             || !in_envelope(bend.inner_radius_mm)
-            || bend.inner_radius_mm + self.thickness_mm > MAX_SHEET_METAL_LENGTH_MM
+            || bend.inner_radius_mm + self.thickness_mm > MAX_COORDINATE_MM
         {
             return Err(SheetMetalError::DimensionOutsideEnvelope);
         }
@@ -472,7 +471,7 @@ impl SheetMetalShape {
 /// Drops repeated points and corners on a straight run of a closed contour.
 fn without_collinear_corners(points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     let close =
-        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) <= MIN_SHEET_METAL_LENGTH_MM;
+        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) <= limits::MIN_LENGTH_MM;
     let mut points = points;
     points.dedup_by(|a, b| close(*a, *b));
     while points.len() > 1 && close(points[0], points[points.len() - 1]) {
@@ -488,7 +487,7 @@ fn without_collinear_corners(points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
             let length = run[0].hypot(run[1]);
             let offset = (run[0] * (point[1] - previous[1]) - run[1] * (point[0] - previous[0]))
                 / length.max(f64::MIN_POSITIVE);
-            count > 3 && offset.abs() <= MIN_SHEET_METAL_LENGTH_MM
+            count > 3 && offset.abs() <= limits::MIN_LENGTH_MM
         });
         match straight {
             Some(index) => {

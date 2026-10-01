@@ -233,7 +233,7 @@ pub(super) fn validate_general_revolve_profile(
             validate_coordinate(center_mm[1], "center_y", operation, input)?;
             let start_radius = (start[0] - center_mm[0]).hypot(start[1] - center_mm[1]);
             let end_radius = (end[0] - center_mm[0]).hypot(end[1] - center_mm[1]);
-            if start_radius < MIN_LENGTH_MM
+            if start_radius < limits::MIN_LENGTH_MM
                 || (start_radius - end_radius).abs()
                     > ROUNDING * start_radius.max(end_radius).max(1.0)
             {
@@ -305,7 +305,7 @@ pub(super) fn validate_mixed_profile(
             validate_coordinate(center_mm[1], "center_y", operation, input)?;
             let start_radius = (start[0] - center_mm[0]).hypot(start[1] - center_mm[1]);
             let end_radius = (end[0] - center_mm[0]).hypot(end[1] - center_mm[1]);
-            if start_radius < MIN_LENGTH_MM
+            if start_radius < limits::MIN_LENGTH_MM
                 || (start_radius - end_radius).abs()
                     > ROUNDING * start_radius.max(end_radius).max(1.0)
             {
@@ -440,12 +440,15 @@ pub(super) fn validate_length(
             format!("{name} must be finite"),
         ));
     }
-    if !(MIN_LENGTH_MM..=MAX_LENGTH_MM).contains(&value) {
+    if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&value) {
         return Err(parameter_error(
             GeometryErrorCode::InvalidParameter,
             operation,
             input,
-            format!("{name} must be within {MIN_LENGTH_MM}..={MAX_LENGTH_MM} mm"),
+            format!(
+                "{name} must be within {}..={MAX_COORDINATE_MM} mm",
+                limits::MIN_LENGTH_MM
+            ),
         ));
     }
     Ok(())

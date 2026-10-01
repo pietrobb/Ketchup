@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_tolerance::limits;
 
 pub(super) fn ensure_product_id(id: u64) -> Result<(), CanonicalError> {
     if id == 0 {
@@ -379,11 +380,11 @@ pub(super) fn validate_product_with_drawing_sources(
                         ];
                         output_bounds.into_iter().all(|coordinate| {
                             coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM
-                        }) && output_bounds[2] - output_bounds[0] >= EXACT_MIN_LENGTH_MM
-                            && output_bounds[3] - output_bounds[1] >= EXACT_MIN_LENGTH_MM
+                        }) && output_bounds[2] - output_bounds[0] >= limits::MIN_LENGTH_MM
+                            && output_bounds[3] - output_bounds[1] >= limits::MIN_LENGTH_MM
                     }
                     (FeatureKind::Profile { segments, closed }, None) => {
-                        distance.abs() <= MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+                        distance.abs() <= MAX_COORDINATE_MM
                             && exact_planar_offset_profile(segments, *closed, product.tolerance)
                                 .is_some_and(|profile| {
                                     let bounds = profile.bounds_bits.map(f64::from_bits);
@@ -593,8 +594,8 @@ pub(super) fn validate_product_with_drawing_sources(
                     || matching.len() != 1
                     || !first_length.is_finite()
                     || !second_length.is_finite()
-                    || first_length < EXACT_MIN_LENGTH_MM
-                    || second_length < EXACT_MIN_LENGTH_MM
+                    || first_length < limits::MIN_LENGTH_MM
+                    || second_length < limits::MIN_LENGTH_MM
                     || !direction_dot.is_finite()
                     || direction_dot.abs() > 0.996_194_698_091_745_5
                 {
