@@ -49,12 +49,18 @@ pub(crate) fn spatial_path(path: &[ProgramPathSegment]) -> FeatureKind {
     FeatureKind::SpatialPath {
         segments: path
             .iter()
-            .map(|segment| match segment.arc {
-                None => SpatialPathSegment::Line {
+            .map(|segment| match (segment.arc, segment.bezier) {
+                (None, None) => SpatialPathSegment::Line {
                     start_mm: segment.start_mm,
                     end_mm: segment.end_mm,
                 },
-                Some(arc) => SpatialPathSegment::CircularArc {
+                (None, Some([control_1_mm, control_2_mm])) => SpatialPathSegment::CubicBezier {
+                    start_mm: segment.start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm: segment.end_mm,
+                },
+                (Some(arc), _) => SpatialPathSegment::CircularArc {
                     start_mm: segment.start_mm,
                     end_mm: segment.end_mm,
                     center_mm: arc.center_mm,

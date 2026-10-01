@@ -1,4 +1,5 @@
-use ketchup_geometry::linalg::{cross, dot};
+use ketchup_geometry::helix::Helix;
+use ketchup_geometry::linalg::{CubicBezier, sub};
 use ketchup_model::document::{
     Dimension, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
@@ -343,15 +344,6 @@ impl Default for AssistantHelixParameters {
     }
 }
 
-impl AssistantHelixHandedness {
-    const fn sign(self) -> f64 {
-        match self {
-            Self::Right => 1.0,
-            Self::Left => -1.0,
-        }
-    }
-}
-
 impl AssistantAxisSpec {
     pub fn origin_and_direction(&self) -> Result<([f64; 3], [f64; 3]), AssistantRequestInvalid> {
         let (origin_mm, direction) = match self {
@@ -363,7 +355,7 @@ impl AssistantAxisSpec {
                 if assistant_cad_vector_is_bounded(*start_mm)
                     && assistant_cad_vector_is_bounded(*end_mm) =>
             {
-                (*start_mm, assistant_sub(*end_mm, *start_mm))
+                (*start_mm, sub(*end_mm, *start_mm))
             }
             Self::TwoPoints { .. } => return Err(AssistantRequestInvalid::invalid("axis")),
             Self::ConstructionAxis { .. } | Self::Edge { .. } => {
@@ -461,9 +453,7 @@ impl AssistantHelixParameters {
         {
             return Err(AssistantRequestInvalid::invalid("helix parameter set"));
         }
-        let segment_count =
-            (std::f64::consts::TAU * self.turns / std::f64::consts::FRAC_PI_2).ceil() as usize;
-        if !(1..=MAX_ASSISTANT_HELIX_SEGMENTS).contains(&segment_count) {
+        if !(1..=MAX_ASSISTANT_HELIX_SEGMENTS).contains(&Helix::quarter_turns(self.turns)) {
             return Err(AssistantRequestInvalid::invalid("helix segment count"));
         }
         Ok(())
@@ -486,91 +476,33 @@ impl AssistantHelixParameters {
             direction,
         }
         .origin_and_direction()?;
-        let axis =
-            assistant_unit(direction).ok_or(AssistantRequestInvalid::invalid("helix axis"))?;
-        let reference = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        let helix = Helix {
+            origin_mm,
+            axis: direction,
+            radius_mm: self.radius_mm,
+            pitch_mm: self.pitch_mm,
+            turns: self.turns,
+            start_angle_degrees: self.start_angle_degrees,
+            left_handed: self.handedness == AssistantHelixHandedness::Left,
+        };
+        Ok(helix
+            .cubic_beziers()
+            .ok_or(AssistantRequestInvalid::invalid("helix axis"))?
             .into_iter()
-            .min_by(|left, right| dot(*left, axis).abs().total_cmp(&dot(*right, axis).abs()))
-            .expect("three reference axes exist");
-        let frame_u = assistant_unit(assistant_sub(
-            reference,
-            assistant_scale(axis, dot(reference, axis)),
-        ))
-        .ok_or(AssistantRequestInvalid::invalid("helix reference frame"))?;
-        let frame_v = cross(axis, frame_u);
-        let start_angle = self.start_angle_degrees.to_radians();
-        let total_angle = std::f64::consts::TAU * self.turns;
-        let segment_count = (total_angle / std::f64::consts::FRAC_PI_2).ceil() as usize;
-        let handedness = self.handedness.sign();
-        let rise_per_radian = self.pitch_mm / std::f64::consts::TAU;
-        let point = |angle: f64| {
-            let phase = start_angle + handedness * angle;
-            assistant_add(
-                origin_mm,
-                assistant_add(
-                    assistant_scale(
-                        assistant_add(
-                            assistant_scale(frame_u, phase.cos()),
-                            assistant_scale(frame_v, phase.sin()),
-                        ),
-                        self.radius_mm,
-                    ),
-                    assistant_scale(axis, rise_per_radian * angle),
-                ),
+            .map(
+                |CubicBezier {
+                     points: [start_mm, control_1_mm, control_2_mm, end_mm],
+                 }| {
+                    SpatialPathSegment::CubicBezier {
+                        start_mm,
+                        control_1_mm,
+                        control_2_mm,
+                        end_mm,
+                    }
+                },
             )
-        };
-        let derivative = |angle: f64| {
-            let phase = start_angle + handedness * angle;
-            assistant_add(
-                assistant_scale(
-                    assistant_add(
-                        assistant_scale(frame_u, -phase.sin()),
-                        assistant_scale(frame_v, phase.cos()),
-                    ),
-                    handedness * self.radius_mm,
-                ),
-                assistant_scale(axis, rise_per_radian),
-            )
-        };
-        let mut segments = Vec::with_capacity(segment_count);
-        for index in 0..segment_count {
-            let start = total_angle * index as f64 / segment_count as f64;
-            let end = total_angle * (index + 1) as f64 / segment_count as f64;
-            let delta = end - start;
-            let start_mm = point(start);
-            let end_mm = point(end);
-            segments.push(SpatialPathSegment::CubicBezier {
-                start_mm,
-                control_1_mm: assistant_add(
-                    start_mm,
-                    assistant_scale(derivative(start), delta / 3.0),
-                ),
-                control_2_mm: assistant_sub(end_mm, assistant_scale(derivative(end), delta / 3.0)),
-                end_mm,
-            });
-        }
-        Ok(segments)
+            .collect())
     }
-}
-
-fn assistant_unit(vector: [f64; 3]) -> Option<[f64; 3]> {
-    if vector.iter().any(|value| !value.is_finite()) {
-        return None;
-    }
-    let length = dot(vector, vector).sqrt();
-    (length > ROUNDING).then(|| assistant_scale(vector, length.recip()))
-}
-
-fn assistant_add(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|axis| left[axis] + right[axis])
-}
-
-fn assistant_sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|axis| left[axis] - right[axis])
-}
-
-fn assistant_scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
-    vector.map(|value| value * factor)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]

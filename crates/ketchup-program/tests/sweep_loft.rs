@@ -162,3 +162,50 @@ fn a_point_path_refusal_names_its_kind_and_the_offending_point() {
     };
     assert!(needed_mm > side_mm, "{needed_mm} <= {side_mm}");
 }
+
+const SPRING: &str = "sweep(\"spring\", profile = [(-1, -1), (1, -1), (1, 1), (-1, 1)], \
+                      path = helix(radius = 20, pitch = 10, turns = 1))\n";
+
+#[test]
+fn helix_is_a_path_of_tangent_cubic_quarter_turns() {
+    let spring = part(SPRING, "spring");
+    let path = path(&spring);
+    assert_eq!(path.len(), 4);
+    assert!(
+        path.iter()
+            .all(|segment| segment.bezier.is_some() && segment.arc.is_none())
+    );
+    assert!(close(path[0].start_mm, [20.0, 0.0, 0.0]), "{path:?}");
+    assert!(close(path[1].start_mm, [0.0, 20.0, 2.5]), "{path:?}");
+    assert!(close(path[3].end_mm, [20.0, 0.0, 10.0]), "{path:?}");
+    for pair in path.windows(2) {
+        assert_eq!(pair[0].end_mm, pair[1].start_mm);
+    }
+    // One turn of a 20 mm helix rising 10 mm is sqrt((2 pi 20)^2 + 10^2) long.
+    let expected = (std::f64::consts::TAU * 20.0).hypot(10.0);
+    let total: f64 = path.iter().map(ProgramPathSegment::length).sum();
+    assert!((total - expected).abs() < 0.1, "{total} vs {expected}");
+}
+
+#[test]
+fn a_profile_swept_along_a_helix_reaches_just_past_its_turns() {
+    // The 2 mm square stays within its half diagonal of the helix.
+    let (min, max) = part(SPRING, "spring").local_bounds();
+    for (value, low, high) in [
+        (max[0], 21.0, 21.5),
+        (max[1], 21.0, 21.5),
+        (min[0], -21.5, -21.0),
+        (min[1], -21.5, -21.0),
+        (min[2], -1.5, -0.9),
+        (max[2], 10.9, 11.5),
+    ] {
+        assert!((low..=high).contains(&value), "{min:?} {max:?}");
+    }
+}
+
+#[test]
+fn helix_refuses_more_quarter_turns_than_a_path_holds() {
+    let message = error("p = helix(radius = 5, pitch = 1, turns = 17)\n");
+    assert!(message.contains("68 quarter turns"), "{message}");
+    assert!(error("p = helix(radius = 0, pitch = 1, turns = 1)\n").contains("must be positive"));
+}

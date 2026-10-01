@@ -1,16 +1,18 @@
-//! Sweep paths: tangent-continuous chains of lines and circular arcs in a
-//! part's frame, and where a profile swept along one reaches.
+//! Sweep paths: tangent-continuous chains of lines, circular arcs and cubic
+//! Bezier curves in a part's frame, and where a profile swept along one
+//! reaches.
 //!
 //! The profile's `(u, v)` plane sits at the path start, square to the start
 //! tangent `t`: `u = t × z` (or `t × y` when the path starts along ±z) and
 //! `v = u × t`, both normalised. Going horizontally, `u` points to the right
 //! of the direction of travel and `v` up. The exact kernel carries this
 //! frame along the path without twist: unchanged along lines, turned about
-//! the axis of each arc.
+//! the axis of each arc, and along a curve rotation-minimising (here
+//! followed by double reflection between close samples).
 
 use crate::model::{ProgramPathArc, ProgramPathSegment, ProgramProfileSegment};
 use ketchup_geometry::linalg::{
-    add, circumcenter, cross, dot, length, normalize_within, scale, sub,
+    CubicBezier, add, circumcenter, cross, dot, length, normalize_within, scale, sub,
 };
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 use std::f64::consts::TAU;
@@ -19,6 +21,9 @@ use std::f64::consts::TAU;
 /// (radians) and arc geometry must agree to within this many millimetres.
 const KERNEL_EPSILON: f64 = ROUNDING;
 pub const MAX_PATH_SEGMENTS: usize = 64;
+/// Samples per curve piece for its length and for following the profile
+/// frame along it.
+const CURVE_SAMPLES: usize = 256;
 
 type Vec3 = [f64; 3];
 
@@ -42,7 +47,25 @@ impl ProgramPathSegment {
             start_mm,
             end_mm,
             arc: None,
+            bezier: None,
         }
+    }
+
+    /// A cubic Bezier piece.
+    #[must_use]
+    pub fn curve(curve: CubicBezier<3>) -> Self {
+        let [start_mm, control_1, control_2, end_mm] = curve.points;
+        Self {
+            start_mm,
+            end_mm,
+            arc: None,
+            bezier: Some([control_1, control_2]),
+        }
+    }
+
+    fn bezier_curve(&self) -> Option<CubicBezier<3>> {
+        self.bezier
+            .map(|[first, second]| CubicBezier::new([self.start_mm, first, second, self.end_mm]))
     }
 
     /// Turn of an arc in radians, in `(0, 2π)`.
@@ -58,24 +81,32 @@ impl ProgramPathSegment {
     }
 
     fn start_tangent(&self) -> Option<Vec3> {
-        match self.arc {
-            None => unit(sub(self.end_mm, self.start_mm)),
-            Some(arc) => unit(cross(arc.normal, sub(self.start_mm, arc.center_mm))),
+        match (self.arc, self.bezier) {
+            (Some(arc), _) => unit(cross(arc.normal, sub(self.start_mm, arc.center_mm))),
+            (None, Some([first, _])) => unit(sub(first, self.start_mm)),
+            (None, None) => unit(sub(self.end_mm, self.start_mm)),
         }
     }
 
     fn end_tangent(&self) -> Option<Vec3> {
-        match self.arc {
-            None => self.start_tangent(),
-            Some(arc) => unit(cross(arc.normal, sub(self.end_mm, arc.center_mm))),
+        match (self.arc, self.bezier) {
+            (Some(arc), _) => unit(cross(arc.normal, sub(self.end_mm, arc.center_mm))),
+            (None, Some([_, second])) => unit(sub(self.end_mm, second)),
+            (None, None) => self.start_tangent(),
         }
     }
 
     #[must_use]
     pub fn length(&self) -> f64 {
-        match self.arc {
-            None => length(sub(self.end_mm, self.start_mm)),
-            Some(arc) => length(sub(self.start_mm, arc.center_mm)) * self.angle(),
+        match (self.arc, self.bezier_curve()) {
+            (Some(arc), _) => length(sub(self.start_mm, arc.center_mm)) * self.angle(),
+            (None, Some(curve)) => (0..CURVE_SAMPLES)
+                .map(|index| {
+                    let at = |index: usize| curve.eval(index as f64 / CURVE_SAMPLES as f64);
+                    length(sub(at(index + 1), at(index)))
+                })
+                .sum(),
+            (None, None) => length(sub(self.end_mm, self.start_mm)),
         }
     }
 }
@@ -255,6 +286,7 @@ pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>
                     center_mm: add(cursor, scale(inward, bend_mm)),
                     normal: unit(cross(a, b)).expect("a turning corner"),
                 }),
+                bezier: None,
             });
             cursor = arc_end;
         }
@@ -317,10 +349,41 @@ pub fn start_frame(path: &[ProgramPathSegment]) -> (Vec3, Vec3, Vec3) {
     (path[0].start_mm, u, v)
 }
 
+/// The profile frame `(u, v)` at `frame.0 = curve(t[0])` carried along the
+/// curve to `t[1]` without twist: the double reflection of Wang et al.
+/// (2008), exact for rotation-minimising frames up to the sample spacing.
+#[allow(clippy::similar_names)]
+fn carry_frame(
+    curve: &CubicBezier<3>,
+    (point, u, v): (Vec3, Vec3, Vec3),
+    t: [f64; 2],
+) -> (Vec3, Vec3, Vec3) {
+    let next = curve.eval(t[1]);
+    let reflect = |vector: Vec3, normal: Vec3| {
+        let square = dot(normal, normal);
+        if square <= f64::EPSILON * f64::EPSILON {
+            vector
+        } else {
+            sub(vector, scale(normal, 2.0 * dot(normal, vector) / square))
+        }
+    };
+    let (Some(tangent), Some(next_tangent)) =
+        (unit(curve.derivative(t[0])), unit(curve.derivative(t[1])))
+    else {
+        return (next, u, v);
+    };
+    let chord = sub(next, point);
+    let reflected_tangent = reflect(tangent, chord);
+    let second = sub(next_tangent, reflected_tangent);
+    let carry = |vector: Vec3| reflect(reflect(vector, chord), second);
+    (next, carry(u), carry(v))
+}
+
 /// The largest `direction · p` over the body a closed profile sweeps along
 /// `path`. Along a line the frame is fixed, so the ends decide; along an arc
-/// every point turns about the arc axis and the largest value over the turn
-/// is found by sampling and a golden-section refinement.
+/// every point turns about the arc axis, and along a curve the frame is
+/// carried sample by sample; the largest value over either is found by
+/// sampling and a golden-section refinement.
 #[must_use]
 pub fn sweep_support(
     profile: &[ProgramProfileSegment],
@@ -336,6 +399,47 @@ pub fn sweep_support(
     let (_, mut u, mut v) = start_frame(path);
     let mut best = f64::NEG_INFINITY;
     for segment in path {
+        if let Some(curve) = segment.bezier_curve() {
+            let reach = |(point, u, v): (Vec3, Vec3, Vec3)| {
+                dot(direction, point) + profile_support(u, v, direction)
+            };
+            // The frame at every sample, carried from the one before it.
+            let mut frames = vec![(curve.eval(0.0), u, v)];
+            for index in 1..=CURVE_SAMPLES {
+                let previous = frames[index - 1];
+                let t = [(index - 1) as f64, index as f64].map(|i| i / CURVE_SAMPLES as f64);
+                frames.push(carry_frame(&curve, previous, t));
+            }
+            let (best_index, best_value) = frames
+                .iter()
+                .map(|frame| reach(*frame))
+                .enumerate()
+                .fold((0, f64::NEG_INFINITY), |best, (index, value)| {
+                    if value > best.1 { (index, value) } else { best }
+                });
+            // Refine between the samples next to the best one.
+            let step = 1.0 / CURVE_SAMPLES as f64;
+            let at = |t: f64| {
+                let from = ((t / step).floor() as usize).min(CURVE_SAMPLES - 1);
+                reach(carry_frame(&curve, frames[from], [from as f64 * step, t]))
+            };
+            let (mut low, mut high) = (
+                (step * best_index as f64 - step).max(0.0),
+                (step * best_index as f64 + step).min(1.0),
+            );
+            let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+            for _ in 0..60 {
+                let (left, right) = (high - ratio * (high - low), low + ratio * (high - low));
+                if at(left) < at(right) {
+                    low = left;
+                } else {
+                    high = right;
+                }
+            }
+            best = best.max(best_value).max(at((low + high) / 2.0));
+            (_, u, v) = frames[CURVE_SAMPLES];
+            continue;
+        }
         let Some(arc) = segment.arc else {
             let across = profile_support(u, v, direction);
             best = best

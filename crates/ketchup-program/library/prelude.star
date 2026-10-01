@@ -333,6 +333,16 @@ def distribute(parts, a, b, face = None):
 #     without twist, e.g. a 30 x 20 rail turning a 100 mm bend:
 #     sweep("rail", profile=[(-15, 0), (15, 0), (15, 20), (-15, 20)],
 #           path=[(0, 0, 0), (600, 0, 0), (600, 400, 0)], bend=100)
+#     A segment [start, end, {"controls": [c1, c2]}] is a cubic Bezier curve
+#     (as in profiles) along which the profile is carried without twist.
+#   helix(radius=, pitch=, turns=, at=(0, 0, 0), axis=(0, 0, 1),
+#         start_angle=0, left=False)  -> a sweep path: the helix around the
+#     axis through `at`, starting `start_angle` degrees from local +x (for
+#     the default axis), rising `pitch` per turn, counter-clockwise seen from
+#     the axis tip (left=True: clockwise), as cubic quarter turns within
+#     0.03 % of the true helix. The profile is carried along it without
+#     twist like along any curve, so it turns slowly about the path relative
+#     to the axis; helix() alone is a spring's or a thread's path.
 #   loft(name, sections=[(profile, z), ...], at=, tool=)
 #     a solid through 2 to 16 closed profiles, each in the local XY plane at
 #     height z (strictly increasing), e.g. a leg tapering 40 -> 24 mm:

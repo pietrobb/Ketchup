@@ -17,13 +17,14 @@ use crate::model::{
     ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment, ProgramProfileSegment,
     ProgramShell, profile_bounds,
 };
+use ketchup_geometry::helix::Helix;
 use ketchup_model::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::syntax::{AstModule, Dialect};
-use starlark::values::dict::DictRef;
+use starlark::values::dict::{AllocDict, DictRef};
 use starlark::values::float::UnpackFloat;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
@@ -284,8 +285,12 @@ fn profile_segments<'v>(
 }
 
 /// The two inner control points of a cubic Bezier segment given as
-/// `{"controls": [(x1, y1), (x2, y2)]}`; `None` for any other dict.
-fn bezier_controls<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Option<[[f64; 2]; 2]>> {
+/// `{"controls": [p1, p2]}` with `N`-dimensional points; `None` for any
+/// other dict.
+fn bezier_controls<'v, const N: usize>(
+    value: Value<'v>,
+    heap: &'v Heap,
+) -> anyhow::Result<Option<[[f64; N]; 2]>> {
     let Some(dict) = DictRef::from_value(value) else {
         return Ok(None);
     };
@@ -293,14 +298,14 @@ fn bezier_controls<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Optio
         return Ok(None);
     };
     if dict.len() != 1 {
-        anyhow::bail!("a curve is {{\"controls\": [(x1, y1), (x2, y2)]}} with no other keys");
+        anyhow::bail!("a curve is {{\"controls\": [p1, p2]}} with no other keys");
     }
     let points = iterate(
         controls,
         heap,
         format_args!("curve controls must be two points"),
     )?
-    .map(|point| numbers::<2>(point, heap, "curve control"))
+    .map(|point| numbers::<N>(point, heap, "curve control"))
     .collect::<anyhow::Result<Vec<_>>>()?;
     let [first, second] = points.as_slice() else {
         anyhow::bail!("curve controls must be two points, got {}", points.len());
@@ -864,15 +869,16 @@ fn reject_swept(part: &Part, operation: &str) -> anyhow::Result<()> {
 }
 
 /// A sweep path: 3D points (a polyline whose corners `bend` rounds), or
-/// segments `[start, end]` and `[start, end, arc]` with the arc
+/// segments `[start, end]` and `[start, end, curve]` with the curve an arc
 /// `{"through": p}` or `{"center": c, "normal": n}` (counter-clockwise
-/// about `n`).
+/// about `n`), or a cubic Bezier `{"controls": [c1, c2]}` (what `helix()`
+/// returns).
 fn sweep_path<'v>(
     value: Value<'v>,
     bend: Option<f64>,
     heap: &'v Heap,
 ) -> anyhow::Result<Vec<ProgramPathSegment>> {
-    const FORMS: &str = "path must be a list of 3D points, or of segments [start, end] / [start, end, {\"through\": p}] / [start, end, {\"center\": c, \"normal\": n}]";
+    const FORMS: &str = "path must be a list of 3D points, or of segments [start, end] / [start, end, {\"through\": p}] / [start, end, {\"center\": c, \"normal\": n}] / [start, end, {\"controls\": [c1, c2]}]";
     let entries = items(value, heap, "path")?;
     let is_point = |entry: &Value<'v>| {
         entry
@@ -912,7 +918,12 @@ fn sweep_path<'v>(
                 }
                 let end_mm = numbers::<3>(end, heap, &what)?;
                 previous_end = Some(end_mm);
+                let bezier = arc
+                    .and_then(|curve| bezier_controls::<3>(curve, heap).transpose())
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!("{what}: {error}"))?;
                 let arc = arc
+                    .filter(|_| bezier.is_none())
                     .map(|arc| {
                         let dict =
                             DictRef::from_value(arc).ok_or_else(|| anyhow::anyhow!("{FORMS}"))?;
@@ -943,12 +954,42 @@ fn sweep_path<'v>(
                     start_mm,
                     end_mm,
                     arc,
+                    bezier,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     };
     crate::path::validate(&path).map_err(anyhow::Error::msg)?;
     Ok(path)
+}
+
+/// `helix` as path segments `[start, end, {"controls": [c1, c2]}]`.
+fn helix_path<'v>(helix: &Helix, heap: &'v Heap) -> anyhow::Result<Value<'v>> {
+    if helix.radius_mm <= TOLERANCE_MM || helix.pitch_mm <= TOLERANCE_MM || helix.turns <= 0.0 {
+        anyhow::bail!("helix radius, pitch and turns must be positive");
+    }
+    let pieces = Helix::quarter_turns(helix.turns);
+    if pieces > crate::path::MAX_PATH_SEGMENTS {
+        anyhow::bail!(
+            "a helix of {} turns needs {pieces} quarter turns; a path has at most {}",
+            helix.turns,
+            crate::path::MAX_PATH_SEGMENTS
+        );
+    }
+    let curves = helix
+        .cubic_beziers()
+        .ok_or_else(|| anyhow::anyhow!("helix axis must be a non-zero direction"))?;
+    let point = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
+    Ok(heap.alloc(
+        curves
+            .into_iter()
+            .map(|curve| {
+                let [start, first, second, end] = curve.points;
+                let controls = AllocDict([("controls", heap.alloc((point(first), point(second))))]);
+                heap.alloc((point(start), point(end), heap.alloc(controls)))
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 /// Loft sections `[(profile, z), ...]` at strictly increasing heights.
@@ -1096,6 +1137,34 @@ fn apply_named_edge_finish(
         )?;
         Ok(NoneType)
     })
+}
+
+#[starlark_module]
+fn path_builtins(builder: &mut GlobalsBuilder) {
+    /// A circular helix as a sweep path of cubic quarter turns.
+    fn helix<'v>(
+        #[starlark(require = named)] radius: Value<'v>,
+        #[starlark(require = named)] pitch: Value<'v>,
+        #[starlark(require = named)] turns: Value<'v>,
+        #[starlark(require = named)] at: Option<Value<'v>>,
+        #[starlark(require = named)] axis: Option<Value<'v>>,
+        #[starlark(require = named)] start_angle: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] left: bool,
+        heap: &'v Heap,
+    ) -> anyhow::Result<Value<'v>> {
+        let helix = Helix {
+            origin_mm: given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?,
+            axis: given(axis)
+                .map_or(Ok([0.0, 0.0, 1.0]), |axis| numbers::<3>(axis, heap, "axis"))?,
+            radius_mm: number(radius, "radius")?,
+            pitch_mm: number(pitch, "pitch")?,
+            turns: number(turns, "turns")?,
+            start_angle_degrees: given(start_angle)
+                .map_or(Ok(0.0), |angle| number(angle, "start_angle"))?,
+            left_handed: left,
+        };
+        helix_path(&helix, heap)
+    }
 }
 
 #[starlark_module]
@@ -2233,6 +2302,7 @@ fn globals() -> Globals {
         LibraryExtension::Partial,
     ])
     .with(builtins)
+    .with(path_builtins)
     .with_namespace("math", math_functions)
     .build()
 }
@@ -2347,7 +2417,12 @@ mod tests {
             .find(|line| line.trim_start_matches(['#', ' ']).starts_with("math."))
             .expect("library header documents math.*");
         let mut missing = Vec::new();
-        for name in GlobalsBuilder::new().with(builtins).build().names() {
+        for name in GlobalsBuilder::new()
+            .with(builtins)
+            .with(path_builtins)
+            .build()
+            .names()
+        {
             let name = name.as_str();
             if !header.contains(&format!("{name}(")) {
                 missing.push(name.to_owned());

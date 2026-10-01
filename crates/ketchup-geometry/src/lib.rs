@@ -5,6 +5,7 @@
 
 pub mod derived;
 pub mod dimension;
+pub mod helix;
 pub mod id;
 pub mod linalg;
 pub mod prismatic;

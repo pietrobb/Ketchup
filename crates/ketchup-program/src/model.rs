@@ -541,13 +541,16 @@ pub struct ProgramPathArc {
     pub normal: [f64; 3],
 }
 
-/// One piece of a sweep path in the part's frame: a line, or an arc.
+/// One piece of a sweep path in the part's frame: a line, an arc, or a
+/// cubic Bezier curve with the two inner control points `bezier`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ProgramPathSegment {
     pub start_mm: [f64; 3],
     pub end_mm: [f64; 3],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arc: Option<ProgramPathArc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bezier: Option<[[f64; 3]; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
