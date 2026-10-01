@@ -29,6 +29,8 @@ Plan and rationale: `docs/plan-upratovania-2026-09-24.md`, `docs/analyza-fundame
   (`caused_by`). Geometric failures also name the parts and a location in mm. Host error codes
   and their hints live in one catalog, `ketchup_application::rejections`.
 - Never discard an error's content: no `map_err(|_| "...")`, no `Err("...".to_owned())`, no
+  `Result<_, String>`, no `map_err(|e| e.to_string())`, no `Variant(format!(…))` instead of
+  fields, no bare `unreachable!()` or `.unwrap()`, no
   rewriting of messages in the SDK or skills, no collapsing many causes into one code.
   Only an error type that carries nothing but its type (`TryFromIntError`, `PoisonError`, …; the
   list is `CONTENT_FREE` in `scripts/check_error_hygiene.py`) may be dropped, and the closure names

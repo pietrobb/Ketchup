@@ -12,6 +12,16 @@ Two forms are counted in production source (crates/*/src, test modules and
   text instead of a typed error or `ketchup_rejection::Rejection`.
 - unreachable: `unreachable!(...)` admits that a type allows a case the code
   says cannot happen; shape the type so the case does not exist instead.
+- silent_unreachable: `unreachable!()` with no message also hides which
+  assumption broke when it fires.
+- string_result: `Result<_, String>` makes every caller unable to tell one
+  failure from another.
+- stringified_cause: `map_err(|e| e.to_string())` flattens a typed error into
+  text, so the caller can no longer react to its kind.
+- formatted_variant: `Variant(format!(...))` puts the facts of an error into a
+  sentence instead of fields (`Some`, `Ok` and `Err` are not error variants;
+  `Err(format!)` is already a string_result).
+- unwrap: `.unwrap()` panics without saying which assumption broke.
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -49,6 +59,13 @@ CONTENT_FREE = {
 DISCARD = re.compile(r"map_err\(\s*(?:move\s*)?\|\s*_\w*\s*(?::\s*([^|]+?)\s*)?\|")
 STRING = re.compile(r"""Err\(\s*"(?:[^"\\]|\\.)*"\s*\.\s*(?:to_owned|to_string|into)\(\)\s*\)""")
 UNREACHABLE = re.compile(r"\bunreachable!\s*\(")
+SILENT_UNREACHABLE = re.compile(r"\bunreachable!\s*\(\s*\)")
+# The Ok type may itself be generic up to two levels deep: Result<Vec<Option<T>>, String>.
+STRING_RESULT = re.compile(r"\bResult<(?:[^<>,]|<[^<>]*(?:<[^<>]*>[^<>]*)*>)+,\s*String\s*>")
+STRINGIFIED_CAUSE = re.compile(
+    r"map_err\(\s*(?:move\s*)?\|\s*(\w+)\s*\|\s*\1\s*\.\s*to_string\(\)\s*\)")
+FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
+UNWRAP = re.compile(r"\.unwrap\(\)")
 # An inline `#[cfg(test)] mod name { ... }` at the top level of a Rust file.
 TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod \w+ \{\n.*?^\}",
                          re.MULTILINE | re.DOTALL)
@@ -64,7 +81,12 @@ def file_counts(text: str) -> dict[str, int]:
     discards = sum(1 for match in DISCARD.finditer(text)
                    if match.group(1) is None or not content_free(match.group(1)))
     return {"discard": discards, "string": len(STRING.findall(text)),
-            "unreachable": len(UNREACHABLE.findall(text))}
+            "unreachable": len(UNREACHABLE.findall(text)),
+            "silent_unreachable": len(SILENT_UNREACHABLE.findall(text)),
+            "string_result": len(STRING_RESULT.findall(text)),
+            "stringified_cause": len(STRINGIFIED_CAUSE.findall(text)),
+            "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
+            "unwrap": len(UNWRAP.findall(text))}
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
@@ -102,7 +124,8 @@ def check(root: Path = ROOT, update: bool = False, allow_growth: bool = False) -
         lines = [f"{key} {value}" for key, value in sorted(counts.items())]
         (root / BASELINE_NAME).write_text(
             "# Remaining errors that drop their cause or cases the types still allow"
-            " (<file> <discard|string|unreachable> <count>); may only shrink.\n"
+            " (<file> <form> <count>, forms in scripts/check_error_hygiene.py);"
+            " may only shrink.\n"
             + "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         print(f"baseline: {sum(counts.values())} occurrences in {len(counts)} entries")
         return 0

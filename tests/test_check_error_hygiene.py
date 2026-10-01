@@ -46,7 +46,10 @@ def test_counts_unreachable_cases_in_production_source_only(tmp_path):
         '#[cfg(test)]\nmod tests {\n    fn g() { unreachable!() }\n}\n',
     )
     write(tmp_path, "crates/a/tests/it.rs", "unreachable!();\n")
-    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs unreachable": 2}
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs unreachable": 2,
+        "crates/a/src/lib.rs silent_unreachable": 1,
+    }
 
 
 def test_only_named_content_free_error_types_may_be_dropped(tmp_path):
@@ -73,7 +76,36 @@ def test_inline_test_modules_are_not_production_code(tmp_path):
         'fn f() -> Result<(), String> { Err("x".to_owned()) }\n'
         '#[cfg(test)]\nmod tests {\n    fn g() { x.map_err(|_| "bad"); }\n}\n',
     )
-    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs string": 1}
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs string": 1,
+        "crates/a/src/lib.rs string_result": 1,
+    }
+
+
+def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "fn a() -> Result<Vec<Option<u8>>, String> { todo!() }\n"
+        "fn b() -> std::result::Result<HashMap<K, V>, String> { todo!() }\n"
+        "fn c() -> Result<(), Error> { todo!() }\n"
+        "let d = x.map_err(|error| error.to_string())?;\n"
+        "let e = x.map_err(move |e| e.to_string())?;\n"
+        "let f = x.map_err(|error| Error::Io(error.to_string()))?;\n"
+        'Error::Dependency(format!("{a} needs {b}"))\n'
+        'Unsupported( format!("x") )\n'
+        'Some(format!("x")); Ok(format!("x")); Err(format!("x")); name(format!("x"))\n'
+        "let g = h.unwrap();\nlet i = h.unwrap_or(0);\n"
+        '_ => unreachable!(),\n_ => unreachable!("said why"),\n',
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs string_result": 2,
+        "crates/a/src/lib.rs stringified_cause": 2,
+        "crates/a/src/lib.rs formatted_variant": 2,
+        "crates/a/src/lib.rs unwrap": 1,
+        "crates/a/src/lib.rs unreachable": 2,
+        "crates/a/src/lib.rs silent_unreachable": 1,
+    }
 
 
 def test_ratchet_refuses_growth_and_locks_in_shrinking(tmp_path, capsys):
