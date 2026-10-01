@@ -170,6 +170,14 @@ pub struct ResourceLimits {
     pub maximum_work_units: u64,
 }
 
+impl ResourceLimits {
+    /// The budget every built-in validator runs under.
+    pub const BUILT_IN: Self = Self {
+        maximum_input_bytes: 16 * 1024 * 1024,
+        maximum_work_units: 1_000_000,
+    };
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatorDescriptor {
     pub contract_id: String,
@@ -554,10 +562,7 @@ pub fn prismatic_validator_descriptor() -> ValidatorDescriptor {
         validation_class: ValidationClass::DeclaredJoint,
         read_scopes: vec![ReadScope::DerivedGeometry, ReadScope::DeclaredJoints],
         deterministic: true,
-        limits: ResourceLimits {
-            maximum_input_bytes: 16 * 1024 * 1024,
-            maximum_work_units: 1_000_000,
-        },
+        limits: ResourceLimits::BUILT_IN,
     }
 }
 

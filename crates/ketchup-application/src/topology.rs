@@ -3,6 +3,7 @@ use ketchup_model::document::{
     FeatureKind, FilletRadiusStation, ShellDirection, Snapshot,
 };
 use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::tolerance::limits;
 use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,15 +13,13 @@ pub enum GeneralFinishKind {
     Chamfer,
 }
 
-pub const MAX_TOPOLOGICAL_FINISH_REFERENCES: usize = 64;
-
 pub fn plan_topology_shell_kind(
     target: FeatureId,
     mut removed_faces: Vec<TopologicalElementRef>,
     thickness: Dimension,
     direction: ShellDirection,
 ) -> Option<FeatureKind> {
-    if removed_faces.len() > MAX_TOPOLOGICAL_FINISH_REFERENCES
+    if removed_faces.len() > limits::FEATURE_REFERENCES
         || removed_faces.iter().any(|reference| {
             reference.kind != TopologicalElementKind::Face
                 || reference.producer_feature_id != target
@@ -47,7 +46,7 @@ pub fn plan_topology_finish_kind(
     mut references: Vec<TopologicalElementRef>,
     amount: Dimension,
 ) -> Option<FeatureKind> {
-    if !(1..=MAX_TOPOLOGICAL_FINISH_REFERENCES).contains(&references.len()) {
+    if !(1..=limits::FEATURE_REFERENCES).contains(&references.len()) {
         return None;
     }
     let expected_kind = match kind {
@@ -113,7 +112,7 @@ pub fn plan_topology_advanced_chamfer_kind(
     distance: Dimension,
     mode: ChamferMode,
 ) -> Option<FeatureKind> {
-    if !(1..=MAX_TOPOLOGICAL_FINISH_REFERENCES).contains(&edge_sides.len())
+    if !(1..=limits::FEATURE_REFERENCES).contains(&edge_sides.len())
         || matches!(mode, ChamferMode::Symmetric)
         || edge_sides.iter().any(|selection| {
             selection.edge.kind != TopologicalElementKind::Edge

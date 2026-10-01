@@ -20,9 +20,7 @@ use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmSourceIdentity,
 };
 pub use ketchup_application::topology::GeneralFinishKind;
-use ketchup_application::topology::{
-    MAX_TOPOLOGICAL_FINISH_REFERENCES, assistant_topology_references, plan_topology_finish_kind,
-};
+use ketchup_application::topology::{assistant_topology_references, plan_topology_finish_kind};
 use ketchup_application::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
     world_edit_in_parent_space,
@@ -2083,7 +2081,7 @@ impl SelectionState {
                 }
                 return true;
             }
-            if self.topological.len() == MAX_TOPOLOGICAL_FINISH_REFERENCES {
+            if self.topological.len() == ketchup_model::tolerance::limits::FEATURE_REFERENCES {
                 return false;
             }
             self.topological.push((selection, topological));

@@ -354,6 +354,16 @@ impl Snapshot {
             .clone()
     }
 
+    /// Whether `value` is a digest as [`Self::canonical_digest`] writes it: one 64-bit
+    /// hash as sixteen lower-case hex digits.
+    #[must_use]
+    pub fn is_canonical_digest(value: &str) -> bool {
+        value.len() == 2 * size_of::<u64>()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
     #[must_use]
     pub fn document_id(&self) -> DocumentId {
         self.product.document_id

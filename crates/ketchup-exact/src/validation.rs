@@ -517,10 +517,5 @@ pub(super) fn squared_distance3(left: [f64; 3], right: [f64; 3]) -> f64 {
 }
 
 pub(super) fn stable_digest(value: &str) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in value.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("fnv1a64:{hash:016x}")
+    ketchup_geometry::reference::fnv1a64_fingerprint(value)
 }

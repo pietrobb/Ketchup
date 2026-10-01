@@ -53,7 +53,6 @@ pub const EXACT_BREP_GRAPH_SCHEMA_V23: &str = "ketchup.exact-brep-graph.v23";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
-pub const MAX_EXACT_BREP_LOFT_SECTIONS: usize = 16;
 pub const MAX_EXACT_BREP_LOFT_CONTROL_POINTS: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_EXACT_BREP_TOPOLOGY_SELECTORS: usize = 64;
@@ -1661,16 +1660,16 @@ mod tests {
     #[test]
     fn loft_operation_limit_matches_the_exact_backend() {
         let tolerance_mm = crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
-        assert_eq!(MAX_EXACT_BREP_LOFT_SECTIONS, 16);
+        assert_eq!(limits::LOFT_SECTIONS, 16);
         assert!(valid_operation(
-            &loft_operation(MAX_EXACT_BREP_LOFT_SECTIONS),
+            &loft_operation(limits::LOFT_SECTIONS),
             1,
             1,
             &[],
             tolerance_mm,
         ));
         assert!(!valid_operation(
-            &loft_operation(MAX_EXACT_BREP_LOFT_SECTIONS + 1),
+            &loft_operation(limits::LOFT_SECTIONS + 1),
             1,
             1,
             &[],

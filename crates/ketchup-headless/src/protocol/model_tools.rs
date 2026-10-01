@@ -121,7 +121,10 @@ fn truncate(text: &mut String, limit: usize) -> bool {
 pub(super) fn bounded_error(mut error: Error) -> Error {
     let original_bytes = error.message.len();
     let message_truncated = truncate(&mut error.message, MAX_ERROR_MESSAGE_BYTES);
-    truncate(&mut error.code, model_query::MAX_TEXT_BYTES);
+    truncate(
+        &mut error.code,
+        ketchup_model::tolerance::limits::NAME_BYTES,
+    );
     let oversized = error.details.as_ref().is_some_and(|details| {
         serde_json::to_vec(details).map_or(true, |bytes| bytes.len() > MAX_ERROR_DETAILS_BYTES)
     });

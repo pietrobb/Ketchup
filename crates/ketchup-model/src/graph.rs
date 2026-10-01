@@ -760,6 +760,16 @@ pub fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
+/// Whether `value` is a digest as [`sha256_hex`] writes it: two lower-case hex digits
+/// per byte. Every digest, reference ID and fingerprint of that form is checked here.
+#[must_use]
+pub fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 2 * size_of::<[u8; 32]>()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn node_input_digest(
     node: &EvaluatorNode,
     dependency_results: &[&String],

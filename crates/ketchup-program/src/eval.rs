@@ -240,7 +240,7 @@ fn profile_segments<'v>(
                     .unpack_str()
                     .ok_or_else(|| anyhow::anyhow!("{what} segment name must be a string"))?;
                 if name.is_empty()
-                    || name.len() > 128
+                    || name.len() > limits::NAME_BYTES
                     || name
                         .chars()
                         .any(|character| character.is_control() || "#,().:".contains(character))
@@ -715,8 +715,20 @@ fn with_part<R>(
 }
 
 fn check_part_name(name: &str) -> anyhow::Result<()> {
-    if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
-        anyhow::bail!("part name must be 1-128 printable bytes, got {name:?}");
+    check_name("part name", name)
+}
+
+/// A name the program gives a part, cut or face: printable and at most
+/// [`limits::NAME_BYTES`] long.
+fn check_name(what: &str, name: &str) -> anyhow::Result<()> {
+    if name.trim().is_empty()
+        || name.len() > limits::NAME_BYTES
+        || name.chars().any(char::is_control)
+    {
+        anyhow::bail!(
+            "{what} must be 1-{} printable bytes, got {name:?}",
+            limits::NAME_BYTES
+        );
     }
     Ok(())
 }
@@ -1005,8 +1017,12 @@ fn helix_path<'v>(helix: &Helix, heap: &'v Heap) -> anyhow::Result<Value<'v>> {
 /// Loft sections `[(profile, z), ...]` at strictly increasing heights.
 fn loft_sections<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Vec<ProgramLoftSection>> {
     let entries = items(value, heap, "sections")?;
-    if !(2..=16).contains(&entries.len()) {
-        anyhow::bail!("a loft needs 2 to 16 sections, got {}", entries.len());
+    if !(2..=limits::LOFT_SECTIONS).contains(&entries.len()) {
+        anyhow::bail!(
+            "a loft needs 2 to {} sections, got {}",
+            limits::LOFT_SECTIONS,
+            entries.len()
+        );
     }
     let mut sections: Vec<ProgramLoftSection> = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
@@ -1475,9 +1491,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         if depth_mm <= TOLERANCE_MM {
             anyhow::bail!("cut on {part_name:?}: depth must be positive");
         }
-        if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
-            anyhow::bail!("cut name must be 1-128 printable bytes, got {name:?}");
-        }
+        check_name("cut name", name)?;
         let state = state(eval)?;
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
@@ -1508,12 +1522,8 @@ fn builtins(builder: &mut GlobalsBuilder) {
         if distance_mm.abs() <= TOLERANCE_MM {
             anyhow::bail!("push_pull on {part_name:?}: distance must be non-zero");
         }
-        if face.trim().is_empty() || face.len() > 128 || face.chars().any(char::is_control) {
-            anyhow::bail!("push_pull face must be 1-128 printable bytes, got {face:?}");
-        }
-        if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
-            anyhow::bail!("push_pull name must be 1-128 printable bytes, got {name:?}");
-        }
+        check_name("push_pull face", face)?;
+        check_name("push_pull name", name)?;
         let state = state(eval)?;
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {

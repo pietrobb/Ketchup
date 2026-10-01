@@ -856,7 +856,7 @@ pub(super) fn valid_operation(
                 .as_ref()
                 .is_none_or(|path| valid_spatial_path(path, tolerance_mm))
                 && !(guide.is_some() && *continuity == ExactBRepLoftContinuity::Curvature)
-                && (2..=MAX_EXACT_BREP_LOFT_SECTIONS).contains(&sections.len())
+                && (2..=limits::LOFT_SECTIONS).contains(&sections.len())
                 && sections.windows(2).all(|pair| {
                     let lower = f64::from_bits(pair[0].elevation_bits);
                     let upper = f64::from_bits(pair[1].elevation_bits);

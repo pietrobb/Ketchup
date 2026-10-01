@@ -142,14 +142,33 @@ pub fn canonical_reference_lineage_digest(
     source_element_id: &str,
     expected_type: &str,
 ) -> String {
-    let identity = format!(
+    fnv1a64_fingerprint(&format!(
         "{}:{}:{}:{}:{}",
         document_id.0, producer_feature_id.0, semantic_role, source_element_id, expected_type
-    );
+    ))
+}
+
+const FNV1A64_PREFIX: &str = "fnv1a64:";
+
+/// The short stable fingerprint of `text`: `fnv1a64:` and the 64-bit FNV-1a hash as
+/// sixteen lower-case hex digits. Not collision resistant; use SHA-256 for content.
+#[must_use]
+pub fn fnv1a64_fingerprint(text: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in identity.bytes() {
+    for byte in text.bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("fnv1a64:{hash:016x}")
+    format!("{FNV1A64_PREFIX}{hash:016x}")
+}
+
+/// Whether `value` is a fingerprint as [`fnv1a64_fingerprint`] writes it.
+#[must_use]
+pub fn is_fnv1a64_fingerprint(value: &str) -> bool {
+    value.strip_prefix(FNV1A64_PREFIX).is_some_and(|hex| {
+        hex.len() == 2 * size_of::<u64>()
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }

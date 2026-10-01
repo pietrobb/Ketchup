@@ -28,7 +28,6 @@ use std::sync::Mutex;
 
 pub const MAX_PAGE: usize = 100;
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
-pub const MAX_TEXT_BYTES: usize = 128;
 pub const MAX_INSTANCE_INDEX_ITEMS: usize = 10_000;
 pub const MAX_WORKSET_ITEMS: usize = 10_000;
 pub const MAX_ACTIVE_WORKSETS: usize = 16;
@@ -88,7 +87,7 @@ fn default_limit() -> usize {
 
 fn valid_page_request(request: &PageRequest) -> bool {
     (1..=MAX_PAGE).contains(&request.limit)
-        && request.search.len() <= 128
+        && request.search.len() <= limits::NAME_BYTES
         && request.definition_id != Some(0)
         && request.tag_id != Some(0)
         && request.classification_dimension_id != Some(0)
@@ -297,7 +296,7 @@ impl ModelQuery {
                 "relations":relation_count(snapshot)},
             "complete":complete,"resource_budget":resource_budget,
             "limits":{"max_page":MAX_PAGE,"max_output_bytes":MAX_OUTPUT_BYTES,
-                "max_name_bytes":MAX_TEXT_BYTES,"max_search_bytes":128,
+                "max_name_bytes":limits::NAME_BYTES,"max_search_bytes":limits::NAME_BYTES,
                 "max_instance_index_items":MAX_INSTANCE_INDEX_ITEMS,
                 "max_instance_path_steps":limits::INSTANCE_PATH_STEPS,
                 "max_instance_index_text_bytes":limits::REPORT_TEXT_BYTES}})
@@ -1704,7 +1703,7 @@ fn instance_has_tag(snapshot: &Snapshot, path: &InstancePath, wanted: TagId) -> 
 }
 
 pub fn bounded_text(text: &str) -> Value {
-    let mut end = text.len().min(MAX_TEXT_BYTES);
+    let mut end = text.len().min(limits::NAME_BYTES);
     while !text.is_char_boundary(end) {
         end -= 1;
     }

@@ -24,7 +24,6 @@ const MAX_DEFINITIONS: usize = 128;
 const MAX_INSTANCES: usize = 512;
 const MAX_TOTAL_VERTICES: usize = 200_000;
 const MAX_TOTAL_TRIANGLES: usize = 400_000;
-const MAX_TEXT_BYTES: usize = 1_024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSketchupScene {
@@ -624,7 +623,7 @@ pub fn plan_sketchup_scene_import(
 }
 
 fn validate_text(value: &str) -> Result<(), SketchupSceneImportError> {
-    if value.is_empty() || value.len() > MAX_TEXT_BYTES || value.chars().any(char::is_control) {
+    if value.is_empty() || value.len() > limits::TEXT_BYTES || value.chars().any(char::is_control) {
         Err(SketchupSceneImportError::InvalidText)
     } else {
         Ok(())

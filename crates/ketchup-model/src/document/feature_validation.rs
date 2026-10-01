@@ -25,7 +25,7 @@ pub(super) fn validate_topological_feature_references(
     references: &[TopologicalElementRef],
     expected_kind: TopologicalElementKind,
 ) -> Result<(), CanonicalError> {
-    if references.len() > 64
+    if references.len() > limits::FEATURE_REFERENCES
         || !roles_are_strictly_sorted(references)
         || references
             .iter()
@@ -925,7 +925,7 @@ pub(super) fn validate_feature_kind(
             let named = FaceRef::all_named(removed_faces)
                 .ok_or(CanonicalError::InvalidTopologicalFeatureReference)?;
             if *direction != ShellDirection::Inward
-                || named.len() > 64
+                || named.len() > limits::FEATURE_REFERENCES
                 || !named.iter().all(ProfileFaceReference::is_valid)
             {
                 return Err(CanonicalError::InvalidTopologicalFeatureReference);
@@ -996,7 +996,7 @@ pub(super) fn validate_feature_kind(
                 return Err(CanonicalError::InvalidTopologicalFeatureReference);
             }
             if !fillet_radius_stations.is_empty() {
-                if fillet_radius_stations.len() > 32
+                if fillet_radius_stations.len() > limits::FILLET_RADIUS_STATIONS
                     || fillet_radius_stations
                         .last()
                         .is_none_or(|station| station.position != 1.0)
@@ -1125,7 +1125,7 @@ pub(super) fn validate_feature_kind(
             ..
         } => {
             Dimension::new(tolerance.source_token(), tolerance.millimetres()).map(|_| ())?;
-            if !(2..=256).contains(&surfaces.len())
+            if !(2..=limits::KNIT_SURFACES).contains(&surfaces.len())
                 || !surfaces.windows(2).all(|pair| pair[0] < pair[1])
                 || !(tolerance_mm..=10.0).contains(&tolerance.millimetres())
             {
@@ -1166,7 +1166,7 @@ pub(super) fn validate_feature_kind(
             guide,
             continuity,
         }) => {
-            if !(2..=16).contains(&sections.len())
+            if !(2..=limits::LOFT_SECTIONS).contains(&sections.len())
                 || (guide.is_some() && *continuity == LoftContinuity::Curvature)
                 || sections.windows(2).any(|pair| {
                     pair[0].elevation_mm >= pair[1].elevation_mm
@@ -1239,11 +1239,11 @@ pub(super) fn validate_imported_exact_body(
         return reject(ImportContractError::InvalidSource);
     }
     if spec.result_fingerprint.is_empty()
-        || spec.result_fingerprint.len() > 128
+        || spec.result_fingerprint.len() > limits::NAME_BYTES
         || spec.backend.is_empty()
-        || spec.backend.len() > 1_024
+        || spec.backend.len() > limits::TEXT_BYTES
         || spec.tolerance.is_empty()
-        || spec.tolerance.len() > 1_024
+        || spec.tolerance.len() > limits::TEXT_BYTES
     {
         return reject(ImportContractError::InvalidText);
     }

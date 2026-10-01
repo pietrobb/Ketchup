@@ -16,6 +16,8 @@ const CAM_POSTPROCESSOR_RESOLUTION_MM: f64 = ROUNDING;
 const MAX_RPM: u32 = 200_000;
 const MAX_FEED_MM_PER_MIN: f64 = 1.0e6;
 const MAX_CAM_OPERATIONS: usize = 1_024;
+/// Most motions one toolpath holds.
+const MAX_CAM_MOTIONS: usize = 100_000;
 const MAX_PATH_SEGMENTS: usize = 4_096;
 const MAX_DRILL_POINTS: usize = 4_096;
 const GEOMETRY_TOLERANCE_MM: f64 = ROUNDING;
@@ -988,7 +990,7 @@ impl CamToolpath {
             || self.operations.is_empty()
             || self.operations.len() > MAX_CAM_OPERATIONS
             || self.motions.is_empty()
-            || self.motions.len() > 100_000
+            || self.motions.len() > MAX_CAM_MOTIONS
         {
             return Err(CamPlannerError::StaleToolpath);
         }
@@ -1181,10 +1183,10 @@ fn validate_simulation_for_postprocessing(
         || simulation.gouge_mm3 > volume_tolerance
         || !simulation.collisions.is_empty()
         || simulation.backend.is_empty()
-        || simulation.backend.len() > 1024
+        || simulation.backend.len() > ketchup_tolerance::limits::TEXT_BYTES
         || simulation.tolerance.is_empty()
-        || simulation.tolerance.len() > 1024
-        || !valid_sha256_hex(&simulation.result_fingerprint)
+        || simulation.tolerance.len() > ketchup_tolerance::limits::TEXT_BYTES
+        || !crate::graph::is_sha256_hex(&simulation.result_fingerprint)
         || simulation.result_fingerprint != simulation.stable_fingerprint()
     {
         return Err(CamPostprocessorError::UnsafeSimulation);
@@ -1262,9 +1264,9 @@ fn validate_postprocessed_program(
     program: &CamPostprocessedProgram,
 ) -> Result<(), CamPostprocessorError> {
     if program.schema != CAM_POSTPROCESSOR_SCHEMA_V1
-        || !valid_sha256_hex(&program.plan_digest)
-        || !valid_sha256_hex(&program.toolpath_digest)
-        || !valid_sha256_hex(&program.simulation_fingerprint)
+        || !crate::graph::is_sha256_hex(&program.plan_digest)
+        || !crate::graph::is_sha256_hex(&program.toolpath_digest)
+        || !crate::graph::is_sha256_hex(&program.simulation_fingerprint)
         || program.units != "mm"
         || !matches!(
             program.work_offset.as_str(),
@@ -1278,7 +1280,7 @@ fn validate_postprocessed_program(
         || program.plunge_feed_mm_per_min > program.cutting_feed_mm_per_min
         || !valid_postprocessor_number(program.safe_retract_z_mm)
         || program.motions.is_empty()
-        || program.motions.len() > 100_000
+        || program.motions.len() > MAX_CAM_MOTIONS
     {
         return Err(malformed(
             "header values (units, tool, spindle, feeds, retract, motion count) are out of range",
@@ -1592,13 +1594,6 @@ fn valid_postprocessor_number(value: f64) -> bool {
     value.is_finite() && value > 0.0 && value <= MAX_FEED_MM_PER_MIN
 }
 
-fn valid_sha256_hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn content_digest(content: &[u8]) -> String {
     hex_digest(Sha256::digest(content))
 }
@@ -1695,7 +1690,7 @@ impl MotionBuilder {
     }
 
     fn ensure_capacity(&self) -> Result<(), CamPlannerError> {
-        if self.motions.len() >= 100_000 {
+        if self.motions.len() >= MAX_CAM_MOTIONS {
             Err(CamPlannerError::InvalidOperations)
         } else {
             Ok(())
@@ -2064,10 +2059,10 @@ fn validate_scalar_data(plan: &CamPlan) -> Result<(), CamError> {
     let positive = |value: f64| bounded(value) && value > 0.0;
     if plan.id.0 == 0
         || plan.name.trim().is_empty()
-        || plan.name.len() > 1024
+        || plan.name.len() > ketchup_tolerance::limits::TEXT_BYTES
         || plan.target.definition_id.0 == 0
         || plan.target.feature_id.0 == 0
-        || plan.target.exact_graph_digest.len() != 64
+        || !crate::graph::is_sha256_hex(&plan.target.exact_graph_digest)
         || plan.tool.number == 0
         || plan.tool.spindle_rpm == 0
         || plan.tool.spindle_rpm > MAX_RPM

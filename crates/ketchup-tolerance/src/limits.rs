@@ -44,3 +44,23 @@ pub const REPORT_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Most batch jobs one host keeps open at a time.
 pub const BATCH_JOBS: usize = 16;
+
+/// Longest name, in bytes: a part, feature, parameter path, case or fingerprint label.
+pub const NAME_BYTES: usize = 128;
+
+/// Longest free-text field, in bytes: a backend, tolerance description, imported label
+/// or plan name.
+pub const TEXT_BYTES: usize = 1_024;
+
+/// Most topology references (edges or faces) one feature or analysis case names: a
+/// fillet, chamfer, shell opening or constrained faces.
+pub const FEATURE_REFERENCES: usize = 64;
+
+/// Most radius stations along one variable fillet.
+pub const FILLET_RADIUS_STATIONS: usize = 32;
+
+/// Most sections one loft passes through.
+pub const LOFT_SECTIONS: usize = 16;
+
+/// Most surfaces one knit joins.
+pub const KNIT_SURFACES: usize = 256;

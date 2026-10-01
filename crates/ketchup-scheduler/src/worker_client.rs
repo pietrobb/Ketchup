@@ -178,7 +178,7 @@ impl ExactWorkerClient {
         let maximum_vertices = max_tetrahedra.saturating_mul(4);
         let maximum_boundary_triangles = max_tetrahedra.saturating_mul(4);
         if receipt.result_fingerprint != result_fingerprint
-            || !is_sha256_digest(&receipt.sha256)
+            || !ketchup_model::graph::is_sha256_hex(&receipt.sha256)
             || receipt.vertex_count < 4
             || receipt.tetrahedron_count == 0
             || receipt.tetrahedron_count > max_tetrahedra
@@ -440,7 +440,7 @@ impl ExactWorkerClient {
                 "invalid imported body kind {body_kind} or unit {source_unit}"
             ));
         };
-        if !is_fnv1a64_digest(&result_fingerprint) {
+        if !ketchup_geometry::reference::is_fnv1a64_fingerprint(&result_fingerprint) {
             return self.fail_protocol(format!(
                 "invalid imported result fingerprint {result_fingerprint}"
             ));
@@ -519,7 +519,9 @@ impl ExactWorkerClient {
         output_path: &Path,
         label: &str,
     ) -> Result<StepImportMesh, WorkerError> {
-        if receipt.result_fingerprint != result_fingerprint || !is_sha256_digest(&receipt.sha256) {
+        if receipt.result_fingerprint != result_fingerprint
+            || !ketchup_model::graph::is_sha256_hex(&receipt.sha256)
+        {
             return self.fail_protocol(format!("{label} receipt {receipt:?} does not match"));
         }
         let encoded = read_step_import_mesh_output(
@@ -559,7 +561,7 @@ impl ExactWorkerClient {
             WorkerReply::Exported(ExportReceipt {
                 result_fingerprint,
                 sha256: None,
-            }) if is_fnv1a64_digest(&result_fingerprint) => {}
+            }) if ketchup_geometry::reference::is_fnv1a64_fingerprint(&result_fingerprint) => {}
             reply => return self.unexpected(reply),
         }
         self.read_bounded_output(
@@ -588,7 +590,11 @@ impl ExactWorkerClient {
             WorkerReply::Exported(ExportReceipt {
                 result_fingerprint: exported,
                 sha256: Some(sha256),
-            }) if exported == result_fingerprint && is_sha256_digest(&sha256) => sha256,
+            }) if exported == result_fingerprint
+                && ketchup_model::graph::is_sha256_hex(&sha256) =>
+            {
+                sha256
+            }
             reply => return self.unexpected(reply),
         };
         let bytes = self.read_bounded_output(
@@ -623,7 +629,11 @@ impl ExactWorkerClient {
             WorkerReply::Exported(ExportReceipt {
                 result_fingerprint,
                 sha256: Some(sha256),
-            }) if is_fnv1a64_digest(&result_fingerprint) && is_sha256_digest(&sha256) => sha256,
+            }) if ketchup_geometry::reference::is_fnv1a64_fingerprint(&result_fingerprint)
+                && ketchup_model::graph::is_sha256_hex(&sha256) =>
+            {
+                sha256
+            }
             reply => return self.unexpected(reply),
         };
         let bytes = self.read_bounded_output(

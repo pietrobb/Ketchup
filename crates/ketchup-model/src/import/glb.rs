@@ -63,7 +63,6 @@ const MAX_NODES: usize = 512;
 const MAX_TOTAL_VERTICES: usize = 200_000;
 const MAX_TOTAL_TRIANGLES: usize = 400_000;
 const MAX_GLB_COMMANDS: usize = 1_024;
-const MAX_TEXT_BYTES: usize = 1_024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedGlbScene {
@@ -1490,7 +1489,7 @@ fn optional_name(
 }
 
 fn validate_text(value: &str) -> Result<(), GlbImportError> {
-    if value.is_empty() || value.len() > MAX_TEXT_BYTES || value.chars().any(char::is_control) {
+    if value.is_empty() || value.len() > limits::TEXT_BYTES || value.chars().any(char::is_control) {
         Err(GlbImportError::InvalidText)
     } else {
         Ok(())

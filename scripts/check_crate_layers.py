@@ -72,7 +72,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 572,
     "crates/ketchup-model/src/shared_change.rs::project_component_replacement_impact_for_principal": 823,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 484,
-    "crates/ketchup-program/src/eval.rs::builtins": 1024,
+    "crates/ketchup-program/src/eval.rs::builtins": 1018,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 559,
 }
 

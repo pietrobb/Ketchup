@@ -4,6 +4,7 @@ use ketchup_model::document::{
     Dimension, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
 };
+use ketchup_model::graph::is_sha256_hex;
 use ketchup_model::pin_joint::PinSpec;
 use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::tolerance::{
@@ -33,10 +34,13 @@ const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
 const MAX_ASSISTANT_CAD_EDIT_OPERATIONS: usize = 64;
 const MAX_ASSISTANT_CAD_SELECTOR_TARGETS: usize = 100;
 const MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES: usize = 512;
-const MAX_ASSISTANT_NAME_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_CODE_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_OPERATION_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_TARGET_BYTES: usize = 256;
+/// Longest system prompt or response text one API diagnostics record keeps, in bytes.
+const MAX_ASSISTANT_DIAGNOSTIC_TEXT_BYTES: usize = 64 * 1024;
+/// Longest serialized provider request one API diagnostics record keeps, in bytes.
+const MAX_ASSISTANT_DIAGNOSTIC_PAYLOAD_BYTES: usize = 128 * 1024;
 const MAX_ASSISTANT_REJECTION_TEXT_BYTES: usize = 2_048;
 const MAX_ASSISTANT_REJECTION_BYTES: usize = 8 * 1_024;
 const MAX_ASSISTANT_HELIX_TURNS: f64 = 16.0;
@@ -380,10 +384,7 @@ impl AssistantAxisSpec {
             Self::Edge {
                 edge_reference_id,
                 instance_path,
-            } if edge_reference_id.len() == 64
-                && edge_reference_id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())
+            } if is_sha256_hex(edge_reference_id)
                 && instance_path.as_ref().is_none_or(|path| {
                     path.root_occurrence_id > 0
                         && path.steps.len() <= limits::INSTANCE_PATH_STEPS
@@ -576,9 +577,7 @@ fn assistant_unit_axis(vector: [f64; 3]) -> Option<usize> {
 }
 
 fn assistant_cut_id_is_valid(id: &str) -> bool {
-    !id.trim().is_empty()
-        && id.len() <= MAX_ASSISTANT_NAME_BYTES
-        && !id.chars().any(char::is_control)
+    !id.trim().is_empty() && id.len() <= limits::NAME_BYTES && !id.chars().any(char::is_control)
 }
 
 /// A round hole drilled into one face of a part: the entry point on that face
@@ -1317,7 +1316,7 @@ impl AssistantCadBodyFeature {
                 sections,
                 guide_feature_id,
                 continuity,
-            } if (2..=16).contains(&sections.len())
+            } if (2..=limits::LOFT_SECTIONS).contains(&sections.len())
                 && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
                 && !(guide_feature_id.is_some()
                     && *continuity == AssistantCadLoftContinuity::Curvature)
@@ -1349,7 +1348,7 @@ impl AssistantCadBodyFeature {
                         guide_feature_id,
                         continuity,
                     },
-            } if (2..=16).contains(&sections.len())
+            } if (2..=limits::LOFT_SECTIONS).contains(&sections.len())
                 && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
                 && !(guide_feature_id.is_some()
                     && *continuity == AssistantCadLoftContinuity::Curvature)
@@ -1395,7 +1394,7 @@ impl AssistantCadBodyFeature {
                 surface_feature_ids,
                 tolerance_mm,
                 ..
-            } if (2..=256).contains(&surface_feature_ids.len())
+            } if (2..=limits::KNIT_SURFACES).contains(&surface_feature_ids.len())
                 && surface_feature_ids
                     .iter()
                     .all(|reference| reference.validate().is_ok())
@@ -1431,11 +1430,10 @@ impl AssistantCadBodyFeature {
                 thickness_mm,
                 ..
             } if *target_feature_id != 0
-                && removed_face_reference_ids.len() <= 64
-                && removed_face_reference_ids.iter().all(|reference_id| {
-                    reference_id.len() == 64
-                        && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
+                && removed_face_reference_ids.len() <= limits::FEATURE_REFERENCES
+                && removed_face_reference_ids
+                    .iter()
+                    .all(|reference_id| is_sha256_hex(reference_id))
                 && removed_face_reference_ids
                     .iter()
                     .collect::<BTreeSet<_>>()
@@ -1453,16 +1451,15 @@ impl AssistantCadBodyFeature {
                 radius_mm,
                 radius_stations,
             } if *target_feature_id != 0
-                && (1..=64).contains(&edge_reference_ids.len())
-                && edge_reference_ids.iter().all(|reference_id| {
-                    reference_id.len() == 64
-                        && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
+                && (1..=limits::FEATURE_REFERENCES).contains(&edge_reference_ids.len())
+                && edge_reference_ids
+                    .iter()
+                    .all(|reference_id| is_sha256_hex(reference_id))
                 && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
                     == edge_reference_ids.len()
                 && radius_mm.is_finite()
                 && (0.01..=100_000.0).contains(radius_mm)
-                && radius_stations.len() <= 32
+                && radius_stations.len() <= limits::FILLET_RADIUS_STATIONS
                 && (radius_stations.is_empty()
                     || radius_stations
                         .last()
@@ -1490,11 +1487,10 @@ impl AssistantCadBodyFeature {
                 mode,
                 side_face_reference_ids,
             } if *target_feature_id != 0
-                && (1..=64).contains(&edge_reference_ids.len())
-                && edge_reference_ids.iter().all(|reference_id| {
-                    reference_id.len() == 64
-                        && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
+                && (1..=limits::FEATURE_REFERENCES).contains(&edge_reference_ids.len())
+                && edge_reference_ids
+                    .iter()
+                    .all(|reference_id| is_sha256_hex(reference_id))
                 && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
                     == edge_reference_ids.len()
                 && distance_mm.is_finite()
@@ -1505,20 +1501,18 @@ impl AssistantCadBodyFeature {
                         second_distance_mm.is_finite()
                             && (0.01..=100_000.0).contains(second_distance_mm)
                             && side_face_reference_ids.len() == edge_reference_ids.len()
-                            && side_face_reference_ids.iter().all(|reference_id| {
-                                reference_id.len() == 64
-                                    && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                            })
+                            && side_face_reference_ids
+                                .iter()
+                                .all(|reference_id| is_sha256_hex(reference_id))
                     }
                     AssistantCadChamferMode::DistanceAngle { angle_degrees } => {
                         angle_degrees.is_finite()
                             && *angle_degrees > 0.1
                             && *angle_degrees < 89.9
                             && side_face_reference_ids.len() == edge_reference_ids.len()
-                            && side_face_reference_ids.iter().all(|reference_id| {
-                                reference_id.len() == 64
-                                    && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                            })
+                            && side_face_reference_ids
+                                .iter()
+                                .all(|reference_id| is_sha256_hex(reference_id))
                     }
                 } =>
             {
@@ -1867,7 +1861,7 @@ impl AssistantFeaReviewRequest {
             || self.feature_id == 0
             || self.occurrence_id == 0
             || self.case_id.trim().is_empty()
-            || self.case_id.len() > MAX_ASSISTANT_NAME_BYTES
+            || self.case_id.len() > limits::NAME_BYTES
             || self.case_id.chars().any(char::is_control)
             || !self.youngs_modulus_mpa.is_finite()
             || self.youngs_modulus_mpa <= 0.0
@@ -1878,7 +1872,7 @@ impl AssistantFeaReviewRequest {
             || self.yield_strength_mpa <= 0.0
             || self.yield_strength_mpa > 1.0e9
             || self.constrained_face_ordinals.is_empty()
-            || self.constrained_face_ordinals.len() > 64
+            || self.constrained_face_ordinals.len() > limits::FEATURE_REFERENCES
             || unique_constraints.len() != self.constrained_face_ordinals.len()
             || unique_constraints.contains(&self.loaded_face_ordinal)
             || !self
@@ -2843,7 +2837,7 @@ fn validate_assistant_sketch_payload(
     constraints: &[AssistantSketchConstraint],
 ) -> Result<(), AssistantRequestInvalid> {
     if name.trim().is_empty()
-        || name.len() > MAX_ASSISTANT_NAME_BYTES
+        || name.len() > limits::NAME_BYTES
         || name.chars().any(char::is_control)
         || entities.is_empty()
         || constraints.len() > ketchup_geometry::sketch::MAX_SKETCH_CONSTRAINTS
@@ -3023,7 +3017,7 @@ impl AssistantCadEditProgram {
                 }
                 AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
                         return Err(AssistantRequestInvalid::invalid("spatial path creation"));
@@ -3035,7 +3029,7 @@ impl AssistantCadEditProgram {
                 }
                 AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || !assistant_cad_vector_is_bounded(*position_mm)
                     {
@@ -3051,7 +3045,7 @@ impl AssistantCadEditProgram {
                     direction,
                 } => {
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || !assistant_cad_vector_is_bounded(*origin_mm)
                         || !assistant_cad_vector_is_bounded(*direction)
@@ -3070,7 +3064,7 @@ impl AssistantCadEditProgram {
                     x_direction,
                 } => {
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || !assistant_cad_vector_is_bounded(*origin_mm)
                         || !assistant_cad_vector_is_bounded(*normal)
@@ -3091,7 +3085,7 @@ impl AssistantCadEditProgram {
                     profile,
                 } => {
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
                         return Err(AssistantRequestInvalid::invalid("Helix creation"));
@@ -3112,7 +3106,7 @@ impl AssistantCadEditProgram {
                 } => {
                     if *definition_id == 0
                         || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
                         return Err(AssistantRequestInvalid::invalid("CAD Fillet"));
@@ -3135,7 +3129,7 @@ impl AssistantCadEditProgram {
                 } => {
                     if *definition_id == 0
                         || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
                         return Err(AssistantRequestInvalid::invalid("CAD Chamfer"));
@@ -3156,7 +3150,7 @@ impl AssistantCadEditProgram {
                     feature,
                 } => {
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
                         return Err(AssistantRequestInvalid::invalid("CAD feature append"));
@@ -3172,7 +3166,7 @@ impl AssistantCadEditProgram {
                 }
                 AssistantCadEditOperation::BindProgramOutput { name, source } => {
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || named_outputs.contains_key(name)
                     {
@@ -3207,7 +3201,7 @@ impl AssistantCadEditProgram {
                 } => {
                     if *feature_id == 0
                         || parameter_path.trim().is_empty()
-                        || parameter_path.len() > MAX_ASSISTANT_NAME_BYTES
+                        || parameter_path.len() > limits::NAME_BYTES
                         || parameter_path.chars().any(char::is_control)
                         || !value.is_finite()
                         || value.abs() > MAX_COORDINATE_MM
@@ -3292,7 +3286,7 @@ impl AssistantCadEditProgram {
                     };
                     if !holes_valid
                         || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || first.instance_path == second.instance_path
                         || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
@@ -3348,7 +3342,7 @@ impl AssistantCadEditProgram {
                 } => {
                     let unique = instance_paths.iter().collect::<BTreeSet<_>>();
                     if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || instance_paths.is_empty()
                         || instance_paths.len() > MAX_ASSISTANT_CAD_SELECTOR_TARGETS
@@ -3409,7 +3403,7 @@ impl AssistantCadEditProgram {
                         || *tool_number == 0
                         || *spindle_rpm == 0
                         || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || !assistant_cad_vector_is_bounded(*stock_minimum_mm)
                         || !assistant_cad_vector_is_bounded(*stock_maximum_mm)
@@ -3435,14 +3429,14 @@ impl AssistantCadEditProgram {
                     let mut category_ids = BTreeSet::new();
                     if *dimension_id == 0
                         || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || categories.is_empty()
                         || categories.len() > MAX_ASSISTANT_CAD_EDIT_OPERATIONS
                         || categories.iter().any(|category| {
                             category.id == 0
                                 || category.name.trim().is_empty()
-                                || category.name.len() > MAX_ASSISTANT_NAME_BYTES
+                                || category.name.len() > limits::NAME_BYTES
                                 || category.name.chars().any(char::is_control)
                                 || !category_ids.insert(category.id)
                         })
@@ -3472,7 +3466,7 @@ impl AssistantCadEditProgram {
                 } => {
                     if *node_id == 0
                         || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || !value.is_finite()
                         || value.abs() > MAX_COORDINATE_MM
@@ -3484,7 +3478,7 @@ impl AssistantCadEditProgram {
                 AssistantCadEditOperation::CreateTag { tag_id, name, .. } => {
                     if *tag_id == 0
                         || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
                         return Err(AssistantRequestInvalid::invalid("CAD tag creation"));
@@ -3834,7 +3828,7 @@ impl AssistantModelIntent {
         }
         for item in &self.boxes {
             if item.name.trim().is_empty()
-                || item.name.len() > MAX_ASSISTANT_NAME_BYTES
+                || item.name.len() > limits::NAME_BYTES
                 || item.name.chars().any(char::is_control)
             {
                 return Err(AssistantRequestInvalid::invalid("box name"));
@@ -4076,10 +4070,11 @@ impl AssistantApiDiagnostics {
             || self.provider.len() > MAX_ASSISTANT_MODEL_BYTES
             || self.model.is_empty()
             || self.model.len() > MAX_ASSISTANT_MODEL_BYTES
-            || self.system_prompt.len() > 64 * 1024
-            || self.response_text.len() > 64 * 1024
-            || serde_json::to_vec(&self.request_payload)
-                .map_or(true, |bytes| bytes.len() > 128 * 1024)
+            || self.system_prompt.len() > MAX_ASSISTANT_DIAGNOSTIC_TEXT_BYTES
+            || self.response_text.len() > MAX_ASSISTANT_DIAGNOSTIC_TEXT_BYTES
+            || serde_json::to_vec(&self.request_payload).map_or(true, |bytes| {
+                bytes.len() > MAX_ASSISTANT_DIAGNOSTIC_PAYLOAD_BYTES
+            })
         {
             return Err(AssistantRequestInvalid::new(
                 "API diagnostics record",

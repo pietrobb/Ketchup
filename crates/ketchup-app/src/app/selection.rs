@@ -581,7 +581,9 @@ impl KetchupApp {
         Vec<TopologicalElementRef>,
     )> {
         let selection = self.selection.primary.as_ref()?;
-        if !(1..=MAX_TOPOLOGICAL_FINISH_REFERENCES).contains(&self.selection.topological.len()) {
+        if !(1..=ketchup_model::tolerance::limits::FEATURE_REFERENCES)
+            .contains(&self.selection.topological.len())
+        {
             return None;
         }
         let snapshot = self.document.current();

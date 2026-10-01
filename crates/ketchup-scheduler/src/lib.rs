@@ -801,6 +801,10 @@ impl WorkerError {
 const MAX_CAM_SIMULATION_MOTIONS: usize = 4_096;
 const MAX_CAM_SIMULATION_FIXTURES: usize = 64;
 const MAX_CAM_SIMULATION_PAIR_CHECKS: usize = 16_384;
+/// Most parts, and most nodes, one STEP assembly export writes.
+const MAX_STEP_ASSEMBLY_NODES: usize = 1_024;
+/// Longest part or node name one STEP assembly export writes, in bytes.
+const MAX_STEP_ASSEMBLY_NAME_BYTES: usize = 4_096;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2505,7 +2509,10 @@ fn push_step_assembly_node(
     if let Some(id) = keys.get(&key) {
         return Ok(*id);
     }
-    if nodes.len() >= 1_024 || name.is_empty() || name.len() > 4_096 {
+    if nodes.len() >= MAX_STEP_ASSEMBLY_NODES
+        || name.is_empty()
+        || name.len() > MAX_STEP_ASSEMBLY_NAME_BYTES
+    {
         return Err(ExactProductError::ExportResourceLimit);
     }
     let id = nodes.len() as u32;
@@ -3046,7 +3053,7 @@ fn exact_brep_graph_sources_from_blobs<'a>(
 }
 
 fn decode_sha256(value: &str) -> Option<[u8; 32]> {
-    if !is_sha256_digest(value) {
+    if !ketchup_model::graph::is_sha256_hex(value) {
         return None;
     }
     let mut digest = [0_u8; 32];
@@ -3062,21 +3069,6 @@ fn parse_import_body_kind(value: &str) -> Option<BodyKind> {
         "surface" => Some(BodyKind::Surface),
         _ => None,
     }
-}
-
-fn is_sha256_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-}
-
-fn is_fnv1a64_digest(value: &str) -> bool {
-    value.len() == 24
-        && value.starts_with("fnv1a64:")
-        && value[8..]
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 #[cfg(test)]

@@ -13,11 +13,10 @@ crates/ketchup-app/src/live_bridge/consent.rs limit 1
 crates/ketchup-app/src/live_bridge/image.rs limit 1
 crates/ketchup-app/src/live_bridge/transport.rs limit 1
 crates/ketchup-application/src/append_feature.rs limit 1
-crates/ketchup-application/src/model_query.rs limit 3
+crates/ketchup-application/src/model_query.rs limit 2
 crates/ketchup-application/src/validation.rs limit 1
 crates/ketchup-application/src/workflow_trace.rs limit 1
 crates/ketchup-assistant/src/extension.rs limit 2
-crates/ketchup-assistant/src/sidecar.rs limit 17
 crates/ketchup-exact/src/exchange.rs limit 4
 crates/ketchup-exact/src/profiles.rs limit 1
 crates/ketchup-exact/src/solids.rs limit 4
@@ -28,10 +27,9 @@ crates/ketchup-headless/src/protocol/model_tools.rs limit 1
 crates/ketchup-headless/src/protocol/production.rs limit 2
 crates/ketchup-manufacturing/src/dxf_export.rs limit 1
 crates/ketchup-manufacturing/src/fabrication.rs limit 2
-crates/ketchup-model/src/cam.rs limit 9
+crates/ketchup-model/src/cam.rs limit 1
 crates/ketchup-model/src/document/assembly_validation.rs limit 2
 crates/ketchup-model/src/document/command.rs limit 1
-crates/ketchup-model/src/document/feature_validation.rs limit 8
 crates/ketchup-model/src/document/store.rs limit 2
 crates/ketchup-model/src/drawing_export.rs limit 1
 crates/ketchup-model/src/exact_brep_graph/validation.rs limit 4
@@ -45,7 +43,4 @@ crates/ketchup-model/src/persistence.rs limit 3
 crates/ketchup-model/src/pin_joint.rs limit 2
 crates/ketchup-model/src/validation.rs limit 1
 crates/ketchup-pdm/src/local.rs limit 1
-crates/ketchup-program/src/eval.rs limit 6
 crates/ketchup-scheduler/src/assistant.rs limit 1
-crates/ketchup-scheduler/src/exact_worker.rs limit 10
-crates/ketchup-scheduler/src/lib.rs limit 4

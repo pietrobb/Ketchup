@@ -14,7 +14,6 @@ pub const IMPORT_RECEIPT_SCHEMA_V1: &str = "ketchup.import-receipt.v1";
 pub const MAX_IMPORT_SOURCE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 pub const MAX_IMPORT_DIAGNOSTICS: usize = 1_024;
 pub const MAX_IMPORT_OUTPUTS: usize = 1_024;
-const MAX_IMPORT_TEXT_BYTES: usize = 1_024;
 
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -771,9 +770,9 @@ fn exact_body_evidence_valid(evidence: &StepImportEvidence) -> bool {
         && measurements_valid
         && bounds_valid
         && !evidence.backend.is_empty()
-        && evidence.backend.len() <= MAX_IMPORT_TEXT_BYTES
+        && evidence.backend.len() <= limits::TEXT_BYTES
         && !evidence.tolerance.is_empty()
-        && evidence.tolerance.len() <= MAX_IMPORT_TEXT_BYTES
+        && evidence.tolerance.len() <= limits::TEXT_BYTES
 }
 
 pub fn plan_step_xde_import(
@@ -1070,10 +1069,7 @@ pub fn plan_step_xde_import(
 }
 
 fn validate_text(value: &str) -> Result<(), ImportContractError> {
-    if value.is_empty()
-        || value.len() > MAX_IMPORT_TEXT_BYTES
-        || value.chars().any(char::is_control)
-    {
+    if value.is_empty() || value.len() > limits::TEXT_BYTES || value.chars().any(char::is_control) {
         Err(ImportContractError::InvalidText)
     } else {
         Ok(())

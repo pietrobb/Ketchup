@@ -721,7 +721,7 @@ impl<'a> GraphCompiler<'a> {
         &mut self,
         sections: &[LoftSection],
     ) -> Result<Vec<ExactBRepLoftSection>, ExactBRepGraphError> {
-        if !(2..=MAX_EXACT_BREP_LOFT_SECTIONS).contains(&sections.len()) {
+        if !(2..=ketchup_tolerance::limits::LOFT_SECTIONS).contains(&sections.len()) {
             return Err(ExactBRepGraphError::InvalidParameter);
         }
         sections

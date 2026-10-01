@@ -35,7 +35,7 @@ use ketchup_model::exact_brep_graph::{
     exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
 };
 use ketchup_model::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
-use ketchup_model::graph::sha256_hex;
+use ketchup_model::graph::{is_sha256_hex, sha256_hex};
 use ketchup_model::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
@@ -636,19 +636,19 @@ fn cam_simulation_response(
             request.holder_offset_mm,
             request.holder_length_mm,
         ])
-        .all(|value| value.is_finite() && value.abs() <= 1.0e6);
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM);
     let bounded_pairs = request
         .motions
         .len()
         .checked_mul(request.fixtures.len().saturating_mul(2).saturating_add(2))
-        .is_some_and(|checks| checks <= 16_384);
+        .is_some_and(|checks| checks <= crate::MAX_CAM_SIMULATION_PAIR_CHECKS);
     if request.schema != CAM_SIMULATION_SCHEMA_V1
         || request.target_exact_graph_digest != graph.graph_digest
-        || !is_canonical_digest(&request.plan_digest)
-        || !is_canonical_digest(&request.toolpath_digest)
+        || !is_sha256_hex(&request.plan_digest)
+        || !is_sha256_hex(&request.toolpath_digest)
         || request.motions.is_empty()
-        || request.motions.len() > 4_096
-        || request.fixtures.len() > 64
+        || request.motions.len() > crate::MAX_CAM_SIMULATION_MOTIONS
+        || request.fixtures.len() > crate::MAX_CAM_SIMULATION_FIXTURES
         || !bounded_pairs
         || !bounded_values
         || request.cutter_radius_mm <= 0.0
@@ -666,7 +666,7 @@ fn cam_simulation_response(
                     .into_iter()
                     .chain(motion.end_mm)
                     .chain(motion.center_mm)
-                    .any(|value| !value.is_finite() || value.abs() > 1.0e6)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
         })
         || request.fixtures.iter().any(|fixture| {
             fixture.id == 0
@@ -675,7 +675,7 @@ fn cam_simulation_response(
                     .bounds_mm
                     .iter()
                     .flatten()
-                    .any(|value| !value.is_finite() || value.abs() > 1.0e6)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
         })
         || request
             .fixtures
@@ -2870,12 +2870,7 @@ fn step_import_result_fingerprint(
         topology.bounds_mm.max.y.to_bits(),
         topology.bounds_mm.max.z.to_bits(),
     );
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in signature.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("fnv1a64:{hash:016x}")
+    ketchup_geometry::reference::fnv1a64_fingerprint(&signature)
 }
 
 /// Copies a declared source into a private file after proving its SHA-256.
@@ -2897,7 +2892,7 @@ fn verified_copy(
             "{label} source exceeds the bounded 32 MiB envelope"
         )));
     }
-    if !is_canonical_digest(&source.sha256) || sha256_hex(&source_bytes) != source.sha256 {
+    if !is_sha256_hex(&source.sha256) || sha256_hex(&source_bytes) != source.sha256 {
         return Err(failure(&format!(
             "{label} source bytes do not match the declared SHA-256"
         )));
@@ -3245,7 +3240,7 @@ fn m21_step_xde_to_iges_response(
             transform: *world.matrix(),
         });
     }
-    if nodes.is_empty() || nodes.len() > 1_024 {
+    if nodes.is_empty() || nodes.len() > crate::MAX_STEP_ASSEMBLY_NODES {
         return Err(backend_failure(
             OPERATION,
             "STEP XDE source has no bounded leaf occurrences",
@@ -3393,11 +3388,11 @@ fn m21_step_assembly_response(
 ) -> WorkerResult {
     let output_path = utf8_path(output_path)?;
     if manifest.schema != "ketchup.step-xde-assembly.v2"
-        || !is_snapshot_digest(&manifest.source_digest)
+        || !ketchup_model::document::Snapshot::is_canonical_digest(&manifest.source_digest)
         || manifest.parts.is_empty()
-        || manifest.parts.len() > 1_024
+        || manifest.parts.len() > crate::MAX_STEP_ASSEMBLY_NODES
         || manifest.nodes.is_empty()
-        || manifest.nodes.len() > 1_024
+        || manifest.nodes.len() > crate::MAX_STEP_ASSEMBLY_NODES
     {
         return Err(backend_failure(
             "verify_step_manifest",
@@ -3420,11 +3415,15 @@ fn m21_step_assembly_response(
             || manifest_part.definition_id == 0
             || manifest_part.producer_feature_id == 0
             || manifest_part.name.is_empty()
-            || manifest_part.name.len() > 4_096
+            || manifest_part.name.len() > crate::MAX_STEP_ASSEMBLY_NAME_BYTES
             || manifest_part.name.chars().any(char::is_control)
-            || !is_result_fingerprint(&manifest_part.expected_result_fingerprint)
-            || !is_result_fingerprint(&manifest_part.imported_result_fingerprint)
-            || !is_canonical_digest(&manifest_part.source_sha256)
+            || !ketchup_geometry::reference::is_fnv1a64_fingerprint(
+                &manifest_part.expected_result_fingerprint,
+            )
+            || !ketchup_geometry::reference::is_fnv1a64_fingerprint(
+                &manifest_part.imported_result_fingerprint,
+            )
+            || !is_sha256_hex(&manifest_part.source_sha256)
         {
             return Err(backend_failure(
                 "verify_step_part",
@@ -3460,7 +3459,7 @@ fn m21_step_assembly_response(
     for (index, node) in manifest.nodes.iter().enumerate() {
         if node.id as usize != index
             || node.name.is_empty()
-            || node.name.len() > 4_096
+            || node.name.len() > crate::MAX_STEP_ASSEMBLY_NAME_BYTES
             || node.name.chars().any(char::is_control)
             || node
                 .parent_id
@@ -3542,23 +3541,6 @@ fn backend_failure(operation: &str, diagnostic: &str) -> WorkerFailure {
             backend: ketchup_exact::backend_fingerprint().to_owned(),
         }),
     }
-}
-
-fn is_snapshot_digest(value: &str) -> bool {
-    value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn is_result_fingerprint(value: &str) -> bool {
-    value.len() == 24
-        && value.starts_with("fnv1a64:")
-        && value[8..].bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn is_canonical_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 #[cfg(test)]

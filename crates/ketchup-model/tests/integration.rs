@@ -10,6 +10,7 @@ mod body_contract;
 mod cam_plan;
 mod component_replacement_impact;
 mod component_replacement_impact_verifier;
+mod digest_formats;
 mod document_revisions;
 mod dxf_import;
 mod exact_brep_graph;

@@ -773,10 +773,7 @@ pub fn gravity_support_validator_descriptor() -> ValidatorDescriptor {
         validation_class: ValidationClass::StructuralBestEffort,
         read_scopes: vec![ReadScope::CanonicalGraph, ReadScope::DerivedGeometry],
         deterministic: true,
-        limits: ResourceLimits {
-            maximum_input_bytes: 16 * 1024 * 1024,
-            maximum_work_units: 1_000_000,
-        },
+        limits: ResourceLimits::BUILT_IN,
     }
 }
 
@@ -820,10 +817,7 @@ pub fn general_body_validator_descriptor() -> ValidatorDescriptor {
         validation_class: ValidationClass::Collision,
         read_scopes: vec![ReadScope::CanonicalGraph, ReadScope::DerivedGeometry],
         deterministic: true,
-        limits: ResourceLimits {
-            maximum_input_bytes: 16 * 1024 * 1024,
-            maximum_work_units: 1_000_000,
-        },
+        limits: ResourceLimits::BUILT_IN,
     }
 }
 
