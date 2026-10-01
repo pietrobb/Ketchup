@@ -91,7 +91,7 @@ pub struct SheetMetalFlatBend {
     pub bend_line_end_mm: [f64; 2],
     pub bend_allowance_mm: f64,
     pub angle_degrees: f64,
-    pub panel_corners_mm: Vec<[f64; 2]>,
+    pub flange_corners_mm: Vec<[f64; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -410,7 +410,7 @@ impl SheetMetalShape {
                 bend_line_end_mm: shift(end, allowance * 0.5),
                 bend_allowance_mm: allowance,
                 angle_degrees: bend.angle_degrees,
-                panel_corners_mm: self
+                flange_corners_mm: self
                     .corners(&spans, Some(index))
                     .into_iter()
                     .map(|corner| place(&flange, corner))
@@ -691,7 +691,7 @@ fn sheet_metal_manufacturing_payload(
         );
         number(&mut bytes, bend.bend_allowance_mm);
         number(&mut bytes, bend.angle_degrees);
-        points(&mut bytes, &bend.panel_corners_mm);
+        points(&mut bytes, &bend.flange_corners_mm);
     }
     bytes
 }

@@ -35,7 +35,8 @@ WORDS = [
     "bottle", "teapot", "balloon_text", "balloon_glyph", "gable_roof", "staircase",
     "oriented_beam", "hettich", "quadro", "nightstand", "capsule", "d_profile",
     "squeeze", "ketchup_bottle", "drawer", "cabinet", "wardrobe", "dowel", "hinge",
-    "shelf", "shelves", "furniture", "grain",
+    "shelf", "shelves", "furniture", "grain", "panel", "board", "beam", "timber", "lumber",
+    "weldment", "cup_bore", "apron",
 ]
 PATTERN = re.compile("(?<![A-Za-z])(?:" + "|".join(re.escape(word) for word in WORDS) + ")",
                      re.IGNORECASE)

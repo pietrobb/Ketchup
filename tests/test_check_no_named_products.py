@@ -55,9 +55,27 @@ def test_no_named_sheet_metal_edge_or_thread_shape_remains():
     assert [key for key in checker.current_counts() if key[key.rindex(":") + 1 :][0].isupper()] == []
 
 
+# Words added by the 2026-10-01 review; their existing occurrences may only shrink.
+SHRINKING = {"panel", "board", "beam", "timber", "lumber", "weldment", "cup_bore", "apron"}
+
+
+def test_counts_board_and_frame_words_from_the_second_review(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "// a panel, a board, a beam, timber, lumber, a weldment, a cup_bore, an apron\n"
+        "struct SidePanel;\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        f"crates/a/src/lib.rs:{word}": 1
+        for word in SHRINKING
+    }
+
+
 def test_core_and_application_crates_name_no_product_domain():
     assert [
         key
         for key in checker.current_counts()
         if key.startswith(("crates/ketchup-model/", "crates/ketchup-application/"))
+        and key.rsplit(":", 1)[1] not in SHRINKING
     ] == []
