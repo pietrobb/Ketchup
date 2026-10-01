@@ -9,6 +9,8 @@
 //! coordinate where `f64` still resolves the linear tolerance with margin.
 use std::fmt;
 
+pub mod limits;
+
 /// Evidence identity of the policy semantics; part of validation digests.
 pub const TOLERANCE_POLICY_ID: &str = "ketchup.prismatic-tolerance.v1";
 

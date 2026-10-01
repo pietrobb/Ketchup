@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::{CubicBezier, Vec3, dot, sub};
+use ketchup_tolerance::limits;
 
 pub(super) fn projected_bounds(
     origin_mm: [f64; 3],
@@ -840,7 +841,7 @@ pub(super) fn sweep_path_length(
     segments: &[ExactBRepPlanarSegment],
     tolerance_mm: f64,
 ) -> Option<f64> {
-    if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len())
+    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len())
         || segments.len() == 1 && !matches!(segments[0], ExactBRepPlanarSegment::Line { .. })
     {
         return None;

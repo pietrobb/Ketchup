@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::{cross, dot};
+use ketchup_tolerance::limits;
 
 pub(super) fn planar_segment_endpoints(segment: &PlanarProfileSegment) -> ([f64; 2], [f64; 2]) {
     match segment {
@@ -719,7 +720,7 @@ pub(super) fn validate_spatial_sweep_path(
             diagnostic.to_owned(),
         )
     };
-    if !(1..=MAX_SWEEP_PATH_SEGMENTS).contains(&segments.len()) {
+    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len()) {
         return Err(invalid(
             "Spatial Sweep requires between one and 64 path segments",
         ));
@@ -899,7 +900,7 @@ impl PlanarRegionPayload {
     }
 
     pub(super) fn loop_segment_counts(&self) -> Vec<u32> {
-        // A region holds at most MAX_PLANAR_REGION_SEGMENTS segments.
+        // A region holds at most limits::REGION_SEGMENTS segments.
         self.loops
             .iter()
             .map(|segments| segments.len() as u32)
@@ -965,7 +966,7 @@ pub(super) fn flatten_planar_region(
     operation: &'static str,
     input: &str,
 ) -> Result<PlanarRegionPayload, GeometryError> {
-    if holes.is_empty() || holes.len() > MAX_PLANAR_REGION_HOLES {
+    if holes.is_empty() || holes.len() > limits::REGION_HOLES {
         return Err(parameter_error(
             GeometryErrorCode::InvalidProfile,
             operation,
@@ -1024,7 +1025,7 @@ pub(super) fn flatten_planar_region(
             }
         }
     }
-    if loops.iter().map(Vec::len).sum::<usize>() > MAX_PLANAR_REGION_SEGMENTS {
+    if loops.iter().map(Vec::len).sum::<usize>() > limits::REGION_SEGMENTS {
         return Err(parameter_error(
             GeometryErrorCode::InvalidProfile,
             operation,

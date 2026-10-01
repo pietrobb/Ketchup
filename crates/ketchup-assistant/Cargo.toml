@@ -16,6 +16,7 @@ private-oauth = []
 ketchup-model = { path = "../ketchup-model" }
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-rejection = { path = "../ketchup-rejection" }
+ketchup-tolerance = { path = "../ketchup-tolerance" }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 

@@ -58,10 +58,6 @@ pub const MAX_EXACT_BREP_LOFT_SECTIONS: usize = 16;
 pub const MAX_EXACT_BREP_LOFT_CONTROL_POINTS: usize = 64;
 pub const MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 0.01;
 pub const MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 100_000.0;
-pub const MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS: usize = 64;
-pub const MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS: usize = 64;
-pub const MAX_EXACT_BREP_REGION_HOLES: usize = 64;
-pub const MAX_EXACT_BREP_REGION_SEGMENTS: usize = 4_096;
 pub const MAX_EXACT_BREP_GRAPH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_EXACT_BREP_TOPOLOGY_SELECTORS: usize = 64;
 const MAX_ABS_MM: f64 = MAX_COORDINATE_MM;
@@ -1600,6 +1596,7 @@ impl std::error::Error for ExactBRepGraphError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ketchup_tolerance::limits;
 
     fn loft_operation(section_count: usize) -> ExactBRepOperation {
         ExactBRepOperation::Loft {
@@ -1777,9 +1774,9 @@ mod tests {
     #[test]
     fn planar_region_resource_limits_are_enforced() {
         let tolerance_mm = crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
-        assert_eq!(MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, 64);
-        assert_eq!(MAX_EXACT_BREP_REGION_HOLES, 64);
-        assert_eq!(MAX_EXACT_BREP_REGION_SEGMENTS, 4_096);
+        assert_eq!(limits::PATH_SEGMENTS, 64);
+        assert_eq!(limits::REGION_HOLES, 64);
+        assert_eq!(limits::REGION_SEGMENTS, 4_096);
 
         let hole_center = |index: usize| {
             [
@@ -1794,33 +1791,23 @@ mod tests {
                 .collect(),
         };
         assert_eq!(
-            validate_geometry(
-                &geometry_with_holes(MAX_EXACT_BREP_REGION_HOLES),
-                tolerance_mm
-            ),
-            Ok(MAX_EXACT_BREP_REGION_HOLES + 1),
+            validate_geometry(&geometry_with_holes(limits::REGION_HOLES), tolerance_mm),
+            Ok(limits::REGION_HOLES + 1),
         );
         assert_eq!(
-            validate_geometry(
-                &geometry_with_holes(MAX_EXACT_BREP_REGION_HOLES + 1),
-                tolerance_mm
-            ),
+            validate_geometry(&geometry_with_holes(limits::REGION_HOLES + 1), tolerance_mm),
             Err(ExactBRepGraphError::ResourceLimit),
         );
 
         assert_eq!(
             validate_geometry(
-                &loop_geometry(&boundary_loop(
-                    [0.0, 0.0],
-                    100.0,
-                    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS + 1,
-                )),
+                &loop_geometry(&boundary_loop([0.0, 0.0], 100.0, limits::PATH_SEGMENTS + 1)),
                 tolerance_mm
             ),
             Err(ExactBRepGraphError::ResourceLimit),
         );
 
-        let outer = || boundary_loop([0.0, 0.0], 100.0, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS);
+        let outer = || boundary_loop([0.0, 0.0], 100.0, limits::PATH_SEGMENTS);
         let boundary_holes = || {
             (0..63)
                 .map(|index| {
@@ -1828,7 +1815,7 @@ mod tests {
                         (index % 9) as f64 * 10.0 - 40.0,
                         (index / 9) as f64 * 10.0 - 30.0,
                     ];
-                    boundary_loop(center, 2.0, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS)
+                    boundary_loop(center, 2.0, limits::PATH_SEGMENTS)
                 })
                 .collect::<Vec<_>>()
         };
@@ -1838,7 +1825,7 @@ mod tests {
         };
         assert_eq!(
             validate_geometry(&accepted, tolerance_mm),
-            Ok(MAX_EXACT_BREP_REGION_SEGMENTS),
+            Ok(limits::REGION_SEGMENTS),
         );
         let mut over_limit_holes = boundary_holes();
         over_limit_holes.push(circle_loop([0.0, 45.0], 2.0));
@@ -2024,21 +2011,21 @@ mod tests {
         assert!(valid_operation_profiles(&sweep, &profiles, tolerance_mm));
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
             closed: false,
-            segments: (0..MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS)
+            segments: (0..limits::PATH_SEGMENTS)
                 .map(|index| line([index as f64, 0.0], [index as f64 + 1.0, 0.0]))
                 .collect(),
         };
         assert!(valid_operation_profiles(&sweep, &profiles, tolerance_mm));
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
             closed: false,
-            segments: (0..MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS)
+            segments: (0..limits::PATH_SEGMENTS)
                 .map(|index| cubic(index as f64 * 2.0))
                 .collect(),
         };
         assert!(valid_operation_profiles(&sweep, &profiles, tolerance_mm));
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
             closed: false,
-            segments: (0..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS)
+            segments: (0..=limits::PATH_SEGMENTS)
                 .map(|index| line([index as f64, 0.0], [index as f64 + 1.0, 0.0]))
                 .collect(),
         };

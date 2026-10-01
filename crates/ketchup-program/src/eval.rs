@@ -20,6 +20,7 @@ use crate::model::{
 use ketchup_geometry::helix::Helix;
 use ketchup_geometry::linalg::normalize_within;
 use ketchup_model::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
+use ketchup_tolerance::limits;
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
@@ -978,11 +979,11 @@ fn helix_path<'v>(helix: &Helix, heap: &'v Heap) -> anyhow::Result<Value<'v>> {
         anyhow::bail!("helix radius, pitch and turns must be positive");
     }
     let pieces = Helix::quarter_turns(helix.turns);
-    if pieces > crate::path::MAX_PATH_SEGMENTS {
+    if pieces > limits::PATH_SEGMENTS {
         anyhow::bail!(
             "a helix of {} turns needs {pieces} quarter turns; a path has at most {}",
             helix.turns,
-            crate::path::MAX_PATH_SEGMENTS
+            limits::PATH_SEGMENTS
         );
     }
     let curves = helix

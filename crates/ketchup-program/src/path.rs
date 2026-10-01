@@ -19,12 +19,12 @@ use ketchup_geometry::linalg::{
     CubicBezier, add, circumcenter, cross, dot, length, normalize_within, scale, sub,
 };
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
+use ketchup_tolerance::limits;
 use std::f64::consts::TAU;
 
 /// The exact kernel's limits: joins must be tangent to within this angle
 /// (radians) and arc geometry must agree to within this many millimetres.
 const KERNEL_EPSILON: f64 = ROUNDING;
-pub const MAX_PATH_SEGMENTS: usize = 64;
 /// Samples per curve piece for its length and for following the profile
 /// frame along it.
 const CURVE_SAMPLES: usize = 256;
@@ -320,9 +320,10 @@ pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>
 /// Checks a path the exact kernel will accept: connected, at most 64
 /// non-degenerate pieces, tangent-continuous joins.
 pub fn validate(path: &[ProgramPathSegment]) -> Result<(), String> {
-    if !(1..=MAX_PATH_SEGMENTS).contains(&path.len()) {
+    if !(1..=limits::PATH_SEGMENTS).contains(&path.len()) {
         return Err(format!(
-            "a path has 1 to {MAX_PATH_SEGMENTS} segments, got {}",
+            "a path has 1 to {} segments, got {}",
+            limits::PATH_SEGMENTS,
             path.len()
         ));
     }

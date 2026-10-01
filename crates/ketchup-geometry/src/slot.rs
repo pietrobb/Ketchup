@@ -1,9 +1,8 @@
 //! Identity of a value a rule node derives: the root rule and the path of output slots to it.
 
 use crate::id::NodeId;
+use ketchup_tolerance::limits;
 use std::fmt;
-
-pub const MAX_SLOT_PATH_SEGMENTS: usize = 64;
 
 #[derive(
     Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -45,7 +44,7 @@ impl SlotPath {
         if segments.is_empty() {
             return Err(SlotError::EmptySlotPath);
         }
-        if segments.len() > MAX_SLOT_PATH_SEGMENTS {
+        if segments.len() > limits::PATH_SEGMENTS {
             return Err(SlotError::SlotPathLimit);
         }
         Ok(Self(segments))
@@ -128,7 +127,7 @@ mod tests {
         );
         assert_eq!(SlotPath::new(Vec::new()), Err(SlotError::EmptySlotPath));
         assert_eq!(
-            SlotPath::new(vec![segment.clone(); MAX_SLOT_PATH_SEGMENTS + 1]),
+            SlotPath::new(vec![segment.clone(); limits::PATH_SEGMENTS + 1]),
             Err(SlotError::SlotPathLimit)
         );
         let path = SlotPath::new(vec![segment]).unwrap();

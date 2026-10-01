@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::dot;
+use ketchup_tolerance::limits;
 
 #[must_use]
 pub fn has_complete_manifold_adjacency(topology: &TopologyEvidence) -> bool {
@@ -186,7 +187,7 @@ pub(super) fn validate_general_revolve_profile(
             diagnostic,
         )
     };
-    if !(2..=MAX_PLANAR_LOOP_SEGMENTS).contains(&segments.len()) {
+    if !(2..=limits::PATH_SEGMENTS).contains(&segments.len()) {
         return Err(invalid(
             "Revolve profile requires 2..=64 segments".to_owned(),
         ));
@@ -265,9 +266,7 @@ pub(super) fn validate_mixed_profile(
     let line_only = segments
         .iter()
         .all(|segment| matches!(segment, PlanarProfileSegment::Line { .. }));
-    if !(2..=MAX_PLANAR_LOOP_SEGMENTS).contains(&segments.len())
-        || (line_only && segments.len() < 3)
-    {
+    if !(2..=limits::PATH_SEGMENTS).contains(&segments.len()) || (line_only && segments.len() < 3) {
         return Err(invalid(
             "Segmented profile requires 2..=64 segments; line-only polygons require at least three lines".to_owned(),
         ));

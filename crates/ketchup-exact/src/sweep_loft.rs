@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::{Mat3, Vec3};
+use ketchup_tolerance::limits;
 
 impl ExactBackend {
     pub fn sweep_planar_profile(
@@ -14,7 +15,7 @@ impl ExactBackend {
             digest_bits(&planar_segments_digest_values(path))
         );
         validate_mixed_profile(profile, operation, &input)?;
-        if !(2..=MAX_SWEEP_PATH_SEGMENTS).contains(&path.len()) {
+        if !(2..=limits::PATH_SEGMENTS).contains(&path.len()) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidProfile,
                 operation,

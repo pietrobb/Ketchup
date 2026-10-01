@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_tolerance::limits;
 
 impl ExactBackend {
     pub fn make_box(&self, spec: BoxSpec) -> Result<ExactOpOutput, GeometryError> {
@@ -505,7 +506,7 @@ impl ExactBackend {
                 "Planar region offset distance is outside the bounded envelope".to_owned(),
             ));
         }
-        if holes.is_empty() || holes.len() > MAX_PLANAR_REGION_HOLES {
+        if holes.is_empty() || holes.len() > limits::REGION_HOLES {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidProfile,
                 operation,
@@ -519,7 +520,7 @@ impl ExactBackend {
                 PlanarProfileLoop::Segments(segments) => segments.len(),
                 PlanarProfileLoop::Circle { .. } => 1,
             };
-            if loop_segment_count == 0 || loop_segment_count > MAX_PLANAR_LOOP_SEGMENTS {
+            if loop_segment_count == 0 || loop_segment_count > limits::PATH_SEGMENTS {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidProfile,
                     operation,
@@ -528,7 +529,7 @@ impl ExactBackend {
                 ));
             }
             segment_count = segment_count.saturating_add(loop_segment_count);
-            if segment_count > MAX_PLANAR_REGION_SEGMENTS {
+            if segment_count > limits::REGION_SEGMENTS {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidProfile,
                     operation,

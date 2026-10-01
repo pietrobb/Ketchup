@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_tolerance::limits;
 
 pub(super) fn canonical_bits(value: f64) -> u64 {
     if value == 0.0 {
@@ -77,7 +78,7 @@ pub(super) fn validate_geometry(
     };
     match geometry {
         ExactBRepPlanarGeometry::Boundary { closed, segments } => {
-            if segments.len() > MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS {
+            if segments.len() > limits::PATH_SEGMENTS {
                 return Err(ExactBRepGraphError::ResourceLimit);
             }
             if segments.is_empty() || *closed && segments.len() < 2 {
@@ -173,7 +174,7 @@ pub(super) fn validate_geometry(
             if holes.is_empty() {
                 return Err(ExactBRepGraphError::InvalidGraph);
             }
-            if holes.len() > MAX_EXACT_BREP_REGION_HOLES {
+            if holes.len() > limits::REGION_HOLES {
                 return Err(ExactBRepGraphError::ResourceLimit);
             }
             let segment_count = holes.iter().try_fold(
@@ -184,7 +185,7 @@ pub(super) fn validate_geometry(
                         .ok_or(ExactBRepGraphError::ResourceLimit)
                 },
             )?;
-            if segment_count > MAX_EXACT_BREP_REGION_SEGMENTS {
+            if segment_count > limits::REGION_SEGMENTS {
                 return Err(ExactBRepGraphError::ResourceLimit);
             }
             Ok(segment_count)
@@ -442,11 +443,7 @@ pub(super) fn valid_operation_profiles(
                             ExactBRepPlanarGeometry::Boundary {
                                 closed: true,
                                 segments,
-                            } if (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS)
-                                .contains(&segments.len()) =>
-                            {
-                                0
-                            }
+                            } if (2..=limits::PATH_SEGMENTS).contains(&segments.len()) => 0,
                             ExactBRepPlanarGeometry::Circle { .. } => 0,
                             ExactBRepPlanarGeometry::Region { holes, .. } => holes.len(),
                             _ => return false,

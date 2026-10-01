@@ -1,6 +1,3 @@
-use ketchup_exact::{
-    MAX_PLANAR_LOOP_SEGMENTS, MAX_PLANAR_REGION_HOLES, MAX_PLANAR_REGION_SEGMENTS,
-};
 use ketchup_geometry::sketch::{CutStart, PadOperation, PadProfile};
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
@@ -20,8 +17,7 @@ use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepGraphError, ExactBRepNodeId, ExactBRepOperation,
     ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfileId,
     ExactBRepSpatialPathSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
-    MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
-    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
+    MAX_EXACT_BREP_GRAPH_SEGMENTS,
 };
 use ketchup_model::exact_product::ExactFaceRole;
 use ketchup_model::persistence;
@@ -30,6 +26,7 @@ use ketchup_model::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, TolerancePolicy};
 use ketchup_model::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
+use ketchup_tolerance::limits;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const BASE_PROFILE: FeatureId = FeatureId(10);
@@ -854,18 +851,12 @@ fn canonical_cycle_is_rejected_without_changing_the_valid_graph() {
 #[test]
 fn byte_and_segment_resource_limits_fail_without_mutating_the_document() {
     assert_eq!(
-        MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
-        MAX_PLANAR_LOOP_SEGMENTS
-    );
-    assert_eq!(MAX_EXACT_BREP_REGION_HOLES, MAX_PLANAR_REGION_HOLES);
-    assert_eq!(MAX_EXACT_BREP_REGION_SEGMENTS, MAX_PLANAR_REGION_SEGMENTS);
-    assert_eq!(
         ExactBRepGraph::from_bytes(&vec![0; MAX_EXACT_BREP_GRAPH_BYTES + 1]),
         Err(ExactBRepGraphError::ResourceLimit)
     );
 
     let mut document = DocumentStore::new();
-    let segment_count_per_profile = MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS;
+    let segment_count_per_profile = limits::PATH_SEGMENTS;
     let profile_count = MAX_EXACT_BREP_GRAPH_SEGMENTS / segment_count_per_profile + 1;
     let mut commands = vec![CanonicalCommand::CreateDefinition {
         id: DEFINITION,

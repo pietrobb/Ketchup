@@ -32,10 +32,6 @@ const TOLERANCE_PROFILE: &str = "r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel
 const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
 const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
-const MAX_SWEEP_PATH_SEGMENTS: usize = 64;
-pub const MAX_PLANAR_LOOP_SEGMENTS: usize = 64;
-pub const MAX_PLANAR_REGION_HOLES: usize = 64;
-pub const MAX_PLANAR_REGION_SEGMENTS: usize = 4_096;
 
 #[must_use]
 pub const fn backend_fingerprint() -> &'static str {

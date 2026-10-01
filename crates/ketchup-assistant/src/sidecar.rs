@@ -10,6 +10,7 @@ use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::tolerance::{
     APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
 };
+use ketchup_tolerance::limits;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -40,8 +41,6 @@ const MAX_ASSISTANT_REJECTION_TARGET_BYTES: usize = 256;
 const MAX_ASSISTANT_REJECTION_TEXT_BYTES: usize = 2_048;
 const MAX_ASSISTANT_REJECTION_BYTES: usize = 8 * 1_024;
 const MAX_ASSISTANT_HELIX_TURNS: f64 = 16.0;
-const MAX_ASSISTANT_HELIX_SEGMENTS: usize = 64;
-const MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS: usize = 64;
 const MAX_ASSISTANT_PROFILE_COPIES: usize = 16;
 const MAX_ASSISTANT_INSTANCE_PATH_STEPS: usize = 256;
 // Four quarter-ellipse cubics using kappa have peak normalized radial error < 0.000273.
@@ -314,7 +313,7 @@ pub fn validated_spatial_path_segments(
     segments: &[AssistantSpatialPathSegment],
     tolerance_mm: f64,
 ) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
-    if !(1..=MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS).contains(&segments.len()) {
+    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len()) {
         return Err(AssistantRequestInvalid::invalid(
             "spatial path segment count",
         ));
@@ -454,7 +453,7 @@ impl AssistantHelixParameters {
         {
             return Err(AssistantRequestInvalid::invalid("helix parameter set"));
         }
-        if !(1..=MAX_ASSISTANT_HELIX_SEGMENTS).contains(&Helix::quarter_turns(self.turns)) {
+        if !(1..=limits::PATH_SEGMENTS).contains(&Helix::quarter_turns(self.turns)) {
             return Err(AssistantRequestInvalid::invalid("helix segment count"));
         }
         Ok(())

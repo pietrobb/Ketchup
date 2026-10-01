@@ -8,7 +8,7 @@ use crate::document::{
 };
 use crate::exact_brep_graph::{
     ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment, MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
+    ExactBRepPlanarSegment,
 };
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::import::StepImportMesh;
@@ -24,6 +24,7 @@ use crate::topology::{
 use ketchup_geometry::sketch::{
     SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
 };
+use ketchup_tolerance::limits;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -2795,7 +2796,7 @@ pub struct ExactPlanarOffsetRegion {
 
 impl ExactPlanarOffsetRegion {
     fn from_solved(region: &SolvedSketchRegion) -> Option<Self> {
-        if region.holes.is_empty() || region.holes.len() > MAX_EXACT_BREP_REGION_HOLES {
+        if region.holes.is_empty() || region.holes.len() > limits::REGION_HOLES {
             return None;
         }
         let outer = exact_planar_offset_loop_from_solved(&region.outer)?;
@@ -2808,17 +2809,17 @@ impl ExactPlanarOffsetRegion {
             .chain(&holes)
             .map(planar_offset_loop_segment_count)
             .sum::<usize>();
-        (segment_count <= MAX_EXACT_BREP_REGION_SEGMENTS).then_some(Self { outer, holes })
+        (segment_count <= limits::REGION_SEGMENTS).then_some(Self { outer, holes })
     }
 
     pub(crate) fn has_valid_encoding(&self, distance_mm: f64) -> bool {
         !self.holes.is_empty()
-            && self.holes.len() <= MAX_EXACT_BREP_REGION_HOLES
+            && self.holes.len() <= limits::REGION_HOLES
             && std::iter::once(&self.outer)
                 .chain(&self.holes)
                 .map(planar_offset_loop_segment_count)
                 .sum::<usize>()
-                <= MAX_EXACT_BREP_REGION_SEGMENTS
+                <= limits::REGION_SEGMENTS
             && planar_offset_loop_is_valid(&self.outer, distance_mm)
             && self
                 .holes

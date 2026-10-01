@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_geometry::linalg::normalize_within;
+use ketchup_tolerance::limits;
 
 pub(super) const MAX_STABLE_SUBSHAPE_ROLE_BYTES: usize = 128;
 
@@ -1962,10 +1963,10 @@ pub fn valid_sketch_sweep_profile(profile: &SketchSpec) -> bool {
     };
     match &region.outer {
         SolvedSketchRegionProfile::Polyline(points) => {
-            (3..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&points.len())
+            (3..=limits::PATH_SEGMENTS).contains(&points.len())
         }
         SolvedSketchRegionProfile::Boundary(edges) => {
-            (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&edges.len())
+            (2..=limits::PATH_SEGMENTS).contains(&edges.len())
         }
         SolvedSketchRegionProfile::Circle { .. } => true,
     }
@@ -2058,7 +2059,7 @@ pub(super) fn valid_sketch_sweep_inputs_with_frames(
 }
 
 pub fn is_valid_sweep_path(segments: &[ProfileSegment], tolerance_mm: f64) -> bool {
-    if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len())
+    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len())
         || segments.len() == 1 && !matches!(segments[0], ProfileSegment::Line { .. })
     {
         return false;
@@ -2253,7 +2254,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm
         }
     }
 
-    if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len()) {
+    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len()) {
         return false;
     }
     let Some(metrics) = segments
