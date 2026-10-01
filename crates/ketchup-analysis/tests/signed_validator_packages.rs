@@ -90,7 +90,7 @@ fn invocation(store: &DocumentStore, descriptor: &ValidatorDescriptor) -> Valida
 }
 
 #[test]
-fn m7c_discovers_installs_and_monotonically_updates_a_signed_validator() {
+fn discovers_installs_and_monotonically_updates_a_signed_validator() {
     let key = signing_key(7);
     let mut host = trusted_host(&key);
     let first_artifact = b"bounded validator artifact release one".to_vec();
@@ -132,7 +132,7 @@ fn m7c_discovers_installs_and_monotonically_updates_a_signed_validator() {
 }
 
 #[test]
-fn m7c_rejects_untrusted_signatures_and_artifact_tampering() {
+fn rejects_untrusted_signatures_and_artifact_tampering() {
     let trusted_key = signing_key(11);
     let untrusted_key = signing_key(12);
     let artifact = b"authentic artifact".to_vec();
@@ -166,7 +166,7 @@ fn m7c_rejects_untrusted_signatures_and_artifact_tampering() {
 }
 
 #[test]
-fn m7c_revocation_and_external_paid_license_state_fail_closed() {
+fn revocation_and_external_paid_license_state_fail_closed() {
     let key = signing_key(21);
     let artifact = b"paid validator artifact".to_vec();
     let mut host = trusted_host(&key);
@@ -203,7 +203,7 @@ fn m7c_revocation_and_external_paid_license_state_fail_closed() {
 }
 
 #[test]
-fn m7c_binds_only_the_authenticated_descriptor_and_never_mutates_the_document() {
+fn binds_only_the_authenticated_descriptor_and_never_mutates_the_document() {
     let key = signing_key(25);
     let artifact = b"descriptor binding fixture".to_vec();
     let mut host = trusted_host(&key);
@@ -247,7 +247,7 @@ fn m7c_binds_only_the_authenticated_descriptor_and_never_mutates_the_document() 
 }
 
 #[test]
-fn m7c_stale_invocation_is_rejected_before_runtime() {
+fn stale_invocation_is_rejected_before_runtime() {
     let key = signing_key(26);
     let artifact = b"stale invocation fixture".to_vec();
     let mut host = trusted_host(&key);
@@ -282,7 +282,7 @@ fn m7c_stale_invocation_is_rejected_before_runtime() {
 }
 
 #[test]
-fn m7c_unlicensed_package_resolves_to_structured_unavailable() {
+fn unlicensed_package_resolves_to_structured_unavailable() {
     let key = signing_key(27);
     let artifact = b"unlicensed resolution fixture".to_vec();
     let mut host = trusted_host(&key);
@@ -318,7 +318,7 @@ fn m7c_unlicensed_package_resolves_to_structured_unavailable() {
 }
 
 #[test]
-fn m7c_publisher_revocation_invalidates_an_already_installed_release() {
+fn publisher_revocation_invalidates_an_already_installed_release() {
     let key = signing_key(31);
     let artifact = b"publisher revocation fixture".to_vec();
     let mut host = trusted_host(&key);

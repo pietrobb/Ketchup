@@ -2,7 +2,7 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod assistant_sidecar;
-mod gate_d;
+mod intent_review_and_commit;
 mod workplane_frame_schema;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

@@ -19,7 +19,7 @@ def test_counts_domain_words_in_production_source_only(tmp_path):
     write(
         tmp_path,
         "crates/a/src/lib.rs",
-        "// a dowel, a Hinge cup, two shelves, one shelf, the furniture\n"
+        "// a dowel, a Hinge cup, two shelves, one shelf, the furniture, its grain\n"
         "#[cfg(test)]\nmod tests {\n    const SHELF: &str = \"shelf\";\n}\n"
         "fn after() {} // a drawer\n",
     )
@@ -32,6 +32,7 @@ def test_counts_domain_words_in_production_source_only(tmp_path):
         "crates/a/src/lib.rs:shelves": 1,
         "crates/a/src/lib.rs:shelf": 1,
         "crates/a/src/lib.rs:furniture": 1,
+        "crates/a/src/lib.rs:grain": 1,
         "crates/a/src/lib.rs:drawer": 1,
     }
 

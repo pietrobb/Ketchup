@@ -156,7 +156,7 @@ fn high_risk_proposal(
 }
 
 #[test]
-fn gate_d_rule_intent_exposes_authoritative_review_and_commits_one_verified_batch() {
+fn rule_intent_exposes_authoritative_review_and_commits_one_verified_batch() {
     let mut store = seed();
     let undo_before = store.visible_undo_steps();
     let proposal = propose_intent(
@@ -209,7 +209,7 @@ fn gate_d_rule_intent_exposes_authoritative_review_and_commits_one_verified_batc
 }
 
 #[test]
-fn gate_d_evaluator_rename_is_observational_and_commits_exact_text_once() {
+fn evaluator_rename_is_observational_and_commits_exact_text_once() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -256,7 +256,7 @@ fn gate_d_evaluator_rename_is_observational_and_commits_exact_text_once() {
 }
 
 #[test]
-fn gate_d_evaluator_rename_rejects_denied_empty_missing_and_stale_targets() {
+fn evaluator_rename_rejects_denied_empty_missing_and_stale_targets() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -325,7 +325,7 @@ fn gate_d_evaluator_rename_rejects_denied_empty_missing_and_stale_targets() {
 }
 
 #[test]
-fn gate_d_evaluator_expression_is_observational_and_commits_exact_text_once() {
+fn evaluator_expression_is_observational_and_commits_exact_text_once() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -398,7 +398,7 @@ fn gate_d_evaluator_expression_is_observational_and_commits_exact_text_once() {
 }
 
 #[test]
-fn gate_d_evaluator_expression_rejects_denied_invalid_wrong_kind_missing_and_stale() {
+fn evaluator_expression_rejects_denied_invalid_wrong_kind_missing_and_stale() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -484,7 +484,7 @@ fn gate_d_evaluator_expression_rejects_denied_invalid_wrong_kind_missing_and_sta
 }
 
 #[test]
-fn gate_d_profile_points_are_observational_typed_and_undoable() {
+fn profile_points_are_observational_typed_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -537,7 +537,7 @@ fn gate_d_profile_points_are_observational_typed_and_undoable() {
 }
 
 #[test]
-fn gate_d_profile_points_reject_denied_invalid_wrong_kind_missing_and_stale() {
+fn profile_points_reject_denied_invalid_wrong_kind_missing_and_stale() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     let requested = vec![[0.0, 0.0], [12.0, 0.0], [0.0, 8.0]];
@@ -606,7 +606,7 @@ fn gate_d_profile_points_reject_denied_invalid_wrong_kind_missing_and_stale() {
 }
 
 #[test]
-fn gate_d_feature_intent_uses_the_same_safe_path_and_is_not_replayable() {
+fn feature_intent_uses_the_same_safe_path_and_is_not_replayable() {
     let mut store = seed();
     let proposal = propose_intent(
         &store,
@@ -641,7 +641,7 @@ fn gate_d_feature_intent_uses_the_same_safe_path_and_is_not_replayable() {
 }
 
 #[test]
-fn gate_d_definition_rename_is_observational_and_commits_exact_text_once() {
+fn definition_rename_is_observational_and_commits_exact_text_once() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -688,7 +688,7 @@ fn gate_d_definition_rename_is_observational_and_commits_exact_text_once() {
 }
 
 #[test]
-fn gate_d_occurrence_visibility_intent_is_observational_then_commits_one_verified_batch() {
+fn occurrence_visibility_intent_is_observational_then_commits_one_verified_batch() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -735,7 +735,7 @@ fn gate_d_occurrence_visibility_intent_is_observational_then_commits_one_verifie
 }
 
 #[test]
-fn gate_d_tag_visibility_is_observational_and_commits_one_verified_batch() {
+fn tag_visibility_is_observational_and_commits_one_verified_batch() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -776,7 +776,7 @@ fn gate_d_tag_visibility_is_observational_and_commits_one_verified_batch() {
 }
 
 #[test]
-fn gate_d_occurrence_tag_is_observational_and_commits_one_verified_batch() {
+fn occurrence_tag_is_observational_and_commits_one_verified_batch() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -834,7 +834,7 @@ fn gate_d_occurrence_tag_is_observational_and_commits_one_verified_batch() {
 }
 
 #[test]
-fn gate_d_occurrence_repoint_is_observational_and_commits_one_verified_batch() {
+fn occurrence_repoint_is_observational_and_commits_one_verified_batch() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -903,7 +903,7 @@ fn gate_d_occurrence_repoint_is_observational_and_commits_one_verified_batch() {
 }
 
 #[test]
-fn gate_d_occurrence_repoint_rejects_denied_missing_and_stale_dependencies() {
+fn occurrence_repoint_rejects_denied_missing_and_stale_dependencies() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -976,7 +976,7 @@ fn gate_d_occurrence_repoint_rejects_denied_missing_and_stale_dependencies() {
 }
 
 #[test]
-fn gate_d_definition_rename_rejects_empty_missing_and_stale_targets() {
+fn definition_rename_rejects_empty_missing_and_stale_targets() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -1045,7 +1045,7 @@ fn gate_d_definition_rename_rejects_empty_missing_and_stale_targets() {
 }
 
 #[test]
-fn gate_d_tag_visibility_rejects_denied_missing_and_stale_targets() {
+fn tag_visibility_rejects_denied_missing_and_stale_targets() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -1108,7 +1108,7 @@ fn gate_d_tag_visibility_rejects_denied_missing_and_stale_targets() {
 }
 
 #[test]
-fn gate_d_occurrence_tag_rejects_denied_missing_and_stale_targets() {
+fn occurrence_tag_rejects_denied_missing_and_stale_targets() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -1174,7 +1174,7 @@ fn gate_d_occurrence_tag_rejects_denied_missing_and_stale_targets() {
 }
 
 #[test]
-fn gate_d_occurrence_visibility_intent_rejects_missing_or_stale_targets() {
+fn occurrence_visibility_intent_rejects_missing_or_stale_targets() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert!(matches!(
@@ -1218,7 +1218,7 @@ fn gate_d_occurrence_visibility_intent_rejects_missing_or_stale_targets() {
 }
 
 #[test]
-fn gate_d_occurrence_parent_is_typed_observational_and_undoable() {
+fn occurrence_parent_is_typed_observational_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -1323,7 +1323,7 @@ fn gate_d_occurrence_parent_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_occurrence_parent_rejects_denied_missing_and_stale_dependencies() {
+fn occurrence_parent_rejects_denied_missing_and_stale_dependencies() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -1392,7 +1392,7 @@ fn gate_d_occurrence_parent_rejects_denied_missing_and_stale_dependencies() {
 }
 
 #[test]
-fn gate_d_group_parent_is_typed_observational_and_undoable() {
+fn group_parent_is_typed_observational_and_undoable() {
     let mut store = seed();
     let parent = GroupId(17);
     store
@@ -1492,7 +1492,7 @@ fn gate_d_group_parent_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_group_parent_rejects_denied_missing_cycle_and_stale_ancestry() {
+fn group_parent_rejects_denied_missing_cycle_and_stale_ancestry() {
     let mut store = seed();
     let parent = GroupId(17);
     let ancestor = GroupId(18);
@@ -1585,7 +1585,7 @@ fn gate_d_group_parent_rejects_denied_missing_cycle_and_stale_ancestry() {
 }
 
 #[test]
-fn gate_d_group_translation_is_observational_and_commits_exact_transform_once() {
+fn group_translation_is_observational_and_commits_exact_transform_once() {
     let mut store = seed();
     let initial = Transform::from_matrix([
         0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 3.0, 0.0, 0.0, 0.0, 1.0,
@@ -1648,7 +1648,7 @@ fn gate_d_group_translation_is_observational_and_commits_exact_transform_once() 
 }
 
 #[test]
-fn gate_d_group_translation_rejects_denied_invalid_missing_and_stale_targets() {
+fn group_translation_rejects_denied_invalid_missing_and_stale_targets() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -1731,7 +1731,7 @@ fn gate_d_group_translation_rejects_denied_invalid_missing_and_stale_targets() {
 }
 
 #[test]
-fn gate_d_collection_membership_is_typed_observational_and_undoable() {
+fn collection_membership_is_typed_observational_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -1805,7 +1805,7 @@ fn gate_d_collection_membership_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_occurrence_translation_is_observational_and_commits_exact_transform_once() {
+fn occurrence_translation_is_observational_and_commits_exact_transform_once() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -1852,7 +1852,7 @@ fn gate_d_occurrence_translation_is_observational_and_commits_exact_transform_on
 }
 
 #[test]
-fn gate_d_collection_membership_rejects_denied_noncanonical_missing_and_stale_inputs() {
+fn collection_membership_rejects_denied_noncanonical_missing_and_stale_inputs() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -1930,7 +1930,7 @@ fn gate_d_collection_membership_rejects_denied_noncanonical_missing_and_stale_in
 }
 
 #[test]
-fn gate_d_occurrence_translation_rejects_invalid_missing_and_stale_inputs() {
+fn occurrence_translation_rejects_invalid_missing_and_stale_inputs() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert!(matches!(
@@ -1990,7 +1990,7 @@ fn gate_d_occurrence_translation_rejects_invalid_missing_and_stale_inputs() {
 }
 
 #[test]
-fn gate_d_revalidates_unrelated_edits_but_rejects_relevant_changes() {
+fn revalidates_unrelated_edits_but_rejects_relevant_changes() {
     let mut store = seed();
     let proposal = propose_intent(
         &store,
@@ -2033,7 +2033,7 @@ fn gate_d_revalidates_unrelated_edits_but_rejects_relevant_changes() {
 }
 
 #[test]
-fn gate_d_capability_value_and_budget_failures_leave_the_document_unchanged() {
+fn capability_value_and_budget_failures_leave_the_document_unchanged() {
     let store = seed();
     let digest = store.current().canonical_digest();
     let revisions = store.revision_count();
@@ -2107,7 +2107,7 @@ fn gate_d_capability_value_and_budget_failures_leave_the_document_unchanged() {
 }
 
 #[test]
-fn gate_d_invalid_target_and_cross_document_proposal_fail_closed() {
+fn invalid_target_and_cross_document_proposal_fail_closed() {
     let store = seed();
     assert!(matches!(
         propose_intent(
@@ -2138,7 +2138,7 @@ fn gate_d_invalid_target_and_cross_document_proposal_fail_closed() {
 }
 
 #[test]
-fn gate_d_high_risk_commit_requires_distinct_authenticated_human_and_consumes_token_once() {
+fn high_risk_commit_requires_distinct_authenticated_human_and_consumes_token_once() {
     let mut store = seed();
     let authority = TrustedConfirmationSurface::new([7; 32], 1).unwrap();
     store
@@ -2185,7 +2185,7 @@ fn gate_d_high_risk_commit_requires_distinct_authenticated_human_and_consumes_to
 }
 
 #[test]
-fn gate_d_high_risk_token_fails_closed_on_scope_signature_expiry_and_policy_change() {
+fn high_risk_token_fails_closed_on_scope_signature_expiry_and_policy_change() {
     let mut store = seed();
     let authority = TrustedConfirmationSurface::new([11; 32], 4).unwrap();
     store
@@ -2242,7 +2242,7 @@ fn gate_d_high_risk_token_fails_closed_on_scope_signature_expiry_and_policy_chan
 }
 
 #[test]
-fn gate_d_high_risk_preparation_and_issuance_reject_ambiguous_identity_or_scope() {
+fn high_risk_preparation_and_issuance_reject_ambiguous_identity_or_scope() {
     assert_eq!(
         HighRiskScope::new(
             HighRiskClass::ExternalDisclosure,
@@ -2301,7 +2301,7 @@ fn gate_d_high_risk_preparation_and_issuance_reject_ambiguous_identity_or_scope(
 }
 
 #[test]
-fn gate_d_side_effect_receipt_is_payload_bound_one_use_and_non_canonical() {
+fn side_effect_receipt_is_payload_bound_one_use_and_non_canonical() {
     let mut store = seed();
     let authority = TrustedConfirmationSurface::new([17; 32], 3).unwrap();
     store
@@ -2349,7 +2349,7 @@ fn gate_d_side_effect_receipt_is_payload_bound_one_use_and_non_canonical() {
 }
 
 #[test]
-fn gate_d_side_effect_authorization_rejects_payload_substitution_and_stale_snapshot() {
+fn side_effect_authorization_rejects_payload_substitution_and_stale_snapshot() {
     let mut store = seed();
     let authority = TrustedConfirmationSurface::new([19; 32], 2).unwrap();
     store
@@ -2401,7 +2401,7 @@ fn gate_d_side_effect_authorization_rejects_payload_substitution_and_stale_snaps
 }
 
 #[test]
-fn gate_d_rule_outputs_are_typed_observational_and_undoable() {
+fn rule_outputs_are_typed_observational_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -2453,7 +2453,7 @@ fn gate_d_rule_outputs_are_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_rule_outputs_reject_denied_invalid_wrong_kind_missing_and_stale_dependencies() {
+fn rule_outputs_reject_denied_invalid_wrong_kind_missing_and_stale_dependencies() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -2531,7 +2531,7 @@ fn gate_d_rule_outputs_reject_denied_invalid_wrong_kind_missing_and_stale_depend
 }
 
 #[test]
-fn gate_d_create_tag_is_typed_observational_and_undoable() {
+fn create_tag_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = TagId(24);
     let revision_before = store.current().revision_id();
@@ -2584,7 +2584,7 @@ fn gate_d_create_tag_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_tag_rejects_denied_invalid_existing_and_stale_id() {
+fn create_tag_rejects_denied_invalid_existing_and_stale_id() {
     let mut store = seed();
     let target = TagId(24);
     let digest_before = store.current().canonical_digest();
@@ -2660,7 +2660,7 @@ fn gate_d_create_tag_rejects_denied_invalid_existing_and_stale_id() {
 }
 
 #[test]
-fn gate_d_delete_tag_is_typed_observational_and_undoable() {
+fn delete_tag_is_typed_observational_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -2708,7 +2708,7 @@ fn gate_d_delete_tag_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
+fn delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -2810,7 +2810,7 @@ fn gate_d_delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
 }
 
 #[test]
-fn gate_d_create_collection_is_typed_observational_and_undoable() {
+fn create_collection_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = CollectionId(24);
     let revision_before = store.current().revision_id();
@@ -2859,7 +2859,7 @@ fn gate_d_create_collection_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_collection_rejects_denied_invalid_existing_and_stale_id() {
+fn create_collection_rejects_denied_invalid_existing_and_stale_id() {
     let mut store = seed();
     let target = CollectionId(24);
     let digest_before = store.current().canonical_digest();
@@ -2933,7 +2933,7 @@ fn gate_d_create_collection_rejects_denied_invalid_existing_and_stale_id() {
 }
 
 #[test]
-fn gate_d_delete_collection_is_typed_observational_and_undoable() {
+fn delete_collection_is_typed_observational_and_undoable() {
     let mut store = seed();
     store
         .apply_batch(&CommandBatch::new(vec![
@@ -2992,7 +2992,7 @@ fn gate_d_delete_collection_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_collection_rejects_denied_missing_and_stale_membership() {
+fn delete_collection_rejects_denied_missing_and_stale_membership() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -3054,7 +3054,7 @@ fn gate_d_delete_collection_rejects_denied_missing_and_stale_membership() {
 }
 
 #[test]
-fn gate_d_delete_group_is_typed_observational_and_undoable() {
+fn delete_group_is_typed_observational_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -3104,7 +3104,7 @@ fn gate_d_delete_group_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_group_rejects_denied_missing_nonempty_and_stale_children() {
+fn delete_group_rejects_denied_missing_nonempty_and_stale_children() {
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -3179,7 +3179,7 @@ fn gate_d_delete_group_rejects_denied_missing_nonempty_and_stale_children() {
 }
 
 #[test]
-fn gate_d_create_definition_is_typed_observational_and_undoable() {
+fn create_definition_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = DefinitionId(24);
     let revision_before = store.current().revision_id();
@@ -3228,7 +3228,7 @@ fn gate_d_create_definition_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_definition_rejects_denied_invalid_existing_and_stale_id() {
+fn create_definition_rejects_denied_invalid_existing_and_stale_id() {
     let mut store = seed();
     let target = DefinitionId(24);
     let digest_before = store.current().canonical_digest();
@@ -3302,7 +3302,7 @@ fn gate_d_create_definition_rejects_denied_invalid_existing_and_stale_id() {
 }
 
 #[test]
-fn gate_d_create_group_is_typed_observational_and_undoable() {
+fn create_group_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = GroupId(24);
     let revision_before = store.current().revision_id();
@@ -3356,7 +3356,7 @@ fn gate_d_create_group_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_group_rejects_denied_invalid_existing_and_stale_id() {
+fn create_group_rejects_denied_invalid_existing_and_stale_id() {
     let mut store = seed();
     let target = GroupId(24);
     let digest_before = store.current().canonical_digest();
@@ -3428,7 +3428,7 @@ fn gate_d_create_group_rejects_denied_invalid_existing_and_stale_id() {
 }
 
 #[test]
-fn gate_d_create_occurrence_is_typed_observational_and_undoable() {
+fn create_occurrence_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = OccurrenceId(24);
     let revision_before = store.current().revision_id();
@@ -3494,7 +3494,7 @@ fn gate_d_create_occurrence_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_occurrence_rejects_denied_invalid_existing_dependency_and_stale_id() {
+fn create_occurrence_rejects_denied_invalid_existing_dependency_and_stale_id() {
     let mut store = seed();
     let target = OccurrenceId(24);
     let digest_before = store.current().canonical_digest();
@@ -3583,7 +3583,7 @@ fn gate_d_create_occurrence_rejects_denied_invalid_existing_dependency_and_stale
 }
 
 #[test]
-fn gate_d_create_profile_feature_is_typed_observational_and_undoable() {
+fn create_profile_feature_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = FeatureId(24);
     let points_mm = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
@@ -3681,7 +3681,7 @@ fn gate_d_create_profile_feature_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_profile_feature_rejects_denied_invalid_existing_dependency_and_stale_id() {
+fn create_profile_feature_rejects_denied_invalid_existing_dependency_and_stale_id() {
     let mut store = seed();
     let target = FeatureId(24);
     let valid_points = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
@@ -3808,7 +3808,7 @@ fn gate_d_create_profile_feature_rejects_denied_invalid_existing_dependency_and_
 }
 
 #[test]
-fn gate_d_delete_occurrence_is_typed_observational_and_undoable() {
+fn delete_occurrence_is_typed_observational_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -3864,7 +3864,7 @@ fn gate_d_delete_occurrence_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_occurrence_rejects_denied_missing_collected_and_stale_collection() {
+fn delete_occurrence_rejects_denied_missing_collected_and_stale_collection() {
     let store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -3950,7 +3950,7 @@ fn gate_d_delete_occurrence_rejects_denied_missing_collected_and_stale_collectio
 }
 
 #[test]
-fn gate_d_delete_profile_feature_is_typed_observational_and_undoable() {
+fn delete_profile_feature_is_typed_observational_and_undoable() {
     let target = FeatureId(24);
     let points_mm = vec![[0.0, 0.0], [12.0, 0.0], [12.0, 8.0]];
     let mut store = seed();
@@ -4043,7 +4043,7 @@ fn gate_d_delete_profile_feature_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_profile_feature_rejects_denied_missing_used_and_stale_definition() {
+fn delete_profile_feature_rejects_denied_missing_used_and_stale_definition() {
     let store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -4131,7 +4131,7 @@ fn gate_d_delete_profile_feature_rejects_denied_missing_used_and_stale_definitio
 }
 
 #[test]
-fn gate_d_create_evaluator_input_is_typed_observational_and_undoable() {
+fn create_evaluator_input_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = NodeId(24);
     let revision_before = store.current().revision_id();
@@ -4189,7 +4189,7 @@ fn gate_d_create_evaluator_input_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_evaluator_input_rejects_denied_invalid_existing_and_stale_id() {
+fn create_evaluator_input_rejects_denied_invalid_existing_and_stale_id() {
     let mut store = seed();
     let target = NodeId(24);
     let digest_before = store.current().canonical_digest();
@@ -4281,7 +4281,7 @@ fn gate_d_create_evaluator_input_rejects_denied_invalid_existing_and_stale_id() 
 }
 
 #[test]
-fn gate_d_create_evaluator_expression_is_typed_observational_and_undoable() {
+fn create_evaluator_expression_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = NodeId(24);
     let revision_before = store.current().revision_id();
@@ -4357,7 +4357,7 @@ fn gate_d_create_evaluator_expression_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_evaluator_expression_rejects_denied_invalid_and_stale_dependency() {
+fn create_evaluator_expression_rejects_denied_invalid_and_stale_dependency() {
     let mut store = seed();
     let target = NodeId(24);
     let digest_before = store.current().canonical_digest();
@@ -4443,7 +4443,7 @@ fn gate_d_create_evaluator_expression_rejects_denied_invalid_and_stale_dependenc
 }
 
 #[test]
-fn gate_d_create_rule_override_is_typed_observational_and_undoable() {
+fn create_rule_override_is_typed_observational_and_undoable() {
     let mut store = seed();
     let rule = NodeId(30);
     let target = 31;
@@ -4521,7 +4521,7 @@ fn gate_d_create_rule_override_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_rule_override_rejects_denied_invalid_existing_and_stale_rule() {
+fn create_rule_override_rejects_denied_invalid_existing_and_stale_rule() {
     let mut store = seed();
     let rule = NodeId(30);
     store
@@ -4645,7 +4645,7 @@ fn gate_d_create_rule_override_rejects_denied_invalid_existing_and_stale_rule() 
 }
 
 #[test]
-fn gate_d_delete_rule_override_is_typed_observational_and_undoable() {
+fn delete_rule_override_is_typed_observational_and_undoable() {
     let mut store = seed();
     let rule = NodeId(30);
     let target = 31;
@@ -4733,7 +4733,7 @@ fn gate_d_delete_rule_override_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_rule_override_rejects_denied_missing_and_stale_override() {
+fn delete_rule_override_rejects_denied_missing_and_stale_override() {
     let mut store = seed();
     let rule = NodeId(30);
     let target = 31;
@@ -4818,7 +4818,7 @@ fn gate_d_delete_rule_override_rejects_denied_missing_and_stale_override() {
 }
 
 #[test]
-fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable() {
+fn create_feature_parameter_binding_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
@@ -4899,7 +4899,7 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
 }
 
 #[test]
-fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_stale() {
+fn create_feature_parameter_binding_rejects_denied_invalid_occupied_and_stale() {
     let mut store = seed();
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
@@ -5008,7 +5008,7 @@ fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_s
 }
 
 #[test]
-fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable() {
+fn delete_feature_parameter_binding_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
@@ -5089,7 +5089,7 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
 }
 
 #[test]
-fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
+fn delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
     let mut store = seed();
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
@@ -5217,7 +5217,7 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
 }
 
 #[test]
-fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
+fn recompute_feature_parameter_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
@@ -5293,7 +5293,7 @@ fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale() {
+fn recompute_feature_parameter_rejects_denied_missing_multiple_and_stale() {
     let mut store = seed();
     let target =
         FeatureParameterTarget::new(EXTRUSION, "extent.distance", ParameterValueType::Length)
@@ -5382,7 +5382,7 @@ fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale(
 }
 
 #[test]
-fn gate_d_create_evaluator_rule_is_typed_observational_and_undoable() {
+fn create_evaluator_rule_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = NodeId(24);
     let revision_before = store.current().revision_id();
@@ -5459,7 +5459,7 @@ fn gate_d_create_evaluator_rule_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_evaluator_rule_rejects_denied_invalid_and_stale_dependency() {
+fn create_evaluator_rule_rejects_denied_invalid_and_stale_dependency() {
     let mut store = seed();
     let target = NodeId(24);
     let digest_before = store.current().canonical_digest();
@@ -5545,7 +5545,7 @@ fn gate_d_create_evaluator_rule_rejects_denied_invalid_and_stale_dependency() {
 }
 
 #[test]
-fn gate_d_delete_definition_is_typed_observational_and_undoable() {
+fn delete_definition_is_typed_observational_and_undoable() {
     let mut store = seed();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -5609,7 +5609,7 @@ fn gate_d_delete_definition_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_definition_rejects_denied_missing_nonempty_used_and_stale_users() {
+fn delete_definition_rejects_denied_missing_nonempty_used_and_stale_users() {
     let store = seed();
     let digest_before = store.current().canonical_digest();
     assert_eq!(
@@ -5712,7 +5712,7 @@ fn gate_d_delete_definition_rejects_denied_missing_nonempty_used_and_stale_users
 }
 
 #[test]
-fn gate_d_clone_profile_definition_is_typed_observational_and_undoable() {
+fn clone_profile_definition_is_typed_observational_and_undoable() {
     let mut store = seed();
     let source_feature = FeatureId(90);
     let occurrence = OccurrenceId(91);
@@ -5876,7 +5876,7 @@ fn gate_d_clone_profile_definition_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_clone_profile_definition_rejects_denied_unsupported_stale_and_claimed() {
+fn clone_profile_definition_rejects_denied_unsupported_stale_and_claimed() {
     let seed_clone = || {
         let mut store = seed();
         store
@@ -6025,7 +6025,7 @@ fn gate_d_clone_profile_definition_rejects_denied_unsupported_stale_and_claimed(
 }
 
 #[test]
-fn gate_d_convert_empty_group_is_typed_observational_and_undoable() {
+fn convert_empty_group_is_typed_observational_and_undoable() {
     let mut store = seed();
     let new_definition = DefinitionId(90);
     let new_occurrence = OccurrenceId(91);
@@ -6126,7 +6126,7 @@ fn gate_d_convert_empty_group_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_convert_empty_group_rejects_denied_nonempty_stale_and_claimed() {
+fn convert_empty_group_rejects_denied_nonempty_stale_and_claimed() {
     let intent = || WorkflowIntent::ConvertEmptyGroupToComponent {
         target: GROUP,
         new_definition: DefinitionId(90),
@@ -6219,7 +6219,7 @@ fn reviewed_joint(id: JointId, max_x: f64) -> CanonicalJoint {
 }
 
 #[test]
-fn gate_d_create_joint_is_typed_observational_and_undoable() {
+fn create_joint_is_typed_observational_and_undoable() {
     let mut store = seed();
     store
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetRuleOutputs {
@@ -6301,7 +6301,7 @@ fn gate_d_create_joint_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_joint_rejects_denied_invalid_unresolved_reuse_and_stale_claim() {
+fn create_joint_rejects_denied_invalid_unresolved_reuse_and_stale_claim() {
     let mut store = seed();
     store
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetRuleOutputs {
@@ -6412,7 +6412,7 @@ fn gate_d_create_joint_rejects_denied_invalid_unresolved_reuse_and_stale_claim()
 }
 
 #[test]
-fn gate_d_delete_joint_is_typed_observational_and_undoable() {
+fn delete_joint_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = JointId(80);
     let joint = reviewed_joint(target, 1.0);
@@ -6467,7 +6467,7 @@ fn gate_d_delete_joint_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_joint_rejects_denied_missing_and_stale_replacement() {
+fn delete_joint_rejects_denied_missing_and_stale_replacement() {
     let mut store = seed();
     let target = JointId(81);
     store
@@ -6534,7 +6534,7 @@ fn reviewed_space(id: SpaceId, purpose: &str, max_x: f64) -> CanonicalSpace {
 }
 
 #[test]
-fn gate_d_create_space_is_typed_observational_and_undoable() {
+fn create_space_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = SpaceId(92);
     let revision_before = store.current().revision_id();
@@ -6597,7 +6597,7 @@ fn gate_d_create_space_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_space_rejects_denied_invalid_reuse_and_stale_claim() {
+fn create_space_rejects_denied_invalid_reuse_and_stale_claim() {
     let mut store = seed();
     let target = SpaceId(93);
     let intent = || WorkflowIntent::CreateSpace {
@@ -6668,7 +6668,7 @@ fn gate_d_create_space_rejects_denied_invalid_reuse_and_stale_claim() {
 }
 
 #[test]
-fn gate_d_delete_space_is_typed_observational_and_undoable() {
+fn delete_space_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = SpaceId(82);
     let space = reviewed_space(target, "service access", 1.0);
@@ -6724,7 +6724,7 @@ fn gate_d_delete_space_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_space_rejects_denied_missing_and_stale_replacement() {
+fn delete_space_rejects_denied_missing_and_stale_replacement() {
     let mut store = seed();
     let target = SpaceId(83);
     store
@@ -6798,7 +6798,7 @@ fn reviewed_clearance(
 }
 
 #[test]
-fn gate_d_create_clearance_volume_is_typed_observational_and_undoable() {
+fn create_clearance_volume_is_typed_observational_and_undoable() {
     let mut store = seed();
     let owner = SpaceId(94);
     let target = ClearanceVolumeId(95);
@@ -6880,7 +6880,7 @@ fn gate_d_create_clearance_volume_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_clearance_volume_rejects_denied_invalid_missing_owner_reuse_and_stale_claim() {
+fn create_clearance_volume_rejects_denied_invalid_missing_owner_reuse_and_stale_claim() {
     let mut store = seed();
     let owner = SpaceId(96);
     let target = ClearanceVolumeId(97);
@@ -7002,7 +7002,7 @@ fn gate_d_create_clearance_volume_rejects_denied_invalid_missing_owner_reuse_and
 }
 
 #[test]
-fn gate_d_delete_clearance_volume_is_typed_observational_and_undoable() {
+fn delete_clearance_volume_is_typed_observational_and_undoable() {
     let mut store = seed();
     let owner = SpaceId(84);
     let target = ClearanceVolumeId(85);
@@ -7063,7 +7063,7 @@ fn gate_d_delete_clearance_volume_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_clearance_volume_rejects_denied_missing_and_stale_replacement() {
+fn delete_clearance_volume_rejects_denied_missing_and_stale_replacement() {
     let mut store = seed();
     let owner = SpaceId(86);
     let target = ClearanceVolumeId(87);
@@ -7125,7 +7125,7 @@ fn gate_d_delete_clearance_volume_rejects_denied_missing_and_stale_replacement()
 }
 
 #[test]
-fn gate_d_delete_persistent_dimension_is_typed_observational_and_undoable() {
+fn delete_persistent_dimension_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = PersistentDimensionId(88);
     let dimension_target = PersistentDimensionTarget::FeatureParameter(
@@ -7195,7 +7195,7 @@ fn gate_d_delete_persistent_dimension_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_delete_persistent_dimension_rejects_denied_missing_and_stale_replacement() {
+fn delete_persistent_dimension_rejects_denied_missing_and_stale_replacement() {
     let mut store = seed();
     let target = PersistentDimensionId(89);
     let dimension_target = PersistentDimensionTarget::FeatureParameter(
@@ -7273,7 +7273,7 @@ fn gate_d_delete_persistent_dimension_rejects_denied_missing_and_stale_replaceme
 }
 
 #[test]
-fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
+fn create_persistent_dimension_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = PersistentDimensionId(90);
     let dimension_target =
@@ -7350,7 +7350,7 @@ fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
 }
 
 #[test]
-fn gate_d_create_persistent_dimension_rejects_denied_reuse_and_stale_claim() {
+fn create_persistent_dimension_rejects_denied_reuse_and_stale_claim() {
     let mut store = seed();
     let target = PersistentDimensionId(91);
     let dimension_target =

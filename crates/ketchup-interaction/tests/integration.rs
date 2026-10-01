@@ -1,12 +1,12 @@
 //! Single integration test binary for this crate: every `tests/*.rs` file is a
 //! module here, so the crate links one test executable instead of one per file.
 
+mod bvh_and_broad_phase;
+mod canonical_projection;
 mod face_intent;
-mod gate_c1a_projection_authority;
-mod gate_c_interaction;
+mod picking_snapping_and_locales;
 mod push_pull_gesture;
 mod rectangle_face_authoring;
-mod spatial_m16;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;

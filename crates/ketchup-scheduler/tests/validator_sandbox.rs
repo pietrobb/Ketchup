@@ -124,7 +124,7 @@ fn authorize_external_disclosure_for(
 }
 
 #[test]
-fn m7c_wasm_validator_has_no_ambient_imports_and_is_fuel_and_memory_bounded() {
+fn wasm_validator_has_no_ambient_imports_and_is_fuel_and_memory_bounded() {
     let host = installed(VALID_WASM, ValidatorRuntime::WasmNoImports, vec![]);
     let receipt =
         run_isolated_wasm_validator(host.resolve(PACKAGE).unwrap(), WasmRuntimeLimits::M7C)
@@ -136,7 +136,7 @@ fn m7c_wasm_validator_has_no_ambient_imports_and_is_fuel_and_memory_bounded() {
 }
 
 #[test]
-fn m7c_wasm_imports_and_unsandboxed_native_runtime_fail_closed() {
+fn wasm_imports_and_unsandboxed_native_runtime_fail_closed() {
     let importing_wasm = br#"(module
         (import "env" "ambient" (func))
         (func (export "validate") (result i32) i32.const 0))"#;
@@ -164,7 +164,7 @@ fn m7c_wasm_imports_and_unsandboxed_native_runtime_fail_closed() {
 }
 
 #[test]
-fn m7c_wasm_fuel_exhaustion_fails_closed() {
+fn wasm_fuel_exhaustion_fails_closed() {
     let looping_wasm = br#"(module
         (func (export "validate") (result i32)
             (loop br 0)
@@ -181,7 +181,7 @@ fn m7c_wasm_fuel_exhaustion_fails_closed() {
 }
 
 #[test]
-fn m7c_remote_egress_is_host_mediated_allowlisted_bounded_and_receipted() {
+fn remote_egress_is_host_mediated_allowlisted_bounded_and_receipted() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -265,7 +265,7 @@ fn allowed_hostname_cannot_resolve_to_loopback() {
 }
 
 #[test]
-fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() {
+fn external_disclosure_requires_exact_human_authorization_before_connect() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -346,7 +346,7 @@ fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() 
 }
 
 #[test]
-fn m7c_zero_egress_limits_fail_closed_before_connecting() {
+fn zero_egress_limits_fail_closed_before_connecting() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -390,7 +390,7 @@ fn m7c_zero_egress_limits_fail_closed_before_connecting() {
 }
 
 #[test]
-fn m7c_egress_timeout_is_one_cumulative_transport_deadline() {
+fn egress_timeout_is_one_cumulative_transport_deadline() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -433,7 +433,7 @@ fn m7c_egress_timeout_is_one_cumulative_transport_deadline() {
 }
 
 #[test]
-fn m7c_remote_response_overflow_fails_closed() {
+fn remote_response_overflow_fails_closed() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {

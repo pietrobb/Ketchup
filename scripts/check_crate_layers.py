@@ -8,8 +8,12 @@ Only normal `[dependencies]` count; tests may use any crate.
 No source module of any crate may exceed MAX_MODULE_LINES. Modules that were
 already larger are listed in OVERSIZED with their size: they may shrink but not
 grow, and an entry must be removed once its module fits the limit.
+
+Test files are named after the behavior they check (push_pull, save_reopen),
+never after a milestone, gate or slice (gate_d, m120_, assistant_m7, live_bridge_s4).
 """
 
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -38,6 +42,10 @@ OVERSIZED = {
     "crates/ketchup-app/src/lib.rs": 36_480,
     "crates/ketchup-app/src/tests.rs": 17_975,
 }
+
+
+# A milestone, gate or slice label as one word of a snake_case file name.
+MILESTONE_WORD = re.compile(r"(?:^|_)(?:gate(?:_[a-z]?\d+[a-z]?|_[a-z])?|[ms]\d+[a-z]?)(?:_|$)")
 
 
 def workspace_dependencies(root):
@@ -93,10 +101,28 @@ def oversized_modules(sizes, limit=MAX_MODULE_LINES, oversized=OVERSIZED):
     return problems
 
 
+def test_files(root):
+    """Every Rust test file: integration tests and unit-test modules of each crate."""
+    return [
+        path.relative_to(root).as_posix()
+        for pattern in ("*/tests/**/*.rs", "*/src/**/*tests*.rs")
+        for path in sorted((root / "crates").glob(pattern))
+    ]
+
+
+def milestone_named_tests(paths):
+    return [
+        f"{path}: name the test file after the behavior it checks, not a milestone or gate"
+        for path in paths
+        if MILESTONE_WORD.search(Path(path).stem)
+    ]
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
     problems += oversized_modules(module_sizes(root))
+    problems += milestone_named_tests(test_files(root))
     for problem in problems:
         print(problem)
     if not problems:

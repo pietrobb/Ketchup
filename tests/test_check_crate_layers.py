@@ -81,3 +81,29 @@ def test_geometry_depends_on_nothing_but_the_tolerances():
     graph = checker.workspace_dependencies(ROOT)
     assert graph["ketchup-geometry"] == ["ketchup-tolerance"]
     assert checker.LAYERS["ketchup-geometry"] < checker.LAYERS["ketchup-model"]
+
+
+def test_milestone_named_test_files_fail_and_behavior_names_pass():
+    named = [
+        "crates/a/tests/gate_d.rs",
+        "crates/a/tests/gate_c1a_projection_authority.rs",
+        "crates/a/tests/assistant_m7.rs",
+        "crates/a/tests/m120_cut.rs",
+        "crates/a/tests/live_bridge_s4.rs",
+        "crates/a/src/plugin_m7b_tests.rs",
+    ]
+    behavior = [
+        "crates/a/tests/push_pull.rs",
+        "crates/a/tests/save_reopen.rs",
+        "crates/a/tests/three_mf_export.rs",
+        "crates/a/tests/gateway_routing.rs",
+        "crates/a/src/assistant_deadline_tests.rs",
+    ]
+    problems = checker.milestone_named_tests(named + behavior)
+    assert [problem.split(":")[0] for problem in problems] == named
+
+
+def test_workspace_test_files_are_named_after_behavior():
+    files = checker.test_files(ROOT)
+    assert "crates/ketchup-scheduler/tests/scheduler_reliability.rs" in files
+    assert checker.milestone_named_tests(files) == []

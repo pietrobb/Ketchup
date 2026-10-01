@@ -20,7 +20,7 @@ const CANCELLATION_SAMPLES: usize = 100;
 const READER_SAMPLES: usize = 1_000;
 
 #[test]
-fn formal_gate_b() {
+fn scheduler_survives_races_crashes_and_cancellation_within_limits() {
     let _turn = crate::integration_support::file_turn();
     let stale_current_inserts = exercise_schedule_permutations();
     let changed_read_digest_accepted = exercise_proposal_race();

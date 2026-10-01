@@ -127,7 +127,7 @@ fn run_example(
 }
 
 #[test]
-fn m7b_python_plugin_queries_bounded_state_and_returns_one_review_only_proposal() {
+fn python_plugin_queries_bounded_state_and_returns_one_review_only_proposal() {
     let _turn = crate::integration_support::file_turn();
     let mut store = seed();
     let digest_before = store.current().canonical_digest();
@@ -160,7 +160,7 @@ fn m7b_python_plugin_queries_bounded_state_and_returns_one_review_only_proposal(
 }
 
 #[test]
-fn m7b_host_max_query_state_fits_the_declared_response_line() {
+fn host_max_query_state_fits_the_declared_response_line() {
     let _turn = crate::integration_support::file_turn();
     let store = host_max_store();
     let script = "import sys\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.host-max\\t1.0.0\\t7001\\tquery.agent-state.v1\\t2\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nstate = sys.stdin.readline()\nassert state.startswith('STATE\\t65536\\t')\nprint('DONE', flush=True)\nsys.stdin.readline()";
@@ -180,7 +180,7 @@ fn m7b_host_max_query_state_fits_the_declared_response_line() {
 }
 
 #[test]
-fn m7b_host_max_response_honors_timeout_when_plugin_stops_reading() {
+fn host_max_response_honors_timeout_when_plugin_stops_reading() {
     let _turn = crate::integration_support::file_turn();
     let store = host_max_store();
     let directory = tempfile::tempdir().unwrap();
@@ -214,7 +214,7 @@ fn m7b_host_max_response_honors_timeout_when_plugin_stops_reading() {
 }
 
 #[test]
-fn m7b_flooding_plugin_is_backpressured_while_host_response_is_blocked() {
+fn flooding_plugin_is_backpressured_while_host_response_is_blocked() {
     let _turn = crate::integration_support::file_turn();
     let marker = std::env::temp_dir().join(format!(
         "ketchup-plugin-backpressure-{}.marker",
@@ -247,7 +247,7 @@ fn m7b_flooding_plugin_is_backpressured_while_host_response_is_blocked() {
 }
 
 #[test]
-fn m7b_unrepresentable_timeout_is_rejected_without_panicking() {
+fn unrepresentable_timeout_is_rejected_without_panicking() {
     let _turn = crate::integration_support::file_turn();
     let result = std::panic::catch_unwind(|| {
         run_plugin_process(
@@ -270,7 +270,7 @@ fn m7b_unrepresentable_timeout_is_rejected_without_panicking() {
 }
 
 #[test]
-fn m7b_host_max_response_honors_cancellation_when_plugin_stops_reading() {
+fn host_max_response_honors_cancellation_when_plugin_stops_reading() {
     let _turn = crate::integration_support::file_turn();
     let store = host_max_store();
     let directory = tempfile::tempdir().unwrap();
@@ -312,7 +312,7 @@ fn m7b_host_max_response_honors_cancellation_when_plugin_stops_reading() {
 }
 
 #[test]
-fn m7b_host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
+fn host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
     let query_only = PluginGrant::new(
@@ -351,7 +351,7 @@ fn m7b_host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
 }
 
 #[test]
-fn m7b_plugin_process_does_not_inherit_parent_environment() {
+fn plugin_process_does_not_inherit_parent_environment() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
     let script = "import os,sys\npackage = 'org.ketchup.ambient-leak' if os.environ.get('PATH') else 'org.ketchup.isolated'\nprint(f'HELLO\\tketchup.plugin.v1\\t{package}\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
@@ -370,7 +370,7 @@ fn m7b_plugin_process_does_not_inherit_parent_environment() {
 }
 
 #[test]
-fn m7b_process_rejects_direct_mutation_vocabulary_and_oversized_input() {
+fn process_rejects_direct_mutation_vocabulary_and_oversized_input() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
     let hello = "HELLO\\tketchup.plugin.v1\\torg.ketchup.dimension-pilot\\t1.0.0\\t7001\\tquery.agent-state.v1,intent.set-feature-dimension.v1\\t4\\t32768\\t1\\t64\\t1";
@@ -400,7 +400,7 @@ fn m7b_process_rejects_direct_mutation_vocabulary_and_oversized_input() {
 }
 
 #[test]
-fn m7b_pre_cancelled_run_does_not_attempt_to_spawn_the_plugin() {
+fn pre_cancelled_run_does_not_attempt_to_spawn_the_plugin() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
     let cancelled = AtomicBool::new(true);
@@ -420,7 +420,7 @@ fn m7b_pre_cancelled_run_does_not_attempt_to_spawn_the_plugin() {
 }
 
 #[test]
-fn m7b_process_timeout_and_cancellation_kill_the_untrusted_client() {
+fn process_timeout_and_cancellation_kill_the_untrusted_client() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
     let sleeper = "import time; time.sleep(5)";
@@ -465,7 +465,7 @@ fn release_descendant(sentinel: &std::path::Path) {
 
 #[cfg(windows)]
 #[test]
-fn m7b_timeout_terminates_plugin_descendants() {
+fn timeout_terminates_plugin_descendants() {
     let _turn = crate::integration_support::file_turn();
     let store = seed();
     let directory = tempfile::tempdir().unwrap();
@@ -499,7 +499,7 @@ fn m7b_timeout_terminates_plugin_descendants() {
 
 #[cfg(windows)]
 #[test]
-fn m7b_completed_runs_terminate_plugin_descendants_on_success_and_failure() {
+fn completed_runs_terminate_plugin_descendants_on_success_and_failure() {
     let _turn = crate::integration_support::file_turn();
     for exit_code in [0, 7] {
         let store = seed();
@@ -539,7 +539,7 @@ fn m7b_completed_runs_terminate_plugin_descendants_on_success_and_failure() {
 }
 
 #[test]
-fn m7b_plugin_proposal_remains_revision_bound_and_non_replayable() {
+fn plugin_proposal_remains_revision_bound_and_non_replayable() {
     let _turn = crate::integration_support::file_turn();
     let mut store = seed();
     let run = run_example(&store, pilot_grant(PluginLimits::M7B_PILOT)).unwrap();
