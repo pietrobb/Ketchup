@@ -21,11 +21,11 @@ use ketchup_model::feature_history::{
 };
 use ketchup_model::persistence;
 use ketchup_model::shared_change::{
-    OCCURRENCE_EDIT_IMPACT_SCHEMA_V1, OccurrenceDrawingDependencyAction, OccurrenceEdit,
-    OccurrenceEditImpactError, OccurrenceEditRequest, SharedChangeExportEligibility,
-    SharedChangeExportFormat, SharedChangeImpactError, SharedChangePropagationError,
-    SharedDefinitionChangeRequest, commit_shared_definition_change, project_occurrence_edit_impact,
-    project_shared_change_impact,
+    DependencyBlocker, ExportProblem, OCCURRENCE_EDIT_IMPACT_SCHEMA_V1,
+    OccurrenceDrawingDependencyAction, OccurrenceEdit, OccurrenceEditImpactError,
+    OccurrenceEditRequest, SharedChangeExportEligibility, SharedChangeExportFormat,
+    SharedChangeImpactError, SharedChangePropagationError, SharedDefinitionChangeRequest,
+    commit_shared_definition_change, project_occurrence_edit_impact, project_shared_change_impact,
 };
 use ketchup_model::testing::box_package;
 use std::sync::Arc;
@@ -2107,7 +2107,11 @@ fn duplicate_invalid_and_stale_propagation_requests_preserve_history_and_outputs
             duplicate_request,
             ProposalPrincipal::LocalAssistant,
         ),
-        Err(SharedChangeImpactError::Unsupported(reason)) if reason.contains("duplicate")
+        Err(SharedChangeImpactError::Unsupported(
+            ketchup_model::shared_change::DependencyBlocker::ParameterEdit(
+                ketchup_model::feature_history::BodyParameterEditError::Duplicate(_)
+            )
+        ))
     ));
     assert_eq!(stamp(&document), before);
     assert_eq!(
@@ -2421,8 +2425,12 @@ fn dependent_rebind_failures_preserve_last_valid_transforms_views_and_exports() 
     assert!(
         matches!(
             hidden_failed,
-            Err(SharedChangePropagationError::Dependency(ref reason))
-                if reason.contains("not visible and current")
+            Err(SharedChangePropagationError::Dependency(
+                DependencyBlocker::Export {
+                    problem: ExportProblem::NotVisible,
+                    ..
+                }
+            ))
         ),
         "{hidden_failed:?}"
     );
@@ -2471,8 +2479,12 @@ fn dependent_rebind_failures_preserve_last_valid_transforms_views_and_exports() 
     assert!(
         matches!(
             unsupported_failed,
-            Err(SharedChangePropagationError::Dependency(ref reason))
-                if reason.contains("has no current exact body")
+            Err(SharedChangePropagationError::Dependency(
+                DependencyBlocker::Export {
+                    problem: ExportProblem::NoExactBody,
+                    ..
+                }
+            ))
         ),
         "{unsupported_failed:?}"
     );

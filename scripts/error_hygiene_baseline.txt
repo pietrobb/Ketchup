@@ -31,7 +31,6 @@ crates/ketchup-model/src/document/solid_tool.rs unwrap 1
 crates/ketchup-model/src/exact_brep_graph/validation.rs unwrap 1
 crates/ketchup-model/src/import/dxf.rs unreachable 3
 crates/ketchup-model/src/persistence.rs formatted_variant 2
-crates/ketchup-model/src/shared_change.rs formatted_variant 67
 crates/ketchup-model/src/state_view.rs unwrap 8
 crates/ketchup-program/src/faces.rs unreachable 1
 crates/ketchup-program/src/model.rs unreachable 2

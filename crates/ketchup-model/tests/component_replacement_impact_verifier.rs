@@ -882,8 +882,12 @@ fn under_over_constrained_and_invalid_export_paths_preserve_last_valid_state() {
     .unwrap_err();
     assert!(matches!(
         under_error,
-        ComponentReplacementImpactError::Unsupported(reason)
-            if reason.contains("UnderConstrained")
+        ComponentReplacementImpactError::Unsupported(
+            ketchup_model::shared_change::DependencyBlocker::SolveNotFullyConstrained {
+                solve: ketchup_model::assembly::AssemblySolveStatus::UnderConstrained,
+                ..
+            }
+        )
     ));
     assert_eq!(store_stamp(&under_constrained), under_before);
     assert_eq!(under_results.contents_stamp(), under_results_before);
@@ -914,8 +918,12 @@ fn under_over_constrained_and_invalid_export_paths_preserve_last_valid_state() {
     .unwrap_err();
     assert!(matches!(
         over_error,
-        ComponentReplacementImpactError::Unsupported(reason)
-            if reason.contains("OverConstrained")
+        ComponentReplacementImpactError::Unsupported(
+            ketchup_model::shared_change::DependencyBlocker::SolveNotFullyConstrained {
+                solve: ketchup_model::assembly::AssemblySolveStatus::OverConstrained,
+                ..
+            }
+        )
     ));
     assert_eq!(store_stamp(&over_constrained), over_before);
     assert_eq!(over_results.contents_stamp(), over_results_before);
@@ -965,8 +973,11 @@ fn under_over_constrained_and_invalid_export_paths_preserve_last_valid_state() {
     assert!(
         matches!(
             export_error,
-            ComponentReplacementImpactError::Unsupported(ref reason)
-                if reason.contains("invalid facet")
+            ComponentReplacementImpactError::Unsupported(
+                ketchup_model::shared_change::DependencyBlocker::Exact(
+                    ketchup_model::exact_product::ExactProductError::InvalidMeshExport
+                )
+            )
         ),
         "unexpected export failure: {export_error:?}"
     );

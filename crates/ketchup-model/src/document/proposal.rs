@@ -681,7 +681,7 @@ impl fmt::Display for HumanConfirmationError {
 
 impl std::error::Error for HumanConfirmationError {}
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalPrepareError {
     HostBudgetExceeded,
     RequestedBudgetExceeded,

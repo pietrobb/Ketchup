@@ -68,10 +68,8 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2141,
     "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 615,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
-    "crates/ketchup-model/src/shared_change.rs::commit_component_replacement": 430,
-    "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 572,
-    "crates/ketchup-model/src/shared_change.rs::project_component_replacement_impact_for_principal": 823,
-    "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 484,
+    "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 558,
+    "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 1018,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 559,
 }

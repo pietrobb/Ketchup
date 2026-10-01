@@ -592,8 +592,9 @@ fn replacement_impact_fails_closed_for_hidden_failed_lost_and_incompatible_input
             &incompatible_results,
             ComponentReplacementImpactRequest::new(&incompatible.current(), SELECTED, TARGET),
         ),
-        Err(ComponentReplacementImpactError::Incompatible(reason))
-            if reason.contains("feature counts")
+        Err(ComponentReplacementImpactError::Incompatible(
+            ketchup_model::shared_change::ReplacementMismatch::FeatureCount
+        ))
     ));
     assert_eq!(stamp(&incompatible), incompatible_before);
 }
@@ -750,8 +751,7 @@ fn replacement_commit_rebinds_dependencies_and_rejects_tampered_correspondence()
     assert_eq!(
         commit_component_replacement(&mut document, &mut results, &tampered),
         Err(ComponentReplacementCommitError::InvalidImpact(
-            "component replacement impact no longer matches the complete current correspondence"
-                .into(),
+            ketchup_model::shared_change::ReviewMismatch::CorrespondenceChanged
         ))
     );
     assert_eq!(stamp(&document), before);
@@ -875,8 +875,9 @@ fn conflicting_replacement_dependency_preserves_canonical_registry_and_last_vali
 
     assert!(matches!(
         failed,
-        Err(ComponentReplacementImpactError::Unsupported(reason))
-            if reason.contains("not fully constrained")
+        Err(ComponentReplacementImpactError::Unsupported(
+            ketchup_model::shared_change::DependencyBlocker::SolveNotFullyConstrained { .. }
+        ))
     ));
     assert_eq!(stamp(&document), before);
     assert_eq!(results.contents_stamp(), results_before);

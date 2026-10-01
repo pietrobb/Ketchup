@@ -947,7 +947,7 @@ impl AssemblyRecomputeResult {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssemblyRecomputeError {
     Preview(crate::document::CanonicalError),
     Solve(AssemblySolveError),

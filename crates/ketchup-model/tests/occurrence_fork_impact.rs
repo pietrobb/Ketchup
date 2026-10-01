@@ -1719,7 +1719,11 @@ fn invalid_fork_requests_fail_closed_without_history_or_exact_mutation() {
             duplicate_target,
             ProposalPrincipal::ManualClient,
         ),
-        Err(OccurrenceForkImpactError::Unsupported(reason)) if reason.contains("duplicate")
+        Err(OccurrenceForkImpactError::Unsupported(
+            ketchup_model::shared_change::DependencyBlocker::ParameterEdit(
+                ketchup_model::feature_history::BodyParameterEditError::Duplicate(_)
+            )
+        ))
     ));
     assert_eq!(stamp(&document), before);
     assert_eq!(results.contents_stamp(), results_before);

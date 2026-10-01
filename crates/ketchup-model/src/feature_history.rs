@@ -144,7 +144,7 @@ pub struct BodyParameterEditPreview {
     pub proposal: Proposal,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BodyParameterEditError {
     Empty,
     Duplicate(ExactParameterEditTarget),
@@ -660,7 +660,7 @@ pub struct BodyHistoryMutationPreview {
     pub proposal: Proposal,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BodyHistoryMutationError {
     History(FeatureHistoryError),
     NoSuppressedSuffix(BodyId),
