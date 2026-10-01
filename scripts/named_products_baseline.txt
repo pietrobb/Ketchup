@@ -26,7 +26,7 @@ crates/ketchup-app/src/lib.rs:shelf 1
 crates/ketchup-app/src/live_bridge/consent.rs:panel 1
 crates/ketchup-app/src/theme.rs:panel 11
 crates/ketchup-app/src/validator_ui.rs:panel 27
-crates/ketchup-application/src/append_feature.rs:weldment 16
+crates/ketchup-application/src/append_feature.rs:weldment 14
 crates/ketchup-application/src/collision.rs:panel 2
 crates/ketchup-application/src/collision_hull.rs:panel 2
 crates/ketchup-application/src/lib.rs:panel 1

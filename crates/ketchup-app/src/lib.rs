@@ -453,7 +453,6 @@ fn bind_assistant_cad_current_selection(
     for operation in &mut program.operations {
         let Some(selector) = (match operation {
             AssistantCadEditOperation::CreateSketch { .. }
-            | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreatePinJoint { .. }
@@ -472,7 +471,6 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
-            | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::BindProgramOutput { .. }
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::SetFeatureParameter { .. }

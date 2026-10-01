@@ -476,7 +476,7 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
         request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 80,
+                definition_id: 80.into(),
                 name: "Opposite flanges".into(),
                 feature: AssistantCadBodyFeature::SheetMetal {
                     base_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
@@ -1046,7 +1046,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
         AssistantCadEditProgram {
             operations: vec![
                 AssistantCadEditOperation::AppendFeature {
-                    definition_id: 80,
+                    definition_id: 80.into(),
                     name: "Horizontal member".into(),
                     feature: AssistantCadBodyFeature::WeldmentMember {
                         profile_feature_id: 80,
@@ -1055,7 +1055,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
                     },
                 },
                 AssistantCadEditOperation::AppendFeature {
-                    definition_id: 80,
+                    definition_id: 80.into(),
                     name: "Vertical member".into(),
                     feature: AssistantCadBodyFeature::WeldmentMember {
                         profile_feature_id: 80,
@@ -1064,7 +1064,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
                     },
                 },
                 AssistantCadEditOperation::AppendFeature {
-                    definition_id: 80,
+                    definition_id: 80.into(),
                     name: "Miter corner".into(),
                     feature: AssistantCadBodyFeature::WeldmentJoint {
                         first_member_id: body_output(0),

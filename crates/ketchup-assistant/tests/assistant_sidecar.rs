@@ -233,7 +233,7 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
     let program = AssistantCadEditProgram {
         operations: vec![
             AssistantCadEditOperation::CreateSketch {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Mixed sketch".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xy,
@@ -363,7 +363,7 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
 
     let colliding_ellipse = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Rejected ellipse".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -383,7 +383,7 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
 
     let oversized_rounding = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Rejected rounded rectangle".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -421,7 +421,7 @@ fn profile_copies_are_bounded_typed_and_do_not_repeat_source_points() {
         };
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Two transformed profiles".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -450,7 +450,7 @@ fn profile_copies_are_bounded_typed_and_do_not_repeat_source_points() {
 
     let mismatched_ids = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Rejected profile copy".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -524,7 +524,7 @@ fn cad_edit_full_sketch_constraint_vocabulary_is_typed_and_round_trips() {
     ];
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "General constraints".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -688,7 +688,7 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
 fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Exact union".to_owned(),
             feature: AssistantCadBodyFeature::Boolean {
                 operation: AssistantCadBooleanOperation::Union,
@@ -794,20 +794,18 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
                 "translation_mm": [0, 0, 0]
             },
             {
-                "operation": "create_program_sketch",
-                "definition": {"operation_index": 0, "output": "definition"},
+                "operation": "create_sketch",
+                "definition_id": {"operation_index": 0, "output": "definition"},
                 "name": "Opening profile",
                 "workplane": {"type": "principal", "plane": "xy"},
                 "entities": [{"type": "circle", "id": 1, "center_mm": [0, 0], "radius_mm": 4}],
                 "constraints": []
             },
             {
-                "operation": "append_program_pocket",
-                "definition": {"operation_index": 0, "output": "definition"},
+                "operation": "append_feature",
+                "definition_id": {"operation_index": 0, "output": "definition"},
                 "name": "Opening",
-                "target_feature": {"operation_index": 0, "output": "body_feature"},
-                "profile_feature": {"operation_index": 1, "output": "sketch_feature"},
-                "depth_mm": 5
+                "feature": { "type": "pocket", "target_feature_id": {"operation_index": 0, "output": "body_feature"}, "profile_feature_id": {"operation_index": 1, "output": "sketch_feature"}, "depth_mm": 5 }
             }
         ]
     });
@@ -886,7 +884,7 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
 
     let self_boolean = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Invalid".to_owned(),
             feature: AssistantCadBodyFeature::Boolean {
                 operation: AssistantCadBooleanOperation::Intersect,
@@ -905,11 +903,11 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
 fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Exact pocket".to_owned(),
             feature: AssistantCadBodyFeature::Pocket {
-                target_feature_id: 11,
-                profile_feature_id: 12,
+                target_feature_id: 11.into(),
+                profile_feature_id: 12.into(),
                 depth_mm: 8.0,
             },
         }],
@@ -931,11 +929,11 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
     for depth_mm in [0.0, -1.0, f64::INFINITY, 1_000_001.0] {
         let invalid = AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 7,
+                definition_id: 7.into(),
                 name: "Invalid pocket".to_owned(),
                 feature: AssistantCadBodyFeature::Pocket {
-                    target_feature_id: 11,
-                    profile_feature_id: 12,
+                    target_feature_id: 11.into(),
+                    profile_feature_id: 12.into(),
                     depth_mm,
                 },
             }],
@@ -948,11 +946,11 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
 
     let same_input = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Invalid pocket".to_owned(),
             feature: AssistantCadBodyFeature::Pocket {
-                target_feature_id: 11,
-                profile_feature_id: 11,
+                target_feature_id: 11.into(),
+                profile_feature_id: 11.into(),
                 depth_mm: 8.0,
             },
         }],
@@ -983,7 +981,7 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
 fn cad_edit_append_planar_offset_contract_is_strict_bounded_and_host_id_assigned() {
     let program = |profile_feature_id, distance_mm| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Exact planar offset".to_owned(),
             feature: AssistantCadBodyFeature::PlanarOffset {
                 profile_feature_id,
@@ -1063,7 +1061,7 @@ fn cad_edit_append_planar_offset_contract_is_strict_bounded_and_host_id_assigned
 fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Exact sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: 11,
@@ -1087,7 +1085,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
 
     let same_input = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Invalid sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: 11,
@@ -1102,7 +1100,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
     for (profile_feature_id, path_feature_id) in [(0, 12), (11, 0)] {
         let zero_input = AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 7,
+                definition_id: 7.into(),
                 name: "Invalid sweep".to_owned(),
                 feature: AssistantCadBodyFeature::Sweep {
                     profile_feature_id,
@@ -1148,7 +1146,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
 fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
     let program = |sections| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Exact loft".to_owned(),
             feature: AssistantCadBodyFeature::Loft {
                 sections,
@@ -1342,7 +1340,7 @@ fn cad_edit_surface_contract_is_strict_typed_and_round_trips() {
     let input = AssistantCadEditProgram {
         operations: vec![
             AssistantCadEditOperation::AppendFeature {
-                definition_id: 7,
+                definition_id: 7.into(),
                 name: "Planar surface".into(),
                 feature: AssistantCadBodyFeature::SurfaceBody {
                     source: AssistantCadSurfaceBodySource::Planar {
@@ -1351,7 +1349,7 @@ fn cad_edit_surface_contract_is_strict_typed_and_round_trips() {
                 },
             },
             AssistantCadEditOperation::AppendFeature {
-                definition_id: 7,
+                definition_id: 7.into(),
                 name: "Extended surface".into(),
                 feature: AssistantCadBodyFeature::SurfaceExtend {
                     target_feature_id: earlier_body(0),
@@ -1359,7 +1357,7 @@ fn cad_edit_surface_contract_is_strict_typed_and_round_trips() {
                 },
             },
             AssistantCadEditOperation::AppendFeature {
-                definition_id: 7,
+                definition_id: 7.into(),
                 name: "Thickened surface".into(),
                 feature: AssistantCadBodyFeature::SurfaceThicken {
                     target_feature_id: earlier_body(1),
@@ -1387,7 +1385,7 @@ fn cad_edit_surface_contract_is_strict_typed_and_round_trips() {
 
     let duplicate_knit = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Invalid knit".into(),
             feature: AssistantCadBodyFeature::SurfaceKnit {
                 surface_feature_ids: vec![11.into(), 11.into()],
@@ -1419,7 +1417,7 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
     let program =
         |target_feature_id, removed_face_reference_ids, thickness_mm| AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 7,
+                definition_id: 7.into(),
                 name: "Exact shell".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyShell {
                     target_feature_id,
@@ -1509,7 +1507,7 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
     let reference_id = "a".repeat(64);
     let program = |target_feature_id, edge_reference_ids, radius_mm| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Exact fillet".to_owned(),
             feature: AssistantCadBodyFeature::TopologyFillet {
                 target_feature_id,
@@ -1674,7 +1672,7 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
     let reference_id = "b".repeat(64);
     let program = |target_feature_id, edge_reference_ids, distance_mm| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 7,
+            definition_id: 7.into(),
             name: "Exact chamfer".to_owned(),
             feature: AssistantCadBodyFeature::TopologyChamfer {
                 target_feature_id,
@@ -1688,7 +1686,7 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
     let advanced_program =
         |edge_reference_ids, mode, side_face_reference_ids| AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 7,
+                definition_id: 7.into(),
                 name: "Advanced exact chamfer".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyChamfer {
                     target_feature_id: 11,

@@ -625,6 +625,9 @@ impl Shell {
         let rect = node.rect();
         node.click();
         self.open_menu = Some(rect);
+        // egui lays a new popup out in an invisible sizing pass first; only the
+        // second frame paints it where its items take clicks.
+        self.harness.step();
         self.harness.step();
     }
 

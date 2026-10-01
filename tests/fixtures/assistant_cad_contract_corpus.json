@@ -22,8 +22,8 @@
             "translation_mm": [0.0, 0.0, 0.0]
           },
           {
-            "operation": "create_program_sketch",
-            "definition": {"operation_index": 0, "output": "definition"},
+            "operation": "create_sketch",
+            "definition_id": {"operation_index": 0, "output": "definition"},
             "name": "Lower loft section",
             "workplane": {"type": "principal", "plane": "xy"},
             "entities": [
@@ -32,8 +32,8 @@
             "constraints": []
           },
           {
-            "operation": "create_program_sketch",
-            "definition": {"operation_index": 0, "output": "definition"},
+            "operation": "create_sketch",
+            "definition_id": {"operation_index": 0, "output": "definition"},
             "name": "Upper loft section",
             "workplane": {"type": "principal", "plane": "xy"},
             "entities": [
@@ -78,8 +78,8 @@
             "x_direction": [1.0, 0.0, 0.0]
           },
           {
-            "operation": "create_program_sketch",
-            "definition": {"operation_index": 6, "output": "definition"},
+            "operation": "create_sketch",
+            "definition_id": {"operation_index": 6, "output": "definition"},
             "name": "Construction plane sketch",
             "workplane": {
               "type": "construction_plane",

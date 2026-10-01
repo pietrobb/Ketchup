@@ -2142,7 +2142,7 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
             *request,
             AssistantCadEditProgram {
                 operations: vec![AssistantCadEditOperation::AppendFeature {
-                    definition_id: 1,
+                    definition_id: 1.into(),
                     name: format!("Assistant {operation:?}"),
                     feature: AssistantCadBodyFeature::Boolean {
                         operation,
@@ -2265,11 +2265,11 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
         request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Assistant pocket".to_owned(),
                 feature: AssistantCadBodyFeature::Pocket {
-                    target_feature_id: 2,
-                    profile_feature_id: 3,
+                    target_feature_id: 2.into(),
+                    profile_feature_id: 3.into(),
                     depth_mm: 8.0,
                 },
             }],
@@ -2337,11 +2337,11 @@ fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
     )]));
     let invalid_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Rejected Assistant pocket".to_owned(),
             feature: AssistantCadBodyFeature::Pocket {
-                target_feature_id: 2,
-                profile_feature_id: 999,
+                target_feature_id: 2.into(),
+                profile_feature_id: 999.into(),
                 depth_mm: 8.0,
             },
         }],
@@ -2399,7 +2399,7 @@ fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
         request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Assistant planar offset".to_owned(),
                 feature: AssistantCadBodyFeature::PlanarOffset {
                     profile_feature_id: 1,
@@ -2481,7 +2481,7 @@ fn scripted_append_sweep_is_exact_persistent_and_one_step() {
         request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Assistant sweep".to_owned(),
                 feature: AssistantCadBodyFeature::Sweep {
                     profile_feature_id: 1,
@@ -2558,7 +2558,7 @@ fn scripted_append_guided_loft_json_is_exact_persistent_and_one_step() {
     )]));
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Assistant guided loft".to_owned(),
             feature: AssistantCadBodyFeature::Loft {
                 sections: vec![
@@ -2682,7 +2682,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
         request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Assistant shell".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyShell {
                     target_feature_id: 2,
@@ -2803,7 +2803,7 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
         request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Assistant fillet".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyFillet {
                     target_feature_id: 2,
@@ -2965,7 +2965,7 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
         request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Assistant chamfer".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyChamfer {
                     target_feature_id: 2,
@@ -3094,7 +3094,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         shell_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Integrated shell".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyShell {
                     target_feature_id: 2,
@@ -3163,7 +3163,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         fillet_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Integrated variable fillet".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyFillet {
                     target_feature_id: 3,
@@ -3258,7 +3258,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
     );
     let invalid_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Rejected edge-as-face Chamfer".to_owned(),
             feature: AssistantCadBodyFeature::TopologyChamfer {
                 target_feature_id: 4,
@@ -3291,7 +3291,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         chamfer_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Integrated two-distance chamfer".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyChamfer {
                     target_feature_id: 4,
@@ -3425,7 +3425,7 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
         create_principal,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreateSketch {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Mixed boundary sketch".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xy,
@@ -3499,7 +3499,7 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
         create_offset,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreateSketch {
-                definition_id: 1,
+                definition_id: 1.into(),
                 name: "Offset circle sketch".to_owned(),
                 workplane: AssistantWorkplaneSpec::Offset {
                     base_feature_id: principal_workplane_id.0,
@@ -3596,7 +3596,7 @@ fn scripted_sketch_program_rejects_invalid_constraint_without_mutation() {
     )]));
     let invalid_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Rejected sketch".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -3994,7 +3994,7 @@ fn scripted_surface_program_applies_as_one_undoable_step() {
         AssistantCadEditProgram {
             operations: vec![
                 AssistantCadEditOperation::AppendFeature {
-                    definition_id: 1,
+                    definition_id: 1.into(),
                     name: "Assistant planar surface".into(),
                     feature: AssistantCadBodyFeature::SurfaceBody {
                         source: AssistantCadSurfaceBodySource::Planar {
@@ -4003,7 +4003,7 @@ fn scripted_surface_program_applies_as_one_undoable_step() {
                     },
                 },
                 AssistantCadEditOperation::AppendFeature {
-                    definition_id: 1,
+                    definition_id: 1.into(),
                     name: "Assistant extended surface".into(),
                     feature: AssistantCadBodyFeature::SurfaceExtend {
                         target_feature_id: earlier_body(0),
@@ -4011,7 +4011,7 @@ fn scripted_surface_program_applies_as_one_undoable_step() {
                     },
                 },
                 AssistantCadEditOperation::AppendFeature {
-                    definition_id: 1,
+                    definition_id: 1.into(),
                     name: "Assistant thickened solid".into(),
                     feature: AssistantCadBodyFeature::SurfaceThicken {
                         target_feature_id: earlier_body(1),

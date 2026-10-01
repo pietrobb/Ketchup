@@ -201,7 +201,7 @@ fn cad_edit_append_boolean_is_host_id_assigned_exact_and_one_step() {
         let baseline_undo = app.document.visible_undo_steps();
         let program = AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: INITIAL_BOX_DEFINITION.0,
+                definition_id: INITIAL_BOX_DEFINITION.0.into(),
                 name: "Assistant Boolean".to_owned(),
                 feature: AssistantCadBodyFeature::Boolean {
                     operation: assistant_operation,
@@ -264,11 +264,11 @@ fn cad_edit_append_pocket_is_host_id_assigned_exact_and_one_step() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Assistant pocket".to_owned(),
             feature: AssistantCadBodyFeature::Pocket {
-                target_feature_id: 2,
-                profile_feature_id: 3,
+                target_feature_id: 2.into(),
+                profile_feature_id: 3.into(),
                 depth_mm: 8.0,
             },
         }],
@@ -343,7 +343,7 @@ fn cad_edit_append_planar_offset_is_host_id_assigned_exact_and_one_step() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 2,
+            definition_id: 2.into(),
             name: "Assistant planar offset".to_owned(),
             feature: AssistantCadBodyFeature::PlanarOffset {
                 profile_feature_id: 3,
@@ -422,7 +422,7 @@ fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Assistant sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: 3,
@@ -516,7 +516,7 @@ fn cad_edit_append_spatial_sweep_preflights_v12_without_mutation_and_is_one_step
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Assistant spatial sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: 3,
@@ -608,7 +608,7 @@ fn cad_edit_append_spatial_sweep_rejects_combined_envelope_without_mutation() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected spatial sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: 3,
@@ -692,7 +692,7 @@ fn cad_edit_append_spatial_sweep_rejects_suppressed_and_cross_definition_paths_a
     );
     let program = |path_feature_id| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 2,
+            definition_id: 2.into(),
             name: "Rejected spatial sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: 3,
@@ -766,7 +766,7 @@ fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Assistant loft".to_owned(),
             feature: AssistantCadBodyFeature::Loft {
                 sections: vec![
@@ -864,7 +864,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Assistant shell".to_owned(),
             feature: AssistantCadBodyFeature::TopologyShell {
                 target_feature_id: 2,
@@ -1098,7 +1098,7 @@ fn cad_edit_append_topology_shell_rejects_unpublished_reference_without_mutation
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected shell".to_owned(),
             feature: AssistantCadBodyFeature::TopologyShell {
                 target_feature_id: 2,
@@ -1125,7 +1125,7 @@ fn cad_edit_append_topology_fillet_rejects_unpublished_reference_without_mutatio
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected fillet".to_owned(),
             feature: AssistantCadBodyFeature::TopologyFillet {
                 target_feature_id: 2,
@@ -1152,7 +1152,7 @@ fn cad_edit_append_topology_chamfer_rejects_unpublished_reference_without_mutati
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected chamfer".to_owned(),
             feature: AssistantCadBodyFeature::TopologyChamfer {
                 target_feature_id: 2,
@@ -1204,7 +1204,7 @@ fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = |target_feature_id, profile_feature_id, depth_mm| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected pocket".to_owned(),
             feature: AssistantCadBodyFeature::Pocket {
                 target_feature_id,
@@ -1215,15 +1215,15 @@ fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
     };
 
     assert!(
-        app.plan_assistant_cad_edit_program(&program(2, 4, 8.0))
+        app.plan_assistant_cad_edit_program(&program(2.into(), 4.into(), 8.0))
             .is_err()
     );
     assert!(
-        app.plan_assistant_cad_edit_program(&program(2, 3, 20.0))
+        app.plan_assistant_cad_edit_program(&program(2.into(), 3.into(), 20.0))
             .is_err()
     );
     assert!(
-        app.plan_assistant_cad_edit_program(&program(3, 2, 8.0))
+        app.plan_assistant_cad_edit_program(&program(3.into(), 2.into(), 8.0))
             .is_err()
     );
     assert_eq!(app.document.current().revision_id(), baseline_revision);
@@ -1245,9 +1245,9 @@ fn cad_edit_append_planar_offset_rejects_unsupported_inputs_without_mutation() {
     let baseline_revision = app.document.current().revision_id();
     let baseline_digest = app.document.current().canonical_digest();
     let baseline_undo = app.document.visible_undo_steps();
-    let program = |definition_id, profile_feature_id, distance_mm| AssistantCadEditProgram {
+    let program = |definition_id: u64, profile_feature_id, distance_mm| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id,
+            definition_id: definition_id.into(),
             name: "Rejected planar offset".to_owned(),
             feature: AssistantCadBodyFeature::PlanarOffset {
                 profile_feature_id,
@@ -1402,7 +1402,7 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = |profile_feature_id, path_feature_id| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id,
@@ -1507,7 +1507,7 @@ fn cad_edit_append_loft_rejects_unsupported_inputs_without_mutation() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = |upper_profile_feature_id: u64| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected loft".to_owned(),
             feature: AssistantCadBodyFeature::Loft {
                 sections: vec![
@@ -1593,7 +1593,7 @@ fn cad_edit_append_boolean_rejects_invalid_exact_inputs_without_mutation() {
     let baseline_undo = app.document.visible_undo_steps();
     let program = |operation, target_feature_id, tool_feature_id| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: INITIAL_BOX_DEFINITION.0,
+            definition_id: INITIAL_BOX_DEFINITION.0.into(),
             name: "Rejected Boolean".to_owned(),
             feature: AssistantCadBodyFeature::Boolean {
                 operation,

@@ -51,7 +51,7 @@ fn program(feature: AssistantCadBodyFeature) -> AssistantCadEditProgram {
         operations: vec![
             prefix(),
             AssistantCadEditOperation::AppendFeature {
-                definition_id: INITIAL_BOX_DEFINITION.0,
+                definition_id: INITIAL_BOX_DEFINITION.0.into(),
                 name: "Finish after prefix".into(),
                 feature,
             },

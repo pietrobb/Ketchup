@@ -1993,7 +1993,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 40);
+        assert_eq!(variants.len(), 38);
         for operation in [
             "move_physical_pin_pair",
             "append_feature",
@@ -2004,8 +2004,6 @@ mod tests {
             "create_tag",
             "set_occurrence_tag",
             "set_tag_visibility",
-            "create_program_sketch",
-            "append_program_pocket",
             "create_spatial_path",
             "create_construction_point",
             "create_construction_axis",
@@ -2078,20 +2076,18 @@ mod tests {
                 "translation_mm":[0,0,0]
             },
             {
-                "operation":"create_program_sketch",
-                "definition":{"operation_index":0,"output":"definition"},
+                "operation":"create_sketch",
+                "definition_id":{"operation_index":0,"output":"definition"},
                 "name":"Opening profile",
                 "workplane":{"type":"principal","plane":"xy"},
                 "entities":[{"type":"circle","id":1,"center_mm":[0,0],"radius_mm":4}],
                 "constraints":[]
             },
             {
-                "operation":"append_program_pocket",
-                "definition":{"operation_index":0,"output":"definition"},
+                "operation":"append_feature",
+                "definition_id":{"operation_index":0,"output":"definition"},
                 "name":"Opening",
-                "target_feature":{"operation_index":0,"output":"body_feature"},
-                "profile_feature":{"operation_index":1,"output":"sketch_feature"},
-                "depth_mm":5
+                "feature":{"type":"pocket","target_feature_id":{"operation_index":0,"output":"body_feature"},"profile_feature_id":{"operation_index":1,"output":"sketch_feature"},"depth_mm":5}
             }
         ]});
         let applied = request(

@@ -819,7 +819,7 @@ fn public_profile_copies_expand_to_transformed_editable_closed_profiles() {
             uniform_scale,
         };
     let input = program(vec![AssistantCadEditOperation::CreateSketch {
-        definition_id: 1,
+        definition_id: 1.into(),
         name: "Transformed profile copies".into(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -917,8 +917,8 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
     };
     let input = program(vec![
         part(),
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition,
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(definition),
             name: "Dimensioned circular section".into(),
             workplane: AssistantWorkplaneSpec::Frame {
                 origin_mm: [0.0, 0.0, 0.0],
@@ -936,8 +936,8 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
                 value_mm: 13.0,
             }],
         },
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition,
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(definition),
             name: "Rounded middle section".into(),
             workplane: AssistantWorkplaneSpec::Frame {
                 origin_mm: [2.0, -1.0, -8.0],
@@ -954,8 +954,8 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
             }],
             constraints: Vec::new(),
         },
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition,
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(definition),
             name: "Transformed elliptic section".into(),
             workplane: AssistantWorkplaneSpec::Frame {
                 origin_mm: [4.0, 2.0, -15.0],
@@ -981,7 +981,7 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
             constraints: Vec::new(),
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Parametric multi-section loft".into(),
             feature: AssistantCadBodyFeature::Loft {
                 sections: vec![
@@ -1006,7 +1006,7 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
     let input: AssistantCadEditProgram =
         serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
     let mut holed = input.clone();
-    let AssistantCadEditOperation::CreateProgramSketch {
+    let AssistantCadEditOperation::CreateSketch {
         entities,
         constraints,
         ..
@@ -1038,7 +1038,7 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
         "Loft sections with mismatched hole counts must fail closed during public planning"
     );
     for (operation_index, (outer_radius, hole_radius)) in [(2, (11.0, 3.0)), (3, (9.0, 2.0))] {
-        let AssistantCadEditOperation::CreateProgramSketch {
+        let AssistantCadEditOperation::CreateSketch {
             entities,
             constraints,
             ..
@@ -1411,9 +1411,7 @@ fn helix_resolves_existing_and_same_program_construction_axes() {
     existing.apply_batch(&axis_batch).unwrap();
     let existing_program = program(vec![AssistantCadEditOperation::CreateHelix {
         name: "Existing-axis Helix".into(),
-        parameters: parameters(AssistantAxisSpec::ConstructionAxis {
-            axis: AssistantCadFeatureReference::Existing(1),
-        }),
+        parameters: parameters(AssistantAxisSpec::ConstructionAxis { axis: 1.into() }),
         profile: Vec::new(),
     }]);
     let existing_batch = plan(
@@ -1471,9 +1469,7 @@ fn helix_resolves_existing_and_same_program_construction_axes() {
     wrong_existing.apply_batch(&point_batch).unwrap();
     let invalid_existing = program(vec![AssistantCadEditOperation::CreateHelix {
         name: "Invalid existing-axis Helix".into(),
-        parameters: parameters(AssistantAxisSpec::ConstructionAxis {
-            axis: AssistantCadFeatureReference::Existing(1),
-        }),
+        parameters: parameters(AssistantAxisSpec::ConstructionAxis { axis: 1.into() }),
         profile: Vec::new(),
     }]);
     assert!(
@@ -1935,8 +1931,8 @@ fn program_sketch_persistently_references_typed_construction_plane_output() {
             normal: [0.0, 0.0, 2.0],
             x_direction: [3.0, 0.0, 0.0],
         },
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition: definition_output,
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(definition_output),
             name: "Referenced plane sketch".into(),
             workplane: AssistantWorkplaneSpec::ConstructionPlane {
                 plane: AssistantCadFeatureReference::ProgramOutput(plane_output),
@@ -2026,8 +2022,8 @@ fn program_sketch_persistently_references_typed_construction_plane_output() {
             origin_mm: [0.0; 3],
             direction: [0.0, 0.0, 1.0],
         },
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition: definition_output,
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(definition_output),
             name: "Invalid referenced sketch".into(),
             workplane: AssistantWorkplaneSpec::ConstructionPlane {
                 plane: AssistantCadFeatureReference::ProgramOutput(plane_output),
@@ -2093,25 +2089,25 @@ fn same_program_boolean_resolves_host_assigned_body_outputs_atomically() {
     };
     let input = program(vec![
         AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "First pocket body".into(),
             feature: AssistantCadBodyFeature::Pocket {
-                target_feature_id: 2,
-                profile_feature_id: 3,
+                target_feature_id: 2.into(),
+                profile_feature_id: 3.into(),
                 depth_mm: 5.0,
             },
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Second pocket body".into(),
             feature: AssistantCadBodyFeature::Pocket {
-                target_feature_id: 2,
-                profile_feature_id: 4,
+                target_feature_id: 2.into(),
+                profile_feature_id: 4.into(),
                 depth_mm: 5.0,
             },
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Chained Boolean".into(),
             feature: AssistantCadBodyFeature::Boolean {
                 operation: AssistantCadBooleanOperation::Intersect,
@@ -2221,7 +2217,7 @@ fn same_program_set_dimension_updates_existing_boolean_inputs_atomically() {
     let baseline = document.current();
     let undo = document.visible_undo_steps();
     let intersect = AssistantCadEditOperation::AppendFeature {
-        definition_id: 1,
+        definition_id: 1.into(),
         name: "Overlap".into(),
         feature: AssistantCadBodyFeature::Boolean {
             operation: AssistantCadBooleanOperation::Intersect,
@@ -2302,8 +2298,11 @@ fn create_part_sketch_and_pocket_resolve_typed_program_outputs_atomically() {
     };
     let input = program(vec![
         part(),
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                0,
+                AssistantCadProgramFeatureOutput::Definition,
+            )),
             name: "Opening profile".into(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -2315,12 +2314,23 @@ fn create_part_sketch_and_pocket_resolve_typed_program_outputs_atomically() {
             }],
             constraints: Vec::new(),
         },
-        AssistantCadEditOperation::AppendProgramPocket {
-            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                0,
+                AssistantCadProgramFeatureOutput::Definition,
+            )),
             name: "Opening".into(),
-            target_feature: output(0, AssistantCadProgramFeatureOutput::BodyFeature),
-            profile_feature: output(1, AssistantCadProgramFeatureOutput::SketchFeature),
-            depth_mm: 10.0,
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    0,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                )),
+                profile_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    1,
+                    AssistantCadProgramFeatureOutput::SketchFeature,
+                )),
+                depth_mm: 10.0,
+            },
         },
     ]);
     let input: AssistantCadEditProgram =
@@ -2410,8 +2420,11 @@ fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
             translation_mm: [0.0, 0.0, 0.0],
             rotation: None,
         },
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                0,
+                AssistantCadProgramFeatureOutput::Definition,
+            )),
             name: "Left holes".into(),
             workplane: AssistantWorkplaneSpec::Frame {
                 origin_mm: [0.0, 0.0, 0.0],
@@ -2425,15 +2438,29 @@ fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
             }],
             constraints: Vec::new(),
         },
-        AssistantCadEditOperation::AppendProgramPocket {
-            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                0,
+                AssistantCadProgramFeatureOutput::Definition,
+            )),
             name: "Left pocket".into(),
-            target_feature: output(0, AssistantCadProgramFeatureOutput::BodyFeature),
-            profile_feature: output(1, AssistantCadProgramFeatureOutput::SketchFeature),
-            depth_mm: 4.0,
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    0,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                )),
+                profile_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    1,
+                    AssistantCadProgramFeatureOutput::SketchFeature,
+                )),
+                depth_mm: 4.0,
+            },
         },
-        AssistantCadEditOperation::CreateProgramSketch {
-            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+        AssistantCadEditOperation::CreateSketch {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                0,
+                AssistantCadProgramFeatureOutput::Definition,
+            )),
             name: "Right holes".into(),
             workplane: AssistantWorkplaneSpec::Frame {
                 origin_mm: [100.0, 0.0, 18.0],
@@ -2447,12 +2474,23 @@ fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
             }],
             constraints: Vec::new(),
         },
-        AssistantCadEditOperation::AppendProgramPocket {
-            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                0,
+                AssistantCadProgramFeatureOutput::Definition,
+            )),
             name: "Right pocket".into(),
-            target_feature: output(2, AssistantCadProgramFeatureOutput::BodyFeature),
-            profile_feature: output(3, AssistantCadProgramFeatureOutput::SketchFeature),
-            depth_mm: 4.0,
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    2,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                )),
+                profile_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    3,
+                    AssistantCadProgramFeatureOutput::SketchFeature,
+                )),
+                depth_mm: 4.0,
+            },
         },
     ]);
 
@@ -4039,8 +4077,8 @@ fn typed_program_outputs_reject_forward_and_cross_kind_references_without_mutati
         operation_index,
         output,
     };
-    let sketch = |definition| AssistantCadEditOperation::CreateProgramSketch {
-        definition,
+    let sketch = |definition| AssistantCadEditOperation::CreateSketch {
+        definition_id: AssistantCadFeatureReference::ProgramOutput(definition),
         name: "Opening profile".into(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -4052,12 +4090,17 @@ fn typed_program_outputs_reject_forward_and_cross_kind_references_without_mutati
         }],
         constraints: Vec::new(),
     };
-    let pocket = |target_feature, profile_feature| AssistantCadEditOperation::AppendProgramPocket {
-        definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+    let pocket = |target_feature, profile_feature| AssistantCadEditOperation::AppendFeature {
+        definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+            0,
+            AssistantCadProgramFeatureOutput::Definition,
+        )),
         name: "Opening".into(),
-        target_feature,
-        profile_feature,
-        depth_mm: 10.0,
+        feature: AssistantCadBodyFeature::Pocket {
+            target_feature_id: AssistantCadFeatureReference::ProgramOutput(target_feature),
+            profile_feature_id: AssistantCadFeatureReference::ProgramOutput(profile_feature),
+            depth_mm: 10.0,
+        },
     };
     let invalid_programs = [
         program(vec![
@@ -4082,8 +4125,11 @@ fn typed_program_outputs_reject_forward_and_cross_kind_references_without_mutati
         ]),
         program(vec![
             part(),
-            AssistantCadEditOperation::CreateProgramSketch {
-                definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            AssistantCadEditOperation::CreateSketch {
+                definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    0,
+                    AssistantCadProgramFeatureOutput::Definition,
+                )),
                 name: "Guessed workplane".into(),
                 workplane: AssistantWorkplaneSpec::Offset {
                     base_feature_id: 1,
@@ -4424,7 +4470,7 @@ fn public_framed_sketch_output_builds_an_exact_editable_planar_offset() {
     let baseline_digest = document.current().canonical_digest();
     let offset_program = |distance_mm| {
         program(vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Framed planar offset".into(),
             feature: AssistantCadBodyFeature::PlanarOffset {
                 profile_feature_id: 2,
@@ -4514,7 +4560,7 @@ fn missing_topology_evidence_cannot_authorize_a_finish() {
         .unwrap();
     let baseline = document.current();
     let input = program(vec![AssistantCadEditOperation::AppendFeature {
-        definition_id: 1,
+        definition_id: 1.into(),
         name: "Finish".into(),
         feature: AssistantCadBodyFeature::TopologyFillet {
             target_feature_id: 2,
@@ -4760,7 +4806,7 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
         .unwrap();
     let baseline = document.current();
     let input = program(vec![AssistantCadEditOperation::AppendFeature {
-        definition_id: definition.0,
+        definition_id: definition.0.into(),
         name: "Public general sweep".into(),
         feature: AssistantCadBodyFeature::Sweep {
             profile_feature_id: profile.0,
@@ -4870,7 +4916,7 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
         ]))
         .unwrap();
     let sketch_path_program = program(vec![AssistantCadEditOperation::AppendFeature {
-        definition_id: definition.0,
+        definition_id: definition.0.into(),
         name: "Public Sketch path sweep".into(),
         feature: AssistantCadBodyFeature::Sweep {
             profile_feature_id: profile.0,
@@ -4980,7 +5026,7 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
     };
     let input = program(vec![
         AssistantCadEditOperation::AppendFeature {
-            definition_id: definition.0,
+            definition_id: definition.0.into(),
             name: "Planar surface A".into(),
             feature: AssistantCadBodyFeature::SurfaceBody {
                 source: AssistantCadSurfaceBodySource::Planar {
@@ -4989,7 +5035,7 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
             },
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: definition.0,
+            definition_id: definition.0.into(),
             name: "Planar surface B".into(),
             feature: AssistantCadBodyFeature::SurfaceBody {
                 source: AssistantCadSurfaceBodySource::Planar {
@@ -4998,7 +5044,7 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
             },
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: definition.0,
+            definition_id: definition.0.into(),
             name: "Trimmed surface".into(),
             feature: AssistantCadBodyFeature::SurfaceTrim {
                 target_feature_id: earlier_body(0),
@@ -5006,7 +5052,7 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
             },
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: definition.0,
+            definition_id: definition.0.into(),
             name: "Extended surface".into(),
             feature: AssistantCadBodyFeature::SurfaceExtend {
                 target_feature_id: earlier_body(2),
@@ -5014,7 +5060,7 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
             },
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: definition.0,
+            definition_id: definition.0.into(),
             name: "Knitted surface".into(),
             feature: AssistantCadBodyFeature::SurfaceKnit {
                 surface_feature_ids: vec![earlier_body(3), earlier_body(1)],
@@ -5023,7 +5069,7 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
             },
         },
         AssistantCadEditOperation::AppendFeature {
-            definition_id: definition.0,
+            definition_id: definition.0.into(),
             name: "Thickened solid".into(),
             feature: AssistantCadBodyFeature::SurfaceThicken {
                 target_feature_id: earlier_body(4),
@@ -5073,7 +5119,7 @@ fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
 
     let committed = document.current();
     let invalid = program(vec![AssistantCadEditOperation::AppendFeature {
-        definition_id: definition.0,
+        definition_id: definition.0.into(),
         name: "Invalid solid extension".into(),
         feature: AssistantCadBodyFeature::SurfaceExtend {
             target_feature_id: FeatureId(8).0.into(),

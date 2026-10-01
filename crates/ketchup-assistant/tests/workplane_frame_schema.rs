@@ -8,7 +8,7 @@ use serde_json::json;
 fn program(workplane: AssistantWorkplaneSpec) -> AssistantCadEditProgram {
     AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
-            definition_id: 1,
+            definition_id: 1.into(),
             name: "Frame sketch".into(),
             workplane,
             entities: vec![AssistantSketchEntity::Circle {

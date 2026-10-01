@@ -1239,7 +1239,6 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CircularPattern { selector, .. }
                 | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
                 AssistantCadEditOperation::CreateSketch { .. }
-                | AssistantCadEditOperation::CreateProgramSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::CreatePinJoint { .. }
@@ -1258,7 +1257,6 @@ impl LiveBridge {
                 | AssistantCadEditOperation::FilletEdges { .. }
                 | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
-                | AssistantCadEditOperation::AppendProgramPocket { .. }
                 | AssistantCadEditOperation::BindProgramOutput { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
                 | AssistantCadEditOperation::SetFeatureParameter { .. }

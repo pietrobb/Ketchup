@@ -72,13 +72,13 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly four fields: message (a concise user-facing string), "
     "model_intent (null for discussion or typed actions), cad_edit_program (null unless proposing typed CAD operations), and fea_review (null unless preparing a confirmed static FEA review). "
-    "Return at most one non-null action field. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, spatial paths, helixes swept with any profile, direct edge fillets/chamfers, append_feature, append_program_pocket, set_dimension, set_feature_parameter, make_occurrence_unique, create_assembly_joint, set_assembly_joint_position, create_drawing, upsert_cam_plan, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
+    "Return at most one non-null action field. Use cad_edit_program for create_part, create_sketch, typed construction geometry, spatial paths, helixes swept with any profile, direct edge fillets/chamfers, append_feature, set_dimension, set_feature_parameter, make_occurrence_unique, create_assembly_joint, set_assembly_joint_position, create_drawing, upsert_cam_plan, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
     "Use fea_review only when the user asks to set up or run static FEA and only with host-published current exact face ordinals. It has definition_id, feature_id, occurrence_id, case_id, youngs_modulus_mpa, poisson_ratio, yield_strength_mpa, constrained_face_ordinals, loaded_face_ordinal, traction_local_n_per_mm2 [x,y,z], coarse_deflection_mm, and fine_deflection_mm. The host opens an editable review dialog and still requires the user to click explicit confirmation before meshing or solving. Never invent face ordinals or claim a solve before the host returns review evidence. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection, optional instance_path: the exact {root_occurrence_id, steps: [{owner_definition_id, kind: group|occurrence, local_id}]} copied from current instance inspection; instance_path is required when that definition has multiple visible instances}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
     "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: weldment_member, profile_feature_id, path_feature_id, orientation_degrees}, whose inputs are an unsuppressed closed profile and bounded SpatialPath in that definition and whose orientation is in [-180,180) degrees; feature {type: weldment_joint, first_member_id, second_member_id, policy: butt|miter, primary: first|second}, whose distinct member inputs may be existing IDs or earlier typed body_feature outputs and must meet at one manufacturable straight endpoint; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing or typed earlier sketch profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: sheet_metal, base_mm: [[x, y], ...], thickness_mm, k_factor, bends: [{parent, edge, length_mm, angle_degrees, inner_radius_mm}, ...]}, whose base is a simple counter-clockwise polygon whose every edge is longer than the thickness, and whose bends form a tree: parent null bends an edge of the base (edge i runs from corner i to the next), parent j bends the far edge 2 of the flange of an earlier bend j; bends are ordered by (parent, edge), at most one per edge, never on two edges that share a corner, and a positive angle bends toward the face normal; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Surface features are generic: surface_body uses source {type: planar, profile_feature_id} or {type: loft, sections, optional guide_feature_id, continuity}; surface_trim uses distinct surface target_feature_id and cutter_feature_id; surface_extend uses a surface target and positive distance_mm; surface_knit uses 2 to 256 unique surface_feature_ids, tolerance_mm from 0.0000001 to 10, and make_solid; surface_thicken uses a surface target, thickness_mm from 0.01 to 100000, and direction inward|outward|symmetric. Surface operands may be positive existing IDs or earlier typed body_feature outputs; the host rejects solid/surface kind mismatches. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
-    "create_sketch has definition_id, name, workplane, entities, and constraints; create_program_sketch has the same shape except definition is a typed earlier definition output. Workplane is principal with plane xy/yz/xz, an exact right-handed unit frame with origin_mm/x_axis/y_axis, offset with an existing base_feature_id and distance_mm for create_part/create_sketch, or construction_plane with plane as an existing feature ID or earlier create_construction_plane construction_feature output for create_program_sketch. "
-    "append_program_pocket has definition, target_feature, and profile_feature typed references plus name and depth_mm. Reference the definition and body_feature of an earlier create_part, and the sketch_feature of that create_part or an earlier create_program_sketch; this creates the opening in the same atomic program without guessed host IDs. Loft profile_feature_id also accepts a typed sketch_feature output from an earlier create_part or create_program_sketch. "
+    "create_sketch has definition_id, name, workplane, entities, and constraints. Workplane is principal with plane xy/yz/xz, an exact right-handed unit frame with origin_mm/x_axis/y_axis, offset with an existing base_feature_id and distance_mm for create_part or a create_sketch on an existing definition, or construction_plane with plane as an existing feature ID or earlier create_construction_plane construction_feature output for create_sketch. "
+    "Every definition_id of create_sketch and append_feature, and every feature input of append_feature, is either a positive existing ID or {operation_index, output} naming an earlier operation of this same program: output definition of an earlier create_part, body_feature of an earlier create_part or body-producing append_feature, typed sketch_feature output of an earlier create_part or create_sketch. So one atomic program can create a part, sketch an opening on it, and append_feature {type: pocket} through it without guessed host IDs. "
     "Entities are typed line/arc/circle/cubic_bezier records with positive stable IDs and 2D millimetre coordinates; ellipse uses four positive unique segment_ids, center_mm, positive radius_x_mm/radius_y_mm, rotation_degrees, and a required positive maximum_deviation_mm that must cover its bounded cubic approximation error. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center/control1/control2}. "
     "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. set_feature_parameter targets an existing feature_id with a host-advertised parameter_path, value_type length|angle|scalar, and finite value; copy the path and type exactly from current feature parameters. make_occurrence_unique takes an existing root occurrence_id and safely isolates only a shared part while preserving its existing holes and joints; use it before drilling a shared side in the same program. "
     "upsert_cam_plan commits one exact-target-bound setup with positive plan/definition/feature/tool IDs, bounded stock minimum/maximum, tool_kind flat_end_mill|ball_end_mill|drill, tool and holder dimensions, spindle/feed/plunge, work_offset g54..g59, origin/x_axis/y_axis, safe_height, stepdown/stepover and allowances; use only a current solid feature and do not claim simulation or export until the host returns exact review evidence. upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
@@ -633,7 +633,7 @@ def _valid_cad_program_output_reference(
             "create_helix",
         }
     if output == "sketch_feature":
-        return producer_type in {"create_part", "create_program_sketch"}
+        return producer_type in {"create_part", "create_sketch"}
     if output == "construction_feature":
         return producer_type in {
             "create_spatial_path",
@@ -649,7 +649,6 @@ def _valid_cad_program_output_reference(
             "create_part",
             "fillet_edges",
             "chamfer_edges",
-            "append_program_pocket",
         }
         or producer_type == "append_feature"
         and isinstance(producer.get("feature"), dict)
@@ -857,7 +856,7 @@ def _valid_cad_workplane(
         )
     if workplane_type == "construction_plane":
         reference = value.get("plane")
-        if operation_type != "create_program_sketch" or set(value) != {"type", "plane"}:
+        if operation_type != "create_sketch" or set(value) != {"type", "plane"}:
             return False
         if isinstance(reference, int) and not isinstance(reference, bool):
             return 0 < reference <= MAX_U64
@@ -1200,27 +1199,22 @@ def _validate_cad_edit_program(program: object) -> dict:
         operation_type = operation["operation"]
         target_count = 0
         generated_per_target = 0
-        if operation_type in {"create_sketch", "create_program_sketch", "create_part"}:
-            if operation_type in {"create_sketch", "create_program_sketch"}:
-                definition_field = (
-                    "definition_id" if operation_type == "create_sketch" else "definition"
-                )
+        if operation_type in {"create_sketch", "create_part"}:
+            if operation_type == "create_sketch":
                 if set(operation) != {
-                    "operation", definition_field, "name", "workplane", "entities", "constraints"
+                    "operation", "definition_id", "name", "workplane", "entities", "constraints"
                 }:
                     raise ProtocolError("provider CAD sketch creation contains missing or unknown fields")
-                if operation_type == "create_sketch":
-                    definition_valid = (
-                        isinstance(operation[definition_field], int)
-                        and not isinstance(operation[definition_field], bool)
-                        and 0 < operation[definition_field] <= MAX_U64
-                    )
-                else:
-                    definition_valid = _valid_cad_program_output_reference(
-                        operation[definition_field], operation_index, operations, "definition"
-                    )
-                if not definition_valid:
+                if not _valid_cad_feature_reference(
+                    operation["definition_id"], operation_index, operations, "definition"
+                ):
                     raise ProtocolError("provider CAD sketch creation target is invalid")
+                # An offset workplane leans on a face of a definition that exists before
+                # this program runs.
+                if isinstance(operation["definition_id"], dict) and isinstance(
+                    operation["workplane"], dict
+                ) and operation["workplane"].get("type") == "offset":
+                    raise ProtocolError("provider CAD workplane is invalid")
             else:
                 if not {"operation", "name", "workplane", "entities", "constraints", "feature", "translation_mm"} <= set(operation) <= {
                     "operation", "name", "workplane", "entities", "constraints", "feature", "translation_mm", "rotation"
@@ -1350,49 +1344,15 @@ def _validate_cad_edit_program(program: object) -> dict:
             ):
                 raise ProtocolError("provider CAD Helix is invalid")
             target_count = generated_per_target = 1
-        elif operation_type == "append_program_pocket":
-            if set(operation) != {
-                "operation",
-                "definition",
-                "name",
-                "target_feature",
-                "profile_feature",
-                "depth_mm",
-            }:
-                raise ProtocolError("provider CAD program Pocket contains missing or unknown fields")
-            name = operation["name"]
-            depth_mm = operation["depth_mm"]
-            if (
-                not isinstance(name, str)
-                or not name.strip()
-                or len(name.encode("utf-8")) > 128
-                or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in name)
-                or not _valid_cad_program_output_reference(
-                    operation["definition"], operation_index, operations, "definition"
-                )
-                or not _valid_cad_program_output_reference(
-                    operation["target_feature"], operation_index, operations, "body_feature"
-                )
-                or not _valid_cad_program_output_reference(
-                    operation["profile_feature"], operation_index, operations, "sketch_feature"
-                )
-                or operation["target_feature"] == operation["profile_feature"]
-                or not isinstance(depth_mm, (int, float))
-                or isinstance(depth_mm, bool)
-                or not math.isfinite(depth_mm)
-                or not 0 < depth_mm <= 1_000_000
-            ):
-                raise ProtocolError("provider CAD program Pocket is invalid")
         elif operation_type == "append_feature":
             if set(operation) != {"operation", "definition_id", "name", "feature"}:
                 raise ProtocolError("provider CAD feature append contains missing or unknown fields")
-            definition_id = operation["definition_id"]
             name = operation["name"]
             feature = operation["feature"]
             if (
-                not isinstance(definition_id, int)
-                or isinstance(definition_id, bool)
-                or not 0 < definition_id <= MAX_U64
+                not _valid_cad_feature_reference(
+                    operation["definition_id"], operation_index, operations, "definition"
+                )
                 or not isinstance(name, str)
                 or not name.strip()
                 or len(name.encode("utf-8")) > 128
@@ -1417,12 +1377,12 @@ def _validate_cad_edit_program(program: object) -> dict:
                 depth_mm = feature.get("depth_mm")
                 valid_feature = (
                     set(feature) == {"type", "target_feature_id", "profile_feature_id", "depth_mm"}
-                    and isinstance(target_feature_id, int)
-                    and not isinstance(target_feature_id, bool)
-                    and 0 < target_feature_id <= MAX_U64
-                    and isinstance(feature.get("profile_feature_id"), int)
-                    and not isinstance(feature.get("profile_feature_id"), bool)
-                    and 0 < feature["profile_feature_id"] <= MAX_U64
+                    and _valid_cad_body_feature_reference(
+                        target_feature_id, operation_index, operations
+                    )
+                    and _valid_cad_feature_reference(
+                        feature.get("profile_feature_id"), operation_index, operations, "sketch_feature"
+                    )
                     and target_feature_id != feature["profile_feature_id"]
                     and isinstance(depth_mm, (int, float))
                     and not isinstance(depth_mm, bool)
@@ -2006,7 +1966,6 @@ def _validate_cad_edit_program(program: object) -> dict:
             target_count = _validate_cad_selector(operation["selector"])
         if operation_type in {
             "create_sketch",
-            "create_program_sketch",
             "create_part",
             "create_spatial_path",
             "create_construction_point",
@@ -2014,7 +1973,6 @@ def _validate_cad_edit_program(program: object) -> dict:
             "create_construction_plane",
             "create_helix",
             "append_feature",
-            "append_program_pocket",
             "fillet_edges",
             "chamfer_edges",
             "set_dimension",

@@ -944,8 +944,8 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
         "operations": [
             revolve_program["operations"][0],
             {
-                "operation": "create_program_sketch",
-                "definition": {"operation_index": 0, "output": "definition"},
+                "operation": "create_sketch",
+                "definition_id": {"operation_index": 0, "output": "definition"},
                 "name": "Opening profile",
                 "workplane": {"type": "principal", "plane": "xy"},
                 "entities": [
@@ -954,26 +954,27 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 "constraints": [],
             },
             {
-                "operation": "append_program_pocket",
-                "definition": {"operation_index": 0, "output": "definition"},
+                "operation": "append_feature",
+                "definition_id": {"operation_index": 0, "output": "definition"},
                 "name": "Opening",
-                "target_feature": {"operation_index": 0, "output": "body_feature"},
-                "profile_feature": {"operation_index": 1, "output": "sketch_feature"},
-                "depth_mm": 1,
+                "feature": { "type": "pocket", "target_feature_id": {"operation_index": 0, "output": "body_feature"}, "profile_feature_id": {"operation_index": 1, "output": "sketch_feature"}, "depth_mm": 1 },
             },
         ]
     }
     assert assistant._validate_cad_edit_program(typed_pocket_program) == typed_pocket_program
-    assert "append_program_pocket" in assistant.SYSTEM_PROMPT
-    for operation_index, field, output in [
-        (1, "definition", "body_feature"),
-        (2, "profile_feature", "body_feature"),
-        (2, "target_feature", "sketch_feature"),
-        (2, "target_feature", "body_feature"),
+    assert "append_program_pocket" not in assistant.SYSTEM_PROMPT
+    for operation_index, path, output in [
+        (1, ("definition_id",), "body_feature"),
+        (2, ("feature", "profile_feature_id"), "body_feature"),
+        (2, ("feature", "target_feature_id"), "sketch_feature"),
+        (2, ("feature", "target_feature_id"), "body_feature"),
     ]:
         invalid_typed_program = json.loads(json.dumps(typed_pocket_program))
-        invalid_typed_program["operations"][operation_index][field] = {
-            "operation_index": operation_index if field == "target_feature" else 0,
+        operation = invalid_typed_program["operations"][operation_index]
+        for key in path[:-1]:
+            operation = operation[key]
+        operation[path[-1]] = {
+            "operation_index": operation_index if path[-1] == "target_feature_id" else 0,
             "output": output,
         }
         with pytest.raises(assistant.ProtocolError):

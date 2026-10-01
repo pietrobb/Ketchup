@@ -368,6 +368,25 @@ impl StagedPlanningContext {
         }
     }
 
+    /// An existing definition ID as given (planning checks it exists), or the definition an
+    /// earlier operation of this program created.
+    fn resolve_program_definition(
+        &self,
+        reference: AssistantCadFeatureReference,
+        operation: &str,
+    ) -> AssistantPlanningResult<DefinitionId> {
+        match reference {
+            AssistantCadFeatureReference::Existing(id) => Ok(DefinitionId(id)),
+            AssistantCadFeatureReference::ProgramOutput(reference) => self
+                .resolve_program_output(
+                    reference,
+                    AssistantCadProgramFeatureOutput::Definition,
+                    operation,
+                )
+                .map(DefinitionId),
+        }
+    }
+
     fn resolve_base_selector(
         &self,
         current_selection: &BTreeSet<OccurrenceId>,
@@ -578,7 +597,7 @@ fn plan_panel(
     for hole in holes {
         staged.refresh("create_panel", document_target)?;
         let sketch = AssistantCadEditOperation::CreateSketch {
-            definition_id: definition_id.0,
+            definition_id: definition_id.0.into(),
             name: format!("{name} hole {}", hole.id),
             workplane: panel_hole_workplane(hole),
             entities: vec![AssistantSketchEntity::Circle {
@@ -610,8 +629,8 @@ fn plan_panel(
         staged.extend(sketch_commands);
         staged.refresh("create_panel", document_target)?;
         let feature = AssistantCadBodyFeature::Pocket {
-            target_feature_id: target_feature_id.0,
-            profile_feature_id: sketch_id.0,
+            target_feature_id: target_feature_id.0.into(),
+            profile_feature_id: sketch_id.0.into(),
             depth_mm: hole.depth_mm,
         };
         let kind = plan_feature_kind(
@@ -646,7 +665,7 @@ fn plan_panel(
             end_mm,
         };
         let sketch = AssistantCadEditOperation::CreateSketch {
-            definition_id: definition_id.0,
+            definition_id: definition_id.0.into(),
             name: format!("{name} pocket {}", pocket.id),
             workplane,
             entities: vec![
@@ -679,8 +698,8 @@ fn plan_panel(
         staged.extend(sketch_commands);
         staged.refresh("create_panel", document_target)?;
         let feature = AssistantCadBodyFeature::Pocket {
-            target_feature_id: target_feature_id.0,
-            profile_feature_id: sketch_id.0,
+            target_feature_id: target_feature_id.0.into(),
+            profile_feature_id: sketch_id.0.into(),
             depth_mm,
         };
         let kind = plan_feature_kind(
@@ -901,7 +920,7 @@ fn append_physical_pin_hole(
         depth_mm: hole.depth_mm,
     };
     let sketch = AssistantCadEditOperation::CreateSketch {
-        definition_id: definition_id.0,
+        definition_id: definition_id.0.into(),
         name: format!("{} sketch", hole.stable_hole_id),
         workplane: panel_hole_workplane(&panel_hole),
         entities: vec![AssistantSketchEntity::Circle {
@@ -934,8 +953,8 @@ fn append_physical_pin_hole(
     staged.refresh("create_physical_pin_joint", document_target)?;
 
     let feature = AssistantCadBodyFeature::Pocket {
-        target_feature_id: target_feature_id.0,
-        profile_feature_id: sketch_id.0,
+        target_feature_id: target_feature_id.0.into(),
+        profile_feature_id: sketch_id.0.into(),
         depth_mm: hole.depth_mm,
     };
     let kind = plan_feature_kind(
@@ -1527,6 +1546,27 @@ fn resolve_staged_program_feature_references(
                 .into();
         }
     }
+    if let AssistantCadBodyFeature::Pocket {
+        target_feature_id,
+        profile_feature_id,
+        ..
+    } = &mut feature
+    {
+        *target_feature_id = staged_planning
+            .resolve_program_feature(
+                *target_feature_id,
+                AssistantCadProgramFeatureOutput::BodyFeature,
+                operation,
+            )?
+            .into();
+        *profile_feature_id = staged_planning
+            .resolve_program_feature(
+                *profile_feature_id,
+                AssistantCadProgramFeatureOutput::SketchFeature,
+                operation,
+            )?
+            .into();
+    }
     match &mut feature {
         AssistantCadBodyFeature::SurfaceBody { source } => match source {
             AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
@@ -1810,7 +1850,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
     for (operation_index, operation) in program.operations.iter().enumerate() {
         let operation_name = match operation {
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
-            AssistantCadEditOperation::CreateProgramSketch { .. } => "create_program_sketch",
             AssistantCadEditOperation::CreatePart { .. } => "create_part",
             AssistantCadEditOperation::CreatePanel { .. } => "create_panel",
             AssistantCadEditOperation::CreateSpatialPath { .. } => "create_spatial_path",
@@ -1825,7 +1864,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             AssistantCadEditOperation::FilletEdges { .. } => "fillet_edges",
             AssistantCadEditOperation::ChamferEdges { .. } => "chamfer_edges",
             AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
-            AssistantCadEditOperation::AppendProgramPocket { .. } => "append_program_pocket",
             AssistantCadEditOperation::BindProgramOutput { .. } => "bind_program_output",
             AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
             AssistantCadEditOperation::SetFeatureParameter { .. } => "set_feature_parameter",
@@ -1914,7 +1952,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 edge_reference_ids,
                 radius_mm,
             } => Some(AssistantCadEditOperation::AppendFeature {
-                definition_id: *definition_id,
+                definition_id: (*definition_id).into(),
                 name: name.clone(),
                 feature: AssistantCadBodyFeature::TopologyFillet {
                     target_feature_id: *target_feature_id,
@@ -1930,7 +1968,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 edge_reference_ids,
                 distance_mm,
             } => Some(AssistantCadEditOperation::AppendFeature {
-                definition_id: *definition_id,
+                definition_id: (*definition_id).into(),
                 name: name.clone(),
                 feature: AssistantCadBodyFeature::TopologyChamfer {
                     target_feature_id: *target_feature_id,
@@ -1945,7 +1983,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         let operation = normalized_operation.as_ref().unwrap_or(operation);
         let selector = match operation {
             AssistantCadEditOperation::CreateSketch { .. }
-            | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
@@ -1956,7 +1993,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             | AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
-            | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::BindProgramOutput { .. }
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::SetFeatureParameter { .. }
@@ -2005,8 +2041,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         }
 
         match operation {
-            AssistantCadEditOperation::CreateSketch { .. }
-            | AssistantCadEditOperation::CreatePart { .. } => {
+            AssistantCadEditOperation::CreatePart { .. } => {
                 let creation_commands = plan_creation(
                     &snapshot,
                     operation,
@@ -2302,18 +2337,17 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     staged_planning.extend(creation_commands);
                 }
             }
-            AssistantCadEditOperation::CreateProgramSketch {
-                definition,
+            AssistantCadEditOperation::CreateSketch {
+                definition_id,
                 name,
                 workplane,
                 entities,
                 constraints,
             } => {
-                let definition_id = staged_planning.resolve_program_output(
-                    *definition,
-                    AssistantCadProgramFeatureOutput::Definition,
-                    operation_name,
-                )?;
+                let definition_id = staged_planning
+                    .resolve_program_definition(*definition_id, operation_name)?
+                    .0
+                    .into();
                 staged_planning.refresh(operation_name, &document_target)?;
                 let planning_snapshot = staged_planning.staged_snapshot();
                 let workplane = match workplane {
@@ -2374,7 +2408,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     &staged_planning,
                     operation_name,
                 )?;
-                let definition_id = DefinitionId(*definition_id);
+                let definition_id =
+                    staged_planning.resolve_program_definition(*definition_id, operation_name)?;
                 if planning_snapshot.definition(definition_id).is_none() {
                     return Err(assistant_canonical_rejection(
                         CanonicalError::DefinitionNotFound(definition_id),
@@ -2412,61 +2447,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 } else {
                     appended_exact_features.push((definition_id, id));
                 }
-            }
-            AssistantCadEditOperation::AppendProgramPocket {
-                definition,
-                name,
-                target_feature,
-                profile_feature,
-                depth_mm,
-            } => {
-                let definition_id = DefinitionId(staged_planning.resolve_program_output(
-                    *definition,
-                    AssistantCadProgramFeatureOutput::Definition,
-                    operation_name,
-                )?);
-                let target_feature_id = staged_planning.resolve_program_output(
-                    *target_feature,
-                    AssistantCadProgramFeatureOutput::BodyFeature,
-                    operation_name,
-                )?;
-                let profile_feature_id = staged_planning.resolve_program_output(
-                    *profile_feature,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                    operation_name,
-                )?;
-                staged_planning.refresh(operation_name, &document_target)?;
-                let planning_snapshot = staged_planning.staged_snapshot();
-                let planning_topology = staged_planning.topology(topology_results);
-                let feature = AssistantCadBodyFeature::Pocket {
-                    target_feature_id,
-                    profile_feature_id,
-                    depth_mm: *depth_mm,
-                };
-                let kind = plan_feature_kind(
-                    planning_snapshot,
-                    &planning_topology,
-                    definition_id,
-                    &feature,
-                    operation_name,
-                )?;
-                let id = next_feature.map(FeatureId).ok_or_else(|| {
-                    assistant_canonical_rejection(
-                        CanonicalError::IdExhausted,
-                        operation_name,
-                        &document_target,
-                    )
-                })?;
-                next_feature = id.0.checked_add(1);
-                staged_planning.push(CanonicalCommand::CreateFeature {
-                    id,
-                    definition_id,
-                    name: name.clone(),
-                    kind,
-                });
-                staged_planning
-                    .record_output(operation_index, StagedProgramOutput::BodyFeature(id));
-                appended_exact_features.push((definition_id, id));
             }
             AssistantCadEditOperation::BindProgramOutput { name, source } => {
                 staged_planning.bind_named_output(name, *source, operation_name)?;

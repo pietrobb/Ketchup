@@ -8,7 +8,8 @@ use crate::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
 };
 use ketchup_assistant::sidecar::{
-    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantWorkplaneSpec,
+    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadFeatureReference,
+    AssistantCadPartFeature, AssistantWorkplaneSpec,
 };
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchSpec, WorkplaneSpec,
@@ -111,6 +112,24 @@ fn construction_plane_workplane(
     })
 }
 
+/// The planner rewrites earlier-program outputs to the host IDs they produced before creation
+/// planning; an output that reaches here was never resolved.
+fn existing_reference(
+    reference: AssistantCadFeatureReference,
+    operation_name: &str,
+    document_target: &str,
+) -> AssistantPlanningResult<u64> {
+    reference.existing_id().ok_or_else(|| {
+        assistant_planning_rejection(
+            "planning.program_reference_unresolved",
+            operation_name,
+            document_target,
+            "An earlier-operation output was not resolved before planning.",
+            "Use an existing ID or an earlier typed program output.",
+        )
+    })
+}
+
 pub(crate) fn plan_creation(
     snapshot: &Snapshot,
     operation: &AssistantCadEditOperation,
@@ -133,7 +152,11 @@ pub(crate) fn plan_creation(
             entities,
             constraints,
         } => {
-            let definition_id = DefinitionId(*definition_id);
+            let definition_id = DefinitionId(existing_reference(
+                *definition_id,
+                operation_name,
+                document_target,
+            )?);
             if snapshot.definition(definition_id).is_none() {
                 return Err(assistant_canonical_rejection(
                     CanonicalError::DefinitionNotFound(definition_id),
@@ -215,15 +238,8 @@ pub(crate) fn plan_creation(
                     }
                 }
                 AssistantWorkplaneSpec::ConstructionPlane { plane } => {
-                    let feature_id = FeatureId(plane.existing_id().ok_or_else(|| {
-                        assistant_planning_rejection(
-                            "planning.construction_plane_reference_unresolved",
-                            operation_name,
-                            document_target,
-                            "The construction-plane reference was not resolved before planning.",
-                            "Use an existing construction plane or an earlier typed program output.",
-                        )
-                    })?);
+                    let feature_id =
+                        FeatureId(existing_reference(*plane, operation_name, document_target)?);
                     construction_plane_workplane(snapshot, feature_id, operation_name)?
                 }
             };
@@ -366,15 +382,8 @@ pub(crate) fn plan_creation(
                     }
                 }
                 AssistantWorkplaneSpec::ConstructionPlane { plane } => {
-                    let feature_id = FeatureId(plane.existing_id().ok_or_else(|| {
-                        assistant_planning_rejection(
-                            "planning.construction_plane_reference_unresolved",
-                            operation_name,
-                            document_target,
-                            "The construction-plane reference was not resolved before planning.",
-                            "Use an existing construction plane or an earlier typed program output.",
-                        )
-                    })?);
+                    let feature_id =
+                        FeatureId(existing_reference(*plane, operation_name, document_target)?);
                     construction_plane_workplane(snapshot, feature_id, operation_name)?
                 }
             };

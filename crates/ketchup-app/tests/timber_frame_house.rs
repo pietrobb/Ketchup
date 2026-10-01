@@ -19,9 +19,10 @@ use ketchup_application::validation::{
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadClassificationCategory, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
-    AssistantCadRotation, AssistantChatResult, AssistantDistribution, AssistantPrincipalPlane,
-    AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantCadFeatureReference, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
+    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantChatResult,
+    AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_manufacturing::fabrication::{
@@ -2036,8 +2037,11 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
                 translation_mm: [1_000.0, 1_000.0, 1_000.0],
                 rotation: None,
             },
-            AssistantCadEditOperation::CreateProgramSketch {
-                definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            AssistantCadEditOperation::CreateSketch {
+                definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    0,
+                    AssistantCadProgramFeatureOutput::Definition,
+                )),
                 name: "Window opening".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xz,
@@ -2045,12 +2049,23 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
                 entities: window_entities,
                 constraints: window_constraints,
             },
-            AssistantCadEditOperation::AppendProgramPocket {
-                definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            AssistantCadEditOperation::AppendFeature {
+                definition_id: AssistantCadFeatureReference::ProgramOutput(output(
+                    0,
+                    AssistantCadProgramFeatureOutput::Definition,
+                )),
                 name: "Window pocket".to_owned(),
-                target_feature: output(0, AssistantCadProgramFeatureOutput::BodyFeature),
-                profile_feature: output(1, AssistantCadProgramFeatureOutput::SketchFeature),
-                depth_mm: SHEATHING_THICKNESS_MM,
+                feature: AssistantCadBodyFeature::Pocket {
+                    target_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                        0,
+                        AssistantCadProgramFeatureOutput::BodyFeature,
+                    )),
+                    profile_feature_id: AssistantCadFeatureReference::ProgramOutput(output(
+                        1,
+                        AssistantCadProgramFeatureOutput::SketchFeature,
+                    )),
+                    depth_mm: SHEATHING_THICKNESS_MM,
+                },
             },
         ],
     };
@@ -2230,7 +2245,7 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
         path_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreateSketch {
-                definition_id: definition_id.0,
+                definition_id: definition_id.0.into(),
                 name: "Sweep path".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xy,
@@ -2270,7 +2285,7 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
 
     let sweep_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
-            definition_id: definition_id.0,
+            definition_id: definition_id.0.into(),
             name: "Assistant sketch sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: profile_id.0,
@@ -2414,7 +2429,7 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
         fillet_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: definition_id.0,
+                definition_id: definition_id.0.into(),
                 name: "Rounded edge".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyFillet {
                     target_feature_id: body_id.0,

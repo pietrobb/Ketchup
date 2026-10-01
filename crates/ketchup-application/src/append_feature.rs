@@ -7,7 +7,8 @@ use crate::topology::{
 };
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
-    AssistantCadLoftContinuity, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
+    AssistantCadFeatureReference, AssistantCadLoftContinuity, AssistantCadShellDirection,
+    AssistantCadSurfaceBodySource,
 };
 use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
@@ -20,6 +21,16 @@ use ketchup_model::document::{
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
 use ketchup_model::topology::TopologicalElementKind;
+
+/// The planner rewrites every earlier-program-output reference to the host ID it produced
+/// before a feature is planned, so only existing IDs reach here.
+fn resolved(reference: &AssistantCadFeatureReference) -> FeatureId {
+    FeatureId(
+        reference
+            .existing_id()
+            .expect("Assistant feature references are resolved before feature planning"),
+    )
+}
 
 pub(crate) fn plan_feature_kind(
     snapshot: &Snapshot,
@@ -34,16 +45,8 @@ pub(crate) fn plan_feature_kind(
             target_feature_id,
             tool_feature_id,
         } => {
-            let target = FeatureId(
-                target_feature_id
-                    .existing_id()
-                    .expect("Assistant Boolean references are resolved before feature planning"),
-            );
-            let tool = FeatureId(
-                tool_feature_id
-                    .existing_id()
-                    .expect("Assistant Boolean references are resolved before feature planning"),
-            );
+            let target = resolved(target_feature_id);
+            let tool = resolved(tool_feature_id);
             let mut input_bounds = [None, None];
             for (index, input) in [target, tool].into_iter().enumerate() {
                 let existing = snapshot.feature(input).ok_or_else(|| {
@@ -117,7 +120,7 @@ pub(crate) fn plan_feature_kind(
             profile_feature_id,
             depth_mm,
         } => {
-            let profile = FeatureId(*profile_feature_id);
+            let profile = resolved(profile_feature_id);
             // A sketch lies on its workplane and is cut from there; a plain
             // profile is cut down from the target face its normal leaves.
             let start = if matches!(
@@ -133,11 +136,15 @@ pub(crate) fn plan_feature_kind(
                 direction: FeatureDirection::AlongNormal,
                 extent: FeatureExtent::Blind(
                     Dimension::new(depth_mm.to_string(), *depth_mm).map_err(|error| {
-                        assistant_canonical_rejection(error.into(), operation_name, "feature.depth_mm")
+                        assistant_canonical_rejection(
+                            error.into(),
+                            operation_name,
+                            "feature.depth_mm",
+                        )
                     })?,
                 ),
                 operation: PadOperation::Cut {
-                    target: FeatureId(*target_feature_id),
+                    target: resolved(target_feature_id),
                     start,
                 },
             })
@@ -185,7 +192,11 @@ pub(crate) fn plan_feature_kind(
                 profile,
                 distance: Dimension::new(distance_mm.to_string(), *distance_mm).map_err(
                     |error| {
-                        assistant_canonical_rejection(error.into(), operation_name, "feature.distance_mm")
+                        assistant_canonical_rejection(
+                            error.into(),
+                            operation_name,
+                            "feature.distance_mm",
+                        )
                     },
                 )?,
             }
@@ -269,12 +280,8 @@ pub(crate) fn plan_feature_kind(
             policy,
             primary,
         } => {
-            let first_member = FeatureId(first_member_id.existing_id().expect(
-                "Assistant weldment joint references are resolved before feature planning",
-            ));
-            let second_member = FeatureId(second_member_id.existing_id().expect(
-                "Assistant weldment joint references are resolved before feature planning",
-            ));
+            let first_member = resolved(first_member_id);
+            let second_member = resolved(second_member_id);
             for member_id in [first_member, second_member] {
                 let member = snapshot.feature(member_id).ok_or_else(|| {
                     assistant_canonical_rejection(
@@ -354,13 +361,7 @@ pub(crate) fn plan_feature_kind(
                     elevation_mm: section.elevation_mm,
                 });
             }
-            let guide = guide_feature_id.map(|guide| {
-                FeatureId(
-                    guide
-                        .existing_id()
-                        .expect("Assistant Loft guide is resolved before feature planning"),
-                )
-            });
+            let guide = guide_feature_id.as_ref().map(resolved);
             if let Some(guide) = guide {
                 let source = snapshot.feature(guide).ok_or_else(|| {
                     assistant_canonical_rejection(
@@ -396,60 +397,44 @@ pub(crate) fn plan_feature_kind(
                 },
             }
         }
-        AssistantCadBodyFeature::SurfaceBody { source } => {
-            FeatureKind::SurfaceBody(match source {
-                AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
-                    SurfaceBodySpec::Planar {
-                        profile: FeatureId(profile_feature_id.existing_id().expect(
-                            "Assistant planar SurfaceBody reference is resolved before feature planning",
-                        )),
-                    }
+        AssistantCadBodyFeature::SurfaceBody { source } => FeatureKind::SurfaceBody(match source {
+            AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
+                SurfaceBodySpec::Planar {
+                    profile: resolved(profile_feature_id),
                 }
-                AssistantCadSurfaceBodySource::Loft {
-                    sections,
-                    guide_feature_id,
-                    continuity,
-                } => SurfaceBodySpec::Loft {
-                    sections: sections
-                        .iter()
-                        .map(|section| LoftSection {
-                            profile: FeatureId(section.profile_feature_id.existing_id().expect(
-                                "Assistant loft SurfaceBody references are resolved before feature planning",
-                            )),
-                            elevation_mm: section.elevation_mm,
-                        })
-                        .collect(),
-                    guide: guide_feature_id.map(|guide| {
-                        FeatureId(guide.existing_id().expect(
-                            "Assistant loft SurfaceBody guide is resolved before feature planning",
-                        ))
-                    }),
-                    continuity: match continuity {
-                        AssistantCadLoftContinuity::Position => LoftContinuity::Position,
-                        AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
-                        AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
-                    },
+            }
+            AssistantCadSurfaceBodySource::Loft {
+                sections,
+                guide_feature_id,
+                continuity,
+            } => SurfaceBodySpec::Loft {
+                sections: sections
+                    .iter()
+                    .map(|section| LoftSection {
+                        profile: resolved(&section.profile_feature_id),
+                        elevation_mm: section.elevation_mm,
+                    })
+                    .collect(),
+                guide: guide_feature_id.as_ref().map(resolved),
+                continuity: match continuity {
+                    AssistantCadLoftContinuity::Position => LoftContinuity::Position,
+                    AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
+                    AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
                 },
-            })
-        }
+            },
+        }),
         AssistantCadBodyFeature::SurfaceTrim {
             target_feature_id,
             cutter_feature_id,
         } => FeatureKind::SurfaceTrim {
-            target: FeatureId(target_feature_id.existing_id().expect(
-                "Assistant SurfaceTrim target is resolved before feature planning",
-            )),
-            cutter: FeatureId(cutter_feature_id.existing_id().expect(
-                "Assistant SurfaceTrim cutter is resolved before feature planning",
-            )),
+            target: resolved(target_feature_id),
+            cutter: resolved(cutter_feature_id),
         },
         AssistantCadBodyFeature::SurfaceExtend {
             target_feature_id,
             distance_mm,
         } => FeatureKind::SurfaceExtend {
-            target: FeatureId(target_feature_id.existing_id().expect(
-                "Assistant SurfaceExtend target is resolved before feature planning",
-            )),
+            target: resolved(target_feature_id),
             distance: Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
                 assistant_canonical_rejection(error.into(), operation_name, "feature.distance_mm")
             })?,
@@ -459,14 +444,7 @@ pub(crate) fn plan_feature_kind(
             tolerance_mm,
             make_solid,
         } => {
-            let mut surfaces = surface_feature_ids
-                .iter()
-                .map(|reference| {
-                    FeatureId(reference.existing_id().expect(
-                        "Assistant SurfaceKnit references are resolved before feature planning",
-                    ))
-                })
-                .collect::<Vec<_>>();
+            let mut surfaces = surface_feature_ids.iter().map(resolved).collect::<Vec<_>>();
             surfaces.sort_unstable();
             FeatureKind::SurfaceKnit {
                 surfaces,
@@ -487,12 +465,16 @@ pub(crate) fn plan_feature_kind(
             thickness_mm,
             direction,
         } => FeatureKind::SurfaceThicken {
-            target: FeatureId(target_feature_id.existing_id().expect(
-                "Assistant SurfaceThicken target is resolved before feature planning",
-            )),
-            thickness: Dimension::new(thickness_mm.to_string(), *thickness_mm).map_err(|error| {
-                assistant_canonical_rejection(error.into(), operation_name, "feature.thickness_mm")
-            })?,
+            target: resolved(target_feature_id),
+            thickness: Dimension::new(thickness_mm.to_string(), *thickness_mm).map_err(
+                |error| {
+                    assistant_canonical_rejection(
+                        error.into(),
+                        operation_name,
+                        "feature.thickness_mm",
+                    )
+                },
+            )?,
             direction: match direction {
                 AssistantCadShellDirection::Inward => ShellDirection::Inward,
                 AssistantCadShellDirection::Outward => ShellDirection::Outward,
@@ -583,7 +565,11 @@ pub(crate) fn plan_feature_kind(
             }
             let thickness =
                 Dimension::new(thickness_mm.to_string(), *thickness_mm).map_err(|error| {
-                    assistant_canonical_rejection(error.into(), operation_name, "feature.thickness_mm")
+                    assistant_canonical_rejection(
+                        error.into(),
+                        operation_name,
+                        "feature.thickness_mm",
+                    )
                 })?;
             plan_topology_shell_kind(
                 target,
@@ -760,7 +746,11 @@ pub(crate) fn plan_feature_kind(
             }
             let distance =
                 Dimension::new(distance_mm.to_string(), *distance_mm).map_err(|error| {
-                    assistant_canonical_rejection(error.into(), operation_name, "feature.distance_mm")
+                    assistant_canonical_rejection(
+                        error.into(),
+                        operation_name,
+                        "feature.distance_mm",
+                    )
                 })?;
             match mode {
                 AssistantCadChamferMode::Symmetric => {
