@@ -19,8 +19,13 @@ pub enum RoleFunction {
     GravityGround,
     StaticLoad,
     StaticSupport,
+    /// Any body that carries load across its plane; the plane normal is its depth axis.
+    /// A role read from the body's source-frame extents, not a shape constructor.
     Beam,
     Freestanding,
+    /// Any body whose thickness is measured along the plane normal (minimum thickness,
+    /// hosted holes). A role, not a shape: the body may be any extrusion or sheet. The
+    /// role names are stored classification categories, so they stay as written.
     Panel,
     Hole,
     CupBore,
