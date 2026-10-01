@@ -466,17 +466,17 @@ impl AssistantHelixParameters {
         self.spatial_path_segments_for_axis(axis)
     }
 
-    pub fn spatial_path_segments_for_axis(
+    fn helix_for_axis(
         &self,
         (origin_mm, direction): ([f64; 3], [f64; 3]),
-    ) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
+    ) -> Result<Helix, AssistantRequestInvalid> {
         self.validate()?;
         AssistantAxisSpec::OriginDirection {
             origin_mm,
             direction,
         }
         .origin_and_direction()?;
-        let helix = Helix {
+        Ok(Helix {
             origin_mm,
             axis: direction,
             radius_mm: self.radius_mm,
@@ -484,8 +484,28 @@ impl AssistantHelixParameters {
             turns: self.turns,
             start_angle_degrees: self.start_angle_degrees,
             left_handed: self.handedness == AssistantHelixHandedness::Left,
-        };
-        Ok(helix
+        })
+    }
+
+    /// The helix path and the fixed `up` that keeps a profile swept along
+    /// it in its axial section; see `Helix::sweep_up`.
+    pub fn sweep_path_for_axis(
+        &self,
+        axis: ([f64; 3], [f64; 3]),
+    ) -> Result<(Vec<SpatialPathSegment>, [f64; 3]), AssistantRequestInvalid> {
+        let up = self
+            .helix_for_axis(axis)?
+            .sweep_up()
+            .ok_or(AssistantRequestInvalid::invalid("helix axis"))?;
+        Ok((self.spatial_path_segments_for_axis(axis)?, up))
+    }
+
+    pub fn spatial_path_segments_for_axis(
+        &self,
+        axis: ([f64; 3], [f64; 3]),
+    ) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
+        Ok(self
+            .helix_for_axis(axis)?
             .cubic_beziers()
             .ok_or(AssistantRequestInvalid::invalid("helix axis"))?
             .into_iter()

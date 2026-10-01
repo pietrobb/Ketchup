@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_geometry::linalg::{cross, dot, sub};
+use ketchup_geometry::linalg::{cross, dot, normalize_within, sub};
 
 pub(super) struct GraphCompiler<'a> {
     pub(super) snapshot: &'a Snapshot,
@@ -469,7 +469,7 @@ impl<'a> GraphCompiler<'a> {
                 )?,
                 direction: (*direction).into(),
             },
-            FeatureKind::Sweep { profile, path } => {
+            FeatureKind::Sweep { profile, path, up } => {
                 let compiled_profile = match self
                     .snapshot
                     .feature(*profile)
@@ -491,25 +491,7 @@ impl<'a> GraphCompiler<'a> {
                     }
                     _ => self.compile_profile(*profile, None, identity_frame())?,
                 };
-                let spatial = match self.snapshot.feature(*path).map(|feature| feature.kind()) {
-                    Some(FeatureKind::SpatialPath { segments }) => Some(spatial_path(
-                        *path,
-                        segments,
-                        self.snapshot.tolerance().linear_mm(),
-                    )?),
-                    Some(FeatureKind::Sketch(_)) => Some(self.compile_sketch_spatial_path(*path)?),
-                    _ => None,
-                };
-                match spatial {
-                    Some(path) => ExactBRepOperation::SpatialSweep {
-                        profile: self.compile_section_profile(compiled_profile, &path)?,
-                        path,
-                    },
-                    _ => ExactBRepOperation::Sweep {
-                        profile: compiled_profile,
-                        path: self.compile_profile(*path, None, identity_frame())?,
-                    },
-                }
+                self.compile_sweep(compiled_profile, *path, *up)?
             }
             FeatureKind::WeldmentMember(spec) => {
                 let compiled_profile = match self
@@ -548,6 +530,7 @@ impl<'a> GraphCompiler<'a> {
                 ExactBRepOperation::SpatialSweep {
                     profile,
                     path: spatial_path(spec.path, segments, self.snapshot.tolerance().linear_mm())?,
+                    up_bits: None,
                 }
             }
             FeatureKind::WeldmentJoint(spec) => {
@@ -1157,10 +1140,46 @@ impl<'a> GraphCompiler<'a> {
     /// start. A sketched profile already sits in the world, in a plane through
     /// the path start facing along it: re-express it in that section frame so
     /// the swept body starts exactly where it was sketched.
+    /// A sweep of `profile` along `path`: along a spatial path (or a sketch
+    /// taken as one) the profile is framed at the path start, optionally on a
+    /// fixed `up`; a planar path keeps it square to its plane by itself.
+    fn compile_sweep(
+        &mut self,
+        profile: ExactBRepProfileId,
+        path: FeatureId,
+        up: Option<[f64; 3]>,
+    ) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        let spatial = match self.snapshot.feature(path).map(|feature| feature.kind()) {
+            Some(FeatureKind::SpatialPath { segments }) => Some(spatial_path(
+                path,
+                segments,
+                self.snapshot.tolerance().linear_mm(),
+            )?),
+            Some(FeatureKind::Sketch(_)) => Some(self.compile_sketch_spatial_path(path)?),
+            _ => None,
+        };
+        let up = up
+            .map(|up| normalize_within(up, ROUNDING).ok_or(ExactBRepGraphError::InvalidParameter))
+            .transpose()?;
+        Ok(match (spatial, up) {
+            (Some(spatial), up) => ExactBRepOperation::SpatialSweep {
+                profile: self.compile_section_profile(profile, &spatial, up)?,
+                path: spatial,
+                up_bits: up.map(|up| up.map(f64::to_bits)),
+            },
+            (None, Some(_)) => return Err(ExactBRepGraphError::UnsupportedFeature(path)),
+            (None, None) => ExactBRepOperation::Sweep {
+                profile,
+                path: self.compile_profile(path, None, identity_frame())?,
+            },
+        })
+    }
+
     pub(super) fn compile_section_profile(
         &mut self,
         source: ExactBRepProfileId,
         path: &ExactBRepSpatialPath,
+        up: Option<[f64; 3]>,
     ) -> Result<ExactBRepProfileId, ExactBRepGraphError> {
         let mut profile = self
             .profiles
@@ -1223,12 +1242,18 @@ impl<'a> GraphCompiler<'a> {
         } else {
             [0.0, 0.0, 1.0]
         };
-        let section_u = unit(cross(tangent, reference));
-        let section_v = unit(cross(section_u, tangent));
+        let (section_u, section_v) = match up {
+            Some(up) => (unit(cross(tangent, up)), unit(up)),
+            None => {
+                let section_u = unit(cross(tangent, reference));
+                (section_u, unit(cross(section_u, tangent)))
+            }
+        };
+        let section_normal = cross(section_u, section_v);
         let [origin, x_axis, y_axis, _] = profile.frame().to_vectors();
         let from_start = sub(origin, start);
-        if dot(cross(x_axis, y_axis), tangent).abs() < 1.0 - ROUNDING
-            || dot(from_start, tangent).abs() > ROUNDING
+        if dot(cross(x_axis, y_axis), section_normal).abs() < 1.0 - ROUNDING
+            || dot(from_start, section_normal).abs() > ROUNDING
         {
             return Err(ExactBRepGraphError::InvalidParameter);
         }

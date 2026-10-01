@@ -209,3 +209,45 @@ fn helix_refuses_more_quarter_turns_than_a_path_holds() {
     assert!(message.contains("68 quarter turns"), "{message}");
     assert!(error("p = helix(radius = 0, pitch = 1, turns = 1)\n").contains("must be positive"));
 }
+
+#[test]
+fn a_thread_swept_with_up_reaches_its_tip_radius_and_end_caps() {
+    // With up the tooth stays in the axial section: tip 0.8 mm outside the
+    // 4.2 mm path on every turn, base corners 0.65 mm above and below its ends.
+    let thread = part(
+        "sweep(\"thread\", profile = v_thread(depth = 0.8, width = 1.3), \
+         path = helix(radius = 4.2, pitch = 1.5, turns = 12), up = (0, 0, 1))\n",
+        "thread",
+    );
+    let (min, max) = thread.local_bounds();
+    for (value, expected) in [
+        (max[0], 5.0),
+        (min[0], -5.0),
+        (max[1], 5.0),
+        (min[1], -5.0),
+        (min[2], -0.65),
+        (max[2], 18.65),
+    ] {
+        assert!((value - expected).abs() < 3e-3, "{min:?} {max:?}");
+    }
+    let ProgramPartBody::Sweep { up, .. } = thread.body else {
+        panic!("not a sweep");
+    };
+    assert_eq!(up, Some([0.0, 0.0, 1.0]));
+}
+
+#[test]
+fn up_must_be_a_direction_off_the_path() {
+    let profile = "profile = [(-1, -1), (1, -1), (1, 1), (-1, 1)]";
+    let message = error(&format!(
+        "sweep(\"s\", {profile}, path = [(0, 0, 0), (0, 0, 9)], up = (0, 0, 0))\n"
+    ));
+    assert!(message.contains("non-zero direction"), "{message}");
+    let message = error(&format!(
+        "sweep(\"s\", {profile}, path = [(0, 0, 0), (9, 0, 0)], up = (2, 0, 0))\n"
+    ));
+    assert!(
+        message.contains("path segment 1 runs along up"),
+        "{message}"
+    );
+}

@@ -321,7 +321,7 @@ def distribute(parts, a, b, face = None):
 # Swept and lofted parts (curved rails, bent tubes, tapered legs). Both take
 # at= and tool=True like extrude(), and subtract()/intersect() in either role;
 # fillet/chamfer/cut/push_pull do not apply to them.
-#   sweep(name, profile=, path=, bend=None, at=, tool=)
+#   sweep(name, profile=, path=, bend=None, up=None, at=, tool=)
 #     carries a closed profile along a smooth path in the part's frame. path
 #     is 3D points [(x, y, z), ...] whose corners bend=r rounds with tangent
 #     arcs (a corner without bend is refused), or segments [start, end] and
@@ -335,14 +335,28 @@ def distribute(parts, a, b, face = None):
 #           path=[(0, 0, 0), (600, 0, 0), (600, 400, 0)], bend=100)
 #     A segment [start, end, {"controls": [c1, c2]}] is a cubic Bezier curve
 #     (as in profiles) along which the profile is carried without twist.
+#     up=(x, y, z) instead holds v on that direction and u on tangent x up
+#     all along (the path must never run along up): the profile plane keeps
+#     up in it, so it does not twist about up.
 #   helix(radius=, pitch=, turns=, at=(0, 0, 0), axis=(0, 0, 1),
 #         start_angle=0, left=False)  -> a sweep path: the helix around the
 #     axis through `at`, starting `start_angle` degrees from local +x (for
 #     the default axis), rising `pitch` per turn, counter-clockwise seen from
 #     the axis tip (left=True: clockwise), as cubic quarter turns within
-#     0.03 % of the true helix. The profile is carried along it without
-#     twist like along any curve, so it turns slowly about the path relative
-#     to the axis; helix() alone is a spring's or a thread's path.
+#     0.03 % of the true helix. Swept with up=axis (up=-axis when left=True)
+#     the profile stays in the axial section, u pointing away from the axis
+#     and v along it, so any closed profile narrower than the pitch becomes a
+#     thread or a spring with the same section on every turn, e.g. an M10
+#     thread on a 8.4 mm core:
+#     sweep("thread", profile=v_thread(depth=0.8, width=1.3),
+#           path=helix(radius=4.2, pitch=1.5, turns=12), up=(0, 0, 1))
+#     (without up the profile is carried without twist like along any curve
+#     and so turns about the path relative to the axis, ~19 deg per M10 turn).
+#   v_thread(depth, width), trapezoid_thread(depth, width, crest) and
+#     round_thread(radius, name="thread") are such profiles with their base
+#     on the path: a triangle `width` wide with its tip `depth` out along u,
+#     a trapezoid narrowing to `crest` at that depth, and a circle centred on
+#     the path.
 #   loft(name, sections=[(profile, z), ...], at=, tool=)
 #     a solid through 2 to 16 closed profiles, each in the local XY plane at
 #     height z (strictly increasing), e.g. a leg tapering 40 -> 24 mm:
@@ -443,6 +457,26 @@ def ellipse(rx, ry, center = (0, 0), angle = 0, name = "side"):
         segments.append(["%s%d" % (name, i + 1), _turn(start, center, angle), _turn(end, center, angle),
                          {"controls": [_turn(first, center, angle), _turn(second, center, angle)]}])
     return segments
+
+def v_thread(depth, width):
+    """A thread tooth: base `width` wide along v on the path, tip `depth` out along u."""
+    return trapezoid_thread(depth, width, 0)
+
+def trapezoid_thread(depth, width, crest):
+    """A thread tooth: base `width` wide along v on the path, `crest` wide `depth` out along u."""
+    if depth <= 0 or width <= 0 or crest < 0 or crest >= width:
+        fail("thread profile: need depth > 0 and 0 <= crest < width, got depth %s, width %s, crest %s" %
+             (depth, width, crest))
+    if crest == 0:
+        return [(0, -width / 2), (depth, 0), (0, width / 2)]
+    return [(0, -width / 2), (depth, -crest / 2), (depth, crest / 2), (0, width / 2)]
+
+def round_thread(radius, name = "thread"):
+    """A round thread section: a circle of `radius` centred on the path, as two named half arcs."""
+    if radius <= 0:
+        fail("round_thread(): radius must be positive, got %s" % radius)
+    return [[name, (-radius, 0), (radius, 0), {"center": (0, 0)}],
+            [name + "_back", (radius, 0), (-radius, 0), {"center": (0, 0)}]]
 
 #@topic machining: Holes, pockets, grooves, rebates, trims and booleans
 #

@@ -307,7 +307,8 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
 
 std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
     rust::Slice<const NativeSegment> profile_segments,
-    rust::Slice<const NativeSegment> path_segments) noexcept {
+    rust::Slice<const NativeSegment> path_segments,
+    rust::Slice<const double> up) noexcept {
   return guarded([&] {
     const double epsilon = tolerances().rounding;
     const double minimum_segment_length = tolerances().linear_mm;
@@ -316,6 +317,14 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
     if (profile_segments.size() < 2 || profile_segments.size() > 64
         || path_segments.empty() || path_segments.size() > 64) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT spatial Sweep payload is malformed");
+    }
+    // A fixed up keeps the profile's v on it and its u on tangent x up
+    // (fixed binormal); none carries the profile square to the path.
+    if (!up.empty()
+        && (up.size() != 3 || !std::isfinite(up[0]) || !std::isfinite(up[1])
+            || !std::isfinite(up[2])
+            || std::abs(std::hypot(up[0], up[1], up[2]) - 1.0) > epsilon)) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT spatial Sweep up is not a unit direction");
     }
     for (const NativeSegment& segment : profile_segments) {
       if (!segment_bounded(segment, coordinate_limit)) {
@@ -540,8 +549,22 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
     if (tangent.Crossed(reference).SquareMagnitude() <= epsilon * epsilon) {
       reference = gp_Vec(0.0, 1.0, 0.0);
     }
-    const gp_Vec frame_u = tangent.Crossed(reference).Normalized();
-    const gp_Vec frame_v = frame_u.Crossed(tangent).Normalized();
+    gp_Vec frame_u;
+    gp_Vec frame_v;
+    if (up.empty()) {
+      frame_u = tangent.Crossed(reference).Normalized();
+      frame_v = frame_u.Crossed(tangent).Normalized();
+    } else {
+      frame_v = gp_Vec(up[0], up[1], up[2]);
+      for (std::size_t index = 0; index < path_count; ++index) {
+        if (start_tangents[index].Crossed(frame_v).Magnitude() <= epsilon
+            || end_tangents[index].Crossed(frame_v).Magnitude() <= epsilon) {
+          return error_result(
+              STATUS_INVALID_PARAMETER, "OCCT spatial Sweep path runs along its up direction");
+        }
+      }
+      frame_u = tangent.Crossed(frame_v).Normalized();
+    }
     const auto section_point = [&](double u, double v) {
       return path_start.Translated(frame_u.Multiplied(u).Added(frame_v.Multiplied(v)));
     };
@@ -604,8 +627,12 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
     const TopoDS_Wire profile = profile_builder.Wire();
 
     BRepOffsetAPI_MakePipeShell operation(spine);
-    // Corrected Frenet is OCCT's deterministic minimum-twist transport mode.
-    operation.SetMode(false);
+    if (up.empty()) {
+      // Corrected Frenet is OCCT's deterministic minimum-twist transport mode.
+      operation.SetMode(false);
+    } else {
+      operation.SetMode(gp_Dir(up[0], up[1], up[2]));
+    }
     operation.SetTolerance(tolerances().linear_mm, tolerances().linear_mm, tolerances().rounding);
     operation.Add(profile, false, false);
     if (!operation.IsReady()) {

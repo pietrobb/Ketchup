@@ -908,7 +908,7 @@ pub(super) fn authoritative_dependencies(
                     | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                     }
-                    FeatureKind::Sweep { profile, path } => {
+                    FeatureKind::Sweep { profile, path, .. } => {
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                         add_feature_dependency_closure(snapshot, *path, &mut dependencies);
                     }
@@ -1784,7 +1784,7 @@ pub(super) fn add_feature_dependency_closure(
             | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
             }
-            FeatureKind::Sweep { profile, path } => {
+            FeatureKind::Sweep { profile, path, .. } => {
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
                 add_feature_dependency_closure(snapshot, *path, dependencies);
             }

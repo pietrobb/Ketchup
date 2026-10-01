@@ -9,6 +9,10 @@
 //! frame along the path without twist: unchanged along lines, turned about
 //! the axis of each arc, and along a curve rotation-minimising (here
 //! followed by double reflection between close samples).
+//!
+//! A sweep given a fixed `up` instead keeps `v = up` and `u = t × up`
+//! (normalised) everywhere, so the profile plane holds `up`: swept along a
+//! helix about `up` the profile stays in the axial section.
 
 use crate::model::{ProgramPathArc, ProgramPathSegment, ProgramProfileSegment};
 use ketchup_geometry::linalg::{
@@ -93,6 +97,25 @@ impl ProgramPathSegment {
             (Some(arc), _) => unit(cross(arc.normal, sub(self.end_mm, arc.center_mm))),
             (None, Some([_, second])) => unit(sub(self.end_mm, second)),
             (None, None) => self.start_tangent(),
+        }
+    }
+
+    /// The point and unit tangent at `s` in `[0, 1]` along the piece.
+    fn point_and_tangent(&self, s: f64) -> (Vec3, Option<Vec3>) {
+        match (self.arc, self.bezier_curve()) {
+            (Some(arc), _) => {
+                let radius = rotate(
+                    sub(self.start_mm, arc.center_mm),
+                    arc.normal,
+                    s * self.angle(),
+                );
+                (add(arc.center_mm, radius), unit(cross(arc.normal, radius)))
+            }
+            (None, Some(curve)) => (curve.eval(s), unit(curve.derivative(s))),
+            (None, None) => (
+                add(self.start_mm, scale(sub(self.end_mm, self.start_mm), s)),
+                self.start_tangent(),
+            ),
         }
     }
 
@@ -335,10 +358,42 @@ pub fn validate(path: &[ProgramPathSegment]) -> Result<(), String> {
     Ok(())
 }
 
+/// Samples per path piece at which a fixed `up` must stay off the tangent.
+const UP_SAMPLES: usize = 64;
+
+/// Checks that a fixed sweep `up` (unit) never runs along `path`, where the
+/// profile's u = t × up would vanish.
+pub fn validate_up(path: &[ProgramPathSegment], up: Vec3) -> Result<(), String> {
+    for (index, segment) in path.iter().enumerate() {
+        for step in 0..=UP_SAMPLES {
+            let s = step as f64 / UP_SAMPLES as f64;
+            if let (point, Some(tangent)) = segment.point_and_tangent(s)
+                && length(cross(tangent, up)) <= KERNEL_EPSILON
+            {
+                return Err(format!(
+                    "path segment {} runs along up {up:?} at {point:?}; up must stay off the path direction",
+                    index + 1
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The profile frame `(u, v)` a fixed `up` gives where the path runs along
+/// `tangent`.
+fn up_frame(tangent: Vec3, up: Vec3) -> (Vec3, Vec3) {
+    (unit(cross(tangent, up)).unwrap_or(up), up)
+}
+
 /// Path start and the profile frame `(u, v)` there.
 #[must_use]
-pub fn start_frame(path: &[ProgramPathSegment]) -> (Vec3, Vec3, Vec3) {
+pub fn start_frame(path: &[ProgramPathSegment], up: Option<Vec3>) -> (Vec3, Vec3, Vec3) {
     let tangent = path[0].start_tangent().expect("validated path");
+    if let Some(up) = up {
+        let (u, v) = up_frame(tangent, up);
+        return (path[0].start_mm, u, v);
+    }
     let reference = if length(cross(tangent, [0.0, 0.0, 1.0])) <= ROUNDING {
         [0.0, 1.0, 0.0]
     } else {
@@ -379,15 +434,43 @@ fn carry_frame(
     (next, carry(u), carry(v))
 }
 
+/// The largest `f` over `[0, 1]`: `samples` even samples, then a
+/// golden-section refinement between the neighbours of the best.
+fn maximize(f: impl Fn(f64) -> f64, samples: usize) -> f64 {
+    let step = 1.0 / samples as f64;
+    let (best_index, best_value) = (0..=samples)
+        .map(|index| f(step * index as f64))
+        .enumerate()
+        .fold((0, f64::NEG_INFINITY), |best, (index, value)| {
+            if value > best.1 { (index, value) } else { best }
+        });
+    let (mut low, mut high) = (
+        (step * best_index as f64 - step).max(0.0),
+        (step * best_index as f64 + step).min(1.0),
+    );
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..60 {
+        let (left, right) = (high - ratio * (high - low), low + ratio * (high - low));
+        if f(left) < f(right) {
+            low = left;
+        } else {
+            high = right;
+        }
+    }
+    best_value.max(f((low + high) / 2.0))
+}
+
 /// The largest `direction · p` over the body a closed profile sweeps along
-/// `path`. Along a line the frame is fixed, so the ends decide; along an arc
-/// every point turns about the arc axis, and along a curve the frame is
-/// carried sample by sample; the largest value over either is found by
-/// sampling and a golden-section refinement.
+/// `path`. With a fixed `up` the frame follows the tangent alone, so every
+/// piece is sampled and refined. Without, along a line the frame is fixed,
+/// so the ends decide; along an arc every point turns about the arc axis,
+/// and along a curve the frame is carried sample by sample; the largest
+/// value over either is found by sampling and a golden-section refinement.
 #[must_use]
 pub fn sweep_support(
     profile: &[ProgramProfileSegment],
     path: &[ProgramPathSegment],
+    up: Option<Vec3>,
     direction: Vec3,
 ) -> f64 {
     let profile_support = |u: Vec3, v: Vec3, d: Vec3| {
@@ -396,7 +479,22 @@ pub fn sweep_support(
             .map(|segment| segment.support([dot(d, u), dot(d, v)]))
             .fold(f64::NEG_INFINITY, f64::max)
     };
-    let (_, mut u, mut v) = start_frame(path);
+    if let Some(up) = up {
+        return path
+            .iter()
+            .map(|segment| {
+                maximize(
+                    |s| {
+                        let (point, tangent) = segment.point_and_tangent(s);
+                        let (u, v) = up_frame(tangent.unwrap_or(up), up);
+                        dot(direction, point) + profile_support(u, v, direction)
+                    },
+                    CURVE_SAMPLES,
+                )
+            })
+            .fold(f64::NEG_INFINITY, f64::max);
+    }
+    let (_, mut u, mut v) = start_frame(path, None);
     let mut best = f64::NEG_INFINITY;
     for segment in path {
         if let Some(curve) = segment.bezier_curve() {

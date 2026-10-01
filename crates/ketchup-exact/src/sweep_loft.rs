@@ -186,23 +186,37 @@ impl ExactBackend {
         Ok(output)
     }
 
+    /// Sweeps a closed profile along a tangent-continuous spatial path.
+    /// With `up` (a unit direction) the profile's v stays on `up` and its u
+    /// on `tangent × up`; without, it is carried square to the path
+    /// without twist.
     pub fn sweep_spatial_profile(
         &self,
         profile: &[PlanarProfileSegment],
         path: &[SpatialProfileSegment],
+        up: Option<[f64; 3]>,
     ) -> Result<ExactOpOutput, GeometryError> {
         let operation = "sweep_spatial_profile";
-        let input = format!(
+        let mut input = format!(
             "{operation}:{:?}:{:?}",
             digest_bits(&planar_segments_digest_values(profile)),
             digest_bits(&spatial_segments_digest_values(path))
         );
+        if let Some(up) = up {
+            input.push_str(&format!(":up{:?}", digest_bits(&up)));
+        }
         validate_mixed_profile(profile, operation, &input)?;
         validate_spatial_sweep_path(path, operation, &input)?;
+        if let Some(up) = up {
+            for (name, coordinate) in [("up_x", up[0]), ("up_y", up[1]), ("up_z", up[2])] {
+                validate_coordinate(coordinate, name, operation, &input)?;
+            }
+        }
         let output = collect_output(
             ffi::sweep_spatial_profile_native(
                 &native_planar_segments(profile),
                 &native_spatial_segments(path),
+                up.as_ref().map_or(&[], |up| up.as_slice()),
             ),
             operation,
             &input,

@@ -134,6 +134,17 @@ pub(super) fn remap_optional_feature(
         .transpose()
 }
 
+/// Where `id` landed in the cloned definition.
+fn remapped(
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+    id: &FeatureId,
+) -> Result<FeatureId, CanonicalError> {
+    mapping
+        .get(id)
+        .copied()
+        .ok_or(CanonicalError::InvalidFeatureMap)
+}
+
 pub(super) fn clone_definition_and_repoint(
     product: &mut ProductModel,
     plan: &CloneDefinitionPlan,
@@ -205,9 +216,7 @@ pub(super) fn clone_definition_and_repoint(
             }
             FeatureKind::Sketch(spec) => {
                 let mut cloned = spec.clone();
-                cloned.workplane = *mapping
-                    .get(&spec.workplane)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                cloned.workplane = remapped(&mapping, &spec.workplane)?;
                 FeatureKind::Sketch(cloned)
             }
             FeatureKind::Profile { segments, closed } => FeatureKind::Profile {
@@ -260,9 +269,7 @@ pub(super) fn clone_definition_and_repoint(
                 axis_end_mm,
                 angle_degrees,
             } => FeatureKind::Revolve {
-                profile: *mapping
-                    .get(profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                profile: remapped(&mapping, profile)?,
                 axis_start_mm: *axis_start_mm,
                 axis_end_mm: *axis_end_mm,
                 angle_degrees: *angle_degrees,
@@ -273,9 +280,7 @@ pub(super) fn clone_definition_and_repoint(
                 thickness,
                 direction,
             } => FeatureKind::Shell {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
                 removed_faces: removed_faces
                     .iter()
                     .map(|face| remap_face_ref(face, new_definition_id, &mapping))
@@ -292,9 +297,7 @@ pub(super) fn clone_definition_and_repoint(
                 chamfer_mode,
                 chamfer_edge_sides,
             } => FeatureKind::EdgeFinish {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
                 edges: edges
                     .iter()
                     .map(|edge| remap_edge_ref(edge, new_definition_id, &mapping))
@@ -326,9 +329,7 @@ pub(super) fn clone_definition_and_repoint(
                 face,
                 distance,
             } => FeatureKind::FaceOffset {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
                 face: remap_face_ref(face, new_definition_id, &mapping)?,
                 distance: distance.clone(),
             },
@@ -338,47 +339,32 @@ pub(super) fn clone_definition_and_repoint(
                 tool,
             } => FeatureKind::Boolean {
                 operation: *operation,
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
                 tool: *mapping.get(tool).ok_or(CanonicalError::InvalidFeatureMap)?,
             },
             FeatureKind::PlanarOffset { profile, distance } => FeatureKind::PlanarOffset {
-                profile: *mapping
-                    .get(profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                profile: remapped(&mapping, profile)?,
                 distance: distance.clone(),
             },
-            FeatureKind::Sweep { profile, path } => FeatureKind::Sweep {
-                profile: *mapping
-                    .get(profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+            FeatureKind::Sweep { profile, path, up } => FeatureKind::Sweep {
+                profile: remapped(&mapping, profile)?,
                 path: *mapping.get(path).ok_or(CanonicalError::InvalidFeatureMap)?,
+                up: *up,
             },
             FeatureKind::WeldmentMember(spec) => FeatureKind::WeldmentMember(WeldmentMemberSpec {
-                profile: *mapping
-                    .get(&spec.profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                path: *mapping
-                    .get(&spec.path)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                profile: remapped(&mapping, &spec.profile)?,
+                path: remapped(&mapping, &spec.path)?,
                 orientation_degrees: spec.orientation_degrees,
             }),
             FeatureKind::WeldmentJoint(spec) => FeatureKind::WeldmentJoint(WeldmentJointSpec {
-                first_member: *mapping
-                    .get(&spec.first_member)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                second_member: *mapping
-                    .get(&spec.second_member)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                first_member: remapped(&mapping, &spec.first_member)?,
+                second_member: remapped(&mapping, &spec.second_member)?,
                 policy: spec.policy,
                 primary: spec.primary,
             }),
             FeatureKind::SurfaceBody(spec) => FeatureKind::SurfaceBody(match spec {
                 SurfaceBodySpec::Planar { profile } => SurfaceBodySpec::Planar {
-                    profile: *mapping
-                        .get(profile)
-                        .ok_or(CanonicalError::InvalidFeatureMap)?,
+                    profile: remapped(&mapping, profile)?,
                 },
                 SurfaceBodySpec::Loft {
                     sections,
@@ -391,17 +377,11 @@ pub(super) fn clone_definition_and_repoint(
                 },
             }),
             FeatureKind::SurfaceTrim { target, cutter } => FeatureKind::SurfaceTrim {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                cutter: *mapping
-                    .get(cutter)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
+                cutter: remapped(&mapping, cutter)?,
             },
             FeatureKind::SurfaceExtend { target, distance } => FeatureKind::SurfaceExtend {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
                 distance: distance.clone(),
             },
             FeatureKind::SurfaceThicken {
@@ -409,9 +389,7 @@ pub(super) fn clone_definition_and_repoint(
                 thickness,
                 direction,
             } => FeatureKind::SurfaceThicken {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
                 thickness: thickness.clone(),
                 direction: *direction,
             },
@@ -444,9 +422,7 @@ pub(super) fn clone_definition_and_repoint(
             FeatureKind::SheetMetal(spec) => FeatureKind::SheetMetal(spec.clone()),
             FeatureKind::ImportedExactBody(spec) => FeatureKind::ImportedExactBody(spec.clone()),
             FeatureKind::RigidTransform { target, transform } => FeatureKind::RigidTransform {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                target: remapped(&mapping, target)?,
                 transform: *transform,
             },
             FeatureKind::MeshBody(spec) => {
@@ -469,14 +445,7 @@ pub(super) fn clone_definition_and_repoint(
     let feature_body_ownership = source
         .feature_body_ownership
         .iter()
-        .map(|(source_id, ownership)| {
-            Ok((
-                *mapping
-                    .get(source_id)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                ownership.clone(),
-            ))
-        })
+        .map(|(source_id, ownership)| Ok((remapped(&mapping, source_id)?, ownership.clone())))
         .collect::<Result<BTreeMap<_, _>, CanonicalError>>()?;
     let bodies = source
         .bodies
@@ -615,14 +584,12 @@ pub(super) fn clone_definition_and_repoint(
         if (first || second) && joint.physical_hole_pairs.is_some() {
             for pair in Arc::make_mut(joint).physical_hole_pairs.as_mut().unwrap() {
                 if first {
-                    pair.first_pocket_feature_id = *mapping
-                        .get(&pair.first_pocket_feature_id)
-                        .ok_or(CanonicalError::InvalidFeatureMap)?;
+                    pair.first_pocket_feature_id =
+                        remapped(&mapping, &pair.first_pocket_feature_id)?;
                 }
                 if second {
-                    pair.second_pocket_feature_id = *mapping
-                        .get(&pair.second_pocket_feature_id)
-                        .ok_or(CanonicalError::InvalidFeatureMap)?;
+                    pair.second_pocket_feature_id =
+                        remapped(&mapping, &pair.second_pocket_feature_id)?;
                 }
             }
         }
@@ -663,9 +630,7 @@ pub(super) fn clone_definition_and_repoint(
                         AssemblyRecipeError::OwnedFeatureConflict(owned.key.clone()),
                     ));
                 }
-                owned.feature_id = *mapping
-                    .get(&owned.feature_id)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                owned.feature_id = remapped(&mapping, &owned.feature_id)?;
                 owned.canonical_fingerprint = digest_feature(&product.features[&owned.feature_id]);
             }
         }
@@ -880,9 +845,10 @@ pub(super) fn remap_exact_solid_tool_feature_kind(
             target: mapped(target)?,
             tool: mapped(tool)?,
         }),
-        FeatureKind::Sweep { profile, path } => Ok(FeatureKind::Sweep {
+        FeatureKind::Sweep { profile, path, up } => Ok(FeatureKind::Sweep {
             profile: mapped(profile)?,
             path: mapped(path)?,
+            up: *up,
         }),
         FeatureKind::Loft {
             sections,

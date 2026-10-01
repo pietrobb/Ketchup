@@ -153,7 +153,7 @@ pub(super) fn operation_bounds(
             tolerance_mm,
         )
         .map(Some),
-        ExactBRepOperation::SpatialSweep { profile, path } => {
+        ExactBRepOperation::SpatialSweep { profile, path, .. } => {
             spatial_sweep_bounds(&profiles[profile.0 as usize], path, tolerance_mm).map(Some)
         }
         ExactBRepOperation::Revolve {

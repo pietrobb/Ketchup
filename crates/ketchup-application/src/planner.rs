@@ -1667,7 +1667,7 @@ fn plan_assistant_construction_creation(
 fn plan_assistant_helix_sweep_creation(
     name: &str,
     profile_segments: Vec<ProfileSegment>,
-    path_segments: Vec<SpatialPathSegment>,
+    (path_segments, up): (Vec<SpatialPathSegment>, [f64; 3]),
     next_definition: &mut Option<u64>,
     next_feature: &mut Option<u64>,
     next_occurrence: &mut Option<u64>,
@@ -1720,6 +1720,7 @@ fn plan_assistant_helix_sweep_creation(
                 kind: FeatureKind::Sweep {
                     profile: profile_feature_id,
                     path: path_feature_id,
+                    up: Some(up),
                 },
             },
             CanonicalCommand::CreateOccurrence {
@@ -2223,18 +2224,16 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     &program.operations,
                     operation_name,
                 )?;
-                let path_segments =
-                    parameters
-                        .spatial_path_segments_for_axis(axis)
-                        .map_err(|error| {
-                            assistant_planning_rejection(
-                                "planning.cad_helix_invalid",
-                                operation_name,
-                                &document_target,
-                                error.to_string(),
-                                "Use finite bounded Helix parameters and a non-zero 3D axis.",
-                            )
-                        })?;
+                let (path_segments, up) =
+                    parameters.sweep_path_for_axis(axis).map_err(|error| {
+                        assistant_planning_rejection(
+                            "planning.cad_helix_invalid",
+                            operation_name,
+                            &document_target,
+                            error.to_string(),
+                            "Use finite bounded Helix parameters and a non-zero 3D axis.",
+                        )
+                    })?;
                 if profile.is_empty() {
                     let (creation_commands, definition_id, feature_id) =
                         plan_assistant_construction_creation(
@@ -2285,7 +2284,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         plan_assistant_helix_sweep_creation(
                             name,
                             profile_segments,
-                            path_segments,
+                            (path_segments, up),
                             &mut next_definition,
                             &mut next_feature,
                             &mut next_occurrence,

@@ -541,10 +541,7 @@ impl KetchupApp {
             id: generated_feature_id,
             definition_id: source.definition_id,
             name: self.catalog.text("model-sweep-feature"),
-            kind: FeatureKind::Sweep {
-                profile: source.profile_feature_id,
-                path: source.path_feature_id,
-            },
+            kind: FeatureKind::sweep(source.profile_feature_id, source.path_feature_id),
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
@@ -610,7 +607,7 @@ impl KetchupApp {
             .current()
             .features()
             .filter_map(|feature| {
-                let FeatureKind::Sweep { profile, path } = feature.kind() else {
+                let FeatureKind::Sweep { profile, path, .. } = feature.kind() else {
                     return None;
                 };
                 Some((feature.id(), *profile, *path))
@@ -1330,10 +1327,7 @@ impl KetchupApp {
                 id: sweep_feature_id,
                 definition_id,
                 name: self.catalog.text("model-sweep-feature"),
-                kind: FeatureKind::Sweep {
-                    profile: profile_feature_id,
-                    path: path_feature_id,
-                },
+                kind: FeatureKind::sweep(profile_feature_id, path_feature_id),
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence_id,

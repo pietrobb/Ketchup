@@ -470,6 +470,8 @@ pub enum ProgramPartBody {
     Sweep {
         segments: Vec<ProgramProfileSegment>,
         path: Vec<ProgramPathSegment>,
+        /// A fixed unit direction the profile's v keeps; see `crate::path`.
+        up: Option<[f64; 3]>,
     },
     /// A solid through closed profiles lying in local XY planes at strictly
     /// increasing heights.
@@ -945,8 +947,8 @@ impl Part {
     /// `reach` of a swept or lofted body along a direction in its own frame.
     fn local_reach(&self, local: [f64; 3]) -> f64 {
         match &self.body {
-            ProgramPartBody::Sweep { segments, path } => {
-                crate::path::sweep_support(segments, path, local)
+            ProgramPartBody::Sweep { segments, path, up } => {
+                crate::path::sweep_support(segments, path, *up, local)
             }
             ProgramPartBody::Loft { sections } => sections
                 .iter()

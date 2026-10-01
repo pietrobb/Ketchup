@@ -18,6 +18,7 @@ use crate::model::{
     ProgramShell, profile_bounds,
 };
 use ketchup_geometry::helix::Helix;
+use ketchup_geometry::linalg::normalize_within;
 use ketchup_model::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
@@ -963,6 +964,14 @@ fn sweep_path<'v>(
     Ok(path)
 }
 
+/// A sweep's fixed `up`, normalised, checked to stay off the path direction.
+fn sweep_up(path: &[ProgramPathSegment], up: [f64; 3]) -> anyhow::Result<[f64; 3]> {
+    let up = normalize_within(up, TOLERANCE_MM)
+        .ok_or_else(|| anyhow::anyhow!("up must be a non-zero direction"))?;
+    crate::path::validate_up(path, up).map_err(anyhow::Error::msg)?;
+    Ok(up)
+}
+
 /// `helix` as path segments `[start, end, {"controls": [c1, c2]}]`.
 fn helix_path<'v>(helix: &Helix, heap: &'v Heap) -> anyhow::Result<Value<'v>> {
     if helix.radius_mm <= TOLERANCE_MM || helix.pitch_mm <= TOLERANCE_MM || helix.turns <= 0.0 {
@@ -1141,7 +1150,9 @@ fn apply_named_edge_finish(
 
 #[starlark_module]
 fn path_builtins(builder: &mut GlobalsBuilder) {
-    /// A circular helix as a sweep path of cubic quarter turns.
+    /// A circular helix as a sweep path of cubic quarter turns. Sweep along
+    /// it with `up=` its axis (the reversed axis when `left`) to keep the
+    /// profile in the axial section.
     fn helix<'v>(
         #[starlark(require = named)] radius: Value<'v>,
         #[starlark(require = named)] pitch: Value<'v>,
@@ -1164,6 +1175,50 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
             left_handed: left,
         };
         helix_path(&helix, heap)
+    }
+
+    /// Carries a closed profile along a smooth path of lines and arcs. The
+    /// profile's (u, v) plane stands square to the path at its start; going
+    /// horizontally, u points right of the direction of travel and v up.
+    /// `up=(x, y, z)` instead keeps v on that direction and u on
+    /// tangent × up all along: `up=` the axis of a `helix()` keeps a thread
+    /// profile (depth along u, width along v) in the axial section.
+    fn sweep<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] profile: Value<'v>,
+        #[starlark(require = named)] path: Value<'v>,
+        #[starlark(require = named)] bend: Option<Value<'v>>,
+        #[starlark(require = named)] up: Option<Value<'v>>,
+        #[starlark(require = named)] at: Option<Value<'v>>,
+        #[starlark(require = named)] material: Option<Value<'v>>,
+        #[starlark(require = named)] color: Option<Value<'v>>,
+        #[starlark(require = named)] attributes: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] tool: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let segments = profile_segments(profile, heap, "profile")?;
+        let bend = given(bend).map(|bend| number(bend, "bend")).transpose()?;
+        if bend.is_some_and(|bend| bend <= TOLERANCE_MM) {
+            anyhow::bail!("bend must be a positive radius");
+        }
+        let path = sweep_path(path, bend, heap)?;
+        let up = given(up)
+            .map(|up| sweep_up(&path, numbers::<3>(up, heap, "up")?))
+            .transpose()?;
+        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
+        let look = Look::read(material, color, attributes, heap)?;
+        let state = state(eval)?;
+        let part = insert_profile_part(
+            &state,
+            name,
+            at_mm,
+            ProgramPartBody::Sweep { segments, path, up },
+            look,
+            tool,
+        )?;
+        record_source(eval, &state, &[name]);
+        Ok(part_value(&part, heap))
     }
 }
 
@@ -1316,43 +1371,6 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 axis_end_mm: *axis_end_mm,
                 angle_degrees: angle,
             },
-            look,
-            tool,
-        )?;
-        record_source(eval, &state, &[name]);
-        Ok(part_value(&part, heap))
-    }
-
-    /// Carries a closed profile along a smooth path of lines and arcs. The
-    /// profile's (u, v) plane stands square to the path at its start; going
-    /// horizontally, u points right of the direction of travel and v up.
-    fn sweep<'v>(
-        #[starlark(require = pos)] name: &str,
-        #[starlark(require = named)] profile: Value<'v>,
-        #[starlark(require = named)] path: Value<'v>,
-        #[starlark(require = named)] bend: Option<Value<'v>>,
-        #[starlark(require = named)] at: Option<Value<'v>>,
-        #[starlark(require = named)] material: Option<Value<'v>>,
-        #[starlark(require = named)] color: Option<Value<'v>>,
-        #[starlark(require = named)] attributes: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] tool: bool,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        let heap = eval.heap();
-        let segments = profile_segments(profile, heap, "profile")?;
-        let bend = given(bend).map(|bend| number(bend, "bend")).transpose()?;
-        if bend.is_some_and(|bend| bend <= TOLERANCE_MM) {
-            anyhow::bail!("bend must be a positive radius");
-        }
-        let path = sweep_path(path, bend, heap)?;
-        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, heap)?;
-        let state = state(eval)?;
-        let part = insert_profile_part(
-            &state,
-            name,
-            at_mm,
-            ProgramPartBody::Sweep { segments, path },
             look,
             tool,
         )?;

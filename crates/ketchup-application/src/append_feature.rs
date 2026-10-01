@@ -221,7 +221,7 @@ pub(crate) fn plan_feature_kind(
                     "Target a supported profile and path in the requested definition.",
                 ));
             }
-            FeatureKind::Sweep { profile, path }
+            FeatureKind::sweep(profile, path)
         }
         AssistantCadBodyFeature::WeldmentMember {
             profile_feature_id,

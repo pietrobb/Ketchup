@@ -429,7 +429,7 @@ pub(super) fn validate_product_with_drawing_sources(
                     return Err(CanonicalError::InvalidPlanarOffset);
                 }
             }
-            FeatureKind::Sweep { profile, path } => {
+            FeatureKind::Sweep { profile, path, .. } => {
                 let profile_source = product
                     .features
                     .get(&profile)

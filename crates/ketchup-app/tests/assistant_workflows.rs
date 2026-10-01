@@ -2512,6 +2512,7 @@ fn scripted_append_sweep_is_exact_persistent_and_one_step() {
         FeatureKind::Sweep {
             profile: FeatureId(1),
             path: FeatureId(2),
+            ..
         }
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();

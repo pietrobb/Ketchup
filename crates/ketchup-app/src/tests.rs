@@ -440,6 +440,7 @@ fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
             kind: FeatureKind::Sweep {
                 profile: FeatureId(3),
                 path: FeatureId(4),
+                ..
             },
             ..
         }]
@@ -533,6 +534,7 @@ fn cad_edit_append_spatial_sweep_preflights_v12_without_mutation_and_is_one_step
             kind: FeatureKind::Sweep {
                 profile: FeatureId(3),
                 path: FeatureId(4),
+                ..
             },
             ..
         }]
@@ -652,10 +654,7 @@ fn cad_edit_append_spatial_sweep_rejects_suppressed_and_cross_definition_paths_a
                 id: FeatureId(5),
                 definition_id: DefinitionId(2),
                 name: "Existing spatial sweep".to_owned(),
-                kind: FeatureKind::Sweep {
-                    profile: FeatureId(3),
-                    path: FeatureId(4),
-                },
+                kind: FeatureKind::sweep(FeatureId(3), FeatureId(4)),
             },
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(3),

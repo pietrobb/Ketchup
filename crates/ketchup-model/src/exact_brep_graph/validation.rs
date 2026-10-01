@@ -497,15 +497,22 @@ pub(super) fn valid_operation_profiles(
                         sweep_profile_bounds(profile, path, tolerance_mm).is_ok()
                     })
         }
-        ExactBRepOperation::SpatialSweep { profile, path } => {
-            profiles.get(profile.0 as usize).is_some_and(|profile| {
-                matches!(
-                    profile.geometry,
-                    ExactBRepPlanarGeometry::Boundary { closed: true, .. }
-                        | ExactBRepPlanarGeometry::Circle { .. }
-                        | ExactBRepPlanarGeometry::Region { .. }
-                ) && spatial_sweep_bounds(profile, path, tolerance_mm).is_ok()
-            })
+        ExactBRepOperation::SpatialSweep {
+            profile,
+            path,
+            up_bits,
+        } => {
+            // The section profile was framed on this unit `up`.
+            let up = up_bits.map(|up| up.map(f64::from_bits));
+            up.is_none_or(|up| (dot(up, up).sqrt() - 1.0).abs() <= ROUNDING)
+                && profiles.get(profile.0 as usize).is_some_and(|profile| {
+                    matches!(
+                        profile.geometry,
+                        ExactBRepPlanarGeometry::Boundary { closed: true, .. }
+                            | ExactBRepPlanarGeometry::Circle { .. }
+                            | ExactBRepPlanarGeometry::Region { .. }
+                    ) && spatial_sweep_bounds(profile, path, tolerance_mm).is_ok()
+                })
         }
         _ => true,
     }

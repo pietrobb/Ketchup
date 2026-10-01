@@ -148,7 +148,7 @@ pub(crate) fn replace_base_body(
         Ok(id)
     };
     let solid = match &part.body {
-        ProgramPartBody::Sweep { segments, path } => {
+        ProgramPartBody::Sweep { segments, path, up } => {
             // Only a plain profile is read in the path's own section frame.
             if let CanonicalCommand::CreateFeature { kind, .. } = &mut commands[sketch] {
                 *kind = FeatureKind::Profile {
@@ -159,6 +159,7 @@ pub(crate) fn replace_base_body(
             FeatureKind::Sweep {
                 profile,
                 path: create(format!("{} path", part.name), spatial_path(path))?,
+                up: *up,
             }
         }
         ProgramPartBody::Loft { sections } => {
@@ -507,9 +508,10 @@ impl<'a> OperationPlanner<'a> {
             },
         )?;
         let solid_kind = match &tool.body {
-            ProgramPartBody::Sweep { path, .. } => FeatureKind::Sweep {
+            ProgramPartBody::Sweep { path, up, .. } => FeatureKind::Sweep {
                 profile,
                 path: self.feature(format!("{prefix} tool path"), spatial_path(path))?,
+                up: *up,
             },
             ProgramPartBody::Loft { .. } => unreachable!("built above"),
             ProgramPartBody::Extrusion { distance_mm, .. } => {

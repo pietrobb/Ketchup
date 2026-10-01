@@ -2288,7 +2288,7 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
         .id();
     assert!(matches!(
         committed.feature(sweep_id).unwrap().kind(),
-        FeatureKind::Sweep { profile, path }
+        FeatureKind::Sweep { profile, path, .. }
             if *profile == profile_id && *path == path_id
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, sweep_id).unwrap();

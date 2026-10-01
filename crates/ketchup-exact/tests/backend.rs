@@ -446,8 +446,8 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
         },
     ];
 
-    let output = kernel.sweep_spatial_profile(&profile, &path).unwrap();
-    let repeated = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    let output = kernel.sweep_spatial_profile(&profile, &path, None).unwrap();
+    let repeated = kernel.sweep_spatial_profile(&profile, &path, None).unwrap();
     assert_valid(&output);
     assert_eq!(output.input_digest, repeated.input_digest);
     assert_eq!(
@@ -463,7 +463,7 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
     assert_eq!(output.topology_history.len(), 2);
 
     let one_segment = kernel
-        .sweep_spatial_profile(&profile, &path[..1])
+        .sweep_spatial_profile(&profile, &path[..1], None)
         .expect("one spatial line segment must produce an exact sweep");
     assert_valid(&one_segment);
     let mut non_finite = path;
@@ -475,7 +475,7 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
     };
     assert_eq!(
         kernel
-            .sweep_spatial_profile(&profile, &non_finite)
+            .sweep_spatial_profile(&profile, &non_finite, None)
             .unwrap_err()
             .code,
         GeometryErrorCode::NonFiniteParameter
@@ -490,7 +490,7 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
     };
     assert_eq!(
         kernel
-            .sweep_spatial_profile(&profile, &bad_normal)
+            .sweep_spatial_profile(&profile, &bad_normal, None)
             .unwrap_err()
             .code,
         GeometryErrorCode::InvalidProfile
@@ -505,7 +505,7 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
     };
     assert_eq!(
         kernel
-            .sweep_spatial_profile(&profile, &off_plane)
+            .sweep_spatial_profile(&profile, &off_plane, None)
             .unwrap_err()
             .code,
         GeometryErrorCode::InvalidProfile
@@ -517,7 +517,7 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
     };
     assert_eq!(
         kernel
-            .sweep_spatial_profile(&profile, &disconnected)
+            .sweep_spatial_profile(&profile, &disconnected, None)
             .unwrap_err()
             .code,
         GeometryErrorCode::InvalidProfile
@@ -529,7 +529,7 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
     };
     assert_eq!(
         kernel
-            .sweep_spatial_profile(&profile, &not_c1)
+            .sweep_spatial_profile(&profile, &not_c1, None)
             .unwrap_err()
             .code,
         GeometryErrorCode::InvalidProfile
@@ -573,8 +573,8 @@ fn closed_c1_spatial_sweep_produces_one_deterministic_periodic_solid() {
         quarter([0.0, -20.0, 0.0], [20.0, 0.0, 0.0]),
     ];
 
-    let output = kernel.sweep_spatial_profile(&profile, &path).unwrap();
-    let repeated = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    let output = kernel.sweep_spatial_profile(&profile, &path, None).unwrap();
+    let repeated = kernel.sweep_spatial_profile(&profile, &path, None).unwrap();
     assert_valid(&output);
     assert_eq!(output.input_digest, repeated.input_digest);
     assert_eq!(
@@ -633,8 +633,8 @@ fn closed_non_planar_spatial_sweep_has_a_periodic_deterministic_frame() {
         },
     ];
 
-    let output = kernel.sweep_spatial_profile(&profile, &path).unwrap();
-    let repeated = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    let output = kernel.sweep_spatial_profile(&profile, &path, None).unwrap();
+    let repeated = kernel.sweep_spatial_profile(&profile, &path, None).unwrap();
     assert_valid(&output);
     assert_eq!(output.input_digest, repeated.input_digest);
     assert_eq!(
@@ -693,7 +693,7 @@ fn xy_spatial_sweep_preserves_legacy_planar_profile_placement() {
         .sweep_planar_profile(&profile, &planar_path)
         .unwrap();
     let spatial = backend
-        .sweep_spatial_profile(&profile, &spatial_path)
+        .sweep_spatial_profile(&profile, &spatial_path, None)
         .unwrap();
     assert_valid(&planar);
     assert_valid(&spatial);

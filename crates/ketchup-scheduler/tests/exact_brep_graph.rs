@@ -1024,7 +1024,7 @@ fn worker_evaluates_v9_curved_sweep_with_deterministic_topology_and_mesh() {
                 id: sweep,
                 definition_id: definition,
                 name: "Curved sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();
@@ -1118,7 +1118,7 @@ fn worker_evaluates_v10_multisegment_sweep_with_step_round_trip() {
                 id: sweep,
                 definition_id: definition,
                 name: "Multisegment sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();
@@ -2380,7 +2380,7 @@ fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed()
                 id: sweep,
                 definition_id: definition,
                 name: "Unsupported spline sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .err()
@@ -2697,10 +2697,7 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
                 id: sweep,
                 definition_id: definition,
                 name: "Non-rectangular sweep".into(),
-                kind: FeatureKind::Sweep {
-                    profile: sweep_profile,
-                    path: sweep_path,
-                },
+                kind: FeatureKind::sweep(sweep_profile, sweep_path),
             },
             CanonicalCommand::CreateFeature {
                 id: loft_lower,
@@ -6750,7 +6747,7 @@ fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
                 id: sweep,
                 definition_id: definition,
                 name: "V11 sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();
@@ -6856,7 +6853,7 @@ fn worker_evaluates_closed_non_planar_v12_sweep_with_mesh_and_step_round_trip() 
                 id: sweep,
                 definition_id: definition,
                 name: "Spatial sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();
@@ -7015,7 +7012,7 @@ fn worker_evaluates_general_sketch_profiles_on_a_mixed_spatial_path() {
                     id: sweep,
                     definition_id: definition,
                     name: "General sketch sweep".into(),
-                    kind: FeatureKind::Sweep { profile, path },
+                    kind: FeatureKind::sweep(profile, path),
                 },
             ]))
             .unwrap();
@@ -7127,7 +7124,7 @@ fn worker_evaluates_general_sketch_profiles_on_a_mixed_spatial_path() {
                 id: sweep,
                 definition_id: definition,
                 name: "Sketch path Sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();

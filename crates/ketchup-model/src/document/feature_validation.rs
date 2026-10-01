@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::normalize_within;
 
 pub(super) const MAX_STABLE_SUBSHAPE_ROLE_BYTES: usize = 128;
 
@@ -1135,8 +1136,8 @@ pub(super) fn validate_feature_kind(
             }
             Ok(())
         }
-        FeatureKind::Sweep { profile, path } => {
-            if profile == path {
+        FeatureKind::Sweep { profile, path, up } => {
+            if profile == path || up.is_some_and(|up| normalize_within(up, ROUNDING).is_none()) {
                 return Err(CanonicalError::InvalidSweep);
             }
             Ok(())

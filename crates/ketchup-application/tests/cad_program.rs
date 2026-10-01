@@ -1246,9 +1246,13 @@ fn helix_sweeps_any_closed_profile_that_fits_between_its_turns() {
             ..
         }
     ));
+    // The helix axis holds the tooth in the axial section on every turn.
     assert!(matches!(
         candidate.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::Sweep { .. }
+        FeatureKind::Sweep {
+            up: Some([0.0, 0.0, 1.0]),
+            ..
+        }
     ));
     ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(3)).unwrap();
 

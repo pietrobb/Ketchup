@@ -862,6 +862,12 @@ pub enum FeatureKind {
     Sweep {
         profile: FeatureId,
         path: FeatureId,
+        /// Along a spatial path, keeps the profile's v on this direction
+        /// and its u on `tangent × up` (fixed binormal), so a profile swept
+        /// along a helix about `up` stays in the axial section. None
+        /// carries the profile square to the path without twist.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up: Option<[f64; 3]>,
     },
     WeldmentMember(WeldmentMemberSpec),
     WeldmentJoint(WeldmentJointSpec),
@@ -993,6 +999,16 @@ impl FeatureKind {
             extent: FeatureExtent::Blind(height),
             operation: PadOperation::NewBody,
         })
+    }
+
+    /// `profile` swept along `path` without a fixed `up`.
+    #[must_use]
+    pub fn sweep(profile: FeatureId, path: FeatureId) -> Self {
+        Self::Sweep {
+            profile,
+            path,
+            up: None,
+        }
     }
 
     /// A blind cut `depth` into `target`, opened on the target face the
@@ -1373,7 +1389,7 @@ impl FeatureKind {
             | Self::EdgeFinish { target, .. }
             | Self::FaceOffset { target, .. } => [*target].into_iter().collect(),
             Self::Boolean { target, tool, .. } => [*target, *tool].into_iter().collect(),
-            Self::Sweep { profile, path } => [*profile, *path].into_iter().collect(),
+            Self::Sweep { profile, path, .. } => [*profile, *path].into_iter().collect(),
             Self::WeldmentMember(spec) => [spec.profile, spec.path].into_iter().collect(),
             Self::WeldmentJoint(spec) => [spec.first_member, spec.second_member]
                 .into_iter()

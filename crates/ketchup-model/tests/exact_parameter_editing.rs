@@ -1135,10 +1135,7 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                 id: SWEEP,
                 definition_id: DEFINITION,
                 name: "Sweep".into(),
-                kind: FeatureKind::Sweep {
-                    profile: SWEEP_PROFILE,
-                    path: SWEEP_PATH,
-                },
+                kind: FeatureKind::sweep(SWEEP_PROFILE, SWEEP_PATH),
             },
             CanonicalCommand::CreateFeature {
                 id: LOFT_LOWER,

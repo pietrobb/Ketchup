@@ -313,6 +313,7 @@ mod ffi {
         fn sweep_spatial_profile_native(
             profile_segments: &[NativeSegment],
             path_segments: &[NativeSegment],
+            up: &[f64],
         ) -> UniquePtr<NativeOperationResult>;
         fn loft_framed_profiles_native(
             sections: &[NativeLoftSection],

@@ -546,10 +546,7 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
                 id: sweep,
                 definition_id: sweep_definition,
                 name: "Sweep".into(),
-                kind: FeatureKind::Sweep {
-                    profile: sweep_profile,
-                    path: sweep_path,
-                },
+                kind: FeatureKind::sweep(sweep_profile, sweep_path),
             },
         ]))
         .unwrap();
@@ -704,7 +701,7 @@ fn tangent_line_arc_sweep_uses_v9_and_round_trips() {
                 id: sweep,
                 definition_id: definition,
                 name: "Curved sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();
@@ -1633,7 +1630,7 @@ fn cubic_sweep_selects_v11_round_trips_and_rejects_v10_downgrade() {
                 id: sweep,
                 definition_id: definition,
                 name: "V11 sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();
@@ -1759,7 +1756,7 @@ fn spatial_sweep_v12_graph() -> ExactBRepGraph {
                 id: sweep,
                 definition_id: definition,
                 name: "V12 spatial sweep".into(),
-                kind: FeatureKind::Sweep { profile, path },
+                kind: FeatureKind::sweep(profile, path),
             },
         ]))
         .unwrap();
@@ -1775,7 +1772,7 @@ fn non_coplanar_mixed_spatial_sweep_selects_v12_with_exact_stable_payload() {
         1,
         "the spatial path is embedded in the operation"
     );
-    let ExactBRepOperation::SpatialSweep { profile, path } = &graph.nodes[0].operation else {
+    let ExactBRepOperation::SpatialSweep { profile, path, .. } = &graph.nodes[0].operation else {
         panic!("fixture must compile as a V12 spatial sweep");
     };
     assert_eq!(*profile, ExactBRepProfileId(0));

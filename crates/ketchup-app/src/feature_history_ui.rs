@@ -413,7 +413,7 @@ impl KetchupApp {
                 })
                 .into_iter()
                 .collect(),
-            FeatureKind::Sweep { profile, path } => [*profile, *path]
+            FeatureKind::Sweep { profile, path, .. } => [*profile, *path]
                 .into_iter()
                 .flat_map(generic_choices)
                 .collect(),

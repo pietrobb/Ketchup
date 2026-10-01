@@ -509,6 +509,10 @@ pub enum ExactBRepOperation {
     SpatialSweep {
         profile: ExactBRepProfileId,
         path: ExactBRepSpatialPath,
+        /// Unit direction the profile's v keeps (fixed binormal); see
+        /// `FeatureKind::Sweep::up`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_bits: Option<[u64; 3]>,
     },
     WeldmentJoint {
         first: ExactBRepNodeId,

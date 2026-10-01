@@ -3406,10 +3406,9 @@ fn read_product(
                 profile: FeatureId(reader.u64()?),
                 distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
-            13 if capabilities.sweep => FeatureKind::Sweep {
-                profile: FeatureId(reader.u64()?),
-                path: FeatureId(reader.u64()?),
-            },
+            13 if capabilities.sweep => {
+                FeatureKind::sweep(FeatureId(reader.u64()?), FeatureId(reader.u64()?))
+            }
             30 if capabilities.weldment_member => FeatureKind::WeldmentMember(WeldmentMemberSpec {
                 profile: FeatureId(reader.u64()?),
                 path: FeatureId(reader.u64()?),

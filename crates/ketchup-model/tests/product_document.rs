@@ -3280,10 +3280,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: SWEEP,
                 definition_id: DEFINITION,
                 name: "Bounded sweep".to_owned(),
-                kind: FeatureKind::Sweep {
-                    profile: PROFILE,
-                    path: PATH,
-                },
+                kind: FeatureKind::sweep(PROFILE, PATH),
             },
             CanonicalCommand::CreateOccurrence {
                 id: OCCURRENCE,
@@ -3307,6 +3304,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
         FeatureKind::Sweep {
             profile: PROFILE,
             path: PATH,
+            ..
         }
     ));
     let state = encode_semantic_state(&document.current());
@@ -3333,7 +3331,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
     };
     assert!(matches!(
         unique.feature(*unique_sweep).unwrap().kind(),
-        FeatureKind::Sweep { profile, path }
+        FeatureKind::Sweep { profile, path, .. }
             if profile == unique_profile && path == unique_path
     ));
 
@@ -3344,7 +3342,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
     assert!(reopened.migration_losses().is_empty());
     assert!(matches!(
         reopened.snapshot().feature(*unique_sweep).unwrap().kind(),
-        FeatureKind::Sweep { profile, path }
+        FeatureKind::Sweep { profile, path, .. }
             if profile == unique_profile && path == unique_path
     ));
 
@@ -3384,10 +3382,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: SWEEP,
                 definition_id: DEFINITION,
                 name: "Unsupported bent sweep".to_owned(),
-                kind: FeatureKind::Sweep {
-                    profile: PROFILE,
-                    path: PATH,
-                },
+                kind: FeatureKind::sweep(PROFILE, PATH),
             },
         ]))
         .err()
@@ -3432,10 +3427,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: SWEEP,
                 definition_id: DEFINITION,
                 name: "Degenerate segment sweep".to_owned(),
-                kind: FeatureKind::Sweep {
-                    profile: PROFILE,
-                    path: PATH,
-                },
+                kind: FeatureKind::sweep(PROFILE, PATH),
             },
         ]))
         .err()
@@ -3479,10 +3471,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 id: SWEEP,
                 definition_id: DEFINITION,
                 name: "Unsupported spline sweep".to_owned(),
-                kind: FeatureKind::Sweep {
-                    profile: PROFILE,
-                    path: PATH,
-                },
+                kind: FeatureKind::sweep(PROFILE, PATH),
             },
         ]))
         .err()
@@ -3933,10 +3922,7 @@ fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
                 id: SWEEP,
                 definition_id: DEFINITION,
                 name: "V11 sweep".to_owned(),
-                kind: FeatureKind::Sweep {
-                    profile: PROFILE,
-                    path: PATH,
-                },
+                kind: FeatureKind::sweep(PROFILE, PATH),
             },
         ])
     };
@@ -4102,10 +4088,7 @@ fn v12_spatial_sweep_is_canonical_persistent_and_rejects_uncompilable_bounds() {
                 id: SWEEP,
                 definition_id: DEFINITION,
                 name: "Spatial sweep".to_owned(),
-                kind: FeatureKind::Sweep {
-                    profile: PROFILE,
-                    path: PATH,
-                },
+                kind: FeatureKind::sweep(PROFILE, PATH),
             },
         ])
     };
@@ -4148,7 +4131,8 @@ fn v12_spatial_sweep_is_canonical_persistent_and_rejects_uncompilable_bounds() {
         reopened.snapshot().feature(SWEEP).unwrap().kind(),
         FeatureKind::Sweep {
             profile: PROFILE,
-            path: PATH
+            path: PATH,
+            ..
         }
     ));
 
@@ -4344,4 +4328,67 @@ fn offset_distance(graph: &ExactBRepGraph) -> f64 {
         panic!("expected a planar offset graph");
     };
     f64::from_bits(distance_bits)
+}
+
+#[test]
+fn a_spatial_sweep_up_persists_and_enters_the_digest() {
+    let document_with = |up| {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Sweep".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(2),
+                    definition_id: DefinitionId(1),
+                    name: "Profile".to_owned(),
+                    kind: FeatureKind::polygon(&[[0.0, -1.0], [1.0, 0.0], [0.0, 1.0]]),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(3),
+                    definition_id: DefinitionId(1),
+                    name: "Path".to_owned(),
+                    kind: FeatureKind::SpatialPath {
+                        segments: vec![SpatialPathSegment::Line {
+                            start_mm: [0.0, 0.0, 0.0],
+                            end_mm: [10.0, 0.0, 0.0],
+                        }],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(4),
+                    definition_id: DefinitionId(1),
+                    name: "Sweep".to_owned(),
+                    kind: FeatureKind::Sweep {
+                        profile: FeatureId(2),
+                        path: FeatureId(3),
+                        up,
+                    },
+                },
+            ]))
+            .map(|_| document)
+    };
+    let plain = document_with(None).unwrap().current();
+    let held = document_with(Some([0.0, 1.0, 1.0])).unwrap().current();
+    assert_ne!(plain.canonical_digest(), held.canonical_digest());
+    let reopened = persistence::load(&persistence::save(&held)).unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        held.canonical_digest()
+    );
+    assert!(matches!(
+        reopened.snapshot().feature(FeatureId(4)).unwrap().kind(),
+        FeatureKind::Sweep {
+            up: Some([0.0, 1.0, 1.0]),
+            ..
+        }
+    ));
+    for up in [[0.0; 3], [f64::NAN, 0.0, 1.0]] {
+        assert!(matches!(
+            document_with(Some(up)),
+            Err(CanonicalError::InvalidSweep)
+        ));
+    }
 }

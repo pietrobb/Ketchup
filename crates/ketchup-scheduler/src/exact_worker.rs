@@ -1225,11 +1225,11 @@ fn evaluate_exact_brep_graph(
                 &graph.profiles[profile.0 as usize],
                 &graph.profiles[path.0 as usize],
             )?,
-            ExactBRepOperation::SpatialSweep { profile, path } => exact_brep_spatial_sweep(
-                backend,
-                &graph.profiles[profile.0 as usize],
-                &path.segments,
-            )?,
+            ExactBRepOperation::SpatialSweep {
+                profile,
+                path,
+                up_bits: up,
+            } => exact_brep_spatial_sweep(backend, &graph.profiles[profile.0 as usize], path, *up)?,
             ExactBRepOperation::WeldmentJoint {
                 first,
                 second,
@@ -2245,8 +2245,10 @@ fn finish_exact_brep_weldment_joint(
 fn exact_brep_spatial_sweep(
     backend: &ExactKernel,
     profile: &ExactBRepProfile,
-    path: &[ExactBRepSpatialPathSegment],
+    path: &ExactBRepSpatialPath,
+    up_bits: Option<[u64; 3]>,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let up = up_bits.map(|up| up.map(f64::from_bits));
     let (outer, holes) = match &profile.geometry {
         ExactBRepPlanarGeometry::Boundary { closed: true, .. }
         | ExactBRepPlanarGeometry::Circle { .. } => {
@@ -2265,12 +2267,13 @@ fn exact_brep_spatial_sweep(
         }
     };
     let path = path
+        .segments
         .iter()
         .map(exact_brep_spatial_path_segment)
         .collect::<Vec<_>>();
-    let mut output = exact_brep_spatial_sweep_loop(backend, outer, &path)?;
+    let mut output = exact_brep_spatial_sweep_loop(backend, outer, &path, up)?;
     for hole in holes {
-        let tool = exact_brep_spatial_sweep_loop(backend, hole, &path)?;
+        let tool = exact_brep_spatial_sweep_loop(backend, hole, &path, up)?;
         output =
             backend.boolean_bodies(&output.body, &tool.body, ExactBodyBooleanOperation::Cut)?;
     }
@@ -2281,6 +2284,7 @@ fn exact_brep_spatial_sweep_loop(
     backend: &ExactKernel,
     profile: PlanarProfileLoop,
     path: &[SpatialProfileSegment],
+    up: Option<[f64; 3]>,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let segments = match profile {
         PlanarProfileLoop::Segments(segments) => segments,
@@ -2306,7 +2310,7 @@ fn exact_brep_spatial_sweep_loop(
             ]
         }
     };
-    backend.sweep_spatial_profile(&segments, path)
+    backend.sweep_spatial_profile(&segments, path, up)
 }
 
 fn exact_brep_spatial_path_segment(segment: &ExactBRepSpatialPathSegment) -> SpatialProfileSegment {

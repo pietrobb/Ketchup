@@ -28,6 +28,22 @@ impl Helix {
         (TAU * turns / FRAC_PI_2).ceil().max(0.0) as usize
     }
 
+    /// The fixed `up` of a sweep along this helix that keeps the profile in
+    /// the axial section with its u pointing away from the axis (`u =
+    /// tangent × up`): the axis, reversed for a left-handed helix, whose
+    /// tangent runs the other way round. A thread profile drawn with its
+    /// depth along u and its width along v cuts the same section on every
+    /// turn. `None` when the axis has no direction.
+    #[must_use]
+    pub fn sweep_up(&self) -> Option<[f64; 3]> {
+        let axis = normalize_within(self.axis, f64::EPSILON)?;
+        Some(if self.left_handed {
+            scale(axis, -1.0)
+        } else {
+            axis
+        })
+    }
+
     /// The helix as cubic Béziers, each matching the helix's position and
     /// tangent at both ends of its quarter turn (the last may be shorter).
     /// `None` when the axis has no direction.

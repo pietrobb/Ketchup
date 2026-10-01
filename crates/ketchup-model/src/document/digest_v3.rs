@@ -1375,11 +1375,7 @@ impl DigestV3 {
                 self.bytes(distance.source_token().as_bytes());
                 self.u64(distance.millimetres().to_bits());
             }
-            FeatureKind::Sweep { profile, path } => {
-                self.byte(13);
-                self.u64(profile.0);
-                self.u64(path.0);
-            }
+            FeatureKind::Sweep { profile, path, up } => self.sweep(*profile, *path, *up),
             FeatureKind::WeldmentMember(spec) => {
                 self.byte(30);
                 self.u64(spec.profile.0);
@@ -2264,6 +2260,19 @@ impl DigestV3 {
         if let Some(color) = occurrence.color {
             for channel in color {
                 self.byte(channel);
+            }
+        }
+    }
+
+    fn sweep(&mut self, profile: FeatureId, path: FeatureId, up: Option<[f64; 3]>) {
+        self.byte(13);
+        self.u64(profile.0);
+        self.u64(path.0);
+        // Absent `up` adds nothing, so digests of earlier sweeps stay.
+        if let Some(up) = up {
+            self.byte(1);
+            for coordinate in up {
+                self.u64(coordinate.to_bits());
             }
         }
     }
