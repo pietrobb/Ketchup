@@ -32,46 +32,51 @@ impl MeshRecognitionResiduals {
     }
 }
 
+/// The closed planar profile of a recognized extrusion, in its profile basis
+/// around the base origin.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BoxRecognition {
-    pub center_mm: [f64; 3],
-    pub axes: [[f64; 3]; 3],
-    pub dimensions_mm: [f64; 3],
+pub enum RecognizedProfile {
+    Polygon(Vec<[f64; 2]>),
+    /// A circle around the base origin that the mesh approximates with
+    /// `tessellated_side_count` flat sides.
+    Circle {
+        radius_mm: f64,
+        tessellated_side_count: usize,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct CylinderRecognition {
-    pub center_mm: [f64; 3],
-    pub axis: [f64; 3],
-    pub radius_mm: f64,
-    pub height_mm: f64,
-    pub tessellated_side_count: usize,
+impl RecognizedProfile {
+    fn area_mm2(&self) -> f64 {
+        match self {
+            Self::Polygon(points) => {
+                points
+                    .iter()
+                    .zip(points.iter().cycle().skip(1))
+                    .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
+                    .sum::<f64>()
+                    .abs()
+                    * 0.5
+            }
+            Self::Circle { radius_mm, .. } => std::f64::consts::PI * radius_mm * radius_mm,
+        }
+    }
 }
 
+/// Every recognized mesh is one planar profile extruded along `axis` by
+/// `height_mm` from `base_origin_mm`; `kind` names the recognizer that found it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct LinearExtrusionRecognition {
+pub struct MeshRecognitionCandidate {
+    pub kind: RecognizedMeshKind,
     pub base_origin_mm: [f64; 3],
     pub profile_basis: [[f64; 3]; 2],
     pub axis: [f64; 3],
     pub height_mm: f64,
-    pub profile_mm: Vec<[f64; 2]>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum MeshRecognitionCandidate {
-    Box(BoxRecognition),
-    Cylinder(CylinderRecognition),
-    LinearExtrusion(LinearExtrusionRecognition),
+    pub profile: RecognizedProfile,
 }
 
 impl MeshRecognitionCandidate {
-    #[must_use]
-    pub const fn kind(&self) -> RecognizedMeshKind {
-        match self {
-            Self::Box(_) => RecognizedMeshKind::Box,
-            Self::Cylinder(_) => RecognizedMeshKind::Cylinder,
-            Self::LinearExtrusion(_) => RecognizedMeshKind::LinearExtrusion,
-        }
+    fn volume_mm3(&self) -> f64 {
+        self.profile.area_mm2() * self.height_mm
     }
 }
 
@@ -185,66 +190,141 @@ pub fn recognize_mesh_body_cancellable(
         };
     }
 
-    let mut boxes = prisms
-        .iter()
-        .filter_map(|evidence| box_candidate(evidence, tolerance_mm))
-        .collect::<Vec<_>>();
-    boxes.sort_by(|left, right| {
-        left.1
-            .maximum_mm()
-            .total_cmp(&right.1.maximum_mm())
-            .then_with(|| candidate_dimensions(&left.0).total_cmp(&candidate_dimensions(&right.0)))
-    });
-    if let Some((candidate, residuals)) = boxes.first().cloned() {
-        return MeshRecognition::Candidate {
-            candidate,
-            residuals,
+    for (index, recognizer) in RECOGNIZERS.iter().enumerate() {
+        let mut matches = Vec::new();
+        for evidence in &prisms {
+            if cancelled() {
+                return MeshRecognition::NoMatch {
+                    reason: "recognition was cancelled".to_owned(),
+                };
+            }
+            matches.extend(recognizer.recognize(evidence, tolerance_mm, &cancelled));
+        }
+        matches.sort_by(|left: &Recognized, right: &Recognized| {
+            left.residuals
+                .maximum_mm()
+                .total_cmp(&right.residuals.maximum_mm())
+                .then_with(|| {
+                    left.candidate
+                        .volume_mm3()
+                        .total_cmp(&right.candidate.volume_mm3())
+                })
+        });
+        let Some(best) = matches.first().cloned() else {
+            continue;
         };
-    }
-
-    let mut cylinders = prisms
-        .iter()
-        .filter_map(|evidence| cylinder_candidate(evidence, tolerance_mm, &cancelled))
-        .collect::<Vec<_>>();
-    cylinders.sort_by(|left, right| left.1.maximum_mm().total_cmp(&right.1.maximum_mm()));
-    if let Some((candidate, residuals)) = cylinders.first().cloned() {
-        let MeshRecognitionCandidate::Cylinder(cylinder) = &candidate else {
-            unreachable!("cylinder_candidate always returns a cylinder")
-        };
-        if cylinder.tessellated_side_count >= UNAMBIGUOUS_CYLINDER_SIDES {
+        let Some(reason) = recognizer.ambiguity(&best.candidate, matches.len()) else {
             return MeshRecognition::Candidate {
-                candidate,
-                residuals,
+                candidate: best.candidate,
+                residuals: best.residuals,
             };
+        };
+        // An ambiguous match also offers the best reading of every later recognizer.
+        let mut candidates = matches
+            .into_iter()
+            .map(|found| found.candidate)
+            .collect::<Vec<_>>();
+        for later in &RECOGNIZERS[index + 1..] {
+            candidates.extend(
+                prisms
+                    .iter()
+                    .filter_map(|evidence| later.recognize(evidence, tolerance_mm, &cancelled))
+                    .min_by(|left, right| {
+                        left.residuals
+                            .maximum_mm()
+                            .total_cmp(&right.residuals.maximum_mm())
+                    })
+                    .map(|found| found.candidate),
+            );
         }
         return MeshRecognition::Ambiguous {
-            candidates: vec![candidate, extrusion_candidate(&prisms[0])],
-            residuals,
-            reason:
-                "low polygon count cannot distinguish a cylinder from a regular polygon extrusion"
-                    .to_owned(),
+            candidates,
+            residuals: best.residuals,
+            reason: reason.to_owned(),
         };
     }
-
-    if prisms.len() == 1 {
-        let evidence = &prisms[0];
-        return MeshRecognition::Candidate {
-            candidate: extrusion_candidate(evidence),
-            residuals: evidence.residuals,
-        };
-    }
-
-    MeshRecognition::Ambiguous {
-        candidates: prisms.iter().map(extrusion_candidate).collect(),
-        residuals: prisms[0].residuals,
-        reason: "multiple Cartesian extrusion axes satisfy the requested tolerance".to_owned(),
+    MeshRecognition::NoMatch {
+        reason: "no recognizer reads the paired layers as a planar profile extrusion".to_owned(),
     }
 }
 
-fn candidate_dimensions(candidate: &MeshRecognitionCandidate) -> f64 {
-    match candidate {
-        MeshRecognitionCandidate::Box(value) => value.dimensions_mm.into_iter().product(),
-        _ => 0.0,
+#[derive(Clone)]
+struct Recognized {
+    candidate: MeshRecognitionCandidate,
+    residuals: MeshRecognitionResiduals,
+}
+
+/// Reads one Cartesian prism of a closed mesh as a planar profile extrusion.
+trait Recognizer: Sync {
+    fn recognize(
+        &self,
+        evidence: &PrismEvidence,
+        tolerance_mm: f64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Recognized>;
+
+    /// Why the best of `matches` readings cannot be chosen on its own.
+    fn ambiguity(&self, _best: &MeshRecognitionCandidate, _matches: usize) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Tried in order; the first recognizer that reads any prism decides.
+const RECOGNIZERS: [&dyn Recognizer; 3] =
+    [&BoxRecognizer, &CylinderRecognizer, &ExtrusionRecognizer];
+
+struct BoxRecognizer;
+struct CylinderRecognizer;
+struct ExtrusionRecognizer;
+
+impl Recognizer for BoxRecognizer {
+    fn recognize(
+        &self,
+        evidence: &PrismEvidence,
+        tolerance_mm: f64,
+        _cancelled: &dyn Fn() -> bool,
+    ) -> Option<Recognized> {
+        box_candidate(evidence, tolerance_mm)
+    }
+}
+
+impl Recognizer for CylinderRecognizer {
+    fn recognize(
+        &self,
+        evidence: &PrismEvidence,
+        tolerance_mm: f64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Recognized> {
+        cylinder_candidate(evidence, tolerance_mm, cancelled)
+    }
+
+    fn ambiguity(&self, best: &MeshRecognitionCandidate, _matches: usize) -> Option<&'static str> {
+        matches!(
+            best.profile,
+            RecognizedProfile::Circle { tessellated_side_count, .. }
+                if tessellated_side_count < UNAMBIGUOUS_CYLINDER_SIDES
+        )
+        .then_some(
+            "low polygon count cannot distinguish a cylinder from a regular polygon extrusion",
+        )
+    }
+}
+
+impl Recognizer for ExtrusionRecognizer {
+    fn recognize(
+        &self,
+        evidence: &PrismEvidence,
+        _tolerance_mm: f64,
+        _cancelled: &dyn Fn() -> bool,
+    ) -> Option<Recognized> {
+        Some(Recognized {
+            candidate: extrusion_candidate(evidence),
+            residuals: evidence.residuals,
+        })
+    }
+
+    fn ambiguity(&self, _best: &MeshRecognitionCandidate, matches: usize) -> Option<&'static str> {
+        (matches > 1).then_some("multiple Cartesian extrusion axes satisfy the requested tolerance")
     }
 }
 
@@ -630,10 +710,7 @@ fn side_band_matches(
     mixed_triangle_count == low_boundary.len() * 2 && expected.iter().all(|(_, count)| *count == 2)
 }
 
-fn box_candidate(
-    evidence: &PrismEvidence,
-    tolerance_mm: f64,
-) -> Option<(MeshRecognitionCandidate, MeshRecognitionResiduals)> {
+fn box_candidate(evidence: &PrismEvidence, tolerance_mm: f64) -> Option<Recognized> {
     if evidence.profile.len() != 4 {
         return None;
     }
@@ -659,26 +736,37 @@ fn box_candidate(
     let mut second_axis = [0.0; 3];
     second_axis[u_axis] = edge_v[0] / depth;
     second_axis[v_axis] = edge_v[1] / depth;
-    let extrusion_axis = cardinal_axis(evidence.extrusion_axis);
-    let axis_center = (evidence.low + evidence.high) * 0.5;
-    let center_mm = combine_point(evidence.extrusion_axis, evidence.center_2d, axis_center);
+    let axis = cardinal_axis(evidence.extrusion_axis);
     let mut residuals = evidence.residuals;
     residuals.max_profile_distance_mm = profile_residual;
-    Some((
-        MeshRecognitionCandidate::Box(BoxRecognition {
-            center_mm,
-            axes: [first_axis, second_axis, extrusion_axis],
-            dimensions_mm: [width, depth, evidence.high - evidence.low],
-        }),
+    let (half_width, half_depth) = (width * 0.5, depth * 0.5);
+    Some(Recognized {
+        candidate: MeshRecognitionCandidate {
+            kind: RecognizedMeshKind::Box,
+            base_origin_mm: combine_point(
+                evidence.extrusion_axis,
+                evidence.center_2d,
+                evidence.low,
+            ),
+            profile_basis: [first_axis, second_axis],
+            axis,
+            height_mm: evidence.high - evidence.low,
+            profile: RecognizedProfile::Polygon(vec![
+                [-half_width, -half_depth],
+                [half_width, -half_depth],
+                [half_width, half_depth],
+                [-half_width, half_depth],
+            ]),
+        },
         residuals,
-    ))
+    })
 }
 
 fn cylinder_candidate(
     evidence: &PrismEvidence,
     tolerance_mm: f64,
     cancelled: &dyn Fn() -> bool,
-) -> Option<(MeshRecognitionCandidate, MeshRecognitionResiduals)> {
+) -> Option<Recognized> {
     let side_count = evidence.profile.len();
     if side_count < MIN_CYLINDER_SIDES {
         return None;
@@ -725,54 +813,44 @@ fn cylinder_candidate(
     if surface_residual > tolerance_mm {
         return None;
     }
-    let axis_center = (evidence.low + evidence.high) * 0.5;
-    let center_mm = combine_point(evidence.extrusion_axis, evidence.center_2d, axis_center);
     let mut residuals = evidence.residuals;
     residuals.max_profile_distance_mm = profile_residual;
     residuals.max_surface_distance_mm = surface_residual;
-    Some((
-        MeshRecognitionCandidate::Cylinder(CylinderRecognition {
-            center_mm,
-            axis: cardinal_axis(evidence.extrusion_axis),
-            radius_mm: radius,
-            height_mm: evidence.high - evidence.low,
-            tessellated_side_count: side_count,
-        }),
+    Some(Recognized {
+        candidate: MeshRecognitionCandidate {
+            kind: RecognizedMeshKind::Cylinder,
+            profile: RecognizedProfile::Circle {
+                radius_mm: radius,
+                tessellated_side_count: side_count,
+            },
+            ..extrusion_candidate(evidence)
+        },
         residuals,
-    ))
+    })
 }
 
 fn extrusion_candidate(evidence: &PrismEvidence) -> MeshRecognitionCandidate {
     let [u_axis, v_axis] = profile_axes(evidence.extrusion_axis);
-    let mut basis_u = [0.0; 3];
-    basis_u[u_axis] = 1.0;
-    let mut basis_v = [0.0; 3];
-    basis_v[v_axis] = 1.0;
-    MeshRecognitionCandidate::LinearExtrusion(LinearExtrusionRecognition {
+    MeshRecognitionCandidate {
+        kind: RecognizedMeshKind::LinearExtrusion,
         base_origin_mm: combine_point(evidence.extrusion_axis, evidence.center_2d, evidence.low),
-        profile_basis: [basis_u, basis_v],
+        profile_basis: [cardinal_axis(u_axis), cardinal_axis(v_axis)],
         axis: cardinal_axis(evidence.extrusion_axis),
         height_mm: evidence.high - evidence.low,
-        profile_mm: evidence
-            .profile
-            .iter()
-            .map(|point| {
-                [
-                    point[0] - evidence.center_2d[0],
-                    point[1] - evidence.center_2d[1],
-                ]
-            })
-            .collect(),
-    })
+        profile: RecognizedProfile::Polygon(
+            evidence
+                .profile
+                .iter()
+                .map(|point| subtract_2d(*point, evidence.center_2d))
+                .collect(),
+        ),
+    }
 }
 
+/// The two other Cartesian axes of `extrusion_axis` (0, 1 or 2), ascending.
 fn profile_axes(extrusion_axis: usize) -> [usize; 2] {
-    match extrusion_axis {
-        0 => [1, 2],
-        1 => [0, 2],
-        2 => [0, 1],
-        _ => unreachable!("axis is generated from 0..3"),
-    }
+    let first = usize::from(extrusion_axis == 0);
+    [first, 3 - extrusion_axis - first]
 }
 
 fn cardinal_axis(axis: usize) -> [f64; 3] {

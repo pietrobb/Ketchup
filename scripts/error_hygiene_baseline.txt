@@ -1,1 +1,31 @@
-# Remaining errors that drop their cause (<file> <discard|string> <count>); may only shrink.
+# Remaining errors that drop their cause or cases the types still allow (<file> <discard|string|unreachable> <count>); may only shrink.
+crates/ketchup-app/src/app/document.rs unreachable 2
+crates/ketchup-app/src/app/export.rs unreachable 1
+crates/ketchup-app/src/app/transform.rs unreachable 2
+crates/ketchup-app/src/feature_history_ui.rs unreachable 4
+crates/ketchup-app/src/lib.rs unreachable 1
+crates/ketchup-app/src/live_bridge/image.rs unreachable 3
+crates/ketchup-application/src/append_feature.rs unreachable 1
+crates/ketchup-application/src/creation.rs unreachable 2
+crates/ketchup-application/src/evaluation.rs unreachable 2
+crates/ketchup-application/src/model_query.rs unreachable 6
+crates/ketchup-application/src/planner.rs unreachable 3
+crates/ketchup-application/src/rule_operations.rs unreachable 4
+crates/ketchup-application/src/sketch.rs unreachable 3
+crates/ketchup-application/src/topology.rs unreachable 1
+crates/ketchup-application/src/validation.rs unreachable 2
+crates/ketchup-assistant/src/intent.rs unreachable 1
+crates/ketchup-exact/src/profiles.rs unreachable 1
+crates/ketchup-geometry/src/sketch.rs unreachable 2
+crates/ketchup-geometry/src/sketch/region.rs unreachable 1
+crates/ketchup-geometry/src/sketch/solver.rs unreachable 5
+crates/ketchup-headless/src/protocol.rs unreachable 3
+crates/ketchup-headless/src/protocol/model_tools.rs unreachable 3
+crates/ketchup-manufacturing/src/fabrication.rs unreachable 1
+crates/ketchup-model/src/document/planar_face.rs unreachable 5
+crates/ketchup-model/src/document/proposal_analysis.rs unreachable 2
+crates/ketchup-model/src/exact_brep_graph/geometry.rs unreachable 1
+crates/ketchup-model/src/exact_product.rs unreachable 4
+crates/ketchup-model/src/import/dxf.rs unreachable 3
+crates/ketchup-program/src/faces.rs unreachable 1
+crates/ketchup-program/src/model.rs unreachable 2

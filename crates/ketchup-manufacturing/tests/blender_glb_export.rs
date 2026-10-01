@@ -13,7 +13,7 @@ use ketchup_model::import::{
     GlbImportError, ImportFormat, ImportLengthUnit, inspect_glb, plan_glb_import,
 };
 use ketchup_model::mesh_recognition::{
-    MeshRecognition, MeshRecognitionCandidate, recognize_mesh_body,
+    MeshRecognition, MeshRecognitionCandidate, RecognizedMeshKind, recognize_mesh_body,
 };
 use ketchup_model::persistence;
 use ketchup_model::testing::box_package;
@@ -499,7 +499,10 @@ fn exported_glb_imports_as_one_persistent_undoable_mesh_scene() {
     assert!(matches!(
         recognize_mesh_body(mesh, 1.0e-6),
         MeshRecognition::Candidate {
-            candidate: MeshRecognitionCandidate::Box(_),
+            candidate: MeshRecognitionCandidate {
+                kind: RecognizedMeshKind::Box,
+                ..
+            },
             ..
         }
     ));

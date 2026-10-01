@@ -2,8 +2,8 @@ use std::cell::Cell;
 
 use ketchup_model::document::{MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec};
 use ketchup_model::mesh_recognition::{
-    MeshRecognition, MeshRecognitionCandidate, RecognizedMeshKind, recognize_mesh_body,
-    recognize_mesh_body_cancellable,
+    MeshRecognition, MeshRecognitionCandidate, RecognizedMeshKind, RecognizedProfile,
+    recognize_mesh_body, recognize_mesh_body_cancellable,
 };
 
 fn prism(profile: &[[f64; 2]], height: f64) -> MeshBodySpec {
@@ -93,15 +93,31 @@ fn recognizes_oriented_box_with_measured_residuals() {
     let mesh = prism(&[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]], 8.0);
 
     let MeshRecognition::Candidate {
-        candidate: MeshRecognitionCandidate::Box(candidate),
+        candidate:
+            MeshRecognitionCandidate {
+                kind: RecognizedMeshKind::Box,
+                base_origin_mm,
+                axis,
+                height_mm,
+                profile: RecognizedProfile::Polygon(corners),
+                ..
+            },
         residuals,
     } = recognize_mesh_body(&mesh, 1.0e-6)
     else {
         panic!("expected an unambiguous box")
     };
 
-    assert_eq!(candidate.dimensions_mm.iter().product::<f64>(), 64.0);
-    assert_eq!(candidate.center_mm, [0.0, 0.0, 4.0]);
+    // A box is a centred rectangle extruded from the base face; all three
+    // Cartesian readings fit exactly, so check what does not depend on the axis.
+    let [[x0, y0], [x1, _], [_, y2], [x3, _]] = corners[..] else {
+        panic!("expected a rectangle, got {corners:?}")
+    };
+    assert_eq!([x0, y0, x3], [-(x1), -(y2), x0]);
+    assert_eq!((x1 - x0) * (y2 - y0) * height_mm, 64.0);
+    let center =
+        std::array::from_fn::<f64, 3, _>(|i| base_origin_mm[i] + axis[i] * height_mm * 0.5);
+    assert_eq!(center, [0.0, 0.0, 4.0]);
     assert_eq!(residuals.maximum_mm(), 0.0);
 }
 
@@ -136,16 +152,26 @@ fn recognizes_sufficiently_fine_cylinder_and_reports_tessellation_error() {
     let mesh = prism(&regular_polygon(16, 10.0), 25.0);
 
     let MeshRecognition::Candidate {
-        candidate: MeshRecognitionCandidate::Cylinder(candidate),
+        candidate:
+            MeshRecognitionCandidate {
+                kind: RecognizedMeshKind::Cylinder,
+                height_mm,
+                profile:
+                    RecognizedProfile::Circle {
+                        radius_mm,
+                        tessellated_side_count,
+                    },
+                ..
+            },
         residuals,
     } = recognize_mesh_body(&mesh, 0.2)
     else {
         panic!("expected an unambiguous cylinder")
     };
 
-    assert_eq!(candidate.tessellated_side_count, 16);
-    assert!((candidate.radius_mm - 10.0).abs() < 1.0e-12);
-    assert_eq!(candidate.height_mm, 25.0);
+    assert_eq!(tessellated_side_count, 16);
+    assert!((radius_mm - 10.0).abs() < 1.0e-12);
+    assert_eq!(height_mm, 25.0);
     assert!(residuals.max_surface_distance_mm > 0.19);
     assert!(residuals.max_surface_distance_mm <= residuals.tolerance_mm);
 }
@@ -162,8 +188,8 @@ fn low_polygon_cylinder_is_ambiguous_with_general_extrusion() {
     };
 
     assert_eq!(candidates.len(), 2);
-    assert_eq!(candidates[0].kind(), RecognizedMeshKind::Cylinder);
-    assert_eq!(candidates[1].kind(), RecognizedMeshKind::LinearExtrusion);
+    assert_eq!(candidates[0].kind, RecognizedMeshKind::Cylinder);
+    assert_eq!(candidates[1].kind, RecognizedMeshKind::LinearExtrusion);
     assert!(reason.contains("low polygon count"));
 }
 
@@ -179,14 +205,21 @@ fn recognizes_general_linear_extrusion_and_exposes_profile() {
     let mesh = prism(&profile, 7.0);
 
     let MeshRecognition::Candidate {
-        candidate: MeshRecognitionCandidate::LinearExtrusion(candidate),
+        candidate:
+            candidate @ MeshRecognitionCandidate {
+                kind: RecognizedMeshKind::LinearExtrusion,
+                ..
+            },
         residuals,
     } = recognize_mesh_body(&mesh, 1.0e-6)
     else {
         panic!("expected a general linear extrusion")
     };
 
-    assert_eq!(candidate.profile_mm.len(), profile.len());
+    let RecognizedProfile::Polygon(corners) = &candidate.profile else {
+        panic!("expected a polygon profile")
+    };
+    assert_eq!(corners.len(), profile.len());
     assert_eq!(candidate.axis, [0.0, 0.0, 1.0]);
     assert_eq!(candidate.height_mm, 7.0);
     assert_eq!(residuals.maximum_mm(), 0.0);
@@ -256,7 +289,11 @@ fn tiny_tolerance_at_large_coordinates_does_not_collapse_spatial_buckets() {
     );
 
     let MeshRecognition::Candidate {
-        candidate: MeshRecognitionCandidate::Box(_),
+        candidate:
+            MeshRecognitionCandidate {
+                kind: RecognizedMeshKind::Box,
+                ..
+            },
         residuals,
     } = recognize_mesh_body(&mesh, 1.0e-15)
     else {

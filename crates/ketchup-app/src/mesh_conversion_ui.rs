@@ -255,7 +255,7 @@ impl KetchupApp {
         let Some(pending) = self.mesh_conversion_state.pending.as_ref() else {
             return;
         };
-        let kind_key = match pending.plan.candidate().kind() {
+        let kind_key = match pending.plan.candidate().kind {
             ketchup_model::mesh_recognition::RecognizedMeshKind::Box => {
                 "dialog-mesh-conversion-kind-box"
             }

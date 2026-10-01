@@ -10,6 +10,8 @@ Two forms are counted in production source (crates/*/src, test modules and
   content-free types are listed in CONTENT_FREE; any other typed discard counts.
 - string: `Err("...".to_owned())`, `.to_string()` or `.into()` answers with bare
   text instead of a typed error or `ketchup_rejection::Rejection`.
+- unreachable: `unreachable!(...)` admits that a type allows a case the code
+  says cannot happen; shape the type so the case does not exist instead.
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -46,6 +48,7 @@ CONTENT_FREE = {
 }
 DISCARD = re.compile(r"map_err\(\s*(?:move\s*)?\|\s*_\w*\s*(?::\s*([^|]+?)\s*)?\|")
 STRING = re.compile(r"""Err\(\s*"(?:[^"\\]|\\.)*"\s*\.\s*(?:to_owned|to_string|into)\(\)\s*\)""")
+UNREACHABLE = re.compile(r"\bunreachable!\s*\(")
 # An inline `#[cfg(test)] mod name { ... }` at the top level of a Rust file.
 TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod \w+ \{\n.*?^\}",
                          re.MULTILINE | re.DOTALL)
@@ -60,7 +63,8 @@ def file_counts(text: str) -> dict[str, int]:
     text = TEST_MODULE.sub("", text)
     discards = sum(1 for match in DISCARD.finditer(text)
                    if match.group(1) is None or not content_free(match.group(1)))
-    return {"discard": discards, "string": len(STRING.findall(text))}
+    return {"discard": discards, "string": len(STRING.findall(text)),
+            "unreachable": len(UNREACHABLE.findall(text))}
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
@@ -97,7 +101,8 @@ def check(root: Path = ROOT, update: bool = False, allow_growth: bool = False) -
             return 1
         lines = [f"{key} {value}" for key, value in sorted(counts.items())]
         (root / BASELINE_NAME).write_text(
-            "# Remaining errors that drop their cause (<file> <discard|string> <count>); may only shrink.\n"
+            "# Remaining errors that drop their cause or cases the types still allow"
+            " (<file> <discard|string|unreachable> <count>); may only shrink.\n"
             + "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         print(f"baseline: {sum(counts.values())} occurrences in {len(counts)} entries")
         return 0

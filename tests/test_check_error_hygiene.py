@@ -36,6 +36,19 @@ def test_counts_discarded_causes_and_bare_text_errors_in_production_source(tmp_p
     }
 
 
+def test_counts_unreachable_cases_in_production_source_only(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        'Kind::Circle => unreachable!("handled above"),\n'
+        "_ => unreachable! ()\n"
+        "// not_unreachable!(x) and the word unreachable alone do not count\n"
+        '#[cfg(test)]\nmod tests {\n    fn g() { unreachable!() }\n}\n',
+    )
+    write(tmp_path, "crates/a/tests/it.rs", "unreachable!();\n")
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs unreachable": 2}
+
+
 def test_only_named_content_free_error_types_may_be_dropped(tmp_path):
     write(
         tmp_path,

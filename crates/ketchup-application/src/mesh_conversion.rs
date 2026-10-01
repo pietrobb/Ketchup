@@ -21,7 +21,7 @@ use ketchup_model::document::{
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError};
 use ketchup_model::exact_product::ExactBRepGraphPackage;
 use ketchup_model::mesh_recognition::{
-    CylinderRecognition, MeshRecognition, MeshRecognitionCandidate, MeshRecognitionResiduals,
+    MeshRecognition, MeshRecognitionCandidate, MeshRecognitionResiduals, RecognizedProfile,
     recognize_mesh_body_cancellable,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
@@ -641,45 +641,25 @@ fn candidate_feature_chain(
     transform_id: FeatureId,
     candidate: &MeshRecognitionCandidate,
 ) -> Result<CandidateFeatureChain, MeshConversionError> {
-    if let MeshRecognitionCandidate::Cylinder(cylinder) = candidate {
-        return cylinder_feature_chain(
-            definition_id,
-            profile_id,
-            extrusion_id,
-            transform_id,
-            cylinder,
-        );
-    }
-    let (profile, height_mm, origin, basis_u, mut basis_v, axis) = match candidate {
-        MeshRecognitionCandidate::Box(value) => {
-            let [width, depth, height] = value.dimensions_mm;
-            (
-                FeatureKind::polygon(&[
-                    [-width * 0.5, -depth * 0.5],
-                    [width * 0.5, -depth * 0.5],
-                    [width * 0.5, depth * 0.5],
-                    [-width * 0.5, depth * 0.5],
-                ]),
-                height,
-                subtract_3d(value.center_mm, scale_3d(value.axes[2], height * 0.5)),
-                value.axes[0],
-                value.axes[1],
-                value.axes[2],
-            )
+    let points_mm = match &candidate.profile {
+        RecognizedProfile::Circle { radius_mm, .. } => {
+            return circle_feature_chain(
+                definition_id,
+                [profile_id, extrusion_id, transform_id],
+                candidate,
+                *radius_mm,
+            );
         }
-        MeshRecognitionCandidate::LinearExtrusion(value) => (
-            FeatureKind::polygon(&value.profile_mm),
-            value.height_mm,
-            value.base_origin_mm,
-            value.profile_basis[0],
-            value.profile_basis[1],
-            value.axis,
-        ),
-        MeshRecognitionCandidate::Cylinder(_) => {
-            unreachable!("cylinder candidates return before generic extrusion planning")
-        }
+        RecognizedProfile::Polygon(points_mm) => points_mm,
     };
-    let mut profile = profile;
+    let mut profile = FeatureKind::polygon(points_mm);
+    let MeshRecognitionCandidate {
+        base_origin_mm: origin,
+        profile_basis: [basis_u, mut basis_v],
+        axis,
+        height_mm,
+        ..
+    } = *candidate;
     if dot(basis_u, cross(basis_v, axis)) < 0.0 {
         basis_v = scale_3d(basis_v, -1.0);
         reflect_profile_y(&mut profile);
@@ -736,35 +716,29 @@ fn candidate_feature_chain(
     })
 }
 
-fn cylinder_feature_chain(
+/// A circle profile is rotationally symmetric, so its sketch plane only needs
+/// a right-handed basis around the axis, not the recognized profile basis.
+fn circle_feature_chain(
     definition_id: DefinitionId,
-    workplane_id: FeatureId,
-    sketch_id: FeatureId,
-    pad_id: FeatureId,
-    cylinder: &CylinderRecognition,
+    [workplane_id, sketch_id, pad_id]: [FeatureId; 3],
+    candidate: &MeshRecognitionCandidate,
+    radius_mm: f64,
 ) -> Result<CandidateFeatureChain, MeshConversionError> {
-    if !cylinder.radius_mm.is_finite()
-        || cylinder.radius_mm <= 0.0
-        || !cylinder.height_mm.is_finite()
-        || cylinder.height_mm <= 0.0
-    {
+    let height_mm = candidate.height_mm;
+    if !radius_mm.is_finite() || radius_mm <= 0.0 || !height_mm.is_finite() || height_mm <= 0.0 {
         return Err(invalid_candidate(format!(
-            "cylinder radius {} mm and height {} mm must be finite and positive",
-            cylinder.radius_mm, cylinder.height_mm
+            "circle radius {radius_mm} mm and height {height_mm} mm must be finite and positive"
         )));
     }
-    let [basis_u, basis_v] = perpendicular_basis(cylinder.axis)?;
-    let origin = subtract_3d(
-        cylinder.center_mm,
-        scale_3d(cylinder.axis, cylinder.height_mm * 0.5),
-    );
-    let frame = WorkplaneFrame::from_axes(origin, basis_u, basis_v).map_err(invalid_candidate)?;
+    let [basis_u, basis_v] = perpendicular_basis(candidate.axis)?;
+    let frame = WorkplaneFrame::from_axes(candidate.base_origin_mm, basis_u, basis_v)
+        .map_err(invalid_candidate)?;
     let sketch = SketchSpec {
         workplane: workplane_id,
         entities: vec![SketchEntity::Circle {
             id: SketchEntityId(1),
             center_mm: [0.0, 0.0],
-            radius_mm: cylinder.radius_mm,
+            radius_mm,
         }],
         constraints: Vec::new(),
     };
@@ -804,7 +778,7 @@ fn cylinder_feature_chain(
                     },
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(
-                        Dimension::new(format!("{:.17}", cylinder.height_mm), cylinder.height_mm)
+                        Dimension::new(format!("{height_mm:.17}"), height_mm)
                             .map_err(invalid_candidate)?,
                     ),
                     operation: PadOperation::NewBody,
