@@ -53,6 +53,19 @@ def test_documented_exceptions_are_not_counted(tmp_path):
     assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 2}
 
 
+def test_counts_size_limits_written_as_literals_next_to_a_length(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "if x.len() > 64 {}\n"
+        "if (2..=16).contains(&sections.len()) {}\n"
+        "if 128 < v.len() || b.len() <= 1_024 {}\n"
+        "if a.len() == 3 || (1..=MAX).contains(&a.len()) {}\n"
+        "if (2..=limits::PATH_SEGMENTS).contains(&s.len()) {}\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs limit": 4}
+
+
 def test_ratchet_refuses_growth_and_locks_in_shrinking(tmp_path, capsys):
     (tmp_path / "scripts").mkdir()
     write(tmp_path, "crates/a/src/lib.rs", "const A: f64 = 1.0e-9;\nconst B: f64 = 1.0e-6;\n")
