@@ -12,6 +12,11 @@ use std::fmt;
 pub const MIN_SHEET_METAL_BEND_ANGLE_DEGREES: f64 = 0.1;
 pub const MAX_SHEET_METAL_BEND_ANGLE_DEGREES: f64 = 179.9;
 
+/// Most bends one sheet-metal part carries. The base is one profile loop of at most
+/// [`limits::PATH_SEGMENTS`] corners, and every bend adds one face, so the bend tree is
+/// bounded by the same number; any base shape and any tree depth fit under it.
+pub const MAX_SHEET_METAL_BENDS: usize = limits::PATH_SEGMENTS;
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SheetMetalSpec {
     /// Corners of the base face in the XY plane, counter-clockwise; the sheet fills z
@@ -181,7 +186,7 @@ impl SheetMetalShape {
 
     fn validate_base(&self) -> Result<(), SheetMetalError> {
         let base = &self.base_mm;
-        if base.len() < 3
+        if !(3..=limits::PATH_SEGMENTS).contains(&base.len())
             || base
                 .iter()
                 .flatten()
@@ -263,6 +268,9 @@ impl SheetMetalShape {
             return Err(SheetMetalError::InvalidKFactor);
         }
         self.validate_base()?;
+        if self.bends.len() > MAX_SHEET_METAL_BENDS {
+            return Err(SheetMetalError::TooManyBends);
+        }
         let mut spans = Vec::with_capacity(self.bends.len());
         for index in 0..self.bends.len() {
             let span = self.validate_bend(index, &spans)?;
@@ -841,16 +849,27 @@ pub enum SheetMetalError {
     InvalidBendAngle,
     AdjacentFlangesRequireCornerRelief,
     UnknownBend,
+    TooManyBends,
 }
 
 impl fmt::Display for SheetMetalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidBase => {
+                return write!(
+                    formatter,
+                    "the sheet-metal base must be a simple counter-clockwise polygon of 3 to {} corners inside the envelope",
+                    limits::PATH_SEGMENTS
+                );
+            }
+            Self::TooManyBends => {
+                return write!(
+                    formatter,
+                    "a sheet-metal part carries at most {MAX_SHEET_METAL_BENDS} bends"
+                );
+            }
             Self::DimensionOutsideEnvelope => {
                 "sheet-metal dimensions must be finite and inside the exact manufacturing envelope"
-            }
-            Self::InvalidBase => {
-                "the sheet-metal base must be a simple counter-clockwise polygon of at least three corners inside the envelope"
             }
             Self::ThicknessExceedsBase => {
                 "sheet-metal thickness must be smaller than every edge of the base"

@@ -28,10 +28,16 @@ const WORK_RECOVERY_SCHEMA: u16 = 1;
 const MAX_HISTORY_REVISIONS: u32 = 4_096;
 pub const CURRENT_SCHEMA: u16 = snapshot_codec::SNAPSHOT_FORMAT;
 
-const MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
+/// Largest serialized document snapshot: the current document or one revision in its
+/// history. A native file is a container of one or more snapshots plus history and
+/// blobs, so it may be larger: [`MAX_NATIVE_DOCUMENT_BYTES`].
+const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_STRING_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_ITEMS: u32 = 500_000;
+/// Largest native `.ketchup` file: the container with the current snapshot, revision
+/// history and blobs.
 pub const MAX_NATIVE_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+const _: () = assert!(MAX_SNAPSHOT_BYTES < MAX_NATIVE_DOCUMENT_BYTES);
 const MAX_CONTAINER_BYTES: usize = MAX_NATIVE_DOCUMENT_BYTES;
 const MAX_CONTAINER_ENTRIES: u32 = 4_096;
 const MAX_CONTAINER_PATH_BYTES: usize = 1_024;
@@ -1490,7 +1496,7 @@ fn decode_revision_history(
         }
         let length = usize::try_from(reader.u64()?)
             .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-        if length > MAX_FILE_BYTES {
+        if length > MAX_SNAPSHOT_BYTES {
             return Err(PersistenceError::ResourceLimit);
         }
         let checksum: [u8; 32] = reader
@@ -1554,7 +1560,7 @@ fn load_document(
     mut container_data: ContainerData,
     migrated_digests: &mut BTreeMap<String, String>,
 ) -> Result<LoadOutcome, PersistenceError> {
-    if bytes.len() > MAX_FILE_BYTES {
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
     let body = bytes

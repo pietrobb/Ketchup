@@ -481,7 +481,7 @@ impl ProductSchemaCapabilities {
     }
 }
 
-use super::MAX_FILE_BYTES;
+use super::{MAX_COLLECTION_ITEMS, MAX_SNAPSHOT_BYTES, MAX_STRING_BYTES};
 const HEADER_BYTES: usize = 16;
 const MANIFEST_BYTES: usize = 8
     + 32
@@ -492,9 +492,7 @@ const MANIFEST_BYTES: usize = 8
     + 4
     + crate::document::TOLERANCE_PROFILE_V1.len();
 const MAX_MANIFEST_BYTES: usize = MANIFEST_BYTES;
-const MAX_PAYLOAD_BYTES: usize = MAX_FILE_BYTES - HEADER_BYTES - MANIFEST_BYTES;
-const MAX_STRING_BYTES: usize = 1024 * 1024;
-const MAX_COLLECTION_ITEMS: u32 = 500_000;
+const MAX_PAYLOAD_BYTES: usize = MAX_SNAPSHOT_BYTES - HEADER_BYTES - MANIFEST_BYTES;
 
 pub(super) struct Decoded {
     pub(super) old: OldRecords,

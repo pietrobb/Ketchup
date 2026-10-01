@@ -55,6 +55,33 @@ fn import_batch(id: u64, definition_id: u64, occurrence_id: u64, source: &[u8]) 
 }
 
 #[test]
+fn a_receipt_is_bounded_by_its_own_format_reader_limit() {
+    for format in [ImportFormat::Stl, ImportFormat::Dxf, ImportFormat::Glb] {
+        let limit = format.source_limit_bytes();
+        let receipt = |source_byte_len| {
+            ImportReceipt::new(
+                ImportId(1),
+                format,
+                [7; 32],
+                source_byte_len,
+                "part",
+                ImportUnitDecision::new(
+                    ImportLengthUnit::Millimetre,
+                    ImportUnitAuthority::UserDeclared,
+                ),
+                "reader",
+                "1",
+                Vec::new(),
+                vec![ImportOutputRef::Definition(DefinitionId(1))],
+            )
+        };
+        assert!(receipt(limit).is_ok(), "{format:?} at its limit");
+        assert!(receipt(limit + 1).is_err(), "{format:?} past its limit");
+        assert!(receipt(0).is_err());
+    }
+}
+
+#[test]
 fn reviewed_import_is_one_undoable_persistent_deterministic_batch() {
     let source = b"solid deterministic-import-contract";
     let mut first = DocumentStore::new();

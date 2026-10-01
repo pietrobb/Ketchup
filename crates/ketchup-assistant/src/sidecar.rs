@@ -23,8 +23,11 @@ const MAX_ASSISTANT_BOXES: usize = 64;
 const MAX_ASSISTANT_SUBTRACTIONS: usize = 64;
 const MAX_ASSISTANT_TRANSLATIONS: usize = 100;
 const MAX_ASSISTANT_ROTATIONS: usize = 100;
-const MAX_ASSISTANT_PROFILE_TRANSLATIONS: usize = 1;
-const MAX_ASSISTANT_PARAMETER_EDITS: usize = 1;
+/// Profile translations and parameter edits act on the one active exact selection the
+/// app reports (selected_profile_translation_target / selected_parameter_edit_target),
+/// so a model intent carries at most one of each. This is not a batch limit: several
+/// parameter edits go into one CAD edit program as SetFeatureParameter operations.
+const MAX_ASSISTANT_SELECTION_EDITS: usize = 1;
 /// Most holes, and most pockets, one created part may carry.
 const MAX_ASSISTANT_PART_CUTS: usize = 128;
 const MAX_ASSISTANT_ARRAYS: usize = 16;
@@ -3654,16 +3657,16 @@ impl AssistantModelIntent {
                 AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_ROTATIONS),
             ));
         }
-        if self.profile_translations.len() > MAX_ASSISTANT_PROFILE_TRANSLATIONS {
+        if self.profile_translations.len() > MAX_ASSISTANT_SELECTION_EDITS {
             return Err(AssistantRequestInvalid::new(
                 "proposal profile translation count",
-                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PROFILE_TRANSLATIONS),
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_SELECTION_EDITS),
             ));
         }
-        if self.parameter_edits.len() > MAX_ASSISTANT_PARAMETER_EDITS {
+        if self.parameter_edits.len() > MAX_ASSISTANT_SELECTION_EDITS {
             return Err(AssistantRequestInvalid::new(
                 "proposal parameter edit count",
-                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PARAMETER_EDITS),
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_SELECTION_EDITS),
             ));
         }
         if self.linear_arrays.len() > MAX_ASSISTANT_ARRAYS {

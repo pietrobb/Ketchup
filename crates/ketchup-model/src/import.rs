@@ -11,7 +11,6 @@ use crate::document::{
 use crate::graph::sha256_bytes;
 
 pub const IMPORT_RECEIPT_SCHEMA_V1: &str = "ketchup.import-receipt.v1";
-pub const MAX_IMPORT_SOURCE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 pub const MAX_IMPORT_DIAGNOSTICS: usize = 1_024;
 pub const MAX_IMPORT_OUTPUTS: usize = 1_024;
 
@@ -265,7 +264,7 @@ impl ImportReceipt {
         if self.schema != IMPORT_RECEIPT_SCHEMA_V1 || self.id.0 == 0 {
             return Err(ImportContractError::InvalidIdentity);
         }
-        if self.source_byte_len == 0 || self.source_byte_len > MAX_IMPORT_SOURCE_BYTES {
+        if self.source_byte_len == 0 || self.source_byte_len > self.format.source_limit_bytes() {
             return Err(ImportContractError::InvalidSource);
         }
         validate_text(&self.source_name)?;
