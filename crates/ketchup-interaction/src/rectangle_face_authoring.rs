@@ -4,6 +4,7 @@ use crate::face_intent::{
     FaceIntentError, FaceWorkplaneContext, ResolvedFaceIntent, TransientFaceIntent,
 };
 use crate::spatial::SnapshotBinding;
+use ketchup_geometry::dimension::DimensionError;
 use ketchup_geometry::sketch::{
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
@@ -65,9 +66,9 @@ impl RectangleSize {
         let width_mm = (opposite_uv_mm[0] - anchor_uv_mm[0]).abs();
         let depth_mm = (opposite_uv_mm[1] - anchor_uv_mm[1]).abs();
         let width = Dimension::new(width_mm.to_string(), width_mm)
-            .map_err(|_| RectangleAuthoringError::InvalidDimensions)?;
+            .map_err(RectangleAuthoringError::Dimension)?;
         let depth = Dimension::new(depth_mm.to_string(), depth_mm)
-            .map_err(|_| RectangleAuthoringError::InvalidDimensions)?;
+            .map_err(RectangleAuthoringError::Dimension)?;
         Self::exact(width, depth)
     }
 
@@ -410,6 +411,7 @@ pub enum RectangleAuthoringError {
     FaceIntent(FaceIntentError),
     InvalidPoint,
     InvalidDimensions,
+    Dimension(DimensionError),
     StaleIntent,
     ForeignPreview,
     Proposal(ProposalPrepareError),
@@ -418,6 +420,7 @@ pub enum RectangleAuthoringError {
 impl fmt::Display for RectangleAuthoringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Dimension(error) => write!(formatter, "rectangle dimension is invalid: {error}"),
             Self::FaceIntent(error) => write!(formatter, "face intent rejected: {error}"),
             Self::InvalidPoint => formatter.write_str("rectangle points must be finite"),
             Self::InvalidDimensions => {
@@ -432,4 +435,11 @@ impl fmt::Display for RectangleAuthoringError {
     }
 }
 
-impl std::error::Error for RectangleAuthoringError {}
+impl std::error::Error for RectangleAuthoringError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Dimension(error) => Some(error),
+            _ => None,
+        }
+    }
+}

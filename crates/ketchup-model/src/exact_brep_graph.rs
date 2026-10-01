@@ -1,6 +1,6 @@
 use crate::document::{
-    BodyKind, BooleanOperation, ChamferMode, DefinitionId, EdgeFinishKind, EdgeRef, FaceRef,
-    FeatureDependencyGraph, FeatureId, FeatureKind, LoftContinuity, LoftSection,
+    BodyKind, BooleanOperation, CanonicalError, ChamferMode, DefinitionId, EdgeFinishKind, EdgeRef,
+    FaceRef, FeatureDependencyGraph, FeatureId, FeatureKind, LoftContinuity, LoftSection,
     ProfileFaceReference, ProfileSegment, ShellDirection, Snapshot, SpatialPathSegment,
     SurfaceBodySpec, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
     solved_sketch_sweep_path,
@@ -12,7 +12,7 @@ use crate::exact_product::{
 };
 use crate::sheet_metal::SheetMetalEdge;
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
-use crate::topology::{TopologicalElementKind, TopologicalElementRef};
+use crate::topology::{TopologicalElementKind, TopologicalElementRef, TopologicalReferenceError};
 use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile,
     SketchError, SketchRegionId, SolvedSketchRegion, SolvedSketchRegionEdge,
@@ -177,7 +177,7 @@ pub struct ExactBRepProfileEdgeReference {
 impl ExactBRepTopologySelector {
     pub fn reference(&self) -> Result<TopologicalElementRef, ExactBRepGraphError> {
         let reference = TopologicalElementRef::from_bytes(&self.reference_bytes)
-            .map_err(|_| ExactBRepGraphError::InvalidTopologySelector)?;
+            .map_err(ExactBRepGraphError::InvalidTopologyReference)?;
         if reference.kind != self.kind.element_kind() {
             return Err(ExactBRepGraphError::InvalidTopologySelector);
         }
@@ -815,7 +815,7 @@ impl ExactBRepGraph {
     ) -> Result<Self, ExactBRepGraphError> {
         let dependencies = snapshot
             .feature_dependency_graph()
-            .map_err(|_| ExactBRepGraphError::InvalidDependencyGraph)?;
+            .map_err(|error| ExactBRepGraphError::DependencyGraph(Box::new(error)))?;
         Self::from_snapshot_with_dependencies(
             snapshot,
             definition_id,
@@ -1497,8 +1497,10 @@ pub enum ExactBRepGraphError {
     SuppressedFeature(FeatureId),
     DependencyCycle(FeatureId),
     InvalidDependencyGraph,
+    DependencyGraph(Box<CanonicalError>),
     InvalidParameter,
     InvalidTopologySelector,
+    InvalidTopologyReference(TopologicalReferenceError),
     UnresolvedExtent,
     AmbiguousExtent,
     InvalidGraph,
@@ -1510,6 +1512,12 @@ pub enum ExactBRepGraphError {
 impl fmt::Display for ExactBRepGraphError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidTopologyReference(error) => {
+                write!(formatter, "topology selector reference is invalid: {error}")
+            }
+            Self::DependencyGraph(error) => {
+                write!(formatter, "feature dependency graph is invalid: {error}")
+            }
             Self::DefinitionNotFound(id) => write!(formatter, "definition {} was not found", id.0),
             Self::FeatureNotFound(id) => write!(formatter, "feature {} was not found", id.0),
             Self::UnsupportedFeature(id) => {
@@ -1564,7 +1572,16 @@ impl fmt::Display for ExactBRepGraphError {
     }
 }
 
-impl std::error::Error for ExactBRepGraphError {}
+impl std::error::Error for ExactBRepGraphError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidTopologyReference(error) => Some(error),
+            Self::DependencyGraph(error) => Some(error.as_ref()),
+            Self::UnsolvedProfile(_, error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

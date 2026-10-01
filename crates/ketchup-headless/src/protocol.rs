@@ -197,6 +197,7 @@ impl From<PdmWorkflowError> for Error {
                 LocalPdmError::InvalidReleaseId
                 | LocalPdmError::ManifestTooLarge
                 | LocalPdmError::InvalidManifest
+                | LocalPdmError::NonUtf8ReleaseEntry(_)
                 | LocalPdmError::ManifestIdentityMismatch => "pdm_manifest_invalid",
                 LocalPdmError::InvalidRepositoryPath => "pdm_repository_invalid",
                 LocalPdmError::ReleaseAlreadyExists => "pdm_release_exists",
@@ -250,7 +251,7 @@ impl From<SessionError> for Error {
             SessionError::Prepare(_) => "proposal_prepare_rejected",
             SessionError::Commit(_) => "proposal_commit_rejected",
             SessionError::Persistence(_) => "persistence_error",
-            SessionError::ReviewOnly => "review_only",
+            SessionError::ReviewOnly(_) => "review_only",
             SessionError::NoUndo => "no_undo",
             SessionError::NoRedo => "no_redo",
             SessionError::Evaluation(_) => "evaluation_error",

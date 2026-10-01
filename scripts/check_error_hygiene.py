@@ -33,6 +33,12 @@ CONTENT_FREE = {
     "TryFromIntError", "TryFromSliceError", "PoisonError", "TryLockError", "SendError",
     "TrySendError", "RecvError", "TryRecvError", "RecvTimeoutError", "Infallible",
     "fmt::Error",
+    # A float parse failure only says the token was empty or not a number.
+    "ParseFloatError",
+    # An integer parse failure only says the digits were empty, invalid or out of range.
+    "ParseIntError",
+    # Says only that the path does not start with the prefix.
+    "StripPrefixError",
     # wgpu reports a failed buffer map as a unit struct.
     "wgpu::BufferAsyncError",
     # Opaque by design: a failed signature check must not reveal why it failed.

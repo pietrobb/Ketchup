@@ -1,6 +1,6 @@
 use crate::document::{
-    CanonicalCommand, CommandBatch, DocumentId, DocumentStore, InstancePath, OccurrenceId,
-    Proposal, ProposalPrepareError, Snapshot, Transform,
+    CanonicalCommand, CanonicalError, CommandBatch, DocumentId, DocumentStore, InstancePath,
+    OccurrenceId, Proposal, ProposalPrepareError, Snapshot, Transform,
 };
 use crate::exact_product::{BodySubshapeRef, ExactReferenceResolution, ExactResultRegistry};
 use crate::tolerance::{
@@ -742,18 +742,22 @@ impl AssemblySolveResult {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssemblySolveError {
     InvalidPolicy,
     InvalidRigidTransform(OccurrenceId),
     UnresolvedReference(AssemblyMateId),
     UnsupportedReference(AssemblyMateId),
     NumericalFailure,
+    InvalidOccurrence(OccurrenceId, CanonicalError),
 }
 
 impl fmt::Display for AssemblySolveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidOccurrence(id, error) => {
+                write!(formatter, "occurrence {} cannot be placed: {error}", id.0)
+            }
             Self::InvalidPolicy => formatter.write_str("assembly solver policy is invalid"),
             Self::InvalidRigidTransform(id) => {
                 write!(
@@ -781,7 +785,14 @@ impl fmt::Display for AssemblySolveError {
     }
 }
 
-impl std::error::Error for AssemblySolveError {}
+impl std::error::Error for AssemblySolveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidOccurrence(_, error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum AssemblySolvePublishError {
@@ -1200,7 +1211,7 @@ impl RigidPose {
             .then_some(pose)
     }
 
-    fn to_transform(self) -> Result<Transform, AssemblySolveError> {
+    fn to_transform(self) -> Result<Transform, CanonicalError> {
         Transform::from_matrix([
             self.rotation[0][0],
             self.rotation[0][1],
@@ -1219,7 +1230,6 @@ impl RigidPose {
             0.0,
             1.0,
         ])
-        .map_err(|_| AssemblySolveError::NumericalFailure)
     }
 
     fn rotate(self, vector: [f64; 3]) -> [f64; 3] {
@@ -1300,9 +1310,10 @@ pub fn solve_rigid_assembly(
     for occurrence in snapshot.scene_query() {
         let resolved = snapshot
             .resolve_instance_path(&occurrence.instance_path)
-            .map_err(|_| {
-                AssemblySolveError::InvalidRigidTransform(
+            .map_err(|error| {
+                AssemblySolveError::InvalidOccurrence(
                     occurrence.instance_path.root_occurrence(),
+                    error,
                 )
             })?;
         let local = RigidPose::from_transform(resolved.local_transform).ok_or(
@@ -1425,7 +1436,11 @@ pub fn solve_rigid_assembly(
         };
         occurrences.push(AssemblySolvedOccurrence {
             instance_path: instance_path.clone(),
-            transform: state.local_poses[instance_path].to_transform()?,
+            transform: state.local_poses[instance_path]
+                .to_transform()
+                .map_err(|error| {
+                    AssemblySolveError::InvalidOccurrence(instance_path.root_occurrence(), error)
+                })?,
             remaining_dof: remaining,
             grounded,
         });

@@ -4,8 +4,8 @@ use crate::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, InstancePathStep, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment,
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use crate::exact_product::{ExactBodyPackage, ExactResultKey, ExactResultRegistry};
 use crate::graph::sha256_hex;
@@ -17,8 +17,9 @@ use crate::validation::{
     ValidationInvocation, ValidationPolicyRef, ValidationReport, ValidationState,
     ValidatorDescriptor,
 };
-use ketchup_geometry::prismatic::Aabb;
+use ketchup_geometry::prismatic::{Aabb, PrismaticError};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
+use std::fmt;
 
 pub const EXACT_VALIDATOR_CONTRACT_V1: &str = "ketchup.validator.exact-bodies.v1";
 pub const EXACT_VALIDATOR_IMPLEMENTATION_V1: &str = "ketchup.builtin.exact-bodies.aabb-cpu-f64.v1";
@@ -146,14 +147,45 @@ pub struct GeneralBodyParticipant {
     evidence_class: EvidenceClass,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GeneralBodyValidationError {
     InvalidOrHiddenInstance,
     UnavailableOrAmbiguousGeometry,
+    ExactGraph(Box<ExactBRepGraphError>),
     StaleExactResult,
     InvalidGeometry,
+    InvalidBounds(PrismaticError),
     InvalidGravityVector,
     InvalidClearance,
+}
+
+impl fmt::Display for GeneralBodyValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidOrHiddenInstance => {
+                formatter.write_str("body instance is invalid or hidden")
+            }
+            Self::UnavailableOrAmbiguousGeometry => {
+                formatter.write_str("body geometry is unavailable or ambiguous")
+            }
+            Self::ExactGraph(error) => write!(formatter, "body exact graph is invalid: {error}"),
+            Self::StaleExactResult => formatter.write_str("body exact result is stale"),
+            Self::InvalidGeometry => formatter.write_str("body geometry is invalid"),
+            Self::InvalidBounds(error) => write!(formatter, "body bounds are invalid: {error}"),
+            Self::InvalidGravityVector => formatter.write_str("gravity vector is invalid"),
+            Self::InvalidClearance => formatter.write_str("clearance is invalid"),
+        }
+    }
+}
+
+impl std::error::Error for GeneralBodyValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ExactGraph(error) => Some(error.as_ref()),
+            Self::InvalidBounds(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 impl GeneralBodyParticipant {
@@ -169,135 +201,136 @@ impl GeneralBodyParticipant {
             .find(|occurrence| occurrence.instance_path == instance_path && occurrence.visible)
             .ok_or(GeneralBodyValidationError::InvalidOrHiddenInstance)?;
         let transform = occurrence.transform;
-        let (source, vertices, exact_box) =
-            if let Some(package) = registry.get(&occurrence.definition_id) {
-                if !package.is_current(snapshot) {
-                    return Err(GeneralBodyValidationError::StaleExactResult);
+        let (source, vertices, exact_box) = if let Some(package) =
+            registry.get(&occurrence.definition_id)
+        {
+            if !package.is_current(snapshot) {
+                return Err(GeneralBodyValidationError::StaleExactResult);
+            }
+            let exact_box = matches!(
+                package.as_ref(),
+                ExactBodyPackage::Graph(graph_package)
+                    if graph_is_axis_aligned_box(&graph_package.graph)
+                        && is_translation_only(transform)
+            );
+            (
+                GeneralBodySource::Exact(package.result_key()),
+                package
+                    .vertices()
+                    .iter()
+                    .map(|vertex| vertex.position_mm)
+                    .collect::<Vec<_>>(),
+                exact_box,
+            )
+        } else {
+            let definition = snapshot
+                .definition(occurrence.definition_id)
+                .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?;
+            match definition.feature_ids() {
+                [feature_id] => {
+                    let FeatureKind::MeshBody(spec) = snapshot
+                        .feature(*feature_id)
+                        .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
+                        .kind()
+                    else {
+                        return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                    };
+                    (
+                        GeneralBodySource::CanonicalMesh {
+                            definition_id: occurrence.definition_id,
+                            feature_id: *feature_id,
+                            geometry_digest: mesh_geometry_digest(spec),
+                        },
+                        spec.vertices_mm.clone(),
+                        false,
+                    )
                 }
-                let exact_box = matches!(
-                    package.as_ref(),
-                    ExactBodyPackage::Graph(graph_package)
-                        if graph_is_axis_aligned_box(&graph_package.graph)
-                            && is_translation_only(transform)
-                );
-                (
-                    GeneralBodySource::Exact(package.result_key()),
-                    package
-                        .vertices()
+                [profile_id, extrusion_id] => {
+                    let Some(points_mm) = snapshot
+                        .feature(*profile_id)
+                        .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
+                        .kind()
+                        .polygon_points()
+                    else {
+                        return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                    };
+                    let FeatureKind::Pad(
+                        pad @ PadSpec {
+                            operation: PadOperation::NewBody,
+                            ..
+                        },
+                    ) = snapshot
+                        .feature(*extrusion_id)
+                        .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
+                        .kind()
+                    else {
+                        return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                    };
+                    let Some((profile, height)) = pad.blind_along_normal() else {
+                        return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                    };
+                    if profile != *profile_id || height.millimetres() <= 0.0 {
+                        return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                    }
+                    let vertices = points_mm
                         .iter()
-                        .map(|vertex| vertex.position_mm)
-                        .collect::<Vec<_>>(),
-                    exact_box,
-                )
-            } else {
-                let definition = snapshot
-                    .definition(occurrence.definition_id)
-                    .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?;
-                match definition.feature_ids() {
-                    [feature_id] => {
-                        let FeatureKind::MeshBody(spec) = snapshot
-                            .feature(*feature_id)
-                            .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
-                            .kind()
-                        else {
-                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
-                        };
-                        (
-                            GeneralBodySource::CanonicalMesh {
-                                definition_id: occurrence.definition_id,
-                                feature_id: *feature_id,
-                                geometry_digest: mesh_geometry_digest(spec),
-                            },
-                            spec.vertices_mm.clone(),
-                            false,
-                        )
-                    }
-                    [profile_id, extrusion_id] => {
-                        let Some(points_mm) = snapshot
-                            .feature(*profile_id)
-                            .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
-                            .kind()
-                            .polygon_points()
-                        else {
-                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
-                        };
-                        let FeatureKind::Pad(
-                            pad @ PadSpec {
-                                operation: PadOperation::NewBody,
-                                ..
-                            },
-                        ) = snapshot
-                            .feature(*extrusion_id)
-                            .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
-                            .kind()
-                        else {
-                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
-                        };
-                        let Some((profile, height)) = pad.blind_along_normal() else {
-                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
-                        };
-                        if profile != *profile_id || height.millimetres() <= 0.0 {
-                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
-                        }
-                        let vertices = points_mm
-                            .iter()
-                            .flat_map(|point| {
-                                [
-                                    [point[0], point[1], 0.0],
-                                    [point[0], point[1], height.millimetres()],
-                                ]
-                            })
-                            .collect::<Vec<_>>();
-                        let exact_box = is_axis_aligned_rectangle_profile(&points_mm)
-                            && is_translation_only(transform);
-                        (
-                            GeneralBodySource::CanonicalExtrusion {
-                                definition_id: occurrence.definition_id,
-                                profile_id: *profile_id,
-                                extrusion_id: *extrusion_id,
-                                geometry_digest: canonical_extrusion_geometry_digest(
-                                    &points_mm,
-                                    height.millimetres(),
-                                ),
-                            },
-                            vertices,
-                            exact_box,
-                        )
-                    }
-                    feature_ids => {
-                        let producer_feature_id = *feature_ids
-                            .last()
-                            .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?;
-                        let graph = ExactBRepGraph::from_snapshot(
-                            snapshot,
-                            occurrence.definition_id,
-                            producer_feature_id,
-                        )
-                        .map_err(|_| GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?;
-                        let [minimum, maximum] = graph
-                            .producer_bounds_mm()
-                            .map_err(|_| GeneralBodyValidationError::InvalidGeometry)?
-                            .ok_or(GeneralBodyValidationError::InvalidGeometry)?;
-                        let vertices = [minimum[0], maximum[0]]
-                            .into_iter()
-                            .flat_map(|x| {
-                                [minimum[1], maximum[1]].into_iter().flat_map(move |y| {
-                                    [minimum[2], maximum[2]].into_iter().map(move |z| [x, y, z])
-                                })
-                            })
-                            .collect();
-                        (
-                            GeneralBodySource::CanonicalExactGraph {
-                                definition_id: occurrence.definition_id,
-                                producer_feature_id,
-                                graph_digest: graph.graph_digest,
-                            },
-                            vertices,
-                            false,
-                        )
-                    }
+                        .flat_map(|point| {
+                            [
+                                [point[0], point[1], 0.0],
+                                [point[0], point[1], height.millimetres()],
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    let exact_box = is_axis_aligned_rectangle_profile(&points_mm)
+                        && is_translation_only(transform);
+                    (
+                        GeneralBodySource::CanonicalExtrusion {
+                            definition_id: occurrence.definition_id,
+                            profile_id: *profile_id,
+                            extrusion_id: *extrusion_id,
+                            geometry_digest: canonical_extrusion_geometry_digest(
+                                &points_mm,
+                                height.millimetres(),
+                            ),
+                        },
+                        vertices,
+                        exact_box,
+                    )
                 }
-            };
+                feature_ids => {
+                    let producer_feature_id = *feature_ids
+                        .last()
+                        .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?;
+                    let graph = ExactBRepGraph::from_snapshot(
+                        snapshot,
+                        occurrence.definition_id,
+                        producer_feature_id,
+                    )
+                    .map_err(|error| GeneralBodyValidationError::ExactGraph(Box::new(error)))?;
+                    let [minimum, maximum] = graph
+                        .producer_bounds_mm()
+                        .map_err(|error| GeneralBodyValidationError::ExactGraph(Box::new(error)))?
+                        .ok_or(GeneralBodyValidationError::InvalidGeometry)?;
+                    let vertices = [minimum[0], maximum[0]]
+                        .into_iter()
+                        .flat_map(|x| {
+                            [minimum[1], maximum[1]].into_iter().flat_map(move |y| {
+                                [minimum[2], maximum[2]].into_iter().map(move |z| [x, y, z])
+                            })
+                        })
+                        .collect();
+                    (
+                        GeneralBodySource::CanonicalExactGraph {
+                            definition_id: occurrence.definition_id,
+                            producer_feature_id,
+                            graph_digest: graph.graph_digest,
+                        },
+                        vertices,
+                        false,
+                    )
+                }
+            }
+        };
         let geometry_evidence = general_body_geometry_evidence(transform, &vertices)?;
         let bounds = transformed_body_bounds(transform, &vertices)?;
         let evidence_class = if exact_box {
@@ -1531,7 +1564,7 @@ fn transformed_body_bounds(
             maximum[axis] = maximum[axis].max(point[axis]);
         }
     }
-    Aabb::bounded_volume(minimum, maximum).map_err(|_| GeneralBodyValidationError::InvalidGeometry)
+    Aabb::bounded_volume(minimum, maximum).map_err(GeneralBodyValidationError::InvalidBounds)
 }
 
 fn transform_body_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {

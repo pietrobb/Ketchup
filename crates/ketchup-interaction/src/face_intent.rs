@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
 use crate::spatial::SnapshotBinding;
-use ketchup_geometry::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
+use ketchup_geometry::sketch::{
+    PrincipalPlane, SketchError, WorkplaneFrame, WorkplaneSupportHealth,
+};
 use ketchup_model::document::{BodyId, DefinitionId, Snapshot};
-use ketchup_model::exact_brep_graph::ExactBRepGraph;
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError};
 use ketchup_model::exact_product::BodySubshapeRef;
 use std::cmp::Ordering;
 use std::fmt;
@@ -189,7 +191,7 @@ impl TransientFaceIntent {
             .workplane
             .frame()
             .validate()
-            .map_err(|_| FaceIntentError::InvalidWorkplane)?;
+            .map_err(FaceIntentError::InvalidWorkplaneFrame)?;
         let FaceWorkplaneContext::PlanarFace {
             reference, health, ..
         } = &target.workplane
@@ -212,7 +214,7 @@ impl TransientFaceIntent {
             target.definition_id,
             reference.producer_feature_id,
         )
-        .map_err(|_| FaceIntentError::ReferenceUnavailable)?;
+        .map_err(|error| FaceIntentError::ReferenceGraph(Box::new(error)))?;
         if !graph.names_durable_reference(reference) {
             return Err(FaceIntentError::StaleReference);
         }
@@ -270,7 +272,7 @@ const fn principal_plane_rank(plane: PrincipalPlane) -> u8 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FaceIntentError {
     NoTarget,
     InvalidRayDistance,
@@ -281,9 +283,11 @@ pub enum FaceIntentError {
     HiddenTarget,
     ConsumedBody(BodyId),
     InvalidWorkplane,
+    InvalidWorkplaneFrame(SketchError),
     UnresolvedReference(WorkplaneSupportHealth),
     InvalidReference,
     ReferenceUnavailable,
+    ReferenceGraph(Box<ExactBRepGraphError>),
     StaleReference,
     ReferenceBodyMismatch,
 }
@@ -291,6 +295,13 @@ pub enum FaceIntentError {
 impl fmt::Display for FaceIntentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReferenceGraph(error) => write!(
+                formatter,
+                "target reference exact graph is unavailable: {error}"
+            ),
+            Self::InvalidWorkplaneFrame(error) => {
+                write!(formatter, "target workplane frame is invalid: {error}")
+            }
             Self::NoTarget => formatter.write_str("no hovered or stably selected face target"),
             Self::InvalidRayDistance => {
                 formatter.write_str("hover distance must be finite and nonnegative")
@@ -326,4 +337,12 @@ impl fmt::Display for FaceIntentError {
     }
 }
 
-impl std::error::Error for FaceIntentError {}
+impl std::error::Error for FaceIntentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReferenceGraph(error) => Some(error.as_ref()),
+            Self::InvalidWorkplaneFrame(error) => Some(error),
+            _ => None,
+        }
+    }
+}

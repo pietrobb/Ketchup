@@ -455,7 +455,7 @@ pub(crate) fn plan_creation(
                 Transform::identity(),
                 Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]),
             )
-            .map_err(|_| {
+            .map_err(|error| {
                 assistant_planning_rejection(
                     "planning.cad_part_placement_invalid",
                     operation_name,
@@ -463,6 +463,7 @@ pub(crate) fn plan_creation(
                     "The requested part translation could not be represented.",
                     "Use a finite bounded translation.",
                 )
+                .caused_by(&error)
             })?;
             let transform = if let Some(rotation) = rotation {
                 let world_rotation = world_axis_rotation_transform(
@@ -474,7 +475,7 @@ pub(crate) fn plan_creation(
                     Vec3::new(rotation.axis[0], rotation.axis[1], rotation.axis[2]),
                     rotation.angle_degrees,
                 )
-                .map_err(|_| {
+                .map_err(|error| {
                     assistant_planning_rejection(
                         "planning.cad_part_placement_invalid",
                         operation_name,
@@ -482,6 +483,7 @@ pub(crate) fn plan_creation(
                         "The requested part rotation could not be represented.",
                         "Use a finite pivot and non-zero finite rotation axis.",
                     )
+                    .caused_by(&error)
                 })?;
                 rotation_in_parent_space(world_rotation, Transform::identity(), translated)
                     .ok_or_else(|| {

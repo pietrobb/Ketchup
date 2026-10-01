@@ -1,4 +1,4 @@
-use crate::document::{InstancePath, Snapshot};
+use crate::document::{CanonicalError, InstancePath, Snapshot};
 use crate::exact_product::ExactResultRegistry;
 use crate::exact_validation::{GeneralBodyParticipant, GeneralBodyValidationError};
 use crate::graph::{DerivedIdentity, SlotResolution};
@@ -207,7 +207,7 @@ pub fn validate_clearance_occupancy(
         ClearanceOwner::Occurrence(path) => snapshot
             .resolve_instance_path(path)
             .map(|_| ())
-            .map_err(|_| ClearanceValidationError::OwnerUnavailable)?,
+            .map_err(|error| ClearanceValidationError::UnresolvedOwner(Box::new(error)))?,
         ClearanceOwner::Space(id) => {
             if snapshot.space(*id).is_none() {
                 return Err(ClearanceValidationError::OwnerUnavailable);
@@ -312,6 +312,7 @@ impl std::error::Error for SpaceError {}
 pub enum ClearanceValidationError {
     ClearanceVolumeNotFound,
     OwnerUnavailable,
+    UnresolvedOwner(Box<CanonicalError>),
     UnresolvedDerivedIdentity,
     Geometry(GeneralBodyValidationError),
     Prismatic(PrismaticError),
@@ -320,6 +321,12 @@ pub enum ClearanceValidationError {
 impl fmt::Display for ClearanceValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::UnresolvedOwner(error) => {
+                return write!(
+                    formatter,
+                    "clearance owner instance does not resolve: {error}"
+                );
+            }
             Self::ClearanceVolumeNotFound => "clearance volume does not exist",
             Self::OwnerUnavailable => "clearance owner is unavailable",
             Self::UnresolvedDerivedIdentity => {
@@ -331,4 +338,13 @@ impl fmt::Display for ClearanceValidationError {
     }
 }
 
-impl std::error::Error for ClearanceValidationError {}
+impl std::error::Error for ClearanceValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnresolvedOwner(error) => Some(error.as_ref()),
+            Self::Geometry(error) => Some(error),
+            Self::Prismatic(error) => Some(error),
+            _ => None,
+        }
+    }
+}

@@ -4638,7 +4638,11 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             assert!(matches!(
                 reply,
                 Frame::Message(WorkerReply::Failure(failure))
-                    if failure == WorkerFailure::invalid_request()
+                    if failure.code == WorkerFailure::invalid_request().code
+                        && failure.detail.as_ref().is_some_and(|detail| {
+                            detail.operation == "validate_exact_brep_graph"
+                                && !detail.diagnostic.is_empty()
+                        })
             ));
             assert!(worker.wait().unwrap().success());
         }

@@ -498,7 +498,7 @@ impl MechanicalContractReport {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MechanicalContractError {
     StalePath,
     NoConditions,

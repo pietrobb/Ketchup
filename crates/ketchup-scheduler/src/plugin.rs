@@ -227,13 +227,13 @@ fn parse_request(line: &str) -> Result<PluginRequest, PluginHostError> {
 }
 
 fn parse_u64(value: &str, field: &str) -> Result<u64, PluginHostError> {
-    value.parse().map_err(|_| {
+    value.parse().map_err(|_: std::num::ParseIntError| {
         PluginHostError::MalformedProtocol(format!("{field} must be an unsigned integer"))
     })
 }
 
 fn parse_usize(value: &str, field: &str) -> Result<usize, PluginHostError> {
-    value.parse().map_err(|_| {
+    value.parse().map_err(|_: std::num::ParseIntError| {
         PluginHostError::MalformedProtocol(format!("{field} must be an unsigned integer"))
     })
 }
@@ -283,7 +283,9 @@ fn send_line(
             line,
             acknowledgment,
         })
-        .map_err(|_| PluginHostError::Transport("plugin writer disconnected".to_owned()))?;
+        .map_err(|_: mpsc::SendError<PluginWriteRequest>| {
+            PluginHostError::Transport("plugin writer disconnected".to_owned())
+        })?;
     loop {
         if cancelled.load(Ordering::Acquire) {
             return Err(PluginHostError::Cancelled);
@@ -351,7 +353,7 @@ fn read_bounded_line(reader: &mut impl BufRead, max_bytes: usize) -> io::Result<
     }
     String::from_utf8(bytes)
         .map(Some)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "plugin request was not UTF-8"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.utf8_error()))
 }
 
 fn receive_line(
@@ -471,5 +473,22 @@ impl std::error::Error for PluginHostError {}
 impl From<PluginGatewayError> for PluginHostError {
     fn from(error: PluginGatewayError) -> Self {
         Self::Gateway(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_utf8_request_line_keeps_the_decoding_position_as_its_cause() {
+        let mut reader = io::Cursor::new(b"{\"a\":\xfe}\n".to_vec());
+        let error = read_bounded_line(&mut reader, 64).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let cause = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<std::str::Utf8Error>())
+            .expect("the UTF-8 decoding error is the cause");
+        assert_eq!(cause.valid_up_to(), 5);
     }
 }

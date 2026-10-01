@@ -1,10 +1,10 @@
 use crate::document::{
-    CanonicalCommand, CommandBatch, DocumentStore, InstancePath, OccurrenceId, Proposal,
-    ProposalPrepareError, Snapshot, Transform,
+    CanonicalCommand, CanonicalError, CommandBatch, DocumentStore, InstancePath, OccurrenceId,
+    Proposal, ProposalPrepareError, Snapshot, Transform,
 };
 use crate::mechanical_coupling::{AssemblyMotionCoupling, AssemblyMotionCouplingId};
 use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
-use ketchup_geometry::prismatic::Aabb;
+use ketchup_geometry::prismatic::{Aabb, PrismaticError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -932,7 +932,7 @@ impl AssemblyKinematicSolution {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssemblyMotionSamplingError {
     InvalidSampleIntervals(u32),
     Solve(AssemblyKinematicSolveError),
@@ -958,11 +958,12 @@ impl From<AssemblyKinematicSolveError> for AssemblyMotionSamplingError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssemblyMotionClearanceError {
     InsufficientBodies,
     DuplicateOccurrence(OccurrenceId),
     InvalidBodyBounds(OccurrenceId),
+    InvalidPlacedBounds(OccurrenceId, PrismaticError),
     MissingPose(OccurrenceId),
     InvalidClearanceTolerance,
     AnalysisBudgetExceeded,
@@ -972,6 +973,11 @@ pub enum AssemblyMotionClearanceError {
 impl fmt::Display for AssemblyMotionClearanceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidPlacedBounds(id, error) => write!(
+                formatter,
+                "occurrence {} bounds are invalid at a sampled pose: {error}",
+                id.0
+            ),
             Self::InsufficientBodies => {
                 formatter.write_str("assembly motion clearance requires at least two bodies")
             }
@@ -1002,9 +1008,16 @@ impl fmt::Display for AssemblyMotionClearanceError {
     }
 }
 
-impl std::error::Error for AssemblyMotionClearanceError {}
+impl std::error::Error for AssemblyMotionClearanceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidPlacedBounds(_, error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssemblyMotionClearancePreviewError {
     Sampling(AssemblyMotionSamplingError),
     Clearance(AssemblyMotionClearanceError),
@@ -1033,10 +1046,11 @@ impl From<AssemblyMotionClearanceError> for AssemblyMotionClearancePreviewError 
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssemblyKinematicSolveError {
     MissingMotionStudy(AssemblyMotionStudyId),
     MissingOccurrence(OccurrenceId),
+    UnresolvedOccurrence(OccurrenceId, CanonicalError),
     NonInvertibleTransform(OccurrenceId),
     InvalidJointGraph,
     UnknownDriverJoint(AssemblyJointId),
@@ -1050,6 +1064,9 @@ pub enum AssemblyKinematicSolveError {
 impl fmt::Display for AssemblyKinematicSolveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnresolvedOccurrence(id, error) => {
+                write!(formatter, "occurrence {} does not resolve: {error}", id.0)
+            }
             Self::MissingMotionStudy(id) => {
                 write!(formatter, "assembly motion study {} is missing", id.0)
             }
@@ -1098,7 +1115,14 @@ impl fmt::Display for AssemblyKinematicSolveError {
     }
 }
 
-impl std::error::Error for AssemblyKinematicSolveError {}
+impl std::error::Error for AssemblyKinematicSolveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnresolvedOccurrence(_, error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum AssemblyKinematicPublishError {
@@ -1298,7 +1322,12 @@ pub fn analyze_assembly_motion_clearance(
                     let pose = sample.solution().pose(body.occurrence_id()).ok_or(
                         AssemblyMotionClearanceError::MissingPose(body.occurrence_id()),
                     )?;
-                    transform_aabb(body.local_bounds(), pose.world_transform())
+                    transform_aabb(body.local_bounds(), pose.world_transform()).map_err(|error| {
+                        AssemblyMotionClearanceError::InvalidPlacedBounds(
+                            body.occurrence_id(),
+                            error,
+                        )
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
@@ -1644,9 +1673,10 @@ fn solve_assembly_joint_kinematics_internal(
     for occurrence in snapshot.scene_query() {
         let resolved = snapshot
             .resolve_instance_path(&occurrence.instance_path)
-            .map_err(|_| {
-                AssemblyKinematicSolveError::MissingOccurrence(
+            .map_err(|error| {
+                AssemblyKinematicSolveError::UnresolvedOccurrence(
                     occurrence.instance_path.root_occurrence(),
+                    error,
                 )
             })?;
         source_parent_world.insert(
@@ -2225,10 +2255,7 @@ fn continuous_translational_aabb_clearance(
     Ok((minimum_squared.sqrt(), minimum_t, first_contact_t))
 }
 
-fn transform_aabb(
-    bounds: Aabb,
-    transform: Transform,
-) -> Result<Aabb, AssemblyMotionClearanceError> {
+fn transform_aabb(bounds: Aabb, transform: Transform) -> Result<Aabb, PrismaticError> {
     let matrix = transform.matrix();
     let transformed = bounds.vertices().map(|point| {
         [
@@ -2249,7 +2276,7 @@ fn transform_aabb(
             .map(|point| point[axis])
             .fold(f64::NEG_INFINITY, f64::max)
     });
-    Aabb::new(min, max).map_err(|_| AssemblyMotionClearanceError::NumericalFailure)
+    Aabb::new(min, max)
 }
 
 fn aabb_clearance(left: Aabb, right: Aabb) -> Result<f64, AssemblyMotionClearanceError> {

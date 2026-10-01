@@ -539,6 +539,7 @@ pub enum StepImportPlanError {
     InvalidSourceIdentity(ImportContractError),
     MissingOrAmbiguousUnits,
     InvalidWorkerEvidence,
+    InvalidDiagnostic(ImportContractError),
     IdSpaceExhausted,
 }
 
@@ -557,12 +558,22 @@ impl fmt::Display for StepImportPlanError {
                 "STEP source has missing or ambiguous declared length units"
             }
             Self::InvalidWorkerEvidence => "STEP worker evidence is incomplete or invalid",
+            Self::InvalidDiagnostic(error) => {
+                return write!(formatter, "STEP import diagnostic is invalid: {error}");
+            }
             Self::IdSpaceExhausted => "canonical import ID space is exhausted",
         })
     }
 }
 
-impl std::error::Error for StepImportPlanError {}
+impl std::error::Error for StepImportPlanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidSourceIdentity(error) | Self::InvalidDiagnostic(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Build one detached canonical transaction for a reviewed, worker-validated exact STEP body.
 pub fn plan_step_import(
@@ -636,7 +647,7 @@ pub fn plan_step_import(
     ]
     .into_iter()
     .collect::<Result<Vec<_>, _>>()
-    .map_err(|_| StepImportPlanError::InvalidWorkerEvidence)?;
+    .map_err(StepImportPlanError::InvalidDiagnostic)?;
     let units = ImportUnitDecision::new(evidence.source_unit, ImportUnitAuthority::FileDeclared);
     let receipt = ImportReceipt::from_source_bytes(
         import_id,
@@ -967,11 +978,11 @@ pub fn plan_step_xde_import(
     ]
     .into_iter()
     .collect::<Result<Vec<_>, _>>()
-    .map_err(|_| StepImportPlanError::InvalidWorkerEvidence)?;
+    .map_err(StepImportPlanError::InvalidDiagnostic)?;
     let mut add_diagnostic = |severity, code, count| {
         diagnostics.push(
             ImportDiagnostic::new(severity, code, None, count)
-                .map_err(|_| StepImportPlanError::InvalidWorkerEvidence)?,
+                .map_err(StepImportPlanError::InvalidDiagnostic)?,
         );
         Ok::<(), StepImportPlanError>(())
     };
@@ -1087,6 +1098,7 @@ pub enum StlImportError {
     UnrecognizedEncoding,
     InvalidBinaryLength,
     InvalidAscii,
+    InvalidUtf8(std::str::Utf8Error),
     InvalidNumber,
     UnitsMustBeUserDeclared,
     TooManyTriangles,
@@ -1109,6 +1121,9 @@ impl fmt::Display for StlImportError {
             Self::UnrecognizedEncoding => "source is neither a bounded binary nor ASCII STL",
             Self::InvalidBinaryLength => "binary STL triangle count does not match its byte length",
             Self::InvalidAscii => "ASCII STL structure is malformed or contains unsupported text",
+            Self::InvalidUtf8(error) => {
+                return write!(formatter, "ASCII STL text is not valid UTF-8: {error}");
+            }
             Self::InvalidNumber => "STL contains an invalid numeric coordinate or normal",
             Self::UnitsMustBeUserDeclared => {
                 "STL has no authoritative units; choose the source length unit explicitly"
@@ -1138,7 +1153,14 @@ impl fmt::Display for StlImportError {
     }
 }
 
-impl std::error::Error for StlImportError {}
+impl std::error::Error for StlImportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidUtf8(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Parse an STL into detached canonical mesh data. The function never welds,
 /// removes, fills, flips, or otherwise repairs source geometry.
@@ -1325,7 +1347,7 @@ fn parse_binary_stl(source: &[u8], count: usize) -> Result<Vec<StlFacet>, StlImp
 }
 
 fn parse_ascii_stl(source: &[u8]) -> Result<Vec<StlFacet>, StlImportError> {
-    let text = std::str::from_utf8(source).map_err(|_| StlImportError::InvalidAscii)?;
+    let text = std::str::from_utf8(source).map_err(StlImportError::InvalidUtf8)?;
     if !text.is_ascii() {
         return Err(StlImportError::InvalidAscii);
     }
@@ -1381,7 +1403,7 @@ fn parse_ascii_vector(line: &str, prefix: &str) -> Result<[f64; 3], StlImportErr
         .map(|token| {
             token
                 .parse::<f64>()
-                .map_err(|_| StlImportError::InvalidNumber)
+                .map_err(|_: std::num::ParseFloatError| StlImportError::InvalidNumber)
         });
     let coordinates = [
         values.next().ok_or(StlImportError::InvalidAscii)??,

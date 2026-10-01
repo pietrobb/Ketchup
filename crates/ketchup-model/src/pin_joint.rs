@@ -1,4 +1,4 @@
-use crate::document::{FeatureId, FeatureKind, InstancePath, Snapshot, Transform};
+use crate::document::{CanonicalError, FeatureId, FeatureKind, InstancePath, Snapshot, Transform};
 use crate::tolerance::ACCUMULATED_ROUNDING;
 use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec, SketchEntity};
 use std::fmt;
@@ -154,7 +154,7 @@ pub struct PinJointProjection {
     pub pairs: Vec<PinPair>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PinJointError {
     InvalidJointId,
     SameParticipant,
@@ -162,6 +162,7 @@ pub enum PinJointError {
     InvalidRow,
     NonRigidTransform,
     InvalidParticipantGeometry,
+    UnresolvedParticipant(Box<CanonicalError>),
     FacesDoNotMate,
     HoleOutsidePart,
     InvalidPhysicalHoleBinding,
@@ -172,6 +173,12 @@ pub enum PinJointError {
 impl fmt::Display for PinJointError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
+            Self::UnresolvedParticipant(error) => {
+                return write!(
+                    formatter,
+                    "pin participant instance path does not resolve: {error}"
+                );
+            }
             Self::InvalidJointId => "pin joint ID is invalid",
             Self::SameParticipant => "pin joint requires two different part instances",
             Self::InvalidPin => "pin dimensions or insertion depths are invalid",
@@ -194,7 +201,18 @@ impl fmt::Display for PinJointError {
     }
 }
 
-impl std::error::Error for PinJointError {}
+impl std::error::Error for PinJointError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnresolvedParticipant(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+fn unresolved_participant(error: CanonicalError) -> PinJointError {
+    PinJointError::UnresolvedParticipant(Box::new(error))
+}
 
 pub fn project_pin_joint_contract(
     snapshot: &Snapshot,
@@ -212,10 +230,10 @@ pub fn project_pin_joint_contract(
     }
     let first_resolved = snapshot
         .resolve_instance_path(&contract.first.instance_path)
-        .map_err(|_| PinJointError::InvalidParticipantGeometry)?;
+        .map_err(unresolved_participant)?;
     let second_resolved = snapshot
         .resolve_instance_path(&contract.second.instance_path)
-        .map_err(|_| PinJointError::InvalidParticipantGeometry)?;
+        .map_err(unresolved_participant)?;
     let first_center_world_mm = transform_point(
         first_resolved.world_transform,
         contract.first_center_local_mm,
@@ -527,11 +545,11 @@ fn validate_physical_hole_pairs(
     }
     let first_world_from_local = snapshot
         .resolve_instance_path(&contract.first.instance_path)
-        .map_err(|_| PinJointError::InvalidPhysicalHoleBinding)?
+        .map_err(unresolved_participant)?
         .world_transform;
     let second_world_from_local = snapshot
         .resolve_instance_path(&contract.second.instance_path)
-        .map_err(|_| PinJointError::InvalidPhysicalHoleBinding)?
+        .map_err(unresolved_participant)?
         .world_transform;
     let first_expected_inward_world =
         transform_vector(first_world_from_local, contract.first.inward_unit_local);
@@ -570,7 +588,7 @@ fn observe_physical_hole(
 ) -> Result<ObservedPhysicalHole, PinJointError> {
     let participant = snapshot
         .resolve_instance_path(instance_path)
-        .map_err(|_| PinJointError::InvalidPhysicalHoleBinding)?;
+        .map_err(unresolved_participant)?;
     let pocket = snapshot
         .feature(pocket_feature_id)
         .ok_or(PinJointError::InvalidPhysicalHoleBinding)?;
@@ -980,6 +998,18 @@ mod tests {
                 .len(),
             3
         );
+        // A participant that no longer resolves names the resolver's error as its cause.
+        let mut orphaned = contract.clone();
+        orphaned.second.instance_path = InstancePath::root(OccurrenceId(99));
+        let error = project_pin_joint_contract(&snapshot, &orphaned).unwrap_err();
+        let cause = std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<CanonicalError>())
+            .expect("unresolved participant keeps the canonical cause");
+        assert_eq!(
+            error,
+            PinJointError::UnresolvedParticipant(Box::new(cause.clone()))
+        );
+        assert!(error.to_string().contains(&cause.to_string()));
 
         let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
         assert_eq!(reopened.snapshot().pin_joint(contract.id), Some(&contract));

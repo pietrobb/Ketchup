@@ -441,7 +441,7 @@ impl AssistantProcessClient {
                 line,
                 acknowledgment,
             })
-            .map_err(|_| AssistantProcessError::Closed)?;
+            .map_err(|_: mpsc::SendError<AssistantWriteRequest>| AssistantProcessError::Closed)?;
         loop {
             if self.cancelled.is_cancelled() {
                 self.terminate();
@@ -603,12 +603,9 @@ fn read_bounded_line(reader: &mut impl BufRead, max_bytes: usize) -> io::Result<
     while matches!(bytes.last(), Some(b'\n' | b'\r')) {
         bytes.pop();
     }
-    String::from_utf8(bytes).map(Some).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "assistant response was not UTF-8",
-        )
-    })
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.utf8_error()))
 }
 
 fn receive_line(

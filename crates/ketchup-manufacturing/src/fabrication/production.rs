@@ -78,7 +78,7 @@ impl GeneralFabricationProjection {
         let mut pins = BTreeMap::<InstancePath, Vec<Value>>::new();
         for joint in snapshot.pin_joints() {
             let projection = project_pin_joint_contract(snapshot, joint)
-                .map_err(|_| GeneralFabricationError::ExportBlocked)?;
+                .map_err(GeneralFabricationError::PinJoint)?;
             for pair in projection.pairs {
                 for hole in [pair.first, pair.second] {
                     pins.entry(hole.instance_path.clone())
@@ -181,7 +181,7 @@ impl GeneralFabricationProjection {
                 }
                 let resolved = snapshot
                     .resolve_instance_path(path)
-                    .map_err(|_| GeneralFabricationError::ExportBlocked)?;
+                    .map_err(GeneralFabricationError::UnresolvedInstance)?;
                 if resolved.definition_id != row.definition_id
                     || !is_production_transform(resolved.world_transform)
                 {

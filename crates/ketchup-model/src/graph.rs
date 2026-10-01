@@ -922,10 +922,7 @@ fn topological_order(
         .iter()
         .filter_map(|(id, degree)| (*degree == 0).then_some(*id))
         .collect::<BTreeSet<_>>();
-    let mut order = Vec::new();
-    order
-        .try_reserve_exact(nodes.len())
-        .map_err(|_| GraphError::GraphLimit)?;
+    let mut order = Vec::with_capacity(nodes.len());
     while let Some(id) = ready.pop_first() {
         order.push(id);
         if let Some(children) = dependents.get(&id) {
@@ -1004,7 +1001,7 @@ fn tokenize(source: &str) -> Result<Vec<Token>, GraphError> {
                 }
                 let id = source[start..cursor]
                     .parse::<u64>()
-                    .map_err(|_| GraphError::InvalidNodeReference)?;
+                    .map_err(|_: std::num::ParseIntError| GraphError::InvalidNodeReference)?;
                 if id == 0 {
                     return Err(GraphError::ReservedNodeId);
                 }
@@ -1031,7 +1028,7 @@ fn tokenize(source: &str) -> Result<Vec<Token>, GraphError> {
                 }
                 let value = source[start..cursor]
                     .parse::<f64>()
-                    .map_err(|_| GraphError::InvalidNumber)?;
+                    .map_err(|_: std::num::ParseFloatError| GraphError::InvalidNumber)?;
                 if !value.is_finite() {
                     return Err(GraphError::InvalidNumber);
                 }

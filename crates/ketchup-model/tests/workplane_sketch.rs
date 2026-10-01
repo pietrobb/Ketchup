@@ -4549,10 +4549,22 @@ fn constraint_edits_that_invalidate_a_downstream_pad_region_fail_closed() {
             Ok(_) => panic!("constraint edit unexpectedly invalidated a downstream Pad region"),
             Err(error) => error,
         };
-        assert_eq!(
-            error,
-            CanonicalError::Sketch(SketchError::ConstraintEditInvalidatesProfile(constraint_id))
-        );
+        let CanonicalError::Sketch(SketchError::ConstraintEditInvalidatesProfile(id, cause)) =
+            &error
+        else {
+            panic!("unexpected constraint edit rejection: {error:?}");
+        };
+        assert_eq!(*id, constraint_id);
+        // A Vertical constraint on the closing edge opens the loop: the solver's
+        // own error stays attached as the cause instead of being dropped.
+        if constraint_id == SketchConstraintId(8) {
+            assert_eq!(cause.as_deref(), Some(&SketchError::OpenRegion));
+            assert!(
+                error
+                    .to_string()
+                    .contains(&SketchError::OpenRegion.to_string())
+            );
+        }
         assert_eq!(document.current().revision_id(), before_revision);
         assert_eq!(document.current().canonical_digest(), before_digest);
         assert_eq!(document.visible_undo_steps(), before_undo_steps);

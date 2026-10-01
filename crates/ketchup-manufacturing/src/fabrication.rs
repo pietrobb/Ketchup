@@ -1,11 +1,13 @@
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
-    DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, InstancePathStep, OccurrenceId,
-    Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
+    CanonicalError, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
+    InstancePathStep, OccurrenceId, Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy,
+    WeldmentJointPrimary,
 };
 use ketchup_model::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepNode,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepGraphError, ExactBRepLinearInterval,
+    ExactBRepNode, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment,
+    ExactBRepProfile,
 };
 use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::exact_validation::{
@@ -13,7 +15,7 @@ use ketchup_model::exact_validation::{
     GeneralBodySource, GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
 };
 use ketchup_model::graph::{DerivedIdentity, sha256_hex};
-use ketchup_model::pin_joint::{PinHole, project_pin_joint_contract};
+use ketchup_model::pin_joint::{PinHole, PinJointError, project_pin_joint_contract};
 use ketchup_model::tolerance::{ROUNDING, TolerancePolicy};
 use ketchup_model::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
@@ -21,6 +23,7 @@ use ketchup_model::validation::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::num::TryFromIntError;
 
 pub mod production;
 
@@ -236,7 +239,7 @@ impl Default for BtlxExportOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GeneralFabricationError {
     ValidationBindingMismatch,
     FabricationRoleDimensionMissing,
@@ -246,16 +249,24 @@ pub enum GeneralFabricationError {
     MaterialDimensionAmbiguous,
     InvalidBomMetadata,
     UnsupportedOrUnavailableGeometry,
+    BodyValidation(GeneralBodyValidationError),
     InvalidGeometry,
+    ExactGraph(ExactBRepGraphError),
     InvalidWeldmentGeometry,
     NoSupportedGeometry,
     ExportBlocked,
+    UnresolvedInstance(CanonicalError),
+    PinJoint(PinJointError),
     BtlxProfileRequestUnsupported,
 }
 
 impl fmt::Display for GeneralFabricationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnresolvedInstance(error) => write!(formatter, "a fabrication instance does not resolve: {error}"),
+            Self::PinJoint(error) => write!(formatter, "a pin joint cannot be exported: {error}"),
+            Self::ExactGraph(error) => write!(formatter, "fabrication body exact graph is unavailable: {error}"),
+            Self::BodyValidation(error) => write!(formatter, "a visible body cannot be validated: {error}"),
             Self::ValidationBindingMismatch => formatter.write_str(
                 "general fabrication requires current complete general-body validation coverage",
             ),
@@ -299,11 +310,21 @@ impl fmt::Display for GeneralFabricationError {
     }
 }
 
-impl std::error::Error for GeneralFabricationError {}
+impl std::error::Error for GeneralFabricationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnresolvedInstance(error) => Some(error),
+            Self::PinJoint(error) => Some(error),
+            Self::ExactGraph(error) => Some(error),
+            Self::BodyValidation(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl From<GeneralBodyValidationError> for GeneralFabricationError {
-    fn from(_: GeneralBodyValidationError) -> Self {
-        Self::UnsupportedOrUnavailableGeometry
+    fn from(error: GeneralBodyValidationError) -> Self {
+        Self::BodyValidation(error)
     }
 }
 
@@ -1007,7 +1028,7 @@ impl GeneralFabricationProjection {
         let mut holes = Vec::new();
         for joint in snapshot.pin_joints() {
             let projection = project_pin_joint_contract(snapshot, joint)
-                .map_err(|_| GeneralFabricationError::ExportBlocked)?;
+                .map_err(GeneralFabricationError::PinJoint)?;
             for pair in projection.pairs {
                 holes.push(pair.first);
                 holes.push(pair.second);
@@ -1052,7 +1073,7 @@ impl GeneralFabricationProjection {
             for instance_path in &row.instances {
                 let resolved = snapshot
                     .resolve_instance_path(instance_path)
-                    .map_err(|_| GeneralFabricationError::ExportBlocked)?;
+                    .map_err(GeneralFabricationError::UnresolvedInstance)?;
                 if resolved.definition_id != row.definition_id
                     || !is_production_transform(resolved.world_transform)
                 {
@@ -1230,7 +1251,7 @@ impl GeneralFabricationProjection {
                 let reference_plane_id = first_reference_plane_id
                     .checked_add(
                         u32::try_from(processing_index)
-                            .map_err(|_| GeneralFabricationError::ExportBlocked)?,
+                            .map_err(|_: TryFromIntError| GeneralFabricationError::ExportBlocked)?,
                     )
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
                 let process_id = next_process_id;
@@ -3877,13 +3898,13 @@ fn local_dimensions(
         } => {
             let graph =
                 ExactBRepGraph::from_snapshot(snapshot, *definition_id, *producer_feature_id)
-                    .map_err(|_| GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
+                    .map_err(GeneralFabricationError::ExactGraph)?;
             if graph.graph_digest != *graph_digest {
                 return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
             }
             let [minimum, maximum] = graph
                 .producer_bounds_mm()
-                .map_err(|_| GeneralFabricationError::InvalidGeometry)?
+                .map_err(GeneralFabricationError::ExactGraph)?
                 .ok_or(GeneralFabricationError::InvalidGeometry)?;
             vec![minimum, maximum]
         }

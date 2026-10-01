@@ -66,14 +66,20 @@ impl CliAdapter {
         match arguments {
             ["set-feature-dimension", target, value] => {
                 UiAdapter::canonicalize(UiAction::SetFeatureDimension {
-                    target: FeatureId(target.parse().map_err(|_| AdapterError::InvalidEntityId)?),
+                    target: FeatureId(
+                        target
+                            .parse()
+                            .map_err(|_: std::num::ParseIntError| AdapterError::InvalidEntityId)?,
+                    ),
                     value_text: (*value).to_owned(),
                 })
             }
             ["rename-definition", target, name] => {
                 UiAdapter::canonicalize(UiAction::RenameDefinition {
                     target: DefinitionId(
-                        target.parse().map_err(|_| AdapterError::InvalidEntityId)?,
+                        target
+                            .parse()
+                            .map_err(|_: std::num::ParseIntError| AdapterError::InvalidEntityId)?,
                     ),
                     name: (*name).to_owned(),
                 })

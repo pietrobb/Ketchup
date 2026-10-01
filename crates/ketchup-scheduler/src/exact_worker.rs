@@ -172,9 +172,15 @@ const MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES: u32 = 200_000;
 
 /// The typed graph arrives decoded, so its structure and digest are re-proven here.
 fn validated_graph(graph: &ExactBRepGraph) -> Result<(), WorkerFailure> {
-    graph
-        .validate()
-        .map_err(|_| WorkerFailure::invalid_request())
+    graph.validate().map_err(|error| WorkerFailure {
+        detail: Some(FailureDetail {
+            diagnostic: error.to_string(),
+            operation: "validate_exact_brep_graph".to_owned(),
+            input_digest: graph.graph_digest.clone(),
+            backend: ketchup_exact::backend_fingerprint().to_owned(),
+        }),
+        ..WorkerFailure::invalid_request()
+    })
 }
 
 fn utf8_path(path: &Path) -> Result<&str, WorkerFailure> {
@@ -1382,8 +1388,14 @@ fn evaluate_exact_brep_graph(
                         ExactBRepTopologyKind::Face,
                     )?
                     .try_into()
-                    .map_err(|_| {
-                        exact_brep_graph_error(graph, "face offset selector is invalid")
+                    .map_err(|ordinals: Vec<_>| {
+                        exact_brep_graph_error(
+                            graph,
+                            &format!(
+                                "face offset selector resolved to {} faces instead of one",
+                                ordinals.len()
+                            ),
+                        )
                     })?;
                     backend.offset_body_face(
                         &target_output.body,
@@ -3799,7 +3811,17 @@ mod tests {
                     sources: Vec::new(),
                 }),
             ),
-            Err(WorkerFailure::invalid_request()),
+            Err(WorkerFailure {
+                detail: Some(FailureDetail {
+                    diagnostic:
+                        ketchup_model::exact_brep_graph::ExactBRepGraphError::DigestMismatch
+                            .to_string(),
+                    operation: "validate_exact_brep_graph".to_owned(),
+                    input_digest: "0".repeat(64),
+                    backend: ketchup_exact::backend_fingerprint().to_owned(),
+                }),
+                ..WorkerFailure::invalid_request()
+            }),
             "{schema}"
         );
     }

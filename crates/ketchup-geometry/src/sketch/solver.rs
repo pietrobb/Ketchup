@@ -1899,7 +1899,7 @@ pub(super) fn point_at_radius(
 
 pub(super) fn valid_positive_dimension(value: &Dimension) -> Result<f64, SketchError> {
     let canonical = Dimension::new(value.source_token(), value.millimetres())
-        .map_err(|_| SketchError::InvalidDimension)?;
+        .map_err(SketchError::Dimension)?;
     if canonical.millimetres() <= EPSILON_MM {
         return Err(SketchError::InvalidDimension);
     }

@@ -2354,7 +2354,7 @@ impl AssistantWorkplaneSpec {
                 y_axis,
             } => ketchup_geometry::sketch::WorkplaneFrame::from_axes(*origin_mm, *x_axis, *y_axis)
                 .map(|_| ())
-                .map_err(|_| "assistant workplane frame is invalid".to_owned()),
+                .map_err(|error| format!("assistant workplane frame is invalid: {error}")),
             Self::Principal { .. } => Ok(()),
             Self::Offset {
                 base_feature_id,
@@ -2366,9 +2366,9 @@ impl AssistantWorkplaneSpec {
                 Ok(())
             }
             Self::Offset { .. } => Err("assistant workplane is invalid".to_owned()),
-            Self::ConstructionPlane { plane } => plane
-                .validate()
-                .map_err(|_| "assistant construction-plane workplane is invalid".to_owned()),
+            Self::ConstructionPlane { plane } => plane.validate().map_err(|error| {
+                format!("assistant construction-plane workplane is invalid: {error}")
+            }),
         }
     }
 }

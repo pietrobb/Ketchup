@@ -198,6 +198,7 @@ pub enum LocalPdmError {
     InvalidReleaseId,
     ManifestTooLarge,
     InvalidManifest,
+    NonUtf8ReleaseEntry(std::ffi::OsString),
     InvalidRepositoryPath,
     ManifestIdentityMismatch,
     ReleaseAlreadyExists,
@@ -211,6 +212,11 @@ pub enum LocalPdmError {
 impl fmt::Display for LocalPdmError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NonUtf8ReleaseEntry(name) => write!(
+                formatter,
+                "release catalog entry {} is not a UTF-8 file name",
+                name.to_string_lossy()
+            ),
             Self::Io(error) => write!(formatter, "local PDM I/O failed: {error}"),
             Self::Json(error) => write!(formatter, "local PDM manifest JSON is invalid: {error}"),
             Self::Persistence(error) => write!(formatter, "released document is invalid: {error}"),
@@ -556,7 +562,7 @@ pub fn release_catalog(
         let name = entry
             .file_name()
             .into_string()
-            .map_err(|_| LocalPdmError::InvalidManifest)?;
+            .map_err(LocalPdmError::NonUtf8ReleaseEntry)?;
         let release_id = name
             .strip_suffix(".json")
             .ok_or(LocalPdmError::InvalidManifest)?;
@@ -903,7 +909,7 @@ fn ensure_repository_directory(
 ) -> Result<(), LocalPdmError> {
     let relative = directory
         .strip_prefix(repository)
-        .map_err(|_| LocalPdmError::InvalidRepositoryPath)?;
+        .map_err(|_: std::path::StripPrefixError| LocalPdmError::InvalidRepositoryPath)?;
     if create {
         fs::create_dir_all(repository)?;
     }

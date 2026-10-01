@@ -72,3 +72,15 @@ fn chat_uses_one_cumulative_io_deadline_after_ready_handshake() {
     assert!(client.closed);
     client.child.inner_mut().wait().unwrap();
 }
+
+#[test]
+fn non_utf8_response_line_keeps_the_decoding_position_as_its_cause() {
+    let mut reader = std::io::Cursor::new(b"ok\xffbad\n".to_vec());
+    let error = read_bounded_line(&mut reader, 64).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let cause = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<std::str::Utf8Error>())
+        .expect("the UTF-8 decoding error is the cause");
+    assert_eq!(cause.valid_up_to(), 2);
+}

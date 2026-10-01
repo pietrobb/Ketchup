@@ -88,6 +88,7 @@ pub enum CanonicalError {
     InvalidAssemblyMotionStudy(AssemblyMotionStudyId),
     StaleAssemblySolve,
     InvalidAssemblySolvePublication,
+    UnsolvedAssemblySolvePublication(Box<crate::assembly_joint::AssemblyKinematicSolveError>),
     DrawingSheetAlreadyExists(DrawingSheetId),
     DrawingSheetNotFound(DrawingSheetId),
     Drawing(DrawingError),
@@ -264,6 +265,9 @@ impl CanonicalError {
             Self::InvalidAssemblyMotionStudy(..) => "canonical.invalid_assembly_motion_study",
             Self::StaleAssemblySolve => "canonical.stale_assembly_solve",
             Self::InvalidAssemblySolvePublication => "canonical.invalid_assembly_solve_publication",
+            Self::UnsolvedAssemblySolvePublication(_) => {
+                "canonical.unsolved_assembly_solve_publication"
+            }
             Self::DrawingSheetAlreadyExists(..) => "canonical.drawing_sheet_already_exists",
             Self::DrawingSheetNotFound(..) => "canonical.drawing_sheet_not_found",
             Self::Drawing(..) => "canonical.drawing",
@@ -600,6 +604,9 @@ impl fmt::Display for CanonicalError {
             Self::InvalidAssemblySolvePublication => {
                 formatter.write_str("assembly solve publication is empty, non-canonical, or grounded")
             }
+            Self::UnsolvedAssemblySolvePublication(error) => {
+                write!(formatter, "assembly solve publication cannot be re-solved: {error}")
+            }
             Self::DrawingSheetAlreadyExists(id) => {
                 write!(formatter, "drawing sheet {} already exists", id.0)
             }
@@ -722,7 +729,14 @@ impl fmt::Display for CanonicalError {
     }
 }
 
-impl std::error::Error for CanonicalError {}
+impl std::error::Error for CanonicalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnsolvedAssemblySolvePublication(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl From<SketchError> for CanonicalError {
     fn from(error: SketchError) -> Self {

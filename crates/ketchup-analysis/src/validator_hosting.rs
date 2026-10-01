@@ -316,8 +316,9 @@ impl ValidatorPackageHost {
         if !valid_identifier(&publisher, 128) {
             return Err(ValidatorHostingError::InvalidPublisher);
         }
-        let verifying_key = VerifyingKey::from_bytes(&verifying_key)
-            .map_err(|_| ValidatorHostingError::InvalidPublisherKey)?;
+        let verifying_key = VerifyingKey::from_bytes(&verifying_key).map_err(
+            |_: ed25519_dalek::SignatureError| ValidatorHostingError::InvalidPublisherKey,
+        )?;
         self.revoked_publishers.remove(&publisher);
         self.trusted_publishers.insert(publisher, verifying_key);
         Ok(())
@@ -468,7 +469,7 @@ impl ValidatorPackageHost {
             &manifest.signing_payload(),
             &Signature::from_bytes(&signed.signature),
         )
-        .map_err(|_| ValidatorHostingError::SignatureInvalid)
+        .map_err(|_: ed25519_dalek::SignatureError| ValidatorHostingError::SignatureInvalid)
     }
 }
 

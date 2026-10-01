@@ -46,9 +46,11 @@ def test_only_named_content_free_error_types_may_be_dropped(tmp_path):
         "let d = write!(out, \"x\").map_err(|_: std::fmt::Error| Error::Limit)?;\n"
         "let e = file.read(b).map_err(|_: std::io::Error| Error::Io)?;\n"
         "let f = key.verify(m, s).map_err(|_: ed25519_dalek::SignatureError| Error::Forged)?;\n"
-        "let g = other.check().map_err(|_: SignatureError| Error::Forged)?;\n",
+        "let g = other.check().map_err(|_: SignatureError| Error::Forged)?;\n"
+        "let h = path.strip_prefix(root).map_err(|_: std::path::StripPrefixError| Error::Outside)?;\n",
     )
-    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs discard": 3}
+    # Only the io::Error (e) and the unqualified SignatureError (g) drop content.
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs discard": 2}
 
 
 def test_inline_test_modules_are_not_production_code(tmp_path):

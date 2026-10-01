@@ -1,8 +1,8 @@
 use crate::document::{
-    AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand, CommandBatch,
-    DefinitionId, Dimension, DocumentStore, FeatureDependencyGraph, FeatureId, FeatureKind,
-    FeatureParameterTarget, Proposal, ProposalAssumption, ProposalConfirmation, ProposalContext,
-    ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, Snapshot,
+    AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand, CanonicalError,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureDependencyGraph, FeatureId,
+    FeatureKind, FeatureParameterTarget, Proposal, ProposalAssumption, ProposalConfirmation,
+    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, Snapshot,
 };
 use crate::exact_brep_graph::ExactBRepGraph;
 use crate::exact_product::{
@@ -564,12 +564,15 @@ pub enum FeatureHistoryError {
     SubshapeAmbiguous(usize),
     SubshapeLost,
     SubshapeQuarantined(ExactReferenceQuarantineReason),
-    InvalidFeatureGraph,
+    FeatureGraph(Box<CanonicalError>),
 }
 
 impl fmt::Display for FeatureHistoryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::FeatureGraph(error) => {
+                write!(formatter, "feature dependency graph is invalid: {error}")
+            }
             Self::DefinitionNotFound(id) => write!(formatter, "definition {} was not found", id.0),
             Self::BodyNotFound(definition, body) => write!(
                 formatter,
@@ -620,12 +623,18 @@ impl fmt::Display for FeatureHistoryError {
             Self::SubshapeQuarantined(reason) => {
                 write!(formatter, "selected subshape is quarantined: {reason:?}")
             }
-            Self::InvalidFeatureGraph => formatter.write_str("feature graph is invalid"),
         }
     }
 }
 
-impl std::error::Error for FeatureHistoryError {}
+impl std::error::Error for FeatureHistoryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FeatureGraph(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BodyHistoryMutation {
@@ -701,9 +710,9 @@ pub fn prepare_body_history_mutation(
             FeatureHistoryError::BodyNotFound(request.definition_id, request.body_id),
         ));
     }
-    let graph = snapshot
-        .feature_dependency_graph()
-        .map_err(|_| BodyHistoryMutationError::History(FeatureHistoryError::InvalidFeatureGraph))?;
+    let graph = snapshot.feature_dependency_graph().map_err(|error| {
+        BodyHistoryMutationError::History(FeatureHistoryError::FeatureGraph(Box::new(error)))
+    })?;
     let topological_order = graph
         .topological_order()
         .iter()
@@ -814,7 +823,7 @@ pub fn project_feature_history(
         .ok_or(FeatureHistoryError::DefinitionNotFound(definition_id))?;
     let graph = snapshot
         .feature_dependency_graph()
-        .map_err(|_| FeatureHistoryError::InvalidFeatureGraph)?;
+        .map_err(|error| FeatureHistoryError::FeatureGraph(Box::new(error)))?;
     let definition_features = definition
         .feature_ids()
         .iter()

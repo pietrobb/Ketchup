@@ -27,7 +27,7 @@ pub fn box_package(
     faces: &[ExactFaceRole],
 ) -> Result<ExactBodyPackage, ExactProductError> {
     let graph = ExactBRepGraph::from_snapshot(snapshot, definition_id, producer_feature_id)
-        .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+        .map_err(|error| ExactProductError::UnsupportedDefinition.because(error))?;
     let bounds_mm = graph
         .producer_bounds_mm()
         .ok()

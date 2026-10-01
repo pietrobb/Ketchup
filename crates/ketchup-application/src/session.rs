@@ -59,7 +59,8 @@ pub enum SessionError {
     Commit(ProposalCommitError),
     Canonical(CanonicalError),
     Persistence(String),
-    ReviewOnly,
+    /// The file opened review-only; the audit names the losses or unknown extensions.
+    ReviewOnly(Box<persistence::LoadAudit>),
     NoUndo,
     NoRedo,
     Evaluation(String),
@@ -117,7 +118,7 @@ impl DocumentSession {
         let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
         let (document, container_data) = outcome
             .into_editable_with_container()
-            .map_err(|_| SessionError::ReviewOnly)?;
+            .map_err(|candidate| SessionError::ReviewOnly(Box::new(candidate.audit().clone())))?;
         let recovery = (source_path != requested_path).then(|| RecoveryState {
             requested_path: requested_path.to_owned(),
             source_path,

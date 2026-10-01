@@ -160,7 +160,7 @@ pub(super) fn topology_selectors(
                 },
                 reference_bytes: reference
                     .to_bytes()
-                    .map_err(|_| ExactBRepGraphError::InvalidTopologySelector)?,
+                    .map_err(ExactBRepGraphError::InvalidTopologyReference)?,
             })
         })
         .collect()

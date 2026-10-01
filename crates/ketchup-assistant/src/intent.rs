@@ -492,7 +492,9 @@ pub fn propose_intent(
             value
                 .trim()
                 .parse::<f64>()
-                .map_err(|_| ketchup_model::document::CanonicalError::InvalidTransform)
+                .map_err(|_: std::num::ParseFloatError| {
+                    ketchup_model::document::CanonicalError::InvalidTransform
+                })
         };
         let snapshot = store.current();
         let mut matrix = *snapshot
@@ -719,11 +721,13 @@ pub fn propose_intent(
                     ketchup_model::document::CanonicalError::UndeclaredOverrideParameter.into(),
                 );
             }
-            let value = value_text.parse::<f64>().map_err(|_| {
-                ketchup_model::document::CanonicalError::Graph(
-                    ketchup_model::document::GraphError::NonFiniteOverride,
-                )
-            })?;
+            let value = value_text
+                .parse::<f64>()
+                .map_err(|_: std::num::ParseFloatError| {
+                    ketchup_model::document::CanonicalError::Graph(
+                        ketchup_model::document::GraphError::NonFiniteOverride,
+                    )
+                })?;
             let value = CanonicalOverride::new(
                 target,
                 identity,
@@ -1324,7 +1328,9 @@ pub fn propose_intent(
                 value
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| ketchup_model::document::CanonicalError::InvalidTransform)
+                    .map_err(|_: std::num::ParseFloatError| {
+                        ketchup_model::document::CanonicalError::InvalidTransform
+                    })
             };
             let x_mm = parse(x_mm_text)?;
             let y_mm = parse(y_mm_text)?;
@@ -1361,7 +1367,9 @@ pub fn propose_intent(
                 value
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| ketchup_model::document::CanonicalError::InvalidTransform)
+                    .map_err(|_: std::num::ParseFloatError| {
+                        ketchup_model::document::CanonicalError::InvalidTransform
+                    })
             };
             let x_mm = parse(x_mm_text)?;
             let y_mm = parse(y_mm_text)?;

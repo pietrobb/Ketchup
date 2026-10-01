@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
 use ketchup_geometry::sketch::{
-    SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
+    SketchError, SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
-use ketchup_model::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
-use ketchup_model::import::{DxfImportOptions, inspect_dxf};
+use ketchup_model::document::{CanonicalError, FeatureKind, ProfileSegment, Snapshot, Transform};
+use ketchup_model::import::{DxfImportError, DxfImportOptions, inspect_dxf};
 
 pub const DXF_PROFILE_EXPORT_SCHEMA_V1: &str = "ketchup.dxf-profile-export.v1";
 const MAX_EXPORT_PROFILES: usize = 170;
@@ -22,21 +22,33 @@ pub struct DxfProfileExport {
     pub loss_report: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DxfProfileExportError {
     Empty,
     TooManyProfiles,
     TooManySegments,
     InvalidLayer,
     InvalidGeometry,
+    Sketch(SketchError),
     UnsupportedCurve,
     UnsupportedTransform,
+    Transform(CanonicalError),
     VerificationFailed,
+    Reimport(DxfImportError),
 }
 
 impl fmt::Display for DxfProfileExportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Reimport(error) => {
+                return write!(formatter, "exported DXF does not read back: {error}");
+            }
+            Self::Transform(error) => {
+                return write!(formatter, "sketch workplane transform is invalid: {error}");
+            }
+            Self::Sketch(error) => {
+                return write!(formatter, "sketch geometry cannot be exported: {error}");
+            }
             Self::Empty => "the visible model contains no exportable planar profiles",
             Self::TooManyProfiles => "DXF export exceeds the bounded 170 profile limit",
             Self::TooManySegments => "DXF export exceeds the bounded 10,000 segment limit",
@@ -51,7 +63,16 @@ impl fmt::Display for DxfProfileExportError {
     }
 }
 
-impl std::error::Error for DxfProfileExportError {}
+impl std::error::Error for DxfProfileExportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Reimport(error) => Some(error),
+            Self::Transform(error) => Some(error),
+            Self::Sketch(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct ExportProfile {
@@ -155,8 +176,8 @@ pub fn export_visible_profiles_dxf(
         .map(|profile| profile.layer.clone())
         .collect::<BTreeSet<_>>();
     let dxf = encode_dxf(&profiles);
-    let inspected = inspect_dxf(&dxf, DxfImportOptions::new(None))
-        .map_err(|_| DxfProfileExportError::VerificationFailed)?;
+    let inspected =
+        inspect_dxf(&dxf, DxfImportOptions::new(None)).map_err(DxfProfileExportError::Reimport)?;
     if inspected.profiles().len() != profiles.len()
         || inspected.layers().iter().cloned().collect::<BTreeSet<_>>() != layers
     {
@@ -197,7 +218,7 @@ fn polygon_segments(points: &[[f64; 2]]) -> Result<Vec<ProfileSegment>, DxfProfi
 fn sketch_profiles(sketch: &SketchSpec) -> Result<Vec<Vec<ProfileSegment>>, DxfProfileExportError> {
     let regions = sketch
         .solved_regions()
-        .map_err(|_| DxfProfileExportError::InvalidGeometry)?;
+        .map_err(DxfProfileExportError::Sketch)?;
     let mut profiles = Vec::new();
     for region in regions {
         profiles.push(solved_profile_segments(&region.outer)?);
@@ -269,9 +290,7 @@ fn solved_profile_segments(
 }
 
 fn workplane_transform(frame: WorkplaneFrame) -> Result<Transform, DxfProfileExportError> {
-    frame
-        .validate()
-        .map_err(|_| DxfProfileExportError::InvalidGeometry)?;
+    frame.validate().map_err(DxfProfileExportError::Sketch)?;
     Transform::from_matrix([
         frame.x_axis[0],
         frame.y_axis[0],
@@ -290,7 +309,7 @@ fn workplane_transform(frame: WorkplaneFrame) -> Result<Transform, DxfProfileExp
         0.0,
         1.0,
     ])
-    .map_err(|_| DxfProfileExportError::UnsupportedTransform)
+    .map_err(DxfProfileExportError::Transform)
 }
 
 fn transform_segments(

@@ -728,8 +728,11 @@ pub(super) fn validate_sketch_constraint_edit_dependents(
     }
     let available_regions = updated
         .solved_regions()
-        .map_err(|_| {
-            CanonicalError::Sketch(SketchError::ConstraintEditInvalidatesProfile(constraint_id))
+        .map_err(|error| {
+            CanonicalError::Sketch(SketchError::ConstraintEditInvalidatesProfile(
+                constraint_id,
+                Some(Box::new(error)),
+            ))
         })?
         .into_iter()
         .map(|region| region.id)
@@ -738,7 +741,7 @@ pub(super) fn validate_sketch_constraint_edit_dependents(
         Ok(())
     } else {
         Err(CanonicalError::Sketch(
-            SketchError::ConstraintEditInvalidatesProfile(constraint_id),
+            SketchError::ConstraintEditInvalidatesProfile(constraint_id, None),
         ))
     }
 }

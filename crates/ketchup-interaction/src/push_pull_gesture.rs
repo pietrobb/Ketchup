@@ -4,6 +4,7 @@ use crate::face_intent::{
     FaceIntentError, FaceWorkplaneContext, ResolvedFaceIntent, TransientFaceIntent,
 };
 use crate::spatial::SnapshotBinding;
+use ketchup_geometry::dimension::DimensionError;
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind,
@@ -303,7 +304,7 @@ impl SmartPushPullGesture {
         });
         let signed_distance =
             Dimension::new(canonical_number(signed_distance_mm), signed_distance_mm)
-                .map_err(|_| PushPullGestureError::InvalidDistance)?;
+                .map_err(PushPullGestureError::Distance)?;
         self.preview(PushPullPreviewSource::Pointer, signed_distance, feedback)
     }
 
@@ -373,7 +374,7 @@ impl SmartPushPullGesture {
         }
         let resulting_extent =
             Dimension::new(canonical_number(resulting_extent_mm), resulting_extent_mm)
-                .map_err(|_| PushPullGestureError::InvalidDistance)?;
+                .map_err(PushPullGestureError::Distance)?;
         Ok(PushPullPreview {
             target: self.target.clone(),
             target_reference: self.target_reference.clone(),
@@ -453,6 +454,7 @@ pub enum PushPullGestureError {
     InvalidSnapCandidate,
     TooManySnapCandidates,
     InvalidDistance,
+    Distance(DimensionError),
     StaleIntent,
     ForeignPreview,
     NoChange,
@@ -462,6 +464,7 @@ pub enum PushPullGestureError {
 impl fmt::Display for PushPullGestureError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Distance(error) => write!(formatter, "push/pull distance is invalid: {error}"),
             Self::FaceIntent(error) => write!(formatter, "face intent rejected: {error}"),
             Self::UnsupportedFace => formatter.write_str(
                 "Smart Push/Pull currently supports resolved top faces of existing extrusions",
@@ -494,4 +497,11 @@ impl fmt::Display for PushPullGestureError {
     }
 }
 
-impl std::error::Error for PushPullGestureError {}
+impl std::error::Error for PushPullGestureError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Distance(error) => Some(error),
+            _ => None,
+        }
+    }
+}

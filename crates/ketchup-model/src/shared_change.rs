@@ -7,10 +7,11 @@ use crate::assembly::{
 };
 use crate::document::DocumentStore;
 use crate::document::{
-    AuthoritativeDependency, BodyId, CanonicalCommand, CloneDefinitionPlan, CollectionId,
-    CommandBatch, DefinitionId, DocumentId, FeatureId, GroupId, InstancePath, OccurrenceId,
-    Proposal, ProposalAssumption, ProposalBudget, ProposalCommitError, ProposalConfirmation,
-    ProposalContext, ProposalGoal, ProposalPrincipal, ProposalRisk, Snapshot, Transform,
+    AuthoritativeDependency, BodyId, CanonicalCommand, CanonicalError, CloneDefinitionPlan,
+    CollectionId, CommandBatch, DefinitionId, DocumentId, FeatureId, GroupId, InstancePath,
+    OccurrenceId, Proposal, ProposalAssumption, ProposalBudget, ProposalCommitError,
+    ProposalConfirmation, ProposalContext, ProposalGoal, ProposalPrincipal, ProposalRisk, Snapshot,
+    Transform,
 };
 use crate::drawing::{
     DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
@@ -755,7 +756,7 @@ pub enum OccurrenceForkImpactError {
     Failed(BodyId),
     Ambiguous(BodyId),
     Lost(AssemblyMateId),
-    Cyclic,
+    DependencyGraph(CanonicalError),
     CrossDefinition(DefinitionId, DefinitionId),
     Unsupported(String),
 }
@@ -780,7 +781,9 @@ impl fmt::Display for OccurrenceForkImpactError {
                 "assembly mate {} has a lost exact reference",
                 mate_id.0
             ),
-            Self::Cyclic => formatter.write_str("feature dependency graph is cyclic"),
+            Self::DependencyGraph(error) => {
+                write!(formatter, "feature dependency graph is invalid: {error}")
+            }
             Self::CrossDefinition(expected, actual) => write!(
                 formatter,
                 "occurrence definition {} does not match requested definition {}",
@@ -791,7 +794,14 @@ impl fmt::Display for OccurrenceForkImpactError {
     }
 }
 
-impl std::error::Error for OccurrenceForkImpactError {}
+impl std::error::Error for OccurrenceForkImpactError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DependencyGraph(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentReplacementImpactRequest {
@@ -888,7 +898,7 @@ pub enum ComponentReplacementImpactError {
     Failed(DefinitionId, BodyId),
     Ambiguous(DefinitionId, BodyId),
     Lost(AssemblyMateId),
-    Cyclic,
+    DependencyGraph(CanonicalError),
     Incompatible(String),
     Unsupported(String),
 }
@@ -928,13 +938,22 @@ impl fmt::Display for ComponentReplacementImpactError {
                 "assembly mate {} has a lost exact reference",
                 mate_id.0
             ),
-            Self::Cyclic => formatter.write_str("feature dependency graph is cyclic"),
+            Self::DependencyGraph(error) => {
+                write!(formatter, "feature dependency graph is invalid: {error}")
+            }
             Self::Incompatible(reason) | Self::Unsupported(reason) => formatter.write_str(reason),
         }
     }
 }
 
-impl std::error::Error for ComponentReplacementImpactError {}
+impl std::error::Error for ComponentReplacementImpactError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DependencyGraph(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComponentReplacementCommitReceipt {
@@ -1111,7 +1130,7 @@ pub enum SharedChangeImpactError {
     Failed(BodyId),
     Ambiguous(BodyId),
     Lost(AssemblyMateId),
-    Cyclic,
+    DependencyGraph(CanonicalError),
     Unsupported(String),
 }
 
@@ -1135,13 +1154,22 @@ impl fmt::Display for SharedChangeImpactError {
                 "assembly mate {} has a lost exact reference",
                 mate_id.0
             ),
-            Self::Cyclic => formatter.write_str("feature dependency graph is cyclic"),
+            Self::DependencyGraph(error) => {
+                write!(formatter, "feature dependency graph is invalid: {error}")
+            }
             Self::Unsupported(reason) => formatter.write_str(reason),
         }
     }
 }
 
-impl std::error::Error for SharedChangeImpactError {}
+impl std::error::Error for SharedChangeImpactError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DependencyGraph(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OccurrenceForkCommitReceipt {
@@ -2478,7 +2506,7 @@ pub fn project_component_replacement_impact_for_principal(
     }
     source
         .feature_dependency_graph()
-        .map_err(|_| ComponentReplacementImpactError::Cyclic)?;
+        .map_err(ComponentReplacementImpactError::DependencyGraph)?;
 
     let [target_definition_id] = request.target_definition_ids.as_slice() else {
         return Err(ComponentReplacementImpactError::DuplicateTarget);
@@ -2600,7 +2628,7 @@ pub fn project_component_replacement_impact_for_principal(
 
     let graph = source
         .feature_dependency_graph()
-        .map_err(|_| ComponentReplacementImpactError::Cyclic)?;
+        .map_err(ComponentReplacementImpactError::DependencyGraph)?;
     let source_feature_ids = graph
         .topological_order()
         .iter()
@@ -3861,7 +3889,7 @@ pub fn project_occurrence_fork_impact(
     }
     source
         .feature_dependency_graph()
-        .map_err(|_| OccurrenceForkImpactError::Cyclic)?;
+        .map_err(OccurrenceForkImpactError::DependencyGraph)?;
 
     let selected = source.occurrence(request.selected_occurrence_id).ok_or(
         OccurrenceForkImpactError::OccurrenceNotFound(request.selected_occurrence_id),
@@ -4349,7 +4377,9 @@ fn map_occurrence_fork_impact_error(error: SharedChangeImpactError) -> Occurrenc
             OccurrenceForkImpactError::Ambiguous(body_id)
         }
         SharedChangeImpactError::Lost(mate_id) => OccurrenceForkImpactError::Lost(mate_id),
-        SharedChangeImpactError::Cyclic => OccurrenceForkImpactError::Cyclic,
+        SharedChangeImpactError::DependencyGraph(error) => {
+            OccurrenceForkImpactError::DependencyGraph(error)
+        }
         SharedChangeImpactError::Unsupported(reason) => {
             OccurrenceForkImpactError::Unsupported(reason)
         }
@@ -4370,7 +4400,7 @@ pub fn project_shared_change_impact(
     }
     source
         .feature_dependency_graph()
-        .map_err(|_| SharedChangeImpactError::Cyclic)?;
+        .map_err(SharedChangeImpactError::DependencyGraph)?;
 
     let (
         definition_id,

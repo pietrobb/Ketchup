@@ -1,4 +1,4 @@
-use crate::dimension::Dimension;
+use crate::dimension::{Dimension, DimensionError};
 use crate::id::FeatureId;
 use crate::reference::BodySubshapeRef;
 use crate::tolerance::{
@@ -226,7 +226,7 @@ impl WorkplaneSpec {
                     return Err(SketchError::MissingWorkplaneSupport(*base));
                 }
                 Dimension::new(distance.source_token(), distance.millimetres())
-                    .map_err(|_| SketchError::InvalidDimension)?;
+                    .map_err(SketchError::Dimension)?;
                 Ok(())
             }
             WorkplaneSupport::PlanarFace { reference, health } => {
@@ -810,7 +810,7 @@ fn validate_extent_distance(distance: &Dimension) -> Result<(), SketchError> {
 
 fn validate_extent_length(distance: &Dimension, length_mm: f64) -> Result<(), SketchError> {
     Dimension::new(distance.source_token(), distance.millimetres())
-        .map_err(|_| SketchError::InvalidDimension)?;
+        .map_err(SketchError::Dimension)?;
     if length_mm <= EPSILON_MM || length_mm > MAX_COORDINATE_MM {
         return Err(SketchError::InvalidDimension);
     }
@@ -2861,8 +2861,11 @@ pub enum SketchError {
     InvalidOffsetDistance,
     AmbiguousOffset,
     InvalidConstraintReference(SketchConstraintId),
-    ConstraintEditInvalidatesProfile(SketchConstraintId),
+    /// The edit removes a region a downstream Pad/Pocket uses; when the edited
+    /// sketch no longer solves into regions at all, the solver error is the cause.
+    ConstraintEditInvalidatesProfile(SketchConstraintId, Option<Box<SketchError>>),
     InvalidDimension,
+    Dimension(DimensionError),
     InvalidSolverPolicy,
     NonConvergent,
     InvalidFeatureDirection,
@@ -2878,6 +2881,7 @@ pub enum SketchError {
 impl fmt::Display for SketchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Dimension(error) => write!(formatter, "sketch dimension is invalid: {error}"),
             Self::InvalidWorkplaneFrame => {
                 formatter.write_str("workplane frame is not finite, orthonormal, and right-handed")
             }
@@ -2975,11 +2979,17 @@ impl fmt::Display for SketchError {
                 "sketch constraint {} has an invalid entity or point reference",
                 id.0
             ),
-            Self::ConstraintEditInvalidatesProfile(id) => write!(
-                formatter,
-                "editing sketch constraint {} would invalidate a downstream Pad/Pocket region",
-                id.0
-            ),
+            Self::ConstraintEditInvalidatesProfile(id, cause) => {
+                write!(
+                    formatter,
+                    "editing sketch constraint {} would invalidate a downstream Pad/Pocket region",
+                    id.0
+                )?;
+                match cause {
+                    Some(error) => write!(formatter, ": {error}"),
+                    None => Ok(()),
+                }
+            }
             Self::InvalidDimension => formatter.write_str("sketch dimension is invalid"),
             Self::InvalidSolverPolicy => formatter.write_str("sketch solver policy is invalid"),
             Self::NonConvergent => formatter
@@ -3011,4 +3021,12 @@ impl fmt::Display for SketchError {
     }
 }
 
-impl std::error::Error for SketchError {}
+impl std::error::Error for SketchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Dimension(error) => Some(error),
+            Self::ConstraintEditInvalidatesProfile(_, Some(error)) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}

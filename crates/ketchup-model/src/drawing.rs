@@ -1,11 +1,13 @@
 #![forbid(unsafe_code)]
 
 use crate::assembly::{
-    AssemblyReferenceHealth, AssemblySolveStatus, AssemblySolverPolicy, solve_rigid_assembly,
+    AssemblyReferenceHealth, AssemblySolveError, AssemblySolveStatus, AssemblySolverPolicy,
+    solve_rigid_assembly,
 };
 use crate::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, DocumentId, DocumentStore, InstancePath,
-    InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, Snapshot, Transform,
+    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentId, DocumentStore,
+    InstancePath, InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, Snapshot,
+    Transform,
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
 use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
@@ -2180,10 +2182,12 @@ pub enum DrawingError {
     AnnotationSourceLost,
     LayoutOverflow,
     SourceLost,
+    UnresolvedInstance(OccurrenceId, Box<CanonicalError>),
     SourceStale,
     SourceFailed,
     SourceAmbiguous,
     SourceNotRigid,
+    AssemblyNotSolved(Box<AssemblySolveError>),
     InvalidGeometry,
     ResourceLimit,
 }
@@ -2191,6 +2195,16 @@ pub enum DrawingError {
 impl fmt::Display for DrawingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::UnresolvedInstance(id, error) => {
+                return write!(
+                    formatter,
+                    "drawing instance under occurrence {} does not resolve: {error}",
+                    id.0
+                );
+            }
+            Self::AssemblyNotSolved(error) => {
+                return write!(formatter, "drawing assembly source does not solve: {error}");
+            }
             Self::InvalidSheet => "drawing sheet identity or source is invalid",
             Self::InvalidPageTemplate => "drawing page template or border is invalid",
             Self::InvalidScale => "drawing scale is invalid",
@@ -2214,7 +2228,19 @@ impl fmt::Display for DrawingError {
     }
 }
 
-impl std::error::Error for DrawingError {}
+fn unresolved_instance(path: &InstancePath, error: CanonicalError) -> DrawingError {
+    DrawingError::UnresolvedInstance(path.root_occurrence(), Box::new(error))
+}
+
+impl std::error::Error for DrawingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnresolvedInstance(_, error) => Some(error.as_ref()),
+            Self::AssemblyNotSolved(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum DrawingAuthoringError {
@@ -2386,7 +2412,7 @@ fn validate_rigid_source(
         return Err(DrawingError::SourceNotRigid);
     }
     let solved = solve_rigid_assembly(snapshot, AssemblySolverPolicy::default())
-        .map_err(|_| DrawingError::SourceNotRigid)?;
+        .map_err(|error| DrawingError::AssemblyNotSolved(Box::new(error)))?;
     if solved.status() != AssemblySolveStatus::FullyConstrained
         || !solved.conflicting_mate_ids().is_empty()
         || !solved.maximum_residual().is_finite()
@@ -2443,7 +2469,7 @@ fn drawing_instances_for_paths(
         .map(|path| {
             let resolved = snapshot
                 .resolve_instance_path(path)
-                .map_err(|_| DrawingError::SourceLost)?;
+                .map_err(|error| unresolved_instance(path, error))?;
             Ok(DrawingInstance {
                 token: format!("instance-{}", stable_instance_path(path)),
                 transform: resolved.world_transform,
@@ -3994,7 +4020,7 @@ fn layout_bom_annotations(
     for balloon in sheet.bom_balloons() {
         let resolved = snapshot
             .resolve_instance_path(balloon.instance_path())
-            .map_err(|_| DrawingError::AnnotationSourceLost)?;
+            .map_err(|error| unresolved_instance(balloon.instance_path(), error))?;
         if definition_positions
             .insert(resolved.definition_id, balloon.position())
             .is_some_and(|position| position != balloon.position())

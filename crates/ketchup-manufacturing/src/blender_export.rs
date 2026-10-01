@@ -5,6 +5,7 @@ use ketchup_model::document::{
 use ketchup_model::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::num::TryFromIntError;
 
 const GLB_MAGIC: u32 = 0x4654_6c67;
 const GLB_JSON_CHUNK: u32 = 0x4e4f_534a;
@@ -619,8 +620,8 @@ fn srgb_channel_to_linear(channel: u8) -> f64 {
 }
 
 fn encode_glb(document: &Value, binary: &[u8]) -> Result<Vec<u8>, ExactProductError> {
-    let mut json_bytes =
-        serde_json::to_vec(document).map_err(|_| ExactProductError::InvalidMeshExport)?;
+    let mut json_bytes = serde_json::to_vec(document)
+        .map_err(|error| ExactProductError::InvalidMeshExport.because(error))?;
     align_to_four(&mut json_bytes, b' ');
     let mut binary = binary.to_vec();
     align_to_four(&mut binary, 0);
@@ -631,10 +632,10 @@ fn encode_glb(document: &Value, binary: &[u8]) -> Result<Vec<u8>, ExactProductEr
         .and_then(|length| length.checked_add(binary.len()))
         .and_then(|length| u32::try_from(length).ok())
         .ok_or(ExactProductError::InvalidMeshExport)?;
-    let json_length =
-        u32::try_from(json_bytes.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
-    let binary_length =
-        u32::try_from(binary.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+    let json_length = u32::try_from(json_bytes.len())
+        .map_err(|_: TryFromIntError| ExactProductError::InvalidMeshExport)?;
+    let binary_length = u32::try_from(binary.len())
+        .map_err(|_: TryFromIntError| ExactProductError::InvalidMeshExport)?;
     let mut glb = Vec::with_capacity(total_length as usize);
     glb.extend_from_slice(&GLB_MAGIC.to_le_bytes());
     glb.extend_from_slice(&2_u32.to_le_bytes());

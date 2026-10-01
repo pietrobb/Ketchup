@@ -417,7 +417,7 @@ pub(super) fn validate_assembly_joint_motion_publication(
 
     let expected_solution =
         solve_assembly_joint_kinematics_with_kind_overrides(current, &kind_overrides)
-            .map_err(|_| CanonicalError::InvalidAssemblySolvePublication)?;
+            .map_err(|error| CanonicalError::UnsolvedAssemblySolvePublication(Box::new(error)))?;
     let required_transform_ids = kind_overrides
         .keys()
         .filter_map(|id| {

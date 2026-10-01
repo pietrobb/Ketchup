@@ -66,12 +66,16 @@ pub enum IgesImportPlanError {
     SourceTooLarge,
     InvalidSourceIdentity(ImportContractError),
     InvalidWorkerEvidence,
+    InvalidDiagnostic(ImportContractError),
     IdSpaceExhausted,
 }
 
 impl fmt::Display for IgesImportPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidDiagnostic(error) => {
+                return write!(formatter, "IGES import diagnostic is invalid: {error}");
+            }
             Self::Empty => "IGES source is empty",
             Self::SourceTooLarge => "IGES source exceeds the bounded 32 MiB envelope",
             Self::InvalidSourceIdentity(error) => {
@@ -86,7 +90,14 @@ impl fmt::Display for IgesImportPlanError {
     }
 }
 
-impl std::error::Error for IgesImportPlanError {}
+impl std::error::Error for IgesImportPlanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidSourceIdentity(error) | Self::InvalidDiagnostic(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 pub fn plan_iges_import(
     snapshot: &Snapshot,
@@ -167,7 +178,7 @@ pub fn plan_iges_import(
     .into_iter()
     .map(|(severity, code)| ImportDiagnostic::new(severity, code, None, 1))
     .collect::<Result<Vec<_>, _>>()
-    .map_err(|_| IgesImportPlanError::InvalidWorkerEvidence)?;
+    .map_err(IgesImportPlanError::InvalidDiagnostic)?;
     let units = ImportUnitDecision::new(evidence.source_unit, ImportUnitAuthority::FileDeclared);
     let receipt = ImportReceipt::from_source_bytes(
         import_id,
@@ -393,7 +404,7 @@ pub fn plan_iges_xde_import(
     let mut add = |severity, code, count| {
         diagnostics.push(
             ImportDiagnostic::new(severity, code, None, count)
-                .map_err(|_| IgesImportPlanError::InvalidWorkerEvidence)?,
+                .map_err(IgesImportPlanError::InvalidDiagnostic)?,
         );
         Ok::<(), IgesImportPlanError>(())
     };

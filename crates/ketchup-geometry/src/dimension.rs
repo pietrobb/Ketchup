@@ -27,7 +27,7 @@ impl Dimension {
         let source_token = source_token.into();
         let millimetres = source_token
             .parse::<f64>()
-            .map_err(|_| DimensionError::InvalidDecimalToken)?;
+            .map_err(|_: std::num::ParseFloatError| DimensionError::InvalidDecimalToken)?;
         Self::new(source_token, millimetres)
     }
 
