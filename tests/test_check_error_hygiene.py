@@ -89,6 +89,7 @@ def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
         "fn a() -> Result<Vec<Option<u8>>, String> { todo!() }\n"
         "fn b() -> std::result::Result<HashMap<K, V>, String> { todo!() }\n"
         "fn c() -> Result<(), Error> { todo!() }\n"
+        "let j = run(|| Ok::<_, String>(1)); let k = Ok::<_, Error>(1);\n"
         "let d = x.map_err(|error| error.to_string())?;\n"
         "let e = x.map_err(move |e| e.to_string())?;\n"
         "let f = x.map_err(|error| Error::Io(error.to_string()))?;\n"
@@ -99,7 +100,7 @@ def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
         '_ => unreachable!(),\n_ => unreachable!("said why"),\n',
     )
     assert checker.current_counts(tmp_path) == {
-        "crates/a/src/lib.rs string_result": 2,
+        "crates/a/src/lib.rs string_result": 3,
         "crates/a/src/lib.rs stringified_cause": 2,
         "crates/a/src/lib.rs formatted_variant": 2,
         "crates/a/src/lib.rs unwrap": 1,

@@ -1,21 +1,16 @@
 # Remaining errors that drop their cause or cases the types still allow (<file> <form> <count>, forms in scripts/check_error_hygiene.py); may only shrink.
 crates/ketchup-analysis/src/validator_hosting.rs formatted_variant 1
-crates/ketchup-app/src/app/document.rs stringified_cause 2
 crates/ketchup-app/src/app/document.rs unreachable 2
-crates/ketchup-app/src/app/drawing.rs stringified_cause 2
 crates/ketchup-app/src/app/drawing.rs unwrap 1
 crates/ketchup-app/src/app/export.rs unreachable 1
 crates/ketchup-app/src/app/structure.rs unwrap 1
-crates/ketchup-app/src/feature_history_ui.rs stringified_cause 6
 crates/ketchup-app/src/feature_history_ui.rs unwrap 3
 crates/ketchup-app/src/lib.rs unreachable 1
 crates/ketchup-app/src/live_bridge/image.rs unwrap 2
-crates/ketchup-app/src/planar_push_pull.rs stringified_cause 4
 crates/ketchup-app/src/planar_push_pull.rs unwrap 1
 crates/ketchup-app/src/renderer.rs unwrap 1
 crates/ketchup-app/src/scene_snapping.rs unwrap 2
 crates/ketchup-application/src/creation.rs unreachable 2
-crates/ketchup-application/src/evaluation.rs stringified_cause 1
 crates/ketchup-application/src/evaluation.rs unreachable 2
 crates/ketchup-application/src/fea_workflow.rs formatted_variant 2
 crates/ketchup-application/src/model_query.rs unreachable 6

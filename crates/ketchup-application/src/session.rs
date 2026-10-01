@@ -56,7 +56,7 @@ pub enum SessionError {
     Prepare(ProposalPrepareError),
     Commit(ProposalCommitError),
     Canonical(CanonicalError),
-    Persistence(String),
+    Persistence(persistence::FilePersistenceError),
     /// The file opened review-only; the audit names the losses or unknown extensions.
     ReviewOnly(Box<persistence::LoadAudit>),
     NoUndo,
@@ -65,10 +65,20 @@ pub enum SessionError {
 }
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Persistence(error) => error.fmt(f),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
-impl std::error::Error for SessionError {}
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Persistence(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 pub struct DocumentSession {
     document: DocumentStore,
@@ -112,7 +122,7 @@ impl DocumentSession {
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
         let requested_path = path.as_ref();
         let loaded = persistence::load_file_with_source(requested_path)
-            .map_err(|error| SessionError::Persistence(error.to_string()))?;
+            .map_err(SessionError::Persistence)?;
         let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
         let (document, container_data) = outcome
             .into_editable_with_container()
@@ -170,7 +180,9 @@ impl DocumentSession {
         } else {
             persistence::save_document_store_current_snapshot(&self.document, &self.container_data)
         }
-        .map_err(|error| SessionError::Persistence(error.to_string()))?;
+        .map_err(|error| {
+            SessionError::Persistence(persistence::FilePersistenceError::Format(error))
+        })?;
         let saved_identity = persistence::FileIdentity::from_bytes(&saved_bytes);
         let expected_identity = (self.path.as_deref() == Some(path))
             .then_some(self.file_identity)
@@ -208,7 +220,7 @@ impl DocumentSession {
                     )
                 }
             };
-            result.map_err(|error| SessionError::Persistence(error.to_string()))?;
+            result.map_err(SessionError::Persistence)?;
         } else {
             let result = if preserve_history {
                 persistence::save_atomic_document_store_with_container_if_absent(
@@ -223,7 +235,7 @@ impl DocumentSession {
                     &self.container_data,
                 )
             };
-            result.map_err(|error| SessionError::Persistence(error.to_string()))?;
+            result.map_err(SessionError::Persistence)?;
         }
         if !preserve_history {
             self.document.discard_history_before_current();
@@ -269,7 +281,7 @@ impl DocumentSession {
             return Ok(());
         };
         persistence::clear_work_recovery(&path, Some(identity))
-            .map_err(|error| SessionError::Persistence(error.to_string()))?;
+            .map_err(SessionError::Persistence)?;
         self.pending_work_recovery_cleanup = None;
         Ok(())
     }
@@ -301,7 +313,7 @@ impl DocumentSession {
         let current_digest = document.history_digest();
         if saved_digest == Some(current_digest.as_str()) {
             persistence::clear_work_recovery(path, work_recovery_identity)
-                .map_err(|error| SessionError::Persistence(error.to_string()))?;
+                .map_err(SessionError::Persistence)?;
             return Ok(None);
         }
         persistence::save_work_recovery_document_store_with_container(
@@ -311,7 +323,7 @@ impl DocumentSession {
             identity,
         )
         .map(Some)
-        .map_err(|error| SessionError::Persistence(error.to_string()))
+        .map_err(SessionError::Persistence)
     }
     pub fn is_modified(&self) -> bool {
         self.recovery.is_some()

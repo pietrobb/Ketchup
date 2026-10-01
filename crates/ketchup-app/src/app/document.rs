@@ -572,8 +572,7 @@ impl KetchupApp {
                 &self.file.container_data,
             )
             .map(|_| ()),
-        }
-        .map_err(|error| error.to_string());
+        };
         match result {
             Ok(()) => {
                 if truncate_history {
@@ -900,25 +899,23 @@ impl KetchupApp {
             }
             AppCommand::ReviewStaticFea => {
                 let result = (|| {
-                    let selected = self.selected_root_occurrence_ids().map_err(|error| {
-                        self.root_occurrence_selection_error(&error)
-                            .reason_text()
-                            .to_owned()
-                    })?;
+                    let selected = self
+                        .selected_root_occurrence_ids()
+                        .map_err(|error| self.root_occurrence_selection_error(&error))?;
                     if selected.len() != 1 {
-                        return Err(self.catalog.text("fea-review-select-one"));
+                        return Err(self.catalog.refusal("fea-review-select-one"));
                     }
                     let occurrence_id = *selected.iter().next().expect("one selected occurrence");
                     let snapshot = self.document.current();
                     let occurrence = snapshot
                         .occurrence(occurrence_id)
-                        .ok_or_else(|| self.catalog.text("fea-review-select-one"))?;
+                        .ok_or_else(|| self.catalog.refusal("fea-review-select-one"))?;
                     let terminals =
                         exact_body_terminal_features(&snapshot, occurrence.definition_id())
-                            .map_err(|error| error.to_string())?;
+                            .map_err(|error| failed("fea_review.terminal_features", error))?;
                     let terminal_features = terminals.values().copied().collect::<Vec<_>>();
                     let [feature_id] = terminal_features.as_slice() else {
-                        return Err(self.catalog.text("fea-review-one-body"));
+                        return Err(self.catalog.refusal("fea-review-one-body"));
                     };
                     Ok(FeaReviewDialog {
                         definition_id: occurrence.definition_id(),
@@ -940,7 +937,7 @@ impl KetchupApp {
                 })();
                 match result {
                     Ok(dialog) => self.reviews.fea_review_dialog = Some(dialog),
-                    Err(error) => self.digest = error,
+                    Err(error) => self.digest = error.reason_text().to_owned(),
                 }
             }
             AppCommand::ReviewLocalPdm => {
@@ -1216,8 +1213,10 @@ impl KetchupApp {
         &mut self,
         mutate: impl FnOnce(&mut DocumentStore) -> Option<Snapshot>,
     ) -> bool {
-        self.complete_mutation_with_work_recovery(|document| Ok::<_, String>(mutate(document)))
-            .is_ok_and(|snapshot| snapshot.is_some())
+        self.complete_mutation_with_work_recovery(|document| {
+            Ok::<_, std::convert::Infallible>(mutate(document))
+        })
+        .is_ok_and(|snapshot| snapshot.is_some())
     }
 
     pub fn undo(&mut self) -> bool {

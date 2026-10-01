@@ -1434,7 +1434,7 @@ impl KetchupApp {
             FeatureHistoryExecutionPlan::Local(proposal) => self
                 .commit_verified_proposal_with_work_recovery(proposal)
                 .map(|_| ())
-                .map_err(|error| error.to_string()),
+                .map_err(FeatureHistoryPreviewError::failed),
             FeatureHistoryExecutionPlan::Replacement(impact) => self
                 .complete_mutation_and_exact_results_with_work_recovery(
                     |document, exact_results, _topology_results| {
@@ -1442,7 +1442,7 @@ impl KetchupApp {
                     },
                 )
                 .map(|_| ())
-                .map_err(|error| error.to_string()),
+                .map_err(FeatureHistoryPreviewError::failed),
             FeatureHistoryExecutionPlan::Shared(impact) => {
                 let Some(mut worker) = self.feature_history_exact_worker() else {
                     return false;
@@ -1454,12 +1454,11 @@ impl KetchupApp {
                                 .evaluate_exact_brep_graph(graph)
                                 .map(ExactBodyPackage::from)
                                 .map(Arc::new)
-                                .map_err(|error| error.to_string())
                         })
                     },
                 )
                 .map(|_| ())
-                .map_err(|error| error.to_string())
+                .map_err(FeatureHistoryPreviewError::failed)
             }
             FeatureHistoryExecutionPlan::Fork(impact) => {
                 let Some(mut worker) = self.feature_history_exact_worker() else {
@@ -1472,12 +1471,11 @@ impl KetchupApp {
                                 .evaluate_exact_brep_graph(graph)
                                 .map(ExactBodyPackage::from)
                                 .map(Arc::new)
-                                .map_err(|error| error.to_string())
                         })
                     },
                 )
                 .map(|_| ())
-                .map_err(|error| error.to_string())
+                .map_err(FeatureHistoryPreviewError::failed)
             }
         };
         match result {

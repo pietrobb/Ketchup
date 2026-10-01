@@ -644,21 +644,21 @@ impl KetchupApp {
                 move |document, exact_results, topology_results| {
                     proposal
                         .commit(document)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| failed("face_offset.commit", error))?;
                     if let Some(source) = rule_program {
                         document
                             .bind_rule_program(source)
-                            .map_err(|error| error.to_string())?;
+                            .map_err(|error| failed("face_offset.bind_program", error))?;
                     }
                     document
                         .register_exact_reference_evidence(&render)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| failed("face_offset.render_evidence", error))?;
                     document
                         .register_exact_reference_evidence(&topology)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| failed("face_offset.topology_evidence", error))?;
                     *exact_results = render;
                     *topology_results = topology;
-                    Ok::<(), String>(())
+                    Ok::<(), Rejection>(())
                 },
             )
             .is_err()

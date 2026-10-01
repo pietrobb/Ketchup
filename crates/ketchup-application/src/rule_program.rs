@@ -429,17 +429,14 @@ fn replacement_batch(
         });
         let old = snapshot
             .occurrence(*old_id)
-            .ok_or_else(|| SessionError::Persistence("program part is missing".into()))?;
+            .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
         if snapshot
             .occurrences()
             .filter(|item| item.definition_id() == old.definition_id())
             .count()
             != 1
         {
-            return Err(SessionError::Persistence(
-                "cannot rebuild a shared program definition".into(),
-            )
-            .into());
+            return Err(RuleProgramApplyError::IncrementalUnsupported);
         }
         commands.push(CanonicalCommand::DeleteOccurrence { id: temporary_id });
         commands.push(CanonicalCommand::RepointOccurrence {

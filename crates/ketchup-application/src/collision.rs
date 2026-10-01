@@ -4,6 +4,7 @@ mod bounds;
 #[path = "collision_hull.rs"]
 mod hull;
 use crate::validation::{AssistantValidationSelection, assistant_validation_context_base};
+use crate::worker_pool::ExactWorkerUnavailable;
 use ketchup_interaction::spatial::{
     SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
 };
@@ -11,7 +12,7 @@ use ketchup_model::document::{
     BodyId, DefinitionId, FeatureId, InstancePath, InstancePathStep, OccurrenceId, SceneOccurrence,
     Snapshot,
 };
-use ketchup_model::exact_brep_graph::ExactBRepOperation;
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_model::exact_product::{
     ExactProductError, ExactResultRegistry, ExactSnapshotPreparation,
 };
@@ -29,10 +30,10 @@ use ketchup_model::validation::{
 };
 use ketchup_program::ExactPair;
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
-use ketchup_scheduler::{ExactPairCandidate, ExactPairRelation};
+use ketchup_scheduler::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation, WorkerError};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -341,6 +342,114 @@ struct Body {
     graph: Option<usize>,
     analytic: Option<GeneralBodyParticipant>,
 }
+/// Why the exact pair check stopped before every candidate pair was answered.
+#[derive(Debug)]
+enum ExactPairFailure {
+    WorkerUnavailable(ExactWorkerUnavailable),
+    /// The worker refused a batch of candidate pairs.
+    Batch {
+        cause: WorkerError,
+    },
+    /// The worker answered a batch with fewer or more results than pairs.
+    Incomplete {
+        expected: usize,
+        received: usize,
+    },
+}
+
+impl ExactPairFailure {
+    fn evidence(&self) -> Value {
+        match self {
+            Self::WorkerUnavailable(ExactWorkerUnavailable::NotFound) => {
+                json!({"reason": "exact_worker_unavailable"})
+            }
+            Self::WorkerUnavailable(ExactWorkerUnavailable::Checkout { cause }) => {
+                json!({"reason": "exact_worker_unavailable", "cause": cause.to_string()})
+            }
+            Self::Batch { cause } => {
+                json!({"reason": "exact_pair_batch_failed", "cause": cause.to_string()})
+            }
+            Self::Incomplete { expected, received } => json!({
+                "reason": "exact_pair_batch_incomplete", "expected": expected, "received": received
+            }),
+        }
+    }
+}
+
+/// Asks one exact worker about `pairs` in batches the worker accepts and sends
+/// each answered batch, or the failure that stopped the check, to `tx`.
+fn send_exact_pair_batches(
+    path: Option<&Path>,
+    pairs: &[(usize, usize, ExactPairCandidate)],
+    graphs: &[ExactBRepGraph],
+    sources: &BTreeMap<String, Vec<u8>>,
+    contact_tolerance_mm: f64,
+    cancelled: &AtomicBool,
+    tx: &mpsc::Sender<ExactPairBatch>,
+) {
+    let mut supervisor = match crate::worker_pool::checkout(path, cancelled) {
+        Ok(supervisor) => supervisor,
+        Err(unavailable) => {
+            let _ = tx.send(Err(ExactPairFailure::WorkerUnavailable(unavailable)));
+            return;
+        }
+    };
+    let mut offset = 0;
+    while offset < pairs.len() {
+        let mut end = offset;
+        let mut unique = BTreeSet::new();
+        while end < pairs.len() && end - offset < MAX_EXACT_PAIR_CANDIDATES {
+            let pair = &pairs[end].2;
+            let mut next = unique.clone();
+            next.insert(pair.left_graph);
+            next.insert(pair.right_graph);
+            if next.len() > MAX_EXACT_PAIR_GRAPHS {
+                break;
+            }
+            unique = next;
+            end += 1;
+        }
+        let candidates = pairs[offset..end]
+            .iter()
+            .map(|p| p.2.clone())
+            .collect::<Vec<_>>();
+        match supervisor.query_exact_brep_pairs_with_cancellation(
+            graphs,
+            &candidates,
+            sources,
+            contact_tolerance_mm,
+            cancelled,
+        ) {
+            Ok(results) if results.len() == candidates.len() => {
+                let entries = pairs[offset..end]
+                    .iter()
+                    .zip(results)
+                    .map(|((l, r, _), result)| (*l, *r, result))
+                    .collect::<Vec<_>>();
+                if tx.send(Ok(entries)).is_err() {
+                    return;
+                }
+            }
+            Ok(results) => {
+                let _ = tx.send(Err(ExactPairFailure::Incomplete {
+                    expected: candidates.len(),
+                    received: results.len(),
+                }));
+                return;
+            }
+            Err(cause) => {
+                let _ = tx.send(Err(ExactPairFailure::Batch { cause }));
+                return;
+            }
+        }
+        offset = end;
+    }
+    supervisor.release();
+}
+
+/// One answered batch of candidate pairs, or why the check stopped.
+type ExactPairBatch = Result<Vec<(usize, usize, ExactPairQueryResult)>, ExactPairFailure>;
+
 fn path_json(path: &InstancePath) -> Value {
     json!({"root_occurrence_id": path.root_occurrence().0, "steps": path.steps().iter().map(|step| match step {
         InstancePathStep::Group(id) => json!({"group_id": id.0}),
@@ -1093,66 +1202,23 @@ fn collision_report(
         match (sources, path) {
             (Err(error), _) => failures.push(json!({"reason": error.code()})),
             (Ok(_), _) if pairs.is_empty() => {}
-            (Ok(_), None) => failures.push(json!({"reason": "exact_worker_unavailable"})),
-            (Ok(sources), Some(path)) => {
+            (Ok(sources), path) => {
                 let cancelled = cancellation
                     .clone()
                     .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
                 let cancel_worker = cancelled.clone();
                 let (tx, rx) = mpsc::channel();
+                let contact_tolerance_mm = tolerance.linear_mm();
                 std::thread::spawn(move || {
-                    let mut supervisor = match crate::worker_pool::checkout(&path, &cancel_worker) {
-                        Ok(supervisor) => supervisor,
-                        Err(error) => {
-                            let _ = tx.send(Err(format!("exact_worker_unavailable: {error}")));
-                            return;
-                        }
-                    };
-                    let mut offset = 0;
-                    while offset < pairs.len() {
-                        let mut end = offset;
-                        let mut unique = BTreeSet::new();
-                        while end < pairs.len() && end - offset < MAX_EXACT_PAIR_CANDIDATES {
-                            let pair = &pairs[end].2;
-                            let mut next = unique.clone();
-                            next.insert(pair.left_graph);
-                            next.insert(pair.right_graph);
-                            if next.len() > MAX_EXACT_PAIR_GRAPHS {
-                                break;
-                            }
-                            unique = next;
-                            end += 1;
-                        }
-                        let candidates = pairs[offset..end]
-                            .iter()
-                            .map(|p| p.2.clone())
-                            .collect::<Vec<_>>();
-                        match supervisor.query_exact_brep_pairs_with_cancellation(
-                            &graphs,
-                            &candidates,
-                            &sources,
-                            tolerance.linear_mm(),
-                            &cancel_worker,
-                        ) {
-                            Ok(results) if results.len() == candidates.len() => {
-                                let entries = pairs[offset..end]
-                                    .iter()
-                                    .zip(results)
-                                    .map(|((l, r, _), result)| (*l, *r, result))
-                                    .collect::<Vec<_>>();
-                                if tx.send(Ok(entries)).is_err() {
-                                    return;
-                                }
-                            }
-                            result => {
-                                let _ =
-                                    tx.send(Err(format!("exact_pair_batch_failed: {result:?}")));
-                                return;
-                            }
-                        }
-                        offset = end;
-                    }
-                    supervisor.release();
+                    send_exact_pair_batches(
+                        path.as_deref(),
+                        &pairs,
+                        &graphs,
+                        &sources,
+                        contact_tolerance_mm,
+                        &cancel_worker,
+                        &tx,
+                    );
                 });
                 loop {
                     match rx.recv_timeout(timeout.saturating_sub(started.elapsed())) {
@@ -1189,11 +1255,11 @@ fn collision_report(
                                 }
                             }
                         }
-                        Ok(Err(reason)) => {
+                        Ok(Err(failure)) => {
                             failures.push(if cancelled.load(Ordering::Acquire) {
                                 json!({"reason": "exact_collision_cancelled"})
                             } else {
-                                json!({"reason": reason})
+                                failure.evidence()
                             });
                             break;
                         }
@@ -1297,4 +1363,40 @@ fn collision_report(
         report["unavailable_occurrences"] = json!([]);
     }
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_failures_report_their_kind_and_keep_the_worker_cause() {
+        let spawn = || WorkerError::Spawn("no such file".to_owned());
+        let unavailable = ExactPairFailure::WorkerUnavailable(ExactWorkerUnavailable::Checkout {
+            cause: spawn(),
+        });
+        assert_eq!(
+            unavailable.evidence(),
+            json!({"reason": "exact_worker_unavailable", "cause": spawn().to_string()})
+        );
+        assert_eq!(
+            ExactPairFailure::WorkerUnavailable(ExactWorkerUnavailable::NotFound).evidence(),
+            json!({"reason": "exact_worker_unavailable"})
+        );
+        assert_eq!(
+            ExactPairFailure::Batch {
+                cause: WorkerError::Cancelled
+            }
+            .evidence()["reason"],
+            "exact_pair_batch_failed"
+        );
+        assert_eq!(
+            ExactPairFailure::Incomplete {
+                expected: 3,
+                received: 1
+            }
+            .evidence(),
+            json!({"reason": "exact_pair_batch_incomplete", "expected": 3, "received": 1})
+        );
+    }
 }

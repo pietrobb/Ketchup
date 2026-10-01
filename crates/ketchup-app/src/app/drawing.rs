@@ -1928,10 +1928,10 @@ impl KetchupApp {
                 .complete_mutation_with_work_recovery(move |document| {
                     proposal
                         .commit(document)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| failed("push_pull.commit", error))?;
                     rule_program
                         .map_or(Ok(()), |source| document.bind_rule_program(source))
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| failed("push_pull.bind_program", error))
                 })
                 .is_err()
         {

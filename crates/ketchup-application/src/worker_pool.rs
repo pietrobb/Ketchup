@@ -1,6 +1,7 @@
 //! Process-wide pool of verified exact workers. Reusing a worker keeps its
 //! digest-keyed native graph outputs and pair results warm across requests.
 use ketchup_scheduler::{ExactWorkerSupervisor, WorkerError};
+use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::Mutex;
@@ -16,10 +17,38 @@ pub struct PooledExactWorker {
     reusable: bool,
 }
 
+/// Why no exact worker serves a request.
+#[derive(Debug)]
+pub enum ExactWorkerUnavailable {
+    /// No worker executable was found.
+    NotFound,
+    /// Starting or reusing the worker failed; `cause` says how.
+    Checkout { cause: WorkerError },
+}
+
+impl fmt::Display for ExactWorkerUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("exact worker unavailable"),
+            Self::Checkout { cause } => write!(formatter, "exact worker unavailable: {cause}"),
+        }
+    }
+}
+
+impl std::error::Error for ExactWorkerUnavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotFound => None,
+            Self::Checkout { cause } => Some(cause),
+        }
+    }
+}
+
 pub fn checkout(
-    executable: &Path,
+    executable: Option<&Path>,
     cancelled: &AtomicBool,
-) -> Result<PooledExactWorker, WorkerError> {
+) -> Result<PooledExactWorker, ExactWorkerUnavailable> {
+    let executable = executable.ok_or(ExactWorkerUnavailable::NotFound)?;
     let canonical = executable.canonicalize().ok();
     let idle = {
         let mut idle = IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -30,7 +59,8 @@ pub fn checkout(
     // A discarded idle worker is killed by its client's Drop.
     let worker = match idle.and_then(|mut worker| worker.is_reusable().then_some(worker)) {
         Some(worker) => worker,
-        None => ExactWorkerSupervisor::spawn_with_cancellation(executable, cancelled)?,
+        None => ExactWorkerSupervisor::spawn_with_cancellation(executable, cancelled)
+            .map_err(|cause| ExactWorkerUnavailable::Checkout { cause })?,
     };
     Ok(PooledExactWorker {
         worker: Some(worker),

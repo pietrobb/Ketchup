@@ -31,7 +31,7 @@ fn quote(text: &str) -> String {
 fn session_error(error: WorkRecoveryMutationError<SessionError>) -> RuleProgramApplyError {
     RuleProgramApplyError::Session(match error {
         WorkRecoveryMutationError::Mutation(error) => error,
-        WorkRecoveryMutationError::Recovery(error) => SessionError::Persistence(error.to_string()),
+        WorkRecoveryMutationError::Recovery(error) => SessionError::Persistence(error),
     })
 }
 

@@ -862,14 +862,9 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
             Ok((requests, coverage)) => {
                 report.producers = coverage;
                 if !requests.is_empty() {
-                    let worker = executable
-                        .ok_or_else(|| "exact worker unavailable".to_owned())
-                        .and_then(|path| {
-                            crate::worker_pool::checkout(&path, &worker_cancelled)
-                                .map_err(|error| error.to_string())
-                        });
-                    match worker {
-                        Err(reason) => {
+                    match crate::worker_pool::checkout(executable.as_deref(), &worker_cancelled) {
+                        Err(unavailable) => {
+                            let reason = unavailable.to_string();
                             for (key, _) in &requests {
                                 let entry = report
                                     .producers

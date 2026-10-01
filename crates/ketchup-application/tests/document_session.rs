@@ -358,6 +358,28 @@ fn exact_publication_failure_to_finalize_recovery_rolls_back_evidence_and_allows
 }
 
 #[test]
+fn persistence_failures_keep_their_typed_cause() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.ketchup");
+    let Err(error) = DocumentSession::open(&missing, SessionSettings::default()) else {
+        panic!("a missing file must not open");
+    };
+    let SessionError::Persistence(persistence::FilePersistenceError::Io(io)) = &error else {
+        panic!("a missing file is an io failure, got {error:?}");
+    };
+    assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+    assert!(std::error::Error::source(&error).is_some());
+
+    let existing = directory.path().join("existing.ketchup");
+    let mut session = DocumentSession::default();
+    session.save(&existing, SaveOptions::default()).unwrap();
+    assert!(matches!(
+        session.save(&existing, SaveOptions::default()),
+        Err(SessionError::Persistence(_))
+    ));
+}
+
+#[test]
 fn checkpoint_failures_roll_back_apply_undo_and_redo_without_changing_history() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("transactional-checkpoint.ketchup");
@@ -386,7 +408,9 @@ fn checkpoint_failures_roll_back_apply_undo_and_redo_without_changing_history() 
     );
     assert!(matches!(
         session.apply_proposal(&proposal),
-        Err(SessionError::Persistence(_))
+        Err(SessionError::Persistence(
+            persistence::FilePersistenceError::Io(_)
+        ))
     ));
     assert_eq!(
         (
@@ -473,6 +497,13 @@ fn stale_session_save_is_rejected_but_save_as_preserves_both_versions() {
         .set_grounded(OccurrenceId(1), true)
         .err()
         .expect("stale session mutation must fail before commit");
+    assert!(
+        matches!(
+            error,
+            SessionError::Persistence(persistence::FilePersistenceError::ExternalConflict)
+        ),
+        "{error:?}"
+    );
     assert!(error.to_string().contains("changed outside this session"));
     assert_eq!(second.snapshot().canonical_digest(), stale_digest);
     assert_eq!(second.visible_undo_steps(), stale_undo);
@@ -1222,6 +1253,13 @@ fn missing_worker_empty_coverage_and_invalid_inputs_are_honest() {
         .unwrap();
     let report = session.evaluate().unwrap();
     assert!(!report.complete);
+    assert!(
+        report
+            .not_evaluated
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("exact worker unavailable: ")),
+        "{report:?}"
+    );
     assert_eq!(report.producers.len(), 1);
     assert!(matches!(
         report.producers[0].render,

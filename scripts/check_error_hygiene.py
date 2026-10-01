@@ -14,7 +14,7 @@ Two forms are counted in production source (crates/*/src, test modules and
   says cannot happen; shape the type so the case does not exist instead.
 - silent_unreachable: `unreachable!()` with no message also hides which
   assumption broke when it fires.
-- string_result: `Result<_, String>` makes every caller unable to tell one
+- string_result: `Result<_, String>` (or `Ok::<_, String>`) makes every caller unable to tell one
   failure from another.
 - stringified_cause: `map_err(|e| e.to_string())` flattens a typed error into
   text, so the caller can no longer react to its kind.
@@ -61,7 +61,8 @@ STRING = re.compile(r"""Err\(\s*"(?:[^"\\]|\\.)*"\s*\.\s*(?:to_owned|to_string|i
 UNREACHABLE = re.compile(r"\bunreachable!\s*\(")
 SILENT_UNREACHABLE = re.compile(r"\bunreachable!\s*\(\s*\)")
 # The Ok type may itself be generic up to two levels deep: Result<Vec<Option<T>>, String>.
-STRING_RESULT = re.compile(r"\bResult<(?:[^<>,]|<[^<>]*(?:<[^<>]*>[^<>]*)*>)+,\s*String\s*>")
+# A turbofish `Ok::<_, String>(...)` names the same text error type.
+STRING_RESULT = re.compile(r"\b(?:Result|(?:Ok|Err)::)<(?:[^<>,]|<[^<>]*(?:<[^<>]*>[^<>]*)*>)+,\s*String\s*>")
 STRINGIFIED_CAUSE = re.compile(
     r"map_err\(\s*(?:move\s*)?\|\s*(\w+)\s*\|\s*\1\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
