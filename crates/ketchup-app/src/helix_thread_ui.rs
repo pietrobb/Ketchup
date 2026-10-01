@@ -4,9 +4,10 @@ use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 pub use ketchup_assistant::sidecar::{
     AssistantAxisSpec as AxisSpec, AssistantHelixHandedness as HelixHandedness,
     AssistantHelixParameters as HelixToolParameters,
-    AssistantThreadParameters as ThreadToolParameters, AssistantThreadProfile as ThreadProfile,
 };
-use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
+use ketchup_assistant::sidecar::{
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantSketchEntity,
+};
 use ketchup_geometry::linalg::CubicBezier;
 #[cfg(test)]
 use ketchup_geometry::linalg::{dot, sub};
@@ -20,6 +21,48 @@ enum ConstructionKind {
     Point,
     Axis,
     Plane,
+}
+
+/// The cross-sections the thread tool offers, sized by one radius.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadProfile {
+    Round,
+    V,
+    Trapezoid,
+}
+
+impl ThreadProfile {
+    /// The closed profile drawn across the helix start, `radius` from its centre to the tip.
+    #[must_use]
+    pub fn entities(self, radius: f64) -> Vec<AssistantSketchEntity> {
+        let line_loop = |points: &[[f64; 2]]| {
+            (0..points.len())
+                .map(|index| AssistantSketchEntity::Line {
+                    id: index as u64 + 1,
+                    start_mm: points[index],
+                    end_mm: points[(index + 1) % points.len()],
+                })
+                .collect()
+        };
+        match self {
+            Self::Round => vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [0.0, 0.0],
+                radius_mm: radius,
+            }],
+            Self::V => line_loop(&[
+                [-radius, -radius * 0.72],
+                [radius, 0.0],
+                [-radius, radius * 0.72],
+            ]),
+            Self::Trapezoid => line_loop(&[
+                [-radius, -radius * 0.72],
+                [radius * 0.65, -radius * 0.42],
+                [radius * 0.65, radius * 0.42],
+                [-radius, radius * 0.72],
+            ]),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -78,12 +121,12 @@ impl HelixThreadUiState {
         })
     }
 
-    fn thread_parameters(&self) -> Option<ThreadToolParameters> {
-        Some(ThreadToolParameters {
-            helix: self.helix_parameters()?,
-            profile_radius_mm: self.profile_radius.trim().parse().ok()?,
-            profile: self.profile,
-        })
+    /// The thread's cross-section; it must stay narrower than the pitch.
+    fn thread_profile(&self) -> Option<Vec<AssistantSketchEntity>> {
+        let radius: f64 = self.profile_radius.trim().parse().ok()?;
+        let pitch: f64 = self.pitch.trim().parse().ok()?;
+        (radius.is_finite() && radius > 0.0 && radius * 2.0 < pitch)
+            .then(|| self.profile.entities(radius))
     }
 
     fn refresh(&mut self, thread: bool) {
@@ -91,11 +134,8 @@ impl HelixThreadUiState {
         self.preview_segments = parameters
             .and_then(|parameters| helix_segments(&parameters).ok())
             .unwrap_or_default();
-        self.valid = !self.preview_segments.is_empty()
-            && (!thread
-                || self
-                    .thread_parameters()
-                    .is_some_and(|parameters| parameters.profile_segments().is_ok()));
+        self.valid =
+            !self.preview_segments.is_empty() && (!thread || self.thread_profile().is_some());
     }
 }
 
@@ -292,7 +332,12 @@ impl KetchupApp {
             .collect()
     }
 
-    pub fn create_helix(&mut self, parameters: HelixToolParameters) -> bool {
+    /// Adds a helix: a path without a profile, a swept body with one.
+    pub fn create_helix(
+        &mut self,
+        parameters: HelixToolParameters,
+        profile: Vec<AssistantSketchEntity>,
+    ) -> bool {
         let Some(number) = self
             .document
             .current()
@@ -304,65 +349,42 @@ impl KetchupApp {
         else {
             return false;
         };
+        let thread = !profile.is_empty();
         let name = self.catalog.format(
-            "model-helix-definition",
+            if thread {
+                "model-thread-definition"
+            } else {
+                "model-helix-definition"
+            },
             &BTreeMap::from([("number", number.to_string())]),
         );
         let program = AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::CreateHelix { name, parameters }],
+            operations: vec![AssistantCadEditOperation::CreateHelix {
+                name,
+                parameters,
+                profile,
+            }],
         };
+        let refused = if thread { "Thread" } else { "Helix" };
         let batch = match self.plan_assistant_cad_edit_program(&program) {
             Ok(batch) => batch,
             Err(error) => {
-                self.digest = format!("Helix refused: {}", error.failed_invariant);
+                self.digest = format!("{refused} refused: {}", error.failed_invariant);
                 return false;
             }
         };
         if let Err(error) = self.apply_batch_with_work_recovery(&batch) {
-            self.digest = format!("Helix refused: {error}");
+            self.digest = format!("{refused} refused: {error}");
             return false;
         }
         self.clear_ephemeral_edit_state();
         self.active_tool = ActiveTool::Select;
         self.status_key = "status-ready";
-        self.digest = self.catalog.text("digest-helix-committed");
-        true
-    }
-
-    pub fn create_thread(&mut self, parameters: ThreadToolParameters) -> bool {
-        let Some(number) = self
-            .document
-            .current()
-            .definitions()
-            .map(|definition| definition.id().0)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-        else {
-            return false;
-        };
-        let name = self.catalog.format(
-            "model-thread-definition",
-            &BTreeMap::from([("number", number.to_string())]),
-        );
-        let program = AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::CreateThread { name, parameters }],
-        };
-        let batch = match self.plan_assistant_cad_edit_program(&program) {
-            Ok(batch) => batch,
-            Err(error) => {
-                self.digest = format!("Thread refused: {}", error.failed_invariant);
-                return false;
-            }
-        };
-        if let Err(error) = self.apply_batch_with_work_recovery(&batch) {
-            self.digest = format!("Thread refused: {error}");
-            return false;
-        }
-        self.clear_ephemeral_edit_state();
-        self.active_tool = ActiveTool::Select;
-        self.status_key = "status-ready";
-        self.digest = self.catalog.text("digest-thread-committed");
+        self.digest = self.catalog.text(if thread {
+            "digest-thread-committed"
+        } else {
+            "digest-helix-committed"
+        });
         true
     }
 
@@ -549,12 +571,15 @@ impl KetchupApp {
             self.active_tool = ActiveTool::Select;
             self.status_key = "status-ready";
         } else if create {
-            if thread {
-                if let Some(parameters) = self.helix_thread.thread_parameters() {
-                    self.create_thread(parameters);
-                }
-            } else if let Some(parameters) = self.helix_thread.helix_parameters() {
-                self.create_helix(parameters);
+            let profile = if thread {
+                self.helix_thread.thread_profile()
+            } else {
+                Some(Vec::new())
+            };
+            if let (Some(parameters), Some(profile)) =
+                (self.helix_thread.helix_parameters(), profile)
+            {
+                self.create_helix(parameters, profile);
             }
         }
     }

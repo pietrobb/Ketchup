@@ -43,24 +43,35 @@ fn program() -> AssistantCadEditProgram {
                     start_angle_degrees: 37.0,
                     handedness: AssistantHelixHandedness::Left,
                 },
+                profile: vec![AssistantSketchEntity::Circle {
+                    id: 1,
+                    center_mm: [0.0, 0.0],
+                    radius_mm: 0.5,
+                }],
             },
-            AssistantCadEditOperation::CreateThread {
+            AssistantCadEditOperation::CreateHelix {
                 name: "Python live thread".into(),
-                parameters: AssistantThreadParameters {
-                    helix: AssistantHelixParameters {
-                        axis: AssistantAxisSpec::OriginDirection {
-                            origin_mm: [28.0, 0.0, 0.0],
-                            direction: [0.35, 0.2, 1.0],
-                        },
-                        radius_mm: 8.0,
-                        pitch_mm: 6.0,
-                        turns: 2.0,
-                        start_angle_degrees: 15.0,
-                        handedness: AssistantHelixHandedness::Right,
+                parameters: AssistantHelixParameters {
+                    axis: AssistantAxisSpec::OriginDirection {
+                        origin_mm: [28.0, 0.0, 0.0],
+                        direction: [0.35, 0.2, 1.0],
                     },
-                    profile_radius_mm: 0.65,
-                    profile: AssistantThreadProfile::V,
+                    radius_mm: 8.0,
+                    pitch_mm: 6.0,
+                    turns: 2.0,
+                    start_angle_degrees: 15.0,
+                    handedness: AssistantHelixHandedness::Right,
                 },
+                profile: [[-0.65, -0.468], [0.65, 0.0], [-0.65, 0.468]]
+                    .iter()
+                    .zip([[0.65, 0.0], [-0.65, 0.468], [-0.65, -0.468]])
+                    .zip(1..)
+                    .map(|((start, end), id)| AssistantSketchEntity::Line {
+                        id,
+                        start_mm: *start,
+                        end_mm: end,
+                    })
+                    .collect(),
             },
         ],
     }

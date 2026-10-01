@@ -690,7 +690,7 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
             .features()
             .any(|feature| matches!(feature.kind(), FeatureKind::Sweep { .. }))
     );
-    wait_for_exact_bodies(&mut shell, exact_before_thread + 2);
+    wait_for_exact_bodies(&mut shell, exact_before_thread + 1);
 
     let persisted = shell.app().canonical_digest();
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
@@ -699,7 +699,7 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
     assert_eq!(shell.app().active_box_count(), 0);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), persisted);
-    wait_for_exact_bodies(&mut shell, exact_before_thread + 2);
+    wait_for_exact_bodies(&mut shell, exact_before_thread + 1);
     assert!(!shell.app().is_dirty());
 }
 

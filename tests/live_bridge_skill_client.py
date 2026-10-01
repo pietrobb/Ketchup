@@ -52,7 +52,7 @@ async def scenario():
     tools = {tool.name: tool for tool in skill.register_tools()}
     assert set(tools) == {
         "KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveModel",
-        "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
+        "KetchupLiveProgram", "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
 
     def safe(text):
         assert isinstance(text, str) and len(text.encode("utf-8")) <= 32768

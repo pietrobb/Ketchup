@@ -137,7 +137,7 @@ fn shared_axis_edge_reference_is_strict_and_requires_document_resolution() {
     assert!(axis.origin_and_direction().is_err());
 
     let program = |edge_reference_id| AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::CreateHelixPath {
+        operations: vec![AssistantCadEditOperation::CreateHelix {
             name: "Referenced edge axis".into(),
             parameters: AssistantHelixParameters {
                 axis: AssistantAxisSpec::Edge {
@@ -146,6 +146,7 @@ fn shared_axis_edge_reference_is_strict_and_requires_document_resolution() {
                 },
                 ..AssistantHelixParameters::default()
             },
+            profile: Vec::new(),
         }],
     };
     assert!(program("b".repeat(64)).validate().is_ok());

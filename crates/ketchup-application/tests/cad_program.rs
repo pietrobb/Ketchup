@@ -54,6 +54,17 @@ fn program(operations: Vec<AssistantCadEditOperation>) -> AssistantCadEditProgra
     AssistantCadEditProgram { operations }
 }
 
+/// Lines from each point to the next and from the last back to the first.
+fn line_loop(points: &[[f64; 2]]) -> Vec<AssistantSketchEntity> {
+    (0..points.len())
+        .map(|index| AssistantSketchEntity::Line {
+            id: index as u64 + 1,
+            start_mm: points[index],
+            end_mm: points[(index + 1) % points.len()],
+        })
+        .collect()
+}
+
 fn explicit(id: u64) -> AssistantCadEntitySelector {
     AssistantCadEntitySelector::Occurrences {
         occurrence_ids: vec![id],
@@ -1127,24 +1138,26 @@ fn public_helix_and_thread_program_is_serializable_atomic_and_exact() {
                 start_angle_degrees: 37.0,
                 handedness: AssistantHelixHandedness::Left,
             },
+            profile: vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [0.0, 0.0],
+                radius_mm: 0.5,
+            }],
         },
-        AssistantCadEditOperation::CreateThread {
+        AssistantCadEditOperation::CreateHelix {
             name: "Arbitrary axis thread".into(),
-            parameters: AssistantThreadParameters {
-                helix: AssistantHelixParameters {
-                    axis: AssistantAxisSpec::OriginDirection {
-                        origin_mm: [28.0, 0.0, 0.0],
-                        direction: [0.35, 0.2, 1.0],
-                    },
-                    radius_mm: 8.0,
-                    pitch_mm: 6.0,
-                    turns: 2.0,
-                    start_angle_degrees: 15.0,
-                    handedness: AssistantHelixHandedness::Right,
+            parameters: AssistantHelixParameters {
+                axis: AssistantAxisSpec::OriginDirection {
+                    origin_mm: [28.0, 0.0, 0.0],
+                    direction: [0.35, 0.2, 1.0],
                 },
-                profile_radius_mm: 0.65,
-                profile: AssistantThreadProfile::V,
+                radius_mm: 8.0,
+                pitch_mm: 6.0,
+                turns: 2.0,
+                start_angle_degrees: 15.0,
+                handedness: AssistantHelixHandedness::Right,
             },
+            profile: line_loop(&[[-0.65, -0.468], [0.65, 0.0], [-0.65, 0.468]]),
         },
     ]);
     let input: AssistantCadEditProgram =
@@ -1189,10 +1202,90 @@ fn public_helix_and_thread_program_is_serializable_atomic_and_exact() {
 }
 
 #[test]
+fn helix_sweeps_any_closed_profile_that_fits_between_its_turns() {
+    let document = DocumentStore::new();
+    let helix = |pitch_mm, profile| {
+        program(vec![AssistantCadEditOperation::CreateHelix {
+            name: "Buttress thread".into(),
+            parameters: AssistantHelixParameters {
+                pitch_mm,
+                ..AssistantHelixParameters::default()
+            },
+            profile,
+        }])
+    };
+    // A buttress tooth: a steep flank, a flat crest and a curved root.
+    let mut tooth = line_loop(&[[-1.0, -1.2], [1.0, -0.3], [1.0, 0.3], [-1.0, 0.4]]);
+    tooth[3] = AssistantSketchEntity::Arc {
+        id: 4,
+        start_mm: [-1.0, 0.4],
+        end_mm: [-1.0, -1.2],
+        center_mm: [-1.0, -0.4],
+        clockwise: false,
+    };
+    let input: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&helix(3.0, tooth.clone())).unwrap()).unwrap();
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let candidate = document.preview_batch(&batch).unwrap();
+    let FeatureKind::Profile { segments, closed } = candidate.feature(FeatureId(1)).unwrap().kind()
+    else {
+        panic!("the swept profile is the drawn one");
+    };
+    assert!(closed);
+    assert_eq!(segments.len(), 4);
+    assert!(matches!(
+        segments[3],
+        ketchup_model::document::ProfileSegment::CircularArc {
+            center_mm: [-1.0, -0.4],
+            ..
+        }
+    ));
+    assert!(matches!(
+        candidate.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::Sweep { .. }
+    ));
+    ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(3)).unwrap();
+
+    // 2.8 mm wide with its round root: the next turn would cut into it at a 2 mm pitch.
+    assert!(
+        plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &helix(2.0, tooth.clone()),
+        )
+        .is_err()
+    );
+    let open = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &helix(3.0, tooth[..3].to_vec()),
+    );
+    if let Ok(batch) = open {
+        assert!(
+            document.preview_batch(&batch).is_err(),
+            "an open chain is no profile"
+        );
+    }
+    let copies = vec![AssistantSketchEntity::ProfileCopies {
+        source_entities: tooth,
+        copies: Vec::new(),
+    }];
+    assert!(helix(3.0, copies).validate().is_err());
+}
+
+#[test]
 fn helix_path_is_a_persistent_non_solid_construction_feature() {
     let mut document = DocumentStore::new();
     let baseline = document.current();
-    let input = program(vec![AssistantCadEditOperation::CreateHelixPath {
+    let input = program(vec![AssistantCadEditOperation::CreateHelix {
         name: "Construction helix".into(),
         parameters: AssistantHelixParameters {
             axis: AssistantAxisSpec::OriginDirection {
@@ -1205,6 +1298,7 @@ fn helix_path_is_a_persistent_non_solid_construction_feature() {
             start_angle_degrees: 37.0,
             handedness: AssistantHelixHandedness::Left,
         },
+        profile: Vec::new(),
     }]);
     let input: AssistantCadEditProgram =
         serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
@@ -1271,11 +1365,12 @@ fn helix_resolves_existing_and_same_program_construction_axes() {
             origin_mm: [4.0, -3.0, 2.0],
             direction: [1.0, 2.0, 3.0],
         },
-        AssistantCadEditOperation::CreateHelixPath {
+        AssistantCadEditOperation::CreateHelix {
             name: "Referenced Helix".into(),
             parameters: parameters(AssistantAxisSpec::ConstructionAxis {
                 axis: AssistantCadFeatureReference::ProgramOutput(construction_output),
             }),
+            profile: Vec::new(),
         },
     ]);
     let same_program: AssistantCadEditProgram =
@@ -1310,11 +1405,12 @@ fn helix_resolves_existing_and_same_program_construction_axes() {
     )
     .unwrap();
     existing.apply_batch(&axis_batch).unwrap();
-    let existing_program = program(vec![AssistantCadEditOperation::CreateHelixPath {
+    let existing_program = program(vec![AssistantCadEditOperation::CreateHelix {
         name: "Existing-axis Helix".into(),
         parameters: parameters(AssistantAxisSpec::ConstructionAxis {
             axis: AssistantCadFeatureReference::Existing(1),
         }),
+        profile: Vec::new(),
     }]);
     let existing_batch = plan(
         &existing,
@@ -1346,11 +1442,12 @@ fn helix_resolves_existing_and_same_program_construction_axes() {
             name: "Not an axis".into(),
             position_mm: [0.0; 3],
         },
-        AssistantCadEditOperation::CreateHelixPath {
+        AssistantCadEditOperation::CreateHelix {
             name: "Invalid Helix".into(),
             parameters: parameters(AssistantAxisSpec::ConstructionAxis {
                 axis: AssistantCadFeatureReference::ProgramOutput(construction_output),
             }),
+            profile: Vec::new(),
         },
     ]);
     assert!(wrong_kind.validate().is_err());
@@ -1368,11 +1465,12 @@ fn helix_resolves_existing_and_same_program_construction_axes() {
     )
     .unwrap();
     wrong_existing.apply_batch(&point_batch).unwrap();
-    let invalid_existing = program(vec![AssistantCadEditOperation::CreateHelixPath {
+    let invalid_existing = program(vec![AssistantCadEditOperation::CreateHelix {
         name: "Invalid existing-axis Helix".into(),
         parameters: parameters(AssistantAxisSpec::ConstructionAxis {
             axis: AssistantCadFeatureReference::Existing(1),
         }),
+        profile: Vec::new(),
     }]);
     assert!(
         plan(

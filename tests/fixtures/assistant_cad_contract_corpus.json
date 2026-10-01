@@ -91,7 +91,7 @@
             "constraints": []
           },
           {
-            "operation": "create_helix_path",
+            "operation": "create_helix",
             "name": "Construction helix path",
             "parameters": {
               "axis": {
@@ -118,23 +118,27 @@
               "turns": 1.25,
               "start_angle_degrees": 15.0,
               "handedness": "left"
-            }
+            },
+            "profile": [
+              {"type": "circle", "id": 1, "center_mm": [0.0, 0.0], "radius_mm": 0.5}
+            ]
           },
           {
-            "operation": "create_thread",
+            "operation": "create_helix",
             "name": "Solid thread",
             "parameters": {
-              "helix": {
-                "axis": {"type": "origin_direction", "origin_mm": [72.0, 0.0, 0.0], "direction": [0.0, 0.0, 1.0]},
-                "radius_mm": 6.0,
-                "pitch_mm": 5.0,
-                "turns": 1.25,
-                "start_angle_degrees": 0.0,
-                "handedness": "right"
-              },
-              "profile_radius_mm": 0.6,
-              "profile": "v"
-            }
+              "axis": {"type": "origin_direction", "origin_mm": [72.0, 0.0, 0.0], "direction": [0.0, 0.0, 1.0]},
+              "radius_mm": 6.0,
+              "pitch_mm": 5.0,
+              "turns": 1.25,
+              "start_angle_degrees": 0.0,
+              "handedness": "right"
+            },
+            "profile": [
+              {"type": "line", "id": 1, "start_mm": [-0.6, -0.432], "end_mm": [0.6, 0.0]},
+              {"type": "line", "id": 2, "start_mm": [0.6, 0.0], "end_mm": [-0.6, 0.432]},
+              {"type": "line", "id": 3, "start_mm": [-0.6, 0.432], "end_mm": [-0.6, -0.432]}
+            ]
           }
         ]
       }

@@ -185,8 +185,7 @@ pub use assistant_runtime::{
 };
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
 pub use helix_thread_ui::{
-    AxisSpec, HelixHandedness, HelixToolParameters, ThreadProfile, ThreadToolParameters,
-    helix_segments,
+    AxisSpec, HelixHandedness, HelixToolParameters, ThreadProfile, helix_segments,
 };
 pub use native_document_inspection::{
     NativeDocumentInspection, NativeDocumentInspectionError, inspect_native_document,
@@ -468,12 +467,10 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::SetOccurrenceTag { .. }
             | AssistantCadEditOperation::SetTagVisibility { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
-            | AssistantCadEditOperation::CreateHelixPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
             | AssistantCadEditOperation::CreateConstructionAxis { .. }
             | AssistantCadEditOperation::CreateConstructionPlane { .. }
             | AssistantCadEditOperation::CreateHelix { .. }
-            | AssistantCadEditOperation::CreateThread { .. }
             | AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::AppendFeature { .. }

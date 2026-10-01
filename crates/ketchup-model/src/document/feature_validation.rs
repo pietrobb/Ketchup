@@ -1565,49 +1565,115 @@ pub(super) fn sweep_path_segment_metrics(
     }
 }
 
-pub(super) fn sweep_path_segment_bounds(segment: &ProfileSegment) -> [[f64; 2]; 2] {
-    let points = match segment {
-        ProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
-        ProfileSegment::CircularArc {
-            start_mm,
-            center_mm,
-            ..
-        } => {
-            let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
-            let end_mm = segment.end_mm();
-            let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
-            let radius = start_radius.max(end_radius);
-            return [
-                [center_mm[0] - radius, center_mm[1] - radius],
-                [center_mm[0] + radius, center_mm[1] + radius],
-            ];
+impl ProfileSegment {
+    /// The segments that trace a sketch entity from its start; a circle is two half arcs
+    /// starting at its point of least x.
+    #[must_use]
+    pub fn from_sketch_entity(entity: &SketchEntity) -> Vec<Self> {
+        match entity {
+            SketchEntity::Line {
+                start_mm, end_mm, ..
+            } => vec![Self::Line {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+            }],
+            SketchEntity::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+                ..
+            } => vec![Self::CircularArc {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+                center_mm: *center_mm,
+                clockwise: *clockwise,
+            }],
+            SketchEntity::Circle {
+                center_mm,
+                radius_mm,
+                ..
+            } => {
+                let left = [center_mm[0] - radius_mm, center_mm[1]];
+                let right = [center_mm[0] + radius_mm, center_mm[1]];
+                vec![
+                    Self::CircularArc {
+                        start_mm: left,
+                        end_mm: right,
+                        center_mm: *center_mm,
+                        clockwise: false,
+                    },
+                    Self::CircularArc {
+                        start_mm: right,
+                        end_mm: left,
+                        center_mm: *center_mm,
+                        clockwise: false,
+                    },
+                ]
+            }
+            SketchEntity::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => vec![Self::CubicBezier {
+                start_mm: *start_mm,
+                control_1_mm: *control_1_mm,
+                control_2_mm: *control_2_mm,
+                end_mm: *end_mm,
+            }],
         }
-        ProfileSegment::CubicBezier {
-            start_mm,
-            control_1_mm,
-            control_2_mm,
-            end_mm,
-        } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
-        ProfileSegment::Spline { points_mm } => points_mm.clone(),
-    };
-    [0, 1].map(|bound| {
-        [0, 1].map(|axis| {
-            points.iter().fold(
-                if bound == 0 {
-                    f64::INFINITY
-                } else {
-                    f64::NEG_INFINITY
-                },
-                |value, point| {
+    }
+
+    /// `[min, max]` around the segment: an arc counts as its whole circle and a curve as
+    /// the points that define it.
+    #[must_use]
+    pub fn bounds_mm(&self) -> [[f64; 2]; 2] {
+        let segment = self;
+        let points = match segment {
+            ProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
+            ProfileSegment::CircularArc {
+                start_mm,
+                center_mm,
+                ..
+            } => {
+                let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                let end_mm = segment.end_mm();
+                let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
+                let radius = start_radius.max(end_radius);
+                return [
+                    [center_mm[0] - radius, center_mm[1] - radius],
+                    [center_mm[0] + radius, center_mm[1] + radius],
+                ];
+            }
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
+            ProfileSegment::Spline { points_mm } => points_mm.clone(),
+        };
+        [0, 1].map(|bound| {
+            [0, 1].map(|axis| {
+                points.iter().fold(
                     if bound == 0 {
-                        value.min(point[axis])
+                        f64::INFINITY
                     } else {
-                        value.max(point[axis])
-                    }
-                },
-            )
+                        f64::NEG_INFINITY
+                    },
+                    |value, point| {
+                        if bound == 0 {
+                            value.min(point[axis])
+                        } else {
+                            value.max(point[axis])
+                        }
+                    },
+                )
+            })
         })
-    })
+    }
 }
 
 pub(super) fn sweep_path_arc_angle(segment: &ProfileSegment) -> Option<f64> {
@@ -1683,7 +1749,7 @@ pub(super) fn sweep_path_self_intersects(
     }
     let bounds = segments
         .iter()
-        .map(sweep_path_segment_bounds)
+        .map(ProfileSegment::bounds_mm)
         .collect::<Vec<_>>();
     for left in 0..bounds.len() {
         for right in left + 2..bounds.len() {
@@ -1706,40 +1772,12 @@ pub fn solved_sketch_sweep_path(
     let segments = solution
         .entities
         .iter()
-        .map(|entity| match entity {
-            SketchEntity::Line {
-                start_mm, end_mm, ..
-            } => Some(ProfileSegment::Line {
-                start_mm: *start_mm,
-                end_mm: *end_mm,
-            }),
-            SketchEntity::Arc {
-                start_mm,
-                end_mm,
-                center_mm,
-                clockwise,
-                ..
-            } => Some(ProfileSegment::CircularArc {
-                start_mm: *start_mm,
-                end_mm: *end_mm,
-                center_mm: *center_mm,
-                clockwise: *clockwise,
-            }),
-            SketchEntity::CubicBezier {
-                start_mm,
-                control_1_mm,
-                control_2_mm,
-                end_mm,
-                ..
-            } => Some(ProfileSegment::CubicBezier {
-                start_mm: *start_mm,
-                control_1_mm: *control_1_mm,
-                control_2_mm: *control_2_mm,
-                end_mm: *end_mm,
-            }),
-            SketchEntity::Circle { .. } => None,
+        .map(|entity| {
+            (!matches!(entity, SketchEntity::Circle { .. }))
+                .then(|| ProfileSegment::from_sketch_entity(entity))
         })
-        .collect::<Option<Vec<_>>>()?;
+        .collect::<Option<Vec<_>>>()?
+        .concat();
     is_valid_sweep_path(&segments, tolerance_mm).then_some(segments)
 }
 

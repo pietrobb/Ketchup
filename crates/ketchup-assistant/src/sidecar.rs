@@ -1,6 +1,6 @@
 use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::document::{
-    Dimension, ProfileSegment, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
+    Dimension, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
 };
 use ketchup_model::exact_product::EXACT_MIN_LENGTH_MM;
@@ -240,14 +240,6 @@ pub enum AssistantHelixHandedness {
     Left,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantThreadProfile {
-    Round,
-    V,
-    Trapezoid,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantHelixParameters {
@@ -257,14 +249,6 @@ pub struct AssistantHelixParameters {
     pub turns: f64,
     pub start_angle_degrees: f64,
     pub handedness: AssistantHelixHandedness,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantThreadParameters {
-    pub helix: AssistantHelixParameters,
-    pub profile_radius_mm: f64,
-    pub profile: AssistantThreadProfile,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -355,16 +339,6 @@ impl Default for AssistantHelixParameters {
             turns: 3.0,
             start_angle_degrees: 0.0,
             handedness: AssistantHelixHandedness::Right,
-        }
-    }
-}
-
-impl Default for AssistantThreadParameters {
-    fn default() -> Self {
-        Self {
-            helix: AssistantHelixParameters::default(),
-            profile_radius_mm: 0.8,
-            profile: AssistantThreadProfile::Round,
         }
     }
 }
@@ -576,59 +550,6 @@ impl AssistantHelixParameters {
             });
         }
         Ok(segments)
-    }
-}
-
-impl AssistantThreadParameters {
-    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
-        self.helix.validate()?;
-        if !self.profile_radius_mm.is_finite()
-            || self.profile_radius_mm < EXACT_MIN_LENGTH_MM
-            || self.profile_radius_mm * 2.0 >= self.helix.pitch_mm
-        {
-            return Err(AssistantRequestInvalid::invalid("thread profile"));
-        }
-        Ok(())
-    }
-
-    pub fn profile_segments(&self) -> Result<Vec<ProfileSegment>, AssistantRequestInvalid> {
-        self.validate()?;
-        let radius = self.profile_radius_mm;
-        let line_loop = |points: &[[f64; 2]]| {
-            (0..points.len())
-                .map(|index| ProfileSegment::Line {
-                    start_mm: points[index],
-                    end_mm: points[(index + 1) % points.len()],
-                })
-                .collect()
-        };
-        Ok(match self.profile {
-            AssistantThreadProfile::Round => vec![
-                ProfileSegment::CircularArc {
-                    start_mm: [-radius, 0.0],
-                    end_mm: [radius, 0.0],
-                    center_mm: [0.0, 0.0],
-                    clockwise: false,
-                },
-                ProfileSegment::CircularArc {
-                    start_mm: [radius, 0.0],
-                    end_mm: [-radius, 0.0],
-                    center_mm: [0.0, 0.0],
-                    clockwise: false,
-                },
-            ],
-            AssistantThreadProfile::V => line_loop(&[
-                [-radius, -radius * 0.72],
-                [radius, 0.0],
-                [-radius, radius * 0.72],
-            ]),
-            AssistantThreadProfile::Trapezoid => line_loop(&[
-                [-radius, -radius * 0.72],
-                [radius * 0.65, -radius * 0.42],
-                [radius * 0.65, radius * 0.42],
-                [-radius, radius * 0.72],
-            ]),
-        })
     }
 }
 
@@ -873,12 +794,10 @@ impl AssistantCadProgramFeatureReference {
                     AssistantCadEditOperation::CreatePart { .. }
                         | AssistantCadEditOperation::CreatePanel { .. }
                         | AssistantCadEditOperation::CreateSpatialPath { .. }
-                        | AssistantCadEditOperation::CreateHelixPath { .. }
                         | AssistantCadEditOperation::CreateConstructionPoint { .. }
                         | AssistantCadEditOperation::CreateConstructionAxis { .. }
                         | AssistantCadEditOperation::CreateConstructionPlane { .. }
                         | AssistantCadEditOperation::CreateHelix { .. }
-                        | AssistantCadEditOperation::CreateThread { .. }
                 )
             }
             AssistantCadProgramFeatureOutput::Occurrence => matches!(
@@ -892,19 +811,22 @@ impl AssistantCadProgramFeatureReference {
                     | AssistantCadEditOperation::CreatePanel { .. }
                     | AssistantCadEditOperation::CreateProgramSketch { .. }
             ),
-            AssistantCadProgramFeatureOutput::ConstructionFeature => matches!(
-                producer,
-                AssistantCadEditOperation::CreateSpatialPath { .. }
-                    | AssistantCadEditOperation::CreateHelixPath { .. }
-                    | AssistantCadEditOperation::CreateConstructionPoint { .. }
-                    | AssistantCadEditOperation::CreateConstructionAxis { .. }
-                    | AssistantCadEditOperation::CreateConstructionPlane { .. }
-            ),
+            AssistantCadProgramFeatureOutput::ConstructionFeature => {
+                matches!(
+                    producer,
+                    AssistantCadEditOperation::CreateSpatialPath { .. }
+                        | AssistantCadEditOperation::CreateConstructionPoint { .. }
+                        | AssistantCadEditOperation::CreateConstructionAxis { .. }
+                        | AssistantCadEditOperation::CreateConstructionPlane { .. }
+                ) || matches!(
+                    producer,
+                    AssistantCadEditOperation::CreateHelix { profile, .. } if profile.is_empty()
+                )
+            }
             AssistantCadProgramFeatureOutput::BodyFeature => match producer {
+                AssistantCadEditOperation::CreateHelix { profile, .. } => !profile.is_empty(),
                 AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::CreatePanel { .. }
-                | AssistantCadEditOperation::CreateHelix { .. }
-                | AssistantCadEditOperation::CreateThread { .. }
                 | AssistantCadEditOperation::FilletEdges { .. }
                 | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendProgramPocket { .. } => true,
@@ -1974,10 +1896,6 @@ pub enum AssistantCadEditOperation {
         name: String,
         segments: Vec<AssistantSpatialPathSegment>,
     },
-    CreateHelixPath {
-        name: String,
-        parameters: AssistantHelixParameters,
-    },
     CreateConstructionPoint {
         name: String,
         position_mm: [f64; 3],
@@ -1993,13 +1911,14 @@ pub enum AssistantCadEditOperation {
         normal: [f64; 3],
         x_direction: [f64; 3],
     },
+    /// A helix around an axis. Without a profile it is a path other features can use;
+    /// with one, that closed profile (drawn in the plane across the helix start) is swept
+    /// along it into a body: a wire, a spring, a thread of any cross-section.
     CreateHelix {
         name: String,
         parameters: AssistantHelixParameters,
-    },
-    CreateThread {
-        name: String,
-        parameters: AssistantThreadParameters,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        profile: Vec<AssistantSketchEntity>,
     },
     FilletEdges {
         definition_id: u64,
@@ -2873,26 +2792,17 @@ impl AssistantSketchConstraint {
     }
 }
 
-fn validate_assistant_sketch_payload(
-    name: &str,
-    workplane: &AssistantWorkplaneSpec,
+/// Checks each entity and that no two share an ID, within the sketch entity limit.
+fn assistant_sketch_entities_by_id(
     entities: &[AssistantSketchEntity],
-    constraints: &[AssistantSketchConstraint],
-) -> Result<(), AssistantRequestInvalid> {
+) -> Result<BTreeMap<u64, &AssistantSketchEntity>, AssistantRequestInvalid> {
     let expanded_entity_count = entities
         .iter()
         .map(|entity| entity.ids().len())
         .sum::<usize>();
-    if name.trim().is_empty()
-        || name.len() > MAX_ASSISTANT_NAME_BYTES
-        || name.chars().any(char::is_control)
-        || entities.is_empty()
-        || expanded_entity_count > ketchup_geometry::sketch::MAX_SKETCH_ENTITIES
-        || constraints.len() > ketchup_geometry::sketch::MAX_SKETCH_CONSTRAINTS
-    {
-        return Err(AssistantRequestInvalid::invalid("sketch creation"));
+    if expanded_entity_count > ketchup_geometry::sketch::MAX_SKETCH_ENTITIES {
+        return Err(AssistantRequestInvalid::invalid("sketch entity count"));
     }
-    workplane.validate()?;
     let mut entities_by_id = BTreeMap::new();
     for entity in entities {
         entity.validate()?;
@@ -2906,6 +2816,39 @@ fn validate_assistant_sketch_payload(
             }
         }
     }
+    Ok(entities_by_id)
+}
+
+/// A swept profile is sketch entities joined end to start into one closed loop; the
+/// document checks the loop itself when the profile feature is created.
+fn validate_assistant_profile_entities(
+    entities: &[AssistantSketchEntity],
+) -> Result<(), AssistantRequestInvalid> {
+    if entities
+        .iter()
+        .any(|entity| matches!(entity, AssistantSketchEntity::ProfileCopies { .. }))
+    {
+        return Err(AssistantRequestInvalid::invalid("swept profile"));
+    }
+    assistant_sketch_entities_by_id(entities).map(|_| ())
+}
+
+fn validate_assistant_sketch_payload(
+    name: &str,
+    workplane: &AssistantWorkplaneSpec,
+    entities: &[AssistantSketchEntity],
+    constraints: &[AssistantSketchConstraint],
+) -> Result<(), AssistantRequestInvalid> {
+    if name.trim().is_empty()
+        || name.len() > MAX_ASSISTANT_NAME_BYTES
+        || name.chars().any(char::is_control)
+        || entities.is_empty()
+        || constraints.len() > ketchup_geometry::sketch::MAX_SKETCH_CONSTRAINTS
+    {
+        return Err(AssistantRequestInvalid::invalid("sketch creation"));
+    }
+    workplane.validate()?;
+    let entities_by_id = assistant_sketch_entities_by_id(entities)?;
     let mut constraint_ids = BTreeSet::new();
     for constraint in constraints {
         constraint.validate()?;
@@ -2958,12 +2901,10 @@ impl AssistantCadEditProgram {
                 AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::CreateSpatialPath { .. }
-                | AssistantCadEditOperation::CreateHelixPath { .. }
                 | AssistantCadEditOperation::CreateConstructionPoint { .. }
                 | AssistantCadEditOperation::CreateConstructionAxis { .. }
                 | AssistantCadEditOperation::CreateConstructionPlane { .. }
-                | AssistantCadEditOperation::CreateHelix { .. }
-                | AssistantCadEditOperation::CreateThread { .. } => 1,
+                | AssistantCadEditOperation::CreateHelix { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
                 | AssistantCadEditOperation::SetGrounded { selector, .. }
@@ -3210,8 +3151,11 @@ impl AssistantCadEditProgram {
                     }
                     1
                 }
-                AssistantCadEditOperation::CreateHelixPath { name, parameters }
-                | AssistantCadEditOperation::CreateHelix { name, parameters } => {
+                AssistantCadEditOperation::CreateHelix {
+                    name,
+                    parameters,
+                    profile,
+                } => {
                     if name.trim().is_empty()
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
@@ -3222,20 +3166,7 @@ impl AssistantCadEditProgram {
                     parameters
                         .axis
                         .validate_reference_for_operation(operation_index, &self.operations)?;
-                    1
-                }
-                AssistantCadEditOperation::CreateThread { name, parameters } => {
-                    if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
-                        || name.chars().any(char::is_control)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("Thread creation"));
-                    }
-                    parameters.validate()?;
-                    parameters
-                        .helix
-                        .axis
-                        .validate_reference_for_operation(operation_index, &self.operations)?;
+                    validate_assistant_profile_entities(profile)?;
                     1
                 }
                 AssistantCadEditOperation::FilletEdges {

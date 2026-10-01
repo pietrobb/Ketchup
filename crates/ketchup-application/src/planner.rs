@@ -1664,7 +1664,7 @@ fn plan_assistant_construction_creation(
     ))
 }
 
-fn plan_assistant_helix_thread_creation(
+fn plan_assistant_helix_sweep_creation(
     name: &str,
     profile_segments: Vec<ProfileSegment>,
     path_segments: Vec<SpatialPathSegment>,
@@ -1813,7 +1813,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             AssistantCadEditOperation::CreatePart { .. } => "create_part",
             AssistantCadEditOperation::CreatePanel { .. } => "create_panel",
             AssistantCadEditOperation::CreateSpatialPath { .. } => "create_spatial_path",
-            AssistantCadEditOperation::CreateHelixPath { .. } => "create_helix_path",
             AssistantCadEditOperation::CreateConstructionPoint { .. } => {
                 "create_construction_point"
             }
@@ -1822,7 +1821,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 "create_construction_plane"
             }
             AssistantCadEditOperation::CreateHelix { .. } => "create_helix",
-            AssistantCadEditOperation::CreateThread { .. } => "create_thread",
             AssistantCadEditOperation::FilletEdges { .. } => "fillet_edges",
             AssistantCadEditOperation::ChamferEdges { .. } => "chamfer_edges",
             AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
@@ -1950,12 +1948,10 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
-            | AssistantCadEditOperation::CreateHelixPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
             | AssistantCadEditOperation::CreateConstructionAxis { .. }
             | AssistantCadEditOperation::CreateConstructionPlane { .. }
             | AssistantCadEditOperation::CreateHelix { .. }
-            | AssistantCadEditOperation::CreateThread { .. }
             | AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
@@ -2133,49 +2129,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 );
                 staged_planning.extend(creation_commands);
             }
-            AssistantCadEditOperation::CreateHelixPath { name, parameters } => {
-                let axis = resolve_assistant_axis_spec(
-                    &parameters.axis,
-                    &snapshot,
-                    topology_results,
-                    &staged_planning,
-                    &program.operations,
-                    operation_name,
-                )?;
-                let path_segments =
-                    parameters
-                        .spatial_path_segments_for_axis(axis)
-                        .map_err(|error| {
-                            assistant_planning_rejection(
-                                "planning.cad_helix_path_invalid",
-                                operation_name,
-                                &document_target,
-                                error.to_string(),
-                                "Use finite bounded Helix parameters and a non-zero 3D axis.",
-                            )
-                        })?;
-                let (creation_commands, definition_id, feature_id) =
-                    plan_assistant_construction_creation(
-                        name,
-                        "path",
-                        FeatureKind::SpatialPath {
-                            segments: path_segments,
-                        },
-                        &mut next_definition,
-                        &mut next_feature,
-                        &mut next_occurrence,
-                        (operation_name, &document_target),
-                    )?;
-                staged_planning.record_output(
-                    operation_index,
-                    StagedProgramOutput::Definition(definition_id),
-                );
-                staged_planning.record_output(
-                    operation_index,
-                    StagedProgramOutput::ConstructionFeature(feature_id),
-                );
-                staged_planning.extend(creation_commands);
-            }
             AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {
                 let (creation_commands, definition_id, feature_id) =
                     plan_assistant_construction_creation(
@@ -2257,7 +2210,11 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 );
                 staged_planning.extend(creation_commands);
             }
-            AssistantCadEditOperation::CreateHelix { name, parameters } => {
+            AssistantCadEditOperation::CreateHelix {
+                name,
+                parameters,
+                profile,
+            } => {
                 let axis = resolve_assistant_axis_spec(
                     &parameters.axis,
                     &snapshot,
@@ -2278,94 +2235,73 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                 "Use finite bounded Helix parameters and a non-zero 3D axis.",
                             )
                         })?;
-                let wire_radius = (parameters.radius_mm * 0.01)
-                    .min(parameters.pitch_mm * 0.2)
-                    .clamp(0.002, 0.25);
-                let profile_segments = vec![
-                    ProfileSegment::CircularArc {
-                        start_mm: [-wire_radius, 0.0],
-                        end_mm: [wire_radius, 0.0],
-                        center_mm: [0.0, 0.0],
-                        clockwise: false,
-                    },
-                    ProfileSegment::CircularArc {
-                        start_mm: [wire_radius, 0.0],
-                        end_mm: [-wire_radius, 0.0],
-                        center_mm: [0.0, 0.0],
-                        clockwise: false,
-                    },
-                ];
-                let (creation_commands, definition_id, body_feature_id) =
-                    plan_assistant_helix_thread_creation(
-                        name,
-                        profile_segments,
-                        path_segments,
-                        &mut next_definition,
-                        &mut next_feature,
-                        &mut next_occurrence,
-                        (operation_name, &document_target),
-                    )?;
-                staged_planning.record_output(
-                    operation_index,
-                    StagedProgramOutput::Definition(definition_id),
-                );
-                staged_planning.record_output(
-                    operation_index,
-                    StagedProgramOutput::BodyFeature(body_feature_id),
-                );
-                appended_exact_features.push((definition_id, body_feature_id));
-                staged_planning.extend(creation_commands);
-            }
-            AssistantCadEditOperation::CreateThread { name, parameters } => {
-                let axis = resolve_assistant_axis_spec(
-                    &parameters.helix.axis,
-                    &snapshot,
-                    topology_results,
-                    &staged_planning,
-                    &program.operations,
-                    operation_name,
-                )?;
-                let path_segments = parameters
-                    .helix
-                    .spatial_path_segments_for_axis(axis)
-                    .map_err(|error| {
-                        assistant_planning_rejection(
-                            "planning.cad_thread_invalid",
+                if profile.is_empty() {
+                    let (creation_commands, definition_id, feature_id) =
+                        plan_assistant_construction_creation(
+                            name,
+                            "path",
+                            FeatureKind::SpatialPath {
+                                segments: path_segments,
+                            },
+                            &mut next_definition,
+                            &mut next_feature,
+                            &mut next_occurrence,
+                            (operation_name, &document_target),
+                        )?;
+                    staged_planning.record_output(
+                        operation_index,
+                        StagedProgramOutput::Definition(definition_id),
+                    );
+                    staged_planning.record_output(
+                        operation_index,
+                        StagedProgramOutput::ConstructionFeature(feature_id),
+                    );
+                    staged_planning.extend(creation_commands);
+                } else {
+                    let profile_segments = crate::sketch::assistant_profile_segments(profile);
+                    // Neighbouring turns are one pitch apart, so a wider profile would run
+                    // into the next turn.
+                    let [minimum, maximum] =
+                        profile_segments.iter().map(ProfileSegment::bounds_mm).fold(
+                            [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
+                            |[minimum, maximum], [low, high]| {
+                                [
+                                    [minimum[0].min(low[0]), minimum[1].min(low[1])],
+                                    [maximum[0].max(high[0]), maximum[1].max(high[1])],
+                                ]
+                            },
+                        );
+                    if (maximum[0] - minimum[0]).max(maximum[1] - minimum[1]) >= parameters.pitch_mm
+                    {
+                        return Err(assistant_planning_rejection(
+                            "planning.cad_helix_invalid",
                             operation_name,
                             &document_target,
-                            error.to_string(),
-                            "Use finite bounded Thread parameters and a non-zero 3D axis.",
-                        )
-                    })?;
-                let profile_segments = parameters.profile_segments().map_err(|error| {
-                    assistant_planning_rejection(
-                        "planning.cad_thread_invalid",
-                        operation_name,
-                        &document_target,
-                        error.to_string(),
-                        "Use a positive profile radius smaller than half the pitch.",
-                    )
-                })?;
-                let (creation_commands, definition_id, body_feature_id) =
-                    plan_assistant_helix_thread_creation(
-                        name,
-                        profile_segments,
-                        path_segments,
-                        &mut next_definition,
-                        &mut next_feature,
-                        &mut next_occurrence,
-                        (operation_name, &document_target),
-                    )?;
-                staged_planning.record_output(
-                    operation_index,
-                    StagedProgramOutput::Definition(definition_id),
-                );
-                staged_planning.record_output(
-                    operation_index,
-                    StagedProgramOutput::BodyFeature(body_feature_id),
-                );
-                appended_exact_features.push((definition_id, body_feature_id));
-                staged_planning.extend(creation_commands);
+                            "the swept profile is not narrower than the pitch".to_owned(),
+                            "Use a profile whose width and height are both smaller than the pitch.",
+                        ));
+                    }
+                    let (creation_commands, definition_id, body_feature_id) =
+                        plan_assistant_helix_sweep_creation(
+                            name,
+                            profile_segments,
+                            path_segments,
+                            &mut next_definition,
+                            &mut next_feature,
+                            &mut next_occurrence,
+                            (operation_name, &document_target),
+                        )?;
+                    staged_planning.record_output(
+                        operation_index,
+                        StagedProgramOutput::Definition(definition_id),
+                    );
+                    staged_planning.record_output(
+                        operation_index,
+                        StagedProgramOutput::BodyFeature(body_feature_id),
+                    );
+                    appended_exact_features.push((definition_id, body_feature_id));
+                    staged_planning.extend(creation_commands);
+                }
             }
             AssistantCadEditOperation::CreateProgramSketch {
                 definition,

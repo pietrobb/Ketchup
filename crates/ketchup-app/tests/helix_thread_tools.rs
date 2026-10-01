@@ -150,6 +150,12 @@ fn manual_helix_and_thread_tools_use_selected_geometry_form_preview_undo_and_sav
         .last()
         .unwrap();
     assert_eq!(path.len(), 9);
+    // A helix without a profile is a path, not a body.
+    assert!(
+        !snapshot
+            .features()
+            .any(|feature| matches!(feature.kind(), FeatureKind::Sweep { .. }))
+    );
 
     assert!(shell.app_mut().undo());
     assert!(shell.app_mut().redo());
@@ -173,7 +179,7 @@ fn manual_helix_and_thread_tools_use_selected_geometry_form_preview_undo_and_sav
             .features()
             .any(|feature| matches!(feature.kind(), FeatureKind::Sweep { .. }))
     );
-    wait_for_exact_bodies(&mut shell, 3);
+    wait_for_exact_bodies(&mut shell, 2);
 
     let persisted_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
@@ -181,5 +187,5 @@ fn manual_helix_and_thread_tools_use_selected_geometry_form_preview_undo_and_sav
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
-    wait_for_exact_bodies(&mut shell, 3);
+    wait_for_exact_bodies(&mut shell, 2);
 }

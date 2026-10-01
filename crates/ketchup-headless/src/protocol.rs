@@ -1993,7 +1993,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 42);
+        assert_eq!(variants.len(), 40);
         for operation in [
             "move_physical_pin_pair",
             "append_feature",
@@ -2007,12 +2007,10 @@ mod tests {
             "create_program_sketch",
             "append_program_pocket",
             "create_spatial_path",
-            "create_helix_path",
             "create_construction_point",
             "create_construction_axis",
             "create_construction_plane",
             "create_helix",
-            "create_thread",
             "fillet_edges",
             "chamfer_edges",
             "upsert_cam_plan",

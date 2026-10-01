@@ -72,7 +72,7 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly four fields: message (a concise user-facing string), "
     "model_intent (null for discussion or typed actions), cad_edit_program (null unless proposing typed CAD operations), and fea_review (null unless preparing a confirmed static FEA review). "
-    "Return at most one non-null action field. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, spatial paths, helix paths, solid helixes, threads, direct edge fillets/chamfers, append_feature, append_program_pocket, set_dimension, set_feature_parameter, make_occurrence_unique, create_assembly_joint, set_assembly_joint_position, create_drawing, upsert_cam_plan, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
+    "Return at most one non-null action field. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, spatial paths, helixes swept with any profile, direct edge fillets/chamfers, append_feature, append_program_pocket, set_dimension, set_feature_parameter, make_occurrence_unique, create_assembly_joint, set_assembly_joint_position, create_drawing, upsert_cam_plan, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
     "Use fea_review only when the user asks to set up or run static FEA and only with host-published current exact face ordinals. It has definition_id, feature_id, occurrence_id, case_id, youngs_modulus_mpa, poisson_ratio, yield_strength_mpa, constrained_face_ordinals, loaded_face_ordinal, traction_local_n_per_mm2 [x,y,z], coarse_deflection_mm, and fine_deflection_mm. The host opens an editable review dialog and still requires the user to click explicit confirmation before meshing or solving. Never invent face ordinals or claim a solve before the host returns review evidence. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection, optional instance_path: the exact {root_occurrence_id, steps: [{owner_definition_id, kind: group|occurrence, local_id}]} copied from current instance inspection; instance_path is required when that definition has multiple visible instances}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
@@ -82,7 +82,7 @@ SYSTEM_PROMPT = (
     "Entities are typed line/arc/circle/cubic_bezier records with positive stable IDs and 2D millimetre coordinates; ellipse uses four positive unique segment_ids, center_mm, positive radius_x_mm/radius_y_mm, rotation_degrees, and a required positive maximum_deviation_mm that must cover its bounded cubic approximation error. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center/control1/control2}. "
     "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. set_feature_parameter targets an existing feature_id with a host-advertised parameter_path, value_type length|angle|scalar, and finite value; copy the path and type exactly from current feature parameters. make_occurrence_unique takes an existing root occurrence_id and safely isolates only a shared part while preserving its existing holes and joints; use it before drilling a shared side in the same program. "
     "upsert_cam_plan commits one exact-target-bound setup with positive plan/definition/feature/tool IDs, bounded stock minimum/maximum, tool_kind flat_end_mill|ball_end_mill|drill, tool and holder dimensions, spindle/feed/plunge, work_offset g54..g59, origin/x_axis/y_axis, safe_height, stepdown/stepover and allowances; use only a current solid feature and do not claim simulation or export until the host returns exact review evidence. upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
-    "create_construction_point uses name and position_mm; create_construction_axis uses name, origin_mm and non-zero direction; create_construction_plane uses name, origin_mm, non-zero perpendicular normal and x_direction. create_spatial_path uses a name and 1 to 64 continuously joined, tangent-compatible line, circular_arc, or cubic_bezier segments with bounded 3D millimetre points. create_helix_path and create_helix use name plus parameters {axis, radius_mm, pitch_mm, turns, start_angle_degrees, handedness: right|left}; create_thread wraps those helix parameters plus profile_radius_mm and profile round|v|trapezoid. fillet_edges and chamfer_edges use definition_id, name, target_feature_id, 1 to 64 unique opaque edge_reference_ids, and radius_mm or distance_mm from 0.01 to 100000; copy references exactly from current topology inspection. A same-program helix axis may be the typed construction_feature output of an earlier create_construction_axis. "
+    "create_construction_point uses name and position_mm; create_construction_axis uses name, origin_mm and non-zero direction; create_construction_plane uses name, origin_mm, non-zero perpendicular normal and x_direction. create_spatial_path uses a name and 1 to 64 continuously joined, tangent-compatible line, circular_arc, or cubic_bezier segments with bounded 3D millimetre points. create_helix uses name plus parameters {axis, radius_mm, pitch_mm, turns, start_angle_degrees, handedness: right|left} and an optional profile: sketch entities joined end to start into one closed loop, drawn in the plane across the helix start and narrower than the pitch. Without a profile the helix is a construction path; with one the profile is swept along it into a body (a wire, a spring, a thread of any cross-section). fillet_edges and chamfer_edges use definition_id, name, target_feature_id, 1 to 64 unique opaque edge_reference_ids, and radius_mm or distance_mm from 0.01 to 100000; copy references exactly from current topology inspection. A same-program helix axis may be the typed construction_feature output of an earlier create_construction_axis. "
     "create_assembly_joint uses parent_instance_path, child_instance_path, and kind fixed, revolute, prismatic, or helical; moving kinds use axis {direction_in_parent, pivot_in_parent_mm}, optional limits {min,max}, and their typed position field. Paths must be copied exactly from current instance inspection. set_assembly_joint_position has joint_id and position and must be the only operation in its program so the host can publish one authoritative solve. create_drawing has a non-empty name and 1 to 100 unique current instance_paths and performs exact rigid-source preflight before proposal. "
     "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. set_color has color as null or exactly three integer RGB channels from 0 to 255. set_grounded has grounded true or false and marks the selected root occurrences as standing on the ground for gravity support. circular_pattern additionally has instances from 2 to 1000, angle_step_degrees, and the same axis contract as Revolve; each generated angle must remain distinct from the source modulo 360 degrees. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
@@ -627,29 +627,26 @@ def _valid_cad_program_output_reference(
         return producer_type in {
             "create_part",
             "create_spatial_path",
-            "create_helix_path",
             "create_construction_point",
             "create_construction_axis",
             "create_construction_plane",
             "create_helix",
-            "create_thread",
         }
     if output == "sketch_feature":
         return producer_type in {"create_part", "create_program_sketch"}
     if output == "construction_feature":
         return producer_type in {
             "create_spatial_path",
-            "create_helix_path",
             "create_construction_point",
             "create_construction_axis",
             "create_construction_plane",
-        }
+        } or (producer_type == "create_helix" and not producer.get("profile"))
     return output == "body_feature" and (
-        producer_type
+        producer_type == "create_helix"
+        and bool(producer.get("profile"))
+        or producer_type
         in {
             "create_part",
-            "create_helix",
-            "create_thread",
             "fillet_edges",
             "chamfer_edges",
             "append_program_pocket",
@@ -1258,36 +1255,20 @@ def _validate_cad_edit_program(program: object) -> dict:
             ):
                 raise ProtocolError("provider CAD construction plane is invalid")
             target_count = generated_per_target = 1
-        elif operation_type in {"create_helix_path", "create_helix"}:
-            if set(operation) != {"operation", "name", "parameters"} or not _valid_cad_name(
-                operation.get("name")
-            ) or not _valid_helix_parameters(
-                operation.get("parameters"), operation_index, operations
+        elif operation_type == "create_helix":
+            profile = operation.get("profile", [])
+            if (
+                not {"operation", "name", "parameters"}
+                <= set(operation)
+                <= {"operation", "name", "parameters", "profile"}
+                or not _valid_cad_name(operation.get("name"))
+                or not _valid_helix_parameters(
+                    operation.get("parameters"), operation_index, operations
+                )
+                or not isinstance(profile, list)
+                or len(profile) > 4_096
             ):
                 raise ProtocolError("provider CAD Helix is invalid")
-            target_count = generated_per_target = 1
-        elif operation_type == "create_thread":
-            parameters = operation.get("parameters")
-            if (
-                set(operation) != {"operation", "name", "parameters"}
-                or not _valid_cad_name(operation.get("name"))
-                or not isinstance(parameters, dict)
-                or set(parameters) != {"helix", "profile_radius_mm", "profile"}
-                or not _valid_helix_parameters(
-                    parameters.get("helix"), operation_index, operations
-                )
-            ):
-                raise ProtocolError("provider CAD Thread is invalid")
-            profile_radius = parameters["profile_radius_mm"]
-            if (
-                not isinstance(profile_radius, (int, float))
-                or isinstance(profile_radius, bool)
-                or not math.isfinite(profile_radius)
-                or profile_radius < 0.01
-                or profile_radius * 2 >= parameters["helix"]["pitch_mm"]
-                or parameters["profile"] not in {"round", "v", "trapezoid"}
-            ):
-                raise ProtocolError("provider CAD Thread is invalid")
             target_count = generated_per_target = 1
         elif operation_type == "append_program_pocket":
             if set(operation) != {
@@ -2021,9 +2002,7 @@ def _validate_cad_edit_program(program: object) -> dict:
             "create_construction_point",
             "create_construction_axis",
             "create_construction_plane",
-            "create_helix_path",
             "create_helix",
-            "create_thread",
             "append_feature",
             "append_program_pocket",
             "fillet_edges",

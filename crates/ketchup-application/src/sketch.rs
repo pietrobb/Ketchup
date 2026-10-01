@@ -6,7 +6,7 @@ use ketchup_geometry::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
     SketchEntityId, SketchPointKind, SketchPointRef,
 };
-use ketchup_model::document::{CanonicalError, Dimension};
+use ketchup_model::document::{CanonicalError, Dimension, ProfileSegment};
 
 pub(crate) fn assistant_principal_plane(plane: AssistantPrincipalPlane) -> PrincipalPlane {
     match plane {
@@ -91,6 +91,17 @@ fn transformed_profile_entity(
             end_mm: point(end_mm),
         },
     }
+}
+
+/// The closed profile the entities trace, each one continuing where the previous ends.
+pub(crate) fn assistant_profile_segments(
+    entities: &[AssistantSketchEntity],
+) -> Vec<ProfileSegment> {
+    entities
+        .iter()
+        .flat_map(assistant_sketch_entities)
+        .flat_map(|entity| ProfileSegment::from_sketch_entity(&entity))
+        .collect()
 }
 
 pub(crate) fn assistant_sketch_entities(entity: &AssistantSketchEntity) -> Vec<SketchEntity> {

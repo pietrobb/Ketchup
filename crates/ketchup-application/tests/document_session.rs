@@ -690,7 +690,7 @@ fn real_worker_line_edge_resolves_the_same_shared_axis_as_direct_geometry() {
         }],
     };
     let helix_program = |axis| AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::CreateHelixPath {
+        operations: vec![AssistantCadEditOperation::CreateHelix {
             name: "Edge-axis helix".into(),
             parameters: AssistantHelixParameters {
                 axis,
@@ -700,6 +700,7 @@ fn real_worker_line_edge_resolves_the_same_shared_axis_as_direct_geometry() {
                 start_angle_degrees: 20.0,
                 handedness: AssistantHelixHandedness::Right,
             },
+            profile: Vec::new(),
         }],
     };
 

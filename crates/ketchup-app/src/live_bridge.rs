@@ -1251,12 +1251,10 @@ impl LiveBridge {
                 | AssistantCadEditOperation::SetOccurrenceTag { .. }
                 | AssistantCadEditOperation::SetTagVisibility { .. }
                 | AssistantCadEditOperation::CreateSpatialPath { .. }
-                | AssistantCadEditOperation::CreateHelixPath { .. }
                 | AssistantCadEditOperation::CreateConstructionPoint { .. }
                 | AssistantCadEditOperation::CreateConstructionAxis { .. }
                 | AssistantCadEditOperation::CreateConstructionPlane { .. }
                 | AssistantCadEditOperation::CreateHelix { .. }
-                | AssistantCadEditOperation::CreateThread { .. }
                 | AssistantCadEditOperation::FilletEdges { .. }
                 | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }

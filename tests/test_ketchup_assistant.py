@@ -581,10 +581,7 @@ def test_cross_language_cad_contract_corpus_passes_public_parser_fail_closed():
         ),
     )
     invalid("create_helix", lambda operation: operation["parameters"].update(turns=17))
-    invalid(
-        "create_thread",
-        lambda operation: operation["parameters"].update(profile_radius_mm=2.5),
-    )
+    invalid("create_helix", lambda operation: operation.update(profile="v"))
     invalid(
         "create_construction_plane",
         lambda operation: operation.update(x_direction=[0, 0, 1]),
@@ -598,8 +595,8 @@ def test_cross_language_cad_contract_corpus_passes_public_parser_fail_closed():
         "exact right-handed unit frame",
         "typed sketch_feature output",
         "create_construction_plane",
-        "create_helix_path",
-        "create_thread",
+        "create_helix",
+        "narrower than the pitch",
         "set_color",
         "maximum_deviation_mm",
     ):
