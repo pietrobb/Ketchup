@@ -39,6 +39,8 @@ fn gui_and_application_plan_identical_creation_and_selected_transforms() {
     let programs = [
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
+                holes: Vec::new(),
+                pockets: Vec::new(),
                 name: "Scripted cylinder".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xy,

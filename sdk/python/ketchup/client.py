@@ -419,11 +419,16 @@ class Document:
                 self._session._state.update(receipt["after"])
             return result
     def create_part(self, name, entities, *, feature, constraints=(), plane="xy",
-                    translation_mm=(0, 0, 0), rotation=None):
+                    holes=(), pockets=(), translation_mm=(0, 0, 0), rotation=None):
+        """Create one part; holes and pockets are drilled into its bounding faces in the same Undo step."""
         operation = {"operation": "create_part", "name": name,
                      "workplane": {"type": "principal", "plane": plane},
                      "entities": list(entities), "constraints": list(constraints),
                      "feature": feature, "translation_mm": list(translation_mm)}
+        if holes:
+            operation["holes"] = [dict(hole) for hole in holes]
+        if pockets:
+            operation["pockets"] = [dict(pocket) for pocket in pockets]
         if rotation is not None:
             operation["rotation"] = rotation
         return self.apply([operation])
@@ -434,16 +439,6 @@ class Document:
     def box(self, name, width_mm, depth_mm, height_mm, **kwargs):
         """Rectangle sketch + universal extrusion, not a special box primitive."""
         return self.extrude(name, rectangle(width_mm, depth_mm), height_mm, **kwargs)
-
-    def panel(self, name, dimensions_mm, holes=(), *, translation_mm=(0, 0, 0), rotation=None):
-        """Create one rectangular panel and all named physical holes in one Undo step."""
-        operation = {"operation": "create_panel", "name": name,
-                     "dimensions_mm": list(dimensions_mm),
-                     "holes": [dict(hole) for hole in holes],
-                     "translation_mm": list(translation_mm)}
-        if rotation is not None:
-            operation["rotation"] = rotation
-        return self.apply([operation])
 
     def pin_joint(self, name, first, second, first_center_local_mm,
                     row_unit_first_local, count, spacing_mm, *, pin,

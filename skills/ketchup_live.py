@@ -453,7 +453,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
 
         Args:
             action: status, summary, operations, query, detail, workset_create, or workset_status. Allowed in plan mode. operations lists every CAD program operation with its fields straight from Kečup; add operation=<name> for one operation plus all types it references. Use it instead of reading source code.
-            operation: Operation name for action=operations (e.g. create_panel); empty lists all.
+            operation: Operation name for action=operations (e.g. create_part); empty lists all.
             handle: Live session UUID.
             expected: Ignored for reads; accepted for symmetry.
             kind: occurrences, instances, definitions, features, relations, faces, or edges. Topology rows include stable reference IDs and exact geometry.
@@ -542,9 +542,13 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         the parts involved); fix them with a follow-up edit. strict=true rejects instead.
         Full catalog: KetchupLiveInspect action=operations [operation=<name>]. Verified examples:
         program = {"operations":[OP, ...]}; lengths mm; ids come from query/status/diff.targets.
-        create_panel: {"operation":"create_panel","name":"Lem predny","dimensions_mm":[500,18,350],
-          "holes":[],"translation_mm":[0,0,450]}  (box 0..dims in local axes; rotation? {pivot_mm,axis,angle_degrees})
-          create_panel [a,b,c] = sketch a x b (feature id+1: bounds.width=a, bounds.height=b) + pad c (id+2: extent.distance=c).
+        create_part: {"operation":"create_part","name":"Lem predny","workplane":{"type":"principal","plane":"xy"},
+          "entities":[LINE(1,[0,0],[500,0]),LINE(2,[500,0],[500,18]),LINE(3,[500,18],[0,18]),LINE(4,[0,18],[0,0])],
+          "constraints":[],"feature":{"type":"extrusion","distance_mm":350},"translation_mm":[0,0,450]}
+          LINE(i,a,b)={"type":"line","id":i,"start_mm":a,"end_mm":b}; rotation? {pivot_mm,axis,angle_degrees};
+          a w x d rectangle = sketch (feature id+1: bounds.width=w, bounds.height=d) + pad (id+2: extent.distance).
+          holes? [{"id","entry_local_mm","inward_unit_local","diameter_mm","depth_mm"}] and pockets?
+          [{"id","min_local_mm","max_local_mm","inward_unit_local"}] start on a bounding face of the body (local mm).
         set_feature_parameter (resize): {"operation":"set_feature_parameter","feature_id":2,
           "parameter_path":"bounds.height","value_type":"length","value":15}  (paths/ids: edit_context targets=[{root_occurrence_id,steps:[]}])
         transform: {"operation":"transform","selector":{"type":"occurrences","occurrence_ids":[54]},"translation_mm":[0,0,10]}

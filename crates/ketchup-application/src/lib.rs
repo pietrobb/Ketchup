@@ -28,7 +28,7 @@ pub mod workflow_trace;
 pub use ketchup_program::SourceLines;
 pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
-    plan_assistant_cad_edit_program_with_outputs, plan_panel_batch, plan_rule_part_batch,
+    plan_assistant_cad_edit_program_with_outputs, plan_part_batch, plan_rule_part_batch,
 };
 pub use rule_exact_collisions::{apply_exact_pairs, verify_rule_program_exact};
 pub use rule_program::{

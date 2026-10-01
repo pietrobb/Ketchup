@@ -1240,7 +1240,6 @@ impl LiveBridge {
                 | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
-                | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::CreatePinJoint { .. }
                 | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
                 | AssistantCadEditOperation::MovePhysicalPinPair { .. }

@@ -489,19 +489,20 @@ fn named_profile_segments_are_preserved_and_must_be_unique() {
 }
 
 #[test]
-fn panel_operations_carry_holes_and_pockets_in_panel_coordinates() {
+fn part_operations_carry_holes_and_pockets_in_part_coordinates() {
     let model = eval(CABINET);
     let operations = ketchup_program::cad::part_operations(&model);
     assert_eq!(operations.len(), 7);
-    let ketchup_assistant::sidecar::AssistantCadEditOperation::CreatePanel {
+    let ketchup_assistant::sidecar::AssistantCadEditOperation::CreatePart {
         name,
+        feature: ketchup_assistant::sidecar::AssistantCadPartFeature::Extrusion { .. },
         holes,
         pockets,
         translation_mm,
         ..
     } = &operations[1]
     else {
-        panic!("expected create_panel");
+        panic!("expected an extruded create_part");
     };
     assert_eq!(name, "carcass/right");
     assert_eq!(*translation_mm, [582.0, 0.0, 0.0]);

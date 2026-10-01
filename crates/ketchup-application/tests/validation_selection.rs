@@ -612,13 +612,15 @@ fn all_ungrounded_parts_apart_from_the_base_are_reported_individually() {
 
 fn physical_pin_document(count: u32, duplicate_joint: bool) -> DocumentStore {
     let mut document = DocumentStore::new();
-    let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
-        name: name.into(),
-        dimensions_mm: [100.0, 50.0, 18.0],
-        holes: Vec::new(),
-        pockets: Vec::new(),
-        translation_mm,
-        rotation: None,
+    let panel = |name: &str, translation_mm| {
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
+            Vec::new(),
+            Vec::new(),
+            translation_mm,
+            None,
+        )
     };
     let panels = plan_assistant_cad_edit_program(
         &document,
@@ -1714,4 +1716,42 @@ fn canonical_catalog_selections_remain_valid() {
     assert!(AssistantValidationSelection::only(&["gravity_support"]).is_valid());
     assert!(!AssistantValidationSelection::only(&[]).is_valid());
     assert!(!AssistantValidationSelection::only(&["bogus"]).is_valid());
+}
+
+/// A `create_part` cuboid: a `[width, depth]` rectangle on XY extruded by the
+/// third dimension, with the holes and pockets drilled into it.
+fn cuboid_part(
+    name: String,
+    [width, depth, height]: [f64; 3],
+    holes: Vec<ketchup_assistant::sidecar::AssistantPartHole>,
+    pockets: Vec<ketchup_assistant::sidecar::AssistantPartPocket>,
+    translation_mm: [f64; 3],
+    rotation: Option<ketchup_assistant::sidecar::AssistantCadRotation>,
+) -> AssistantCadEditOperation {
+    use ketchup_assistant::sidecar::{
+        AssistantCadPartFeature, AssistantPrincipalPlane, AssistantSketchEntity,
+        AssistantWorkplaneSpec,
+    };
+    let corners = [[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]];
+    AssistantCadEditOperation::CreatePart {
+        name,
+        workplane: AssistantWorkplaneSpec::Principal {
+            plane: AssistantPrincipalPlane::Xy,
+        },
+        entities: (0..4)
+            .map(|index| AssistantSketchEntity::Line {
+                id: index as u64 + 1,
+                start_mm: corners[index],
+                end_mm: corners[(index + 1) % 4],
+            })
+            .collect(),
+        constraints: Vec::new(),
+        feature: AssistantCadPartFeature::Extrusion {
+            distance_mm: height,
+        },
+        holes,
+        pockets,
+        translation_mm,
+        rotation,
+    }
 }

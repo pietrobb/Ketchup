@@ -26,6 +26,8 @@ fn program() -> AssistantCadEditProgram {
 fn program_at(name: &str, translation_mm: [f64; 3]) -> AssistantCadEditProgram {
     AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: name.into(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,

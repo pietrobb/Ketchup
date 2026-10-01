@@ -22,12 +22,20 @@ fn output(operation_index: u32, output: &str) -> Value {
     json!({"operation_index": operation_index, "output": output})
 }
 
-fn panel() -> Value {
+fn part() -> Value {
+    let line = |id: u64, start: [f64; 2], end: [f64; 2]| json!({"type": "line", "id": id, "start_mm": start, "end_mm": end});
     json!({
-        "operation": "create_panel",
-        "name": "Panel",
-        "dimensions_mm": [100.0, 50.0, 18.0],
-        "holes": [],
+        "operation": "create_part",
+        "name": "Part",
+        "workplane": {"type": "principal", "plane": "xy"},
+        "entities": [
+            line(1, [0.0, 0.0], [100.0, 0.0]),
+            line(2, [100.0, 0.0], [100.0, 50.0]),
+            line(3, [100.0, 50.0], [0.0, 50.0]),
+            line(4, [0.0, 50.0], [0.0, 0.0])
+        ],
+        "constraints": [],
+        "feature": {"type": "extrusion", "distance_mm": 18.0},
         "translation_mm": [0.0, 0.0, 0.0]
     })
 }
@@ -69,8 +77,8 @@ fn one_pin_joint_covers_logical_existing_and_drilled_holes_for_paths_and_outputs
         "second_pocket_feature_id": output(1, "body_feature")
     }]});
     assert!(validate(vec![
-        panel(),
-        panel(),
+        part(),
+        part(),
         joint(
             output(0, "occurrence"),
             output(1, "occurrence"),
@@ -80,7 +88,7 @@ fn one_pin_joint_covers_logical_existing_and_drilled_holes_for_paths_and_outputs
     ]));
 
     let parsed: AssistantCadEditProgram = serde_json::from_value(json!({"operations": [
-        panel(), joint(output(0, "occurrence"), path(2), 1, logical.clone())
+        part(), joint(output(0, "occurrence"), path(2), 1, logical.clone())
     ]}))
     .unwrap();
     let AssistantCadEditOperation::CreatePinJoint { first, second, .. } = &parsed.operations[1]
@@ -133,10 +141,10 @@ fn pin_joint_rejects_mismatched_pairs_forward_outputs_and_replacing_undrilled_jo
             1,
             json!({"type": "logical"})
         ),
-        panel(),
+        part(),
     ]));
     assert!(!validate(vec![
-        panel(),
+        part(),
         joint(
             output(0, "body_feature"),
             path(2),
@@ -163,5 +171,38 @@ fn pin_joint_rejects_mismatched_pairs_forward_outputs_and_replacing_undrilled_jo
         let mut operation = joint(path(1), path(2), 1, json!({"type": "drill"}));
         operation["operation"] = json!(retired);
         assert!(!validate(vec![operation]));
+    }
+}
+
+#[test]
+fn create_part_holes_and_pockets_need_unique_ids_unit_axes_and_positive_sizes() {
+    let with_cuts = |holes: Value, pockets: Value| {
+        let mut operation = part();
+        operation["holes"] = holes;
+        operation["pockets"] = pockets;
+        operation
+    };
+    let hole = |id: &str, inward: [f64; 3], diameter: f64| {
+        json!({"id": id, "entry_local_mm": [20.0, 20.0, 0.0], "inward_unit_local": inward,
+               "diameter_mm": diameter, "depth_mm": 10.0})
+    };
+    let pocket = |id: &str, max_z: f64| {
+        json!({"id": id, "min_local_mm": [0.0, 0.0, 0.0], "max_local_mm": [20.0, 10.0, max_z],
+               "inward_unit_local": [0.0, 0.0, 1.0]})
+    };
+    let up = [0.0, 0.0, 1.0];
+    assert!(validate(vec![with_cuts(
+        json!([hole("a", up, 8.0), hole("b", up, 8.0)]),
+        json!([pocket("a", 5.0)])
+    )]));
+    for (holes, pockets) in [
+        (json!([hole("a", up, 8.0), hole("a", up, 8.0)]), json!([])),
+        (json!([hole("a", [0.0, 0.6, 0.8], 8.0)]), json!([])),
+        (json!([hole("a", up, 0.0)]), json!([])),
+        (json!([hole(" ", up, 8.0)]), json!([])),
+        (json!([]), json!([pocket("a", 5.0), pocket("a", 5.0)])),
+        (json!([]), json!([pocket("a", 0.0)])),
+    ] {
+        assert!(!validate(vec![with_cuts(holes, pockets)]));
     }
 }

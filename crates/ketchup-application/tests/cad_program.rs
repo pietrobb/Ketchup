@@ -30,6 +30,8 @@ use std::sync::Arc;
 
 fn part() -> AssistantCadEditOperation {
     AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: "Editable part".into(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -599,6 +601,8 @@ fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
 fn public_cubic_bezier_profile_plans_as_an_exact_editable_part() {
     let document = DocumentStore::new();
     let input = program(vec![AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: "Bezier enclosure".into(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -651,6 +655,8 @@ fn public_large_ellipse_has_a_visible_bounded_deviation_and_reopens_exactly() {
     let baseline_digest = document.current().canonical_digest();
     let ellipse = |radius_x_mm, radius_y_mm, maximum_deviation_mm| {
         program(vec![AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: "Bounded ellipse".into(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -755,6 +761,8 @@ fn public_large_ellipse_has_a_visible_bounded_deviation_and_reopens_exactly() {
 fn public_rotated_rounded_rectangle_plans_as_an_exact_editable_profile() {
     let document = DocumentStore::new();
     let input = program(vec![AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: "Rotated rounded rectangle".into(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -869,6 +877,8 @@ fn public_profile_copies_expand_to_transformed_editable_closed_profiles() {
 
     let exact_document = DocumentStore::new();
     let exact_input = program(vec![AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: "Transformed exact profile".into(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -1491,6 +1501,8 @@ fn revolve_resolves_shared_world_axis_in_arbitrary_workplane() {
         y_axis: [0.0, 0.0, 1.0],
     };
     let revolve_part = |axis| AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: "Arbitrary-axis revolve".into(),
         workplane: workplane.clone(),
         entities: vec![AssistantSketchEntity::Circle {
@@ -2389,6 +2401,8 @@ fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
     };
     let input = program(vec![
         AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: "Panel".into(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -2518,22 +2532,22 @@ fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
 }
 
 #[test]
-fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one_hole() {
+fn one_part_operation_creates_named_physical_holes_and_one_local_edit_moves_one_hole() {
     let mut document = DocumentStore::new();
-    let panel = AssistantCadEditOperation::CreatePanel {
-        name: "Side panel".into(),
-        dimensions_mm: [100.0, 50.0, 18.0],
-        holes: vec![AssistantPanelHole {
+    let panel = cuboid_part(
+        "Side panel".into(),
+        [100.0, 50.0, 18.0],
+        vec![AssistantPartHole {
             id: "pin-1".into(),
             entry_local_mm: [20.0, 20.0, 0.0],
             inward_unit_local: [0.0, 0.0, 1.0],
             diameter_mm: 8.0,
             depth_mm: 16.0,
         }],
-        pockets: Vec::new(),
-        translation_mm: [0.0, 0.0, 0.0],
-        rotation: None,
-    };
+        Vec::new(),
+        [0.0, 0.0, 0.0],
+        None,
+    );
     let batch = plan(
         &document,
         &BTreeSet::new(),
@@ -2588,15 +2602,95 @@ fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one
 }
 
 #[test]
+fn create_part_drills_into_the_bounding_faces_of_any_extruded_profile() {
+    let cylinder = |holes| AssistantCadEditOperation::CreatePart {
+        name: "Round part".into(),
+        workplane: AssistantWorkplaneSpec::Principal {
+            plane: AssistantPrincipalPlane::Xy,
+        },
+        entities: vec![AssistantSketchEntity::Circle {
+            id: 1,
+            center_mm: [0.0, 0.0],
+            radius_mm: 30.0,
+        }],
+        constraints: Vec::new(),
+        feature: AssistantCadPartFeature::Extrusion { distance_mm: 20.0 },
+        holes,
+        pockets: Vec::new(),
+        translation_mm: [0.0, 0.0, 0.0],
+        rotation: None,
+    };
+    let hole = |entry_local_mm, inward_unit_local| AssistantPartHole {
+        id: "axis".into(),
+        entry_local_mm,
+        inward_unit_local,
+        diameter_mm: 6.0,
+        depth_mm: 10.0,
+    };
+    let mut document = DocumentStore::new();
+    let baseline = document.current();
+    // The body spans -30..30 in x and y, so a hole at negative x is on its top face.
+    for outside in [
+        hole([45.0, 0.0, 20.0], [0.0, 0.0, -1.0]),
+        hole([-10.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        AssistantPartHole {
+            depth_mm: 25.0,
+            ..hole([-10.0, 0.0, 20.0], [0.0, 0.0, -1.0])
+        },
+    ] {
+        let error = plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &program(vec![cylinder(vec![outside])]),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "planning.cad_part_cut_outside");
+        assert_eq!(
+            document.current().canonical_digest(),
+            baseline.canonical_digest()
+        );
+    }
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![cylinder(vec![hole(
+            [-10.0, 0.0, 20.0],
+            [0.0, 0.0, -1.0],
+        )])]),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let snapshot = document.current();
+    assert_eq!(document.visible_undo_steps(), 1);
+    let names = snapshot
+        .features()
+        .map(|feature| feature.name().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"Round part hole axis".to_owned()),
+        "{names:?}"
+    );
+    let pocket = snapshot
+        .features()
+        .find(|feature| feature.name() == "Round part hole axis pocket")
+        .unwrap();
+    ExactBRepGraph::from_snapshot(&snapshot, DefinitionId(1), pocket.id()).unwrap();
+}
+
+#[test]
 fn one_pin_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_panels() {
     let mut document = DocumentStore::new();
-    let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
-        name: name.into(),
-        dimensions_mm: [100.0, 50.0, 18.0],
-        holes: Vec::new(),
-        pockets: Vec::new(),
-        translation_mm,
-        rotation: None,
+    let panel = |name: &str, translation_mm| {
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
+            Vec::new(),
+            Vec::new(),
+            translation_mm,
+            None,
+        )
     };
     let batch = plan(
         &document,
@@ -2676,22 +2770,22 @@ fn physical_pin_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
     };
     let corner = |first_insertion_mm| {
         program(vec![
-            AssistantCadEditOperation::CreatePanel {
-                name: "Front 15".into(),
-                dimensions_mm: [100.0, 15.0, 60.0],
-                holes: Vec::new(),
-                pockets: Vec::new(),
-                translation_mm: [0.0, 0.0, 0.0],
-                rotation: None,
-            },
-            AssistantCadEditOperation::CreatePanel {
-                name: "Side 15".into(),
-                dimensions_mm: [15.0, 50.0, 60.0],
-                holes: Vec::new(),
-                pockets: Vec::new(),
-                translation_mm: [0.0, 15.0, 0.0],
-                rotation: None,
-            },
+            cuboid_part(
+                "Front 15".into(),
+                [100.0, 15.0, 60.0],
+                Vec::new(),
+                Vec::new(),
+                [0.0, 0.0, 0.0],
+                None,
+            ),
+            cuboid_part(
+                "Side 15".into(),
+                [15.0, 50.0, 60.0],
+                Vec::new(),
+                Vec::new(),
+                [0.0, 15.0, 0.0],
+                None,
+            ),
             AssistantCadEditOperation::CreatePinJoint {
                 joint_id: None,
                 name: "Corner".into(),
@@ -2742,13 +2836,15 @@ fn physical_pin_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
 #[test]
 fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
     let mut document = DocumentStore::new();
-    let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
-        name: name.into(),
-        dimensions_mm: [100.0, 50.0, 18.0],
-        holes: Vec::new(),
-        pockets: Vec::new(),
-        translation_mm,
-        rotation: None,
+    let panel = |name: &str, translation_mm| {
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
+            Vec::new(),
+            Vec::new(),
+            translation_mm,
+            None,
+        )
     };
     let panels = plan(
         &document,
@@ -3046,15 +3142,17 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
 
 #[test]
 fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
-    let seed = |lower_holes: Vec<AssistantPanelHole>, upper_z: f64| {
+    let seed = |lower_holes: Vec<AssistantPartHole>, upper_z: f64| {
         let mut document = DocumentStore::new();
-        let panel = |name: &str, translation_mm, holes| AssistantCadEditOperation::CreatePanel {
-            name: name.into(),
-            dimensions_mm: [100.0, 50.0, 18.0],
-            holes,
-            pockets: Vec::new(),
-            translation_mm,
-            rotation: None,
+        let panel = |name: &str, translation_mm, holes| {
+            cuboid_part(
+                name.into(),
+                [100.0, 50.0, 18.0],
+                holes,
+                Vec::new(),
+                translation_mm,
+                None,
+            )
         };
         let batch = plan(
             &document,
@@ -3170,7 +3268,7 @@ fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
         ),
     );
 
-    let hardware = AssistantPanelHole {
+    let hardware = AssistantPartHole {
         id: "hinge-hardware".into(),
         entry_local_mm: [20.0, 20.0, 18.0],
         inward_unit_local: [0.0, 0.0, -1.0],
@@ -3249,13 +3347,15 @@ fn physical_pin_joint_refuses_shared_root_and_nested_definitions_without_mutatio
                 &program(
                     vec![0.0, 18.0]
                         .into_iter()
-                        .map(|z| AssistantCadEditOperation::CreatePanel {
-                            name: format!("Panel {z}"),
-                            dimensions_mm: [100.0, 50.0, 18.0],
-                            holes: vec![],
-                            pockets: Vec::new(),
-                            translation_mm: [0.0, 0.0, z],
-                            rotation: None,
+                        .map(|z| {
+                            cuboid_part(
+                                format!("Panel {z}"),
+                                [100.0, 50.0, 18.0],
+                                vec![],
+                                Vec::new(),
+                                [0.0, 0.0, z],
+                                None,
+                            )
                         })
                         .collect(),
                 ),
@@ -3353,21 +3453,21 @@ fn physical_pin_joint_refuses_shared_root_and_nested_definitions_without_mutatio
 fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() {
     let mut document = DocumentStore::new();
     let panel = |name: &str, translation_mm, rotation: Option<AssistantCadRotation>, holes| {
-        AssistantCadEditOperation::CreatePanel {
-            name: name.into(),
-            dimensions_mm: [100.0, 50.0, 18.0],
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
             holes,
-            pockets: Vec::new(),
+            Vec::new(),
             translation_mm,
             rotation,
-        }
+        )
     };
     let rotation = |pivot_mm, angle_degrees| AssistantCadRotation {
         pivot_mm,
         axis: [0.0, 1.0, 0.0],
         angle_degrees,
     };
-    let hardware = AssistantPanelHole {
+    let hardware = AssistantPartHole {
         id: "hinge-hardware".into(),
         entry_local_mm: [50.0, 25.0, 18.0],
         inward_unit_local: [0.0, 0.0, -1.0],
@@ -3584,24 +3684,24 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
 }
 
 #[test]
-fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_batch() {
+fn named_program_outputs_create_parts_physical_holes_and_joint_in_one_atomic_batch() {
     let mut document = DocumentStore::new();
     let baseline = document.current();
     let panel = |name: &str, translation_mm, entry_z, inward_unit_local| {
-        AssistantCadEditOperation::CreatePanel {
-            name: name.into(),
-            dimensions_mm: [100.0, 50.0, 18.0],
-            holes: vec![AssistantPanelHole {
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
+            vec![AssistantPartHole {
                 id: "pin-1".into(),
                 entry_local_mm: [20.0, 20.0, entry_z],
                 inward_unit_local,
                 diameter_mm: 8.0,
                 depth_mm: 16.0,
             }],
-            pockets: Vec::new(),
+            Vec::new(),
             translation_mm,
-            rotation: None,
-        }
+            None,
+        )
     };
     let bind = |name: &str, operation_index, output| AssistantCadEditOperation::BindProgramOutput {
         name: name.into(),
@@ -3834,13 +3934,15 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
                 "name": "later",
                 "source": {"operation_index": 2, "output": "occurrence"}
             },
-            {
-                "operation": "create_panel",
-                "name": "Later panel",
-                "dimensions_mm": [100.0, 50.0, 18.0],
-                "holes": [],
-                "translation_mm": [0.0, 0.0, 0.0]
-            }
+            (serde_json::to_value(cuboid_part(
+                "Later part".into(),
+                [100.0, 50.0, 18.0],
+                Vec::new(),
+                Vec::new(),
+                [0.0, 0.0, 0.0],
+                None,
+            ))
+            .unwrap())
         ]
     }))
     .unwrap();
@@ -3858,7 +3960,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         [20.0, 45.0, 70.0]
             .into_iter()
             .enumerate()
-            .map(|(index, x)| AssistantPanelHole {
+            .map(|(index, x)| AssistantPartHole {
                 id: format!("pin-{}", index + 1),
                 entry_local_mm: [x, 20.0, entry_z],
                 inward_unit_local,
@@ -3868,14 +3970,14 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
             .collect()
     };
     let panel = |name: &str, translation_mm, entry_z, inward_unit_local| {
-        AssistantCadEditOperation::CreatePanel {
-            name: name.into(),
-            dimensions_mm: [100.0, 50.0, 18.0],
-            holes: holes(entry_z, inward_unit_local),
-            pockets: Vec::new(),
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
+            holes(entry_z, inward_unit_local),
+            Vec::new(),
             translation_mm,
-            rotation: None,
-        }
+            None,
+        )
     };
     let batch = plan(
         &document,
@@ -4465,6 +4567,8 @@ fn canonical_batch_validation_remains_atomic_for_deferred_dimension_errors() {
 fn public_framed_sketch_output_builds_an_exact_editable_planar_offset() {
     let mut document = DocumentStore::new();
     let part_program = program(vec![AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: "Framed cubic profile".into(),
         workplane: AssistantWorkplaneSpec::Frame {
             origin_mm: [30.0, -20.0, 15.0],
@@ -5241,4 +5345,38 @@ fn public_assistant_cam_setup_is_exact_bound_atomic_undoable_and_fail_closed() {
             .cam_plan(ketchup_model::cam::CamPlanId(1)),
         Some(&cam)
     );
+}
+
+/// A `create_part` cuboid: a `[width, depth]` rectangle on XY extruded by the
+/// third dimension, with the holes and pockets drilled into it.
+fn cuboid_part(
+    name: String,
+    [width, depth, height]: [f64; 3],
+    holes: Vec<AssistantPartHole>,
+    pockets: Vec<AssistantPartPocket>,
+    translation_mm: [f64; 3],
+    rotation: Option<AssistantCadRotation>,
+) -> AssistantCadEditOperation {
+    let corners = [[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]];
+    AssistantCadEditOperation::CreatePart {
+        name,
+        workplane: AssistantWorkplaneSpec::Principal {
+            plane: AssistantPrincipalPlane::Xy,
+        },
+        entities: (0..4)
+            .map(|index| AssistantSketchEntity::Line {
+                id: index as u64 + 1,
+                start_mm: corners[index],
+                end_mm: corners[(index + 1) % 4],
+            })
+            .collect(),
+        constraints: Vec::new(),
+        feature: AssistantCadPartFeature::Extrusion {
+            distance_mm: height,
+        },
+        holes,
+        pockets,
+        translation_mm,
+        rotation,
+    }
 }

@@ -171,15 +171,20 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(SessionClosedError):
             doc.undo()
 
-    def test_panel_and_pin_helpers_emit_one_high_level_operation_each(self):
+    def test_drilled_part_and_pin_helpers_emit_one_high_level_operation_each(self):
         process = FakeProcess()
         doc = self.session(process).new_document()
         hole = {"id": "pin-1", "entry_local_mm": [20, 10, 0],
                 "inward_unit_local": [0, 0, 1], "diameter_mm": 8, "depth_mm": 16}
-        doc.panel("Side", [100, 50, 18], [hole])
+        pocket = {"id": "groove", "min_local_mm": [0, 20, 10], "max_local_mm": [100, 28, 18],
+                  "inward_unit_local": [0, 0, -1]}
+        doc.box("Side", 100, 50, 18, holes=[hole], pockets=[pocket])
         self.assertEqual(process.requests[-1]["params"]["program"]["operations"], [{
-            "operation": "create_panel", "name": "Side", "dimensions_mm": [100, 50, 18],
-            "holes": [hole], "translation_mm": [0, 0, 0],
+            "operation": "create_part", "name": "Side",
+            "workplane": {"type": "principal", "plane": "xy"},
+            "entities": rectangle(100, 50), "constraints": [],
+            "feature": {"type": "extrusion", "distance_mm": 18},
+            "holes": [hole], "pockets": [pocket], "translation_mm": [0, 0, 0],
         }])
         face = {"instance_path": {"root_occurrence_id": 1, "steps": []},
                 "face_origin_local_mm": [0, 0, 18], "inward_unit_local": [0, 0, -1],

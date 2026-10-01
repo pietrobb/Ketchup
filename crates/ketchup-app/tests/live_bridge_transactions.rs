@@ -80,6 +80,8 @@ impl Client {
 fn program() -> AssistantCadEditProgram {
     AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: "S4 live cylinder".into(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,

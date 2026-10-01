@@ -284,6 +284,7 @@ pub(crate) fn plan_creation(
             feature,
             translation_mm,
             rotation,
+            ..
         } => {
             let definition_id = next_definition.map(DefinitionId).ok_or_else(|| {
                 assistant_canonical_rejection(
@@ -460,28 +461,23 @@ pub(crate) fn plan_creation(
                     }
                 }
             };
-            let translated = translated_transform(
-                Transform::identity(),
-                Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]),
-            )
-            .map_err(|error| {
-                assistant_planning_rejection(
-                    "planning.cad_part_placement_invalid",
-                    operation_name,
-                    &format!("occurrence:{}", occurrence_id.0),
-                    "The requested part translation could not be represented.",
-                    "Use a finite bounded translation.",
-                )
-                .caused_by(&error)
-            })?;
+            let translated =
+                translated_transform(Transform::identity(), Vec3::from(*translation_mm)).map_err(
+                    |error| {
+                        assistant_planning_rejection(
+                            "planning.cad_part_placement_invalid",
+                            operation_name,
+                            &format!("occurrence:{}", occurrence_id.0),
+                            "The requested part translation could not be represented.",
+                            "Use a finite bounded translation.",
+                        )
+                        .caused_by(&error)
+                    },
+                )?;
             let transform = if let Some(rotation) = rotation {
                 let world_rotation = world_axis_rotation_transform(
-                    Vec3::new(
-                        rotation.pivot_mm[0],
-                        rotation.pivot_mm[1],
-                        rotation.pivot_mm[2],
-                    ),
-                    Vec3::new(rotation.axis[0], rotation.axis[1], rotation.axis[2]),
+                    Vec3::from(rotation.pivot_mm),
+                    Vec3::from(rotation.axis),
                     rotation.angle_degrees,
                 )
                 .map_err(|error| {

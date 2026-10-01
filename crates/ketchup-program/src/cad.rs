@@ -1,56 +1,13 @@
-//! Converts an evaluated model into canonical panel creation requests that
+//! Converts an evaluated model into canonical part creation requests that
 //! the application planner turns into one undoable command batch.
 //! The operations carry only the part's origin; the planner places each
 //! occurrence with the part's exact frame (`Part::transform_matrix`).
 
 use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment};
 use ketchup_assistant::sidecar::{
-    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantPanelHole,
-    AssistantPanelPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantPartHole,
+    AssistantPartPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
-
-/// A cuboid is the document's rectangle-and-pad panel and drills the holes
-/// and pockets written before its other operations (`Part::panel_machining`);
-/// the planner subtracts the rest in program order.
-fn panel(part: &Part) -> AssistantCadEditOperation {
-    let drilled = &part.operations[..part.panel_machining()];
-    let holes = drilled
-        .iter()
-        .filter_map(|operation| match operation {
-            ProgramOperation::Hole(hole) => Some(AssistantPanelHole {
-                id: hole.id.clone(),
-                entry_local_mm: hole.entry_mm,
-                inward_unit_local: hole.inward,
-                diameter_mm: hole.diameter_mm,
-                depth_mm: hole.depth_mm,
-            }),
-            _ => None,
-        })
-        .collect();
-    let pockets = drilled
-        .iter()
-        .filter_map(|operation| match operation {
-            ProgramOperation::Pocket(pocket) => {
-                let (min, max) = pocket.local_box();
-                Some(AssistantPanelPocket {
-                    id: pocket.id.clone(),
-                    min_local_mm: min,
-                    max_local_mm: max,
-                    inward_unit_local: pocket.inward,
-                })
-            }
-            _ => None,
-        })
-        .collect();
-    AssistantCadEditOperation::CreatePanel {
-        name: part.name.clone(),
-        dimensions_mm: part.size_mm,
-        holes,
-        pockets,
-        translation_mm: part.at_mm,
-        rotation: None,
-    }
-}
 
 /// Sketch entities of a closed program profile, numbered from 1.
 #[must_use]
@@ -87,10 +44,39 @@ pub fn profile_entities(segments: &[ProgramProfileSegment]) -> Vec<AssistantSket
         .collect()
 }
 
+/// A part's body, plus the holes and pockets it drills itself
+/// (`Part::panel_machining`); the planner subtracts its other operations in
+/// program order.
 pub fn part(part: &Part) -> AssistantCadEditOperation {
-    if part.body.cuboid_size().is_some() {
-        return panel(part);
-    }
+    let drilled = &part.operations[..part.panel_machining()];
+    let holes = drilled
+        .iter()
+        .filter_map(|operation| match operation {
+            ProgramOperation::Hole(hole) => Some(AssistantPartHole {
+                id: hole.id.clone(),
+                entry_local_mm: hole.entry_mm,
+                inward_unit_local: hole.inward,
+                diameter_mm: hole.diameter_mm,
+                depth_mm: hole.depth_mm,
+            }),
+            _ => None,
+        })
+        .collect();
+    let pockets = drilled
+        .iter()
+        .filter_map(|operation| match operation {
+            ProgramOperation::Pocket(pocket) => {
+                let (min, max) = pocket.local_box();
+                Some(AssistantPartPocket {
+                    id: pocket.id.clone(),
+                    min_local_mm: min,
+                    max_local_mm: max,
+                    inward_unit_local: pocket.inward,
+                })
+            }
+            _ => None,
+        })
+        .collect();
     let (segments, feature) = match &part.body {
         ProgramPartBody::Extrusion {
             segments,
@@ -137,6 +123,8 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
         entities: profile_entities(segments),
         constraints: Vec::new(),
         feature,
+        holes,
+        pockets,
         translation_mm: part.at_mm,
         rotation: None,
     }

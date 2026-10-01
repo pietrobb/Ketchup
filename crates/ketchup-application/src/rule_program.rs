@@ -228,7 +228,7 @@ impl DocumentSession {
             RuleProgramChange::Unchanged => self.snapshot(),
             RuleProgramChange::SourceOnly => self.replace_rule_program_source(source)?,
             RuleProgramChange::Incremental(batch) => {
-                self.apply_rule_commands_with_source(batch, &[], source)?
+                self.apply_rule_commands_with_source(batch, source)?
             }
             RuleProgramChange::Replacement => {
                 if self.snapshot().definitions().next().is_some() && !allow_replacement {

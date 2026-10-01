@@ -1871,6 +1871,8 @@ fn scripted_create_part_program_round_trips_state_view_and_one_step_undo_redo() 
     )]));
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: "Editable prism".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -1990,6 +1992,8 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
     )]));
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: "Editable revolve".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,

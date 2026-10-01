@@ -24,7 +24,8 @@ const MAX_ASSISTANT_TRANSLATIONS: usize = 100;
 const MAX_ASSISTANT_ROTATIONS: usize = 100;
 const MAX_ASSISTANT_PROFILE_TRANSLATIONS: usize = 1;
 const MAX_ASSISTANT_PARAMETER_EDITS: usize = 1;
-const MAX_ASSISTANT_PANEL_POCKETS: usize = 128;
+/// Most holes, and most pockets, one created part may carry.
+const MAX_ASSISTANT_PART_CUTS: usize = 128;
 const MAX_ASSISTANT_ARRAYS: usize = 16;
 const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
@@ -565,9 +566,29 @@ pub enum AssistantCadPartFeature {
     },
 }
 
+/// The unit axis `vector` runs along, if it is one.
+fn assistant_unit_axis(vector: [f64; 3]) -> Option<usize> {
+    let axis = vector
+        .iter()
+        .position(|value| (value.abs() - 1.0).abs() <= ROUNDING)?;
+    vector
+        .iter()
+        .enumerate()
+        .all(|(index, value)| index == axis || value.abs() <= ROUNDING)
+        .then_some(axis)
+}
+
+fn assistant_cut_id_is_valid(id: &str) -> bool {
+    !id.trim().is_empty()
+        && id.len() <= MAX_ASSISTANT_NAME_BYTES
+        && !id.chars().any(char::is_control)
+}
+
+/// A round hole drilled into one face of a part: the entry point on that face
+/// and the unit axis it runs along into the part, in part-local coordinates.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantPanelHole {
+pub struct AssistantPartHole {
     pub id: String,
     pub entry_local_mm: [f64; 3],
     pub inward_unit_local: [f64; 3],
@@ -575,67 +596,130 @@ pub struct AssistantPanelHole {
     pub depth_mm: f64,
 }
 
-/// A rectangular pocket milled into one face of a panel: the removed box in
-/// panel-local coordinates. It must start on the face that `inward_unit_local`
+impl AssistantPartHole {
+    /// Axis index of the hole direction, if `inward_unit_local` is a unit axis.
+    #[must_use]
+    pub fn axis(&self) -> Option<usize> {
+        assistant_unit_axis(self.inward_unit_local)
+    }
+
+    fn invalid(&self) -> AssistantRequestInvalid {
+        AssistantRequestInvalid::new(
+            "part hole",
+            AssistantRequestProblem::Violates(
+                "it must enter the face opposite to inward_unit_local along a unit axis, keep its whole circle on that face and stay within the part",
+            ),
+        )
+        .item(&self.id)
+    }
+
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
+        if !assistant_cut_id_is_valid(&self.id)
+            || self.axis().is_none()
+            || !assistant_cad_vector_is_bounded(self.entry_local_mm)
+            || !self.diameter_mm.is_finite()
+            || self.diameter_mm <= 0.0
+            || !self.depth_mm.is_finite()
+            || self.depth_mm <= 0.0
+        {
+            return Err(self.invalid());
+        }
+        Ok(())
+    }
+
+    /// Checks the hole against the part body's local `[min, max]` bounds.
+    ///
+    /// # Errors
+    /// The hole does not start on the bounding face `inward_unit_local` points
+    /// away from, leaves that face or is deeper than the body.
+    pub fn validate_within(&self, bounds_mm: [[f64; 3]; 2]) -> Result<(), AssistantRequestInvalid> {
+        let Some(axis) = self.axis() else {
+            return Err(self.invalid());
+        };
+        let [min, max] = bounds_mm;
+        let radius = self.diameter_mm * 0.5;
+        let entry = if self.inward_unit_local[axis] > 0.0 {
+            min[axis]
+        } else {
+            max[axis]
+        };
+        if self.depth_mm > max[axis] - min[axis]
+            || (self.entry_local_mm[axis] - entry).abs() > ROUNDING
+            || (0..3).any(|index| {
+                index != axis
+                    && (self.entry_local_mm[index] < min[index] + radius
+                        || self.entry_local_mm[index] > max[index] - radius)
+            })
+        {
+            return Err(self.invalid());
+        }
+        Ok(())
+    }
+}
+
+/// A rectangular pocket milled into one face of a part: the removed box in
+/// part-local coordinates. It must start on the face that `inward_unit_local`
 /// points away from and may run off the face edges (grooves, rabbets).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantPanelPocket {
+pub struct AssistantPartPocket {
     pub id: String,
     pub min_local_mm: [f64; 3],
     pub max_local_mm: [f64; 3],
     pub inward_unit_local: [f64; 3],
 }
 
-impl AssistantPanelPocket {
+impl AssistantPartPocket {
     /// Axis index of the pocket direction, if `inward_unit_local` is a unit axis.
     #[must_use]
     pub fn axis(&self) -> Option<usize> {
-        let axis = self
-            .inward_unit_local
-            .iter()
-            .position(|value| (value.abs() - 1.0).abs() <= ROUNDING)?;
-        self.inward_unit_local
-            .iter()
-            .enumerate()
-            .all(|(index, value)| index == axis || value.abs() <= ROUNDING)
-            .then_some(axis)
+        assistant_unit_axis(self.inward_unit_local)
     }
 
-    fn validate(&self, dimensions_mm: [f64; 3]) -> Result<(), AssistantRequestInvalid> {
-        let invalid = || {
-            Err(AssistantRequestInvalid::new(
-                "panel pocket",
-                AssistantRequestProblem::Violates(
-                    "it must be a box that starts on the face opposite to inward_unit_local, stays within the panel thickness and overlaps the face",
-                ),
-            )
-            .item(&self.id))
-        };
-        let Some(axis) = self.axis() else {
-            return invalid();
-        };
-        if self.id.trim().is_empty()
-            || self.id.len() > MAX_ASSISTANT_NAME_BYTES
-            || self.id.chars().any(char::is_control)
+    fn invalid(&self) -> AssistantRequestInvalid {
+        AssistantRequestInvalid::new(
+            "part pocket",
+            AssistantRequestProblem::Violates(
+                "it must be a box that starts on the face opposite to inward_unit_local, stays within the part and overlaps the face",
+            ),
+        )
+        .item(&self.id)
+    }
+
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
+        if !assistant_cut_id_is_valid(&self.id)
+            || self.axis().is_none()
             || !assistant_cad_vector_is_bounded(self.min_local_mm)
             || !assistant_cad_vector_is_bounded(self.max_local_mm)
             || (0..3)
                 .any(|index| self.max_local_mm[index] - self.min_local_mm[index] <= APPROXIMATION)
         {
-            return invalid();
+            return Err(self.invalid());
         }
+        Ok(())
+    }
+
+    /// Checks the pocket against the part body's local `[min, max]` bounds.
+    ///
+    /// # Errors
+    /// The pocket does not start on the bounding face `inward_unit_local`
+    /// points away from, misses that face or is deeper than the body.
+    pub fn validate_within(&self, bounds_mm: [[f64; 3]; 2]) -> Result<(), AssistantRequestInvalid> {
+        let Some(axis) = self.axis() else {
+            return Err(self.invalid());
+        };
+        let [min, max] = bounds_mm;
         let entry_ok = if self.inward_unit_local[axis] > 0.0 {
-            self.min_local_mm[axis].abs() <= ROUNDING
+            (self.min_local_mm[axis] - min[axis]).abs() <= ROUNDING
         } else {
-            (self.max_local_mm[axis] - dimensions_mm[axis]).abs() <= ROUNDING
+            (self.max_local_mm[axis] - max[axis]).abs() <= ROUNDING
         };
         let depth = self.max_local_mm[axis] - self.min_local_mm[axis];
         let overlaps_face = (0..3).filter(|index| *index != axis).all(|index| {
-            self.min_local_mm[index] < dimensions_mm[index] && self.max_local_mm[index] > 0.0
+            self.min_local_mm[index] < max[index] && self.max_local_mm[index] > min[index]
         });
-        if !entry_ok || depth > dimensions_mm[axis] + ROUNDING || !overlaps_face {
-            return invalid();
+        if !entry_ok || depth > max[axis] - min[axis] + ROUNDING || !overlaps_face {
+            return Err(self.invalid());
         }
         Ok(())
     }
@@ -795,7 +879,6 @@ impl AssistantCadProgramFeatureReference {
                 matches!(
                     producer,
                     AssistantCadEditOperation::CreatePart { .. }
-                        | AssistantCadEditOperation::CreatePanel { .. }
                         | AssistantCadEditOperation::CreateSpatialPath { .. }
                         | AssistantCadEditOperation::CreateConstructionPoint { .. }
                         | AssistantCadEditOperation::CreateConstructionAxis { .. }
@@ -803,15 +886,12 @@ impl AssistantCadProgramFeatureReference {
                         | AssistantCadEditOperation::CreateHelix { .. }
                 )
             }
-            AssistantCadProgramFeatureOutput::Occurrence => matches!(
-                producer,
-                AssistantCadEditOperation::CreatePart { .. }
-                    | AssistantCadEditOperation::CreatePanel { .. }
-            ),
+            AssistantCadProgramFeatureOutput::Occurrence => {
+                matches!(producer, AssistantCadEditOperation::CreatePart { .. })
+            }
             AssistantCadProgramFeatureOutput::SketchFeature => matches!(
                 producer,
                 AssistantCadEditOperation::CreatePart { .. }
-                    | AssistantCadEditOperation::CreatePanel { .. }
                     | AssistantCadEditOperation::CreateSketch { .. }
             ),
             AssistantCadProgramFeatureOutput::ConstructionFeature => {
@@ -829,7 +909,6 @@ impl AssistantCadProgramFeatureReference {
             AssistantCadProgramFeatureOutput::BodyFeature => match producer {
                 AssistantCadEditOperation::CreateHelix { profile, .. } => !profile.is_empty(),
                 AssistantCadEditOperation::CreatePart { .. }
-                | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::FilletEdges { .. }
                 | AssistantCadEditOperation::ChamferEdges { .. } => true,
                 AssistantCadEditOperation::AppendFeature { feature, .. } => {
@@ -1838,16 +1917,12 @@ pub enum AssistantCadEditOperation {
         entities: Vec<AssistantSketchEntity>,
         constraints: Vec<AssistantSketchConstraint>,
         feature: AssistantCadPartFeature,
-        translation_mm: [f64; 3],
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rotation: Option<AssistantCadRotation>,
-    },
-    CreatePanel {
-        name: String,
-        dimensions_mm: [f64; 3],
-        holes: Vec<AssistantPanelHole>,
+        /// Holes drilled into the body's bounding faces, in this order.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        pockets: Vec<AssistantPanelPocket>,
+        holes: Vec<AssistantPartHole>,
+        /// Pockets milled into the body's bounding faces after the holes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pockets: Vec<AssistantPartPocket>,
         translation_mm: [f64; 3],
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<AssistantCadRotation>,
@@ -2826,7 +2901,6 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
                 AssistantCadEditOperation::CreatePart { .. }
-                | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::CreateSpatialPath { .. }
                 | AssistantCadEditOperation::CreateConstructionPoint { .. }
                 | AssistantCadEditOperation::CreateConstructionAxis { .. }
@@ -2896,10 +2970,45 @@ impl AssistantCadEditProgram {
                     entities,
                     constraints,
                     feature,
+                    holes,
+                    pockets,
                     translation_mm,
                     rotation,
                 } => {
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
+                    for (cuts, label) in [
+                        (holes.len(), "part hole count"),
+                        (pockets.len(), "part pocket count"),
+                    ] {
+                        if cuts > MAX_ASSISTANT_PART_CUTS {
+                            return Err(AssistantRequestInvalid::new(
+                                label,
+                                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PART_CUTS),
+                            ));
+                        }
+                    }
+                    let mut hole_ids = BTreeSet::new();
+                    for hole in holes {
+                        hole.validate()?;
+                        if !hole_ids.insert(hole.id.as_str()) {
+                            return Err(AssistantRequestInvalid::new(
+                                "part hole id",
+                                AssistantRequestProblem::Duplicate,
+                            )
+                            .item(&hole.id));
+                        }
+                    }
+                    let mut pocket_ids = BTreeSet::new();
+                    for pocket in pockets {
+                        pocket.validate()?;
+                        if !pocket_ids.insert(pocket.id.as_str()) {
+                            return Err(AssistantRequestInvalid::new(
+                                "part pocket id",
+                                AssistantRequestProblem::Duplicate,
+                            )
+                            .item(&pocket.id));
+                        }
+                    }
                     if matches!(workplane, AssistantWorkplaneSpec::ConstructionPlane { .. }) {
                         return Err(AssistantRequestInvalid::invalid("part workplane reference"));
                     }
@@ -2912,88 +3021,6 @@ impl AssistantCadEditProgram {
                     }
                     if let Some(rotation) = rotation {
                         rotation.validate()?;
-                    }
-                    1
-                }
-                AssistantCadEditOperation::CreatePanel {
-                    name,
-                    dimensions_mm,
-                    holes,
-                    pockets,
-                    translation_mm,
-                    rotation,
-                } => {
-                    if pockets.len() > MAX_ASSISTANT_PANEL_POCKETS {
-                        return Err(AssistantRequestInvalid::new(
-                            "panel pocket count",
-                            AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PANEL_POCKETS),
-                        ));
-                    }
-                    let mut pocket_ids = BTreeSet::new();
-                    for pocket in pockets {
-                        if !pocket_ids.insert(pocket.id.as_str()) {
-                            return Err(AssistantRequestInvalid::new(
-                                "panel pocket id",
-                                AssistantRequestProblem::Duplicate,
-                            )
-                            .item(&pocket.id));
-                        }
-                        pocket.validate(*dimensions_mm)?;
-                    }
-                    if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || dimensions_mm.iter().any(|value| {
-                            !value.is_finite() || *value <= 0.0 || *value > MAX_COORDINATE_MM
-                        })
-                        || holes.len() > 128
-                        || !assistant_cad_vector_is_bounded(*translation_mm)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("panel creation"));
-                    }
-                    if let Some(rotation) = rotation {
-                        rotation.validate()?;
-                    }
-                    let mut hole_ids = BTreeSet::new();
-                    for hole in holes {
-                        let radius = hole.diameter_mm * 0.5;
-                        let Some(axis) = hole
-                            .inward_unit_local
-                            .iter()
-                            .position(|value| (value.abs() - 1.0).abs() <= ROUNDING)
-                        else {
-                            return Err(AssistantRequestInvalid::invalid("panel hole direction"));
-                        };
-                        if hole.id.trim().is_empty()
-                            || hole.id.len() > MAX_ASSISTANT_NAME_BYTES
-                            || hole.id.chars().any(char::is_control)
-                            || !hole_ids.insert(hole.id.as_str())
-                            || !assistant_cad_vector_is_bounded(hole.entry_local_mm)
-                            || !assistant_cad_vector_is_bounded(hole.inward_unit_local)
-                            || hole
-                                .inward_unit_local
-                                .iter()
-                                .enumerate()
-                                .any(|(index, value)| index != axis && value.abs() > ROUNDING)
-                            || !hole.diameter_mm.is_finite()
-                            || hole.diameter_mm <= 0.0
-                            || !hole.depth_mm.is_finite()
-                            || hole.depth_mm <= 0.0
-                            || hole.depth_mm > dimensions_mm[axis]
-                            || (if hole.inward_unit_local[axis] > 0.0 {
-                                hole.entry_local_mm[axis].abs()
-                            } else {
-                                (hole.entry_local_mm[axis] - dimensions_mm[axis]).abs()
-                            }) > ROUNDING
-                            || (0..3).any(|index| {
-                                index != axis
-                                    && (hole.entry_local_mm[index] < radius
-                                        || hole.entry_local_mm[index]
-                                            > dimensions_mm[index] - radius)
-                            })
-                        {
-                            return Err(AssistantRequestInvalid::invalid("panel hole"));
-                        }
                     }
                     1
                 }

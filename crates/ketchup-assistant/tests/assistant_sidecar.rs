@@ -603,6 +603,8 @@ fn cad_edit_full_sketch_constraint_vocabulary_is_typed_and_round_trips() {
 fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: "Editable prism".to_owned(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -2323,10 +2325,10 @@ fn assistant_rejection_diagnostic_reads_as_the_shared_rejection() {
     let rejection = ketchup_rejection::Rejection::from(AssistantRejectionDiagnostic {
         phase: AssistantRejectionPhase::ExactValidation,
         code: "exact.solid_invalid".to_owned(),
-        operation: "create_panel".to_owned(),
+        operation: "create_part".to_owned(),
         target: "occurrence:17".to_owned(),
-        failed_invariant: "The panel must evaluate to one closed solid.".to_owned(),
-        repair_hint: "Give the panel a positive thickness.".to_owned(),
+        failed_invariant: "The part must evaluate to one closed solid.".to_owned(),
+        repair_hint: "Give the part a positive thickness.".to_owned(),
         retryable: true,
         causes: Vec::new(),
     });
@@ -2338,11 +2340,11 @@ fn assistant_rejection_diagnostic_reads_as_the_shared_rejection() {
     assert_eq!(rejection.target_name(), "occurrence:17");
     assert_eq!(
         rejection.reason_text(),
-        "create_panel: The panel must evaluate to one closed solid."
+        "create_part: The part must evaluate to one closed solid."
     );
     assert_eq!(
         rejection.fix_hint_text(),
-        "Give the panel a positive thickness."
+        "Give the part a positive thickness."
     );
 }
 
@@ -2364,7 +2366,7 @@ fn assistant_rejection_diagnostic_keeps_a_bounded_cause_chain() {
         Box::new(AssistantRejectionDiagnostic {
             phase: AssistantRejectionPhase::ProposalPlanning,
             code: "planning.invalid_parameter".to_owned(),
-            operation: "create_panel".to_owned(),
+            operation: "create_part".to_owned(),
             target: "thickness".to_owned(),
             failed_invariant: "The thickness must be a number.".to_owned(),
             repair_hint: "Write the thickness as digits.".to_owned(),

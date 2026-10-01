@@ -4,9 +4,7 @@ use crate::{
     plan_assistant_cad_edit_program,
     validation::{AssistantValidationSelection, assistant_validation_context_with_worker},
 };
-use ketchup_assistant::sidecar::{
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantRejectionDiagnostic,
-};
+use ketchup_assistant::sidecar::{AssistantCadEditProgram, AssistantRejectionDiagnostic};
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DocumentStore, OccurrenceId, Proposal,
     ProposalCommitError, ProposalContext, ProposalPrepareError, Snapshot, VerifiedProposalCommit,
@@ -412,17 +410,6 @@ impl DocumentSession {
         let proposal = self.plan_cad_program(program, selection)?;
         self.apply_proposal(&proposal)
     }
-    /// Publishes a rule program and its canonical geometry in one transaction and Undo step.
-    pub fn apply_panels_with_source(
-        &mut self,
-        panels: &[AssistantCadEditOperation],
-        source: ketchup_model::document::RuleProgramSource,
-    ) -> Result<Snapshot, SessionError> {
-        let batch = crate::planner::plan_panel_batch(&self.document, panels)
-            .map_err(SessionError::Planning)?;
-        self.apply_rule_commands_with_source(batch, &[], source)
-    }
-
     pub(crate) fn replace_with_rule_parts(
         &mut self,
         parts: &[ketchup_program::model::Part],
@@ -431,7 +418,7 @@ impl DocumentSession {
         let mut replacement = Self::new(self.settings.clone());
         let batch = crate::planner::plan_rule_part_batch(&replacement.document, parts)
             .map_err(SessionError::Planning)?;
-        let snapshot = replacement.apply_rule_commands_with_source(batch, &[], source)?;
+        let snapshot = replacement.apply_rule_commands_with_source(batch, source)?;
         *self = replacement;
         Ok(snapshot)
     }
@@ -440,23 +427,8 @@ impl DocumentSession {
     pub fn apply_rule_commands_with_source(
         &mut self,
         batch: CommandBatch,
-        panels: &[AssistantCadEditOperation],
         source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
-        let batch = if panels.is_empty() {
-            batch
-        } else {
-            let additions = crate::planner::plan_panel_batch(&self.document, panels)
-                .map_err(SessionError::Planning)?;
-            CommandBatch::new(
-                batch
-                    .commands()
-                    .iter()
-                    .chain(additions.commands())
-                    .cloned()
-                    .collect(),
-            )
-        };
         let proposal = self.plan_commands(batch)?;
         let before = self.snapshot();
         self.mutate_with_work_recovery(|document| {
@@ -470,85 +442,6 @@ impl DocumentSession {
         self.update_incremental_exact_plan(&before);
         self.rebind();
         Ok(self.snapshot())
-    }
-
-    /// Rebuilds only changed program parts while keeping their occurrence identities.
-    pub fn replace_rule_panels_with_source(
-        &mut self,
-        replacements: &[(OccurrenceId, AssistantCadEditOperation)],
-        added_panels: &[AssistantCadEditOperation],
-        other_commands: CommandBatch,
-        source: ketchup_model::document::RuleProgramSource,
-    ) -> Result<Snapshot, SessionError> {
-        let snapshot = self.snapshot();
-        let panels = replacements
-            .iter()
-            .map(|(_, panel)| panel.clone())
-            .chain(added_panels.iter().cloned())
-            .collect::<Vec<_>>();
-        let additions = crate::planner::plan_panel_batch(&self.document, &panels)
-            .map_err(SessionError::Planning)?;
-        let definitions = additions
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                CanonicalCommand::CreateDefinition { id, .. } => Some(*id),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let temporary_occurrences = additions
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                CanonicalCommand::CreateOccurrence { id, .. } => Some(*id),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let mut commands = additions.commands().to_vec();
-        for ((old_id, _), (definition_id, temporary_id)) in replacements
-            .iter()
-            .zip(definitions.into_iter().zip(temporary_occurrences))
-        {
-            let transform = additions
-                .commands()
-                .iter()
-                .find_map(|command| match command {
-                    CanonicalCommand::CreateOccurrence { id, transform, .. }
-                        if *id == temporary_id =>
-                    {
-                        Some(*transform)
-                    }
-                    _ => None,
-                })
-                .expect("the planned replacement occurrence exists");
-            commands.push(CanonicalCommand::SetOccurrenceTransform {
-                id: *old_id,
-                transform,
-            });
-            let old = snapshot
-                .occurrence(*old_id)
-                .ok_or_else(|| SessionError::Persistence("program part is missing".into()))?;
-            if snapshot
-                .occurrences()
-                .filter(|item| item.definition_id() == old.definition_id())
-                .count()
-                != 1
-            {
-                return Err(SessionError::Persistence(
-                    "cannot rebuild a shared program definition".into(),
-                ));
-            }
-            commands.push(CanonicalCommand::DeleteOccurrence { id: temporary_id });
-            commands.push(CanonicalCommand::RepointOccurrence {
-                id: *old_id,
-                definition_id,
-            });
-            commands.push(CanonicalCommand::DeleteDefinition {
-                id: old.definition_id(),
-            });
-        }
-        commands.extend(other_commands.commands().iter().cloned());
-        self.apply_rule_commands_with_source(CommandBatch::new(commands), &[], source)
     }
 
     /// Publishes a source-only edit in the existing document's undo history.
@@ -567,17 +460,6 @@ impl DocumentSession {
         Ok(self.snapshot())
     }
 
-    /// Creates one panel per `create_panel` operation as a single undo step.
-    /// Rule programs use this; it is not bound by Assistant program limits.
-    pub fn apply_panels(
-        &mut self,
-        panels: &[AssistantCadEditOperation],
-    ) -> Result<Snapshot, SessionError> {
-        let batch = crate::planner::plan_panel_batch(&self.document, panels)
-            .map_err(SessionError::Planning)?;
-        let proposal = self.plan_commands(batch)?;
-        self.apply_proposal(&proposal)
-    }
     pub fn set_grounded(
         &mut self,
         id: OccurrenceId,

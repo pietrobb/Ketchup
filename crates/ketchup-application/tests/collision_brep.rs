@@ -540,6 +540,8 @@ fn exact_hole_does_not_collide_with_insert() {
     let mut operations = Vec::new();
     for (name, radii) in [("ring", vec![10.0, 5.0]), ("insert", vec![4.0])] {
         operations.push(AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: name.into(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,

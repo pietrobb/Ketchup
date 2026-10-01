@@ -55,6 +55,8 @@ fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
 
 fn part() -> AssistantCadEditOperation {
     AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: "Editable part".into(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -657,6 +659,8 @@ fn real_worker_session_save_open_and_read_only_reports() {
 fn real_worker_line_edge_resolves_the_same_shared_axis_as_direct_geometry() {
     let base_program = || AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
             name: "Axis source".into(),
             workplane: AssistantWorkplaneSpec::Principal {
                 plane: AssistantPrincipalPlane::Xy,
@@ -976,6 +980,8 @@ fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation()
         .apply_cad_program(
             &AssistantCadEditProgram {
                 operations: vec![AssistantCadEditOperation::CreatePart {
+                    holes: Vec::new(),
+                    pockets: Vec::new(),
                     name: "Annular part".into(),
                     workplane: AssistantWorkplaneSpec::Principal {
                         plane: AssistantPrincipalPlane::Xy,

@@ -106,6 +106,8 @@ fn timber(
 ) -> AssistantCadEditOperation {
     let (entities, constraints) = rectangle(plan_width_mm, plan_height_mm);
     AssistantCadEditOperation::CreatePart {
+        holes: Vec::new(),
+        pockets: Vec::new(),
         name: name.to_owned(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
@@ -523,6 +525,8 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         requests[4],
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
+                holes: Vec::new(),
+                pockets: Vec::new(),
                 name: "Front sheathing".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xz,
@@ -970,6 +974,8 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     let expected_roof_program = AssistantCadEditProgram {
         operations: vec![
             AssistantCadEditOperation::CreatePart {
+                holes: Vec::new(),
+                pockets: Vec::new(),
                 name: "Left roof plane".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Yz,
@@ -988,6 +994,8 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
                 rotation: None,
             },
             AssistantCadEditOperation::CreatePart {
+                holes: Vec::new(),
+                pockets: Vec::new(),
                 name: "Right roof plane".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Yz,
@@ -2025,6 +2033,8 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
     let program = AssistantCadEditProgram {
         operations: vec![
             AssistantCadEditOperation::CreatePart {
+                holes: Vec::new(),
+                pockets: Vec::new(),
                 name: "Front sheathing".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xz,
@@ -2225,6 +2235,8 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
         profile_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
+                holes: Vec::new(),
+                pockets: Vec::new(),
                 name: "Sweep profile".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Yz,
@@ -2378,6 +2390,8 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
         part_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
+                holes: Vec::new(),
+                pockets: Vec::new(),
                 name: "Fillet block".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xy,

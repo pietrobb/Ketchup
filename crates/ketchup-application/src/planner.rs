@@ -17,9 +17,9 @@ use ketchup_assistant::sidecar::{
     AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
     AssistantCadSurfaceBodySource, AssistantCamToolKind, AssistantCamWorkOffset,
     AssistantInstancePath, AssistantInstancePathStep, AssistantInstanceReference,
-    AssistantPanelHole, AssistantPanelPocket, AssistantPinHoles, AssistantPrincipalPlane,
-    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
-    AssistantWorkplaneSpec, validated_spatial_path_segments,
+    AssistantPartHole, AssistantPartPocket, AssistantPinHoles, AssistantRejectionDiagnostic,
+    AssistantRejectionPhase, AssistantSketchEntity, AssistantWorkplaneSpec,
+    validated_spatial_path_segments,
 };
 use ketchup_geometry::linalg::cross;
 use ketchup_geometry::sketch::{
@@ -418,8 +418,8 @@ impl StagedPlanningContext {
     }
 }
 
-/// In-plane x axis for a workplane on an axis-aligned panel face.
-fn panel_face_x_axis(normal: [f64; 3]) -> [f64; 3] {
+/// In-plane x axis for a workplane on an axis-aligned part face.
+fn face_x_axis(normal: [f64; 3]) -> [f64; 3] {
     if normal[0].abs() > 0.5 {
         [0.0, 1.0, 0.0]
     } else if normal[1].abs() > 0.5 {
@@ -429,21 +429,20 @@ fn panel_face_x_axis(normal: [f64; 3]) -> [f64; 3] {
     }
 }
 
-fn panel_hole_workplane(hole: &AssistantPanelHole) -> AssistantWorkplaneSpec {
-    let normal = hole.inward_unit_local;
-    let x_axis = panel_face_x_axis(normal);
+fn hole_workplane(entry_local_mm: [f64; 3], normal: [f64; 3]) -> AssistantWorkplaneSpec {
+    let x_axis = face_x_axis(normal);
     AssistantWorkplaneSpec::Frame {
-        origin_mm: hole.entry_local_mm,
+        origin_mm: entry_local_mm,
         x_axis,
         y_axis: cross(normal, x_axis),
     }
 }
 
 /// Workplane on the pocket's entry face and the pocket rectangle in it.
-fn panel_pocket_sketch(pocket: &AssistantPanelPocket) -> (AssistantWorkplaneSpec, [f64; 4], f64) {
+fn pocket_sketch(pocket: &AssistantPartPocket) -> (AssistantWorkplaneSpec, [f64; 4], f64) {
     let normal = pocket.inward_unit_local;
     let axis = pocket.axis().unwrap_or(2);
-    let x_axis = panel_face_x_axis(normal);
+    let x_axis = face_x_axis(normal);
     let y_axis = cross(normal, x_axis);
     let mut origin_mm: [f64; 3] = std::array::from_fn(|index| {
         (pocket.min_local_mm[index] + pocket.max_local_mm[index]) * 0.5
@@ -479,58 +478,24 @@ fn panel_pocket_sketch(pocket: &AssistantPanelPocket) -> (AssistantWorkplaneSpec
     )
 }
 
+/// Plans one `create_part`: its profile and body (`plan_creation`), then the
+/// holes and pockets it drills into the body's bounding faces, each a sketch
+/// on that face and a pocket of the previous solid.
 #[allow(clippy::too_many_arguments)]
-fn plan_panel(
+fn plan_part(
+    operation: &AssistantCadEditOperation,
     name: &str,
-    dimensions_mm: [f64; 3],
-    holes: &[AssistantPanelHole],
-    pockets: &[AssistantPanelPocket],
-    translation_mm: [f64; 3],
-    rotation: Option<ketchup_assistant::sidecar::AssistantCadRotation>,
+    holes: &[AssistantPartHole],
+    pockets: &[AssistantPartPocket],
     staged: &mut StagedPlanningContext,
     next_definition: &mut Option<u64>,
     next_feature: &mut Option<u64>,
     next_occurrence: &mut Option<u64>,
     document_target: &str,
 ) -> AssistantPlanningResult<(DefinitionId, OccurrenceId, FeatureId, FeatureId)> {
-    let [width, depth, thickness] = dimensions_mm;
-    let base = AssistantCadEditOperation::CreatePart {
-        name: name.to_owned(),
-        workplane: AssistantWorkplaneSpec::Principal {
-            plane: AssistantPrincipalPlane::Xy,
-        },
-        entities: vec![
-            AssistantSketchEntity::Line {
-                id: 1,
-                start_mm: [0.0, 0.0],
-                end_mm: [width, 0.0],
-            },
-            AssistantSketchEntity::Line {
-                id: 2,
-                start_mm: [width, 0.0],
-                end_mm: [width, depth],
-            },
-            AssistantSketchEntity::Line {
-                id: 3,
-                start_mm: [width, depth],
-                end_mm: [0.0, depth],
-            },
-            AssistantSketchEntity::Line {
-                id: 4,
-                start_mm: [0.0, depth],
-                end_mm: [0.0, 0.0],
-            },
-        ],
-        constraints: Vec::new(),
-        feature: AssistantCadPartFeature::Extrusion {
-            distance_mm: thickness,
-        },
-        translation_mm,
-        rotation,
-    };
     let base_commands = plan_creation(
         staged.base_snapshot(),
-        &base,
+        operation,
         next_definition,
         next_feature,
         next_occurrence,
@@ -573,13 +538,48 @@ fn plan_panel(
         })
         .expect("CreatePart always creates a body");
     staged.extend(base_commands);
+    if !holes.is_empty() || !pockets.is_empty() {
+        staged.refresh("create_part", document_target)?;
+        let bounds_rejection = |message: String| {
+            assistant_planning_rejection(
+                "planning.cad_part_bounds_unknown",
+                "create_part",
+                document_target,
+                message,
+                "Drill holes and pockets into a part whose body is one exact solid.",
+            )
+        };
+        let bounds = ExactBRepGraph::from_snapshot(
+            staged.staged_snapshot(),
+            definition_id,
+            target_feature_id,
+        )
+        .map_err(|error| bounds_rejection(error.to_string()))?
+        .producer_bounds_mm()
+        .map_err(|error| bounds_rejection(error.to_string()))?
+        .ok_or_else(|| bounds_rejection("The part body has no finite bounds.".to_owned()))?;
+        holes
+            .iter()
+            .map(|hole| hole.validate_within(bounds))
+            .chain(pockets.iter().map(|pocket| pocket.validate_within(bounds)))
+            .collect::<Result<Vec<()>, _>>()
+            .map_err(|error| {
+                assistant_planning_rejection(
+                    "planning.cad_part_cut_outside",
+                    "create_part",
+                    document_target,
+                    error.to_string(),
+                    "Start each hole and pocket on a bounding face of the part body and keep it inside the body.",
+                )
+            })?;
+    }
 
     for hole in holes {
-        staged.refresh("create_panel", document_target)?;
+        staged.refresh("create_part", document_target)?;
         let sketch = AssistantCadEditOperation::CreateSketch {
             definition_id: definition_id.0.into(),
             name: format!("{name} hole {}", hole.id),
-            workplane: panel_hole_workplane(hole),
+            workplane: hole_workplane(hole.entry_local_mm, hole.inward_unit_local),
             entities: vec![AssistantSketchEntity::Circle {
                 id: 1,
                 center_mm: [0.0, 0.0],
@@ -607,7 +607,7 @@ fn plan_panel(
             })
             .expect("CreateSketch always creates a sketch");
         staged.extend(sketch_commands);
-        staged.refresh("create_panel", document_target)?;
+        staged.refresh("create_part", document_target)?;
         let feature = AssistantCadBodyFeature::Pocket {
             target_feature_id: target_feature_id.0.into(),
             profile_feature_id: sketch_id.0.into(),
@@ -618,12 +618,12 @@ fn plan_panel(
             &staged.topology(&ExactResultRegistry::default()),
             definition_id,
             &feature,
-            "create_panel",
+            "create_part",
         )?;
         let id = next_feature.map(FeatureId).ok_or_else(|| {
             assistant_canonical_rejection(
                 CanonicalError::IdExhausted,
-                "create_panel",
+                "create_part",
                 document_target,
             )
         })?;
@@ -637,8 +637,8 @@ fn plan_panel(
         target_feature_id = id;
     }
     for pocket in pockets {
-        staged.refresh("create_panel", document_target)?;
-        let (workplane, [x_min, y_min, x_max, y_max], depth_mm) = panel_pocket_sketch(pocket);
+        staged.refresh("create_part", document_target)?;
+        let (workplane, [x_min, y_min, x_max, y_max], depth_mm) = pocket_sketch(pocket);
         let line = |id, start_mm, end_mm| AssistantSketchEntity::Line {
             id,
             start_mm,
@@ -676,7 +676,7 @@ fn plan_panel(
             })
             .expect("CreateSketch always creates a sketch");
         staged.extend(sketch_commands);
-        staged.refresh("create_panel", document_target)?;
+        staged.refresh("create_part", document_target)?;
         let feature = AssistantCadBodyFeature::Pocket {
             target_feature_id: target_feature_id.0.into(),
             profile_feature_id: sketch_id.0.into(),
@@ -687,12 +687,12 @@ fn plan_panel(
             &staged.topology(&ExactResultRegistry::default()),
             definition_id,
             &feature,
-            "create_panel",
+            "create_part",
         )?;
         let id = next_feature.map(FeatureId).ok_or_else(|| {
             assistant_canonical_rejection(
                 CanonicalError::IdExhausted,
-                "create_panel",
+                "create_part",
                 document_target,
             )
         })?;
@@ -892,17 +892,10 @@ fn append_physical_pin_hole(
         "create_pin_joint",
         None,
     )?;
-    let panel_hole = AssistantPanelHole {
-        id: hole.stable_hole_id.clone(),
-        entry_local_mm: hole.entry_local_mm,
-        inward_unit_local: hole.inward_unit_local,
-        diameter_mm: hole.diameter_mm,
-        depth_mm: hole.depth_mm,
-    };
     let sketch = AssistantCadEditOperation::CreateSketch {
         definition_id: definition_id.0.into(),
         name: format!("{} sketch", hole.stable_hole_id),
-        workplane: panel_hole_workplane(&panel_hole),
+        workplane: hole_workplane(hole.entry_local_mm, hole.inward_unit_local),
         entities: vec![AssistantSketchEntity::Circle {
             id: 1,
             center_mm: [0.0, 0.0],
@@ -1831,7 +1824,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         let operation_name = match operation {
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
             AssistantCadEditOperation::CreatePart { .. } => "create_part",
-            AssistantCadEditOperation::CreatePanel { .. } => "create_panel",
             AssistantCadEditOperation::CreateSpatialPath { .. } => "create_spatial_path",
             AssistantCadEditOperation::CreateConstructionPoint { .. } => {
                 "create_construction_point"
@@ -1962,7 +1954,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         let selector = match operation {
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
-            | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
             | AssistantCadEditOperation::CreateConstructionAxis { .. }
@@ -2017,97 +2008,34 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         }
 
         match operation {
-            AssistantCadEditOperation::CreatePart { .. } => {
-                let creation_commands = plan_creation(
-                    &snapshot,
-                    operation,
-                    &mut next_definition,
-                    &mut next_feature,
-                    &mut next_occurrence,
-                    &document_target,
-                )?;
-                for command in &creation_commands {
-                    match command {
-                        CanonicalCommand::CreateDefinition { id, .. } => {
-                            staged_planning.record_output(
-                                operation_index,
-                                StagedProgramOutput::Definition(*id),
-                            );
-                        }
-                        CanonicalCommand::CreateFeature {
-                            id,
-                            kind: ketchup_model::document::FeatureKind::Sketch(_),
-                            ..
-                        } => {
-                            staged_planning.record_output(
-                                operation_index,
-                                StagedProgramOutput::SketchFeature(*id),
-                            );
-                        }
-                        CanonicalCommand::CreateFeature { id, kind, .. }
-                            if matches!(
-                                operation,
-                                AssistantCadEditOperation::CreatePart { .. }
-                            ) && !matches!(
-                                kind,
-                                ketchup_model::document::FeatureKind::Workplane(_)
-                                    | ketchup_model::document::FeatureKind::Sketch(_)
-                            ) =>
-                        {
-                            staged_planning.record_output(
-                                operation_index,
-                                StagedProgramOutput::BodyFeature(*id),
-                            );
-                        }
-                        CanonicalCommand::CreateOccurrence { id, .. } => {
-                            staged_planning.record_output(
-                                operation_index,
-                                StagedProgramOutput::Occurrence(*id),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                staged_planning.extend(creation_commands);
-            }
-            AssistantCadEditOperation::CreatePanel {
+            AssistantCadEditOperation::CreatePart {
                 name,
-                dimensions_mm,
                 holes,
                 pockets,
-                translation_mm,
-                rotation,
+                ..
             } => {
-                let (definition_id, occurrence_id, sketch_id, body_feature_id) = plan_panel(
+                let (definition_id, occurrence_id, sketch_id, body_feature_id) = plan_part(
+                    operation,
                     name,
-                    *dimensions_mm,
                     holes,
                     pockets,
-                    *translation_mm,
-                    rotation.clone(),
                     &mut staged_planning,
                     &mut next_definition,
                     &mut next_feature,
                     &mut next_occurrence,
                     &document_target,
                 )?;
-                staged_planning.record_output(
-                    operation_index,
+                for output in [
                     StagedProgramOutput::Definition(definition_id),
-                );
-                staged_planning.record_output(
-                    operation_index,
                     StagedProgramOutput::Occurrence(occurrence_id),
-                );
-                staged_planning.record_output(
-                    operation_index,
                     StagedProgramOutput::SketchFeature(sketch_id),
-                );
-                staged_planning.record_output(
-                    operation_index,
                     StagedProgramOutput::BodyFeature(body_feature_id),
-                );
-                appended_exact_features.push((definition_id, body_feature_id));
+                ] {
+                    staged_planning.record_output(operation_index, output);
+                }
+                if !holes.is_empty() || !pockets.is_empty() {
+                    appended_exact_features.push((definition_id, body_feature_id));
+                }
             }
             AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
                 let path_segments = validated_spatial_path_segments(segments, snapshot.tolerance().linear_mm()).map_err(|error| {
@@ -2938,7 +2866,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         operation_name,
                         &document_target,
                         error.to_string(),
-                        "Keep the moved pair inside both panels and away from other pins.",
+                        "Keep the moved pair inside both parts and away from other pins.",
                     )
                 })?;
                 let current_pair = &before.pairs[index];
@@ -3860,12 +3788,12 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
     Ok(AssistantCadProgramPlan { batch, outputs })
 }
 
-/// Plans many `create_panel` operations as one command batch. Used by rule
+/// Plans many `create_part` operations as one command batch. Used by rule
 /// programs, which may generate far more parts than one Assistant program is
 /// allowed to create.
-pub fn plan_panel_batch(
+pub fn plan_part_batch(
     document: &DocumentStore,
-    panels: &[AssistantCadEditOperation],
+    parts: &[AssistantCadEditOperation],
 ) -> Result<CommandBatch, Box<AssistantRejectionDiagnostic>> {
     let snapshot = document.current();
     let document_target = format!("document:{}", snapshot.document_id().0);
@@ -3874,7 +3802,7 @@ pub fn plan_panel_batch(
     let mut next_occurrence = next_id(&mut snapshot.occurrences().map(|item| item.id().0));
     let mut next_feature = next_id(&mut snapshot.features().map(|item| item.id().0));
     let mut staged = StagedPlanningContext::new(&snapshot);
-    for operation in panels {
+    for operation in parts {
         staged.refresh("rule_part", &document_target)?;
         AssistantCadEditProgram {
             operations: vec![operation.clone()],
@@ -3892,21 +3820,17 @@ pub fn plan_panel_batch(
             )
         })?;
         match operation {
-            AssistantCadEditOperation::CreatePanel {
+            AssistantCadEditOperation::CreatePart {
                 name,
-                dimensions_mm,
                 holes,
                 pockets,
-                translation_mm,
-                rotation,
+                ..
             } => {
-                plan_panel(
+                plan_part(
+                    operation,
                     name,
-                    *dimensions_mm,
                     holes,
                     pockets,
-                    *translation_mm,
-                    rotation.clone(),
                     &mut staged,
                     &mut next_definition,
                     &mut next_feature,
@@ -3914,24 +3838,13 @@ pub fn plan_panel_batch(
                     &document_target,
                 )?;
             }
-            AssistantCadEditOperation::CreatePart { .. } => {
-                let commands = plan_creation(
-                    staged.staged_snapshot(),
-                    operation,
-                    &mut next_definition,
-                    &mut next_feature,
-                    &mut next_occurrence,
-                    &document_target,
-                )?;
-                staged.extend(commands);
-            }
             _ => {
                 return Err(assistant_planning_rejection(
                     "planning.rule_part_expected",
                     "rule_part",
                     &document_target,
                     "rule program batches accept only independent part creation operations.",
-                    "Pass create_part or create_panel operations only.",
+                    "Pass create_part operations only.",
                 ));
             }
         }
@@ -3947,7 +3860,7 @@ pub fn plan_rule_part_batch(
         .iter()
         .map(ketchup_program::cad::part)
         .collect::<Vec<_>>();
-    let base = plan_panel_batch(document, &operations)?;
+    let base = plan_part_batch(document, &operations)?;
     let snapshot = document.current();
     let document_target = format!("document:{}", snapshot.document_id().0);
     let definitions = base

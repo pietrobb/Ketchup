@@ -454,7 +454,6 @@ fn bind_assistant_cad_current_selection(
         let Some(selector) = (match operation {
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
-            | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreatePinJoint { .. }
             | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
             | AssistantCadEditOperation::MovePhysicalPinPair { .. }
