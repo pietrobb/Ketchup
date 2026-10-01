@@ -46,18 +46,6 @@ pub struct FaceFrame {
     pub max: [f64; 2],
 }
 
-/// Panel faces: name, the local axis it is perpendicular to, whether it lies
-/// at the far end of that axis. Face coordinates follow the remaining axes in
-/// order: z faces use (x, y), x faces (y, z), y faces (x, z).
-pub const PANEL_FACES: [(&str, usize, bool); 6] = [
-    ("x-", 0, false),
-    ("x+", 0, true),
-    ("y-", 1, false),
-    ("y+", 1, true),
-    ("z-", 2, false),
-    ("z+", 2, true),
-];
-
 fn unit(axis: usize) -> [f64; 3] {
     std::array::from_fn(|index| if index == axis { 1.0 } else { 0.0 })
 }
@@ -275,22 +263,35 @@ fn arc_side(segment: &ProgramProfileSegment, turn: f64) -> Option<([f64; 3], f64
     ))
 }
 
-fn extrusion_faces(segments: &[ProgramProfileSegment], distance_mm: f64) -> Vec<FaceFrame> {
+/// Faces of `segments` extruded by `distance_mm` between the `caps`. A flat
+/// side's u runs forward along its dominant axis, so a box's sides are
+/// measured from its minimum corner.
+fn extrusion_faces(
+    segments: &[ProgramProfileSegment],
+    distance_mm: f64,
+    caps: &[String; 2],
+) -> Vec<FaceFrame> {
     let (min, max) = profile_bounds(segments);
     let (x, y, z) = (unit(0), unit(1), unit(2));
     let mut faces = vec![
-        FaceFrame::planar("start", [0.0; 3], scaled(z, -1.0), x, y).spanning(min, max),
-        FaceFrame::planar("end", [0.0, 0.0, distance_mm], z, x, y).spanning(min, max),
+        FaceFrame::planar(&caps[0], [0.0; 3], scaled(z, -1.0), x, y).spanning(min, max),
+        FaceFrame::planar(&caps[1], [0.0, 0.0, distance_mm], z, x, y).spanning(min, max),
     ];
     let turn = turn(segments);
     for segment in segments {
         if let Some((direction, length)) = side(segment) {
+            let dominant = usize::from(direction[1].abs() > direction[0].abs());
+            let (origin, u) = if direction[dominant] < 0.0 {
+                (segment.end_mm, scaled(direction, -1.0))
+            } else {
+                (segment.start_mm, direction)
+            };
             faces.push(
                 FaceFrame::planar(
                     &segment.name,
-                    flat(segment.start_mm),
+                    flat(origin),
                     side_normal(direction, turn),
-                    direction,
+                    u,
                     z,
                 )
                 .spanning([0.0; 2], [length, distance_mm]),
@@ -309,6 +310,22 @@ fn extrusion_faces(segments: &[ProgramProfileSegment], distance_mm: f64) -> Vec<
         }
     }
     faces
+}
+
+/// The faces of the box `min..max`, named and measured as a cuboid's.
+pub(crate) fn box_faces(min: [f64; 3], max: [f64; 3]) -> Vec<FaceFrame> {
+    let ProgramPartBody::Extrusion {
+        segments,
+        distance_mm,
+        caps,
+    } = ProgramPartBody::cuboid(std::array::from_fn(|axis| max[axis] - min[axis]))
+    else {
+        unreachable!("a cuboid is an extrusion")
+    };
+    extrusion_faces(&segments, distance_mm, &caps)
+        .into_iter()
+        .map(|face| face.placed(&frame::IDENTITY, min, false))
+        .collect()
 }
 
 fn revolve_faces(
@@ -412,30 +429,11 @@ impl Part {
     /// Frames of the body's faces before any operation.
     fn body_face_frames(&self) -> Vec<FaceFrame> {
         match &self.body {
-            ProgramPartBody::Panel => PANEL_FACES
-                .iter()
-                .map(|&(name, axis, far)| {
-                    let (u_axis, v_axis) = match axis {
-                        0 => (1, 2),
-                        1 => (0, 2),
-                        _ => (0, 1),
-                    };
-                    let mut origin = [0.0; 3];
-                    origin[axis] = if far { self.size_mm[axis] } else { 0.0 };
-                    FaceFrame::planar(
-                        name,
-                        origin,
-                        scaled(unit(axis), if far { 1.0 } else { -1.0 }),
-                        unit(u_axis),
-                        unit(v_axis),
-                    )
-                    .spanning([0.0; 2], [self.size_mm[u_axis], self.size_mm[v_axis]])
-                })
-                .collect(),
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
-            } => extrusion_faces(segments, *distance_mm),
+                caps,
+            } => extrusion_faces(segments, *distance_mm, caps),
             ProgramPartBody::Revolve {
                 segments,
                 axis_start_mm,
@@ -586,10 +584,10 @@ impl Part {
     }
 
     /// Holes and pockets as subtracted tools, in the body's frame, for a
-    /// part built from a profile; a box carries them itself (`crate::cad`).
+    /// part built from a profile; a cuboid carries them itself (`crate::cad`).
     #[must_use]
     pub fn machining_tools(&self) -> Vec<ProgramBoolean> {
-        if matches!(self.body, ProgramPartBody::Panel) {
+        if self.body.cuboid_size().is_some() {
             return Vec::new();
         }
         let tool = |name: String, size_mm: [f64; 3], corner: [f64; 3], axes: Mat3, body| {
@@ -638,13 +636,13 @@ impl Part {
                 [hole.diameter_mm, hole.diameter_mm, hole.depth_mm],
                 hole.entry_mm,
                 axes,
-                ProgramPartBody::Extrusion {
-                    segments: vec![
+                ProgramPartBody::extrusion(
+                    vec![
                         half("wall_1", [radius, 0.0], [-radius, 0.0]),
                         half("wall_2", [-radius, 0.0], [radius, 0.0]),
                     ],
-                    distance_mm: hole.depth_mm,
-                },
+                    hole.depth_mm,
+                ),
             )
         });
         let pockets = self.pockets.iter().map(|pocket| {
@@ -666,7 +664,7 @@ impl Part {
                 size,
                 pocket.corner_mm,
                 axes,
-                ProgramPartBody::Panel,
+                ProgramPartBody::cuboid(size),
             )
         });
         holes.chain(pockets).collect()

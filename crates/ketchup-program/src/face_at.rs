@@ -5,8 +5,6 @@ use crate::model::{Part, ProgramPartBody, ProgramProfileSegment};
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 use std::f64::consts::TAU;
 
-const AXES: [char; 3] = ['x', 'y', 'z'];
-
 impl Part {
     /// Program name of the face through `point` with outward unit `normal`,
     /// both in the part's own frame: "x-" ... "z+" on a box, "start", "end"
@@ -28,13 +26,11 @@ impl Part {
                 }
             })
         };
+        let caps = match &self.body {
+            ProgramPartBody::Extrusion { caps, .. } => [caps[0].as_str(), caps[1].as_str()],
+            _ => ["start", "end"],
+        };
         let segments = match &self.body {
-            ProgramPartBody::Panel => {
-                return (0..3).find_map(|axis| match cap(axis) {
-                    Some((true, sign)) => Some(format!("{}{sign}", AXES[axis])),
-                    _ => None,
-                });
-            }
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. }
             | ProgramPartBody::Sweep { segments, .. } => segments.as_slice(),
@@ -48,11 +44,10 @@ impl Part {
                 self.cuts()
                     .any(|c| c.name == cut && c.segments.iter().any(|s| s.name == face))
             });
-            if base == "start"
-                || base == "end"
-                || cut_face
-                || segments.iter().any(|s| s.name == base)
-            {
+            if let Some(index) = ["start", "end"].iter().position(|end| *end == base) {
+                return Some(role.replacen(base, caps[index], 1));
+            }
+            if caps.contains(&base) || cut_face || segments.iter().any(|s| s.name == base) {
                 return Some(role.to_owned());
             }
         }
@@ -60,7 +55,7 @@ impl Part {
         match &self.body {
             ProgramPartBody::Extrusion { .. } => {
                 if let Some((true, sign)) = cap(2) {
-                    return Some(if sign == "+" { "end" } else { "start" }.to_owned());
+                    return Some(caps[usize::from(sign == "+")].to_owned());
                 }
                 if normal[2].abs() > APPROXIMATION {
                     return None;

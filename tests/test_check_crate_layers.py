@@ -173,3 +173,20 @@ def test_hand_written_linear_algebra_is_counted_and_only_falls(tmp_path):
 def test_workspace_linear_algebra_stays_in_ketchup_geometry():
     counts = checker.linear_algebra_counts(ROOT)
     assert checker.hand_written_linear_algebra(counts) == []
+
+
+def test_a_program_body_without_geometry_fails():
+    source = (
+        "pub enum ProgramPartBody {\n    Panel,\n    Extrusion {\n        segments: Vec<S>,\n"
+        "    },\n    Sphere,\n}\n"
+    )
+    problems = checker.named_program_bodies(source)
+    assert [problem.split()[0] for problem in problems] == [
+        "ProgramPartBody::Panel",
+        "ProgramPartBody::Sphere",
+    ]
+
+
+def test_workspace_program_bodies_carry_their_geometry():
+    source = (ROOT / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
+    assert checker.named_program_bodies(source) == []

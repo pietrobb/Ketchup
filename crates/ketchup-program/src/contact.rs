@@ -2,7 +2,7 @@
 //! flat face of the other, whatever the parts' bodies, operations and frames.
 
 use crate::eval::TOLERANCE_MM;
-use crate::faces::{FaceFrame, FaceKind, PANEL_FACES};
+use crate::faces::{FaceFrame, FaceKind, box_faces};
 use crate::model::Part;
 use ketchup_geometry::linalg::dot;
 use ketchup_model::tolerance::ROUNDING;
@@ -117,31 +117,7 @@ fn planar_faces(part: &Part) -> Vec<FaceFrame> {
     let faces = part.face_frames();
     if faces.is_empty() {
         let (min, max) = part.local_bounds();
-        return PANEL_FACES
-            .iter()
-            .map(|&(name, axis, far)| {
-                let (u_axis, v_axis) = match axis {
-                    0 => (1, 2),
-                    1 => (0, 2),
-                    _ => (0, 1),
-                };
-                let unit = |index: usize| -> [f64; 3] {
-                    std::array::from_fn(|i| if i == index { 1.0 } else { 0.0 })
-                };
-                let mut origin = min;
-                origin[axis] = if far { max[axis] } else { min[axis] };
-                FaceFrame {
-                    name: name.to_owned(),
-                    kind: FaceKind::Planar,
-                    origin_mm: origin,
-                    normal: unit(axis).map(|value| if far { value } else { -value }),
-                    u: unit(u_axis),
-                    v: unit(v_axis),
-                    min: [0.0; 2],
-                    max: [max[u_axis] - min[u_axis], max[v_axis] - min[v_axis]],
-                }
-            })
-            .collect();
+        return box_faces(min, max);
     }
     faces
         .into_iter()

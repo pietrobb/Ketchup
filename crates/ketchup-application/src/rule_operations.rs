@@ -466,17 +466,7 @@ impl<'a> OperationPlanner<'a> {
             definition_id: self.definition_id,
             id: body,
         });
-        let line = |start_mm: [f64; 2], end_mm: [f64; 2]| ProfileSegment::Line { start_mm, end_mm };
         let segments = match &tool.body {
-            ProgramPartBody::Panel => {
-                let [x, y, _] = tool.size_mm;
-                vec![
-                    line([0.0, 0.0], [x, 0.0]),
-                    line([x, 0.0], [x, y]),
-                    line([x, y], [0.0, y]),
-                    line([0.0, y], [0.0, 0.0]),
-                ]
-            }
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. }
             | ProgramPartBody::Sweep { segments, .. } => {
@@ -512,7 +502,6 @@ impl<'a> OperationPlanner<'a> {
                 path: self.feature(format!("{prefix} tool path"), spatial_path(path))?,
             },
             ProgramPartBody::Loft { .. } => unreachable!("built above"),
-            ProgramPartBody::Panel => self.extrusion(profile, tool.size_mm[2])?,
             ProgramPartBody::Extrusion { distance_mm, .. } => {
                 self.extrusion(profile, *distance_mm)?
             }

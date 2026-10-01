@@ -119,7 +119,7 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
             // Only a plain box is exactly its bounding box; anything else
             // removes less, so it cannot prove the overlap gone.
             ProgramBooleanKind::Subtract => {
-                !(matches!(tool.body, ProgramPartBody::Panel)
+                !(is_box(tool)
                     && tool.booleans().next().is_none()
                     && !corners.is_empty()
                     && corners
@@ -145,8 +145,7 @@ fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
     part.booleans()
         .filter(|boolean| {
             boolean.kind == ProgramBooleanKind::Subtract
-                && matches!(boolean.tool.body, ProgramPartBody::Panel)
-                && !boolean.tool.has_shaping()
+                && is_box(&boolean.tool)
                 && boolean.tool.booleans().next().is_none()
         })
         .filter_map(|boolean| {
@@ -198,13 +197,12 @@ fn trims_separate(a: &Part, b: &Part) -> bool {
         })
 }
 
-/// Whether the solid of `part`, before booleans, is exactly its box: a panel,
-/// or an extrusion of a rectangle, with no cut, finish or moved face.
+/// Whether the solid of `part`, before booleans, is exactly its box: an
+/// extrusion of an axis-aligned rectangle, with no cut, finish or moved face.
 pub(crate) fn is_box(part: &Part) -> bool {
     let plain = !part.has_shaping();
     plain
         && match &part.body {
-            ProgramPartBody::Panel => true,
             ProgramPartBody::Extrusion { segments, .. }
                 if segments.iter().all(ProgramProfileSegment::is_line) =>
             {

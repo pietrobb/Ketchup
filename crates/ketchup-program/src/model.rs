@@ -445,10 +445,12 @@ impl ProgramOperation {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProgramPartBody {
-    Panel,
+    /// The closed profile padded along local +z by `distance_mm`; `caps`
+    /// name the faces at z = 0 and z = distance.
     Extrusion {
         segments: Vec<ProgramProfileSegment>,
         distance_mm: f64,
+        caps: [String; 2],
     },
     Revolve {
         segments: Vec<ProgramProfileSegment>,
@@ -464,9 +466,65 @@ pub enum ProgramPartBody {
     },
     /// A solid through closed profiles lying in local XY planes at strictly
     /// increasing heights.
-    Loft {
-        sections: Vec<ProgramLoftSection>,
-    },
+    Loft { sections: Vec<ProgramLoftSection> },
+}
+
+impl ProgramPartBody {
+    /// A profile extruded from its "start" cap to its "end" cap.
+    #[must_use]
+    pub fn extrusion(segments: Vec<ProgramProfileSegment>, distance_mm: f64) -> Self {
+        Self::Extrusion {
+            segments,
+            distance_mm,
+            caps: ["start".to_owned(), "end".to_owned()],
+        }
+    }
+
+    /// The cuboid `0..size_mm`: the rectangle y-, x+, y+, x- extruded from
+    /// cap z- to cap z+, so every face is named by its outward axis.
+    #[must_use]
+    pub fn cuboid(size_mm: [f64; 3]) -> Self {
+        let [x, y, z] = size_mm;
+        Self::Extrusion {
+            segments: vec![
+                ProgramProfileSegment::line("y-", [0.0, 0.0], [x, 0.0]),
+                ProgramProfileSegment::line("x+", [x, 0.0], [x, y]),
+                ProgramProfileSegment::line("y+", [x, y], [0.0, y]),
+                ProgramProfileSegment::line("x-", [0.0, y], [0.0, 0.0]),
+            ],
+            distance_mm: z,
+            caps: ["z-".to_owned(), "z+".to_owned()],
+        }
+    }
+
+    /// The size of the cuboid this body is: the rectangle of `cuboid(size)`,
+    /// corner for corner, extruded by its distance (under any face names).
+    #[must_use]
+    pub fn cuboid_size(&self) -> Option<[f64; 3]> {
+        let Self::Extrusion {
+            segments,
+            distance_mm,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let size = [
+            segments.first()?.end_mm[0],
+            segments.get(2)?.start_mm[1],
+            *distance_mm,
+        ];
+        let Self::Extrusion { segments: own, .. } = Self::cuboid(size) else {
+            unreachable!("a cuboid is an extrusion")
+        };
+        (segments.len() == own.len()
+            && segments.iter().zip(&own).all(|(segment, corner)| {
+                segment.is_line()
+                    && segment.start_mm == corner.start_mm
+                    && segment.end_mm == corner.end_mm
+            }))
+        .then_some(size)
+    }
 }
 
 /// A circular path arc, counter-clockwise about `normal` seen from its tip.
@@ -565,18 +623,19 @@ impl Part {
             })
     }
 
-    /// Names of the faces of the body before any operation: "x-" ... "z+" on
-    /// a box; "start", "end" and the segment names on an extruded or revolved
-    /// profile. Swept and lofted bodies have none.
+    /// Names of the faces of the body before any operation: the caps and the
+    /// segment names of an extruded profile ("z-", "z+", "y-", "x+", "y+",
+    /// "x-" on a box); "start", "end" and the segment names of a revolved
+    /// one. Swept and lofted bodies have none.
     #[must_use]
     pub fn body_face_names(&self) -> Vec<String> {
         match &self.body {
-            ProgramPartBody::Panel => crate::faces::PANEL_FACES
+            ProgramPartBody::Extrusion { segments, caps, .. } => caps
                 .iter()
-                .map(|(name, ..)| (*name).to_owned())
+                .cloned()
+                .chain(segments.iter().map(|segment| segment.name.clone()))
                 .collect(),
-            ProgramPartBody::Extrusion { segments, .. }
-            | ProgramPartBody::Revolve { segments, .. } => ["start", "end"]
+            ProgramPartBody::Revolve { segments, .. } => ["start", "end"]
                 .into_iter()
                 .map(str::to_owned)
                 .chain(segments.iter().map(|segment| segment.name.clone()))
@@ -674,18 +733,17 @@ impl Part {
             }
         };
         match &self.body {
-            ProgramPartBody::Panel => Ok(match name {
-                "z-" => "start",
-                "z+" => "end",
-                "y-" => "segment_1",
-                "x+" => "segment_2",
-                "y+" => "segment_3",
-                "x-" => "segment_4",
-                _ => return Err(unknown()),
+            ProgramPartBody::Extrusion { segments, caps, .. } => {
+                if let Some(index) = caps.iter().position(|cap| cap == name) {
+                    return Ok(["start", "end"][index].to_owned());
+                }
+                segments
+                    .iter()
+                    .position(|segment| segment.name == name)
+                    .map(|index| segment_label(segments, index))
+                    .ok_or_else(unknown)
             }
-            .to_owned()),
-            ProgramPartBody::Extrusion { segments, .. }
-            | ProgramPartBody::Revolve { segments, .. } => {
+            ProgramPartBody::Revolve { segments, .. } => {
                 if name == "start" || name == "end" {
                     return Ok(name.to_owned());
                 }
@@ -741,16 +799,17 @@ impl Part {
 
     fn body_bounds(&self) -> ([f64; 3], [f64; 3]) {
         match &self.body {
-            ProgramPartBody::Panel => self.grown_by_pushed_faces([0.0; 3], self.size_mm, &[]),
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
+                caps,
             } => {
                 let (min, max) = profile_bounds(segments);
                 self.grown_by_pushed_faces(
                     [min[0], min[1], 0.0],
                     [max[0], max[1], *distance_mm],
                     segments,
+                    Some(caps),
                 )
             }
             ProgramPartBody::Revolve { segments, .. } => {
@@ -760,6 +819,7 @@ impl Part {
                     [-radius, min[1], -radius],
                     [radius, max[1], radius],
                     &[],
+                    None,
                 )
             }
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
@@ -790,6 +850,7 @@ impl Part {
         mut min: [f64; 3],
         mut max: [f64; 3],
         segments: &[ProgramProfileSegment],
+        caps: Option<&[String; 2]>,
     ) -> ([f64; 3], [f64; 3]) {
         let doubled_area: f64 = segments
             .iter()
@@ -799,31 +860,21 @@ impl Part {
         for offset in self.face_offsets().filter(|o| o.distance_mm > 0.0) {
             let d = offset.distance_mm;
             let face = offset.face.split('#').next().unwrap_or_default();
-            if matches!(self.body, ProgramPartBody::Panel)
-                && let Some(&(_, axis, far)) = crate::faces::PANEL_FACES
-                    .iter()
-                    .find(|(name, ..)| *name == face)
-            {
-                if far {
-                    max[axis] += d;
-                } else {
-                    min[axis] -= d;
-                }
-                continue;
-            }
-            let side = segments.iter().position(|s| s.name == face);
-            let moved = match (face, side) {
-                ("end", _) if !segments.is_empty() => {
-                    max[2] += d;
-                    continue;
-                }
-                ("start", _) if !segments.is_empty() => {
+            match caps.and_then(|caps| caps.iter().position(|cap| cap == face)) {
+                Some(0) => {
                     min[2] -= d;
                     continue;
                 }
-                (_, Some(index)) => moved_side(segments, index, d * turn),
-                _ => None,
-            };
+                Some(_) => {
+                    max[2] += d;
+                    continue;
+                }
+                None => {}
+            }
+            let moved = segments
+                .iter()
+                .position(|s| s.name == face)
+                .and_then(|index| moved_side(segments, index, d * turn));
             let Some(points) = moved else {
                 for axis in 0..3 {
                     min[axis] -= d;
@@ -880,7 +931,6 @@ impl Part {
         let largest =
             |values: &mut dyn Iterator<Item = f64>| values.fold(f64::NEG_INFINITY, f64::max);
         let body = match &self.body {
-            ProgramPartBody::Panel => bounds_reach(),
             ProgramPartBody::Extrusion { .. } | ProgramPartBody::Revolve { .. }
                 if self.pushes_faces_out() =>
             {
@@ -889,6 +939,7 @@ impl Part {
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
+                ..
             } => {
                 largest(&mut segments.iter().map(|s| s.support([local[0], local[1]])))
                     + (local[2] * distance_mm).max(0.0)
@@ -1040,29 +1091,23 @@ impl Part {
             parameters
         };
         match &self.body {
-            ProgramPartBody::Panel => {
-                features.push(feature(
-                    format!("{} sketch", self.name),
-                    ProgramFeatureKind::Sketch,
-                    vec![
-                        length("bounds.width", self.size_mm[0]),
-                        length("bounds.height", self.size_mm[1]),
-                    ],
-                ));
-                features.push(feature(
-                    format!("{} feature", self.name),
-                    ProgramFeatureKind::Pad,
-                    vec![length("extent.distance", self.size_mm[2])],
-                ));
-            }
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
+                ..
             } => {
+                // A cuboid's sketch is the document's rectangle (`crate::cad`).
+                let sketch = match self.body.cuboid_size() {
+                    Some([width, height, _]) => vec![
+                        length("bounds.width", width),
+                        length("bounds.height", height),
+                    ],
+                    None => profile_parameters(segments),
+                };
                 features.push(feature(
                     format!("{} sketch", self.name),
                     ProgramFeatureKind::Sketch,
-                    profile_parameters(segments),
+                    sketch,
                 ));
                 features.push(feature(
                     format!("{} feature", self.name),

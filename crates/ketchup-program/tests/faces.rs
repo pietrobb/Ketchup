@@ -49,7 +49,8 @@ fn box_faces_are_planes_that_follow_the_part_frame() {
         "p",
     );
     let names: Vec<_> = panel.face_frames().into_iter().map(|f| f.name).collect();
-    assert_eq!(names, ["x-", "x+", "y-", "y+", "z-", "z+"]);
+    // A box is its rectangle extruded: caps first, then the sides in order.
+    assert_eq!(names, ["z-", "z+", "y-", "x+", "y+", "x-"]);
     let top = world(&panel, "z+");
     assert_eq!(top.kind, FaceKind::Planar);
     assert_near(top.origin_mm, [10.0, 20.0, 48.0], "z+ origin");
@@ -68,8 +69,45 @@ fn box_faces_are_planes_that_follow_the_part_frame() {
         panel
             .face_frame("top")
             .unwrap_err()
-            .contains("x-, x+, y-, y+, z-, z+")
+            .contains("z-, z+, y-, x+, y+, x-")
     );
+}
+
+#[test]
+fn a_box_is_its_rectangle_extruded_and_measured_from_its_minimum_corner() {
+    let block = part("box(\"b\", (400, 300, 18))\n", "b");
+    assert_eq!(block.body.cuboid_size(), Some([400.0, 300.0, 18.0]));
+    // Every side, also the two the rectangle runs backwards along, starts at
+    // the minimum corner and runs along +x or +y.
+    for (name, origin, u) in [
+        ("y-", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        ("x+", [400.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ("y+", [0.0, 300.0, 0.0], [1.0, 0.0, 0.0]),
+        ("x-", [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ] {
+        let face = block.face_frame(name).unwrap();
+        assert_near(face.origin_mm, origin, name);
+        assert_near(face.u, u, name);
+        assert_near(face.v, [0.0, 0.0, 1.0], name);
+    }
+    // The exact kernel names the faces as it names the panel it builds.
+    for (name, label) in [
+        ("z-", "start"),
+        ("z+", "end"),
+        ("y-", "segment_1"),
+        ("x+", "segment_2"),
+        ("y+", "segment_3"),
+        ("x-", "segment_4"),
+    ] {
+        assert_eq!(block.exact_face_label(name).unwrap(), label);
+    }
+    // The same rectangle drawn from another corner is an extrusion, not a box.
+    let shifted = part(
+        "extrude(\"s\", distance = 18, profile = [[400, 0], [400, 300], [0, 300], [0, 0]])\n",
+        "s",
+    );
+    assert_eq!(shifted.body.cuboid_size(), None);
+    assert_eq!(shifted.size_mm, [400.0, 300.0, 18.0]);
 }
 
 #[test]

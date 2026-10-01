@@ -91,12 +91,10 @@ pub fn rewrite_rule_program_push_pull(
         {
             return Some(offset.distance_mm);
         }
-        match (&part.body, face_name) {
-            (ketchup_program::model::ProgramPartBody::Extrusion { distance_mm, .. }, "end") => {
-                Some(*distance_mm)
-            }
-            // A board is padded along its third size component.
-            (ketchup_program::model::ProgramPartBody::Panel, "end" | "z+") => Some(part.size_mm[2]),
+        match &part.body {
+            ketchup_program::model::ProgramPartBody::Extrusion {
+                distance_mm, caps, ..
+            } if face_name == "end" || face_name == caps[1] => Some(*distance_mm),
             _ => None,
         }
     };
@@ -519,16 +517,23 @@ fn program_feature_references_match(
     }
     let body_matches = match (&before.body, &after.body) {
         (
-            ketchup_program::model::ProgramPartBody::Panel,
-            ketchup_program::model::ProgramPartBody::Panel,
-        ) => true,
-        (
-            ketchup_program::model::ProgramPartBody::Extrusion { segments: left, .. },
             ketchup_program::model::ProgramPartBody::Extrusion {
-                segments: right, ..
+                segments: left,
+                caps: left_caps,
+                ..
             },
-        )
-        | (
+            ketchup_program::model::ProgramPartBody::Extrusion {
+                segments: right,
+                caps: right_caps,
+                ..
+            },
+        ) => {
+            // A cuboid is a panel in the document (`ketchup_program::cad`).
+            left_caps == right_caps
+                && before.body.cuboid_size().is_some() == after.body.cuboid_size().is_some()
+                && segment_names(left) == segment_names(right)
+        }
+        (
             ketchup_program::model::ProgramPartBody::Revolve { segments: left, .. },
             ketchup_program::model::ProgramPartBody::Revolve {
                 segments: right, ..

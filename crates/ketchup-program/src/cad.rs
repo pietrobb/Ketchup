@@ -9,7 +9,8 @@ use ketchup_assistant::sidecar::{
     AssistantPanelPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 
-/// A box carries its holes and pockets, in its frame before its operations;
+/// A cuboid is the document's rectangle-and-pad panel and carries its holes
+/// and pockets, in its frame before its operations;
 /// other bodies get them as subtracted tools (`Part::machining_tools`).
 fn panel(part: &Part) -> AssistantCadEditOperation {
     let holes = part
@@ -82,11 +83,14 @@ pub fn profile_entities(segments: &[ProgramProfileSegment]) -> Vec<AssistantSket
 }
 
 pub fn part(part: &Part) -> AssistantCadEditOperation {
+    if part.body.cuboid_size().is_some() {
+        return panel(part);
+    }
     let (segments, feature) = match &part.body {
-        ProgramPartBody::Panel => return panel(part),
         ProgramPartBody::Extrusion {
             segments,
             distance_mm,
+            ..
         } => (
             segments,
             AssistantCadPartFeature::Extrusion {

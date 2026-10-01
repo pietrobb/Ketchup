@@ -1038,9 +1038,13 @@ fn every_body_takes_material_color_and_attributes() {
     assert_eq!(part("e").material.as_deref(), Some("cast"));
     assert_eq!(part("f").material.as_deref(), Some("board"));
     assert_eq!(part("f").attributes["grain"], "x");
-    let error = run("bad.star", "board(\"g\", [10, 10, 10], grain=\"w\")", &BTreeMap::new())
-        .err()
-        .unwrap()
-        .to_string();
+    let error = run(
+        "bad.star",
+        "board(\"g\", [10, 10, 10], grain=\"w\")",
+        &BTreeMap::new(),
+    )
+    .err()
+    .unwrap()
+    .to_string();
     assert!(error.contains("grain must be"), "{error}");
 }

@@ -72,8 +72,11 @@ point and outward normal in the part's frame and in the world. An edge gives
 
 A box's faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own
 frame; their coordinates `(u, v)` are measured from the part's minimum corner:
-z faces use (x, y), x faces use (y, z) and y faces use (x, z). An extruded or
-revolved profile has `start`, `end` and its segment names; a boolean leaves
+z faces use (x, y), x faces use (y, z) and y faces use (x, z). A box is an
+extrusion like any other: the rectangle `y-`, `x+`, `y+`, `x-` padded from cap
+`z-` to cap `z+`. An extruded or revolved profile has `start`, `end` and its
+segment names; a flat side's u runs forward along its dominant axis, which is
+what measures a box's sides from its minimum corner. A boolean leaves
 `<operation>.<tool face>`. `face()` gives each face's frame, and faces follow
 `push_pull`, `mirror`, `rotate` and `place`, so holes and pockets work in any
 order with them.

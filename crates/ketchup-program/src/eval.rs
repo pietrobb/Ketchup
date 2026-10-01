@@ -766,7 +766,10 @@ impl Look {
                 dict.iter()
                     .map(|(key, value)| {
                         let key = key.unpack_str().map(ToOwned::to_owned).ok_or_else(|| {
-                            anyhow::anyhow!("attribute names must be strings, got {}", key.get_type())
+                            anyhow::anyhow!(
+                                "attribute names must be strings, got {}",
+                                key.get_type()
+                            )
                         })?;
                         // An attribute given as None is left out.
                         let value = text(Some(value), &format!("attribute {key:?}"))?;
@@ -824,6 +827,7 @@ fn insert_profile_part(
         ProgramPartBody::Extrusion {
             segments,
             distance_mm,
+            ..
         } => {
             let (min, max) = profile_bounds(segments);
             [max[0] - min[0], max[1] - min[1], *distance_mm]
@@ -837,12 +841,15 @@ fn insert_profile_part(
             let (min, max) = new_part(name, [0.0; 3], at_mm, body.clone()).local_bounds();
             std::array::from_fn(|axis| max[axis] - min[axis])
         }
-        ProgramPartBody::Panel => unreachable!(),
     };
     if size_mm.iter().any(|value| *value <= TOLERANCE_MM) {
         anyhow::bail!("part {name:?}: profile and body dimensions must be positive");
     }
-    insert_part(state, look.dress(new_part(name, size_mm, at_mm, body)), tool)
+    insert_part(
+        state,
+        look.dress(new_part(name, size_mm, at_mm, body)),
+        tool,
+    )
 }
 
 fn reject_swept(part: &Part, operation: &str) -> anyhow::Result<()> {
@@ -1161,7 +1168,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         let part = insert_part(
             &state,
-            look.dress(new_part(name, size, at, ProgramPartBody::Panel)),
+            look.dress(new_part(name, size, at, ProgramPartBody::cuboid(size))),
             tool,
         )?;
         record_source(eval, &state, &[name]);
@@ -1193,10 +1200,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             &state,
             name,
             at_mm,
-            ProgramPartBody::Extrusion {
-                segments,
-                distance_mm,
-            },
+            ProgramPartBody::extrusion(segments, distance_mm),
             look,
             tool,
         )?;

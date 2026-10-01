@@ -232,7 +232,7 @@ fn a_wrong_face_or_too_large_radius_is_explained() {
         "{BLOCK}fillet(block, edges=[[\"x+\", \"top\"]], radius=5)"
     ));
     assert!(error.contains("face \"top\" does not exist"), "{error}");
-    assert!(error.contains("x-, x+, y-, y+, z-, z+"), "{error}");
+    assert!(error.contains("z-, z+, y-, x+, y+, x-"), "{error}");
 
     let error = solid(
         &mut worker,

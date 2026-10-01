@@ -72,7 +72,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 572,
     "crates/ketchup-model/src/shared_change.rs::project_component_replacement_impact_for_principal": 823,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 484,
-    "crates/ketchup-program/src/eval.rs::builtins": 1078,
+    "crates/ketchup-program/src/eval.rs::builtins": 1071,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 562,
 }
 
@@ -257,6 +257,23 @@ def hand_written_linear_algebra(counts, recorded=LINEAR_ALGEBRA):
     return problems
 
 
+# A program body carries its own geometry (profile, path, sections); a
+# variant without data is a shape fixed by name and size, as Panel was.
+PROGRAM_BODY = re.compile(r"pub enum ProgramPartBody \{(.*?)\n\}", re.DOTALL)
+UNIT_VARIANT = re.compile(r"^\s*(\w+),\s*$", re.MULTILINE)
+
+
+def named_program_bodies(source):
+    body = PROGRAM_BODY.search(source)
+    if body is None:
+        return ["ketchup-program model.rs: enum ProgramPartBody not found"]
+    return [
+        f"ProgramPartBody::{name} has no geometry of its own; describe it as a profile, "
+        "path or section body"
+        for name in UNIT_VARIANT.findall(body.group(1))
+    ]
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
@@ -264,6 +281,9 @@ def main():
     problems += oversized_functions(long_functions(root))
     problems += milestone_named_tests(test_files(root))
     problems += hand_written_linear_algebra(linear_algebra_counts(root))
+    problems += named_program_bodies(
+        (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
+    )
     for problem in problems:
         print(problem)
     if not problems:
