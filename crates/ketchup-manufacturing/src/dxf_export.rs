@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use ketchup_geometry::linalg::{cross2, dot2};
 use ketchup_model::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
@@ -322,8 +323,9 @@ fn transform_segments(
     let matrix = transform.matrix();
     let scale_x = matrix[0].hypot(matrix[4]);
     let scale_y = matrix[1].hypot(matrix[5]);
-    let dot = matrix[0] * matrix[1] + matrix[4] * matrix[5];
-    let determinant = matrix[0] * matrix[5] - matrix[1] * matrix[4];
+    let (x_axis, y_axis) = ([matrix[0], matrix[4]], [matrix[1], matrix[5]]);
+    let dot = dot2(x_axis, y_axis);
+    let determinant = cross2(x_axis, y_axis);
     let scale = scale_x.max(scale_y).max(1.0);
     if matrix.iter().any(|value| !value.is_finite())
         || matrix[8].abs() > EPSILON
@@ -390,10 +392,10 @@ fn transform_point(point: [f64; 2], matrix: &[f64; 16]) -> Result<[f64; 2], DxfP
     if point.iter().any(|value| !value.is_finite()) {
         return Err(DxfProfileExportError::InvalidGeometry);
     }
-    let transformed = [
-        matrix[0] * point[0] + matrix[1] * point[1] + matrix[3],
-        matrix[4] * point[0] + matrix[5] * point[1] + matrix[7],
-    ];
+    let [x, y, _] = ketchup_geometry::linalg::Affine3::from_row_major(*matrix)
+        .transform_point([point[0], point[1], 0.0].into())
+        .to_array();
+    let transformed = [x, y];
     if transformed
         .iter()
         .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)

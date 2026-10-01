@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::{cross, dot};
 
 pub(super) fn planar_segment_endpoints(segment: &PlanarProfileSegment) -> ([f64; 2], [f64; 2]) {
     match segment {
@@ -389,20 +390,8 @@ pub(super) fn spatial_sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
 
-pub(super) fn spatial_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-pub(super) fn spatial_cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
 pub(super) fn spatial_length(vector: [f64; 3]) -> f64 {
-    spatial_dot(vector, vector).sqrt()
+    dot(vector, vector).sqrt()
 }
 
 pub(super) fn spatial_unit(vector: [f64; 3]) -> Option<[f64; 3]> {
@@ -425,8 +414,7 @@ pub(super) fn spatial_sweep_path_arc_angle(segment: &SpatialProfileSegment) -> O
     let normal = spatial_unit(*normal)?;
     let start_radius = spatial_sub(*start_mm, *center_mm);
     let end_radius = spatial_sub(*end_mm, *center_mm);
-    let signed = spatial_dot(normal, spatial_cross(start_radius, end_radius))
-        .atan2(spatial_dot(start_radius, end_radius));
+    let signed = dot(normal, cross(start_radius, end_radius)).atan2(dot(start_radius, end_radius));
     Some(if *clockwise {
         (-signed).rem_euclid(std::f64::consts::TAU)
     } else {
@@ -440,7 +428,7 @@ pub(super) fn spatial_sweep_path_join_is_separated(
     tangent: [f64; 3],
 ) -> bool {
     let join = spatial_segment_endpoints(left).1;
-    let projection = |point: [f64; 3]| spatial_dot(spatial_sub(point, join), tangent);
+    let projection = |point: [f64; 3]| dot(spatial_sub(point, join), tangent);
     let left_is_behind = match left {
         SpatialProfileSegment::Line { start_mm, .. } => projection(*start_mm) < -ROUNDING,
         SpatialProfileSegment::CircularArc { .. } => spatial_sweep_path_arc_angle(left)
@@ -601,14 +589,14 @@ pub(super) fn spatial_sweep_path_metrics(
             let end_radius_length = spatial_length(end_radius);
             if radius <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
                 || (radius - end_radius_length).abs() > ROUNDING
-                || spatial_dot(start_radius, normal).abs() > ROUNDING
-                || spatial_dot(end_radius, normal).abs() > ROUNDING
+                || dot(start_radius, normal).abs() > ROUNDING
+                || dot(end_radius, normal).abs() > ROUNDING
                 || start == end
             {
                 return Err(invalid());
             }
-            let signed_angle = spatial_dot(normal, spatial_cross(start_radius, end_radius))
-                .atan2(spatial_dot(start_radius, end_radius));
+            let signed_angle =
+                dot(normal, cross(start_radius, end_radius)).atan2(dot(start_radius, end_radius));
             let angle = if *clockwise {
                 (-signed_angle).rem_euclid(std::f64::consts::TAU)
             } else {
@@ -619,10 +607,10 @@ pub(super) fn spatial_sweep_path_metrics(
                 return Err(invalid());
             }
             let sign = if *clockwise { -1.0 } else { 1.0 };
-            let start_tangent = spatial_unit(spatial_cross(normal, start_radius).map(|v| sign * v))
-                .ok_or_else(invalid)?;
-            let end_tangent = spatial_unit(spatial_cross(normal, end_radius).map(|v| sign * v))
-                .ok_or_else(invalid)?;
+            let start_tangent =
+                spatial_unit(cross(normal, start_radius).map(|v| sign * v)).ok_or_else(invalid)?;
+            let end_tangent =
+                spatial_unit(cross(normal, end_radius).map(|v| sign * v)).ok_or_else(invalid)?;
             Ok((length, start_tangent, end_tangent))
         }
         SpatialProfileSegment::CubicBezier {
@@ -645,9 +633,9 @@ pub(super) fn spatial_sweep_path_metrics(
             let first = spatial_sub(*control_1_mm, start);
             let middle = spatial_sub(*control_2_mm, *control_1_mm);
             let last = spatial_sub(end, *control_2_mm);
-            let chord_squared = spatial_dot(chord, chord);
-            let projection_1 = spatial_dot(first, chord);
-            let projection_2 = spatial_dot(spatial_sub(*control_2_mm, start), chord);
+            let chord_squared = dot(chord, chord);
+            let projection_1 = dot(first, chord);
+            let projection_2 = dot(spatial_sub(*control_2_mm, start), chord);
             if start == end
                 || projection_1 <= 0.0
                 || projection_2 < projection_1
@@ -746,8 +734,8 @@ pub(super) fn validate_spatial_sweep_path(
         if spatial_segment_endpoints(&segments[0]).1 != spatial_segment_endpoints(&segments[1]).0 {
             return Err(invalid("Spatial Sweep path segments are disconnected"));
         }
-        if spatial_dot(metrics[0].2, metrics[1].1) < 1.0 - ROUNDING
-            || spatial_length(spatial_cross(metrics[0].2, metrics[1].1)) > ROUNDING
+        if dot(metrics[0].2, metrics[1].1) < 1.0 - ROUNDING
+            || spatial_length(cross(metrics[0].2, metrics[1].1)) > ROUNDING
         {
             return Err(invalid(
                 "Spatial Sweep path segments must be C1 tangent-continuous",
@@ -757,8 +745,8 @@ pub(super) fn validate_spatial_sweep_path(
     if closed {
         let outgoing = metrics.last().unwrap().2;
         let incoming = metrics.first().unwrap().1;
-        if spatial_dot(outgoing, incoming) < 1.0 - ROUNDING
-            || spatial_length(spatial_cross(outgoing, incoming)) > ROUNDING
+        if dot(outgoing, incoming) < 1.0 - ROUNDING
+            || spatial_length(cross(outgoing, incoming)) > ROUNDING
         {
             return Err(invalid(
                 "Closed Spatial Sweep path seam must be C1 tangent-continuous",

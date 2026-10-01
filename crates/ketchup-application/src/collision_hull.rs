@@ -1,6 +1,7 @@
 //! Analytic panel hulls: a rectangle extrusion, optionally reduced by cuts, is
 //! always contained in its rectangular box. Two such boxes that do not
 //! penetrate prove the solids do not penetrate either, at any rotation.
+use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
@@ -35,18 +36,6 @@ pub(super) enum HullRelation {
     Touching { area_mm2: f64 },
     /// Hulls penetrate; only exact geometry can decide (e.g. pin in its hole).
     Overlapping,
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn axis_aligned(v: [f64; 3]) -> bool {
@@ -130,13 +119,7 @@ pub(super) fn local_hull(graph: &ExactBRepGraph) -> Option<LocalHull> {
                 profile, interval, ..
             } => {
                 let profile = graph.profiles.get(profile.0 as usize)?;
-                let frame = profile.frame_bits.map(f64::from_bits);
-                let (origin, u, v, normal) = (
-                    [frame[0], frame[1], frame[2]],
-                    [frame[3], frame[4], frame[5]],
-                    [frame[6], frame[7], frame[8]],
-                    [frame[9], frame[10], frame[11]],
-                );
+                let [origin, u, v, normal] = profile.frame().to_vectors();
                 let direction = interval.direction();
                 if !axis_aligned(u)
                     || !axis_aligned(v)

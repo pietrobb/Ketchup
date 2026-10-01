@@ -12,6 +12,7 @@ use crate::model::{
     Part, ProgramArc, ProgramBoolean, ProgramBooleanKind, ProgramOperation, ProgramPartBody,
     ProgramProfileSegment, profile_bounds,
 };
+use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_model::tolerance::APPROXIMATION;
 use serde::Serialize;
 use std::f64::consts::TAU;
@@ -114,10 +115,7 @@ impl FaceFrame {
     /// Unit direction from the axis at `angle` degrees (cylinders).
     fn radial(&self, angle: f64) -> [f64; 3] {
         let (sin, cos) = angle.to_radians().sin_cos();
-        plus(
-            scaled(self.u, cos),
-            scaled(frame::cross(self.v, self.u), sin),
-        )
+        plus(scaled(self.u, cos), scaled(cross(self.v, self.u), sin))
     }
 
     /// Outward unit normal at face coordinates `at`.
@@ -126,7 +124,7 @@ impl FaceFrame {
         match self.kind {
             FaceKind::Planar => self.normal,
             FaceKind::Cylindrical { .. } => {
-                scaled(self.radial(at[0]), frame::dot(self.normal, self.u).signum())
+                scaled(self.radial(at[0]), dot(self.normal, self.u).signum())
             }
         }
     }
@@ -135,13 +133,13 @@ impl FaceFrame {
     #[must_use]
     pub fn coordinates(&self, point: [f64; 3]) -> [f64; 2] {
         let offset = minus(point, self.origin_mm);
-        let along_v = frame::dot(offset, self.v);
+        let along_v = dot(offset, self.v);
         match self.kind {
-            FaceKind::Planar => [frame::dot(offset, self.u), along_v],
+            FaceKind::Planar => [dot(offset, self.u), along_v],
             FaceKind::Cylindrical { .. } => {
-                let across = frame::cross(self.v, self.u);
-                let angle = frame::dot(offset, across)
-                    .atan2(frame::dot(offset, self.u))
+                let across = cross(self.v, self.u);
+                let angle = dot(offset, across)
+                    .atan2(dot(offset, self.u))
                     .rem_euclid(TAU);
                 [angle.to_degrees(), along_v]
             }
@@ -153,10 +151,10 @@ impl FaceFrame {
     pub fn distance(&self, point: [f64; 3]) -> f64 {
         let offset = minus(point, self.origin_mm);
         match self.kind {
-            FaceKind::Planar => frame::dot(offset, self.normal).abs(),
+            FaceKind::Planar => dot(offset, self.normal).abs(),
             FaceKind::Cylindrical { radius_mm } => {
-                let radial = minus(offset, scaled(self.v, frame::dot(offset, self.v)));
-                (frame::length(radial) - radius_mm).abs()
+                let radial = minus(offset, scaled(self.v, dot(offset, self.v)));
+                (length(radial) - radius_mm).abs()
             }
         }
     }
@@ -217,7 +215,7 @@ impl FaceFrame {
                 self.origin_mm = plus(self.origin_mm, scaled(self.normal, distance_mm));
             }
             FaceKind::Cylindrical { radius_mm } => {
-                *radius_mm += distance_mm * frame::dot(self.normal, self.u).signum();
+                *radius_mm += distance_mm * dot(self.normal, self.u).signum();
             }
         }
     }
@@ -242,7 +240,7 @@ fn turn(segments: &[ProgramProfileSegment]) -> f64 {
 /// Unit direction and length of a straight side.
 fn side(segment: &ProgramProfileSegment) -> Option<([f64; 3], f64)> {
     let direction = minus(flat(segment.end_mm), flat(segment.start_mm));
-    let length = frame::length(direction);
+    let length = length(direction);
     (segment.is_line() && length > 0.0).then(|| (scaled(direction, 1.0 / length), length))
 }
 
@@ -262,7 +260,7 @@ fn arc_side(segment: &ProgramProfileSegment, turn: f64) -> Option<([f64; 3], f64
         (segment.start_mm, segment.end_mm)
     };
     let (from, to) = (minus(flat(from), center), minus(flat(to), center));
-    let radius = frame::length(from);
+    let radius = length(from);
     let span = (to[1].atan2(to[0]) - from[1].atan2(from[0])).rem_euclid(TAU);
     let span = if span <= APPROXIMATION { TAU } else { span };
     // Travelling counter-clockwise the right-hand side faces away from the
@@ -327,14 +325,14 @@ fn revolve_faces(
     let across = [-axis[1], axis[0], 0.0];
     let side_of_profile: f64 = segments
         .iter()
-        .map(|segment| frame::dot(minus(flat(segment.start_mm), origin), across))
+        .map(|segment| dot(minus(flat(segment.start_mm), origin), across))
         .sum();
     let radial = if side_of_profile < 0.0 {
         scaled(across, -1.0)
     } else {
         across
     };
-    let tangent = frame::cross(axis, radial);
+    let tangent = cross(axis, radial);
     let full = angle_degrees >= 360.0;
     let mut faces = Vec::new();
     if !full {
@@ -354,20 +352,20 @@ fn revolve_faces(
             continue;
         };
         let outward = side_normal(direction, turn);
-        let along = frame::dot(direction, axis);
+        let along = dot(direction, axis);
         let ends = [offset(segment.start_mm), offset(segment.end_mm)];
-        let radius = frame::dot(ends[0], radial).abs();
+        let radius = dot(ends[0], radial).abs();
         if along.abs() >= 1.0 - APPROXIMATION {
             if radius <= APPROXIMATION {
                 // A side on the axis sweeps no surface.
                 continue;
             }
-            let heights = ends.map(|end| frame::dot(end, axis));
+            let heights = ends.map(|end| dot(end, axis));
             faces.push(FaceFrame {
                 name: segment.name.clone(),
                 kind: FaceKind::Cylindrical { radius_mm: radius },
                 origin_mm: origin,
-                normal: scaled(radial, frame::dot(outward, radial).signum()),
+                normal: scaled(radial, dot(outward, radial).signum()),
                 u: radial,
                 v: axis,
                 min: [0.0, heights[0].min(heights[1])],
@@ -376,8 +374,8 @@ fn revolve_faces(
         } else if along.abs() <= APPROXIMATION {
             // A flat ring (or disc) across the axis; its rectangle bounds the
             // swept sector of radii between the side's ends.
-            let height = frame::dot(ends[0], axis);
-            let radii = ends.map(|end| frame::dot(end, radial).abs());
+            let height = dot(ends[0], axis);
+            let radii = ends.map(|end| dot(end, radial).abs());
             let (inner, outer) = (radii[0].min(radii[1]), radii[0].max(radii[1]));
             let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
             let sweep = angle_degrees.min(360.0);
@@ -651,8 +649,7 @@ impl Part {
         let pockets = self.pockets.iter().map(|pocket| {
             let [du, dv] = pocket.extent_mm();
             // A box frame is right-handed: u, v, inward or v, u, inward.
-            let (axes, size) = if frame::dot(frame::cross(pocket.u, pocket.v), pocket.inward) > 0.0
-            {
+            let (axes, size) = if dot(cross(pocket.u, pocket.v), pocket.inward) > 0.0 {
                 (
                     columns(pocket.u, pocket.v, pocket.inward),
                     [du, dv, pocket.depth_mm],

@@ -1,4 +1,4 @@
-use super::{Transform, Vec3, cross, dot, vector_length};
+use super::{Transform, Vec3, cross, dot, length};
 use ketchup_model::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 
 /// Represent coplanar world points in a rigid local XY frame, without flattening them.
@@ -24,12 +24,12 @@ pub(super) fn planar_points(points: &[Vec3]) -> Option<(Transform, Vec<Vec3>)> {
         let direction = points
             .iter()
             .map(|point| *point - origin)
-            .find(|direction| vector_length(*direction) > 0.01)?;
-        let x = direction * (1.0 / vector_length(direction));
+            .find(|direction| length(*direction) > 0.01)?;
+        let x = direction * (1.0 / length(direction));
         let normal = points
             .iter()
             .map(|point| cross(x, *point - origin))
-            .find(|normal| vector_length(*normal) > DEFAULT_LINEAR_TOLERANCE_MM)
+            .find(|normal| length(*normal) > DEFAULT_LINEAR_TOLERANCE_MM)
             .unwrap_or_else(|| {
                 let reference = if x.x.abs() < 0.9 {
                     Vec3::new(1.0, 0.0, 0.0)
@@ -38,7 +38,7 @@ pub(super) fn planar_points(points: &[Vec3]) -> Option<(Transform, Vec<Vec3>)> {
                 };
                 cross(x, reference)
             });
-        let normal = normal * (1.0 / vector_length(normal));
+        let normal = normal * (1.0 / length(normal));
         (x, cross(normal, x), normal)
     };
     let transform = Transform::from_matrix([
@@ -70,13 +70,9 @@ mod tests {
         let transform = snapshot
             .world_transform_for_occurrence(selected.instance_path.root_occurrence())
             .unwrap();
-        let matrix = transform.matrix();
         let world = |point: [f64; 2]| {
-            Vec3::new(
-                matrix[0] * point[0] + matrix[1] * point[1] + matrix[3],
-                matrix[4] * point[0] + matrix[5] * point[1] + matrix[7],
-                matrix[8] * point[0] + matrix[9] * point[1] + matrix[11],
-            )
+            let [x, y, z] = transform.transform_point([point[0], point[1], 0.0]);
+            Vec3::new(x, y, z)
         };
         let segments = snapshot
             .features()
@@ -101,7 +97,7 @@ mod tests {
 
     fn assert_point(actual: Vec3, expected: Vec3) {
         assert!(
-            vector_length(actual - expected) < 1.0e-8,
+            length(actual - expected) < 1.0e-8,
             "{actual:?} != {expected:?}"
         );
     }
@@ -143,7 +139,7 @@ mod tests {
             assert!(app.complete_exact_line());
             let points = selected_line_points(&app);
             assert_point(points[0], start);
-            assert_point(points[1], start + delta * (26.0 / vector_length(delta)));
+            assert_point(points[1], start + delta * (26.0 / length(delta)));
         }
     }
 

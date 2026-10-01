@@ -539,7 +539,7 @@ fn every_polygon_face_supports_signed_offset_and_repeated_edit_with_exact_undo()
                 select(&mut app, ordinal);
                 let selected = app.selection.primary.clone().unwrap();
                 let face = app.selected_planar_face(&selected).unwrap();
-                assert!((vector_length(face.normal) - 1.0).abs() < 1.0e-9);
+                assert!((length(face.normal) - 1.0).abs() < 1.0e-9);
                 let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0));
                 let source_package = package(&app);
                 let reference = source_package
@@ -606,7 +606,7 @@ fn every_polygon_face_supports_signed_offset_and_repeated_edit_with_exact_undo()
                         let before = transform_model_point(transform, Vec3::new(x, y, z));
                         let after = transform_model_point(transform, *moved);
                         assert!(
-                            vector_length(after - before - face.normal * distance) < 1.0e-8,
+                            length(after - before - face.normal * distance) < 1.0e-8,
                             "live cap must follow the selected face normal and signed world distance"
                         );
                     }

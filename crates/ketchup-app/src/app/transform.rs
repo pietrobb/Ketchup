@@ -1,6 +1,7 @@
 //! Moving, rotating, scaling, copying, pasting, Push/Pull, patterns and alignment of the selection.
 
 use crate::*;
+use ketchup_geometry::linalg::CubicBezier;
 
 impl KetchupApp {
     pub(crate) fn selected_alignment_pair(&self) -> Option<(OccurrenceId, OccurrenceId)> {
@@ -422,7 +423,7 @@ impl KetchupApp {
         primary_selection: &SelectionId,
         delta_mm: Vec3,
     ) -> bool {
-        let distance_mm = vector_length(delta_mm);
+        let distance_mm = length(delta_mm);
         if !delta_mm.x.is_finite()
             || !delta_mm.y.is_finite()
             || !delta_mm.z.is_finite()
@@ -784,7 +785,7 @@ impl KetchupApp {
         delta_mm: Vec3,
         accepts_vector_correction: bool,
     ) -> bool {
-        let distance_mm = vector_length(delta_mm);
+        let distance_mm = length(delta_mm);
         if !delta_mm.x.is_finite() || !delta_mm.y.is_finite() || !delta_mm.z.is_finite() {
             return false;
         }
@@ -1877,7 +1878,7 @@ impl KetchupApp {
         let world_y_axis = to_world(local_y_axis);
         let mut world_origin = transform_model_point(occurrence.transform, local_origin);
         let normal = cross(world_x_axis, world_y_axis);
-        let normal_length = vector_length(normal);
+        let normal_length = length(normal);
         if normal_length > ROUNDING {
             let unit_normal = normal * (1.0 / normal_length);
             world_origin =
@@ -1984,18 +1985,13 @@ impl KetchupApp {
                         ..
                     } => (0..=32)
                         .map(|step| {
-                            let t = f64::from(step) / 32.0;
-                            let inverse = 1.0 - t;
-                            world([
-                                inverse.powi(3) * start_mm[0]
-                                    + 3.0 * inverse.powi(2) * t * control_1_mm[0]
-                                    + 3.0 * inverse * t.powi(2) * control_2_mm[0]
-                                    + t.powi(3) * end_mm[0],
-                                inverse.powi(3) * start_mm[1]
-                                    + 3.0 * inverse.powi(2) * t * control_1_mm[1]
-                                    + 3.0 * inverse * t.powi(2) * control_2_mm[1]
-                                    + t.powi(3) * end_mm[1],
-                            ])
+                            let curve = CubicBezier::new([
+                                *start_mm,
+                                *control_1_mm,
+                                *control_2_mm,
+                                *end_mm,
+                            ]);
+                            world(curve.eval(f64::from(step) / 32.0))
                         })
                         .collect(),
                     SketchEntity::Circle {
@@ -2032,18 +2028,13 @@ impl KetchupApp {
                         end_mm,
                     } => (0..=32)
                         .map(|step| {
-                            let t = f64::from(step) / 32.0;
-                            let inverse = 1.0 - t;
-                            world([
-                                inverse.powi(3) * start_mm[0]
-                                    + 3.0 * inverse.powi(2) * t * control_1_mm[0]
-                                    + 3.0 * inverse * t.powi(2) * control_2_mm[0]
-                                    + t.powi(3) * end_mm[0],
-                                inverse.powi(3) * start_mm[1]
-                                    + 3.0 * inverse.powi(2) * t * control_1_mm[1]
-                                    + 3.0 * inverse * t.powi(2) * control_2_mm[1]
-                                    + t.powi(3) * end_mm[1],
-                            ])
+                            let curve = CubicBezier::new([
+                                *start_mm,
+                                *control_1_mm,
+                                *control_2_mm,
+                                *end_mm,
+                            ]);
+                            world(curve.eval(f64::from(step) / 32.0))
                         })
                         .collect(),
                     // The guide runs through the points the spline passes through.
@@ -2219,7 +2210,7 @@ impl KetchupApp {
                         "digest-move-live"
                     },
                     &BTreeMap::from([
-                        ("distance", format_height(vector_length(delta_mm))),
+                        ("distance", format_height(length(delta_mm))),
                         ("vector", format_vector_mm(delta_mm)),
                     ]),
                 );
@@ -2917,7 +2908,7 @@ fn rotation_angle_degrees(reference: Vec3, current: Vec3, axis: Axis) -> Option<
     let unit = axis_direction(axis);
     let flatten = |arm: Vec3| arm - unit * dot(arm, unit);
     let (from, to) = (flatten(reference), flatten(current));
-    if vector_length(from) < ROTATION_MIN_ARM_MM || vector_length(to) < ROTATION_MIN_ARM_MM {
+    if length(from) < ROTATION_MIN_ARM_MM || length(to) < ROTATION_MIN_ARM_MM {
         return None;
     }
     let angle = dot(cross(from, to), unit).atan2(dot(from, to)).to_degrees();
@@ -3186,29 +3177,9 @@ pub(crate) fn push_pull_batch(
     Some(CommandBatch::new(commands))
 }
 
-/// Maps a model point back into the transform's local frame.
 fn inverse_transform_point(transform: Transform, point: Vec3) -> Option<Vec3> {
-    let m = transform.matrix();
-    let rows = [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]];
-    let offset = [point.x - m[3], point.y - m[7], point.z - m[11]];
-    let determinant = rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
-        - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
-        + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0]);
-    if determinant.abs() <= NEGLIGIBLE {
-        return None;
-    }
-    // Cramer's rule: replace one column of the matrix by the offset.
-    let solve = |column: usize| {
-        let mut replaced = rows;
-        for (row, value) in replaced.iter_mut().zip(offset) {
-            row[column] = value;
-        }
-        (replaced[0][0] * (replaced[1][1] * replaced[2][2] - replaced[1][2] * replaced[2][1])
-            - replaced[0][1] * (replaced[1][0] * replaced[2][2] - replaced[1][2] * replaced[2][0])
-            + replaced[0][2] * (replaced[1][0] * replaced[2][1] - replaced[1][1] * replaced[2][0]))
-            / determinant
-    };
-    Some(Vec3::new(solve(0), solve(1), solve(2)))
+    let inverse = transform.affine().invert().ok()?;
+    Some(inverse.transform_point(point))
 }
 
 pub(crate) fn continuous_move_delta(start: Vec3, end: Vec3, constrain_axis: bool) -> Vec3 {

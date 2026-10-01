@@ -610,22 +610,14 @@ impl KetchupApp {
     }
 
     fn placement_point(transform: Transform, local: [f64; 3]) -> Vec3 {
-        let matrix = transform.matrix();
-        Vec3::new(
-            matrix[0] * local[0] + matrix[1] * local[1] + matrix[2] * local[2] + matrix[3],
-            matrix[4] * local[0] + matrix[5] * local[1] + matrix[6] * local[2] + matrix[7],
-            matrix[8] * local[0] + matrix[9] * local[1] + matrix[10] * local[2] + matrix[11],
-        )
+        let [x, y, z] = transform.transform_point(local);
+        Vec3::new(x, y, z)
     }
 
     fn placement_direction(transform: Transform, local: [f64; 3]) -> Option<Vec3> {
-        let matrix = transform.matrix();
-        let direction = Vec3::new(
-            matrix[0] * local[0] + matrix[1] * local[1] + matrix[2] * local[2],
-            matrix[4] * local[0] + matrix[5] * local[1] + matrix[6] * local[2],
-            matrix[8] * local[0] + matrix[9] * local[1] + matrix[10] * local[2],
-        );
-        let length = vector_length(direction);
+        let [x, y, z] = transform.transform_vector(local);
+        let direction = Vec3::new(x, y, z);
+        let length = length(direction);
         (length.is_finite() && length > f64::EPSILON).then_some(direction * (1.0 / length))
     }
 
@@ -701,7 +693,7 @@ impl KetchupApp {
             + moving_normal.y * desired_normal.y
             + moving_normal.z * desired_normal.z)
             .clamp(-1.0, 1.0);
-        let cross_length = vector_length(cross);
+        let cross_length = length(cross);
         let rotated_local = if cross_length > ROUNDING {
             let rotation = world_axis_rotation_transform(
                 moving_origin,

@@ -908,7 +908,7 @@ impl KetchupApp {
             .cursor
             .map(|cursor| cursor - start)
             .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-        let direction_length = vector_length(direction);
+        let direction_length = length(direction);
         let unit = if direction_length > 0.01 {
             Vec3::new(
                 direction.x / direction_length,
@@ -950,7 +950,7 @@ impl KetchupApp {
         };
         let chord = end - start;
         let local_chord = self.drawing_local_delta(start, end);
-        let chord_length = vector_length(local_chord);
+        let chord_length = length(local_chord);
         if chord_length <= 0.01 {
             return false;
         }

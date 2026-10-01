@@ -1,4 +1,5 @@
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
+use ketchup_geometry::linalg::{Affine3, Mat3, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -17,6 +18,34 @@ use crate::document::{
 pub const GLB_PARSER_ID: &str = "ketchup-glb";
 pub const GLB_PARSER_VERSION: &str = "1";
 pub const MAX_GLB_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// glTF is Y-up in metres, Kečup Z-up in millimetres: the Kečup point
+/// `(x, y, z)` mm is the glTF point `(x, z, −y) / 1000`.
+pub const GLTF_FROM_KETCHUP_AXES: Mat3 =
+    Mat3::from_rows([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]);
+pub const MILLIMETRES_PER_METRE: f64 = 1_000.0;
+
+#[must_use]
+pub fn gltf_point_from_ketchup(point_mm: Vec3) -> Vec3 {
+    GLTF_FROM_KETCHUP_AXES.mul_vec(point_mm) / MILLIMETRES_PER_METRE
+}
+
+#[must_use]
+pub fn gltf_transform_from_ketchup(transform: Affine3) -> Affine3 {
+    Affine3 {
+        linear: GLTF_FROM_KETCHUP_AXES * transform.linear * GLTF_FROM_KETCHUP_AXES.transpose(),
+        translation: gltf_point_from_ketchup(transform.translation),
+    }
+}
+
+#[must_use]
+pub fn ketchup_transform_from_gltf(transform: Affine3) -> Affine3 {
+    let ketchup_from_gltf = GLTF_FROM_KETCHUP_AXES.transpose();
+    Affine3 {
+        linear: ketchup_from_gltf * transform.linear * GLTF_FROM_KETCHUP_AXES,
+        translation: ketchup_from_gltf.mul_vec(transform.translation) * MILLIMETRES_PER_METRE,
+    }
+}
 
 const GLB_MAGIC: u32 = 0x4654_6c67;
 const JSON_CHUNK: u32 = 0x4e4f_534a;
@@ -1173,39 +1202,16 @@ fn gltf_transform_to_ketchup(gltf: [f64; 16]) -> Result<Transform, GlbImportErro
     {
         return Err(GlbImportError::InvalidTransform);
     }
-    let to_gltf = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-    let to_ketchup = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-    let mut matrix = multiply_matrix(multiply_matrix(to_ketchup, gltf), to_gltf);
-    matrix[3] *= 1_000.0;
-    matrix[7] *= 1_000.0;
-    matrix[11] *= 1_000.0;
-    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
-    if matrix
+    let affine = ketchup_transform_from_gltf(Affine3::from_row_major(gltf));
+    if affine
+        .to_row_major()
         .iter()
         .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
-        || determinant.abs() <= f64::EPSILON
+        || affine.linear.is_singular()
     {
         return Err(GlbImportError::InvalidTransform);
     }
-    Transform::from_matrix(matrix).map_err(GlbImportError::RejectedByDocument)
-}
-
-fn multiply_matrix(left: [f64; 16], right: [f64; 16]) -> [f64; 16] {
-    let mut result = [0.0; 16];
-    for row in 0..4 {
-        for column in 0..4 {
-            result[row * 4 + column] = (0..4)
-                .map(|index| left[row * 4 + index] * right[index * 4 + column])
-                .sum();
-        }
-    }
-    result
+    Transform::from_affine(affine).map_err(GlbImportError::RejectedByDocument)
 }
 
 fn validate_asset(root: &Map<String, Value>) -> Result<(), GlbImportError> {
@@ -1540,4 +1546,37 @@ fn read_f32(source: &[u8], offset: usize) -> Result<f32, GlbImportError> {
     Ok(f32::from_le_bytes(
         bytes.try_into().expect("four-byte checked slice"),
     ))
+}
+
+#[cfg(test)]
+mod gltf_axes_tests {
+    use super::*;
+
+    fn close(left: Affine3, right: Affine3) -> bool {
+        left.to_row_major()
+            .iter()
+            .zip(right.to_row_major())
+            .all(|(a, b)| (a - b).abs() <= 1.0e-9)
+    }
+
+    #[test]
+    fn gltf_axes_round_trip_points_transforms_and_inverses() {
+        // A rotation about z, a non-uniform scale and a translation in mm.
+        let transform = Affine3::from_row_major([
+            0.0, -2.0, 0.0, 10.0, 1.0, 0.0, 0.0, -5.0, 0.0, 0.0, 3.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+        ]);
+        let gltf = gltf_transform_from_ketchup(transform);
+        assert!(close(ketchup_transform_from_gltf(gltf), transform));
+        let point = Vec3::new(4.0, 6.0, -2.0);
+        let mapped = gltf.transform_point(gltf_point_from_ketchup(point));
+        let expected = gltf_point_from_ketchup(transform.transform_point(point));
+        assert!(mapped.distance(expected) < 1.0e-12);
+        assert!(close(
+            gltf_transform_from_ketchup(transform.invert().unwrap()),
+            gltf.invert().unwrap()
+        ));
+        // Kečup up (+Z) is glTF up (+Y), and 1 000 mm is 1 m.
+        let up = gltf_point_from_ketchup(Vec3::new(0.0, 0.0, MILLIMETRES_PER_METRE));
+        assert!(up.distance(Vec3::Y) < 1.0e-12);
+    }
 }

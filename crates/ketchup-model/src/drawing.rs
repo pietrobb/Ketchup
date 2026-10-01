@@ -11,6 +11,7 @@ use crate::document::{
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
 use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
+use ketchup_geometry::linalg::{cross, cross2, dot, dot2, sub};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -88,13 +89,13 @@ impl DrawingViewFrame {
             .iter()
             .flatten()
             .any(|component| !component.is_finite())
-            || axes
-                .iter()
-                .any(|axis| (length_squared(*axis) - 1.0).abs() > ROUNDING)
+            || axes.iter().any(|axis| {
+                (ketchup_geometry::linalg::length_squared(*axis) - 1.0).abs() > ROUNDING
+            })
             || dot(horizontal, vertical).abs() > ROUNDING
             || dot(horizontal, depth).abs() > ROUNDING
             || dot(vertical, depth).abs() > ROUNDING
-            || subtract(cross(vertical, depth), horizontal)
+            || sub(cross(vertical, depth), horizontal)
                 .into_iter()
                 .any(|component| component.abs() > ROUNDING)
         {
@@ -2591,11 +2592,11 @@ fn project_instance_circles(
             Some((edge, radius_mm, center, axis))
         })
         .filter_map(|(edge, radius_mm, center, axis)| {
-            let world_axis = normalized(transform_vector(transform, axis))?;
+            let world_axis = normalized(transform.transform_vector(axis))?;
             if (dot(world_axis, depth).abs() - 1.0).abs() > ROUNDING {
                 return None;
             }
-            let world_center = transform_point(transform, center);
+            let world_center = transform.transform_point(center);
             Some(ProjectedCircle {
                 stable_circle_id: format!(
                     "sheet-{}/view-{}/{}:circle:{}",
@@ -2647,7 +2648,7 @@ fn project_view(
                     .vertices()
                     .get(index as usize)
                     .ok_or(DrawingError::InvalidGeometry)?;
-                points[offset] = transform_point(instance.transform, vertex.position_mm);
+                points[offset] = instance.transform.transform_point(vertex.position_mm);
             }
             if points
                 .iter()
@@ -2656,11 +2657,8 @@ fn project_view(
             {
                 return Err(DrawingError::InvalidGeometry);
             }
-            let normal = cross(
-                subtract(points[1], points[0]),
-                subtract(points[2], points[0]),
-            );
-            if length_squared(normal) <= VISIBILITY_EPSILON {
+            let normal = cross(sub(points[1], points[0]), sub(points[2], points[0]));
+            if ketchup_geometry::linalg::length_squared(normal) <= VISIBILITY_EPSILON {
                 continue;
             }
             let clipped_points = section_depth_mm.map_or_else(
@@ -2744,10 +2742,10 @@ fn project_view(
         .into_iter()
         .filter(|(_, evidence)| {
             evidence.normals.len() == 1
-                || evidence
-                    .normals
-                    .windows(2)
-                    .any(|pair| length_squared(cross(pair[0], pair[1])) > VISIBILITY_EPSILON)
+                || evidence.normals.windows(2).any(|pair| {
+                    ketchup_geometry::linalg::length_squared(cross(pair[0], pair[1]))
+                        > VISIBILITY_EPSILON
+                })
         })
         .collect::<Vec<_>>();
     if candidate_edges
@@ -2774,7 +2772,7 @@ fn project_view(
         ];
         let projected_delta = subtract_2d(projected_edge[1], projected_edge[0]);
         let projected_length_squared =
-            projected_delta[0] * projected_delta[0] + projected_delta[1] * projected_delta[1];
+            ketchup_geometry::linalg::dot2(projected_delta, projected_delta);
         if !projected_length_squared.is_finite() {
             return Err(DrawingError::InvalidGeometry);
         }
@@ -2946,7 +2944,7 @@ fn project_view(
                 return Err(DrawingError::InvalidGeometry);
             }
             let delta = subtract_2d(end_mm, start_mm);
-            let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
+            let length_squared = ketchup_geometry::linalg::dot2(delta, delta);
             if !length_squared.is_finite() {
                 return Err(DrawingError::InvalidGeometry);
             }
@@ -3015,9 +3013,9 @@ fn clip_lines_to_detail(
     for mut line in lines {
         let direction = subtract_2d(line.end_mm, line.start_mm);
         let offset = subtract_2d(line.start_mm, center);
-        let a = dot_2d(direction, direction);
-        let b = 2.0 * dot_2d(offset, direction);
-        let c = dot_2d(offset, offset) - radius_squared;
+        let a = dot2(direction, direction);
+        let b = 2.0 * dot2(offset, direction);
+        let c = dot2(offset, offset) - radius_squared;
         let discriminant = b * b - 4.0 * a * c;
         if [a, b, c, discriminant]
             .into_iter()
@@ -3189,13 +3187,13 @@ fn segment_intersection_parameter(
 ) -> Option<f64> {
     let direction = subtract_2d(end, start);
     let other_direction = subtract_2d(other_end, other_start);
-    let denominator = cross_2d(direction, other_direction);
+    let denominator = cross2(direction, other_direction);
     if denominator.abs() <= INTERSECTION_EPSILON {
         return None;
     }
     let offset = subtract_2d(other_start, start);
-    let parameter = cross_2d(offset, other_direction) / denominator;
-    let other_parameter = cross_2d(offset, direction) / denominator;
+    let parameter = cross2(offset, other_direction) / denominator;
+    let other_parameter = cross2(offset, direction) / denominator;
     (parameter > INTERSECTION_EPSILON
         && parameter < 1.0 - INTERSECTION_EPSILON
         && (-INTERSECTION_EPSILON..=1.0 + INTERSECTION_EPSILON).contains(&other_parameter))
@@ -3241,14 +3239,6 @@ fn interpolate(start: [f64; 2], end: [f64; 2], parameter: f64) -> [f64; 2] {
 
 fn subtract_2d(left: [f64; 2], right: [f64; 2]) -> [f64; 2] {
     [left[0] - right[0], left[1] - right[1]]
-}
-
-fn cross_2d(left: [f64; 2], right: [f64; 2]) -> f64 {
-    left[0] * right[1] - left[1] * right[0]
-}
-
-fn dot_2d(left: [f64; 2], right: [f64; 2]) -> f64 {
-    left[0] * right[0] + left[1] * right[1]
 }
 
 fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
@@ -3569,7 +3559,7 @@ fn layout_linear_dimensions(
             return Err(DrawingError::DimensionSourceLost);
         }
         let source_delta = subtract_2d(source_line.end_mm, source_line.start_mm);
-        let value_mm = dot_2d(source_delta, source_delta).sqrt();
+        let value_mm = dot2(source_delta, source_delta).sqrt();
         if !value_mm.is_finite() || value_mm <= INTERSECTION_EPSILON {
             return Err(DrawingError::InvalidGeometry);
         }
@@ -3581,7 +3571,7 @@ fn layout_linear_dimensions(
             ]
         });
         let page_delta = subtract_2d(page_points[1], page_points[0]);
-        let page_length = dot_2d(page_delta, page_delta).sqrt();
+        let page_length = dot2(page_delta, page_delta).sqrt();
         if !page_length.is_finite() || page_length <= INTERSECTION_EPSILON {
             return Err(DrawingError::InvalidGeometry);
         }
@@ -3664,7 +3654,7 @@ fn layout_angular_dimensions(
             .iter()
             .map(|line| subtract_2d(line.end_mm, line.start_mm))
             .map(|direction| {
-                let length = dot_2d(direction, direction).sqrt();
+                let length = dot2(direction, direction).sqrt();
                 if !length.is_finite() || length <= INTERSECTION_EPSILON {
                     return Err(DrawingError::InvalidGeometry);
                 }
@@ -3687,7 +3677,7 @@ fn layout_angular_dimensions(
         {
             return Err(DrawingError::InvalidGeometry);
         }
-        let dot = dot_2d(directions[0], directions[1]).clamp(-1.0, 1.0);
+        let dot = dot2(directions[0], directions[1]).clamp(-1.0, 1.0);
         let signed_sweep = cross.atan2(dot);
         let (start_direction, sweep) = if signed_sweep >= 0.0 {
             (directions[0], signed_sweep)
@@ -3857,7 +3847,7 @@ fn layout_datum_symbols(
                 datum.source_line_id(),
             )?;
             let offset = datum.offset_page_mm();
-            let length = dot_2d(offset, offset).sqrt();
+            let length = dot2(offset, offset).sqrt();
             let direction = [offset[0] / length, offset[1] / length];
             let perpendicular = [-direction[1], direction[0]];
             let frame_center = [anchor[0] + offset[0], anchor[1] + offset[1]];
@@ -4109,7 +4099,7 @@ fn layout_bom_annotations(
                 })
             })
             .ok_or(DrawingError::LayoutOverflow)?;
-        let offset_length = dot_2d(offset, offset).sqrt();
+        let offset_length = dot2(offset, offset).sqrt();
         let direction = [offset[0] / offset_length, offset[1] / offset_length];
         let circle_center_mm = [anchor[0] + offset[0], anchor[1] + offset[1]];
         let leader_line_mm = [
@@ -4488,38 +4478,11 @@ fn push_digest(digest: &mut Sha256, value: &[u8]) {
     digest.update(value);
 }
 
-fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-    ]
-}
-
-fn transform_vector(transform: Transform, vector: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
-        matrix[4] * vector[0] + matrix[5] * vector[1] + matrix[6] * vector[2],
-        matrix[8] * vector[0] + matrix[9] * vector[1] + matrix[10] * vector[2],
-    ]
-}
-
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
 fn normalized(value: [f64; 3]) -> Option<[f64; 3]> {
     if value.into_iter().any(|component| !component.is_finite()) {
         return None;
     }
-    let squared = length_squared(value);
-    if !squared.is_finite() || squared <= VISIBILITY_EPSILON {
-        return None;
-    }
-    let length = squared.sqrt();
-    Some(value.map(|component| component / length))
+    ketchup_geometry::linalg::normalize_within(value, VISIBILITY_EPSILON.sqrt())
 }
 
 fn canonical_view_component(value: f64) -> f64 {
@@ -4528,22 +4491,6 @@ fn canonical_view_component(value: f64) -> f64 {
     } else {
         value
     }
-}
-
-fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-}
-
-fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
-fn length_squared(value: [f64; 3]) -> f64 {
-    value[0] * value[0] + value[1] * value[1] + value[2] * value[2]
 }
 
 #[cfg(test)]
@@ -4559,9 +4506,17 @@ mod tests {
             OrthographicViewKind::Isometric,
         ] {
             let frame = kind.frame();
-            assert!((length_squared(frame.horizontal()) - 1.0).abs() <= 1.0e-12);
-            assert!((length_squared(frame.vertical()) - 1.0).abs() <= 1.0e-12);
-            assert!((length_squared(frame.direction()) - 1.0).abs() <= 1.0e-12);
+            assert!(
+                (ketchup_geometry::linalg::length_squared(frame.horizontal()) - 1.0).abs()
+                    <= 1.0e-12
+            );
+            assert!(
+                (ketchup_geometry::linalg::length_squared(frame.vertical()) - 1.0).abs() <= 1.0e-12
+            );
+            assert!(
+                (ketchup_geometry::linalg::length_squared(frame.direction()) - 1.0).abs()
+                    <= 1.0e-12
+            );
             assert!(dot(frame.horizontal(), frame.vertical()).abs() <= 1.0e-12);
             assert!(dot(frame.horizontal(), frame.direction()).abs() <= 1.0e-12);
             assert!(dot(frame.vertical(), frame.direction()).abs() <= 1.0e-12);

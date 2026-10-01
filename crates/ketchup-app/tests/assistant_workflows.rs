@@ -581,15 +581,6 @@ fn write_assistant_rotation_fixture(path: &std::path::Path) {
     persistence::save_atomic(path, &document.current()).unwrap();
 }
 
-fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-    ]
-}
-
 fn assert_point_near(actual: [f64; 3], expected: [f64; 3]) {
     for axis in 0..3 {
         assert!((actual[axis] - expected[axis]).abs() < 1.0e-9);
@@ -609,12 +600,8 @@ fn rotate_point_about_axis(
         point[1] - pivot[1],
         point[2] - pivot[2],
     ];
-    let dot = unit[0] * vector[0] + unit[1] * vector[1] + unit[2] * vector[2];
-    let cross = [
-        unit[1] * vector[2] - unit[2] * vector[1],
-        unit[2] * vector[0] - unit[0] * vector[2],
-        unit[0] * vector[1] - unit[1] * vector[0],
-    ];
+    let dot = ketchup_geometry::linalg::dot(unit, vector);
+    let cross = ketchup_geometry::linalg::cross(unit, vector);
     let (sin, cos) = angle_degrees.to_radians().sin_cos();
     [
         pivot[0] + vector[0] * cos + cross[0] * sin + unit[0] * dot * (1.0 - cos),
@@ -752,9 +739,9 @@ fn assistant_rotates_arbitrary_occurrences_and_groups_around_arbitrary_world_axe
     assert_ne!(second_rotated, second_before);
     let first_local_point = [7.0, -4.0, 3.0];
     assert_point_near(
-        transform_point(first_rotated_world, first_local_point),
+        first_rotated_world.transform_point(first_local_point),
         rotate_point_about_axis(
-            transform_point(first_before_world, first_local_point),
+            first_before_world.transform_point(first_local_point),
             first_pivot,
             first_axis,
             37.25,
@@ -800,9 +787,9 @@ fn assistant_rotates_arbitrary_occurrences_and_groups_around_arbitrary_world_axe
         .unwrap();
     let group_local_point = [-2.0, 5.0, 9.0];
     assert_point_near(
-        transform_point(group_rotated_world, group_local_point),
+        group_rotated_world.transform_point(group_local_point),
         rotate_point_about_axis(
-            transform_point(group_before_world, group_local_point),
+            group_before_world.transform_point(group_local_point),
             group_pivot,
             group_axis,
             22.75,
@@ -990,18 +977,18 @@ fn scripted_assistant_rotation_reviews_cancel_stale_confirm_and_undo_through_acc
         .world_transform_for_occurrence(OccurrenceId(2))
         .unwrap();
     assert_point_near(
-        transform_point(first_rotated_world, [7.0, -4.0, 3.0]),
+        first_rotated_world.transform_point([7.0, -4.0, 3.0]),
         rotate_point_about_axis(
-            transform_point(first_before_world, [7.0, -4.0, 3.0]),
+            first_before_world.transform_point([7.0, -4.0, 3.0]),
             occurrence_rotations[0].pivot_mm,
             occurrence_rotations[0].axis,
             occurrence_rotations[0].angle_degrees,
         ),
     );
     assert_point_near(
-        transform_point(second_rotated_world, [-3.0, 8.0, 1.5]),
+        second_rotated_world.transform_point([-3.0, 8.0, 1.5]),
         rotate_point_about_axis(
-            transform_point(second_before_world, [-3.0, 8.0, 1.5]),
+            second_before_world.transform_point([-3.0, 8.0, 1.5]),
             occurrence_rotations[1].pivot_mm,
             occurrence_rotations[1].axis,
             occurrence_rotations[1].angle_degrees,
@@ -1036,14 +1023,12 @@ fn scripted_assistant_rotation_reviews_cancel_stale_confirm_and_undo_through_acc
     let group_rotated = group_snapshot.group(GroupId(1)).unwrap().transform();
     assert_ne!(group_rotated, group_before);
     assert_point_near(
-        transform_point(
-            group_snapshot
-                .world_transform_for_group(GroupId(1))
-                .unwrap(),
-            [-2.0, 5.0, 9.0],
-        ),
+        (group_snapshot
+            .world_transform_for_group(GroupId(1))
+            .unwrap())
+        .transform_point([-2.0, 5.0, 9.0]),
         rotate_point_about_axis(
-            transform_point(group_before_world, [-2.0, 5.0, 9.0]),
+            group_before_world.transform_point([-2.0, 5.0, 9.0]),
             [4.0, 7.0, -2.0],
             [3.0, -1.0, 2.0],
             22.75,

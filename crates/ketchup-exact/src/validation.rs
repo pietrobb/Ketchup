@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::dot;
 
 #[must_use]
 pub fn has_complete_manifold_adjacency(topology: &TopologyEvidence) -> bool {
@@ -508,21 +509,9 @@ pub(super) fn subtract3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
 
-pub(super) fn dot3(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-pub(super) fn cross3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
 pub(super) fn squared_distance3(left: [f64; 3], right: [f64; 3]) -> f64 {
     let delta = subtract3(left, right);
-    dot3(delta, delta)
+    dot(delta, delta)
 }
 
 pub(super) fn stable_digest(value: &str) -> String {

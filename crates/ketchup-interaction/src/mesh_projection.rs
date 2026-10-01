@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
 use crate::spatial::{
-    SPATIAL_INDEX_V1, SnapshotBinding, SpatialIndex, SpatialQueryError, SpatialQueryStats, cross,
-    ray_triangle_distance, transform_point, transformed_bounds,
+    SPATIAL_INDEX_V1, SnapshotBinding, SpatialIndex, SpatialQueryError, SpatialQueryStats,
+    ray_triangle_distance, transformed_bounds,
 };
 use crate::{Ray, Vec3};
+use ketchup_geometry::linalg::{CubicBezier, cross, dot};
 use ketchup_geometry::sketch::SolvedSketchRegionProfile;
 use ketchup_model::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, ProfileSegment, Snapshot, Transform,
@@ -219,10 +220,11 @@ impl MeshInteractionProjection {
         let triangle = hit.occurrence.geometry.triangles[hit.triangle_index];
         let [first, second, third] = triangle.map(|index| {
             let position = hit.occurrence.geometry.vertices_mm[index as usize];
-            transform_point(
-                hit.occurrence.transform,
-                Vec3::new(position[0], position[1], position[2]),
-            )
+            hit.occurrence.transform.affine().transform_point(Vec3::new(
+                position[0],
+                position[1],
+                position[2],
+            ))
         });
         let normal = cross(second - first, third - first);
         let normal_length = normal.length();
@@ -252,7 +254,10 @@ impl MeshInteractionProjection {
                 let triangle = hit.occurrence.geometry.triangles[hit.triangle_index];
                 let [a, b, c] = triangle.map(|index| {
                     let p = hit.occurrence.geometry.vertices_mm[index as usize];
-                    transform_point(hit.occurrence.transform, Vec3::new(p[0], p[1], p[2]))
+                    hit.occurrence
+                        .transform
+                        .affine()
+                        .transform_point(Vec3::new(p[0], p[1], p[2]))
                 });
                 let normal = cross(b - a, c - a);
                 let length = normal.length();
@@ -396,18 +401,8 @@ fn segment_profile_boundary(segments: &[ProfileSegment]) -> Option<Vec<[f64; 2]>
                 end_mm,
             } => (0..=32)
                 .map(|step| {
-                    let t = f64::from(step) / 32.0;
-                    let inverse = 1.0 - t;
-                    [
-                        inverse.powi(3) * start_mm[0]
-                            + 3.0 * inverse.powi(2) * t * control_1_mm[0]
-                            + 3.0 * inverse * t.powi(2) * control_2_mm[0]
-                            + t.powi(3) * end_mm[0],
-                        inverse.powi(3) * start_mm[1]
-                            + 3.0 * inverse.powi(2) * t * control_1_mm[1]
-                            + 3.0 * inverse * t.powi(2) * control_2_mm[1]
-                            + t.powi(3) * end_mm[1],
-                    ]
+                    CubicBezier::new([*start_mm, *control_1_mm, *control_2_mm, *end_mm])
+                        .eval(f64::from(step) / 32.0)
                 })
                 .collect(),
             // Splines are drawn from the exact kernel's tessellation only.
@@ -584,10 +579,11 @@ fn hit_occurrence<'a>(
         .filter_map(|(triangle_index, triangle)| {
             let [first, second, third] = triangle.map(|index| {
                 let position = occurrence.geometry.vertices_mm[index as usize];
-                transform_point(
-                    occurrence.transform,
-                    Vec3::new(position[0], position[1], position[2]),
-                )
+                occurrence.transform.affine().transform_point(Vec3::new(
+                    position[0],
+                    position[1],
+                    position[2],
+                ))
             });
             Some(PhysicalMeshHit {
                 occurrence,
@@ -649,8 +645,4 @@ fn point_segment_distance(point: Vec3, start: Vec3, end: Vec3) -> f64 {
     }
     let parameter = (dot(point - start, segment) / length_squared).clamp(0.0, 1.0);
     point.distance(start + segment * parameter)
-}
-
-fn dot(left: Vec3, right: Vec3) -> f64 {
-    left.x * right.x + left.y * right.y + left.z * right.z
 }

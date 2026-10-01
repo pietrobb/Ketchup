@@ -42,7 +42,9 @@ fn faces_of_a_rotated_box_are_named_in_its_own_frame() {
         let world_normal = frame::apply(&rail.rotation, local);
         let world = std::array::from_fn(|i| {
             centre[i]
-                + world_normal[i] * (rail.reach(world_normal) - frame::dot(centre, world_normal))
+                + world_normal[i]
+                    * (rail.reach(world_normal)
+                        - ketchup_geometry::linalg::dot(centre, world_normal))
         });
         assert_eq!(
             picked(&rail, world, world_normal, Some("top")).as_deref(),

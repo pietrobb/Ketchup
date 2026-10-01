@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::Affine3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnitSystem {
@@ -48,54 +49,50 @@ impl Transform {
 
     #[must_use]
     pub fn compose(self, local: Self) -> Self {
-        let mut result = [0.0; 16];
-        for row in 0..4 {
-            for column in 0..4 {
-                result[row * 4 + column] = (0..4)
-                    .map(|index| self.matrix[row * 4 + index] * local.matrix[index * 4 + column])
-                    .sum();
-            }
+        Self {
+            matrix: self.affine().compose(local.affine()).to_row_major(),
         }
-        Self { matrix: result }
     }
 
     #[must_use]
+    pub fn affine(self) -> Affine3 {
+        Affine3::from_row_major(self.matrix)
+    }
+
+    #[must_use]
+    pub fn transform_point(self, point: [f64; 3]) -> [f64; 3] {
+        self.affine().transform_point(point.into()).into()
+    }
+
+    #[must_use]
+    pub fn transform_vector(self, vector: [f64; 3]) -> [f64; 3] {
+        self.affine().transform_vector(vector.into()).into()
+    }
+
+    pub fn from_affine(affine: Affine3) -> Result<Self, CanonicalError> {
+        Self::from_matrix(affine.to_row_major())
+    }
+
+    /// The inverse of any non-singular affine transform.
+    #[must_use]
+    pub fn inverse(self) -> Option<Self> {
+        Self::from_affine(self.affine().invert().ok()?).ok()
+    }
+
+    /// The inverse of a rotation plus translation; `None` when the linear
+    /// part is not orthonormal within [`ROUNDING`].
+    #[must_use]
     pub fn rigid_inverse(self) -> Option<Self> {
-        let matrix = self.matrix;
-        let epsilon = ROUNDING;
-        let rows = [
-            [matrix[0], matrix[1], matrix[2]],
-            [matrix[4], matrix[5], matrix[6]],
-            [matrix[8], matrix[9], matrix[10]],
-        ];
-        let dot = |left: [f64; 3], right: [f64; 3]| {
-            left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-        };
-        if matrix.iter().any(|value| !value.is_finite())
-            || matrix[12] != 0.0
-            || matrix[13] != 0.0
-            || matrix[14] != 0.0
-            || matrix[15] != 1.0
-            || rows
-                .iter()
-                .any(|row| (dot(*row, *row) - 1.0).abs() > epsilon)
-            || dot(rows[0], rows[1]).abs() > epsilon
-            || dot(rows[0], rows[2]).abs() > epsilon
-            || dot(rows[1], rows[2]).abs() > epsilon
-        {
+        let affine = self.affine();
+        if !affine.linear.is_orthonormal(ROUNDING) {
             return None;
         }
-        let translation = [matrix[3], matrix[7], matrix[11]];
-        let mut inverse = Self::identity().matrix;
-        for row in 0..3 {
-            for column in 0..3 {
-                inverse[row * 4 + column] = matrix[column * 4 + row];
-            }
-            inverse[row * 4 + 3] = -(0..3)
-                .map(|axis| inverse[row * 4 + axis] * translation[axis])
-                .sum::<f64>();
-        }
-        Some(Self { matrix: inverse })
+        let linear = affine.linear.transpose();
+        Self::from_affine(Affine3 {
+            linear,
+            translation: -linear.mul_vec(affine.translation),
+        })
+        .ok()
     }
 }
 
@@ -2098,5 +2095,43 @@ impl LocalGroup {
     #[must_use]
     pub const fn parent(&self) -> Option<LocalGroupId> {
         self.parent
+    }
+}
+
+#[cfg(test)]
+mod transform_tests {
+    use super::*;
+
+    fn close(left: [f64; 3], right: [f64; 3]) -> bool {
+        left.iter()
+            .zip(right)
+            .all(|(l, r)| (l - r).abs() <= 1.0e-12)
+    }
+
+    /// A quarter turn about z, a non-uniform scale and an offset, so rows
+    /// and columns and points and directions cannot be confused.
+    fn sample() -> Transform {
+        Transform::from_matrix([
+            0.0, -2.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 3.0, 30.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn points_take_the_offset_and_directions_do_not() {
+        assert_eq!(sample().transform_point([1.0, 2.0, 3.0]), [6.0, 21.0, 39.0]);
+        assert_eq!(sample().transform_vector([1.0, 2.0, 3.0]), [-4.0, 1.0, 9.0]);
+    }
+
+    #[test]
+    fn compose_applies_the_local_transform_first_and_inverse_undoes_it() {
+        let local = Transform::from_translation(1.0, 2.0, 3.0).unwrap();
+        let point = [4.0, -5.0, 6.0];
+        let composed = sample().compose(local);
+        let expected = sample().transform_point(local.transform_point(point));
+        assert!(close(composed.transform_point(point), expected));
+        let back = composed.inverse().unwrap().transform_point(expected);
+        assert!(close(back, point));
+        assert_eq!(sample().rigid_inverse(), None);
     }
 }

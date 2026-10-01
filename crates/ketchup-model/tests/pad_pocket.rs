@@ -1005,11 +1005,9 @@ fn offset_workplane_dimension_recomputes_pad_frame_in_one_undoable_step() {
         producer_exact_graph(snapshot, DEFINITION, OFFSET_PAD)
             .unwrap()
             .profiles[0]
-            .frame_bits[0..3]
-            .iter()
-            .copied()
-            .map(f64::from_bits)
-            .collect::<Vec<_>>()
+            .frame()
+            .origin
+            .to_array()
     };
     assert_eq!(
         producer_exact_graph(&before, DEFINITION, OFFSET_PAD)
@@ -1018,7 +1016,7 @@ fn offset_workplane_dimension_recomputes_pad_frame_in_one_undoable_step() {
             .unwrap(),
         Some([[0.0, 0.0, 5.0], [20.0, 10.0, 15.0]])
     );
-    assert_eq!(profile_origin(&before), vec![0.0, 0.0, 5.0]);
+    assert_eq!(profile_origin(&before), [0.0, 0.0, 5.0]);
 
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1034,7 +1032,7 @@ fn offset_workplane_dimension_recomputes_pad_frame_in_one_undoable_step() {
         panic!("expected offset workplane");
     };
     assert_eq!(changed_plane.frame.origin_mm, [0.0, 0.0, 8.0]);
-    assert_eq!(profile_origin(&changed), vec![0.0, 0.0, 8.0]);
+    assert_eq!(profile_origin(&changed), [0.0, 0.0, 8.0]);
     let changed_digest = changed.canonical_digest();
     assert_eq!(
         document.undo().unwrap().canonical_digest(),

@@ -1,5 +1,6 @@
 pub use crate::part_role::{PartRole, RoleFrame, RoleFunction};
 use crate::validation_rules::{ValidationRules, occurrence_materials};
+use ketchup_geometry::linalg::dot;
 use ketchup_model::assembly_joint::AssemblyJointKind;
 use ketchup_model::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
 use ketchup_model::document::{ClassificationError, InstancePath, OccurrenceId, Snapshot};
@@ -514,10 +515,6 @@ fn recipe_face_evidence(
     })
 }
 
-fn validation_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left.into_iter().zip(right).map(|(a, b)| a * b).sum()
-}
-
 fn validation_distance(left: [f64; 3], right: [f64; 3]) -> f64 {
     left.into_iter()
         .zip(right)
@@ -536,7 +533,7 @@ fn recipe_face_overlap_area_mm2(
             .tangent_axes_world
             .iter()
             .filter(|second_axis| {
-                validation_dot(*first_axis, **second_axis).abs() >= 1.0 - ACCUMULATED_ROUNDING
+                dot(*first_axis, **second_axis).abs() >= 1.0 - ACCUMULATED_ROUNDING
             })
             .count()
             == 1
@@ -545,7 +542,7 @@ fn recipe_face_overlap_area_mm2(
             .tangent_axes_world
             .iter()
             .filter(|first_axis| {
-                validation_dot(**first_axis, *second_axis).abs() >= 1.0 - ACCUMULATED_ROUNDING
+                dot(**first_axis, *second_axis).abs() >= 1.0 - ACCUMULATED_ROUNDING
             })
             .count()
             == 1
@@ -562,11 +559,9 @@ fn recipe_face_overlap_area_mm2(
             .tangent_axes_world
             .iter()
             .zip(second.tangent_half_extents_mm)
-            .map(|(second_axis, half_extent)| {
-                validation_dot(axis, *second_axis).abs() * half_extent
-            })
+            .map(|(second_axis, half_extent)| dot(axis, *second_axis).abs() * half_extent)
             .sum::<f64>();
-        let center_offset = validation_dot(delta, axis);
+        let center_offset = dot(delta, axis);
         let overlap = first_radius.min(center_offset + second_radius)
             - (-first_radius).max(center_offset - second_radius);
         if overlap <= epsilon_mm {
@@ -575,14 +570,6 @@ fn recipe_face_overlap_area_mm2(
         area *= overlap;
     }
     Some(area)
-}
-
-fn transform_validation_vector(matrix: &[f64; 16], vector: [f64; 3]) -> [f64; 3] {
-    [
-        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
-        matrix[4] * vector[0] + matrix[5] * vector[1] + matrix[6] * vector[2],
-        matrix[8] * vector[0] + matrix[9] * vector[1] + matrix[10] * vector[2],
-    ]
 }
 
 fn pin_minimum_edge_distance_mm(
@@ -678,8 +665,8 @@ pub fn assistant_assembly_constraints_report(
                     }));
                     continue;
                 };
-                let normal_dot = validation_dot(first.normal_world, second.normal_world);
-                let signed_gap_mm = validation_dot(
+                let normal_dot = dot(first.normal_world, second.normal_world);
+                let signed_gap_mm = dot(
                     std::array::from_fn(|axis| {
                         second.center_world_mm[axis] - first.center_world_mm[axis]
                     }),
@@ -772,16 +759,14 @@ pub fn assistant_assembly_constraints_report(
                         ));
                     }
                     let first_axis_world = first_transform.as_ref().map(|resolved| {
-                        transform_validation_vector(
-                            resolved.world_transform.matrix(),
-                            pair.first.inward_unit_local,
-                        )
+                        resolved
+                            .world_transform
+                            .transform_vector(pair.first.inward_unit_local)
                     });
                     let second_axis_world = second_transform.as_ref().map(|resolved| {
-                        transform_validation_vector(
-                            resolved.world_transform.matrix(),
-                            pair.second.inward_unit_local,
-                        )
+                        resolved
+                            .world_transform
+                            .transform_vector(pair.second.inward_unit_local)
                     });
                     pairs.push(serde_json::json!({
                         "index": pair.index,
@@ -810,7 +795,7 @@ pub fn assistant_assembly_constraints_report(
                                 pair.second.diameter_mm,
                             ),
                         },
-                        "axis_dot": first_axis_world.zip(second_axis_world).map(|(first, second)| validation_dot(first, second)),
+                        "axis_dot": first_axis_world.zip(second_axis_world).map(|(first, second)| dot(first, second)),
                         "physical_probe_coincidence": coincidence.map(|proof| serde_json::json!({
                             "first_probe_endpoints_world_mm": proof.first_probe_endpoints_world_mm,
                             "second_probe_endpoints_world_mm": proof.second_probe_endpoints_world_mm,

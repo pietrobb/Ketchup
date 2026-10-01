@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::{Mat3, Vec3};
 
 impl ExactBackend {
     pub fn sweep_planar_profile(
@@ -107,37 +108,18 @@ impl ExactBackend {
                     ] {
                         validate_coordinate(coordinate, name, operation, &input)?;
                     }
-                    let chord = [end[0] - start[0], end[1] - start[1]];
-                    let start_handle = [control_1_mm[0] - start[0], control_1_mm[1] - start[1]];
-                    let end_handle = [end[0] - control_2_mm[0], end[1] - control_2_mm[1]];
-                    let middle = [
-                        control_2_mm[0] - control_1_mm[0],
-                        control_2_mm[1] - control_1_mm[1],
-                    ];
-                    let chord_squared = chord[0] * chord[0] + chord[1] * chord[1];
-                    let start_length = start_handle[0].hypot(start_handle[1]);
-                    let end_length = end_handle[0].hypot(end_handle[1]);
-                    let length = start_length + middle[0].hypot(middle[1]) + end_length;
-                    let projection_1 = start_handle[0] * chord[0] + start_handle[1] * chord[1];
-                    let control_2_from_start =
-                        [control_2_mm[0] - start[0], control_2_mm[1] - start[1]];
-                    let projection_2 =
-                        control_2_from_start[0] * chord[0] + control_2_from_start[1] * chord[1];
-                    if start_length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
-                        || end_length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
-                        || projection_1 <= 0.0
-                        || projection_2 < projection_1
-                        || projection_2 >= chord_squared
-                    {
-                        return Err(invalid());
-                    }
+                    let forward = ketchup_geometry::linalg::CubicBezier::new([
+                        start,
+                        *control_1_mm,
+                        *control_2_mm,
+                        end,
+                    ])
+                    .forward(MIN_SWEEP_PATH_SEGMENT_LENGTH_MM)
+                    .ok_or_else(invalid)?;
                     Ok((
-                        length,
-                        [
-                            start_handle[0] / start_length,
-                            start_handle[1] / start_length,
-                        ],
-                        [end_handle[0] / end_length, end_handle[1] / end_length],
+                        forward.control_length,
+                        forward.start_tangent,
+                        forward.end_tangent,
                     ))
                 }
             }
@@ -309,38 +291,15 @@ impl ExactBackend {
                 operation,
                 operation,
             )?;
-            let x_axis = [section.frame[3], section.frame[4], section.frame[5]];
-            let y_axis = [section.frame[6], section.frame[7], section.frame[8]];
-            let normal = [section.frame[9], section.frame[10], section.frame[11]];
-            let norm = |axis: [f64; 3]| {
-                axis.into_iter()
-                    .map(|value| value * value)
-                    .sum::<f64>()
-                    .sqrt()
-            };
-            let dot = |left: [f64; 3], right: [f64; 3]| {
-                left.into_iter()
-                    .zip(right)
-                    .map(|(left, right)| left * right)
-                    .sum::<f64>()
-            };
-            let cross = [
-                x_axis[1] * y_axis[2] - x_axis[2] * y_axis[1],
-                x_axis[2] * y_axis[0] - x_axis[0] * y_axis[2],
-                x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0],
-            ];
+            let frame = section.frame;
+            let axes = Mat3::from_rows([frame.x, frame.y, frame.z].map(Vec3::to_array));
             if section.elevation_mm <= previous_elevation
-                || section
-                    .frame
+                || frame
+                    .to_array()
                     .iter()
                     .any(|value| !value.is_finite() || value.abs() > 1_000_000.0)
-                || (norm(x_axis) - 1.0).abs() > ACCUMULATED_ROUNDING
-                || (norm(y_axis) - 1.0).abs() > ACCUMULATED_ROUNDING
-                || (norm(normal) - 1.0).abs() > ACCUMULATED_ROUNDING
-                || dot(x_axis, y_axis).abs() > ACCUMULATED_ROUNDING
-                || dot(x_axis, normal).abs() > ACCUMULATED_ROUNDING
-                || dot(y_axis, normal).abs() > ACCUMULATED_ROUNDING
-                || dot(cross, normal) < 1.0 - ACCUMULATED_ROUNDING
+                || !axes.is_orthonormal(ACCUMULATED_ROUNDING)
+                || axes.determinant() < 1.0 - ACCUMULATED_ROUNDING
             {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidParameter,
@@ -350,18 +309,12 @@ impl ExactBackend {
                 ));
             }
             previous_elevation = section.elevation_mm;
-            let point = |index: usize| {
-                native_spatial_point([
-                    section.frame[index],
-                    section.frame[index + 1],
-                    section.frame[index + 2],
-                ])
-            };
+            let point = |vector: Vec3| native_spatial_point(vector.to_array());
             let mut native_section = ffi::NativeLoftSection {
-                origin: point(0),
-                x_axis: point(3),
-                y_axis: point(6),
-                normal: point(9),
+                origin: point(frame.origin),
+                x_axis: point(frame.x),
+                y_axis: point(frame.y),
+                normal: point(frame.z),
                 elevation: section.elevation_mm,
                 segment_count: 0,
                 spline_point_count: 0,
@@ -410,7 +363,7 @@ impl ExactBackend {
                 }
             };
             values.extend([kind, section.elevation_mm, count as f64]);
-            values.extend(section.frame);
+            values.extend(frame.to_array());
             values.extend(payload);
             sections.push(native_section);
         }

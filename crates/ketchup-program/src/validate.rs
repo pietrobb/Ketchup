@@ -9,6 +9,7 @@ use crate::frame::{self, Obb};
 use crate::model::{
     Part, ProgramBooleanKind, ProgramModel, ProgramPartBody, ProgramProfileSegment,
 };
+use ketchup_geometry::linalg::dot;
 use serde::Serialize;
 
 /// Issue kind for a box overlap that only the exact solids can decide.
@@ -158,7 +159,7 @@ fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
                     .filter(|(normal, offset)| {
                         corners
                             .iter()
-                            .any(|corner| frame::dot(*normal, *corner) > offset + TOLERANCE_MM)
+                            .any(|corner| dot(*normal, *corner) > offset + TOLERANCE_MM)
                     });
             match (crossing.next(), crossing.next()) {
                 (Some((normal, offset)), None) => Some((normal.map(|value| -value), -offset)),
@@ -188,7 +189,7 @@ fn trims_separate(a: &Part, b: &Part) -> bool {
     let vertices = frame::polytope_vertices(&planes, TOLERANCE_MM);
     vertices.is_empty()
         || planes.iter().any(|(normal, _)| {
-            let along = vertices.iter().map(|vertex| frame::dot(*normal, *vertex));
+            let along = vertices.iter().map(|vertex| dot(*normal, *vertex));
             let (low, high) = along
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
                     (low.min(value), high.max(value))
@@ -351,7 +352,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
             let (local_entry, local_inward) = part.after_operations((hole.entry_mm, hole.inward));
             let entry = part.to_world(local_entry);
             let inward = frame::apply(&part.rotation, local_inward);
-            let thickness = part.reach(inward) - frame::dot(entry, inward);
+            let thickness = part.reach(inward) - dot(entry, inward);
             // The hole's circle, in face coordinates, must lie on the face.
             let fit = part.face_frame(&hole.face).ok().map(|face| {
                 let at = face.coordinates(local_entry);

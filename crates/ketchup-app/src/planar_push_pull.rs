@@ -2,6 +2,7 @@ use super::*;
 use ketchup_application::evaluation::{
     ProducerKey, publish_exact_products, start_exact_evaluation_scoped,
 };
+use ketchup_geometry::linalg::normalize_within;
 use ketchup_interaction::exact_projection::ExactSurfaceHit;
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, SCREEN_ROUNDING_PX};
 #[cfg(test)]
@@ -80,15 +81,7 @@ fn planar_face(
         })
         .collect::<Vec<_>>();
     let first = *triangles.first()?;
-    let local_normal = triangle_normal(first);
-    let length = vector_length(local_normal);
-    if length <= ROUNDING {
-        return None;
-    }
-    let local_normal = local_normal * (1.0 / length);
-    if vector_length(local_normal) < 0.99 {
-        return None;
-    }
+    let local_normal = normalize_within(triangle_normal(first), ROUNDING)?;
     let tolerance = package
         .bounds_mm()
         .into_iter()
@@ -104,12 +97,7 @@ fn planar_face(
         return None;
     }
     let world = first.map(|p| transform_model_point(transform, p));
-    let normal = triangle_normal(world);
-    let length = vector_length(normal);
-    if length <= ROUNDING {
-        return None;
-    }
-    let normal = normal * (1.0 / length);
+    let normal = normalize_within(triangle_normal(world), ROUNDING)?;
     let transformed_normal = transform_model_point(transform, first[0] + local_normal) - world[0];
     let normal = if dot(transformed_normal, normal) < 0.0 {
         normal * -1.0
@@ -119,7 +107,7 @@ fn planar_face(
     let scale = dot(transformed_normal, normal);
     // Only similarities preserve a perpendicular offset as a perpendicular offset.
     if scale <= ROUNDING
-        || vector_length(transformed_normal - normal * scale) > scale * ACCUMULATED_ROUNDING
+        || length(transformed_normal - normal * scale) > scale * ACCUMULATED_ROUNDING
     {
         return None;
     }

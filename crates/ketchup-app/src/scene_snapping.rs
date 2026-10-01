@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::CubicBezier;
 use ketchup_model::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING,
 };
@@ -321,20 +322,7 @@ impl SceneSnapGeometry {
                     control_2_mm: c,
                     end_mm: d,
                 } => (0..=64)
-                    .map(|i| {
-                        let t = f64::from(i) / 64.0;
-                        let u = 1.0 - t;
-                        [
-                            u.powi(3) * a[0]
-                                + 3.0 * u * u * t * b[0]
-                                + 3.0 * u * t * t * c[0]
-                                + t.powi(3) * d[0],
-                            u.powi(3) * a[1]
-                                + 3.0 * u * u * t * b[1]
-                                + 3.0 * u * t * t * c[1]
-                                + t.powi(3) * d[1],
-                        ]
-                    })
+                    .map(|i| CubicBezier::new([*a, *b, *c, *d]).eval(f64::from(i) / 64.0))
                     .collect(),
                 // Only the exact kernel knows where a spline runs between its points.
                 ProfileSegment::Spline { .. } => continue,

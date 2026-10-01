@@ -144,3 +144,32 @@ def test_workspace_test_files_are_named_after_behavior():
     files = checker.test_files(ROOT)
     assert "crates/ketchup-scheduler/tests/scheduler_reliability.rs" in files
     assert checker.milestone_named_tests(files) == []
+
+
+def test_hand_written_linear_algebra_is_counted_and_only_falls(tmp_path):
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "fn cross3(a: V, b: V) {}\n"
+        "let n = [u[1] * v[2] - u[2] * v[1], 0.0, 0.0];\n"
+        "let p = m[0] * q[0] + m[1] * q[1] + m[3];\n"
+        "let determinant = a * d - b * c;\n"
+        "let determinant = linear.determinant();\n"
+        "let product = dot(a, cross(b, c));\n",
+        encoding="utf-8",
+    )
+    shared = tmp_path / "crates" / "ketchup-geometry" / "src" / "linalg.rs"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("fn dot(a: V, b: V) {}\n", encoding="utf-8")
+    counts = checker.linear_algebra_counts(tmp_path)
+    assert counts == {"crates/a/src/lib.rs": 4}
+    assert checker.hand_written_linear_algebra(counts, {"crates/a/src/lib.rs": 4}) == []
+    assert len(checker.hand_written_linear_algebra(counts, {})) == 1
+    assert "lower LINEAR_ALGEBRA" in checker.hand_written_linear_algebra(
+        counts, {"crates/a/src/lib.rs": 5}
+    )[0]
+
+
+def test_workspace_linear_algebra_stays_in_ketchup_geometry():
+    counts = checker.linear_algebra_counts(ROOT)
+    assert checker.hand_written_linear_algebra(counts) == []

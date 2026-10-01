@@ -583,28 +583,19 @@ fn encode_model(
 }
 
 fn transform_3mf(transform: Transform) -> Result<String, ExactProductError> {
-    let matrix = transform.matrix();
-    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
-    if matrix.iter().any(|value| !value.is_finite()) || determinant.abs() <= f64::EPSILON {
+    let affine = transform.affine();
+    if !affine.translation.is_finite() || affine.linear.is_singular() {
         return Err(ExactProductError::InvalidMeshExport);
     }
-    Ok(format!(
-        "{:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17}",
-        matrix[0],
-        matrix[1],
-        matrix[2],
-        matrix[4],
-        matrix[5],
-        matrix[6],
-        matrix[8],
-        matrix[9],
-        matrix[10],
-        matrix[3],
-        matrix[7],
-        matrix[11]
-    ))
+    // 3MF multiplies row vectors (p' = p·M), so its rows are Kečup's columns
+    // and the translation is the last row.
+    let [x, y, z] = affine.linear.transpose().rows;
+    Ok([x, y, z, affine.translation.to_array()]
+        .iter()
+        .flatten()
+        .map(|value| format!("{value:.17}"))
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 fn write_xml_escaped(xml: &mut BoundedString, value: &str) -> Result<(), ExactProductError> {
@@ -778,5 +769,45 @@ mod tests {
             Err(ExactProductError::ExportResourceLimit)
         );
         assert_eq!(encode_package(&entries, 101).unwrap().len(), 101);
+    }
+
+    /// A rotation about z by 90°, a non-uniform scale and a translation: the
+    /// linear part is not symmetric, so a transposed export would show.
+    fn rotated_transform() -> Transform {
+        Transform::from_matrix([
+            0.0, -2.0, 0.0, 10.0, 1.0, 0.0, 0.0, -5.0, 0.0, 0.0, 3.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn transform_3mf_maps_row_vectors_like_kecup_and_inverts_back() {
+        use ketchup_geometry::linalg::{Affine3, Mat3, Vec3};
+        let transform = rotated_transform();
+        let values = transform_3mf(transform)
+            .unwrap()
+            .split(' ')
+            .map(|value| value.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 12);
+        let row = |index: usize| [values[index], values[index + 1], values[index + 2]];
+        // p' = p·M with rows m0, m1, m2 and the translation m3.
+        let exported = Affine3 {
+            linear: Mat3::from_rows([row(0), row(3), row(6)]).transpose(),
+            translation: Vec3::from(row(9)),
+        };
+        let point = Vec3::new(4.0, 6.0, -2.0);
+        let expected = transform.affine().transform_point(point);
+        assert!(exported.transform_point(point).distance(expected) < 1.0e-12);
+        let back = exported.invert().unwrap().transform_point(expected);
+        assert!(back.distance(point) < 1.0e-12);
+        let flat = Transform::from_matrix([
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .unwrap();
+        assert_eq!(
+            transform_3mf(flat),
+            Err(ExactProductError::InvalidMeshExport)
+        );
     }
 }

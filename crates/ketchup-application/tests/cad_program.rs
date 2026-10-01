@@ -697,15 +697,14 @@ fn public_large_ellipse_has_a_visible_bounded_deviation_and_reopens_exactly() {
         else {
             panic!("ellipse approximation must remain editable cubic geometry");
         };
+        let curve = ketchup_geometry::linalg::CubicBezier::new([
+            *start_mm,
+            *control_1_mm,
+            *control_2_mm,
+            *end_mm,
+        ]);
         for step in 0..=4_096 {
-            let parameter = f64::from(step) / 4_096.0;
-            let inverse = 1.0 - parameter;
-            let point = [0, 1].map(|axis| {
-                inverse.powi(3) * start_mm[axis]
-                    + 3.0 * inverse.powi(2) * parameter * control_1_mm[axis]
-                    + 3.0 * inverse * parameter.powi(2) * control_2_mm[axis]
-                    + parameter.powi(3) * end_mm[axis]
-            });
+            let point = curve.eval(f64::from(step) / 4_096.0);
             let local = [
                 cos * point[0] + sin * point[1],
                 -sin * point[0] + cos * point[1],
@@ -4341,9 +4340,10 @@ fn public_framed_sketch_output_builds_an_exact_editable_planar_offset() {
     let graph = ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(4)).unwrap();
     assert!(graph.terminal_is_planar_offset());
     assert_eq!(graph.profiles[0].source_feature_id, 2);
-    assert_eq!(graph.profiles[0].frame_bits[0], 30.0_f64.to_bits());
-    assert_eq!(graph.profiles[0].frame_bits[1], (-20.0_f64).to_bits());
-    assert_eq!(graph.profiles[0].frame_bits[2], 15.0_f64.to_bits());
+    assert_eq!(
+        graph.profiles[0].frame().origin.to_array(),
+        [30.0, -20.0, 15.0]
+    );
     let bounds = graph.producer_bounds_mm().unwrap().unwrap();
     assert_eq!(bounds[0][0], 30.0);
     assert_eq!(bounds[1][0], 30.0);

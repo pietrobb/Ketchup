@@ -3,8 +3,8 @@
 
 use crate::eval::TOLERANCE_MM;
 use crate::faces::{FaceFrame, FaceKind, PANEL_FACES};
-use crate::frame;
 use crate::model::Part;
+use ketchup_geometry::linalg::dot;
 use ketchup_model::tolerance::ROUNDING;
 
 /// A shared face patch of positive area between two parts.
@@ -54,8 +54,8 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
     for local_a in planar_faces(a) {
         let face_a = a.world_face(&local_a);
         for face_b in &faces_b {
-            if frame::dot(face_a.normal, face_b.normal) > ROUNDING - 1.0
-                || frame::dot(minus(face_b.origin_mm, face_a.origin_mm), face_a.normal).abs()
+            if dot(face_a.normal, face_b.normal) > ROUNDING - 1.0
+                || dot(minus(face_b.origin_mm, face_a.origin_mm), face_a.normal).abs()
                     > TOLERANCE_MM
             {
                 continue;
@@ -156,15 +156,15 @@ fn minus(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// The world half-space `normal · x <= offset` on the plane of `face`.
 fn in_face(face: &FaceFrame, normal: [f64; 3], offset: f64) -> HalfPlane {
     (
-        [frame::dot(normal, face.u), frame::dot(normal, face.v)],
-        offset - frame::dot(normal, face.origin_mm),
+        [dot(normal, face.u), dot(normal, face.v)],
+        offset - dot(normal, face.origin_mm),
     )
 }
 
 /// The rectangle `other` spans, as half-planes on the plane of `face`.
 fn rectangle(face: &FaceFrame, other: &FaceFrame) -> [HalfPlane; 4] {
     let along = |direction: [f64; 3], low: f64, high: f64| {
-        let start = frame::dot(direction, other.origin_mm);
+        let start = dot(direction, other.origin_mm);
         [
             in_face(face, direction, start + high),
             in_face(face, direction.map(|value| -value), -(start + low)),
@@ -184,7 +184,7 @@ fn corners(face: &FaceFrame) -> Vec<[f64; 2]> {
 /// A convex polygon cut down to a half-plane (Sutherland–Hodgman); points
 /// within [`TOLERANCE_MM`] outside it stay.
 fn clip(polygon: Vec<[f64; 2]>, (coefficients, limit): HalfPlane) -> Vec<[f64; 2]> {
-    let value = |point: [f64; 2]| coefficients[0] * point[0] + coefficients[1] * point[1];
+    let value = |point: [f64; 2]| ketchup_geometry::linalg::dot2(coefficients, point);
     let inside = |point: [f64; 2]| value(point) <= limit + TOLERANCE_MM;
     let mut clipped = Vec::with_capacity(polygon.len() + 1);
     for (index, &current) in polygon.iter().enumerate() {

@@ -54,11 +54,7 @@ pub fn extrude_profile_surface(
     let first = face_triangles[0].map(|i| positions[i as usize]);
     let u = std::array::from_fn::<_, 3, _>(|i| first[1][i] - first[0][i]);
     let v = std::array::from_fn::<_, 3, _>(|i| first[2][i] - first[0][i]);
-    let normal = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
+    let normal = ketchup_geometry::linalg::cross(u, v);
     let direction: f64 = normal.iter().zip(offset).map(|(n, d)| n * d).sum();
     if direction.abs() <= ROUNDING {
         return None;
@@ -200,10 +196,9 @@ mod tests {
                 let mut volume = 0.0;
                 for triangle in triangles {
                     let [a, b, c] = triangle.map(|i| positions[i as usize]);
-                    volume += (a[0] * (b[1] * c[2] - b[2] * c[1])
-                        + a[1] * (b[2] * c[0] - b[0] * c[2])
-                        + a[2] * (b[0] * c[1] - b[1] * c[0]))
-                        / 6.0;
+                    volume +=
+                        ketchup_geometry::linalg::dot(a, ketchup_geometry::linalg::cross(b, c))
+                            / 6.0;
                     for edge in [
                         [triangle[0], triangle[1]],
                         [triangle[1], triangle[2]],

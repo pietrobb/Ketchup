@@ -1,3 +1,4 @@
+use crate::linalg::{dot, sub};
 use crate::slot::DerivedIdentity;
 use crate::tolerance::{InvalidTolerance, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use std::fmt;
@@ -321,7 +322,7 @@ pub fn obb_sat(
                 rotation[left_axis][right_axis].abs() + tolerance.linear_mm();
         }
     }
-    let world_translation = subtract(right.centre, left.centre);
+    let world_translation = sub(right.centre, left.centre);
     let translation: [f64; 3] = std::array::from_fn(|axis| dot(world_translation, left.axes[axis]));
     ensure_finite(rotation.iter().flatten().copied())?;
     ensure_finite(absolute.iter().flatten().copied())?;
@@ -584,14 +585,6 @@ fn separated(
         return Err(PrismaticError::NumericalFailure);
     }
     Ok(distance > bound)
-}
-
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|axis| left[axis] - right[axis])
 }
 
 fn ensure_finite(values: impl IntoIterator<Item = f64>) -> Result<(), PrismaticError> {

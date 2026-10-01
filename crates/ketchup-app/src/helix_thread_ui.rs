@@ -7,6 +7,9 @@ pub use ketchup_assistant::sidecar::{
     AssistantThreadParameters as ThreadToolParameters, AssistantThreadProfile as ThreadProfile,
 };
 use ketchup_assistant::sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
+use ketchup_geometry::linalg::CubicBezier;
+#[cfg(test)]
+use ketchup_geometry::linalg::{dot, sub};
 use ketchup_interaction::{ElementId, Vec3};
 use ketchup_model::document::SpatialPathSegment;
 use ketchup_model::tolerance::ROUNDING;
@@ -215,11 +218,7 @@ impl KetchupApp {
                 } else {
                     [0.0, 0.0, 1.0]
                 };
-                let x_direction = [
-                    reference[1] * direction[2] - reference[2] * direction[1],
-                    reference[2] * direction[0] - reference[0] * direction[2],
-                    reference[0] * direction[1] - reference[1] * direction[0],
-                ];
+                let x_direction = ketchup_geometry::linalg::cross(reference, direction);
                 AssistantCadEditOperation::CreateConstructionPlane {
                     name,
                     origin_mm: origin,
@@ -283,22 +282,9 @@ impl KetchupApp {
                     end_mm,
                 } => (0..=8)
                     .map(|step| {
-                        let t = step as f64 / 8.0;
-                        let one = 1.0 - t;
-                        Vec3::new(
-                            one.powi(3) * start_mm[0]
-                                + 3.0 * one.powi(2) * t * control_1_mm[0]
-                                + 3.0 * one * t.powi(2) * control_2_mm[0]
-                                + t.powi(3) * end_mm[0],
-                            one.powi(3) * start_mm[1]
-                                + 3.0 * one.powi(2) * t * control_1_mm[1]
-                                + 3.0 * one * t.powi(2) * control_2_mm[1]
-                                + t.powi(3) * end_mm[1],
-                            one.powi(3) * start_mm[2]
-                                + 3.0 * one.powi(2) * t * control_1_mm[2]
-                                + 3.0 * one * t.powi(2) * control_2_mm[2]
-                                + t.powi(3) * end_mm[2],
-                        )
+                        let curve =
+                            CubicBezier::new([*start_mm, *control_1_mm, *control_2_mm, *end_mm]);
+                        Vec3::from(curve.eval(f64::from(step) / 8.0))
                     })
                     .collect::<Vec<_>>(),
                 _ => Vec::new(),
@@ -614,27 +600,8 @@ fn scalar_row(ui: &mut egui::Ui, label: String, value: &mut String) -> bool {
 }
 
 #[cfg(test)]
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left.into_iter().zip(right).map(|(a, b)| a * b).sum()
-}
-
-#[cfg(test)]
 fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {
-    if vector.iter().any(|value| !value.is_finite()) {
-        return None;
-    }
-    let length = dot(vector, vector).sqrt();
-    (length > ROUNDING).then(|| scale(vector, length.recip()))
-}
-
-#[cfg(test)]
-fn sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|axis| left[axis] - right[axis])
-}
-
-#[cfg(test)]
-fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
-    vector.map(|value| value * factor)
+    ketchup_geometry::linalg::normalize_within(vector, ROUNDING)
 }
 
 #[cfg(test)]

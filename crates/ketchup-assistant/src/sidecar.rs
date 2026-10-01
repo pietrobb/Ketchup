@@ -1,3 +1,4 @@
+use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::document::{
     Dimension, ProfileSegment, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
     is_valid_spatial_sweep_path,
@@ -515,18 +516,14 @@ impl AssistantHelixParameters {
             assistant_unit(direction).ok_or(AssistantRequestInvalid::invalid("helix axis"))?;
         let reference = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
             .into_iter()
-            .min_by(|left, right| {
-                assistant_dot(*left, axis)
-                    .abs()
-                    .total_cmp(&assistant_dot(*right, axis).abs())
-            })
+            .min_by(|left, right| dot(*left, axis).abs().total_cmp(&dot(*right, axis).abs()))
             .expect("three reference axes exist");
         let frame_u = assistant_unit(assistant_sub(
             reference,
-            assistant_scale(axis, assistant_dot(reference, axis)),
+            assistant_scale(axis, dot(reference, axis)),
         ))
         .ok_or(AssistantRequestInvalid::invalid("helix reference frame"))?;
-        let frame_v = assistant_cross(axis, frame_u);
+        let frame_v = cross(axis, frame_u);
         let start_angle = self.start_angle_degrees.to_radians();
         let total_angle = std::f64::consts::TAU * self.turns;
         let segment_count = (total_angle / std::f64::consts::FRAC_PI_2).ceil() as usize;
@@ -635,23 +632,11 @@ impl AssistantThreadParameters {
     }
 }
 
-fn assistant_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left.into_iter().zip(right).map(|(a, b)| a * b).sum()
-}
-
-fn assistant_cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
 fn assistant_unit(vector: [f64; 3]) -> Option<[f64; 3]> {
     if vector.iter().any(|value| !value.is_finite()) {
         return None;
     }
-    let length = assistant_dot(vector, vector).sqrt();
+    let length = dot(vector, vector).sqrt();
     (length > ROUNDING).then(|| assistant_scale(vector, length.recip()))
 }
 

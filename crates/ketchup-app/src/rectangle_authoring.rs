@@ -37,18 +37,8 @@ impl KetchupApp {
             }) => {
                 let resolved = snapshot.resolve_instance_path(instance_path).ok()?;
                 let inverse = resolved.world_transform.rigid_inverse()?;
-                let m = inverse.matrix();
-                let vector = |p: [f64; 3]| {
-                    [
-                        m[0] * p[0] + m[1] * p[1] + m[2] * p[2],
-                        m[4] * p[0] + m[5] * p[1] + m[6] * p[2],
-                        m[8] * p[0] + m[9] * p[1] + m[10] * p[2],
-                    ]
-                };
-                let mut local_origin = vector(frame.origin_mm);
-                for (coordinate, translation) in local_origin.iter_mut().zip([m[3], m[7], m[11]]) {
-                    *coordinate += translation;
-                }
+                let vector = |p: [f64; 3]| inverse.transform_vector(p);
+                let local_origin = inverse.transform_point(frame.origin_mm);
                 (
                     *definition_id,
                     WorkplaneFrame::from_axes(

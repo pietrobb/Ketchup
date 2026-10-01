@@ -237,7 +237,7 @@ fn surface_thicken_creates_one_exact_solid_with_explicit_side_policy() {
 #[test]
 fn surface_thicken_handles_curved_loft_and_rejects_collapsed_offset() {
     let backend = ExactBackend::new();
-    let frame = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    let frame = ketchup_geometry::linalg::Frame::WORLD;
     let circle = || {
         FramedLoftProfile::Planar(PlanarProfileLoop::Circle {
             center_mm: [0.0, 0.0],

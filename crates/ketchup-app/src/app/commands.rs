@@ -651,7 +651,7 @@ impl KetchupApp {
             });
             // A gesture in flight already knows its target and its copy mode;
             // typing a value replaces the one the pointer is showing.
-            if let Some(delta_mm) = typed.filter(|delta_mm| vector_length(*delta_mm) > 0.0)
+            if let Some(delta_mm) = typed.filter(|delta_mm| length(*delta_mm) > 0.0)
                 && let Some(mut drag) = self.take_move_session(None)
             {
                 drag.delta_mm = delta_mm;
@@ -703,7 +703,7 @@ impl KetchupApp {
                 }
             } else if let Some(distance_mm) = parse_distance_mm(&self.value_box.input) {
                 if let Some((_, previous)) = self.current_move_copy_correction() {
-                    let previous_distance_mm = vector_length(previous.delta_mm);
+                    let previous_distance_mm = length(previous.delta_mm);
                     if previous_distance_mm > 0.0
                         && self.correct_move_copy_delta(
                             previous.delta_mm * (distance_mm / previous_distance_mm),

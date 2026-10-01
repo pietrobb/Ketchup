@@ -1,4 +1,5 @@
-use crate::tolerance::{MAX_COORDINATE_MM, NEGLIGIBLE};
+use crate::tolerance::MAX_COORDINATE_MM;
+use ketchup_geometry::linalg::Affine3;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -446,15 +447,11 @@ pub fn inspect_sketchup_scene(
         for index in [3, 7, 11] {
             matrix[index] *= 25.4;
         }
-        let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-            - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-            + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
         if matrix.iter().any(|value| !value.is_finite())
             || [0, 1, 2, 4, 5, 6, 8, 9, 10]
                 .into_iter()
                 .any(|index| matrix[index].abs() > MAX_COORDINATE_MM)
-            || !determinant.is_finite()
-            || determinant.abs() <= NEGLIGIBLE
+            || Affine3::from_row_major(matrix).linear.is_singular()
         {
             return Err(SketchupSceneImportError::InvalidTransform);
         }

@@ -13,6 +13,7 @@ use crate::spatial::{
     SPATIAL_INDEX_V1, SnapshotBinding, SpatialBounds, SpatialIndex, SpatialQueryError,
     SpatialQueryStats,
 };
+pub use ketchup_geometry::linalg::Vec3;
 use ketchup_model::adapters::{AdapterError, UiAction, UiAdapter};
 use ketchup_model::document::{
     DefinitionId, DocumentStore, FeatureId, FeatureKind, InstancePath, Proposal,
@@ -21,7 +22,6 @@ use ketchup_model::document::{
 use ketchup_model::tolerance::ROUNDING;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::ops::{Add, Mul, Sub};
 use std::sync::Arc;
 
 const RAY_EPSILON: f64 = ROUNDING;
@@ -40,68 +40,6 @@ const BOX_EDGE_ENDPOINTS: [(usize, usize); 12] = [
     (2, 6),
     (3, 7),
 ];
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Vec3 {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-}
-
-impl Vec3 {
-    pub const ZERO: Self = Self {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-
-    #[must_use]
-    pub const fn new(x: f64, y: f64, z: f64) -> Self {
-        Self { x, y, z }
-    }
-
-    #[must_use]
-    pub fn length(self) -> f64 {
-        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
-    }
-
-    #[must_use]
-    pub fn distance(self, other: Self) -> f64 {
-        (self - other).length()
-    }
-
-    fn component(self, axis: Axis) -> f64 {
-        match axis {
-            Axis::X => self.x,
-            Axis::Y => self.y,
-            Axis::Z => self.z,
-        }
-    }
-}
-
-impl Add for Vec3 {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
-    }
-}
-
-impl Sub for Vec3 {
-    type Output = Self;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
-    }
-}
-
-impl Mul<f64> for Vec3 {
-    type Output = Self;
-
-    fn mul(self, rhs: f64) -> Self::Output {
-        Self::new(self.x * rhs, self.y * rhs, self.z * rhs)
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ray {
@@ -137,6 +75,17 @@ pub enum Axis {
     X,
     Y,
     Z,
+}
+
+impl Axis {
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::X => 0,
+            Self::Y => 1,
+            Self::Z => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -625,9 +574,9 @@ fn hit_occurrence_faces(ray: Ray, occurrence: &Occurrence) -> Vec<ExactHit> {
     let mut far_face = (Axis::X, Side::Maximum);
 
     for axis in [Axis::X, Axis::Y, Axis::Z] {
-        let origin = local_origin.component(axis);
-        let direction = ray.direction.component(axis);
-        let maximum = size.component(axis);
+        let origin = local_origin.component(axis.index());
+        let direction = ray.direction.component(axis.index());
+        let maximum = size.component(axis.index());
         if direction.abs() <= RAY_EPSILON {
             if origin < 0.0 || origin > maximum {
                 return Vec::new();

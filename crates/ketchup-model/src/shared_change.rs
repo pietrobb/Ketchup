@@ -248,7 +248,7 @@ pub fn project_occurrence_edit_impact(
             }
             None => Transform::identity(),
         };
-        let inverse_parent = invert_affine_transform(parent_world_transform).ok_or_else(|| {
+        let inverse_parent = parent_world_transform.inverse().ok_or_else(|| {
             parent.map_or_else(
                 || {
                     OccurrenceEditImpactError::InvalidCandidate(
@@ -540,59 +540,6 @@ pub fn project_occurrence_edit_impact(
         drawing_dependencies,
         proposal,
     })
-}
-
-fn invert_affine_transform(transform: Transform) -> Option<Transform> {
-    let matrix = transform.matrix();
-    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
-    if !determinant.is_finite() || determinant == 0.0 {
-        return None;
-    }
-    let inverse_determinant = determinant.recip();
-    let inverse_linear = [
-        (matrix[5] * matrix[10] - matrix[6] * matrix[9]) * inverse_determinant,
-        (matrix[2] * matrix[9] - matrix[1] * matrix[10]) * inverse_determinant,
-        (matrix[1] * matrix[6] - matrix[2] * matrix[5]) * inverse_determinant,
-        (matrix[6] * matrix[8] - matrix[4] * matrix[10]) * inverse_determinant,
-        (matrix[0] * matrix[10] - matrix[2] * matrix[8]) * inverse_determinant,
-        (matrix[2] * matrix[4] - matrix[0] * matrix[6]) * inverse_determinant,
-        (matrix[4] * matrix[9] - matrix[5] * matrix[8]) * inverse_determinant,
-        (matrix[1] * matrix[8] - matrix[0] * matrix[9]) * inverse_determinant,
-        (matrix[0] * matrix[5] - matrix[1] * matrix[4]) * inverse_determinant,
-    ];
-    let translation = [matrix[3], matrix[7], matrix[11]];
-    let inverse_translation = [
-        -(inverse_linear[0] * translation[0]
-            + inverse_linear[1] * translation[1]
-            + inverse_linear[2] * translation[2]),
-        -(inverse_linear[3] * translation[0]
-            + inverse_linear[4] * translation[1]
-            + inverse_linear[5] * translation[2]),
-        -(inverse_linear[6] * translation[0]
-            + inverse_linear[7] * translation[1]
-            + inverse_linear[8] * translation[2]),
-    ];
-    Transform::from_matrix([
-        inverse_linear[0],
-        inverse_linear[1],
-        inverse_linear[2],
-        inverse_translation[0],
-        inverse_linear[3],
-        inverse_linear[4],
-        inverse_linear[5],
-        inverse_translation[1],
-        inverse_linear[6],
-        inverse_linear[7],
-        inverse_linear[8],
-        inverse_translation[2],
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-    ])
-    .ok()
 }
 
 fn transforms_nearly_equal(left: Transform, right: Transform) -> bool {

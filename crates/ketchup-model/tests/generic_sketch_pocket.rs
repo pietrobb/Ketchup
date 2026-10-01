@@ -40,11 +40,10 @@ fn sketch_pocket_preserves_single_region_identity_and_workplane() {
                 compiled.region_id,
                 Some(sketch.solved_regions().unwrap()[0].id.0)
             );
-            let actual = compiled.frame_bits.map(f64::from_bits);
-            assert_eq!(&actual[0..3], &frame.origin_mm);
-            assert_eq!(&actual[3..6], &frame.x_axis);
-            assert_eq!(&actual[6..9], &frame.y_axis);
-            assert_eq!(&actual[9..12], &frame.normal);
+            assert_eq!(
+                compiled.frame().to_vectors(),
+                [frame.origin_mm, frame.x_axis, frame.y_axis, frame.normal]
+            );
             assert_eq!(interval.direction(), frame.normal);
             assert_eq!((interval.start_mm(), interval.end_mm()), (0.0, 20.0));
             assert_eq!(depth_bits.map(f64::from_bits), Some(20.0));

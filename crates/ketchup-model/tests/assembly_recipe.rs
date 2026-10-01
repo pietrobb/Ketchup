@@ -1388,14 +1388,7 @@ fn extend_until_contact_handles_nested_rotation_and_matches_a_clean_compile() {
         .current()
         .resolve_instance_path(&InstancePath::root(OccurrenceId(2)))
         .unwrap();
-    let transform_point = |transform: Transform, point: [f64; 3]| {
-        let matrix = transform.matrix();
-        [
-            matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-            matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-            matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-        ]
-    };
+    let transform_point = |transform: Transform, point: [f64; 3]| transform.transform_point(point);
     assert_eq!(
         transform_point(rear.world_transform, [300.0, 200.0, 29.0]),
         transform_point(top.world_transform, [300.0, 200.0, 0.0])

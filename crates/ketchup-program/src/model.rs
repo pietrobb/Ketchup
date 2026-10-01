@@ -7,6 +7,7 @@
 //! operations, where they are drilled.
 
 use crate::frame::{self, Mat3, Obb};
+use ketchup_geometry::linalg::{CubicBezier, dot};
 use ketchup_model::tolerance::ROUNDING;
 use serde::Serialize;
 
@@ -207,20 +208,13 @@ impl ProgramProfileSegment {
     #[must_use]
     pub fn bezier_point(&self, t: f64) -> [f64; 2] {
         let [c1, c2] = self.bezier.unwrap_or([self.start_mm, self.end_mm]);
-        let s = 1.0 - t;
-        let weights = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
-        std::array::from_fn(|axis| {
-            weights[0] * self.start_mm[axis]
-                + weights[1] * c1[axis]
-                + weights[2] * c2[axis]
-                + weights[3] * self.end_mm[axis]
-        })
+        CubicBezier::new([self.start_mm, c1, c2, self.end_mm]).eval(t)
     }
 
     /// The largest `direction · p` over the segment's points.
     #[must_use]
     pub fn support(&self, direction: [f64; 2]) -> f64 {
-        let dot = |p: [f64; 2]| p[0] * direction[0] + p[1] * direction[1];
+        let dot = |p: [f64; 2]| ketchup_geometry::linalg::dot2(p, direction);
         let ends = dot(self.start_mm).max(dot(self.end_mm));
         if let Some([c1, c2]) = self.bezier {
             // d/dt of the cubic's projection is a t^2 + b t + c; its roots
@@ -921,7 +915,7 @@ impl Part {
         };
         self.joined()
             .map(|tool| tool.reach(direction))
-            .fold(frame::dot(self.at_mm, direction) + body, f64::max)
+            .fold(dot(self.at_mm, direction) + body, f64::max)
     }
 
     #[must_use]

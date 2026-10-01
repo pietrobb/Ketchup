@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::{cross, dot, sub};
 
 pub(super) struct GraphCompiler<'a> {
     pub(super) snapshot: &'a Snapshot,
@@ -1000,7 +1001,7 @@ impl<'a> GraphCompiler<'a> {
         if denominator.abs() <= self.snapshot.tolerance().linear_mm() {
             return Err(ExactBRepGraphError::AmbiguousExtent);
         }
-        let distance = dot(subtract(frame.origin_mm, origin_mm), frame.normal) / denominator;
+        let distance = dot(sub(frame.origin_mm, origin_mm), frame.normal) / denominator;
         if !distance.is_finite()
             || distance <= self.snapshot.tolerance().linear_mm()
             || distance > MAX_ABS_MM
@@ -1178,7 +1179,7 @@ impl<'a> GraphCompiler<'a> {
                 end_bits,
             }) => {
                 let start = start_bits.map(f64::from_bits);
-                (start, subtract(end_bits.map(f64::from_bits), start))
+                (start, sub(end_bits.map(f64::from_bits), start))
             }
             Some(ExactBRepSpatialPathSegment::CircularArc {
                 start_bits,
@@ -1190,7 +1191,7 @@ impl<'a> GraphCompiler<'a> {
                 let start = start_bits.map(f64::from_bits);
                 let tangent = cross(
                     normal_bits.map(f64::from_bits),
-                    subtract(start, center_bits.map(f64::from_bits)),
+                    sub(start, center_bits.map(f64::from_bits)),
                 );
                 (
                     start,
@@ -1203,7 +1204,7 @@ impl<'a> GraphCompiler<'a> {
                 ..
             }) => {
                 let start = start_bits.map(f64::from_bits);
-                (start, subtract(control_1_bits.map(f64::from_bits), start))
+                (start, sub(control_1_bits.map(f64::from_bits), start))
             }
             None => return Err(ExactBRepGraphError::InvalidParameter),
         };
@@ -1224,11 +1225,8 @@ impl<'a> GraphCompiler<'a> {
         };
         let section_u = unit(cross(tangent, reference));
         let section_v = unit(cross(section_u, tangent));
-        let frame = profile.frame_bits.map(f64::from_bits);
-        let origin = [frame[0], frame[1], frame[2]];
-        let x_axis = [frame[3], frame[4], frame[5]];
-        let y_axis = [frame[6], frame[7], frame[8]];
-        let from_start = subtract(origin, start);
+        let [origin, x_axis, y_axis, _] = profile.frame().to_vectors();
+        let from_start = sub(origin, start);
         if dot(cross(x_axis, y_axis), tangent).abs() < 1.0 - ROUNDING
             || dot(from_start, tangent).abs() > ROUNDING
         {

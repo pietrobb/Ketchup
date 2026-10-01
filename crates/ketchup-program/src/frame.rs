@@ -4,6 +4,7 @@
 //! rotation stored row-major; its columns are the part's local x, y and z axes
 //! expressed in world coordinates.
 
+use ketchup_geometry::linalg::{self, cross, dot, length};
 use ketchup_model::tolerance::ROUNDING;
 
 pub type Mat3 = [[f64; 3]; 3];
@@ -26,25 +27,25 @@ pub fn same_orientation(a: &Mat3, b: &Mat3) -> bool {
 
 #[must_use]
 pub fn apply(rotation: &Mat3, vector: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|row| dot(rotation[row], vector))
+    linalg::Mat3::from_rows(*rotation)
+        .mul_vec(vector.into())
+        .to_array()
 }
 
 #[must_use]
 pub fn apply_transposed(rotation: &Mat3, vector: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|column| (0..3).map(|row| rotation[row][column] * vector[row]).sum())
+    apply(&transposed(rotation), vector)
 }
 
 #[must_use]
 pub fn multiply(left: &Mat3, right: &Mat3) -> Mat3 {
-    std::array::from_fn(|row| {
-        std::array::from_fn(|column| (0..3).map(|k| left[row][k] * right[k][column]).sum())
-    })
+    (linalg::Mat3::from_rows(*left) * linalg::Mat3::from_rows(*right)).rows
 }
 
 /// Inverse of a rotation.
 #[must_use]
 pub fn transposed(rotation: &Mat3) -> Mat3 {
-    std::array::from_fn(|row| std::array::from_fn(|column| rotation[column][row]))
+    linalg::Mat3::from_rows(*rotation).transpose().rows
 }
 
 /// Column `index` of `rotation`: the local axis in world coordinates.
@@ -53,30 +54,10 @@ pub fn axis(rotation: &Mat3, index: usize) -> [f64; 3] {
     std::array::from_fn(|row| rotation[row][index])
 }
 
-#[must_use]
-pub fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[must_use]
-pub fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-#[must_use]
-pub fn length(vector: [f64; 3]) -> f64 {
-    dot(vector, vector).sqrt()
-}
-
 /// Unit vector, or `None` for a zero or non-finite vector.
 #[must_use]
 pub fn normalized(vector: [f64; 3]) -> Option<[f64; 3]> {
-    let length = length(vector);
-    (length.is_finite() && length > ORIENTATION_TOLERANCE).then(|| vector.map(|v| v / length))
+    linalg::normalize_within(vector, ORIENTATION_TOLERANCE)
 }
 
 /// Right-handed rotation by `angle_degrees` about `axis` (Rodrigues).
@@ -334,7 +315,7 @@ pub fn polytope_vertices(planes: &[([f64; 3], f64)], tolerance: f64) -> Vec<[f64
             for k in j + 1..planes.len() {
                 let ((a, da), (b, db), (c, dc)) = (planes[i], planes[j], planes[k]);
                 let (bc, ca, ab) = (cross(b, c), cross(c, a), cross(a, b));
-                let determinant = dot(a, bc);
+                let determinant = linalg::Mat3::from_rows([a, b, c]).determinant();
                 if determinant.abs() < ORIENTATION_TOLERANCE {
                     continue;
                 }

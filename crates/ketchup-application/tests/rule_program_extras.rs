@@ -164,8 +164,7 @@ fn centroid_x(
         let [a, b, c] = triangle
             .vertex_indices
             .map(|index| package.vertices[index as usize].position_mm);
-        let det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-            + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        let det = ketchup_geometry::linalg::dot(a, ketchup_geometry::linalg::cross(b, c));
         volume += det / 6.0;
         moment += det / 6.0 * (a[0] + b[0] + c[0]) / 4.0;
     }

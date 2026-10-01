@@ -874,8 +874,8 @@ impl KetchupApp {
                     - world_origin;
                 let world_y = transform_model_point(occurrence.transform, tool_origin + tool_y)
                     - world_origin;
-                let x_length = vector_length(world_x);
-                let y_length = vector_length(world_y);
+                let x_length = length(world_x);
+                let y_length = length(world_y);
                 if x_length <= ROUNDING || y_length <= ROUNDING {
                     continue;
                 }
@@ -1047,7 +1047,7 @@ impl KetchupApp {
                 .filter(|item| self.move_drag_applies_to_path(drag, &item.instance_path))
             {
                 let mut preview = item.clone();
-                preview.origin_mm = preview.origin_mm + drag.delta_mm;
+                preview.origin_mm += drag.delta_mm;
                 if drag.copy && drag.group_id.is_none() {
                     copies.push(preview);
                 } else {
@@ -1137,7 +1137,7 @@ impl KetchupApp {
         self.catalog.format(
             key,
             &BTreeMap::from([
-                ("distance", format_height(vector_length(delta))),
+                ("distance", format_height(length(delta))),
                 ("vector", format_vector_mm(delta)),
             ]),
         )
@@ -1159,7 +1159,7 @@ impl KetchupApp {
     #[must_use]
     pub fn measured_distance_mm(&self) -> Option<f64> {
         let (start, end) = self.measured_points()?;
-        Some(vector_length(Vec3::new(
+        Some(length(Vec3::new(
             end.x - start.x,
             end.y - start.y,
             end.z - start.z,
@@ -1200,8 +1200,7 @@ impl KetchupApp {
             .active_frame_bounds()
             .into_iter()
             .flat_map(|(origin, size)| {
-                box_corners(size.x, size.y, size.z)
-                    .map(|corner| vector_length(origin + corner - target))
+                box_corners(size.x, size.y, size.z).map(|corner| length(origin + corner - target))
             })
             .fold(0.0_f64, f64::max);
         self.camera.distance_mm = nominal
@@ -1728,7 +1727,7 @@ impl KetchupApp {
                         ActiveTool::Arc => {
                             if let Some(end) = self.gesture.sketch.end {
                                 self.complete_arc_sketch(start, end, point);
-                            } else if vector_length(point - start) > 0.01 {
+                            } else if length(point - start) > 0.01 {
                                 self.gesture.sketch.end = Some(point);
                                 self.gesture.sketch.cursor = Some(point);
                                 self.value_box.input.clear();
@@ -1901,7 +1900,7 @@ impl KetchupApp {
                         response.rect,
                         ui.input(|input| input.modifiers.shift),
                     );
-                    if vector_length(anchor.delta_mm) >= 0.01 {
+                    if length(anchor.delta_mm) >= 0.01 {
                         self.commit_move_drag(&anchor);
                     } else {
                         self.set_move_session(ToolSessionPhase::Anchor, anchor);
@@ -1937,7 +1936,7 @@ impl KetchupApp {
                             anchor.axis,
                         )
                         .map(|point| point - anchor.centre_mm)
-                        .filter(|arm| vector_length(*arm) >= ROTATION_MIN_ARM_MM);
+                        .filter(|arm| length(*arm) >= ROTATION_MIN_ARM_MM);
                     self.set_rotate_session(ToolSessionPhase::Gesture, anchor);
                 } else {
                     self.advance_rotation(
@@ -1993,7 +1992,7 @@ impl KetchupApp {
                 response.rect,
                 ui.input(|input| input.modifiers.shift),
             );
-            let distance = vector_length(anchor.delta_mm);
+            let distance = length(anchor.delta_mm);
             let delta_mm = anchor.delta_mm;
             let copy = anchor.copy;
             self.set_move_session(ToolSessionPhase::Anchor, anchor);
@@ -2126,7 +2125,7 @@ impl KetchupApp {
                     response.rect,
                     ui.input(|input| input.modifiers.shift),
                 );
-                let distance = vector_length(drag.delta_mm);
+                let distance = length(drag.delta_mm);
                 let delta_mm = drag.delta_mm;
                 let copy = drag.copy;
                 self.set_move_session(ToolSessionPhase::Gesture, drag);
@@ -2235,7 +2234,7 @@ impl KetchupApp {
                     drag.copy = drag.group_id.is_none();
                     self.gesture.transform.move_copy = drag.copy;
                 }
-                if !self.move_preview_is_current(&drag) || vector_length(drag.delta_mm) >= 0.01 {
+                if !self.move_preview_is_current(&drag) || length(drag.delta_mm) >= 0.01 {
                     self.commit_move_drag(&drag);
                 } else {
                     self.set_move_session(ToolSessionPhase::Anchor, drag);
@@ -2281,18 +2280,18 @@ impl KetchupApp {
                     (self.gesture.sketch.start, self.gesture.sketch.cursor)
             {
                 self.value_box.input = match self.active_tool {
-                    ActiveTool::Line => format_height(vector_length(Vec3::new(
+                    ActiveTool::Line => format_height(length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
                         cursor.z - start.z,
                     ))),
-                    ActiveTool::Circle => format_height(vector_length(Vec3::new(
+                    ActiveTool::Circle => format_height(length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
                         cursor.z - start.z,
                     ))),
                     ActiveTool::Arc => self.gesture.sketch.end.map_or_else(
-                        || format_height(vector_length(cursor - start)),
+                        || format_height(length(cursor - start)),
                         |end| format_height(self.drawing_bulge(start, end, cursor).abs()),
                     ),
                     ActiveTool::Rectangle => {
@@ -2325,7 +2324,7 @@ impl KetchupApp {
             && !ui.ctx().wants_keyboard_input()
             && !self.value_box.focus
         {
-            self.value_box.input = format_height(vector_length(Vec3::new(
+            self.value_box.input = format_height(length(Vec3::new(
                 end.x - start.x,
                 end.y - start.y,
                 end.z - start.z,
@@ -3208,7 +3207,7 @@ impl KetchupApp {
                     egui::Align2::CENTER_CENTER,
                     format!(
                         "{axis_label}{} mm",
-                        format_height(vector_length(Vec3::new(
+                        format_height(length(Vec3::new(
                             cursor.x - start.x,
                             cursor.y - start.y,
                             cursor.z - start.z,
@@ -3248,7 +3247,7 @@ impl KetchupApp {
                     );
                 }
             } else if self.active_tool == ActiveTool::Circle {
-                let radius = vector_length(cursor - start);
+                let radius = length(cursor - start);
                 let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
                 let mut points = Vec::with_capacity(65);
                 for segment in 0..=64 {
@@ -3336,7 +3335,7 @@ impl KetchupApp {
                 egui::Align2::CENTER_CENTER,
                 format!(
                     "{} mm",
-                    format_height(vector_length(Vec3::new(
+                    format_height(length(Vec3::new(
                         end.x - start.x,
                         end.y - start.y,
                         end.z - start.z,
@@ -4348,7 +4347,7 @@ fn projected_bounds(points: &[Vec3], project: impl Fn(Vec3) -> Pos2) -> Rect {
 }
 
 fn arc_polyline(arc: ArcGeometry, segments: usize) -> Vec<Vec3> {
-    let radius = vector_length(arc.start - arc.center);
+    let radius = length(arc.start - arc.center);
     let start_angle = (arc.start.y - arc.center.y).atan2(arc.start.x - arc.center.x);
     let end_angle = (arc.end.y - arc.center.y).atan2(arc.end.x - arc.center.x);
     let mut sweep = end_angle - start_angle;

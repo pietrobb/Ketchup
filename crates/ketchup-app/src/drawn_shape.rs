@@ -7,6 +7,7 @@
 //! copy of a component changes, while pulling out leaves a part of its own.
 //! The drawn shape is used up in the same Undo step.
 use super::*;
+use ketchup_geometry::linalg::{cross, dot, sub};
 use ketchup_model::document::{Occurrence, RuleProgramSource};
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 
@@ -170,22 +171,6 @@ fn loop_bounds(segments: &[ProfileSegment]) -> ([f64; 2], [f64; 2]) {
     (low, high)
 }
 
-fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
 impl KetchupApp {
     /// Commits a batch that only adds a drawn shape. A program that owns the
     /// document keeps owning it: the shape is construction, not a part, and
@@ -282,7 +267,7 @@ impl KetchupApp {
         }
         let origin = to_world([0.0, 0.0]);
         let drawn_normal = transform_model_point(transform, Vec3::new(0.0, 0.0, 1.0)) - origin;
-        let drawn_normal = drawn_normal * (1.0 / vector_length(drawn_normal));
+        let drawn_normal = drawn_normal * (1.0 / length(drawn_normal));
         let model = ketchup_application::plan_rule_program(&self.document, &program)
             .ok()?
             .evaluated
@@ -496,25 +481,21 @@ impl KetchupApp {
                         .map(|vertex| vertex.position_mm)
                 });
                 let [a, b, c] = [a?, b?, c?];
-                let normal = cross3(sub3(b, a), sub3(c, a));
-                let length = dot3(normal, normal).sqrt();
+                let normal = cross(sub(b, a), sub(c, a));
+                let length = dot(normal, normal).sqrt();
                 if length < ROUNDING {
                     return None;
                 }
-                let cosine = dot3(normal, axes[2]) / length;
+                let cosine = dot(normal, axes[2]) / length;
                 if cosine.abs() < 1.0 - APPROXIMATION
                     || [a, b, c]
                         .iter()
-                        .any(|p| dot3(sub3(*p, origin), axes[2]).abs() > plane_mm)
+                        .any(|p| dot(sub(*p, origin), axes[2]).abs() > plane_mm)
                 {
                     return None;
                 }
-                let uv = [a, b, c].map(|p| {
-                    [
-                        dot3(sub3(p, origin), axes[0]),
-                        dot3(sub3(p, origin), axes[1]),
-                    ]
-                });
+                let uv =
+                    [a, b, c].map(|p| [dot(sub(p, origin), axes[0]), dot(sub(p, origin), axes[1])]);
                 let overlaps = (0..2).all(|i| {
                     uv.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min) < high[i] - plane_mm
                         && uv.iter().map(|p| p[i]).fold(f64::NEG_INFINITY, f64::max)

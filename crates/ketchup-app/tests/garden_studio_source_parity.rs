@@ -4,6 +4,7 @@
 //! Run: cargo test -p ketchup-app --test garden_studio_source_parity -- --ignored --nocapture
 
 use ketchup_application::{DocumentSession, SessionSettings};
+use ketchup_geometry::linalg::{cross, dot, sub};
 use ketchup_model::exact_product::ExactBodyPackage;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -121,13 +122,9 @@ fn garden_studio_source_parity() {
         }
 
         let matrix = occurrence.transform.matrix();
-        let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-            - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-            + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
-        assert!(
-            determinant.is_finite() && determinant.abs() > f64::EPSILON,
-            "{name}: singular transform"
-        );
+        let linear = occurrence.transform.affine().linear;
+        assert!(!linear.is_singular(), "{name}: singular transform");
+        let determinant = linear.determinant();
         let world_vertices = package
             .vertices()
             .iter()
@@ -296,22 +293,6 @@ fn point_triangle_distance_squared(p: Point, [a, b, c]: Triangle) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-fn sub(a: Point, b: Point) -> Point {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
 fn blend(a: Point, b: Point, t: f64) -> Point {
     std::array::from_fn(|i| a[i] + t * (b[i] - a[i]))
-}
-
-fn dot(a: Point, b: Point) -> f64 {
-    (0..3).map(|i| a[i] * b[i]).sum()
-}
-
-fn cross(a: Point, b: Point) -> Point {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }

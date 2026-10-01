@@ -9,6 +9,7 @@ use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
 use crate::model::{Part, ProgramBooleanKind, ProgramModel};
 use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
+use ketchup_geometry::linalg::dot;
 use serde::Serialize;
 
 /// Parts closer than this are listed with their clearance.
@@ -96,9 +97,7 @@ pub(crate) fn polygon_area(points: &[[f64; 3]]) -> f64 {
     for pair in points[1..].windows(2) {
         let a: [f64; 3] = std::array::from_fn(|i| pair[0][i] - first[i]);
         let b: [f64; 3] = std::array::from_fn(|i| pair[1][i] - first[i]);
-        sum[0] += a[1] * b[2] - a[2] * b[1];
-        sum[1] += a[2] * b[0] - a[0] * b[2];
-        sum[2] += a[0] * b[1] - a[1] * b[0];
+        sum = ketchup_geometry::linalg::add(sum, ketchup_geometry::linalg::cross(a, b));
     }
     (sum.iter().map(|value| value * value).sum::<f64>()).sqrt() / 2.0
 }
@@ -141,7 +140,7 @@ fn shared_volume(a: &Part, b: &Part) -> Vec<[f64; 3]> {
         let outside = |plane: &([f64; 3], f64)| {
             vertices
                 .iter()
-                .any(|point| frame::dot(plane.0, *point) > plane.1 + TOLERANCE_MM)
+                .any(|point| dot(plane.0, *point) > plane.1 + TOLERANCE_MM)
         };
         let mut sticking_out = tool_planes.iter().filter(|plane| outside(plane));
         if let (Some(&(normal, offset)), None) = (sticking_out.next(), sticking_out.next()) {
@@ -162,7 +161,7 @@ fn insertion(inserted: &Part, vertices: &[[f64; 3]]) -> (f64, [f64; 3]) {
             let direction = obb.axes[axis];
             let (low, high) = vertices
                 .iter()
-                .map(|point| frame::dot(*point, direction))
+                .map(|point| dot(*point, direction))
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), along| {
                     (low.min(along), high.max(along))
                 });
@@ -262,11 +261,7 @@ fn relate(
             let inserted = if *cut_in == a.name { b } else { a };
             let (depth, axis) = insertion(inserted, &vertices);
             let towards: [f64; 3] = std::array::from_fn(|i| ob.centre[i] - oa.centre[i]);
-            let sign = if frame::dot(axis, towards) < 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
+            let sign = if dot(axis, towards) < 0.0 { -1.0 } else { 1.0 };
             relation.depth_mm = Some(round1(depth));
             relation.direction = round_direction(axis.map(|value| value * sign));
         } else {

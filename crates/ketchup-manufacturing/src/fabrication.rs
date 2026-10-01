@@ -1,3 +1,4 @@
+use ketchup_geometry::linalg::{cross, dot};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use ketchup_model::document::{
     CanonicalError, ClassificationError, DefinitionId, DocumentId, FeatureId, FeatureKind,
@@ -1485,7 +1486,7 @@ fn btlx_edge_saw_contours(
         return None;
     };
     let vector = |(start, end): &([f64; 2], [f64; 2])| [end[0] - start[0], end[1] - start[1]];
-    let dot = |left: [f64; 2], right: [f64; 2]| left[0] * right[0] + left[1] * right[1];
+    let dot = ketchup_geometry::linalg::dot2;
     let cross = |left: [f64; 2], right: [f64; 2]| left[0] * right[1] - left[1] * right[0];
     let vectors = [vector(first), vector(second), vector(third), vector(fourth)];
     let close = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
@@ -3181,7 +3182,7 @@ fn blind_cut_enters_at_end(
     interval: ExactBRepLinearInterval,
 ) -> Option<bool> {
     let [minimum, maximum] = graph.node_bounds_mm(stock.id).ok().flatten()?;
-    let origin = [0, 1, 2].map(|axis| f64::from_bits(profile.frame_bits[axis]));
+    let origin = profile.frame().origin.to_array();
     let direction = interval.direction();
     let (low, high) = (0..8)
         .map(|corner| {
@@ -3267,29 +3268,21 @@ fn machining_frame(
     profile: &ExactBRepProfile,
     interval_direction: [f64; 3],
 ) -> Option<GeneralMachiningFrame> {
-    let values = profile.frame_bits.map(f64::from_bits);
-    if !values.iter().all(|value| value.is_finite())
-        || !interval_direction.iter().all(|value| value.is_finite())
+    let [origin_mm, x_axis, y_axis, normal] = profile.frame().to_vectors();
+    if ![origin_mm, x_axis, y_axis, normal, interval_direction]
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite())
     {
         return None;
     }
     let frame = GeneralMachiningFrame {
-        origin_mm: values[0..3].try_into().ok()?,
-        x_axis: values[3..6].try_into().ok()?,
-        y_axis: values[6..9].try_into().ok()?,
-        normal: values[9..12].try_into().ok()?,
+        origin_mm,
+        x_axis,
+        y_axis,
+        normal,
     };
-    let dot = |left: [f64; 3], right: [f64; 3]| {
-        left.into_iter()
-            .zip(right)
-            .map(|(left, right)| left * right)
-            .sum::<f64>()
-    };
-    let cross = [
-        frame.x_axis[1] * frame.y_axis[2] - frame.x_axis[2] * frame.y_axis[1],
-        frame.x_axis[2] * frame.y_axis[0] - frame.x_axis[0] * frame.y_axis[2],
-        frame.x_axis[0] * frame.y_axis[1] - frame.x_axis[1] * frame.y_axis[0],
-    ];
+    let cross = cross(frame.x_axis, frame.y_axis);
     let close = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
     (close(dot(frame.x_axis, frame.x_axis), 1.0)
         && close(dot(frame.y_axis, frame.y_axis), 1.0)
@@ -3371,7 +3364,7 @@ fn circular_profile(geometry: &ExactBRepPlanarGeometry) -> Option<([f64; 2], f64
         let start_vector = [segment_start[0] - center[0], segment_start[1] - center[1]];
         let end_vector = [segment_end[0] - center[0], segment_end[1] - center[1]];
         let end_radius_squared = end_vector[0].powi(2) + end_vector[1].powi(2);
-        let dot = start_vector[0] * end_vector[0] + start_vector[1] * end_vector[1];
+        let dot = ketchup_geometry::linalg::dot2(start_vector, end_vector);
         let cross = start_vector[0] * end_vector[1] - start_vector[1] * end_vector[0];
         if segment_center != center
             || segment_start != previous_end
@@ -3814,10 +3807,7 @@ fn general_envelope_is_current(
 }
 
 fn is_production_transform(transform: Transform) -> bool {
-    let m = transform.matrix();
-    let determinant = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8])
-        + m[2] * (m[4] * m[9] - m[5] * m[8]);
-    is_rigid_transform(transform) && (determinant - 1.0).abs() <= ROUNDING
+    is_rigid_transform(transform) && (transform.affine().determinant() - 1.0).abs() <= ROUNDING
 }
 fn is_rigid_transform(transform: Transform) -> bool {
     let matrix = transform.matrix();

@@ -1907,7 +1907,7 @@ impl KetchupApp {
         occurrence_paths: &BTreeSet<InstancePath>,
         delta_mm: Vec3,
     ) -> bool {
-        let distance_mm = vector_length(delta_mm);
+        let distance_mm = length(delta_mm);
         if !delta_mm.x.is_finite()
             || !delta_mm.y.is_finite()
             || !delta_mm.z.is_finite()
@@ -2080,7 +2080,7 @@ impl KetchupApp {
             transform,
         };
         let mut preview_box = source.moving_box.clone();
-        preview_box.origin_mm = preview_box.origin_mm + delta_mm;
+        preview_box.origin_mm += delta_mm;
         Some(OccurrenceAlignmentPlan {
             source: source.clone(),
             axis,
@@ -2355,7 +2355,7 @@ impl KetchupApp {
             let transform = translated_transform(item.transform, delta_mm).ok()?;
             commands.push(CanonicalCommand::SetOccurrenceTransform { id, transform });
             let mut preview_box = item.render_box;
-            preview_box.origin_mm = preview_box.origin_mm + delta_mm;
+            preview_box.origin_mm += delta_mm;
             preview_boxes.insert(id, preview_box);
         }
         (!commands.is_empty()).then_some(OccurrenceDistributionPlan {

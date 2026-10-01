@@ -1,4 +1,5 @@
 use crate::tolerance::{ACCUMULATED_ROUNDING, MAX_COORDINATE_MM, ROUNDING};
+use ketchup_geometry::linalg::cross2;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -2437,7 +2438,7 @@ fn validate_mesh_face(points: &[[f64; 2]]) -> Result<(), DxfImportError> {
         .copied()
         .zip(points.iter().copied().cycle().skip(1))
         .take(points.len())
-        .map(|(start, end)| cross(start, end))
+        .map(|(start, end)| cross2(start, end))
         .sum::<f64>();
     if twice_area.abs() <= DXF_GEOMETRY_EPSILON_MM * DXF_GEOMETRY_EPSILON_MM {
         return Err(DxfImportError::DegenerateGeometry);
@@ -3047,9 +3048,9 @@ fn transform_segment(
             let radius = start_vector[0].hypot(start_vector[1]);
             let transformed_clockwise = *clockwise ^ (scale[0] * scale[1] < 0.0);
             let major = if transformed_clockwise {
-                cross(start_vector, end_vector) > 0.0
+                cross2(start_vector, end_vector) > 0.0
             } else {
-                cross(start_vector, end_vector) < 0.0
+                cross2(start_vector, end_vector) < 0.0
             };
             validate_arc_sweep_envelope(
                 start_mm,
@@ -3959,7 +3960,7 @@ fn validate_simple_line_polygon(points: &[[f64; 2]]) -> Result<(), DxfImportErro
         .copied()
         .zip(points.iter().copied().cycle().skip(1))
         .take(points.len())
-        .map(|(start, end)| cross(start, end))
+        .map(|(start, end)| cross2(start, end))
         .sum::<f64>();
     if twice_area.abs() <= DXF_GEOMETRY_EPSILON_MM * DXF_GEOMETRY_EPSILON_MM {
         return Err(DxfImportError::DegenerateGeometry);
@@ -3974,7 +3975,7 @@ fn line_segments_intersect(
     second_end: [f64; 2],
 ) -> bool {
     let orientation = |start: [f64; 2], end: [f64; 2], point: [f64; 2]| {
-        cross(
+        cross2(
             [end[0] - start[0], end[1] - start[1]],
             [point[0] - start[0], point[1] - start[1]],
         )
@@ -4040,14 +4041,10 @@ fn directed_arc_contains(
     };
     let tolerance = DXF_GEOMETRY_EPSILON_MM * radius.max(1.0);
     if major {
-        !(cross(to, direction) > tolerance && cross(direction, from) > tolerance)
+        !(cross2(to, direction) > tolerance && cross2(direction, from) > tolerance)
     } else {
-        cross(from, direction) >= -tolerance && cross(direction, to) >= -tolerance
+        cross2(from, direction) >= -tolerance && cross2(direction, to) >= -tolerance
     }
-}
-
-fn cross(left: [f64; 2], right: [f64; 2]) -> f64 {
-    left[0] * right[1] - left[1] * right[0]
 }
 
 fn snap_lines_to_unambiguous_arc_endpoints(

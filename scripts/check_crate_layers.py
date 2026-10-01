@@ -208,12 +208,62 @@ def milestone_named_tests(paths):
     ]
 
 
+# Vector and matrix arithmetic lives in ketchup_geometry::linalg; written out
+# again elsewhere it drifts (singularity thresholds, row/column layout).
+HAND_WRITTEN_LINEAR_ALGEBRA = (
+    re.compile(r"\bfn (?:dot|cross|determinant)\d*\("),
+    re.compile(r"\b(\w+)\[1\] \* (\w+)\[2\] - \1\[2\] \* \2\[1\]"),
+    re.compile(r"\b(\w+)\[0\] \* (\w+)\[0\] \+ \1\[1\] \* \2\[1\]"),
+    re.compile(r"\blet determinant = (?!.*\b(?:determinant|dot|cross2?)\()"),
+)
+# The remaining hand-written spots per file; the counts may only fall.
+LINEAR_ALGEBRA = {
+    "crates/ketchup-analysis/src/fea.rs": 1,
+}
+
+
+def linear_algebra_counts(root):
+    """{"crates/...rs": hits} for hand-written linear algebra outside ketchup-geometry."""
+    counts = {}
+    for path in sorted((root / "crates").glob("*/**/*.rs")):
+        module = path.relative_to(root).as_posix()
+        if module.startswith("crates/ketchup-geometry/"):
+            continue
+        hits = sum(
+            1
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if any(pattern.search(line) for pattern in HAND_WRITTEN_LINEAR_ALGEBRA)
+        )
+        if hits:
+            counts[module] = hits
+    return counts
+
+
+def hand_written_linear_algebra(counts, recorded=LINEAR_ALGEBRA):
+    problems = []
+    for module, hits in counts.items():
+        allowed = recorded.get(module, 0)
+        if hits > allowed:
+            problems.append(
+                f"{module}: {hits} hand-written dot/cross/determinant/matrix products, "
+                f"limit {allowed}; use ketchup_geometry::linalg"
+            )
+    for module, allowed in recorded.items():
+        if counts.get(module, 0) < allowed:
+            problems.append(
+                f"{module}: hand-written linear algebra fell to {counts.get(module, 0)}; "
+                "lower LINEAR_ALGEBRA to it"
+            )
+    return problems
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
     problems += oversized_modules(module_sizes(root))
     problems += oversized_functions(long_functions(root))
     problems += milestone_named_tests(test_files(root))
+    problems += hand_written_linear_algebra(linear_algebra_counts(root))
     for problem in problems:
         print(problem)
     if not problems:

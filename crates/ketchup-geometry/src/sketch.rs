@@ -1,5 +1,6 @@
 use crate::dimension::{Dimension, DimensionError};
 use crate::id::FeatureId;
+use crate::linalg::{cross, cross2, dot};
 use crate::reference::BodySubshapeRef;
 use crate::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, FINITE_DIFFERENCE_STEP,
@@ -2404,27 +2405,10 @@ impl SketchSpec {
                 ..
             } => {
                 let points = [start_mm, control_1_mm, control_2_mm, end_mm];
+                let curve = crate::linalg::CubicBezier::new(points);
                 let sample = |parameter: f64| -> Result<[f64; 2], SketchError> {
-                    let inverse = 1.0 - parameter;
-                    let point = [
-                        inverse.powi(3) * points[0][0]
-                            + 3.0 * inverse.powi(2) * parameter * points[1][0]
-                            + 3.0 * inverse * parameter.powi(2) * points[2][0]
-                            + parameter.powi(3) * points[3][0],
-                        inverse.powi(3) * points[0][1]
-                            + 3.0 * inverse.powi(2) * parameter * points[1][1]
-                            + 3.0 * inverse * parameter.powi(2) * points[2][1]
-                            + parameter.powi(3) * points[3][1],
-                    ];
-                    let tangent = [
-                        3.0 * inverse.powi(2) * (points[1][0] - points[0][0])
-                            + 6.0 * inverse * parameter * (points[2][0] - points[1][0])
-                            + 3.0 * parameter.powi(2) * (points[3][0] - points[2][0]),
-                        3.0 * inverse.powi(2) * (points[1][1] - points[0][1])
-                            + 6.0 * inverse * parameter * (points[2][1] - points[1][1])
-                            + 3.0 * parameter.powi(2) * (points[3][1] - points[2][1]),
-                    ];
-                    Ok(translate(point, left_offset(tangent)?))
+                    let tangent = curve.derivative(parameter);
+                    Ok(translate(curve.eval(parameter), left_offset(tangent)?))
                 };
                 let q0 = sample(0.0)?;
                 let q1 = sample(1.0 / 3.0)?;

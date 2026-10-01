@@ -1,3 +1,4 @@
+use ketchup_geometry::linalg::dot2;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::document::MeshBodySpec;
@@ -646,7 +647,7 @@ fn box_candidate(
     }
     let expected_opposite = [p[1][0] + edge_v[0], p[1][1] + edge_v[1]];
     let closure_residual = distance_2d(p[2], expected_opposite);
-    let perpendicular_residual = dot_2d(edge_u, edge_v).abs() / width.max(depth);
+    let perpendicular_residual = dot2(edge_u, edge_v).abs() / width.max(depth);
     let profile_residual = closure_residual.max(perpendicular_residual);
     if profile_residual > tolerance_mm {
         return None;
@@ -707,12 +708,12 @@ fn cylinder_candidate(
             evidence.profile[(index + 1) % evidence.profile.len()],
             evidence.center_2d,
         );
-        let angle = (dot_2d(first, second) / (length_2d(first) * length_2d(second)))
+        let angle = (dot2(first, second) / (length_2d(first) * length_2d(second)))
             .clamp(-1.0, 1.0)
             .acos();
         angular_residual = angular_residual.max((angle - expected_angle).abs() * radius);
         let edge = subtract_2d(second, first);
-        let projection = (-dot_2d(first, edge) / dot_2d(edge, edge)).clamp(0.0, 1.0);
+        let projection = (-dot2(first, edge) / dot2(edge, edge)).clamp(0.0, 1.0);
         let nearest = [
             first[0] + projection * edge[0],
             first[1] + projection * edge[1],
@@ -793,12 +794,8 @@ fn subtract_2d(left: [f64; 2], right: [f64; 2]) -> [f64; 2] {
     [left[0] - right[0], left[1] - right[1]]
 }
 
-fn dot_2d(left: [f64; 2], right: [f64; 2]) -> f64 {
-    left[0] * right[0] + left[1] * right[1]
-}
-
 fn length_2d(value: [f64; 2]) -> f64 {
-    dot_2d(value, value).sqrt()
+    dot2(value, value).sqrt()
 }
 
 fn distance_2d(left: [f64; 2], right: [f64; 2]) -> f64 {

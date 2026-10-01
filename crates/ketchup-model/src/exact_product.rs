@@ -30,6 +30,7 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use ketchup_geometry::linalg::CubicBezier;
 use ketchup_geometry::reference::reference_lineage_digest;
 pub use ketchup_geometry::reference::{
     BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ReferenceStability,
@@ -410,11 +411,7 @@ impl ExactBRepGraphPackage {
                     .map(|index| mesh.vertices_mm[index as usize]);
                 let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
                 let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-                let cross = [
-                    ab[1] * ac[2] - ab[2] * ac[1],
-                    ab[2] * ac[0] - ab[0] * ac[2],
-                    ab[0] * ac[1] - ab[1] * ac[0],
-                ];
+                let cross = ketchup_geometry::linalg::cross(ab, ac);
                 area + 0.5 * cross[0].hypot(cross[1]).hypot(cross[2])
             });
             let area_tolerance_mm2 = evidence.area_mm2.max(mesh_area_mm2).max(1.0) * 0.01;
@@ -1225,10 +1222,7 @@ fn mesh_export_from_view(
     view: &(impl ExactBodyView + ?Sized),
     transform: Transform,
 ) -> ExactMeshExport {
-    let matrix = transform.matrix();
-    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
+    let mirrored = transform.affine().determinant() < 0.0;
     let loss_report = format!(
         "authority=accepted exact OCCT B-Rep\nformat=Wavefront OBJ\nconversion=exact-body-to-world-space-mesh\neditability_loss=canonical features, rules, and dimensions are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by the accepted tessellation under the source tolerance profile\nsource_tolerance={}\nsource_digest={}\n{}\nresult_fingerprint={}\n",
         view.tolerance(),
@@ -1241,7 +1235,7 @@ fn mesh_export_from_view(
         loss_report.replace('\n', "\n# ")
     );
     for index in 0..view.vertex_count() {
-        let [x, y, z] = transform_exact_point(matrix, view.vertex_position_mm(index));
+        let [x, y, z] = transform.transform_point(view.vertex_position_mm(index));
         writeln!(mesh_obj, "v {x:.17} {y:.17} {z:.17}").expect("writing to a String cannot fail");
     }
     let mut current_group = None;
@@ -1252,7 +1246,7 @@ fn mesh_export_from_view(
             current_group = Some(group);
         }
         let mut indices = view.triangle_indices(triangle_index);
-        if determinant < 0.0 {
+        if mirrored {
             indices.swap(1, 2);
         }
         writeln!(
@@ -1313,38 +1307,30 @@ pub fn model_stl_export(
     for body in bodies {
         let source = body.source;
         let matrix = body.transform.matrix();
-        let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-            - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-            + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
-        if matrix.iter().any(|value| !value.is_finite())
-            || !determinant.is_finite()
-            || determinant.abs() <= f64::EPSILON
-        {
+        let linear = body.transform.affine().linear;
+        if matrix.iter().any(|value| !value.is_finite()) || linear.is_singular() {
             return Err(ExactProductError::InvalidMeshExport);
         }
+        let mirrored = linear.determinant() < 0.0;
         for triangle_index in 0..source.triangle_count() {
             let mut indices = source
                 .triangle_indices(triangle_index)
                 .ok_or(ExactProductError::InvalidMeshExport)?;
-            if determinant < 0.0 {
+            if mirrored {
                 indices.swap(1, 2);
             }
             let points = indices.map(|index| {
                 source
                     .vertex_position_mm(index as usize)
-                    .map(|point| transform_exact_point(matrix, point))
+                    .map(|point| body.transform.transform_point(point))
             });
             let [Some(a), Some(b), Some(c)] = points else {
                 return Err(ExactProductError::InvalidMeshExport);
             };
-            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let cross = [
-                ab[1] * ac[2] - ab[2] * ac[1],
-                ab[2] * ac[0] - ab[0] * ac[2],
-                ab[0] * ac[1] - ab[1] * ac[0],
-            ];
-            let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+            let ab = ketchup_geometry::linalg::sub(b, a);
+            let ac = ketchup_geometry::linalg::sub(c, a);
+            let cross = ketchup_geometry::linalg::cross(ab, ac);
+            let length = ketchup_geometry::linalg::length(cross);
             if !length.is_finite() || length <= f64::EPSILON {
                 return Err(ExactProductError::InvalidMeshExport);
             }
@@ -1392,14 +1378,6 @@ pub fn model_stl_export(
         mesh_stl,
         loss_report,
     })
-}
-
-fn transform_exact_point(matrix: &[f64; 16], point: [f64; 3]) -> [f64; 3] {
-    [
-        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-    ]
 }
 
 impl From<ExactBRepGraphPackage> for ExactBodyPackage {
@@ -2691,19 +2669,12 @@ pub(crate) fn exact_planar_offset_profile_from_segments(
                     return None;
                 }
                 points.extend([cubic[0], cubic[3]]);
-                let evaluate = |t: f64| {
-                    let one_minus_t = 1.0 - t;
-                    [0, 1].map(|axis| {
-                        one_minus_t.powi(3) * cubic[0][axis]
-                            + 3.0 * one_minus_t.powi(2) * t * cubic[1][axis]
-                            + 3.0 * one_minus_t * t * t * cubic[2][axis]
-                            + t.powi(3) * cubic[3][axis]
-                    })
-                };
+                let curve = CubicBezier::new(cubic);
+                let evaluate = |t: f64| curve.eval(t);
                 for axis in 0..2 {
-                    let a = 3.0 * x_or_y_cubic_coefficient(cubic, axis, 3);
-                    let b = 2.0 * x_or_y_cubic_coefficient(cubic, axis, 2);
-                    let c = x_or_y_cubic_coefficient(cubic, axis, 1);
+                    // The roots of the derivative c1 + 2·c2·t + 3·c3·t².
+                    let [_, c, half_b, third_a] = curve.power_coefficients(axis);
+                    let (a, b) = (3.0 * third_a, 2.0 * half_b);
                     if a.abs() <= f64::EPSILON {
                         if b.abs() > f64::EPSILON {
                             let t = -c / b;
@@ -3230,7 +3201,7 @@ fn point_in_planar_offset_clearance_curves(
 
 fn point_to_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
     let direction = [end[0] - start[0], end[1] - start[1]];
-    let length_squared = direction[0] * direction[0] + direction[1] * direction[1];
+    let length_squared = ketchup_geometry::linalg::dot2(direction, direction);
     if length_squared <= f64::EPSILON {
         return (point[0] - start[0]).hypot(point[1] - start[1]);
     }
@@ -3323,9 +3294,9 @@ fn line_to_arc_clearance(
     let direction = [line_end[0] - line_start[0], line_end[1] - line_start[1]];
     let offset = [line_start[0] - center[0], line_start[1] - center[1]];
     let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
-    let a = direction[0] * direction[0] + direction[1] * direction[1];
-    let b = 2.0 * (offset[0] * direction[0] + offset[1] * direction[1]);
-    let c = offset[0] * offset[0] + offset[1] * offset[1] - radius * radius;
+    let a = ketchup_geometry::linalg::dot2(direction, direction);
+    let b = 2.0 * ketchup_geometry::linalg::dot2(offset, direction);
+    let c = ketchup_geometry::linalg::dot2(offset, offset) - radius * radius;
     let discriminant = b * b - 4.0 * a * c;
     if discriminant >= 0.0 {
         let root = discriminant.sqrt();
@@ -3636,15 +3607,6 @@ pub(crate) fn accepts_planar_offset_solved_profile(
                 .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
                 && cannot_statically_collapse
         }
-    }
-}
-
-fn x_or_y_cubic_coefficient(cubic: [[f64; 2]; 4], axis: usize, degree: usize) -> f64 {
-    match degree {
-        1 => 3.0 * (cubic[1][axis] - cubic[0][axis]),
-        2 => 3.0 * (cubic[0][axis] - 2.0 * cubic[1][axis] + cubic[2][axis]),
-        3 => -cubic[0][axis] + 3.0 * cubic[1][axis] - 3.0 * cubic[2][axis] + cubic[3][axis],
-        _ => unreachable!("cubic coefficient degree is bounded"),
     }
 }
 

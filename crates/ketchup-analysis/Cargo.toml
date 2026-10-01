@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 ed25519-dalek = "2.2.0"
 ketchup-model = { path = "../ketchup-model" }
+ketchup-geometry = { path = "../ketchup-geometry" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10.9"

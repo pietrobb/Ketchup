@@ -8,22 +8,6 @@ pub(super) fn canonical_bits(value: f64) -> u64 {
     }
 }
 
-pub(super) fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-pub(super) fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
-pub(super) fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-}
-
 pub(super) fn finite_coordinate(value: f64) -> Result<f64, ExactBRepGraphError> {
     if value.is_finite() && value.abs() <= MAX_ABS_MM {
         Ok(value)

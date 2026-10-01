@@ -24,13 +24,9 @@ fn last_line(shell: &Shell) -> [Vec3; 2] {
     let transform = snapshot
         .world_transform_for_occurrence(occurrence.id())
         .unwrap();
-    let m = transform.matrix();
     [start_mm, end_mm].map(|p| {
-        Vec3::new(
-            m[0] * p[0] + m[1] * p[1] + m[3],
-            m[4] * p[0] + m[5] * p[1] + m[7],
-            m[8] * p[0] + m[9] * p[1] + m[11],
-        )
+        let [x, y, z] = transform.transform_point([p[0], p[1], 0.0]);
+        Vec3::new(x, y, z)
     })
 }
 

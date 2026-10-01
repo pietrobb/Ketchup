@@ -1023,7 +1023,7 @@ impl KetchupApp {
             .map(|(center, cursor)| {
                 (
                     center,
-                    vector_length(Vec3::new(cursor.x - center.x, cursor.y - center.y, 0.0)),
+                    length(Vec3::new(cursor.x - center.x, cursor.y - center.y, 0.0)),
                 )
             })
     }
@@ -1060,16 +1060,8 @@ impl KetchupApp {
                     exact_circle_geometry(segments, *closed)
                 })?;
                 let transform = occurrence.transform();
-                let matrix = transform.matrix();
-                Some((
-                    occurrence.id(),
-                    Vec3::new(
-                        matrix[0] * center[0] + matrix[1] * center[1] + matrix[3],
-                        matrix[4] * center[0] + matrix[5] * center[1] + matrix[7],
-                        matrix[8] * center[0] + matrix[9] * center[1] + matrix[11],
-                    ),
-                    radius,
-                ))
+                let [x, y, z] = transform.transform_point([center[0], center[1], 0.0]);
+                Some((occurrence.id(), Vec3::new(x, y, z), radius))
             })
             .max_by_key(|(id, _, _)| *id)
             .map(|(_, center, radius)| (center, radius))
@@ -1128,13 +1120,9 @@ impl KetchupApp {
                         exact_arc_profile_geometry(segments, *closed)
                     })?;
                 let transform = occurrence.transform();
-                let matrix = transform.matrix();
                 let world = |point: [f64; 2]| {
-                    Vec3::new(
-                        matrix[0] * point[0] + matrix[1] * point[1] + matrix[3],
-                        matrix[4] * point[0] + matrix[5] * point[1] + matrix[7],
-                        matrix[8] * point[0] + matrix[9] * point[1] + matrix[11],
-                    )
+                    let [x, y, z] = transform.transform_point([point[0], point[1], 0.0]);
+                    Vec3::new(x, y, z)
                 };
                 Some((
                     occurrence.id(),
@@ -2131,7 +2119,7 @@ impl KetchupApp {
 
     pub(crate) fn complete_line_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
         if let Some(origin) = self.gesture.sketch.chain_origin {
-            let close_distance = vector_length(Vec3::new(
+            let close_distance = length(Vec3::new(
                 end.x - origin.x,
                 end.y - origin.y,
                 end.z - origin.z,
@@ -2141,7 +2129,7 @@ impl KetchupApp {
             }
         }
 
-        let length_mm = vector_length(end - start);
+        let length_mm = length(end - start);
         if !length_mm.is_finite() || length_mm <= 0.01 {
             return false;
         }
@@ -2329,7 +2317,7 @@ impl KetchupApp {
 
     pub(crate) fn complete_circle_sketch(&mut self, center: Vec3, radial_point: Vec3) -> bool {
         let direction = radial_point - center;
-        self.complete_circle(center, vector_length(direction), direction)
+        self.complete_circle(center, length(direction), direction)
     }
 
     pub(crate) fn complete_circle(
@@ -2342,7 +2330,7 @@ impl KetchupApp {
             return false;
         }
         let direction = self.drawing_local_delta(center, center + direction);
-        let direction_length = vector_length(direction);
+        let direction_length = length(direction);
         let unit = if direction_length > 0.01 {
             Vec3::new(
                 direction.x / direction_length,

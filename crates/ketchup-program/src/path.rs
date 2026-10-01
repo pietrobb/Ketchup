@@ -9,6 +9,9 @@
 //! the axis of each arc.
 
 use crate::model::{ProgramPathArc, ProgramPathSegment, ProgramProfileSegment};
+use ketchup_geometry::linalg::{
+    add, circumcenter, cross, dot, length, normalize_within, scale, sub,
+};
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 use std::f64::consts::TAU;
 
@@ -19,31 +22,8 @@ pub const MAX_PATH_SEGMENTS: usize = 64;
 
 type Vec3 = [f64; 3];
 
-fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn add(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-fn scale(a: Vec3, factor: f64) -> Vec3 {
-    a.map(|value| value * factor)
-}
-fn dot(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-fn length(a: Vec3) -> f64 {
-    dot(a, a).sqrt()
-}
 fn unit(a: Vec3) -> Option<Vec3> {
-    let length = length(a);
-    (length > f64::EPSILON).then(|| scale(a, 1.0 / length))
+    normalize_within(a, f64::EPSILON)
 }
 
 /// `vector` turned by `angle` radians about the unit `axis` (right hand).
@@ -106,15 +86,10 @@ pub fn arc_through(start: Vec3, end: Vec3, through: Vec3) -> Result<ProgramPathA
     let normal = unit(cross(a, b))
         .filter(|_| length(cross(a, b)) > APPROXIMATION * length(a) * length(b))
         .ok_or("the through point lies on the line from start to end; use a line")?;
-    // Circumcentre of start, through, end.
-    let (aa, bb) = (dot(a, a), dot(b, b));
-    let axb = cross(a, b);
-    let offset = scale(
-        add(scale(cross(axb, a), bb), scale(cross(b, axb), aa)),
-        1.0 / (2.0 * dot(axb, axb)),
-    );
+    let center_mm = circumcenter(start, through, end)
+        .ok_or("the through point lies on the line from start to end; use a line")?;
     Ok(ProgramPathArc {
-        center_mm: add(start, offset),
+        center_mm,
         // Start, through, end run counter-clockwise about a × b.
         normal,
     })

@@ -1,3 +1,4 @@
+use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -268,7 +269,7 @@ impl FeaModel {
             .collect::<Vec<_>>();
         let maximum_displacement_mm = displacements_mm
             .iter()
-            .map(|value| norm(*value))
+            .map(|value| length(*value))
             .fold(0.0, f64::max);
         let element_results = self.element_results(&displacement);
         let maximum_von_mises_stress_mpa = element_results
@@ -293,7 +294,7 @@ impl FeaModel {
         });
 
         let total_applied = vector_sum(&original_forces);
-        let total_reaction = reactions.iter().copied().fold([0.0; 3], add3);
+        let total_reaction = reactions.iter().copied().fold([0.0; 3], add);
         Ok(FeaSolution {
             schema: FEA_SOLUTION_SCHEMA_V1,
             solver_version: FEA_SOLVER_VERSION_V1,
@@ -306,7 +307,7 @@ impl FeaModel {
             maximum_von_mises_stress_mpa,
             total_strain_energy_n_mm,
             maximum_free_dof_residual_n,
-            force_balance_n: add3(total_applied, total_reaction),
+            force_balance_n: add(total_applied, total_reaction),
             validity: FeaValidityEvidence {
                 characteristic_length_mm,
                 maximum_displacement_ratio,
@@ -535,12 +536,12 @@ impl FeaModel {
         if nodes.iter().any(|node| *node >= self.nodes.len()) {
             return None;
         }
-        let delta = sub3(
+        let delta = sub(
             self.nodes[nodes[1]].position_mm,
             self.nodes[nodes[0]].position_mm,
         );
-        let length = norm(delta);
-        (length > ROUNDING).then(|| (length, scale3(delta, 1.0 / length)))
+        let length = length(delta);
+        (length > ROUNDING).then(|| (length, scale(delta, 1.0 / length)))
     }
 
     fn tetrahedron_geometry(&self, nodes: [usize; 4]) -> Option<(f64, [[f64; 3]; 4])> {
@@ -549,19 +550,22 @@ impl FeaModel {
         }
         let origin = self.nodes[nodes[0]].position_mm;
         let jacobian = [
-            sub3(self.nodes[nodes[1]].position_mm, origin),
-            sub3(self.nodes[nodes[2]].position_mm, origin),
-            sub3(self.nodes[nodes[3]].position_mm, origin),
+            sub(self.nodes[nodes[1]].position_mm, origin),
+            sub(self.nodes[nodes[2]].position_mm, origin),
+            sub(self.nodes[nodes[3]].position_mm, origin),
         ];
-        let determinant = determinant3(jacobian);
-        let inverse = inverse3(jacobian)?;
+        // The stored Jacobian is transposed, so its inverse is already J^-T.
+        let jacobian = Mat3::from_rows(jacobian);
+        let determinant = jacobian.determinant();
+        let inverse = jacobian.inverse().ok()?;
         let gradients_reference = [
             [-1.0, -1.0, -1.0],
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0],
         ];
-        let gradients = gradients_reference.map(|gradient| matrix_vector3(inverse, gradient));
+        let gradients =
+            gradients_reference.map(|gradient| inverse.mul_vec(gradient.into()).to_array());
         Some((determinant.abs() / 6.0, gradients))
     }
 
@@ -740,7 +744,7 @@ impl FeaModel {
                 maximum[axis] = maximum[axis].max(node.position_mm[axis]);
             }
         }
-        norm(sub3(maximum, minimum)).max(ROUNDING)
+        length(sub(maximum, minimum)).max(ROUNDING)
     }
 
     fn bounds(&self) -> ([f64; 3], [f64; 3]) {
@@ -1152,46 +1156,6 @@ fn tetrahedron_faces_of(nodes: [usize; 4]) -> [[usize; 3]; 4] {
     faces
 }
 
-fn determinant3(matrix: [[f64; 3]; 3]) -> f64 {
-    matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
-        - matrix[1][0] * (matrix[0][1] * matrix[2][2] - matrix[0][2] * matrix[2][1])
-        + matrix[2][0] * (matrix[0][1] * matrix[1][2] - matrix[0][2] * matrix[1][1])
-}
-
-fn inverse3(matrix: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
-    let determinant = determinant3(matrix);
-    if !determinant.is_finite() || determinant.abs() <= NEGLIGIBLE {
-        return None;
-    }
-    let inverse_determinant = 1.0 / determinant;
-    Some([
-        [
-            (matrix[1][1] * matrix[2][2] - matrix[2][1] * matrix[1][2]) * inverse_determinant,
-            (matrix[2][1] * matrix[0][2] - matrix[0][1] * matrix[2][2]) * inverse_determinant,
-            (matrix[0][1] * matrix[1][2] - matrix[1][1] * matrix[0][2]) * inverse_determinant,
-        ],
-        [
-            (matrix[2][0] * matrix[1][2] - matrix[1][0] * matrix[2][2]) * inverse_determinant,
-            (matrix[0][0] * matrix[2][2] - matrix[2][0] * matrix[0][2]) * inverse_determinant,
-            (matrix[1][0] * matrix[0][2] - matrix[0][0] * matrix[1][2]) * inverse_determinant,
-        ],
-        [
-            (matrix[1][0] * matrix[2][1] - matrix[2][0] * matrix[1][1]) * inverse_determinant,
-            (matrix[2][0] * matrix[0][1] - matrix[0][0] * matrix[2][1]) * inverse_determinant,
-            (matrix[0][0] * matrix[1][1] - matrix[1][0] * matrix[0][1]) * inverse_determinant,
-        ],
-    ])
-}
-
-fn matrix_vector3(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
-    // The stored Jacobian is transposed, so its inverse is already J^-T.
-    [
-        matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
-        matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
-        matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2],
-    ]
-}
-
 fn matrix_vector6(matrix: [[f64; 6]; 6], vector: [f64; 6]) -> [f64; 6] {
     let mut result = [0.0; 6];
     for row in 0..6 {
@@ -1241,7 +1205,7 @@ fn von_mises(stress: [f64; 6]) -> f64 {
 }
 
 fn triangle_area(first: [f64; 3], second: [f64; 3], third: [f64; 3]) -> f64 {
-    norm(cross(sub3(second, first), sub3(third, first))) * 0.5
+    length(cross(sub(second, first), sub(third, first))) * 0.5
 }
 
 impl GeometricMoments {
@@ -1250,7 +1214,7 @@ impl GeometricMoments {
     }
 
     fn add_weighted_segment(&mut self, first: [f64; 3], second: [f64; 3], weight: f64) {
-        let measure = norm(sub3(second, first)) * weight;
+        let measure = length(sub(second, first)) * weight;
         self.measure += measure;
         for axis in 0..3 {
             self.first[axis] += measure * (first[axis] + second[axis]) / 2.0;
@@ -1266,11 +1230,12 @@ impl GeometricMoments {
     }
 
     fn add_tetrahedron(&mut self, vertices: [[f64; 3]; 4]) {
-        let volume = determinant3([
-            sub3(vertices[1], vertices[0]),
-            sub3(vertices[2], vertices[0]),
-            sub3(vertices[3], vertices[0]),
+        let volume = Mat3::from_rows([
+            sub(vertices[1], vertices[0]),
+            sub(vertices[2], vertices[0]),
+            sub(vertices[3], vertices[0]),
         ])
+        .determinant()
         .abs()
             / 6.0;
         self.measure += volume;
@@ -1378,37 +1343,9 @@ fn hash_f64s(hasher: &mut Sha256, values: &[f64]) {
     }
 }
 
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
 fn dot6(left: [f64; 6], right: [f64; 6]) -> f64 {
     left.into_iter()
         .zip(right)
         .map(|(left, right)| left * right)
         .sum()
-}
-
-fn norm(value: [f64; 3]) -> f64 {
-    dot(value, value).sqrt()
-}
-
-fn add3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [left[0] + right[0], left[1] + right[1], left[2] + right[2]]
-}
-
-fn sub3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-}
-
-fn scale3(value: [f64; 3], factor: f64) -> [f64; 3] {
-    [value[0] * factor, value[1] * factor, value[2] * factor]
-}
-
-fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
 }

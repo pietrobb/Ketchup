@@ -454,17 +454,8 @@ fn typed_axial_endpoints_are_bit_exact_ignore_labels_transform_origins_and_round
     }
     let solved = solve_rigid_assembly(&committed, AssemblySolverPolicy::default()).unwrap();
     let solved_transform = solved.occurrence(SECOND).unwrap().transform();
-    let m = solved_transform.matrix();
-    let world_b_origin = [
-        m[0] * origin_b[0] + m[1] * origin_b[1] + m[2] * origin_b[2] + m[3],
-        m[4] * origin_b[0] + m[5] * origin_b[1] + m[6] * origin_b[2] + m[7],
-        m[8] * origin_b[0] + m[9] * origin_b[1] + m[10] * origin_b[2] + m[11],
-    ];
-    let world_b_direction = [
-        m[0] * direction_b[0] + m[1] * direction_b[1] + m[2] * direction_b[2],
-        m[4] * direction_b[0] + m[5] * direction_b[1] + m[6] * direction_b[2],
-        m[8] * direction_b[0] + m[9] * direction_b[1] + m[10] * direction_b[2],
-    ];
+    let world_b_origin = solved_transform.transform_point(origin_b);
+    let world_b_direction = solved_transform.transform_vector(direction_b);
     assert_near(world_b_origin[1], origin_a[1]);
     assert_near(world_b_origin[2], origin_a[2]);
     for axis in 0..3 {

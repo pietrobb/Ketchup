@@ -297,8 +297,8 @@ fn nested_world_alignment_preview_matches_committed_geometry() {
             translated_transform(original, preview.0 - origin).unwrap(),
         );
         let actual = app.occurrence_box_geometry(1).unwrap();
-        assert!(vector_length(actual.0 - preview.0) < 1.0e-8);
-        assert!(vector_length(actual.1 - preview.1) < 1.0e-8);
+        assert!(length(actual.0 - preview.0) < 1.0e-8);
+        assert!(length(actual.1 - preview.1) < 1.0e-8);
         assert_eq!(world(&app, 2), sibling);
         assert_eq!(world(&app, 3), reference);
         assert_history(&mut app, &before, steps);

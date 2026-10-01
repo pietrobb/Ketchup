@@ -123,15 +123,14 @@ pub(super) fn certified_bounds(graph: &ExactBRepGraph) -> Option<Bounds> {
             ExactBRepOperation::Extrude {
                 profile, interval, ..
             } => {
-                let frame = graph.profiles[profile.0 as usize]
-                    .frame_bits
-                    .map(f64::from_bits);
+                let [origin, x_axis, y_axis, _] =
+                    graph.profiles[profile.0 as usize].frame().to_vectors();
                 let scale = scales[profile.0 as usize];
                 let distance = interval.start_mm().abs().max(interval.end_mm().abs());
                 let magnitude = (0..3)
                     .map(|axis| {
-                        frame[axis].abs()
-                            + (frame[3 + axis].abs() + frame[6 + axis].abs()) * scale
+                        origin[axis].abs()
+                            + (x_axis[axis].abs() + y_axis[axis].abs()) * scale
                             + interval.direction()[axis].abs() * distance
                     })
                     .fold(1.0, f64::max)

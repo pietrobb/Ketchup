@@ -1,6 +1,7 @@
 use crate::document::{BodyKind, DefinitionId, FeatureId, Snapshot};
 use crate::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError};
 use crate::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING};
+use ketchup_geometry::linalg::{cross, dot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -1955,18 +1956,6 @@ fn setup_bounds(world_bounds: [[f64; 3]; 2], setup: &CamSetup) -> [[f64; 3]; 2] 
         }
     }
     [minimum, maximum]
-}
-
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left.into_iter().zip(right).map(|(a, b)| a * b).sum()
-}
-
-fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
 }
 
 fn compute_toolpath_digest(

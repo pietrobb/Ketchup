@@ -1,4 +1,5 @@
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+use ketchup_geometry::linalg;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_model::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot, Transform,
@@ -489,9 +490,12 @@ pub(crate) fn feature_edge_triangles<G: Copy + Ord>(
                     .skip(1)
                     .any(|index| face_groups[*index as usize] != face_groups[first])
             } else {
-                uses.iter()
-                    .skip(1)
-                    .any(|index| dot(normals[first], normals[*index as usize]) < 0.95)
+                uses.iter().skip(1).any(|index| {
+                    linalg::dot(
+                        normals[first].map(f64::from),
+                        normals[*index as usize].map(f64::from),
+                    ) < 0.95
+                })
             }
         })
         .collect()
@@ -563,30 +567,23 @@ fn ordered_edge(first: u32, second: u32) -> [u32; 2] {
 }
 
 fn triangle_normal(positions: &[[f32; 3]], triangle: [u32; 3]) -> [f32; 3] {
-    let first = positions[triangle[0] as usize];
-    let second = positions[triangle[1] as usize];
-    let third = positions[triangle[2] as usize];
-    normalize([
-        (second[1] - first[1]) * (third[2] - first[2])
-            - (second[2] - first[2]) * (third[1] - first[1]),
-        (second[2] - first[2]) * (third[0] - first[0])
-            - (second[0] - first[0]) * (third[2] - first[2]),
-        (second[0] - first[0]) * (third[1] - first[1])
-            - (second[1] - first[1]) * (third[0] - first[0]),
-    ])
+    let [first, second, third] = triangle.map(|index| positions[index as usize].map(f64::from));
+    unit(linalg::cross(
+        linalg::sub(second, first),
+        linalg::sub(third, first),
+    ))
 }
 
 fn normalize(vector: [f32; 3]) -> [f32; 3] {
-    let length = dot(vector, vector).sqrt();
-    if length > f32::EPSILON {
-        vector.map(|value| value / length)
-    } else {
-        vector
-    }
+    unit(vector.map(f64::from))
 }
 
-fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+/// The unit vector in GPU single precision; a degenerate vector stays as is.
+#[allow(clippy::cast_possible_truncation)]
+fn unit(vector: [f64; 3]) -> [f32; 3] {
+    linalg::normalize(vector)
+        .unwrap_or(vector)
+        .map(|value| value as f32)
 }
 
 fn geometry_fingerprint(kind: &str, vertices: &[RenderVertex], indices: &[u32]) -> String {

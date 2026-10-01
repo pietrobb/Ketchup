@@ -12,6 +12,7 @@ repository.workspace = true
 ketchup-assistant = { path = "../ketchup-assistant" }
 anyhow = "1"
 ketchup-model = { path = "../ketchup-model" }
+ketchup-geometry = { path = "../ketchup-geometry" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # starlark 0.14 turns on serde_json's `arbitrary_precision`, which breaks every

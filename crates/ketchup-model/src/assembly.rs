@@ -7,6 +7,7 @@ use crate::tolerance::{
     ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, FINITE_DIFFERENCE_STEP, MAX_COORDINATE_MM,
     NEGLIGIBLE, ROUNDING,
 };
+use ketchup_geometry::linalg::{Mat3, add, dot, length, normalize, scale, sub};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -1200,14 +1201,9 @@ impl RigidPose {
             rotation,
             translation: [matrix[3], matrix[7], matrix[11]],
         };
-        let rows_are_unit = rotation
-            .iter()
-            .all(|row| (dot(*row, *row) - 1.0).abs() <= ACCUMULATED_ROUNDING);
-        let rows_are_orthogonal = dot(rotation[0], rotation[1]).abs() <= ACCUMULATED_ROUNDING
-            && dot(rotation[0], rotation[2]).abs() <= ACCUMULATED_ROUNDING
-            && dot(rotation[1], rotation[2]).abs() <= ACCUMULATED_ROUNDING;
-        let determinant = dot(rotation[0], cross(rotation[1], rotation[2]));
-        (rows_are_unit && rows_are_orthogonal && (determinant - 1.0).abs() <= ACCUMULATED_ROUNDING)
+        let linear = Mat3::from_rows(rotation);
+        (linear.is_orthonormal(ACCUMULATED_ROUNDING)
+            && (linear.determinant() - 1.0).abs() <= ACCUMULATED_ROUNDING)
             .then_some(pose)
     }
 
@@ -1246,16 +1242,16 @@ impl RigidPose {
 
     fn compose(self, local: Self) -> Self {
         Self {
-            rotation: multiply_rotation(self.rotation, local.rotation),
+            rotation: (Mat3::from_rows(self.rotation) * Mat3::from_rows(local.rotation)).rows,
             translation: add(self.rotate(local.translation), self.translation),
         }
     }
 
     fn inverse(self) -> Self {
-        let rotation = transpose(self.rotation);
+        let rotation = Mat3::from_rows(self.rotation).transpose();
         Self {
-            rotation,
-            translation: scale(multiply_vector(rotation, self.translation), -1.0),
+            rotation: rotation.rows,
+            translation: (-rotation.mul_vec(self.translation.into())).to_array(),
         }
     }
 
@@ -1266,7 +1262,8 @@ impl RigidPose {
         }
         let mut rotation_vector = [0.0; 3];
         rotation_vector[axis - 3] = value;
-        self.rotation = multiply_rotation(rodrigues(rotation_vector), self.rotation);
+        self.rotation =
+            (Mat3::from_rows(rodrigues(rotation_vector)) * Mat3::from_rows(self.rotation)).rows;
     }
 }
 
@@ -1537,14 +1534,14 @@ fn mate_residual(state: &SolverState, mate: &AssemblyMate) -> Result<Vec<f64>, A
         .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?;
     let (b_origin, b_axis) = endpoint_world_frame(b_pose, mate.endpoint_b(), mate.kind())
         .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?;
-    let delta = subtract(b_origin, a_origin);
+    let delta = sub(b_origin, a_origin);
     Ok(match mate.kind() {
         AssemblyMateKind::CoincidentPlanar {
             offset_mm,
             reversed,
         } => {
             let desired_b = scale(a_axis, if reversed { 1.0 } else { -1.0 });
-            let orientation = subtract(b_axis, desired_b);
+            let orientation = sub(b_axis, desired_b);
             vec![
                 orientation[0],
                 orientation[1],
@@ -1554,8 +1551,8 @@ fn mate_residual(state: &SolverState, mate: &AssemblyMate) -> Result<Vec<f64>, A
         }
         AssemblyMateKind::ConcentricAxial { reversed } => {
             let desired_b = scale(a_axis, if reversed { -1.0 } else { 1.0 });
-            let orientation = subtract(b_axis, desired_b);
-            let perpendicular = subtract(delta, scale(a_axis, dot(delta, a_axis)));
+            let orientation = sub(b_axis, desired_b);
+            let perpendicular = sub(delta, scale(a_axis, dot(delta, a_axis)));
             vec![
                 orientation[0],
                 orientation[1],
@@ -1565,7 +1562,7 @@ fn mate_residual(state: &SolverState, mate: &AssemblyMate) -> Result<Vec<f64>, A
                 perpendicular[2],
             ]
         }
-        AssemblyMateKind::Distance { distance_mm } => vec![norm(delta) - distance_mm],
+        AssemblyMateKind::Distance { distance_mm } => vec![length(delta) - distance_mm],
         AssemblyMateKind::Angle { angle_degrees } => {
             vec![dot(a_axis, b_axis) - angle_degrees.to_radians().cos()]
         }
@@ -1810,78 +1807,8 @@ fn conflicting_mates(
     Ok(conflicts)
 }
 
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
-fn add(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [left[0] + right[0], left[1] + right[1], left[2] + right[2]]
-}
-
-fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-}
-
-fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
-    [vector[0] * factor, vector[1] * factor, vector[2] * factor]
-}
-
-fn norm(vector: [f64; 3]) -> f64 {
-    dot(vector, vector).sqrt()
-}
-
-fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
-    let length = norm(vector);
-    (length.is_finite() && length > f64::EPSILON).then(|| scale(vector, length.recip()))
-}
-
-fn transpose(matrix: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    [
-        [matrix[0][0], matrix[1][0], matrix[2][0]],
-        [matrix[0][1], matrix[1][1], matrix[2][1]],
-        [matrix[0][2], matrix[1][2], matrix[2][2]],
-    ]
-}
-
-fn multiply_vector(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
-    [
-        dot(matrix[0], vector),
-        dot(matrix[1], vector),
-        dot(matrix[2], vector),
-    ]
-}
-
-fn multiply_rotation(left: [[f64; 3]; 3], right: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let right = transpose(right);
-    [
-        [
-            dot(left[0], right[0]),
-            dot(left[0], right[1]),
-            dot(left[0], right[2]),
-        ],
-        [
-            dot(left[1], right[0]),
-            dot(left[1], right[1]),
-            dot(left[1], right[2]),
-        ],
-        [
-            dot(left[2], right[0]),
-            dot(left[2], right[1]),
-            dot(left[2], right[2]),
-        ],
-    ]
-}
-
 fn rodrigues(rotation_vector: [f64; 3]) -> [[f64; 3]; 3] {
-    let angle = norm(rotation_vector);
+    let angle = length(rotation_vector);
     if angle <= f64::EPSILON {
         return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     }

@@ -1420,8 +1420,7 @@ fn typed_dimensions_follow_exact_graph_model_change_undo_redo_and_save_open() {
                         right.end_mm[0] - right.start_mm[0],
                         right.end_mm[1] - right.start_mm[1],
                     ];
-                    ((left_delta[0] * right_delta[0] + left_delta[1] * right_delta[1]).abs()
-                        <= 1.0e-9)
+                    (ketchup_geometry::linalg::dot2(left_delta, right_delta).abs() <= 1.0e-9)
                         .then(|| [left.stable_line_id.clone(), right.stable_line_id.clone()])
                 })
         })
@@ -1697,7 +1696,7 @@ fn associative_toleranced_dimensions_recompute_across_undo_redo_and_save_open() 
                 line.end_mm[0] - line.start_mm[0],
                 line.end_mm[1] - line.start_mm[1],
             ];
-            (delta[0] * delta[0] + delta[1] * delta[1] - 900.0).abs() <= 1.0e-9
+            (ketchup_geometry::linalg::dot2(delta, delta) - 900.0).abs() <= 1.0e-9
         })
         .unwrap()
         .stable_line_id
@@ -2003,7 +2002,7 @@ fn svg_text_renders_at_viewbox_scale_without_annotation_collisions() {
                 line.end_mm[0] - line.start_mm[0],
                 line.end_mm[1] - line.start_mm[1],
             ];
-            (delta[0] * delta[0] + delta[1] * delta[1] - 900.0).abs() <= 1.0e-9
+            (ketchup_geometry::linalg::dot2(delta, delta) - 900.0).abs() <= 1.0e-9
         })
         .unwrap()
         .stable_line_id
@@ -2101,7 +2100,7 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
                 line.end_mm[0] - line.start_mm[0],
                 line.end_mm[1] - line.start_mm[1],
             ];
-            (delta[0] * delta[0] + delta[1] * delta[1] - 900.0).abs() <= 1.0e-9
+            (ketchup_geometry::linalg::dot2(delta, delta) - 900.0).abs() <= 1.0e-9
         })
         .unwrap()
         .stable_line_id

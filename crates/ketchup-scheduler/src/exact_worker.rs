@@ -22,6 +22,7 @@ use ketchup_exact::{
     RectangleOffsetSpec, ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment,
     StepXdeExportNode, StepXdeExportPart,
 };
+use ketchup_geometry::linalg::{self, Affine3, Vec3};
 use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
 use ketchup_model::document::Transform;
 use ketchup_model::exact_brep_graph::{
@@ -680,11 +681,7 @@ fn exact_brep_sheet_metal(
             outward[1] * beta.cos(),
             sign * beta.sin(),
         ];
-        let normal = [
-            tangent[1] * edge_axis[2] - tangent[2] * edge_axis[1],
-            tangent[2] * edge_axis[0] - tangent[0] * edge_axis[2],
-            tangent[0] * edge_axis[1] - tangent[1] * edge_axis[0],
-        ];
+        let normal = ketchup_geometry::linalg::cross(tangent, edge_axis);
         let radial = if sign > 0.0 { outer_end } else { inner_end };
         let panel_origin = [
             flange_origin[0] + outward[0] * radial[0],
@@ -1073,7 +1070,7 @@ fn evaluate_exact_brep_graph(
                     exact_brep_through_all_interval(
                         graph,
                         &target_output.body,
-                        std::array::from_fn(|axis| f64::from_bits(profile.frame_bits[axis])),
+                        profile.frame().origin.to_array(),
                         *interval,
                     )?
                 } else {
@@ -1899,7 +1896,7 @@ fn exact_brep_loft(
             }
         };
         let elevation_mm = f64::from_bits(section.elevation_bits);
-        let frame = profile.frame_bits.map(f64::from_bits);
+        let frame = profile.frame();
         let hole_groups = hole_sections.get_or_insert_with(|| {
             (0..holes.len())
                 .map(|_| Vec::with_capacity(sections.len()))
@@ -2024,14 +2021,21 @@ fn transform_local_to_profile_frame(
     profile: &ExactBRepProfile,
     local: &ExactOpOutput,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let frame = profile.frame_bits.map(f64::from_bits);
-    backend.transform_body(
-        &local.body,
-        &[
-            frame[3], frame[6], frame[9], frame[0], frame[4], frame[7], frame[10], frame[1],
-            frame[5], frame[8], frame[11], frame[2], 0.0, 0.0, 0.0, 1.0,
-        ],
-    )
+    backend.transform_body(&local.body, &profile.frame().to_affine().to_row_major())
+}
+
+/// The local-to-world matrix of `profile`'s plane with z along the
+/// interval direction, starting where the interval starts.
+fn extrusion_matrix(profile: &ExactBRepProfile, interval: ExactBRepLinearInterval) -> [f64; 16] {
+    let frame = profile.frame();
+    let direction = Vec3::from(interval.direction());
+    linalg::Frame {
+        origin: frame.origin + direction * interval.start_mm(),
+        z: direction,
+        ..frame
+    }
+    .to_affine()
+    .to_row_major()
 }
 
 fn transform_named_output(
@@ -2040,10 +2044,14 @@ fn transform_named_output(
     matrix: &[f64; 16],
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let mut output = backend.transform_body(&local.body, matrix)?;
-    let transform_point = |point: Point3| Point3 {
-        x: matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
-        y: matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
-        z: matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
+    let affine = Affine3::from_row_major(*matrix);
+    let transform_point = |point: Point3| {
+        let point = affine.transform_point(Vec3::new(point.x, point.y, point.z));
+        Point3 {
+            x: point.x,
+            y: point.y,
+            z: point.z,
+        }
     };
     let close = |left: f64, right: f64| {
         (left - right).abs() <= DEFAULT_LINEAR_TOLERANCE_MM * left.abs().max(right.abs()).max(1.0)
@@ -2126,11 +2134,7 @@ fn exact_brep_sweep(
         backend,
         profile,
         ExactBRepLinearInterval {
-            direction_bits: [
-                profile.frame_bits[9],
-                profile.frame_bits[10],
-                profile.frame_bits[11],
-            ],
+            direction_bits: profile.frame().z.to_array().map(f64::to_bits),
             start_bits: 0.0_f64.to_bits(),
             end_bits: length.to_bits(),
         },
@@ -2412,9 +2416,7 @@ fn exact_brep_planar_offset(
     } else {
         backend.offset_planar_profile(&exact_brep_planar_offset_loop(profile)?, distance_mm)?
     };
-    if profile.frame_bits.map(f64::from_bits)
-        == [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    {
+    if profile.frame() == linalg::Frame::WORLD {
         Ok(local)
     } else {
         transform_local_to_profile_frame(backend, profile, &local)
@@ -2564,32 +2566,7 @@ fn exact_brep_named_profile_body(
         )
         .map_err(|error| exact_brep_profile_error(profile, &error.to_string()))?;
     let (local, names) = named.into_output_and_names();
-    let frame = profile.frame_bits.map(f64::from_bits);
-    let direction = interval.direction();
-    let start_mm = interval.start_mm();
-    let origin = [
-        frame[0] + direction[0] * start_mm,
-        frame[1] + direction[1] * start_mm,
-        frame[2] + direction[2] * start_mm,
-    ];
-    let matrix = [
-        frame[3],
-        frame[6],
-        direction[0],
-        origin[0],
-        frame[4],
-        frame[7],
-        direction[1],
-        origin[1],
-        frame[5],
-        frame[8],
-        direction[2],
-        origin[2],
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-    ];
+    let matrix = extrusion_matrix(profile, interval);
     let output = transform_named_output(backend, &local, &matrix)?;
     Ok((output, names))
 }
@@ -2731,13 +2708,9 @@ fn exact_brep_named_circle_body(
         ));
     };
     let output = exact_brep_profile_body(backend, profile, interval)?;
-    let frame = profile.frame_bits.map(f64::from_bits);
-    let direction = interval.direction();
-    let along = |point: Point3| {
-        (point.x - frame[0]) * direction[0]
-            + (point.y - frame[1]) * direction[1]
-            + (point.z - frame[2]) * direction[2]
-    };
+    let origin = profile.frame().origin;
+    let direction = Vec3::from(interval.direction());
+    let along = |point: Point3| (Vec3::new(point.x, point.y, point.z) - origin).dot(direction);
     let tolerance = APPROXIMATION * interval.length_mm().max(1.0);
     let faces = &output.body.topology.faces;
     let mut names = vec![String::new(); faces.len()];
@@ -2788,11 +2761,7 @@ fn exact_brep_named_revolve(
         )
         .map_err(|error| exact_brep_profile_error(profile, &error.to_string()))?;
     let (local, names) = named.into_output_and_names();
-    let frame = profile.frame_bits.map(f64::from_bits);
-    let matrix = [
-        frame[3], frame[6], frame[9], frame[0], frame[4], frame[7], frame[10], frame[1], frame[5],
-        frame[8], frame[11], frame[2], 0.0, 0.0, 0.0, 1.0,
-    ];
+    let matrix = profile.frame().to_affine().to_row_major();
     let output = transform_named_output(backend, &local, &matrix)?;
     Ok((output, names))
 }
@@ -2913,32 +2882,7 @@ fn exact_brep_profile_body(
             ));
         }
     };
-    let frame = profile.frame_bits.map(f64::from_bits);
-    let direction = interval.direction();
-    let start_mm = interval.start_mm();
-    let origin = [
-        frame[0] + direction[0] * start_mm,
-        frame[1] + direction[1] * start_mm,
-        frame[2] + direction[2] * start_mm,
-    ];
-    let matrix = [
-        frame[3],
-        frame[6],
-        direction[0],
-        origin[0],
-        frame[4],
-        frame[7],
-        direction[1],
-        origin[1],
-        frame[5],
-        frame[8],
-        direction[2],
-        origin[2],
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-    ];
+    let matrix = extrusion_matrix(profile, interval);
     if matrix
         == [
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,

@@ -120,7 +120,7 @@ fn draw(
     y: [f64; 3],
     segments: Vec<ProfileSegment>,
 ) -> SelectionId {
-    let n = cross3(x, y);
+    let n = cross(x, y);
     let transform = Transform::from_matrix([
         x[0], y[0], n[0], origin[0], x[1], y[1], n[1], origin[1], x[2], y[2], n[2], origin[2], 0.0,
         0.0, 0.0, 1.0,

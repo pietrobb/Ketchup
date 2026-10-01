@@ -1,4 +1,5 @@
 use super::*;
+use crate::linalg::cross2;
 
 pub(super) fn region_signed_area(edges: &[SolvedSketchRegionEdge]) -> Result<f64, SketchError> {
     edges
@@ -162,10 +163,6 @@ pub(super) fn curves_intersect(left: RegionCurve, right: RegionCurve) -> bool {
             arcs_intersect(left, right)
         }
     }
-}
-
-pub(super) fn cross2(left: [f64; 2], right: [f64; 2]) -> f64 {
-    left[0] * right[1] - left[1] * right[0]
 }
 
 pub(super) fn subtract2(left: [f64; 2], right: [f64; 2]) -> [f64; 2] {

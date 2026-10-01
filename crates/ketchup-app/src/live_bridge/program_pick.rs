@@ -32,13 +32,9 @@ fn face_sample(package: &ExactBodyPackage, ordinal: u32) -> Option<([f64; 3], [f
             let [a, b, c] = triangle.vertex_indices.map(vertex);
             let u: [f64; 3] = std::array::from_fn(|i| b[i] - a[i]);
             let v: [f64; 3] = std::array::from_fn(|i| c[i] - a[i]);
-            let n = [
-                u[1] * v[2] - u[2] * v[1],
-                u[2] * v[0] - u[0] * v[2],
-                u[0] * v[1] - u[1] * v[0],
-            ];
+            let n = ketchup_geometry::linalg::cross(u, v);
             let centroid = std::array::from_fn(|i| (a[i] + b[i] + c[i]) / 3.0);
-            (frame::dot(n, n).sqrt(), centroid, n)
+            (ketchup_geometry::linalg::dot(n, n).sqrt(), centroid, n)
         })
         .filter(|(area, ..)| *area > ROUNDING)
         .max_by(|a, b| a.0.total_cmp(&b.0))

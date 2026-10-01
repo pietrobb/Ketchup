@@ -1,3 +1,4 @@
+use ketchup_geometry::linalg::{cross, dot};
 use std::{
     fmt,
     path::PathBuf,
@@ -679,7 +680,7 @@ fn candidate_feature_chain(
         }
     };
     let mut profile = profile;
-    if determinant(basis_u, basis_v, axis) < 0.0 {
+    if dot(basis_u, cross(basis_v, axis)) < 0.0 {
         basis_v = scale_3d(basis_v, -1.0);
         reflect_profile_y(&mut profile);
     }
@@ -857,7 +858,7 @@ fn perpendicular_basis(axis: [f64; 3]) -> Result<[[f64; 3]; 2], MeshConversionEr
     } else {
         [0.0, 0.0, 1.0]
     };
-    let basis_u = cross_3d(helper, axis);
+    let basis_u = cross(helper, axis);
     let basis_u_length = length_3d(basis_u);
     if !basis_u_length.is_finite() || basis_u_length <= f64::EPSILON {
         return Err(invalid_candidate(format!(
@@ -865,7 +866,7 @@ fn perpendicular_basis(axis: [f64; 3]) -> Result<[[f64; 3]; 2], MeshConversionEr
         )));
     }
     let basis_u = scale_3d(basis_u, basis_u_length.recip());
-    let basis_v = cross_3d(axis, basis_u);
+    let basis_v = cross(axis, basis_u);
     Ok([basis_u, basis_v])
 }
 
@@ -1191,14 +1192,14 @@ fn point_triangle_distance(point: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3
     let ab = subtract_3d(b, a);
     let ac = subtract_3d(c, a);
     let ap = subtract_3d(point, a);
-    let d1 = dot_3d(ab, ap);
-    let d2 = dot_3d(ac, ap);
+    let d1 = dot(ab, ap);
+    let d2 = dot(ac, ap);
     if d1 <= 0.0 && d2 <= 0.0 {
         return length_3d(ap);
     }
     let bp = subtract_3d(point, b);
-    let d3 = dot_3d(ab, bp);
-    let d4 = dot_3d(ac, bp);
+    let d3 = dot(ab, bp);
+    let d4 = dot(ac, bp);
     if d3 >= 0.0 && d4 <= d3 {
         return length_3d(bp);
     }
@@ -1208,8 +1209,8 @@ fn point_triangle_distance(point: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3
         return length_3d(subtract_3d(point, add_3d(a, scale_3d(ab, v))));
     }
     let cp = subtract_3d(point, c);
-    let d5 = dot_3d(ab, cp);
-    let d6 = dot_3d(ac, cp);
+    let d5 = dot(ab, cp);
+    let d6 = dot(ac, cp);
     if d6 >= 0.0 && d5 <= d6 {
         return length_3d(cp);
     }
@@ -1253,25 +1254,8 @@ fn scale_3d(value: [f64; 3], scale: f64) -> [f64; 3] {
     [value[0] * scale, value[1] * scale, value[2] * scale]
 }
 
-fn dot_3d(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-fn cross_3d(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
 fn length_3d(value: [f64; 3]) -> f64 {
-    dot_3d(value, value).sqrt()
-}
-
-fn determinant(u: [f64; 3], v: [f64; 3], w: [f64; 3]) -> f64 {
-    u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0])
-        + u[2] * (v[0] * w[1] - v[1] * w[0])
+    dot(value, value).sqrt()
 }
 
 #[cfg(test)]
@@ -1284,11 +1268,11 @@ mod tests {
         let axis = [half_sqrt_two, half_sqrt_two, 0.0];
         let [basis_u, basis_v] = perpendicular_basis(axis).unwrap();
 
-        assert!(dot_3d(axis, basis_u).abs() <= 1.0e-12);
-        assert!(dot_3d(axis, basis_v).abs() <= 1.0e-12);
+        assert!(dot(axis, basis_u).abs() <= 1.0e-12);
+        assert!(dot(axis, basis_v).abs() <= 1.0e-12);
         assert!((length_3d(basis_u) - 1.0).abs() <= 1.0e-12);
         assert!((length_3d(basis_v) - 1.0).abs() <= 1.0e-12);
-        assert!((determinant(basis_u, basis_v, axis) - 1.0).abs() <= 1.0e-12);
+        assert!((dot(basis_u, cross(basis_v, axis)) - 1.0).abs() <= 1.0e-12);
         assert_eq!(
             perpendicular_basis([0.0, 0.0, 0.0]),
             Err(MeshConversionError::InvalidCandidate(

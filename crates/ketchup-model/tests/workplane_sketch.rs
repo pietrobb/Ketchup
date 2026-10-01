@@ -1254,7 +1254,7 @@ fn full_general_constraint_vocabulary_solves_geometric_invariants() {
         [delta[0] / length, delta[1] / length]
     };
     let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
-    let dot = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1];
+    let dot = |a: [f64; 2], b: [f64; 2]| ketchup_geometry::linalg::dot2(a, b);
 
     for (kind, expected_dot) in [
         (

@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::{CubicBezier, Vec3, dot, sub};
 
 pub(super) fn projected_bounds(
     origin_mm: [f64; 3],
@@ -14,7 +15,7 @@ pub(super) fn projected_bounds(
     for x in [target_bounds[0][0], target_bounds[1][0]] {
         for y in [target_bounds[0][1], target_bounds[1][1]] {
             for z in [target_bounds[0][2], target_bounds[1][2]] {
-                let projection = dot(subtract([x, y, z], origin_mm), direction);
+                let projection = dot(sub([x, y, z], origin_mm), direction);
                 minimum = minimum.min(projection);
                 maximum = maximum.max(projection);
             }
@@ -222,19 +223,20 @@ pub(super) fn revolve_profile_bounds(
     for x in [profile_bounds[0][0], profile_bounds[1][0]] {
         for y in [profile_bounds[0][1], profile_bounds[1][1]] {
             let relative = [x - axis_start_mm[0], y - axis_start_mm[1]];
-            let projection = relative[0] * local_axis[0] + relative[1] * local_axis[1];
+            let projection = ketchup_geometry::linalg::dot2(relative, local_axis);
             minimum_projection = minimum_projection.min(projection);
             maximum_projection = maximum_projection.max(projection);
             radius = radius.max((relative[0] * local_axis[1] - relative[1] * local_axis[0]).abs());
         }
     }
 
-    let frame = profile.frame_bits.map(f64::from_bits);
-    let axis_origin = [0, 1, 2].map(|axis| {
-        frame[axis] + frame[3 + axis] * axis_start_mm[0] + frame[6 + axis] * axis_start_mm[1]
-    });
-    let world_axis =
-        [0, 1, 2].map(|axis| frame[3 + axis] * local_axis[0] + frame[6 + axis] * local_axis[1]);
+    let frame = profile.frame();
+    let axis_origin = frame
+        .point(Vec3::new(axis_start_mm[0], axis_start_mm[1], 0.0))
+        .to_array();
+    let world_axis = frame
+        .vector(Vec3::new(local_axis[0], local_axis[1], 0.0))
+        .to_array();
     let start = [0, 1, 2].map(|axis| axis_origin[axis] + world_axis[axis] * minimum_projection);
     let end = [0, 1, 2].map(|axis| axis_origin[axis] + world_axis[axis] * maximum_projection);
     let bounds = [
@@ -256,12 +258,11 @@ pub(super) fn planar_surface_bounds(
     profile: &ExactBRepProfile,
 ) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
     let planar = planar_geometry_bounds(&profile.geometry)?;
-    let frame = profile.frame_bits.map(f64::from_bits);
+    let frame = profile.frame();
     let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
     for x in [planar[0][0], planar[1][0]] {
         for y in [planar[0][1], planar[1][1]] {
-            let point =
-                [0, 1, 2].map(|axis| frame[axis] + frame[3 + axis] * x + frame[6 + axis] * y);
+            let point = frame.point(Vec3::new(x, y, 0.0)).to_array();
             for axis in 0..3 {
                 bounds[0][axis] = bounds[0][axis].min(point[axis]);
                 bounds[1][axis] = bounds[1][axis].max(point[axis]);
@@ -283,16 +284,11 @@ pub(super) fn loft_bounds(
             .get(section.profile.0 as usize)
             .ok_or(ExactBRepGraphError::InvalidGraph)?;
         let planar = planar_geometry_bounds(&profile.geometry)?;
-        let frame = profile.frame_bits.map(f64::from_bits);
+        let frame = profile.frame();
         let elevation = f64::from_bits(section.elevation_bits);
         for x in [planar[0][0], planar[1][0]] {
             for y in [planar[0][1], planar[1][1]] {
-                let point = [0, 1, 2].map(|axis| {
-                    frame[axis]
-                        + frame[3 + axis] * x
-                        + frame[6 + axis] * y
-                        + frame[9 + axis] * elevation
-                });
+                let point = frame.point(Vec3::new(x, y, elevation)).to_array();
                 for axis in 0..3 {
                     bounds[0][axis] = bounds[0][axis].min(point[axis]);
                     bounds[1][axis] = bounds[1][axis].max(point[axis]);
@@ -337,10 +333,7 @@ pub(super) fn swept_profile_bounds(
     interval: ExactBRepLinearInterval,
 ) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
     let [[min_x, min_y], [max_x, max_y]] = planar_geometry_bounds(&profile.geometry)?;
-    let frame = profile.frame_bits.map(f64::from_bits);
-    let origin = [frame[0], frame[1], frame[2]];
-    let x_axis = [frame[3], frame[4], frame[5]];
-    let y_axis = [frame[6], frame[7], frame[8]];
+    let [origin, x_axis, y_axis, _] = profile.frame().to_vectors();
     let direction = interval.direction();
     let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
     for x in [min_x, max_x] {
@@ -419,12 +412,11 @@ pub(super) fn planar_offset_profile_bounds(
     let mut local_profile = profile.clone();
     local_profile.frame_bits = identity_frame();
     let local = local_planar_offset_profile_bounds(&local_profile, distance_mm)?;
-    let frame = profile.frame_bits.map(f64::from_bits);
+    let frame = profile.frame();
     let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
     for x in [local[0][0], local[1][0]] {
         for y in [local[0][1], local[1][1]] {
-            let point =
-                [0, 1, 2].map(|axis| frame[axis] + frame[3 + axis] * x + frame[6 + axis] * y);
+            let point = frame.point(Vec3::new(x, y, 0.0)).to_array();
             for axis in 0..3 {
                 bounds[0][axis] = bounds[0][axis].min(point[axis]);
                 bounds[1][axis] = bounds[1][axis].max(point[axis]);
@@ -618,34 +610,13 @@ pub(super) fn sweep_path_segment_metrics(
             let control_1 = control_1_bits.map(f64::from_bits);
             let control_2 = control_2_bits.map(f64::from_bits);
             let end = end_bits.map(f64::from_bits);
-            let chord = [end[0] - start[0], end[1] - start[1]];
-            let start_handle = [control_1[0] - start[0], control_1[1] - start[1]];
-            let end_handle = [end[0] - control_2[0], end[1] - control_2[1]];
-            let middle = [control_2[0] - control_1[0], control_2[1] - control_1[1]];
-            let chord_squared = chord[0] * chord[0] + chord[1] * chord[1];
-            let start_length = start_handle[0].hypot(start_handle[1]);
-            let end_length = end_handle[0].hypot(end_handle[1]);
-            let control_length = start_length + middle[0].hypot(middle[1]) + end_length;
-            let projection_1 = start_handle[0] * chord[0] + start_handle[1] * chord[1];
-            let control_2_from_start = [control_2[0] - start[0], control_2[1] - start[1]];
-            let projection_2 =
-                control_2_from_start[0] * chord[0] + control_2_from_start[1] * chord[1];
-            if !control_length.is_finite()
-                || start_length <= tolerance_mm
-                || end_length <= tolerance_mm
-                || projection_1 <= 0.0
-                || projection_2 < projection_1
-                || projection_2 >= chord_squared
-            {
-                return None;
-            }
+            let forward =
+                ketchup_geometry::linalg::CubicBezier::new([start, control_1, control_2, end])
+                    .forward(tolerance_mm)?;
             Some((
-                control_length,
-                [
-                    start_handle[0] / start_length,
-                    start_handle[1] / start_length,
-                ],
-                [end_handle[0] / end_length, end_handle[1] / end_length],
+                forward.control_length,
+                forward.start_tangent,
+                forward.end_tangent,
             ))
         }
     }
@@ -898,7 +869,7 @@ pub(super) fn sweep_path_length(
         || metrics.windows(2).any(|pair| {
             let outgoing = pair[0].2;
             let incoming = pair[1].1;
-            let dot = outgoing[0] * incoming[0] + outgoing[1] * incoming[1];
+            let dot = ketchup_geometry::linalg::dot2(outgoing, incoming);
             let cross = outgoing[0] * incoming[1] - outgoing[1] * incoming[0];
             dot < 1.0 - ROUNDING || cross.abs() > ROUNDING
         })
@@ -959,17 +930,13 @@ pub(super) fn sweep_profile_bounds(
     let direction = [end[0] - start[0], end[1] - start[1]];
     let tangent = [direction[0] / path_length, direction[1] / path_length];
     let section = [tangent[1], -tangent[0]];
-    let frame = profile.frame_bits.map(f64::from_bits);
+    let frame = profile.frame();
     let mut framed_bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
     let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
     for u in [min_u, max_u] {
         for v in [min_v, max_v] {
             for along in [0.0, path_length] {
-                let profile_point = [
-                    frame[0] + frame[3] * u + frame[6] * v + frame[9] * along,
-                    frame[1] + frame[4] * u + frame[7] * v + frame[10] * along,
-                    frame[2] + frame[5] * u + frame[8] * v + frame[11] * along,
-                ];
+                let profile_point = frame.point(Vec3::new(u, v, along)).to_array();
                 let point = [
                     start[0] + section[0] * profile_point[0] + tangent[0] * profile_point[2],
                     start[1] + section[1] * profile_point[0] + tangent[1] * profile_point[2],
@@ -1026,7 +993,7 @@ pub(super) fn spatial_sweep_bounds(
             } => {
                 let start = start_bits.map(f64::from_bits);
                 let center = center_bits.map(f64::from_bits);
-                let radius = subtract(start, center);
+                let radius = sub(start, center);
                 let radius = dot(radius, radius).sqrt();
                 include(center.map(|coordinate| coordinate - radius));
                 include(center.map(|coordinate| coordinate + radius));
@@ -1182,17 +1149,9 @@ pub(super) fn planar_segment_points(segment: &ExactBRepPlanarSegment, steps: u32
         } => {
             let [p0, p1, p2, p3] = [start_bits, control_1_bits, control_2_bits, end_bits]
                 .map(|bits| bits.map(f64::from_bits));
+            let curve = CubicBezier::new([p0, p1, p2, p3]);
             (0..steps)
-                .map(|step| {
-                    let t = f64::from(step) / f64::from(steps);
-                    let u = 1.0 - t;
-                    [0, 1].map(|axis| {
-                        u * u * u * p0[axis]
-                            + 3.0 * u * u * t * p1[axis]
-                            + 3.0 * u * t * t * p2[axis]
-                            + t * t * t * p3[axis]
-                    })
-                })
+                .map(|step| curve.eval(f64::from(step) / f64::from(steps)))
                 .collect()
         }
     }
@@ -1236,7 +1195,7 @@ pub(super) fn planar_geometry_distance(
 pub(super) fn planar_segment_distance(segment: &ExactBRepPlanarSegment, point: [f64; 2]) -> f64 {
     let to_line = |start: [f64; 2], end: [f64; 2]| {
         let edge = [end[0] - start[0], end[1] - start[1]];
-        let length_squared = edge[0] * edge[0] + edge[1] * edge[1];
+        let length_squared = ketchup_geometry::linalg::dot2(edge, edge);
         let t = if length_squared > 0.0 {
             (((point[0] - start[0]) * edge[0] + (point[1] - start[1]) * edge[1]) / length_squared)
                 .clamp(0.0, 1.0)
@@ -1279,15 +1238,8 @@ pub(super) fn planar_segment_distance(segment: &ExactBRepPlanarSegment, point: [
         } => {
             let [p0, p1, p2, p3] = [start_bits, control_1_bits, control_2_bits, end_bits]
                 .map(|bits| bits.map(f64::from_bits));
-            let at = |t: f64| {
-                let u = 1.0 - t;
-                [0, 1].map(|axis| {
-                    u * u * u * p0[axis]
-                        + 3.0 * u * u * t * p1[axis]
-                        + 3.0 * u * t * t * p2[axis]
-                        + t * t * t * p3[axis]
-                })
-            };
+            let curve = CubicBezier::new([p0, p1, p2, p3]);
+            let at = |t: f64| curve.eval(t);
             (0..64)
                 .map(|step| to_line(at(f64::from(step) / 64.0), at(f64::from(step + 1) / 64.0)))
                 .fold(f64::INFINITY, f64::min)

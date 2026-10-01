@@ -583,9 +583,7 @@ pub(super) fn project_sketch_entity(
         )))?;
     let source_frame = sketch_workplane_frame(product, source_feature_id)?;
     let target_frame = sketch_workplane_frame(product, target_feature_id)?;
-    let dot3 = |left: [f64; 3], right: [f64; 3]| {
-        left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-    };
+    let dot3 = ketchup_geometry::linalg::dot::<[f64; 3]>;
     let project_point = |point: [f64; 2]| {
         let world = [
             source_frame.origin_mm[0]
@@ -1353,11 +1351,7 @@ pub(super) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalErr
             third[1] - first[1],
             third[2] - first[2],
         ];
-        let cross = [
-            first_edge[1] * second_edge[2] - first_edge[2] * second_edge[1],
-            first_edge[2] * second_edge[0] - first_edge[0] * second_edge[2],
-            first_edge[0] * second_edge[1] - first_edge[1] * second_edge[0],
-        ];
+        let cross = ketchup_geometry::linalg::cross(first_edge, second_edge);
         if cross.into_iter().map(|value| value * value).sum::<f64>() <= MESH_AREA_EPSILON {
             return Err(CanonicalError::InvalidMeshBody);
         }
@@ -1555,38 +1549,17 @@ pub(super) fn sweep_path_segment_metrics(
             control_2_mm,
             end_mm,
         } => {
-            let chord = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
-            let start_handle = [control_1_mm[0] - start_mm[0], control_1_mm[1] - start_mm[1]];
-            let end_handle = [end_mm[0] - control_2_mm[0], end_mm[1] - control_2_mm[1]];
-            let middle = [
-                control_2_mm[0] - control_1_mm[0],
-                control_2_mm[1] - control_1_mm[1],
-            ];
-            let chord_squared = chord[0] * chord[0] + chord[1] * chord[1];
-            let start_length = start_handle[0].hypot(start_handle[1]);
-            let end_length = end_handle[0].hypot(end_handle[1]);
-            let control_length = start_length + middle[0].hypot(middle[1]) + end_length;
-            let projection_1 = start_handle[0] * chord[0] + start_handle[1] * chord[1];
-            let control_2_from_start =
-                [control_2_mm[0] - start_mm[0], control_2_mm[1] - start_mm[1]];
-            let projection_2 =
-                control_2_from_start[0] * chord[0] + control_2_from_start[1] * chord[1];
-            if !control_length.is_finite()
-                || start_length <= tolerance_mm
-                || end_length <= tolerance_mm
-                || projection_1 <= 0.0
-                || projection_2 < projection_1
-                || projection_2 >= chord_squared
-            {
-                return None;
-            }
+            let forward = ketchup_geometry::linalg::CubicBezier::new([
+                *start_mm,
+                *control_1_mm,
+                *control_2_mm,
+                *end_mm,
+            ])
+            .forward(tolerance_mm)?;
             Some((
-                control_length,
-                [
-                    start_handle[0] / start_length,
-                    start_handle[1] / start_length,
-                ],
-                [end_handle[0] / end_length, end_handle[1] / end_length],
+                forward.control_length,
+                forward.start_tangent,
+                forward.end_tangent,
             ))
         }
     }
@@ -1984,11 +1957,7 @@ pub(super) fn valid_sketch_spatial_sweep_inputs_with_frame(
             ..
         } => {
             let radius = [0, 1, 2].map(|axis| start_mm[axis] - center_mm[axis]);
-            let cross = [
-                normal[1] * radius[2] - normal[2] * radius[1],
-                normal[2] * radius[0] - normal[0] * radius[2],
-                normal[0] * radius[1] - normal[1] * radius[0],
-            ];
+            let cross = ketchup_geometry::linalg::cross(*normal, radius);
             cross.map(|value| if *clockwise { -value } else { value })
         }
         SpatialPathSegment::CubicBezier {
@@ -2072,34 +2041,14 @@ pub fn is_valid_sweep_path(segments: &[ProfileSegment], tolerance_mm: f64) -> bo
     metrics.windows(2).all(|pair| {
         let outgoing = pair[0].2;
         let incoming = pair[1].1;
-        let dot = outgoing[0] * incoming[0] + outgoing[1] * incoming[1];
-        let cross = outgoing[0] * incoming[1] - outgoing[1] * incoming[0];
+        let dot = ketchup_geometry::linalg::dot2(outgoing, incoming);
+        let cross = ketchup_geometry::linalg::cross2(outgoing, incoming);
         dot >= 1.0 - ROUNDING && cross.abs() <= ROUNDING
     })
 }
 
 pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm: f64) -> bool {
-    fn sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-        [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-    }
-    fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-        left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-    }
-    fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-        [
-            left[1] * right[2] - left[2] * right[1],
-            left[2] * right[0] - left[0] * right[2],
-            left[0] * right[1] - left[1] * right[0],
-        ]
-    }
-    fn length(vector: [f64; 3]) -> f64 {
-        dot(vector, vector).sqrt()
-    }
-    fn unit(vector: [f64; 3], tolerance_mm: f64) -> Option<[f64; 3]> {
-        let magnitude = length(vector);
-        (magnitude.is_finite() && magnitude > tolerance_mm)
-            .then(|| vector.map(|value| value / magnitude))
-    }
+    use ketchup_geometry::linalg::{cross, dot, length, normalize_within as unit, sub};
     fn arc_angle(segment: &SpatialPathSegment, tolerance_mm: f64) -> Option<f64> {
         let SpatialPathSegment::CircularArc {
             start_mm,
@@ -2438,8 +2387,9 @@ pub(super) fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
 }
 
 pub(super) fn segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
-    fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
-        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    /// Positive when `c` lies left of the line from `a` to `b`.
+    fn orientation(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+        ketchup_geometry::linalg::cross2([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]])
     }
     fn on_segment(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> bool {
         point[0] >= a[0].min(b[0]) - PROFILE_EPSILON_MM
@@ -2447,10 +2397,10 @@ pub(super) fn segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64;
             && point[1] >= a[1].min(b[1]) - PROFILE_EPSILON_MM
             && point[1] <= a[1].max(b[1]) + PROFILE_EPSILON_MM
     }
-    let ab_c = cross(a, b, c);
-    let ab_d = cross(a, b, d);
-    let cd_a = cross(c, d, a);
-    let cd_b = cross(c, d, b);
+    let ab_c = orientation(a, b, c);
+    let ab_d = orientation(a, b, d);
+    let cd_a = orientation(c, d, a);
+    let cd_b = orientation(c, d, b);
     if ((ab_c > PROFILE_EPSILON_MM && ab_d < -PROFILE_EPSILON_MM)
         || (ab_c < -PROFILE_EPSILON_MM && ab_d > PROFILE_EPSILON_MM))
         && ((cd_a > PROFILE_EPSILON_MM && cd_b < -PROFILE_EPSILON_MM)

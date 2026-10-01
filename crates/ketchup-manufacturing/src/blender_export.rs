@@ -1,8 +1,10 @@
+use ketchup_geometry::linalg::Vec3;
 use ketchup_model::document::{
     DefinitionId, FeatureId, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
     SceneOccurrence, Snapshot, Transform,
 };
 use ketchup_model::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
+use ketchup_model::import::{gltf_point_from_ketchup, gltf_transform_from_ketchup};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::num::TryFromIntError;
@@ -14,7 +16,6 @@ const GLTF_ARRAY_BUFFER: u32 = 34_962;
 const GLTF_ELEMENT_ARRAY_BUFFER: u32 = 34_963;
 const GLTF_FLOAT: u32 = 5_126;
 const GLTF_UNSIGNED_INT: u32 = 5_125;
-const MILLIMETRES_PER_METRE: f64 = 1_000.0;
 pub const MAX_GLB_EXPORT_INSTANCES: usize = 8_000;
 const MAX_GLB_EXPORT_VERTICES: usize = 2_000_000;
 const MAX_GLB_EXPORT_TRIANGLES: usize = 4_000_000;
@@ -549,53 +550,19 @@ fn append_geometry(
 }
 
 fn ketchup_point_to_gltf(point_mm: [f64; 3]) -> Result<[f32; 3], ExactProductError> {
-    let point = [
-        point_mm[0] / MILLIMETRES_PER_METRE,
-        point_mm[2] / MILLIMETRES_PER_METRE,
-        -point_mm[1] / MILLIMETRES_PER_METRE,
-    ];
-    if point.iter().any(|value| !value.is_finite()) {
+    let point = gltf_point_from_ketchup(Vec3::from(point_mm));
+    if !point.is_finite() {
         return Err(ExactProductError::InvalidMeshExport);
     }
-    Ok(point.map(|value| value as f32))
+    Ok(point.to_array().map(|value| value as f32))
 }
 
 fn gltf_matrix(transform: Transform) -> Result<[f64; 16], ExactProductError> {
-    let conversion = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-    let inverse = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-    let mut converted = multiply_matrix(multiply_matrix(conversion, *transform.matrix()), inverse);
-    converted[3] /= MILLIMETRES_PER_METRE;
-    converted[7] /= MILLIMETRES_PER_METRE;
-    converted[11] /= MILLIMETRES_PER_METRE;
-    let determinant = converted[0] * (converted[5] * converted[10] - converted[6] * converted[9])
-        - converted[1] * (converted[4] * converted[10] - converted[6] * converted[8])
-        + converted[2] * (converted[4] * converted[9] - converted[5] * converted[8]);
-    if converted.iter().any(|value| !value.is_finite()) || determinant.abs() <= f64::EPSILON {
+    let converted = gltf_transform_from_ketchup(transform.affine());
+    if !converted.translation.is_finite() || converted.linear.is_singular() {
         return Err(ExactProductError::InvalidMeshExport);
     }
-    let mut column_major = [0.0; 16];
-    for row in 0..4 {
-        for column in 0..4 {
-            column_major[column * 4 + row] = converted[row * 4 + column];
-        }
-    }
-    Ok(column_major)
-}
-
-fn multiply_matrix(left: [f64; 16], right: [f64; 16]) -> [f64; 16] {
-    let mut result = [0.0; 16];
-    for row in 0..4 {
-        for column in 0..4 {
-            result[row * 4 + column] = (0..4)
-                .map(|index| left[row * 4 + index] * right[index * 4 + column])
-                .sum();
-        }
-    }
-    result
+    Ok(converted.to_column_major())
 }
 
 fn material_json(color: [u8; 3]) -> Value {
@@ -652,5 +619,32 @@ fn encode_glb(document: &Value, binary: &[u8]) -> Result<Vec<u8>, ExactProductEr
 fn align_to_four(bytes: &mut Vec<u8>, padding: u8) {
     while !bytes.len().is_multiple_of(4) {
         bytes.push(padding);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ketchup_geometry::linalg::Affine3;
+
+    #[test]
+    fn gltf_matrix_maps_points_like_the_vertex_conversion_and_inverts_back() {
+        // A rotation about z, a non-uniform scale and a translation.
+        let transform = Transform::from_matrix([
+            0.0, -2.0, 0.0, 10.0, 1.0, 0.0, 0.0, -5.0, 0.0, 0.0, 3.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .unwrap();
+        let exported = Affine3::from_column_major(gltf_matrix(transform).unwrap());
+        let point = Vec3::new(4.0, 6.0, -2.0);
+        let gltf_point = gltf_point_from_ketchup(point);
+        let expected = gltf_point_from_ketchup(transform.affine().transform_point(point));
+        assert!(exported.transform_point(gltf_point).distance(expected) < 1.0e-12);
+        let back = exported.invert().unwrap().transform_point(expected);
+        assert!(back.distance(gltf_point) < 1.0e-12);
+        let flat = Transform::from_matrix([
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .unwrap();
+        assert_eq!(gltf_matrix(flat), Err(ExactProductError::InvalidMeshExport));
     }
 }

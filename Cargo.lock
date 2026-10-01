@@ -2246,6 +2246,7 @@ name = "ketchup-analysis"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "ketchup-geometry",
  "ketchup-model",
  "serde",
  "serde_json",
@@ -2317,6 +2318,7 @@ version = "0.1.0"
 dependencies = [
  "cxx",
  "cxx-build",
+ "ketchup-geometry",
  "ketchup-tolerance",
 ]
 
@@ -2396,6 +2398,7 @@ dependencies = [
  "allocative",
  "anyhow",
  "ketchup-assistant",
+ "ketchup-geometry",
  "ketchup-model",
  "serde",
  "serde_json",

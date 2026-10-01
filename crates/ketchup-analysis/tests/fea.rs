@@ -142,11 +142,7 @@ fn tetrahedron_patch_matches_constant_uniaxial_stress() {
         third[1] - first[1],
         third[2] - first[2],
     ];
-    let cross = [
-        edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
-        edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
-        edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
-    ];
+    let cross = ketchup_geometry::linalg::cross(edge_a, edge_b);
     let face_normal_x = cross[0] / (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt();
     let model = FeaModel {
         schema: FEA_MODEL_SCHEMA_V1.into(),

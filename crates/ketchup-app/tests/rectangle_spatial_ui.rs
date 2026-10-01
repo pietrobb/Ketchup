@@ -57,15 +57,11 @@ fn rectangle_points(shell: &Shell) -> Vec<Vec3> {
             let t = snapshot
                 .world_transform_for_occurrence(occurrence.id())
                 .unwrap();
-            let m = t.matrix();
             points_mm
                 .iter()
                 .map(|p| {
-                    Vec3::new(
-                        m[0] * p[0] + m[1] * p[1] + m[3],
-                        m[4] * p[0] + m[5] * p[1] + m[7],
-                        m[8] * p[0] + m[9] * p[1] + m[11],
-                    )
+                    let [x, y, z] = t.transform_point([p[0], p[1], 0.0]);
+                    Vec3::new(x, y, z)
                 })
                 .collect()
         }

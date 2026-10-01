@@ -17,6 +17,7 @@ use crate::validation::{
     ValidationInvocation, ValidationPolicyRef, ValidationReport, ValidationState,
     ValidatorDescriptor,
 };
+use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_geometry::prismatic::{Aabb, PrismaticError};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use std::fmt;
@@ -367,7 +368,7 @@ impl GeneralBodyParticipant {
         let offset = std::array::from_fn(|axis| point_world_mm[axis] - obb.center[axis]);
         (0..3).all(|axis| {
             obb.half_extents[axis] * 2.0 <= max_length_mm + tolerance_mm
-                && vector_dot(offset, obb.axes[axis]).abs() <= obb.half_extents[axis] + tolerance_mm
+                && dot(offset, obb.axes[axis]).abs() <= obb.half_extents[axis] + tolerance_mm
         })
     }
 
@@ -435,8 +436,8 @@ pub fn general_body_narrow_phase(
     axes.extend(right_obb.axes);
     for left_axis in left_obb.axes {
         for right_axis in right_obb.axes {
-            let cross = vector_cross(left_axis, right_axis);
-            let length = vector_length(cross);
+            let cross = cross(left_axis, right_axis);
+            let length = length(cross);
             if length > ROUNDING {
                 axes.push(cross.map(|value| value / length));
             }
@@ -446,7 +447,7 @@ pub fn general_body_narrow_phase(
         .into_iter()
         .map(|axis| {
             (
-                vector_dot(delta, axis).abs()
+                dot(delta, axis).abs()
                     - obb_projection_radius(left_obb, axis)
                     - obb_projection_radius(right_obb, axis),
                 axis,
@@ -454,7 +455,7 @@ pub fn general_body_narrow_phase(
         })
         .max_by(|left, right| f64::total_cmp(&left.0, &right.0))
         .ok_or(GeneralBodyValidationError::InvalidGeometry)?;
-    if vector_dot(delta, separation_axis_world) < 0.0 {
+    if dot(delta, separation_axis_world) < 0.0 {
         separation_axis_world = separation_axis_world.map(|component| -component);
     }
     let epsilon_mm = tolerance.linear_mm();
@@ -484,7 +485,7 @@ pub fn general_body_containment(
     let center_delta = vector_subtract(body_obb.center, container_obb.center);
     let mut clearances_mm = [0.0; 6];
     for axis in 0..3 {
-        let center = vector_dot(center_delta, container_obb.axes[axis]);
+        let center = dot(center_delta, container_obb.axes[axis]);
         let radius = obb_projection_radius(body_obb, container_obb.axes[axis]);
         clearances_mm[axis * 2] = container_obb.half_extents[axis] + center - radius;
         clearances_mm[axis * 2 + 1] = container_obb.half_extents[axis] - center - radius;
@@ -507,7 +508,7 @@ fn general_body_obb(
     });
     for left in 0..3 {
         for right in left + 1..3 {
-            if vector_dot(axes[left], axes[right]).abs() > ROUNDING {
+            if dot(axes[left], axes[right]).abs() > ROUNDING {
                 return Err(GeneralBodyValidationError::InvalidGeometry);
             }
         }
@@ -550,28 +551,12 @@ fn general_obb_evidence(
 
 fn obb_projection_radius(obb: GeneralBodyObb, axis: [f64; 3]) -> f64 {
     (0..3)
-        .map(|index| obb.half_extents[index] * vector_dot(obb.axes[index], axis).abs())
+        .map(|index| obb.half_extents[index] * dot(obb.axes[index], axis).abs())
         .sum()
-}
-
-fn vector_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    (0..3).map(|axis| left[axis] * right[axis]).sum()
 }
 
 fn vector_subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|axis| left[axis] - right[axis])
-}
-
-fn vector_cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
-fn vector_length(vector: [f64; 3]) -> f64 {
-    vector_dot(vector, vector).sqrt()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -687,7 +672,7 @@ impl GravitySupportInput {
         {
             return Err(GeneralBodyValidationError::InvalidGravityVector);
         }
-        let gravity_magnitude_m_s2 = vector_length(gravity_vector_m_s2);
+        let gravity_magnitude_m_s2 = length(gravity_vector_m_s2);
         if gravity_magnitude_m_s2 <= f64::EPSILON {
             return Err(GeneralBodyValidationError::InvalidGravityVector);
         }
@@ -1288,9 +1273,9 @@ fn body_support_contact(
     let Ok(supporter_obb) = general_body_obb(supporter) else {
         return GravityContactEvidence::None;
     };
-    let candidate_lower_mm = vector_dot(candidate_obb.center, support_direction)
+    let candidate_lower_mm = dot(candidate_obb.center, support_direction)
         - obb_projection_radius(candidate_obb, support_direction);
-    let supporter_upper_mm = vector_dot(supporter_obb.center, support_direction)
+    let supporter_upper_mm = dot(supporter_obb.center, support_direction)
         + obb_projection_radius(supporter_obb, support_direction);
     if (candidate_lower_mm - supporter_upper_mm).abs() > tolerance.linear_mm() {
         return GravityContactEvidence::None;
@@ -1337,7 +1322,7 @@ fn exact_box_face_contact_has_positive_area(
     let support_axis = |body: GeneralBodyObb| {
         body.axes
             .iter()
-            .position(|axis| (vector_dot(*axis, support_direction).abs() - 1.0).abs() <= ROUNDING)
+            .position(|axis| (dot(*axis, support_direction).abs() - 1.0).abs() <= ROUNDING)
     };
     let (Some(candidate_support_axis), Some(supporter_support_axis)) =
         (support_axis(candidate), support_axis(supporter))
@@ -1357,8 +1342,8 @@ fn exact_box_face_contact_has_positive_area(
                 .filter(|(axis, _)| *axis != supporter_support_axis),
         )
         .all(|(_, axis)| {
-            let candidate_center = vector_dot(candidate.center, *axis);
-            let supporter_center = vector_dot(supporter.center, *axis);
+            let candidate_center = dot(candidate.center, *axis);
+            let supporter_center = dot(supporter.center, *axis);
             let candidate_radius = obb_projection_radius(candidate, *axis);
             let supporter_radius = obb_projection_radius(supporter, *axis);
             (candidate_center + candidate_radius).min(supporter_center + supporter_radius)
@@ -1555,25 +1540,16 @@ fn transformed_body_bounds(
         .first()
         .copied()
         .ok_or(GeneralBodyValidationError::InvalidGeometry)?;
-    let mut minimum = transform_body_point(transform, first);
+    let mut minimum = transform.transform_point(first);
     let mut maximum = minimum;
     for vertex in &vertices[1..] {
-        let point = transform_body_point(transform, *vertex);
+        let point = transform.transform_point(*vertex);
         for axis in 0..3 {
             minimum[axis] = minimum[axis].min(point[axis]);
             maximum[axis] = maximum[axis].max(point[axis]);
         }
     }
     Aabb::bounded_volume(minimum, maximum).map_err(GeneralBodyValidationError::InvalidBounds)
-}
-
-fn transform_body_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-    ]
 }
 
 fn is_translation_only(transform: Transform) -> bool {
@@ -1603,8 +1579,9 @@ fn graph_is_axis_aligned_box(graph: &ExactBRepGraph) -> bool {
     let Some(profile) = graph.profiles.get(profile.0 as usize) else {
         return false;
     };
-    let frame = profile.frame_bits.map(f64::from_bits);
-    let is_world_axis = |vector: [f64; 3]| {
+    let frame = profile.frame();
+    let is_world_axis = |vector: ketchup_geometry::linalg::Vec3| {
+        let vector = vector.to_array();
         vector.iter().filter(|value| value.abs() == 1.0).count() == 1
             && vector.iter().filter(|value| **value == 0.0).count() == 2
     };
@@ -1627,9 +1604,9 @@ fn graph_is_axis_aligned_box(graph: &ExactBRepGraph) -> bool {
             _ => None,
         })
         .collect::<Option<Vec<_>>>();
-    is_world_axis([frame[3], frame[4], frame[5]])
-        && is_world_axis([frame[6], frame[7], frame[8]])
-        && is_world_axis(interval.direction())
+    is_world_axis(frame.x)
+        && is_world_axis(frame.y)
+        && is_world_axis(interval.direction().into())
         && points.is_some_and(|points| is_axis_aligned_rectangle_profile(&points))
 }
 

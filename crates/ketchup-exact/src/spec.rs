@@ -79,7 +79,7 @@ pub enum FramedLoftProfile {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FramedLoftSection {
     pub elevation_mm: f64,
-    pub frame: [f64; 12],
+    pub frame: ketchup_geometry::linalg::Frame,
     pub profile: FramedLoftProfile,
 }
 

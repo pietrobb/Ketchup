@@ -505,20 +505,13 @@ pub(super) fn identity_frame() -> [u64; 12] {
 }
 
 pub(super) fn frame_bits(frame: WorkplaneFrame, direction: [f64; 3]) -> [u64; 12] {
-    [
-        frame.origin_mm[0],
-        frame.origin_mm[1],
-        frame.origin_mm[2],
-        frame.x_axis[0],
-        frame.x_axis[1],
-        frame.x_axis[2],
-        frame.y_axis[0],
-        frame.y_axis[1],
-        frame.y_axis[2],
-        direction[0],
-        direction[1],
-        direction[2],
-    ]
+    Frame {
+        origin: frame.origin_mm.into(),
+        x: frame.x_axis.into(),
+        y: frame.y_axis.into(),
+        z: direction.into(),
+    }
+    .to_array()
     .map(f64::to_bits)
 }
 

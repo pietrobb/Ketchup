@@ -435,7 +435,7 @@ impl KetchupApp {
             let delta_mm = axis_vector(plan.axis, offset_mm);
             let mut preview_box = source_box.clone();
             preview_box.instance_path = InstancePath::root(*id);
-            preview_box.origin_mm = preview_box.origin_mm + delta_mm;
+            preview_box.origin_mm += delta_mm;
             boxes.insert(*id, preview_box);
         }
         Some(boxes)
@@ -786,7 +786,7 @@ impl KetchupApp {
                     + axis_vector(plan.secondary_axis, secondary_offset);
                 let mut preview_box = source_box.clone();
                 preview_box.instance_path = InstancePath::root(*id);
-                preview_box.origin_mm = preview_box.origin_mm + delta_mm;
+                preview_box.origin_mm += delta_mm;
                 boxes.insert(*id, preview_box);
             }
         }

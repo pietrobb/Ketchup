@@ -1741,7 +1741,7 @@ fn solve_assembly_joint_kinematics_internal(
             let child_source_world = source_world.get(child_path).copied().ok_or(
                 AssemblyKinematicSolveError::MissingOccurrence(child_path.root_occurrence()),
             )?;
-            let inverse_parent = invert_affine_transform(parent_source_world).ok_or(
+            let inverse_parent = parent_source_world.inverse().ok_or(
                 AssemblyKinematicSolveError::NonInvertibleTransform(parent_path.root_occurrence()),
             )?;
             let target_kind = kind_overrides.get(&joint.id()).copied().unwrap_or_else(|| {
@@ -1754,15 +1754,15 @@ fn solve_assembly_joint_kinematics_internal(
                             .expect("validated driver targets a movable joint")
                     })
             });
-            let inverse_current_motion =
-                invert_affine_transform(joint_motion_transform(joint.kind()))
-                    .expect("validated assembly joint motion is invertible");
+            let inverse_current_motion = joint_motion_transform(joint.kind())
+                .inverse()
+                .expect("validated assembly joint motion is invertible");
             let delta_motion = joint_motion_transform(target_kind).compose(inverse_current_motion);
             let world = parent_solved_world
                 .compose(delta_motion)
                 .compose(inverse_parent)
                 .compose(child_source_world);
-            let inverse_child_source = invert_affine_transform(child_source_world).ok_or(
+            let inverse_child_source = child_source_world.inverse().ok_or(
                 AssemblyKinematicSolveError::NonInvertibleTransform(child_path.root_occurrence()),
             )?;
             let subtree_delta = world.compose(inverse_child_source);
@@ -1789,7 +1789,7 @@ fn solve_assembly_joint_kinematics_internal(
             .max_by_key(|(path, _)| path.steps().len())
         {
             let source_ancestor = source_world[ancestor_path];
-            let inverse_source_ancestor = invert_affine_transform(source_ancestor).ok_or(
+            let inverse_source_ancestor = source_ancestor.inverse().ok_or(
                 AssemblyKinematicSolveError::NonInvertibleTransform(
                     ancestor_path.root_occurrence(),
                 ),
@@ -1798,9 +1798,12 @@ fn solve_assembly_joint_kinematics_internal(
                 .compose(inverse_source_ancestor)
                 .compose(parent_world);
         }
-        let inverse_parent = invert_affine_transform(parent_world).ok_or(
-            AssemblyKinematicSolveError::NonInvertibleTransform(instance_path.root_occurrence()),
-        )?;
+        let inverse_parent =
+            parent_world
+                .inverse()
+                .ok_or(AssemblyKinematicSolveError::NonInvertibleTransform(
+                    instance_path.root_occurrence(),
+                ))?;
         poses.push(AssemblyKinematicPose {
             instance_path: instance_path.clone(),
             local_transform: inverse_parent.compose(*world_transform),
@@ -2256,14 +2259,9 @@ fn continuous_translational_aabb_clearance(
 }
 
 fn transform_aabb(bounds: Aabb, transform: Transform) -> Result<Aabb, PrismaticError> {
-    let matrix = transform.matrix();
-    let transformed = bounds.vertices().map(|point| {
-        [
-            matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-            matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-            matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-        ]
-    });
+    let transformed = bounds
+        .vertices()
+        .map(|point| transform.transform_point(point));
     let min = std::array::from_fn(|axis| {
         transformed
             .iter()
@@ -2302,66 +2300,4 @@ pub(crate) fn transforms_equivalent(left: Transform, right: Transform) -> bool {
             let scale = left.abs().max(right.abs()).max(1.0);
             (left - right).abs() <= ROUNDING * scale
         })
-}
-
-fn invert_affine_transform(transform: Transform) -> Option<Transform> {
-    let matrix = transform.matrix();
-    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
-        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
-        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
-    let linear_scale = matrix[..12]
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !matches!(index, 3 | 7 | 11))
-        .map(|(_, value)| value.abs())
-        .fold(0.0_f64, f64::max);
-    if !determinant.is_finite()
-        || linear_scale == 0.0
-        || determinant.abs() <= f64::EPSILON * linear_scale.powi(3)
-    {
-        return None;
-    }
-    let inverse_determinant = determinant.recip();
-    let inverse_linear = [
-        (matrix[5] * matrix[10] - matrix[6] * matrix[9]) * inverse_determinant,
-        (matrix[2] * matrix[9] - matrix[1] * matrix[10]) * inverse_determinant,
-        (matrix[1] * matrix[6] - matrix[2] * matrix[5]) * inverse_determinant,
-        (matrix[6] * matrix[8] - matrix[4] * matrix[10]) * inverse_determinant,
-        (matrix[0] * matrix[10] - matrix[2] * matrix[8]) * inverse_determinant,
-        (matrix[2] * matrix[4] - matrix[0] * matrix[6]) * inverse_determinant,
-        (matrix[4] * matrix[9] - matrix[5] * matrix[8]) * inverse_determinant,
-        (matrix[1] * matrix[8] - matrix[0] * matrix[9]) * inverse_determinant,
-        (matrix[0] * matrix[5] - matrix[1] * matrix[4]) * inverse_determinant,
-    ];
-    let translation = [matrix[3], matrix[7], matrix[11]];
-    let inverse_translation = [
-        -(inverse_linear[0] * translation[0]
-            + inverse_linear[1] * translation[1]
-            + inverse_linear[2] * translation[2]),
-        -(inverse_linear[3] * translation[0]
-            + inverse_linear[4] * translation[1]
-            + inverse_linear[5] * translation[2]),
-        -(inverse_linear[6] * translation[0]
-            + inverse_linear[7] * translation[1]
-            + inverse_linear[8] * translation[2]),
-    ];
-    Transform::from_matrix([
-        inverse_linear[0],
-        inverse_linear[1],
-        inverse_linear[2],
-        inverse_translation[0],
-        inverse_linear[3],
-        inverse_linear[4],
-        inverse_linear[5],
-        inverse_translation[1],
-        inverse_linear[6],
-        inverse_linear[7],
-        inverse_linear[8],
-        inverse_translation[2],
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-    ])
-    .ok()
 }

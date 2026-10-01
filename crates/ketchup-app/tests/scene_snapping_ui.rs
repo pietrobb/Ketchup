@@ -16,15 +16,11 @@ fn last_rectangle(shell: &Shell) -> Vec<Vec3> {
         .into_iter()
         .find(|o| o.definition_id == feature.definition_id())
         .unwrap();
-    let m = occurrence.transform.matrix();
     points_mm
         .iter()
         .map(|p| {
-            Vec3::new(
-                m[0] * p[0] + m[1] * p[1] + m[3],
-                m[4] * p[0] + m[5] * p[1] + m[7],
-                m[8] * p[0] + m[9] * p[1] + m[11],
-            )
+            let [x, y, z] = occurrence.transform.transform_point([p[0], p[1], 0.0]);
+            Vec3::new(x, y, z)
         })
         .collect()
 }

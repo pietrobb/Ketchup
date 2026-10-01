@@ -1646,11 +1646,7 @@ fn squared_cross(first: [f64; 3], second: [f64; 3], third: [f64; 3]) -> f64 {
         third[1] - first[1],
         third[2] - first[2],
     ];
-    let cross = [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
+    let cross = ketchup_geometry::linalg::cross(a, b);
     cross.into_iter().map(|value| value * value).sum()
 }
 
@@ -1665,11 +1661,7 @@ fn facet_normal_disagrees(vertices: [[f64; 3]; 3], normal: [f64; 3]) -> bool {
         vertices[2][1] - vertices[0][1],
         vertices[2][2] - vertices[0][2],
     ];
-    let cross = [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
+    let cross = ketchup_geometry::linalg::cross(a, b);
     let normal_length = normal.into_iter().map(|value| value * value).sum::<f64>();
     normal_length > 0.0
         && cross

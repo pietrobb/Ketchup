@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::{cross, dot};
 
 impl ExactBackend {
     /// Tessellate an exact body into a display mesh.
@@ -247,7 +248,7 @@ impl ExactBackend {
             let ab = subtract3(points[1], points[0]);
             let ac = subtract3(points[2], points[0]);
             let ad = subtract3(points[3], points[0]);
-            let signed_volume_mm3 = dot3(ab, cross3(ac, ad)) / 6.0;
+            let signed_volume_mm3 = dot(ab, cross(ac, ad)) / 6.0;
             if !signed_volume_mm3.is_finite() || signed_volume_mm3 <= NEGLIGIBLE {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidShape,

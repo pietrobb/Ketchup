@@ -5,6 +5,7 @@ use crate::spatial::{
     SpatialQueryStats,
 };
 use crate::{Ray, Vec3};
+use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::document::{
     CommandBatch, DefinitionId, DocumentStore, FeatureId, InstancePath, Proposal,
     ProposalCommitError, ProposalContext, ProposalDiffEntry, ProposalPrepareError, Revision,
@@ -429,10 +430,11 @@ impl ExactInteractionProjection {
         let triangle = &hit.occurrence.package.triangles()[hit.triangle_index];
         let [first, second, third] = triangle.vertex_indices.map(|index| {
             let position = hit.occurrence.package.vertices()[index as usize].position_mm;
-            transform_point(
-                hit.occurrence.transform,
-                Vec3::new(position[0], position[1], position[2]),
-            )
+            hit.occurrence.transform.affine().transform_point(Vec3::new(
+                position[0],
+                position[1],
+                position[2],
+            ))
         });
         let normal = cross(second - first, third - first);
         let normal_length = normal.length();
@@ -513,10 +515,11 @@ fn physical_hits<'a>(ray: Ray, occurrence: &'a ExactOccurrence) -> Vec<PhysicalT
         .filter_map(|(triangle_index, triangle)| {
             let [first, second, third] = triangle.vertex_indices.map(|index| {
                 let position = occurrence.package.vertices()[index as usize].position_mm;
-                transform_point(
-                    occurrence.transform,
-                    Vec3::new(position[0], position[1], position[2]),
-                )
+                occurrence.transform.affine().transform_point(Vec3::new(
+                    position[0],
+                    position[1],
+                    position[2],
+                ))
             });
             let ray_distance_mm = ray_triangle_distance(ray, first, second, third)?;
             Some(PhysicalTriangleHit {
@@ -539,7 +542,11 @@ fn transformed_bounds(transform: Transform, bounds: [[f64; 3]; 2]) -> [[f64; 3];
         [bounds[0][0], bounds[1][1], bounds[1][2]],
         [bounds[1][0], bounds[1][1], bounds[1][2]],
     ]
-    .map(|point| transform_point(transform, Vec3::new(point[0], point[1], point[2])));
+    .map(|point| {
+        transform
+            .affine()
+            .transform_point(Vec3::new(point[0], point[1], point[2]))
+    });
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for point in corners {
@@ -549,15 +556,6 @@ fn transformed_bounds(transform: Transform, bounds: [[f64; 3]; 2]) -> [[f64; 3];
         }
     }
     [min, max]
-}
-
-fn transform_point(transform: Transform, point: Vec3) -> Vec3 {
-    let matrix = transform.matrix();
-    Vec3::new(
-        matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
-        matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
-        matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
-    )
 }
 
 fn ray_intersects_bounds(ray: Ray, bounds: [[f64; 3]; 2]) -> bool {
@@ -605,18 +603,6 @@ fn ray_triangle_distance(ray: Ray, first: Vec3, second: Vec3, third: Vec3) -> Op
     }
     let distance = dot(second_edge, weight_vector) * inverse_determinant;
     (distance >= 0.0 && distance.is_finite()).then_some(distance)
-}
-
-fn dot(left: Vec3, right: Vec3) -> f64 {
-    left.x * right.x + left.y * right.y + left.z * right.z
-}
-
-fn cross(left: Vec3, right: Vec3) -> Vec3 {
-    Vec3::new(
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    )
 }
 
 #[cfg(test)]

@@ -452,7 +452,7 @@ fn segment_profile_bounds(segments: &[ProfileSegment]) -> Option<(f64, f64, f64,
 }
 
 fn transformed_aabb(transform: Transform, local_box: ProjectedBox) -> Option<ProjectedBox> {
-    let corners = box_corners(local_box).map(|point| transform_point(transform, point));
+    let corners = box_corners(local_box).map(|point| transform.affine().transform_point(point));
     let min = Vec3::new(
         corners.iter().map(|point| point.x).min_by(f64::total_cmp)?,
         corners.iter().map(|point| point.y).min_by(f64::total_cmp)?,
@@ -467,15 +467,6 @@ fn transformed_aabb(transform: Transform, local_box: ProjectedBox) -> Option<Pro
         origin_mm: min,
         size_mm: max - min,
     })
-}
-
-fn transform_point(transform: Transform, point: Vec3) -> Vec3 {
-    let matrix = transform.matrix();
-    Vec3::new(
-        matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
-        matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
-        matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
-    )
 }
 
 fn box_corners(local_box: ProjectedBox) -> [Vec3; 8] {

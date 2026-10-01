@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use crate::{Ray, Vec3};
+use ketchup_geometry::linalg::{cross, dot};
 use ketchup_model::document::{DocumentId, Snapshot, Transform};
 use ketchup_model::tolerance::ROUNDING;
 use std::{
@@ -526,7 +527,11 @@ pub(crate) fn transformed_bounds(transform: Transform, bounds: [[f64; 3]; 2]) ->
         [bounds[0][0], bounds[1][1], bounds[1][2]],
         [bounds[1][0], bounds[1][1], bounds[1][2]],
     ]
-    .map(|point| transform_point(transform, Vec3::new(point[0], point[1], point[2])));
+    .map(|point| {
+        transform
+            .affine()
+            .transform_point(Vec3::new(point[0], point[1], point[2]))
+    });
     let mut min = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let mut max = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for point in corners {
@@ -534,15 +539,6 @@ pub(crate) fn transformed_bounds(transform: Transform, bounds: [[f64; 3]; 2]) ->
         max = Vec3::new(max.x.max(point.x), max.y.max(point.y), max.z.max(point.z));
     }
     SpatialBounds::from_min_max(min, max)
-}
-
-pub(crate) fn transform_point(transform: Transform, point: Vec3) -> Vec3 {
-    let matrix = transform.matrix();
-    Vec3::new(
-        matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
-        matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
-        matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
-    )
 }
 
 pub(crate) fn ray_triangle_distance(
@@ -571,16 +567,4 @@ pub(crate) fn ray_triangle_distance(
     }
     let distance = dot(second_edge, weight_vector) * inverse_determinant;
     (distance >= 0.0 && distance.is_finite()).then_some(distance)
-}
-
-fn dot(left: Vec3, right: Vec3) -> f64 {
-    left.x * right.x + left.y * right.y + left.z * right.z
-}
-
-pub(crate) fn cross(left: Vec3, right: Vec3) -> Vec3 {
-    Vec3::new(
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    )
 }

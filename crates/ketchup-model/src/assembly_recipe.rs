@@ -7,6 +7,7 @@ use crate::pin_joint::{
 };
 use crate::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
 use ketchup_geometry::dimension::DimensionError;
+use ketchup_geometry::linalg::{dot, sub};
 use ketchup_geometry::sketch::{
     FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchEntity, WorkplaneFrame,
     WorkplaneSupport,
@@ -1118,8 +1119,12 @@ fn solve_extend_until_contact(
     let target_resolved = snapshot
         .resolve_instance_path(&target_part.instance_path)
         .map_err(|error| AssemblyRecipeCompileError::PartChanged(target_ref.part.clone(), error))?;
-    let moving_normal = transform_vector(moving_resolved.world_transform, moving_face.normal_local);
-    let target_normal = transform_vector(target_resolved.world_transform, target_face.normal_local);
+    let moving_normal = moving_resolved
+        .world_transform
+        .transform_vector(moving_face.normal_local);
+    let target_normal = target_resolved
+        .world_transform
+        .transform_vector(target_face.normal_local);
     if (dot(moving_normal, target_normal) + 1.0).abs() > ACCUMULATED_ROUNDING
         || !faces_overlap(
             moving_resolved.world_transform,
@@ -1134,13 +1139,18 @@ fn solve_extend_until_contact(
             relation_key.clone(),
         ));
     }
-    let moving_point = transform_point(moving_resolved.world_transform, moving_face.point_local);
-    let target_point = transform_point(target_resolved.world_transform, target_face.point_local);
-    let positive_axis = transform_vector(
-        moving_resolved.world_transform,
-        std::array::from_fn(|axis| (axis == parameter_axis) as u8 as f64),
-    );
-    let displacement = dot(subtract(target_point, moving_point), positive_axis);
+    let moving_point = moving_resolved
+        .world_transform
+        .transform_point(moving_face.point_local);
+    let target_point = target_resolved
+        .world_transform
+        .transform_point(target_face.point_local);
+    let positive_axis = moving_resolved
+        .world_transform
+        .transform_vector(std::array::from_fn(|axis| {
+            (axis == parameter_axis) as u8 as f64
+        }));
+    let displacement = dot(sub(target_point, moving_point), positive_axis);
     let coefficient = match (moving_face.maximum, anchor) {
         (true, RecipeDimensionAnchor::Minimum) => 1.0,
         (true, RecipeDimensionAnchor::Centre) => 0.5,
@@ -1340,11 +1350,11 @@ fn faces_overlap(
         .collect::<Vec<_>>();
     let moving_world_axes = moving_axes
         .iter()
-        .map(|axis| transform_vector(moving_transform, unit_axis(*axis)))
+        .map(|axis| moving_transform.transform_vector(unit_axis(*axis)))
         .collect::<Vec<_>>();
     let target_world_axes = target_axes
         .iter()
-        .map(|axis| transform_vector(target_transform, unit_axis(*axis)))
+        .map(|axis| target_transform.transform_vector(unit_axis(*axis)))
         .collect::<Vec<_>>();
     if target_world_axes.iter().any(|target_axis| {
         moving_world_axes
@@ -1358,9 +1368,9 @@ fn faces_overlap(
         return false;
     }
     let moving_corners = face_corners(moving_bounds, moving_face)
-        .map(|point| transform_point(moving_transform, point));
+        .map(|point| moving_transform.transform_point(point));
     let target_corners = face_corners(target_bounds, target_face)
-        .map(|point| transform_point(target_transform, point));
+        .map(|point| target_transform.transform_point(point));
     moving_world_axes.into_iter().all(|axis| {
         let moving_interval = projection_interval(moving_corners, axis);
         let target_interval = projection_interval(target_corners, axis);
@@ -1408,35 +1418,6 @@ fn axis_index(axis: [f64; 3]) -> Option<usize> {
 
 fn unit_axis(axis: usize) -> [f64; 3] {
     std::array::from_fn(|index| (index == axis) as u8 as f64)
-}
-
-fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-    ]
-}
-
-fn transform_vector(transform: Transform, vector: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
-        matrix[4] * vector[0] + matrix[5] * vector[1] + matrix[6] * vector[2],
-        matrix[8] * vector[0] + matrix[9] * vector[1] + matrix[10] * vector[2],
-    ]
-}
-
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left.into_iter()
-        .zip(right)
-        .map(|(left, right)| left * right)
-        .sum()
-}
-
-fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|axis| left[axis] - right[axis])
 }
 
 fn supported_parameter_axis(

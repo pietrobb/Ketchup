@@ -1,5 +1,6 @@
 use crate::document::{CanonicalError, FeatureId, FeatureKind, InstancePath, Snapshot, Transform};
 use crate::tolerance::ACCUMULATED_ROUNDING;
+use ketchup_geometry::linalg::{add, dot, scale};
 use ketchup_geometry::sketch::{PadOperation, PadProfile, PadSpec, SketchEntity};
 use std::fmt;
 
@@ -234,14 +235,12 @@ pub fn project_pin_joint_contract(
     let second_resolved = snapshot
         .resolve_instance_path(&contract.second.instance_path)
         .map_err(unresolved_participant)?;
-    let first_center_world_mm = transform_point(
-        first_resolved.world_transform,
-        contract.first_center_local_mm,
-    );
-    let row_unit_world = transform_vector(
-        first_resolved.world_transform,
-        contract.row_unit_first_local,
-    );
+    let first_center_world_mm = first_resolved
+        .world_transform
+        .transform_point(contract.first_center_local_mm);
+    let row_unit_world = first_resolved
+        .world_transform
+        .transform_vector(contract.row_unit_first_local);
     let mut projection = project_pin_joint(&PinJointRequest {
         stable_joint_id: format!("pin-{:016x}", contract.id.0),
         first: PinJointSide {
@@ -296,10 +295,9 @@ pub fn project_pin_joint_contract(
             {
                 return Err(PinJointError::InvalidRow);
             }
-            let center = transform_point(
-                first_resolved.world_transform,
-                add(pair.first.entry_local_mm, *offset),
-            );
+            let center = first_resolved
+                .world_transform
+                .transform_point(add(pair.first.entry_local_mm, *offset));
             pair.first = derive_hole(
                 &projection.stable_joint_id,
                 pair.index,
@@ -377,14 +375,14 @@ pub fn project_pin_joint(request: &PinJointRequest) -> Result<PinJointProjection
 
     let first_inverse = validate_side(&request.first)?;
     let second_inverse = validate_side(&request.second)?;
-    let first_inward_world = transform_vector(
-        request.first.world_from_local,
-        request.first.inward_unit_local,
-    );
-    let second_inward_world = transform_vector(
-        request.second.world_from_local,
-        request.second.inward_unit_local,
-    );
+    let first_inward_world = request
+        .first
+        .world_from_local
+        .transform_vector(request.first.inward_unit_local);
+    let second_inward_world = request
+        .second
+        .world_from_local
+        .transform_vector(request.second.inward_unit_local);
     if !is_unit(first_inward_world)
         || !is_unit(second_inward_world)
         || dot(first_inward_world, second_inward_world) > -1.0 + GEOMETRY_TOLERANCE
@@ -393,14 +391,14 @@ pub fn project_pin_joint(request: &PinJointRequest) -> Result<PinJointProjection
     {
         return Err(PinJointError::FacesDoNotMate);
     }
-    let first_face_world = transform_point(
-        request.first.world_from_local,
-        request.first.face_origin_local_mm,
-    );
-    let second_face_world = transform_point(
-        request.second.world_from_local,
-        request.second.face_origin_local_mm,
-    );
+    let first_face_world = request
+        .first
+        .world_from_local
+        .transform_point(request.first.face_origin_local_mm);
+    let second_face_world = request
+        .second
+        .world_from_local
+        .transform_point(request.second.face_origin_local_mm);
     if distance_along(
         first_face_world,
         request.first_center_world_mm,
@@ -501,7 +499,7 @@ fn derive_hole(
     diameter_mm: f64,
     depth_mm: f64,
 ) -> Result<PinHole, PinJointError> {
-    let entry_local_mm = transform_point(local_from_world, center_world_mm);
+    let entry_local_mm = local_from_world.transform_point(center_world_mm);
     let end_local_mm = add(entry_local_mm, scale(side.inward_unit_local, depth_mm));
     let radius = diameter_mm / 2.0;
     for point in [entry_local_mm, end_local_mm] {
@@ -552,9 +550,9 @@ fn validate_physical_hole_pairs(
         .map_err(unresolved_participant)?
         .world_transform;
     let first_expected_inward_world =
-        transform_vector(first_world_from_local, contract.first.inward_unit_local);
+        first_world_from_local.transform_vector(contract.first.inward_unit_local);
     let second_expected_inward_world =
-        transform_vector(second_world_from_local, contract.second.inward_unit_local);
+        second_world_from_local.transform_vector(contract.second.inward_unit_local);
     let mut first_features = std::collections::BTreeSet::new();
     let mut second_features = std::collections::BTreeSet::new();
     let mut diagnostics = Vec::with_capacity(bindings.len());
@@ -644,8 +642,8 @@ fn observe_physical_hole(
         ),
     );
     Ok(ObservedPhysicalHole {
-        entry_world_mm: transform_point(participant.world_transform, entry_local_mm),
-        inward_unit_world: transform_vector(participant.world_transform, frame.normal),
+        entry_world_mm: participant.world_transform.transform_point(entry_local_mm),
+        inward_unit_world: participant.world_transform.transform_vector(frame.normal),
         diameter_mm: radius_mm * 2.0,
         depth_mm,
     })
@@ -714,34 +712,9 @@ fn validate_probe_coincidence(
     })
 }
 
-fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
-        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
-        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
-    ]
-}
-
-fn transform_vector(transform: Transform, vector: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    [
-        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
-        matrix[4] * vector[0] + matrix[5] * vector[1] + matrix[6] * vector[2],
-        matrix[8] * vector[0] + matrix[9] * vector[1] + matrix[10] * vector[2],
-    ]
-}
-
 fn is_unit(vector: [f64; 3]) -> bool {
     vector.into_iter().all(f64::is_finite)
         && (dot(vector, vector) - 1.0).abs() <= GEOMETRY_TOLERANCE
-}
-
-fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
-    left.into_iter()
-        .zip(right)
-        .map(|(left, right)| left * right)
-        .sum()
 }
 
 fn distance(left: [f64; 3], right: [f64; 3]) -> f64 {
@@ -750,14 +723,6 @@ fn distance(left: [f64; 3], right: [f64; 3]) -> f64 {
         .map(|(left, right)| (left - right).powi(2))
         .sum::<f64>()
         .sqrt()
-}
-
-fn add(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|axis| left[axis] + right[axis])
-}
-
-fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
-    vector.map(|value| value * factor)
 }
 
 fn distance_along(origin: [f64; 3], point: [f64; 3], direction: [f64; 3]) -> f64 {

@@ -4,6 +4,7 @@ use crate::assembly_joint::{
 };
 use crate::document::{DefinitionId, FeatureKind, OccurrenceId, Snapshot, Transform};
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING};
+use ketchup_geometry::linalg::{cross, dot, normalize_within, sub};
 use ketchup_geometry::sketch::{PadOperation, PadSpec};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -704,7 +705,7 @@ pub fn evaluate_mechanical_contract(
                         });
                         continue;
                     }
-                    let gap_mm = dot(subtract(b.origin_mm, a.origin_mm), a.normal);
+                    let gap_mm = dot(sub(b.origin_mm, a.origin_mm), a.normal);
                     if (gap_mm - offset_mm).abs() > tolerance_mm {
                         violations.push(MechanicalViolation {
                             condition_id: Some(condition.id()),
@@ -736,7 +737,7 @@ pub fn evaluate_mechanical_contract(
                         });
                         continue;
                     }
-                    let gap_mm = dot(subtract(resting.origin_mm, base.origin_mm), base.normal);
+                    let gap_mm = dot(sub(resting.origin_mm, base.origin_mm), base.normal);
                     if gap_mm.abs() > tolerance_mm {
                         violations.push(MechanicalViolation {
                             condition_id: Some(condition.id()),
@@ -997,7 +998,7 @@ fn within_bounds(inner: [[f64; 3]; 2], outer: [[f64; 3]; 2]) -> bool {
 fn world_frame(interface: &MechanicalInterface, transform: Transform) -> Option<WorldFrame> {
     let frame = interface.frame();
     let normal = transform_direction(transform, frame.normal())?;
-    let origin_mm = transform_point(transform, frame.origin_mm());
+    let origin_mm = transform.transform_point(frame.origin_mm());
     let bounds = frame.bounds_mm();
     let corners_mm = std::array::from_fn(|index| {
         let corner = [
@@ -1005,22 +1006,12 @@ fn world_frame(interface: &MechanicalInterface, transform: Transform) -> Option<
             bounds[(index >> 1) & 1][1],
             bounds[(index >> 2) & 1][2],
         ];
-        transform_point(transform, corner)
+        transform.transform_point(corner)
     });
     Some(WorldFrame {
         origin_mm,
         normal,
         corners_mm,
-    })
-}
-
-fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
-    let matrix = transform.matrix();
-    std::array::from_fn(|row| {
-        matrix[row * 4] * point[0]
-            + matrix[row * 4 + 1] * point[1]
-            + matrix[row * 4 + 2] * point[2]
-            + matrix[row * 4 + 3]
     })
 }
 
@@ -1079,30 +1070,5 @@ fn in_plane_axes(normal: [f64; 3]) -> ([f64; 3], [f64; 3]) {
 }
 
 fn normalize(vector: [f64; 3]) -> [f64; 3] {
-    let length = dot(vector, vector).sqrt();
-    if length > 0.0 {
-        vector.map(|value| value / length)
-    } else {
-        vector
-    }
-}
-
-fn cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
-    [
-        first[1] * second[2] - first[2] * second[1],
-        first[2] * second[0] - first[0] * second[2],
-        first[0] * second[1] - first[1] * second[0],
-    ]
-}
-
-fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
-    first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
-}
-
-fn subtract(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
-    [
-        first[0] - second[0],
-        first[1] - second[1],
-        first[2] - second[2],
-    ]
+    normalize_within(vector, 0.0).unwrap_or(vector)
 }

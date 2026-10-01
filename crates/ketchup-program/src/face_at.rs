@@ -106,7 +106,7 @@ fn distance(segment: &ProgramProfileSegment, p: [f64; 2]) -> f64 {
     }
     let Some(arc) = segment.arc else {
         let d = minus(b, a);
-        let squared = d[0] * d[0] + d[1] * d[1];
+        let squared = ketchup_geometry::linalg::dot2(d, d);
         let t = if squared > 0.0 {
             (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / squared).clamp(0.0, 1.0)
         } else {

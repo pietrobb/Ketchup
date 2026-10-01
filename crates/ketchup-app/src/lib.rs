@@ -24,7 +24,7 @@ use ketchup_application::topology::{
     MAX_TOPOLOGICAL_FINISH_REFERENCES, assistant_topology_references, plan_topology_finish_kind,
 };
 use ketchup_application::transforms::{
-    rotation_in_parent_space, translated_transform, vector_length, world_axis_rotation_transform,
+    rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
     world_edit_in_parent_space,
 };
 use ketchup_application::validation::*;
@@ -41,6 +41,7 @@ use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadLoftContinuity,
 };
+use ketchup_geometry::linalg::{circumcenter, cross, dot, length};
 use ketchup_geometry::prismatic::JointId;
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
@@ -123,8 +124,8 @@ use ketchup_model::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use ketchup_model::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
 use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_model::tolerance::{
-    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM,
-    NEGLIGIBLE, ROUNDING, SCREEN_ROUNDING_PX,
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+    SCREEN_ROUNDING_PX,
 };
 use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_model::validation::ValidatorRoleIndex;
@@ -4370,14 +4371,6 @@ fn bounds_of(points: impl Iterator<Item = Vec3>) -> Option<[Vec3; 2]> {
     })
 }
 
-fn cross(left: Vec3, right: Vec3) -> Vec3 {
-    Vec3::new(
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    )
-}
-
 const fn axis_direction(axis: Axis) -> Vec3 {
     match axis {
         Axis::X => Vec3 {
@@ -4569,10 +4562,6 @@ fn face_element_from_normal(normal: Vec3) -> ElementId {
     }
 }
 
-fn dot(left: Vec3, right: Vec3) -> f64 {
-    left.x * right.x + left.y * right.y + left.z * right.z
-}
-
 fn tangent_points(anchor: Vec3, center: Vec3, radius: f64) -> Vec<Vec3> {
     let delta = anchor - center;
     let distance_squared = delta.x * delta.x + delta.y * delta.y;
@@ -4609,27 +4598,15 @@ fn arc_geometry(start: Vec3, end: Vec3, bulge: Vec3) -> Option<ArcGeometry> {
     if (start.z - end.z).abs() > APPROXIMATION || (start.z - bulge.z).abs() > APPROXIMATION {
         return None;
     }
-    let determinant = 2.0
-        * (start.x * (end.y - bulge.y) + end.x * (bulge.y - start.y) + bulge.x * (start.y - end.y));
-    if !determinant.is_finite() || determinant.abs() <= ROUNDING {
+    if 2.0 * length(cross(end - start, bulge - start)) <= ROUNDING {
         return None;
     }
-    let start_squared = start.x * start.x + start.y * start.y;
-    let end_squared = end.x * end.x + end.y * end.y;
-    let bulge_squared = bulge.x * bulge.x + bulge.y * bulge.y;
-    let center = Vec3::new(
-        (start_squared * (end.y - bulge.y)
-            + end_squared * (bulge.y - start.y)
-            + bulge_squared * (start.y - end.y))
-            / determinant,
-        (start_squared * (bulge.x - end.x)
-            + end_squared * (start.x - bulge.x)
-            + bulge_squared * (end.x - start.x))
-            / determinant,
-        start.z,
-    );
-    let radius = vector_length(center - start);
-    let end_radius = vector_length(center - end);
+    let center = Vec3 {
+        z: start.z,
+        ..circumcenter(start, end, bulge)?
+    };
+    let radius = length(center - start);
+    let end_radius = length(center - end);
     if !radius.is_finite()
         || radius <= 0.01
         || (radius - end_radius).abs() > ACCUMULATED_ROUNDING * radius.max(end_radius).max(1.0)

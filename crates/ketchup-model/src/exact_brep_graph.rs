@@ -13,6 +13,7 @@ use crate::exact_product::{
 use crate::sheet_metal::SheetMetalEdge;
 use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use crate::topology::{TopologicalElementKind, TopologicalElementRef, TopologicalReferenceError};
+use ketchup_geometry::linalg::{Frame, cross, dot, sub};
 use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile,
     SketchError, SketchRegionId, SolvedSketchRegion, SolvedSketchRegionEdge,
@@ -310,6 +311,15 @@ pub struct ExactBRepProfile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segment_entity_ids: Vec<u64>,
     pub geometry: ExactBRepPlanarGeometry,
+}
+
+impl ExactBRepProfile {
+    /// The profile plane: origin, in-plane x and y axes, and the direction
+    /// the profile is extruded or swept along.
+    #[must_use]
+    pub fn frame(&self) -> Frame {
+        Frame::from(self.frame_bits.map(f64::from_bits))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -648,12 +658,9 @@ impl ExactBRepGraph {
                 return None;
             };
             let profile = self.profiles.get(profile.0 as usize)?;
-            let frame = profile.frame_bits.map(f64::from_bits);
-            let relative = subtract(point_mm, [frame[0], frame[1], frame[2]]);
-            let local = [
-                dot(relative, [frame[3], frame[4], frame[5]]),
-                dot(relative, [frame[6], frame[7], frame[8]]),
-            ];
+            let [origin, x_axis, y_axis, _] = profile.frame().to_vectors();
+            let relative = sub(point_mm, origin);
+            let local = [dot(relative, x_axis), dot(relative, y_axis)];
             let along = dot(relative, interval.direction());
             let blind = depth_bits.is_some();
             if blind
@@ -695,10 +702,7 @@ impl ExactBRepGraph {
             let profile = self.profiles.get(profile.0 as usize)?;
             (profile.source_feature_id == profile_feature_id).then_some((profile, *interval))
         })?;
-        let frame = profile.frame_bits.map(f64::from_bits);
-        let origin = [frame[0], frame[1], frame[2]];
-        let x_axis = [frame[3], frame[4], frame[5]];
-        let y_axis = [frame[6], frame[7], frame[8]];
+        let [origin, x_axis, y_axis, _] = profile.frame().to_vectors();
         let direction = interval.direction();
         let at = |u: f64, v: f64, along: f64| {
             [0, 1, 2].map(|axis| {
@@ -793,7 +797,7 @@ impl ExactBRepGraph {
                 let side_x_axis = cross(direction, normal);
                 let [first, second] =
                     [start, end].map(|point| at(point[0], point[1], interval.start_mm()));
-                let origin_mm = if dot(subtract(second, first), side_x_axis) >= 0.0 {
+                let origin_mm = if dot(sub(second, first), side_x_axis) >= 0.0 {
                     first
                 } else {
                     second
@@ -1099,15 +1103,8 @@ impl ExactBRepGraph {
             | ExactBRepOperation::PlanarSurface { profile } => profile,
             _ => return None,
         };
-        let frame = self
-            .profiles
-            .get(profile.0 as usize)?
-            .frame_bits
-            .map(f64::from_bits);
-        let origin = [frame[0], frame[1], frame[2]];
-        let x_axis = [frame[3], frame[4], frame[5]];
-        let y_axis = [frame[6], frame[7], frame[8]];
-        let normal = [frame[9], frame[10], frame[11]];
+        let [origin, x_axis, y_axis, normal] =
+            self.profiles.get(profile.0 as usize)?.frame().to_vectors();
         let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
         for vertex in vertices_mm {
             if vertex.iter().any(|value| !value.is_finite()) {

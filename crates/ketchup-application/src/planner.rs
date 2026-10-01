@@ -21,6 +21,7 @@ use ketchup_assistant::sidecar::{
     AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
     AssistantWorkplaneSpec, validated_spatial_path_segments,
 };
+use ketchup_geometry::linalg::cross;
 use ketchup_geometry::sketch::{
     PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
 };
@@ -416,14 +417,6 @@ impl StagedPlanningContext {
             ExactResultRegistry::default()
         }
     }
-}
-
-fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
 }
 
 /// In-plane x axis for a workplane on an axis-aligned panel face.
