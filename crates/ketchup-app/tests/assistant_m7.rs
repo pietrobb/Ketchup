@@ -1425,7 +1425,7 @@ fn injected_assistant_results_are_validated_fail_closed() {
     let messages = shell.app().assistant_messages();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[1].role, AssistantMessageRole::Error);
-    assert_eq!(messages[1].text, "assistant returned an empty message");
+    assert_eq!(messages[1].text, "assistant reply message is empty");
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);

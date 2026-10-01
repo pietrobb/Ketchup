@@ -1502,7 +1502,7 @@ impl LiveBridge {
         let selection = Self::selection_guard(app, selection)?;
         program
             .validate()
-            .map_err(|error| failure("invalid_program", error, json!({})))?;
+            .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
         Self::program_scope(app, &program)?;
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Planning) {
@@ -2057,7 +2057,7 @@ impl LiveBridge {
                 let selection = Self::selection_guard(app, selection)?;
                 program
                     .validate()
-                    .map_err(|error| failure("invalid_program", error, json!({})))?;
+                    .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
                 Self::program_scope(app, &program)?;
                 let proposal = app
                     .derive_assistant_cad_edit_proposal(&program)

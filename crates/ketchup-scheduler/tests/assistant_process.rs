@@ -320,10 +320,17 @@ fn assistant_process_transports_only_bounded_cad_edit_programs() {
         Duration::from_secs(10),
     )
     .unwrap();
-    assert!(matches!(
-        invalid_client.chat_exchange("request-unbounded", "Pattern selection", &json!({})),
-        Err(AssistantProcessError::Protocol(_))
-    ));
+    let error = invalid_client
+        .chat_exchange("request-unbounded", "Pattern selection", &json!({}))
+        .unwrap_err();
+    // The schema refusal stays typed and is the source of the protocol failure.
+    let AssistantProcessError::InvalidResponse(refusal) = &error else {
+        panic!("an unbounded CAD edit program is a typed invalid response: {error:?}");
+    };
+    assert_eq!(
+        std::error::Error::source(&error).map(ToString::to_string),
+        Some(refusal.to_string())
+    );
     assert_eq!(
         invalid_client.chat("request-after-rejection", "hello", &json!({})),
         Err(AssistantProcessError::Closed)

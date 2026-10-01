@@ -32,7 +32,7 @@ fn revolve_axis_in_workplane(
             "planning.cad_axis_unresolved",
             operation_name,
             target,
-            error,
+            error.to_string(),
             "Use a direct axis or resolve the referenced construction axis before part creation.",
         )
     })?;

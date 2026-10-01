@@ -1,2 +1,1 @@
 # Remaining errors that drop their cause (<file> <discard|string> <count>); may only shrink.
-crates/ketchup-assistant/src/sidecar.rs string 117

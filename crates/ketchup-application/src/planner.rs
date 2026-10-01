@@ -390,7 +390,7 @@ impl StagedPlanningContext {
                     "planning.cad_selector_invalid",
                     operation,
                     "occurrence_selection",
-                    error,
+                    error.to_string(),
                     "Select between one and 100 root occurrences that still exist, then retry.",
                 )
             })?;
@@ -1391,7 +1391,7 @@ fn resolve_assistant_axis_spec(
                 "planning.cad_axis_invalid",
                 operation,
                 "axis",
-                error,
+                error.to_string(),
                 "Use two distinct bounded points, a finite non-zero origin and direction, or one current exact edge reference.",
             )
         });
@@ -1767,7 +1767,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             "intent.cad_edit_program_invalid",
             "cad_edit_program",
             &document_target,
-            error,
+            error.to_string(),
             "Return a bounded CAD edit program that satisfies the Assistant schema invariants.",
             true,
         )
@@ -2114,7 +2114,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         "planning.cad_spatial_path_invalid",
                         operation_name,
                         &document_target,
-                        error,
+                        error.to_string(),
                         "Use one to 64 finite, connected, non-degenerate 3D line, circular-arc, or cubic-Bezier segments.",
                     )
                 })?;
@@ -2157,7 +2157,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                 "planning.cad_helix_path_invalid",
                                 operation_name,
                                 &document_target,
-                                error,
+                                error.to_string(),
                                 "Use finite bounded Helix parameters and a non-zero 3D axis.",
                             )
                         })?;
@@ -2281,7 +2281,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                                 "planning.cad_helix_invalid",
                                 operation_name,
                                 &document_target,
-                                error,
+                                error.to_string(),
                                 "Use finite bounded Helix parameters and a non-zero 3D axis.",
                             )
                         })?;
@@ -2340,7 +2340,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             "planning.cad_thread_invalid",
                             operation_name,
                             &document_target,
-                            error,
+                            error.to_string(),
                             "Use finite bounded Thread parameters and a non-zero 3D axis.",
                         )
                     })?;
@@ -2349,7 +2349,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         "planning.cad_thread_invalid",
                         operation_name,
                         &document_target,
-                        error,
+                        error.to_string(),
                         "Use a positive profile radius smaller than half the pitch.",
                     )
                 })?;
@@ -4145,7 +4145,7 @@ pub fn plan_panel_batch(
                 "intent.rule_part_invalid",
                 "rule_part",
                 document_target.clone(),
-                error,
+                error.to_string(),
                 "Fix the named part profile, body parameters, placement or machining.",
                 true,
             )

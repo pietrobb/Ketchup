@@ -1,6 +1,8 @@
 use crate::{AssistantTransport, AssistantTransportResponse};
+use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
+    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantCapability,
+    AssistantDistribution, AssistantHandshake,
 };
 use ketchup_model::graph::sha256_hex;
 use ketchup_scheduler::assistant::{
@@ -162,6 +164,17 @@ fn read_bounded_regular_file(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>>
         ));
     }
     Ok(bytes)
+}
+
+impl AssistantTransportResponse {
+    /// Checks the reply and its API diagnostics against the request schema;
+    /// action payloads are checked when they are planned.
+    pub(crate) fn validate(&self) -> Result<(), AssistantRequestInvalid> {
+        self.result.validate()?;
+        self.diagnostics
+            .as_ref()
+            .map_or(Ok(()), AssistantApiDiagnostics::validate)
+    }
 }
 
 impl AssistantTransport for ProcessAssistantTransport {

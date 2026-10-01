@@ -9489,10 +9489,7 @@ impl KetchupApp {
                     )
                 })
                 .and_then(|response| {
-                    response.result.validate()?;
-                    if let Some(diagnostics) = response.diagnostics.as_ref() {
-                        diagnostics.validate()?;
-                    }
+                    response.validate().map_err(|error| error.to_string())?;
                     Ok(response)
                 });
             if sender.send(result).is_ok() {
@@ -9592,7 +9589,7 @@ impl KetchupApp {
                 "intent.model_invalid",
                 "model_intent",
                 &document_target,
-                error,
+                error.to_string(),
                 "Return a bounded model intent that satisfies the Assistant schema invariants.",
                 true,
             )

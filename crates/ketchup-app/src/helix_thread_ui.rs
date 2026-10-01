@@ -1,5 +1,6 @@
 use super::{ActiveTool, KetchupApp};
 use eframe::egui;
+use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 pub use ketchup_assistant::sidecar::{
     AssistantAxisSpec as AxisSpec, AssistantHelixHandedness as HelixHandedness,
     AssistantHelixParameters as HelixToolParameters,
@@ -95,7 +96,9 @@ impl HelixThreadUiState {
     }
 }
 
-pub fn helix_segments(parameters: &HelixToolParameters) -> Result<Vec<SpatialPathSegment>, String> {
+pub fn helix_segments(
+    parameters: &HelixToolParameters,
+) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
     parameters.spatial_path_segments()
 }
 

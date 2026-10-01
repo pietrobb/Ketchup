@@ -16,7 +16,7 @@ impl KetchupApp {
         request.validate().map_err(|error| {
             rejected(
                 "planning.fea_request_invalid",
-                error,
+                error.to_string(),
                 "Send finite material, face, traction and deflection values inside their documented ranges.",
             )
         })?;

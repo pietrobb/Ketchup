@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
+
 pub const ASSISTANT_PROTOCOL_VERSION: u16 = 3;
 const MAX_ASSISTANT_MODEL_BYTES: usize = 128;
 const MAX_ASSISTANT_BOXES: usize = 64;
@@ -19,6 +21,8 @@ const MAX_ASSISTANT_SUBTRACTIONS: usize = 64;
 const MAX_ASSISTANT_TRANSLATIONS: usize = 100;
 const MAX_ASSISTANT_ROTATIONS: usize = 100;
 const MAX_ASSISTANT_PROFILE_TRANSLATIONS: usize = 1;
+const MAX_ASSISTANT_PARAMETER_EDITS: usize = 1;
+const MAX_ASSISTANT_PANEL_POCKETS: usize = 128;
 const MAX_ASSISTANT_ARRAYS: usize = 16;
 const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
@@ -322,16 +326,18 @@ impl AssistantSpatialPathSegment {
 pub fn validated_spatial_path_segments(
     segments: &[AssistantSpatialPathSegment],
     tolerance_mm: f64,
-) -> Result<Vec<SpatialPathSegment>, String> {
+) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
     if !(1..=MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS).contains(&segments.len()) {
-        return Err("assistant spatial path segment count is invalid".to_owned());
+        return Err(AssistantRequestInvalid::invalid(
+            "spatial path segment count",
+        ));
     }
     let segments = segments
         .iter()
         .map(AssistantSpatialPathSegment::canonical)
         .collect::<Vec<_>>();
     if !is_valid_spatial_sweep_path(&segments, tolerance_mm) {
-        return Err("assistant spatial path is invalid".to_owned());
+        return Err(AssistantRequestInvalid::invalid("spatial path"));
     }
     Ok(segments)
 }
@@ -372,7 +378,7 @@ impl AssistantHelixHandedness {
 }
 
 impl AssistantAxisSpec {
-    pub fn origin_and_direction(&self) -> Result<([f64; 3], [f64; 3]), String> {
+    pub fn origin_and_direction(&self) -> Result<([f64; 3], [f64; 3]), AssistantRequestInvalid> {
         let (origin_mm, direction) = match self {
             Self::OriginDirection {
                 origin_mm,
@@ -384,9 +390,12 @@ impl AssistantAxisSpec {
             {
                 (*start_mm, assistant_sub(*end_mm, *start_mm))
             }
-            Self::TwoPoints { .. } => return Err("assistant axis is invalid".to_owned()),
+            Self::TwoPoints { .. } => return Err(AssistantRequestInvalid::invalid("axis")),
             Self::ConstructionAxis { .. } | Self::Edge { .. } => {
-                return Err("assistant referenced axis requires document resolution".to_owned());
+                return Err(AssistantRequestInvalid::new(
+                    "referenced axis",
+                    AssistantRequestProblem::NeedsDocumentResolution,
+                ));
             }
         };
         let direction_length_squared = direction.iter().map(|value| value * value).sum::<f64>();
@@ -395,12 +404,12 @@ impl AssistantAxisSpec {
             || !direction_length_squared.is_finite()
             || direction_length_squared <= f64::EPSILON
         {
-            return Err("assistant axis is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("axis"));
         }
         Ok((origin_mm, direction))
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         match self {
             Self::ConstructionAxis { axis } => (*axis).validate(),
             Self::Edge {
@@ -427,7 +436,7 @@ impl AssistantAxisSpec {
             {
                 Ok(())
             }
-            Self::Edge { .. } => Err("assistant edge axis reference is invalid".to_owned()),
+            Self::Edge { .. } => Err(AssistantRequestInvalid::invalid("edge axis reference")),
             direct => direct.origin_and_direction().map(|_| ()),
         }
     }
@@ -436,7 +445,7 @@ impl AssistantAxisSpec {
         &self,
         operation_index: usize,
         operations: &[AssistantCadEditOperation],
-    ) -> Result<(), String> {
+    ) -> Result<(), AssistantRequestInvalid> {
         let Self::ConstructionAxis {
             axis: AssistantCadFeatureReference::ProgramOutput(reference),
         } = self
@@ -454,13 +463,15 @@ impl AssistantAxisSpec {
         ) {
             Ok(())
         } else {
-            Err("assistant construction-axis reference is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid(
+                "construction-axis reference",
+            ))
         }
     }
 }
 
 impl AssistantHelixParameters {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         self.axis.validate()?;
         let axial_length = self.pitch_mm * self.turns;
         if !self.radius_mm.is_finite()
@@ -473,17 +484,19 @@ impl AssistantHelixParameters {
             || !axial_length.is_finite()
             || axial_length > MAX_COORDINATE_MM
         {
-            return Err("assistant helix parameters are invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("helix parameter set"));
         }
         let segment_count =
             (std::f64::consts::TAU * self.turns / std::f64::consts::FRAC_PI_2).ceil() as usize;
         if !(1..=MAX_ASSISTANT_HELIX_SEGMENTS).contains(&segment_count) {
-            return Err("assistant helix segment count is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("helix segment count"));
         }
         Ok(())
     }
 
-    pub fn spatial_path_segments(&self) -> Result<Vec<SpatialPathSegment>, String> {
+    pub fn spatial_path_segments(
+        &self,
+    ) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
         let axis = self.axis.origin_and_direction()?;
         self.spatial_path_segments_for_axis(axis)
     }
@@ -491,15 +504,15 @@ impl AssistantHelixParameters {
     pub fn spatial_path_segments_for_axis(
         &self,
         (origin_mm, direction): ([f64; 3], [f64; 3]),
-    ) -> Result<Vec<SpatialPathSegment>, String> {
+    ) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
         self.validate()?;
         AssistantAxisSpec::OriginDirection {
             origin_mm,
             direction,
         }
         .origin_and_direction()?;
-        let axis = assistant_unit(direction)
-            .ok_or_else(|| "assistant helix axis is invalid".to_owned())?;
+        let axis =
+            assistant_unit(direction).ok_or(AssistantRequestInvalid::invalid("helix axis"))?;
         let reference = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
             .into_iter()
             .min_by(|left, right| {
@@ -512,7 +525,7 @@ impl AssistantHelixParameters {
             reference,
             assistant_scale(axis, assistant_dot(reference, axis)),
         ))
-        .ok_or_else(|| "assistant helix reference frame is invalid".to_owned())?;
+        .ok_or(AssistantRequestInvalid::invalid("helix reference frame"))?;
         let frame_v = assistant_cross(axis, frame_u);
         let start_angle = self.start_angle_degrees.to_radians();
         let total_angle = std::f64::consts::TAU * self.turns;
@@ -570,18 +583,18 @@ impl AssistantHelixParameters {
 }
 
 impl AssistantThreadParameters {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         self.helix.validate()?;
         if !self.profile_radius_mm.is_finite()
             || self.profile_radius_mm < EXACT_MIN_LENGTH_MM
             || self.profile_radius_mm * 2.0 >= self.helix.pitch_mm
         {
-            return Err("assistant thread profile is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("thread profile"));
         }
         Ok(())
     }
 
-    pub fn profile_segments(&self) -> Result<Vec<ProfileSegment>, String> {
+    pub fn profile_segments(&self) -> Result<Vec<ProfileSegment>, AssistantRequestInvalid> {
         self.validate()?;
         let radius = self.profile_radius_mm;
         let line_loop = |points: &[[f64; 2]]| {
@@ -731,12 +744,15 @@ impl AssistantPanelPocket {
             .then_some(axis)
     }
 
-    fn validate(&self, dimensions_mm: [f64; 3]) -> Result<(), String> {
+    fn validate(&self, dimensions_mm: [f64; 3]) -> Result<(), AssistantRequestInvalid> {
         let invalid = || {
-            Err(format!(
-                "panel pocket {:?} is invalid: it must be a box that starts on the face opposite to inward_unit_local, stays within the panel thickness and overlaps the face",
-                self.id
-            ))
+            Err(AssistantRequestInvalid::new(
+                "panel pocket",
+                AssistantRequestProblem::Violates(
+                    "it must be a box that starts on the face opposite to inward_unit_local, stays within the panel thickness and overlaps the face",
+                ),
+            )
+            .item(&self.id))
         };
         let Some(axis) = self.axis() else {
             return invalid();
@@ -804,7 +820,7 @@ impl AssistantPin {
 }
 
 impl AssistantCadPartFeature {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         match self {
             Self::Extrusion { distance_mm }
                 if distance_mm.is_finite()
@@ -813,7 +829,7 @@ impl AssistantCadPartFeature {
             {
                 Ok(())
             }
-            Self::Extrusion { .. } => Err("assistant CAD part feature is invalid".to_owned()),
+            Self::Extrusion { .. } => Err(AssistantRequestInvalid::invalid("CAD part feature")),
             Self::Revolve {
                 axis,
                 angle_degrees,
@@ -824,7 +840,7 @@ impl AssistantCadPartFeature {
             {
                 Ok(())
             }
-            Self::Revolve { .. } => Err("assistant CAD part feature is invalid".to_owned()),
+            Self::Revolve { .. } => Err(AssistantRequestInvalid::invalid("CAD part feature")),
         }
     }
 }
@@ -854,12 +870,16 @@ impl AssistantCadProgramFeatureReference {
         operation_index: usize,
         operations: &[AssistantCadEditOperation],
         expected_output: AssistantCadProgramFeatureOutput,
-    ) -> Result<(), String> {
+    ) -> Result<(), AssistantRequestInvalid> {
         if self.output != expected_output || self.operation_index as usize >= operation_index {
-            return Err("assistant CAD program feature reference is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid(
+                "CAD program feature reference",
+            ));
         }
         let Some(producer) = operations.get(self.operation_index as usize) else {
-            return Err("assistant CAD program feature reference is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid(
+                "CAD program feature reference",
+            ));
         };
         let available = match expected_output {
             AssistantCadProgramFeatureOutput::Definition => {
@@ -922,7 +942,9 @@ impl AssistantCadProgramFeatureReference {
         if available {
             Ok(())
         } else {
-            Err("assistant CAD program feature reference is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid(
+                "CAD program feature reference",
+            ))
         }
     }
 }
@@ -948,12 +970,14 @@ pub struct AssistantCadNamedProgramOutputReference {
 }
 
 impl AssistantCadNamedProgramOutputReference {
-    fn validate_name(&self) -> Result<(), String> {
+    fn validate_name(&self) -> Result<(), AssistantRequestInvalid> {
         if self.name.trim().is_empty()
             || self.name.len() > MAX_ASSISTANT_NAME_BYTES
             || self.name.chars().any(char::is_control)
         {
-            Err("assistant CAD named program output reference is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid(
+                "CAD named program output reference",
+            ))
         } else {
             Ok(())
         }
@@ -985,11 +1009,11 @@ impl AssistantCadFeatureReference {
         }
     }
 
-    fn validate(self) -> Result<(), String> {
+    fn validate(self) -> Result<(), AssistantRequestInvalid> {
         match self {
             Self::Existing(id) if id != 0 => Ok(()),
             Self::ProgramOutput(_) => Ok(()),
-            Self::Existing(_) => Err("assistant CAD feature reference is invalid".to_owned()),
+            Self::Existing(_) => Err(AssistantRequestInvalid::invalid("CAD feature reference")),
         }
     }
 }
@@ -1275,7 +1299,7 @@ impl AssistantCadBodyFeature {
         })
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         match self {
             Self::Boolean {
                 target_feature_id,
@@ -1287,7 +1311,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::Boolean { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::Boolean { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::Pocket {
                 target_feature_id,
                 profile_feature_id,
@@ -1301,7 +1325,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::Pocket { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::Pocket { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::PlanarOffset {
                 profile_feature_id,
                 distance_mm,
@@ -1312,7 +1336,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::PlanarOffset { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::PlanarOffset { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::Sweep {
                 profile_feature_id,
                 path_feature_id,
@@ -1322,7 +1346,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::Sweep { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::Sweep { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::WeldmentMember {
                 profile_feature_id,
                 path_feature_id,
@@ -1336,7 +1360,7 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::WeldmentMember { .. } => {
-                Err("assistant CAD weldment member is invalid".to_owned())
+                Err(AssistantRequestInvalid::invalid("CAD weldment member"))
             }
             Self::WeldmentJoint {
                 first_member_id,
@@ -1348,7 +1372,9 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::WeldmentJoint { .. } => Err("assistant CAD weldment joint is invalid".to_owned()),
+            Self::WeldmentJoint { .. } => {
+                Err(AssistantRequestInvalid::invalid("CAD weldment joint"))
+            }
             Self::Loft {
                 sections,
                 guide_feature_id,
@@ -1374,7 +1400,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::Loft { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::Loft { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::SurfaceBody {
                 source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
             } if profile_feature_id.validate().is_ok() => Ok(()),
@@ -1406,7 +1432,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::SurfaceBody { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceBody { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::SurfaceTrim {
                 target_feature_id,
                 cutter_feature_id,
@@ -1416,7 +1442,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::SurfaceTrim { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceTrim { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::SurfaceExtend {
                 target_feature_id,
                 distance_mm,
@@ -1426,7 +1452,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::SurfaceExtend { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceExtend { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::SurfaceKnit {
                 surface_feature_ids,
                 tolerance_mm,
@@ -1442,7 +1468,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::SurfaceKnit { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceKnit { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::SurfaceThicken {
                 target_feature_id,
                 thickness_mm,
@@ -1453,12 +1479,14 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::SurfaceThicken { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceThicken { .. } => {
+                Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            }
             Self::SheetMetal { .. } => self
                 .sheet_metal_spec()
                 .filter(|spec| spec.validate().is_ok())
                 .map(|_| ())
-                .ok_or_else(|| "assistant CAD sheet-metal feature is invalid".to_owned()),
+                .ok_or(AssistantRequestInvalid::invalid("CAD sheet-metal feature")),
             Self::TopologyShell {
                 target_feature_id,
                 removed_face_reference_ids,
@@ -1480,7 +1508,7 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::TopologyShell { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::TopologyShell { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::TopologyFillet {
                 target_feature_id,
                 edge_reference_ids,
@@ -1514,7 +1542,9 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::TopologyFillet { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::TopologyFillet { .. } => {
+                Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            }
             Self::TopologyChamfer {
                 target_feature_id,
                 edge_reference_ids,
@@ -1556,7 +1586,9 @@ impl AssistantCadBodyFeature {
             {
                 Ok(())
             }
-            Self::TopologyChamfer { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::TopologyChamfer { .. } => {
+                Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            }
         }
     }
 
@@ -1568,7 +1600,7 @@ impl AssistantCadBodyFeature {
         &self,
         operation_index: usize,
         operations: &[AssistantCadEditOperation],
-    ) -> Result<(), String> {
+    ) -> Result<(), AssistantRequestInvalid> {
         let validate_reference = |reference: AssistantCadFeatureReference| match reference {
             AssistantCadFeatureReference::Existing(_) => Ok(()),
             AssistantCadFeatureReference::ProgramOutput(reference) => reference.validate_for(
@@ -1875,7 +1907,7 @@ pub struct AssistantFeaReviewRequest {
 }
 
 impl AssistantFeaReviewRequest {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         let unique_constraints = self
             .constrained_face_ordinals
             .iter()
@@ -1910,7 +1942,7 @@ impl AssistantFeaReviewRequest {
             || self.coarse_deflection_mm <= self.fine_deflection_mm
             || self.coarse_deflection_mm > MAX_COORDINATE_MM
         {
-            return Err("assistant FEA review request is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("FEA review request"));
         }
         Ok(())
     }
@@ -2206,7 +2238,7 @@ fn assistant_cad_vectors_are_perpendicular(left: [f64; 3], right: [f64; 3]) -> b
 }
 
 impl AssistantInstancePath {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         if self.root_occurrence_id == 0
             || self.steps.len() > MAX_ASSISTANT_INSTANCE_PATH_STEPS
             || self.steps.iter().any(|step| match step {
@@ -2220,26 +2252,26 @@ impl AssistantInstancePath {
                 } => *owner_definition_id == 0 || *local_id == 0,
             })
         {
-            return Err("assistant instance path is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("instance path"));
         }
         Ok(())
     }
 }
 
 impl AssistantAssemblyJointAxis {
-    fn validate(self) -> Result<(), String> {
+    fn validate(self) -> Result<(), AssistantRequestInvalid> {
         if !assistant_cad_vector_is_bounded(self.direction_in_parent)
             || !assistant_cad_vector_is_nonzero(self.direction_in_parent)
             || !assistant_cad_vector_is_bounded(self.pivot_in_parent_mm)
         {
-            return Err("assistant assembly joint axis is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("assembly joint axis"));
         }
         Ok(())
     }
 }
 
 impl AssistantAssemblyJointLimits {
-    fn validate(self, position: f64) -> Result<(), String> {
+    fn validate(self, position: f64) -> Result<(), AssistantRequestInvalid> {
         if !self.min.is_finite()
             || !self.max.is_finite()
             || self.min > self.max
@@ -2248,20 +2280,22 @@ impl AssistantAssemblyJointLimits {
             || position < self.min
             || position > self.max
         {
-            return Err("assistant assembly joint limits are invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid(
+                "assembly joint limit range",
+            ));
         }
         Ok(())
     }
 }
 
 impl AssistantAssemblyJointKind {
-    fn validate(self) -> Result<(), String> {
+    fn validate(self) -> Result<(), AssistantRequestInvalid> {
         let validate_motion = |axis: AssistantAssemblyJointAxis,
                                limits: Option<AssistantAssemblyJointLimits>,
                                position: f64| {
             axis.validate()?;
             if !position.is_finite() || position.abs() > MAX_COORDINATE_MM {
-                return Err("assistant assembly joint position is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid("assembly joint position"));
             }
             if let Some(limits) = limits {
                 limits.validate(position)?;
@@ -2291,7 +2325,7 @@ impl AssistantAssemblyJointKind {
                     || lead_mm_per_revolution <= 0.0
                     || lead_mm_per_revolution > MAX_COORDINATE_MM
                 {
-                    return Err("assistant assembly helical joint is invalid".to_owned());
+                    return Err(AssistantRequestInvalid::invalid("assembly helical joint"));
                 }
                 Ok(())
             }
@@ -2300,7 +2334,7 @@ impl AssistantAssemblyJointKind {
 }
 
 impl AssistantCadEntitySelector {
-    fn bounded_target_count(&self) -> Result<usize, String> {
+    fn bounded_target_count(&self) -> Result<usize, AssistantRequestInvalid> {
         match self {
             Self::CurrentSelection {} => Ok(MAX_ASSISTANT_CAD_SELECTOR_TARGETS),
             Self::Occurrences { occurrence_ids } => {
@@ -2310,24 +2344,29 @@ impl AssistantCadEntitySelector {
                     || unique.len() != occurrence_ids.len()
                     || occurrence_ids.contains(&0)
                 {
-                    return Err("assistant CAD selector is invalid".to_owned());
+                    return Err(AssistantRequestInvalid::invalid("CAD selector"));
                 }
                 Ok(occurrence_ids.len())
             }
         }
     }
 
-    pub fn validate_resolved_target_count(&self, target_count: usize) -> Result<(), String> {
+    pub fn validate_resolved_target_count(
+        &self,
+        target_count: usize,
+    ) -> Result<(), AssistantRequestInvalid> {
         self.bounded_target_count()?;
         if target_count == 0 || target_count > MAX_ASSISTANT_CAD_SELECTOR_TARGETS {
-            return Err("assistant CAD resolved selector target count is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid(
+                "CAD resolved selector target count",
+            ));
         }
         Ok(())
     }
 }
 
 impl AssistantCadRotation {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         let axis_length_squared = self.axis.iter().map(|value| value * value).sum::<f64>();
         let normalized_angle = self.angle_degrees.rem_euclid(360.0);
         let shortest_angle = normalized_angle.min(360.0 - normalized_angle);
@@ -2339,14 +2378,14 @@ impl AssistantCadRotation {
             || self.angle_degrees.abs() > MAX_COORDINATE_MM
             || shortest_angle < 0.01
         {
-            return Err("assistant CAD rotation is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("CAD rotation"));
         }
         Ok(())
     }
 }
 
 impl AssistantWorkplaneSpec {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         match self {
             Self::Frame {
                 origin_mm,
@@ -2354,7 +2393,9 @@ impl AssistantWorkplaneSpec {
                 y_axis,
             } => ketchup_geometry::sketch::WorkplaneFrame::from_axes(*origin_mm, *x_axis, *y_axis)
                 .map(|_| ())
-                .map_err(|error| format!("assistant workplane frame is invalid: {error}")),
+                .map_err(|error| {
+                    AssistantRequestInvalid::invalid("workplane frame").caused_by(error)
+                }),
             Self::Principal { .. } => Ok(()),
             Self::Offset {
                 base_feature_id,
@@ -2365,9 +2406,9 @@ impl AssistantWorkplaneSpec {
             {
                 Ok(())
             }
-            Self::Offset { .. } => Err("assistant workplane is invalid".to_owned()),
+            Self::Offset { .. } => Err(AssistantRequestInvalid::invalid("workplane")),
             Self::ConstructionPlane { plane } => plane.validate().map_err(|error| {
-                format!("assistant construction-plane workplane is invalid: {error}")
+                AssistantRequestInvalid::invalid("construction-plane workplane").caused_by(error)
             }),
         }
     }
@@ -2491,7 +2532,7 @@ impl AssistantSketchEntity {
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         let point = |point: &[f64; 2]| {
             point
                 .iter()
@@ -2613,7 +2654,7 @@ impl AssistantSketchEntity {
             } => point(start_mm) && point(control_1_mm) && point(control_2_mm) && point(end_mm),
         };
         if self.id() == 0 || !valid {
-            return Err("assistant sketch entity is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("sketch entity"));
         }
         Ok(())
     }
@@ -2641,7 +2682,7 @@ impl AssistantSketchConstraint {
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         let valid_point_ref = |point: &AssistantSketchPointRef| point.entity_id != 0;
         let valid_point = |point: &[f64; 2]| {
             point
@@ -2734,7 +2775,7 @@ impl AssistantSketchConstraint {
             } => valid_point_ref(point) && *curve_entity_id != 0,
         };
         if self.id() == 0 || !valid {
-            return Err("assistant sketch constraint is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid("sketch constraint"));
         }
         Ok(())
     }
@@ -2742,7 +2783,7 @@ impl AssistantSketchConstraint {
     fn validate_references(
         &self,
         entities: &BTreeMap<u64, &AssistantSketchEntity>,
-    ) -> Result<(), String> {
+    ) -> Result<(), AssistantRequestInvalid> {
         let entity = |id: u64| entities.get(&id).copied();
         let point = |reference: &AssistantSketchPointRef| {
             entity(reference.entity_id).is_some_and(|entity| entity.supports_point(reference.point))
@@ -2840,7 +2881,9 @@ impl AssistantSketchConstraint {
         if valid {
             Ok(())
         } else {
-            Err("assistant sketch constraint reference is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid(
+                "sketch constraint reference",
+            ))
         }
     }
 }
@@ -2850,7 +2893,7 @@ fn validate_assistant_sketch_payload(
     workplane: &AssistantWorkplaneSpec,
     entities: &[AssistantSketchEntity],
     constraints: &[AssistantSketchConstraint],
-) -> Result<(), String> {
+) -> Result<(), AssistantRequestInvalid> {
     let expanded_entity_count = entities
         .iter()
         .map(|entity| entity.ids().len())
@@ -2862,7 +2905,7 @@ fn validate_assistant_sketch_payload(
         || expanded_entity_count > ketchup_geometry::sketch::MAX_SKETCH_ENTITIES
         || constraints.len() > ketchup_geometry::sketch::MAX_SKETCH_CONSTRAINTS
     {
-        return Err("assistant sketch creation is invalid".to_owned());
+        return Err(AssistantRequestInvalid::invalid("sketch creation"));
     }
     workplane.validate()?;
     let mut entities_by_id = BTreeMap::new();
@@ -2870,7 +2913,11 @@ fn validate_assistant_sketch_payload(
         entity.validate()?;
         for id in entity.ids() {
             if entities_by_id.insert(id, entity).is_some() {
-                return Err("assistant sketch entity IDs are invalid".to_owned());
+                return Err(AssistantRequestInvalid::new(
+                    "sketch entity ID",
+                    AssistantRequestProblem::Duplicate,
+                )
+                .item(id));
             }
         }
     }
@@ -2879,16 +2926,22 @@ fn validate_assistant_sketch_payload(
         constraint.validate()?;
         constraint.validate_references(&entities_by_id)?;
         if !constraint_ids.insert(constraint.id()) {
-            return Err("assistant sketch constraint IDs are invalid".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "sketch constraint ID",
+                AssistantRequestProblem::Duplicate,
+            )
+            .item(constraint.id()));
         }
     }
     Ok(())
 }
 
 impl AssistantCadEditProgram {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         if self.operations.is_empty() || self.operations.len() > MAX_ASSISTANT_CAD_EDIT_OPERATIONS {
-            return Err("assistant CAD edit program operation count is invalid".to_owned());
+            return Err(AssistantRequestInvalid::invalid(
+                "CAD edit program operation count",
+            ));
         }
         let mut generated_occurrences = 0usize;
         let mut named_outputs = BTreeMap::<String, AssistantCadProgramFeatureOutput>::new();
@@ -2948,7 +3001,7 @@ impl AssistantCadEditProgram {
                     constraints,
                 } => {
                     if *definition_id == 0 {
-                        return Err("assistant sketch creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("sketch creation"));
                     }
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
                     if matches!(
@@ -2957,7 +3010,9 @@ impl AssistantCadEditProgram {
                             plane: AssistantCadFeatureReference::ProgramOutput(_)
                         }
                     ) {
-                        return Err("assistant sketch workplane reference is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "sketch workplane reference",
+                        ));
                     }
                     0
                 }
@@ -2974,10 +3029,9 @@ impl AssistantCadEditProgram {
                         AssistantCadProgramFeatureOutput::Definition,
                     )?;
                     if matches!(workplane, AssistantWorkplaneSpec::Offset { .. }) {
-                        return Err(
-                            "assistant CAD program Sketch workplane reference is invalid"
-                                .to_owned(),
-                        );
+                        return Err(AssistantRequestInvalid::invalid(
+                            "CAD program Sketch workplane reference",
+                        ));
                     }
                     if let AssistantWorkplaneSpec::ConstructionPlane {
                         plane: AssistantCadFeatureReference::ProgramOutput(plane),
@@ -2992,10 +3046,9 @@ impl AssistantCadEditProgram {
                             self.operations.get(plane.operation_index as usize),
                             Some(AssistantCadEditOperation::CreateConstructionPlane { .. })
                         ) {
-                            return Err(
-                                "assistant construction-plane workplane reference is invalid"
-                                    .to_owned(),
-                            );
+                            return Err(AssistantRequestInvalid::invalid(
+                                "construction-plane workplane reference",
+                            ));
                         }
                     }
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
@@ -3012,14 +3065,14 @@ impl AssistantCadEditProgram {
                 } => {
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
                     if matches!(workplane, AssistantWorkplaneSpec::ConstructionPlane { .. }) {
-                        return Err("assistant part workplane reference is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("part workplane reference"));
                     }
                     feature.validate()?;
                     if let AssistantCadPartFeature::Revolve { axis, .. } = feature {
                         axis.validate_reference_for_operation(operation_index, &self.operations)?;
                     }
                     if !assistant_cad_vector_is_bounded(*translation_mm) {
-                        return Err("assistant CAD part placement is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD part placement"));
                     }
                     if let Some(rotation) = rotation {
                         rotation.validate()?;
@@ -3034,13 +3087,20 @@ impl AssistantCadEditProgram {
                     translation_mm,
                     rotation,
                 } => {
-                    if pockets.len() > 128 {
-                        return Err("assistant panel has more than 128 pockets".to_owned());
+                    if pockets.len() > MAX_ASSISTANT_PANEL_POCKETS {
+                        return Err(AssistantRequestInvalid::new(
+                            "panel pocket count",
+                            AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PANEL_POCKETS),
+                        ));
                     }
                     let mut pocket_ids = BTreeSet::new();
                     for pocket in pockets {
                         if !pocket_ids.insert(pocket.id.as_str()) {
-                            return Err(format!("panel pocket id {:?} is used twice", pocket.id));
+                            return Err(AssistantRequestInvalid::new(
+                                "panel pocket id",
+                                AssistantRequestProblem::Duplicate,
+                            )
+                            .item(&pocket.id));
                         }
                         pocket.validate(*dimensions_mm)?;
                     }
@@ -3053,7 +3113,7 @@ impl AssistantCadEditProgram {
                         || holes.len() > 128
                         || !assistant_cad_vector_is_bounded(*translation_mm)
                     {
-                        return Err("assistant panel creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("panel creation"));
                     }
                     if let Some(rotation) = rotation {
                         rotation.validate()?;
@@ -3066,7 +3126,7 @@ impl AssistantCadEditProgram {
                             .iter()
                             .position(|value| (value.abs() - 1.0).abs() <= ROUNDING)
                         else {
-                            return Err("assistant panel hole direction is invalid".to_owned());
+                            return Err(AssistantRequestInvalid::invalid("panel hole direction"));
                         };
                         if hole.id.trim().is_empty()
                             || hole.id.len() > MAX_ASSISTANT_NAME_BYTES
@@ -3096,7 +3156,7 @@ impl AssistantCadEditProgram {
                                             > dimensions_mm[index] - radius)
                             })
                         {
-                            return Err("assistant panel hole is invalid".to_owned());
+                            return Err(AssistantRequestInvalid::invalid("panel hole"));
                         }
                     }
                     1
@@ -3106,7 +3166,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
-                        return Err("assistant spatial path creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("spatial path creation"));
                     }
                     // Structural pre-check; the document validates the path again with its own
                     // tolerance when the lowered commands apply.
@@ -3119,7 +3179,9 @@ impl AssistantCadEditProgram {
                         || name.chars().any(char::is_control)
                         || !assistant_cad_vector_is_bounded(*position_mm)
                     {
-                        return Err("assistant construction point creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "construction point creation",
+                        ));
                     }
                     1
                 }
@@ -3135,7 +3197,9 @@ impl AssistantCadEditProgram {
                         || !assistant_cad_vector_is_bounded(*direction)
                         || !assistant_cad_vector_is_nonzero(*direction)
                     {
-                        return Err("assistant construction axis creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "construction axis creation",
+                        ));
                     }
                     1
                 }
@@ -3155,7 +3219,9 @@ impl AssistantCadEditProgram {
                         || !assistant_cad_vector_is_nonzero(*x_direction)
                         || !assistant_cad_vectors_are_perpendicular(*normal, *x_direction)
                     {
-                        return Err("assistant construction plane creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "construction plane creation",
+                        ));
                     }
                     1
                 }
@@ -3165,7 +3231,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
-                        return Err("assistant Helix creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("Helix creation"));
                     }
                     parameters.validate()?;
                     parameters
@@ -3178,7 +3244,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
-                        return Err("assistant Thread creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("Thread creation"));
                     }
                     parameters.validate()?;
                     parameters
@@ -3199,7 +3265,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
-                        return Err("assistant CAD Fillet is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD Fillet"));
                     }
                     AssistantCadBodyFeature::TopologyFillet {
                         target_feature_id: *target_feature_id,
@@ -3222,7 +3288,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
-                        return Err("assistant CAD Chamfer is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD Chamfer"));
                     }
                     AssistantCadBodyFeature::TopologyChamfer {
                         target_feature_id: *target_feature_id,
@@ -3244,7 +3310,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
-                        return Err("assistant CAD feature append is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD feature append"));
                     }
                     feature.validate()?;
                     feature.validate_program_references(operation_index, &self.operations)?;
@@ -3265,7 +3331,7 @@ impl AssistantCadEditProgram {
                         || *depth_mm > MAX_COORDINATE_MM
                         || target_feature == profile_feature
                     {
-                        return Err("assistant CAD program Pocket is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD program Pocket"));
                     }
                     definition.validate_for(
                         operation_index,
@@ -3290,7 +3356,9 @@ impl AssistantCadEditProgram {
                         || name.chars().any(char::is_control)
                         || named_outputs.contains_key(name)
                     {
-                        return Err("assistant CAD program output binding is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "CAD program output binding",
+                        ));
                     }
                     source.validate_for(operation_index, &self.operations, source.output)?;
                     named_outputs.insert(name.clone(), source.output);
@@ -3307,7 +3375,7 @@ impl AssistantCadEditProgram {
                         || *value_mm <= 0.0
                         || *value_mm > MAX_COORDINATE_MM
                     {
-                        return Err("assistant CAD dimension edit is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD dimension edit"));
                     }
                     0
                 }
@@ -3325,13 +3393,17 @@ impl AssistantCadEditProgram {
                         || value.abs() > MAX_COORDINATE_MM
                         || (*value_type == AssistantCadParameterValueType::Length && *value <= 0.0)
                     {
-                        return Err("assistant CAD feature parameter edit is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "CAD feature parameter edit",
+                        ));
                     }
                     0
                 }
                 AssistantCadEditOperation::MakeOccurrenceUnique { occurrence_id } => {
                     if *occurrence_id == 0 {
-                        return Err("assistant occurrence make-unique target is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "occurrence make-unique target",
+                        ));
                     }
                     0
                 }
@@ -3344,7 +3416,9 @@ impl AssistantCadEditProgram {
                     child_instance_path.validate()?;
                     kind.validate()?;
                     if parent_instance_path == child_instance_path {
-                        return Err("assistant assembly joint endpoints are invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "assembly joint endpoint pair",
+                        ));
                     }
                     0
                 }
@@ -3395,7 +3469,7 @@ impl AssistantCadEditProgram {
                         || first_holes.len() != physical_hole_pairs.len()
                         || second_holes.len() != physical_hole_pairs.len()
                     {
-                        return Err("assistant pin joint creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("pin joint creation"));
                     }
                     0
                 }
@@ -3435,13 +3509,17 @@ impl AssistantCadEditProgram {
                         || !spacing_mm.is_finite()
                         || *spacing_mm < 0.0
                     {
-                        return Err("assistant physical pin joint creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "physical pin joint creation",
+                        ));
                     }
                     0
                 }
                 AssistantCadEditOperation::DeletePhysicalPinJoint { joint_id } => {
                     if *joint_id == 0 {
-                        return Err("assistant physical pin joint deletion is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "physical pin joint deletion",
+                        ));
                     }
                     0
                 }
@@ -3451,7 +3529,7 @@ impl AssistantCadEditProgram {
                     ..
                 } => {
                     if *joint_id == 0 || !assistant_cad_vector_is_bounded(*offset_first_local_mm) {
-                        return Err("assistant physical pin pair move is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("physical pin pair move"));
                     }
                     0
                 }
@@ -3519,9 +3597,9 @@ impl AssistantCadEditProgram {
                             )
                         })
                     {
-                        return Err(
-                            "assistant named-output pin joint creation is invalid".to_owned()
-                        );
+                        return Err(AssistantRequestInvalid::invalid(
+                            "named-output pin joint creation",
+                        ));
                     }
                     0
                 }
@@ -3531,7 +3609,7 @@ impl AssistantCadEditProgram {
                         || position.abs() > MAX_COORDINATE_MM
                         || self.operations.len() != 1
                     {
-                        return Err("assistant assembly joint edit is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("assembly joint edit"));
                     }
                     0
                 }
@@ -3547,7 +3625,7 @@ impl AssistantCadEditProgram {
                         || instance_paths.len() > MAX_ASSISTANT_CAD_SELECTOR_TARGETS
                         || unique.len() != instance_paths.len()
                     {
-                        return Err("assistant drawing creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("drawing creation"));
                     }
                     for path in instance_paths {
                         path.validate()?;
@@ -3616,7 +3694,7 @@ impl AssistantCadEditProgram {
                             .any(|value| !value.is_finite() || *value <= 0.0)
                         || signed.iter().any(|value| !value.is_finite())
                     {
-                        return Err("assistant CAM plan is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAM plan"));
                     }
                     0
                 }
@@ -3640,7 +3718,9 @@ impl AssistantCadEditProgram {
                                 || !category_ids.insert(category.id)
                         })
                     {
-                        return Err("assistant CAD classification dimension is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "CAD classification dimension",
+                        ));
                     }
                     0
                 }
@@ -3650,7 +3730,9 @@ impl AssistantCadEditProgram {
                     ..
                 } => {
                     if *dimension_id == 0 || category_id == &Some(0) {
-                        return Err("assistant CAD classification assignment is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid(
+                            "CAD classification assignment",
+                        ));
                     }
                     0
                 }
@@ -3666,7 +3748,7 @@ impl AssistantCadEditProgram {
                         || !value.is_finite()
                         || value.abs() > MAX_COORDINATE_MM
                     {
-                        return Err("assistant CAD evaluator input is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD evaluator input"));
                     }
                     0
                 }
@@ -3676,19 +3758,19 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                     {
-                        return Err("assistant CAD tag creation is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD tag creation"));
                     }
                     0
                 }
                 AssistantCadEditOperation::SetOccurrenceTag { tag_id, .. } => {
                     if tag_id == &Some(0) {
-                        return Err("assistant CAD tag assignment is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD tag assignment"));
                     }
                     0
                 }
                 AssistantCadEditOperation::SetTagVisibility { tag_id, .. } => {
                     if *tag_id == 0 {
-                        return Err("assistant CAD tag visibility is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD tag visibility"));
                     }
                     0
                 }
@@ -3703,7 +3785,7 @@ impl AssistantCadEditProgram {
                     if !assistant_cad_vector_is_bounded(*translation_mm)
                         || (!assistant_cad_vector_is_nonzero(*translation_mm) && rotation.is_none())
                     {
-                        return Err("assistant CAD transform is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD transform"));
                     }
                     if let Some(rotation) = rotation {
                         rotation.validate()?;
@@ -3714,7 +3796,7 @@ impl AssistantCadEditProgram {
                     if !assistant_cad_vector_is_bounded(*translation_mm)
                         || !assistant_cad_vector_is_nonzero(*translation_mm)
                     {
-                        return Err("assistant CAD copy is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD copy"));
                     }
                     1
                 }
@@ -3729,7 +3811,7 @@ impl AssistantCadEditProgram {
                                 > MAX_COORDINATE_MM
                         })
                     {
-                        return Err("assistant CAD linear pattern is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD linear pattern"));
                     }
                     instances.saturating_sub(1) as usize
                 }
@@ -3752,7 +3834,7 @@ impl AssistantCadEditProgram {
                         || angle_step_degrees.abs() > MAX_COORDINATE_MM
                         || duplicate_angle
                     {
-                        return Err("assistant CAD circular pattern is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD circular pattern"));
                     }
                     axis.validate_reference_for_operation(operation_index, &self.operations)?;
                     instances.saturating_sub(1) as usize
@@ -3769,22 +3851,23 @@ impl AssistantCadEditProgram {
                         || !normal_length_squared.is_finite()
                         || normal_length_squared <= f64::EPSILON
                     {
-                        return Err("assistant CAD mirror is invalid".to_owned());
+                        return Err(AssistantRequestInvalid::invalid("CAD mirror"));
                     }
                     1
                 }
             };
             generated_occurrences = generated_occurrences
-                .checked_add(
-                    bounded_targets
-                        .checked_mul(generated_per_target)
-                        .ok_or_else(|| {
-                            "assistant CAD generated occurrence count is invalid".to_owned()
-                        })?,
-                )
-                .ok_or_else(|| "assistant CAD generated occurrence count is invalid".to_owned())?;
+                .checked_add(bounded_targets.checked_mul(generated_per_target).ok_or(
+                    AssistantRequestInvalid::invalid("CAD generated occurrence count"),
+                )?)
+                .ok_or(AssistantRequestInvalid::invalid(
+                    "CAD generated occurrence count",
+                ))?;
             if generated_occurrences > MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES {
-                return Err("assistant CAD edit program creates too many occurrences".to_owned());
+                return Err(AssistantRequestInvalid::new(
+                    "CAD edit program generated occurrence count",
+                    AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES),
+                ));
             }
         }
         Ok(())
@@ -3817,7 +3900,7 @@ fn boxes_overlap(left: &AssistantSubtractionIntent, right: &AssistantSubtraction
 }
 
 impl AssistantModelIntent {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         if self.boxes.is_empty()
             && self.translations.is_empty()
             && self.rotations.is_empty()
@@ -3825,28 +3908,46 @@ impl AssistantModelIntent {
             && self.parameter_edits.is_empty()
             && self.linear_arrays.is_empty()
         {
-            return Err(
-                "assistant proposal must contain geometry, translations, rotations, profile translations, parameter edits, or linear arrays"
-                    .to_owned(),
-            );
+            return Err(AssistantRequestInvalid::new(
+                "proposal",
+                AssistantRequestProblem::Empty,
+            ));
         }
         if self.boxes.len() > MAX_ASSISTANT_BOXES {
-            return Err("assistant proposal contains more than 64 boxes".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "proposal box count",
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_BOXES),
+            ));
         }
         if self.translations.len() > MAX_ASSISTANT_TRANSLATIONS {
-            return Err("assistant proposal contains more than 100 translations".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "proposal translation count",
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_TRANSLATIONS),
+            ));
         }
         if self.rotations.len() > MAX_ASSISTANT_ROTATIONS {
-            return Err("assistant proposal contains more than 100 rotations".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "proposal rotation count",
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_ROTATIONS),
+            ));
         }
         if self.profile_translations.len() > MAX_ASSISTANT_PROFILE_TRANSLATIONS {
-            return Err("assistant proposal contains more than one profile translation".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "proposal profile translation count",
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PROFILE_TRANSLATIONS),
+            ));
         }
-        if self.parameter_edits.len() > 1 {
-            return Err("assistant proposal contains more than one parameter edit".to_owned());
+        if self.parameter_edits.len() > MAX_ASSISTANT_PARAMETER_EDITS {
+            return Err(AssistantRequestInvalid::new(
+                "proposal parameter edit count",
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PARAMETER_EDITS),
+            ));
         }
         if self.linear_arrays.len() > MAX_ASSISTANT_ARRAYS {
-            return Err("assistant proposal contains too many linear arrays".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "proposal linear array count",
+                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_ARRAYS),
+            ));
         }
         if self.replace_scene
             && (!self.translations.is_empty()
@@ -3855,7 +3956,10 @@ impl AssistantModelIntent {
                 || !self.parameter_edits.is_empty()
                 || !self.linear_arrays.is_empty())
         {
-            return Err("assistant edits of existing geometry cannot replace the scene".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "edit of existing geometry",
+                AssistantRequestProblem::ConflictsWith("scene replacement"),
+            ));
         }
         if !self.profile_translations.is_empty()
             && (!self.boxes.is_empty()
@@ -3864,7 +3968,10 @@ impl AssistantModelIntent {
                 || !self.parameter_edits.is_empty()
                 || !self.linear_arrays.is_empty())
         {
-            return Err("assistant profile translation cannot mix geometry mutations".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "profile translation",
+                AssistantRequestProblem::ConflictsWith("geometry mutations"),
+            ));
         }
         if !self.parameter_edits.is_empty()
             && (!self.boxes.is_empty()
@@ -3873,7 +3980,10 @@ impl AssistantModelIntent {
                 || !self.profile_translations.is_empty()
                 || !self.linear_arrays.is_empty())
         {
-            return Err("assistant parameter edit cannot mix geometry mutations".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "parameter edit",
+                AssistantRequestProblem::ConflictsWith("geometry mutations"),
+            ));
         }
         let mut translated_occurrences = BTreeSet::new();
         for translation in &self.translations {
@@ -3884,7 +3994,7 @@ impl AssistantModelIntent {
                     .iter()
                     .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             {
-                return Err("assistant translation is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid("translation"));
             }
         }
         let mut rotated_occurrences = BTreeSet::new();
@@ -3914,11 +4024,14 @@ impl AssistantModelIntent {
                 || rotation.angle_degrees.abs() > MAX_COORDINATE_MM
                 || shortest_angle < 0.01
             {
-                return Err("assistant rotation is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid("rotation"));
             }
         }
         if !rotated_occurrences.is_empty() && !rotated_groups.is_empty() {
-            return Err("assistant rotation cannot mix occurrence and group targets".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "rotation occurrence target",
+                AssistantRequestProblem::ConflictsWith("group targets"),
+            ));
         }
         for translation in &self.profile_translations {
             if translation.definition_id == 0
@@ -3930,7 +4043,7 @@ impl AssistantModelIntent {
                     .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
                 || translation.delta_mm.iter().all(|value| *value == 0.0)
             {
-                return Err("assistant profile translation is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid("profile translation"));
             }
         }
         for edit in &self.parameter_edits {
@@ -3942,7 +4055,7 @@ impl AssistantModelIntent {
                 || edit.value_mm <= 0.0
                 || edit.value_mm > MAX_COORDINATE_MM
             {
-                return Err("assistant parameter edit is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid("parameter edit"));
             }
         }
         let mut array_outputs = 0usize;
@@ -3966,20 +4079,27 @@ impl AssistantModelIntent {
                         > MAX_COORDINATE_MM
                 })
             {
-                return Err("assistant linear array is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid("linear array"));
             }
             let Some(outputs) = array
                 .occurrence_ids
                 .len()
                 .checked_mul(array.instances.saturating_sub(1) as usize)
             else {
-                return Err("assistant linear array output count is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid(
+                    "linear array output count",
+                ));
             };
             let Some(total_outputs) = array_outputs.checked_add(outputs) else {
-                return Err("assistant linear array output count is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid(
+                    "linear array output count",
+                ));
             };
             if total_outputs > MAX_ASSISTANT_ARRAY_OUTPUTS {
-                return Err("assistant proposal creates too many array occurrences".to_owned());
+                return Err(AssistantRequestInvalid::new(
+                    "proposal array occurrence count",
+                    AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_ARRAY_OUTPUTS),
+                ));
             }
             array_outputs = total_outputs;
         }
@@ -3988,7 +4108,7 @@ impl AssistantModelIntent {
                 || item.name.len() > MAX_ASSISTANT_NAME_BYTES
                 || item.name.chars().any(char::is_control)
             {
-                return Err("assistant box name is invalid".to_owned());
+                return Err(AssistantRequestInvalid::invalid("box name"));
             }
             if item
                 .size_mm
@@ -3999,12 +4119,16 @@ impl AssistantModelIntent {
                     .iter()
                     .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             {
-                return Err(
-                    "assistant box dimensions or origin are outside the envelope".to_owned(),
-                );
+                return Err(AssistantRequestInvalid::new(
+                    "box",
+                    AssistantRequestProblem::Outside("the coordinate envelope"),
+                ));
             }
             if item.subtract_boxes.len() > MAX_ASSISTANT_SUBTRACTIONS {
-                return Err("assistant body contains more than 64 subtractions".to_owned());
+                return Err(AssistantRequestInvalid::new(
+                    "body subtraction count",
+                    AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_SUBTRACTIONS),
+                ));
             }
             let [width, depth, height] = item.size_mm;
             for subtraction in &item.subtract_boxes {
@@ -4029,7 +4153,10 @@ impl AssistantModelIntent {
                     || cut_z + cut_height > height
                     || (cut_height >= height && !retained_through_opening)
                 {
-                    return Err("assistant subtraction is outside its body".to_owned());
+                    return Err(AssistantRequestInvalid::new(
+                        "subtraction",
+                        AssistantRequestProblem::Outside("its body"),
+                    ));
                 }
             }
             if item.subtract_boxes.iter().enumerate().any(|(index, left)| {
@@ -4037,7 +4164,10 @@ impl AssistantModelIntent {
                     .iter()
                     .any(|right| boxes_overlap(left, right))
             }) {
-                return Err("assistant subtractions overlap".to_owned());
+                return Err(AssistantRequestInvalid::new(
+                    "subtraction",
+                    AssistantRequestProblem::ConflictsWith("an overlapping subtraction"),
+                ));
             }
         }
         Ok(())
@@ -4117,7 +4247,7 @@ impl AssistantRejectionDiagnostic {
         self
     }
 
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         let machine_identifier_is_valid = |value: &str, max_bytes: usize| {
             !value.is_empty()
                 && value.len() <= max_bytes
@@ -4149,7 +4279,7 @@ impl AssistantRejectionDiagnostic {
             || serde_json::to_vec(self)
                 .map_or(true, |bytes| bytes.len() > MAX_ASSISTANT_REJECTION_BYTES)
         {
-            return Err("assistant rejection diagnostic is invalid or too large".to_owned());
+            return Err(AssistantRequestInvalid::invalid("rejection diagnostic"));
         }
         Ok(())
     }
@@ -4212,7 +4342,7 @@ pub struct AssistantApiDiagnostics {
 }
 
 impl AssistantApiDiagnostics {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         if self.provider.is_empty()
             || self.provider.len() > MAX_ASSISTANT_MODEL_BYTES
             || self.model.is_empty()
@@ -4222,7 +4352,10 @@ impl AssistantApiDiagnostics {
             || serde_json::to_vec(&self.request_payload)
                 .map_or(true, |bytes| bytes.len() > 128 * 1024)
         {
-            return Err("assistant API diagnostics exceed their bounded envelope".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "API diagnostics record",
+                AssistantRequestProblem::Outside("its bounded envelope"),
+            ));
         }
         Ok(())
     }
@@ -4241,9 +4374,12 @@ pub struct AssistantChatResult {
 }
 
 impl AssistantChatResult {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         if self.message.trim().is_empty() {
-            return Err("assistant returned an empty message".to_owned());
+            return Err(AssistantRequestInvalid::new(
+                "reply message",
+                AssistantRequestProblem::Empty,
+            ));
         }
         if let Some(intent) = &self.model_intent {
             intent.validate()?;

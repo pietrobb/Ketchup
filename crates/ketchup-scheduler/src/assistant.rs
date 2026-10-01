@@ -1,3 +1,4 @@
+use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 use ketchup_assistant::sidecar::{
     AssistantApiDiagnostics, AssistantCadEditProgram, AssistantCapability, AssistantChatResult,
     AssistantDistribution, AssistantFeaReviewRequest, AssistantHandshake, AssistantModelIntent,
@@ -361,7 +362,7 @@ impl AssistantProcessClient {
                     model_intent: *model_intent,
                 };
                 if let Err(error) = result.validate() {
-                    return self.fail(AssistantProcessError::Protocol(error));
+                    return self.fail(AssistantProcessError::InvalidResponse(error));
                 }
                 if let Err(error) = ensure_single_assistant_action([
                     result.model_intent.is_some(),
@@ -373,17 +374,17 @@ impl AssistantProcessClient {
                 if let Some(program) = cad_edit_program.as_ref()
                     && let Err(error) = program.validate()
                 {
-                    return self.fail(AssistantProcessError::Protocol(error));
+                    return self.fail(AssistantProcessError::InvalidResponse(error));
                 }
                 if let Some(request) = fea_review.as_ref()
                     && let Err(error) = request.validate()
                 {
-                    return self.fail(AssistantProcessError::Protocol(error));
+                    return self.fail(AssistantProcessError::InvalidResponse(error));
                 }
                 if let Some(diagnostics) = diagnostics.as_ref()
                     && let Err(error) = diagnostics.validate()
                 {
-                    return self.fail(AssistantProcessError::Protocol(error));
+                    return self.fail(AssistantProcessError::InvalidResponse(error));
                 }
                 Ok(AssistantProcessChatResult {
                     result,
@@ -648,6 +649,8 @@ pub enum AssistantProcessError {
     Spawn(String),
     Transport(String),
     Protocol(String),
+    /// The sidecar answered with a result that breaks the request schema.
+    InvalidResponse(AssistantRequestInvalid),
     Remote(String),
     RequestLineTooLarge,
     Exited,
@@ -663,6 +666,7 @@ impl fmt::Display for AssistantProcessError {
             Self::Spawn(error) => write!(formatter, "assistant spawn failed: {error}"),
             Self::Transport(error) => write!(formatter, "assistant transport failed: {error}"),
             Self::Protocol(error) => write!(formatter, "assistant protocol failed: {error}"),
+            Self::InvalidResponse(error) => write!(formatter, "assistant protocol failed: {error}"),
             Self::Remote(error) => write!(formatter, "assistant failed: {error}"),
             Self::RequestLineTooLarge => {
                 formatter.write_str("assistant request exceeded byte limit")
@@ -676,7 +680,14 @@ impl fmt::Display for AssistantProcessError {
     }
 }
 
-impl std::error::Error for AssistantProcessError {}
+impl std::error::Error for AssistantProcessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidResponse(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "assistant_deadline_tests.rs"]

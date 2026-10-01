@@ -1,3 +1,4 @@
+use ketchup_assistant::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 use ketchup_assistant::sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantAxisSpec, AssistantCadBodyFeature,
     AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
@@ -661,7 +662,7 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     *feature = AssistantCadPartFeature::Extrusion { distance_mm: 0.0 };
     assert_eq!(
         invalid_feature.validate(),
-        Err("assistant CAD part feature is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("CAD part feature"))
     );
 
     let mut invalid_revolve = program;
@@ -678,7 +679,7 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     };
     assert_eq!(
         invalid_revolve.validate(),
-        Err("assistant CAD part feature is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("CAD part feature"))
     );
 }
 
@@ -895,7 +896,7 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
     };
     assert_eq!(
         self_boolean.validate(),
-        Err("assistant CAD body feature is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("CAD body feature"))
     );
 }
 
@@ -940,7 +941,7 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
         };
         assert_eq!(
             invalid.validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
 
@@ -957,7 +958,7 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
     };
     assert_eq!(
         same_input.validate(),
-        Err("assistant CAD body feature is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("CAD body feature"))
     );
 
     let injected_id = serde_json::json!({
@@ -1023,7 +1024,7 @@ fn cad_edit_append_planar_offset_contract_is_strict_bounded_and_host_id_assigned
     ] {
         assert_eq!(
             invalid.validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
 
@@ -1095,7 +1096,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
     };
     assert_eq!(
         same_input.validate(),
-        Err("assistant CAD body feature is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("CAD body feature"))
     );
     for (profile_feature_id, path_feature_id) in [(0, 12), (11, 0)] {
         let zero_input = AssistantCadEditProgram {
@@ -1110,7 +1111,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
         };
         assert_eq!(
             zero_input.validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
 
@@ -1276,7 +1277,7 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
     for sections in invalid_sections {
         assert_eq!(
             program(sections).validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
 
@@ -1467,7 +1468,7 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
     ] {
         assert_eq!(
             invalid.validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
 
@@ -1587,7 +1588,7 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
             serde_json::from_value::<AssistantCadEditProgram>(invalid_profile)
                 .unwrap()
                 .validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
     assert_eq!(
@@ -1617,7 +1618,7 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
     ] {
         assert_eq!(
             invalid.validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
 
@@ -1771,7 +1772,7 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
     ] {
         assert_eq!(
             invalid.validate(),
-            Err("assistant CAD body feature is invalid".to_owned())
+            Err(AssistantRequestInvalid::invalid("CAD body feature"))
         );
     }
 
@@ -1841,7 +1842,7 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
     {
         assert_eq!(
             invalid.validate(),
-            Err("assistant CAD body feature is invalid".to_owned()),
+            Err(AssistantRequestInvalid::invalid("CAD body feature")),
             "invalid advanced Chamfer case {index} was accepted"
         );
     }
@@ -1968,7 +1969,10 @@ fn cad_edit_program_contract_fails_closed_on_targets_geometry_and_resources() {
     };
     assert_eq!(
         too_many_outputs.validate(),
-        Err("assistant CAD edit program creates too many occurrences".to_owned())
+        Err(AssistantRequestInvalid::new(
+            "CAD edit program generated occurrence count",
+            AssistantRequestProblem::ExceedsLimit(512)
+        ))
     );
 
     let too_many_operations = AssistantCadEditProgram {
@@ -2013,7 +2017,10 @@ fn cad_edit_program_conservatively_budgets_current_selection_outputs() {
     });
     assert_eq!(
         AssistantCadEditProgram { operations }.validate(),
-        Err("assistant CAD edit program creates too many occurrences".to_owned())
+        Err(AssistantRequestInvalid::new(
+            "CAD edit program generated occurrence count",
+            AssistantRequestProblem::ExceedsLimit(512)
+        ))
     );
 }
 
@@ -2068,7 +2075,10 @@ fn cad_edit_selector_and_generated_output_boundaries_fail_closed() {
             operations: boundary_operations,
         }
         .validate(),
-        Err("assistant CAD edit program creates too many occurrences".to_owned())
+        Err(AssistantRequestInvalid::new(
+            "CAD edit program generated occurrence count",
+            AssistantRequestProblem::ExceedsLimit(512)
+        ))
     );
 }
 
@@ -2106,7 +2116,7 @@ fn assistant_rotation_is_shape_independent_arbitrary_axis_and_fail_closed() {
     };
     assert_eq!(
         zero_axis.validate(),
-        Err("assistant rotation is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("rotation"))
     );
 
     let ambiguous_target = AssistantModelIntent {
@@ -2118,7 +2128,7 @@ fn assistant_rotation_is_shape_independent_arbitrary_axis_and_fail_closed() {
     };
     assert_eq!(
         ambiguous_target.validate(),
-        Err("assistant rotation is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("rotation"))
     );
 
     let conflicting_move = AssistantModelIntent {
@@ -2130,7 +2140,7 @@ fn assistant_rotation_is_shape_independent_arbitrary_axis_and_fail_closed() {
     };
     assert_eq!(
         conflicting_move.validate(),
-        Err("assistant rotation is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("rotation"))
     );
 }
 
@@ -2161,7 +2171,10 @@ fn assistant_array_budget_matches_the_canonical_proposal_command_limit() {
     };
     assert_eq!(
         too_large.validate(),
-        Err("assistant proposal creates too many array occurrences".to_owned())
+        Err(AssistantRequestInvalid::new(
+            "proposal array occurrence count",
+            AssistantRequestProblem::ExceedsLimit(512)
+        ))
     );
 }
 
@@ -2197,7 +2210,7 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
     };
     assert_eq!(
         zero.validate(),
-        Err("assistant profile translation is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("profile translation"))
     );
 
     let mixed = AssistantModelIntent {
@@ -2209,7 +2222,10 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
     };
     assert_eq!(
         mixed.validate(),
-        Err("assistant profile translation cannot mix geometry mutations".to_owned())
+        Err(AssistantRequestInvalid::new(
+            "profile translation",
+            AssistantRequestProblem::ConflictsWith("geometry mutations")
+        ))
     );
 }
 
@@ -2245,7 +2261,7 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
     };
     assert_eq!(
         invalid.validate(),
-        Err("assistant parameter edit is invalid".to_owned())
+        Err(AssistantRequestInvalid::invalid("parameter edit"))
     );
 
     let mixed = AssistantModelIntent {
@@ -2257,7 +2273,10 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
     };
     assert_eq!(
         mixed.validate(),
-        Err("assistant parameter edit cannot mix geometry mutations".to_owned())
+        Err(AssistantRequestInvalid::new(
+            "parameter edit",
+            AssistantRequestProblem::ConflictsWith("geometry mutations")
+        ))
     );
 }
 
