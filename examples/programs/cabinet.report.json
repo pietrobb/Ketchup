@@ -1,0 +1,1297 @@
+{
+  "ok": true,
+  "errors": 0,
+  "warnings": 0,
+  "issues": [],
+  "relations": [
+    {
+      "parts": [
+        "carcass/left",
+        "carcass/bottom"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x+",
+        "x-"
+      ],
+      "area_mm2": 6300.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "dowel:carcass/bottom+carcass/left"
+    },
+    {
+      "parts": [
+        "carcass/left",
+        "carcass/top"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x+",
+        "x-"
+      ],
+      "area_mm2": 6300.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "dowel:carcass/top+carcass/left"
+    },
+    {
+      "parts": [
+        "carcass/left",
+        "carcass/back"
+      ],
+      "kind": "overlap",
+      "depth_mm": 8.0,
+      "status": "pocket",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "carcass/left",
+        "shelves/1"
+      ],
+      "kind": "gap",
+      "gap_mm": 1.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "shelf_pins:shelves/1+carcass/left"
+    },
+    {
+      "parts": [
+        "carcass/left",
+        "shelves/2"
+      ],
+      "kind": "gap",
+      "gap_mm": 1.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "shelf_pins:shelves/2+carcass/left"
+    },
+    {
+      "parts": [
+        "carcass/right",
+        "carcass/bottom"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x-",
+        "x+"
+      ],
+      "area_mm2": 6300.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "dowel:carcass/bottom+carcass/right"
+    },
+    {
+      "parts": [
+        "carcass/right",
+        "carcass/top"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x-",
+        "x+"
+      ],
+      "area_mm2": 6300.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "dowel:carcass/top+carcass/right"
+    },
+    {
+      "parts": [
+        "carcass/right",
+        "carcass/back"
+      ],
+      "kind": "overlap",
+      "depth_mm": 8.0,
+      "status": "pocket",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "carcass/right",
+        "shelves/1"
+      ],
+      "kind": "gap",
+      "gap_mm": 1.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "shelf_pins:shelves/1+carcass/right"
+    },
+    {
+      "parts": [
+        "carcass/right",
+        "shelves/2"
+      ],
+      "kind": "gap",
+      "gap_mm": 1.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "joint": "shelf_pins:shelves/2+carcass/right"
+    },
+    {
+      "parts": [
+        "carcass/bottom",
+        "carcass/back"
+      ],
+      "kind": "overlap",
+      "depth_mm": 8.0,
+      "status": "pocket",
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "carcass/top",
+        "carcass/back"
+      ],
+      "kind": "overlap",
+      "depth_mm": 8.0,
+      "status": "pocket",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "carcass/back",
+        "shelves/1"
+      ],
+      "kind": "gap",
+      "gap_mm": 2.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "carcass/back",
+        "shelves/2"
+      ],
+      "kind": "gap",
+      "gap_mm": 2.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "width",
+      "value": 600.0,
+      "default": 600.0,
+      "min": 300.0,
+      "max": 1200.0,
+      "doc": "outer width"
+    },
+    {
+      "name": "height",
+      "value": 720.0,
+      "default": 720.0,
+      "min": 300.0,
+      "max": 2400.0,
+      "doc": "outer height"
+    },
+    {
+      "name": "depth",
+      "value": 350.0,
+      "default": 350.0,
+      "min": 200.0,
+      "max": 650.0,
+      "doc": "outer depth"
+    },
+    {
+      "name": "thickness",
+      "value": 18.0,
+      "default": 18.0,
+      "doc": "carcass board thickness"
+    },
+    {
+      "name": "back_thickness",
+      "value": 4.0,
+      "default": 4.0,
+      "doc": "back panel thickness (HDF)"
+    },
+    {
+      "name": "shelves",
+      "value": 2.0,
+      "default": 2.0,
+      "min": 0.0,
+      "max": 8.0
+    }
+  ],
+  "bom": {
+    "cut_list": [
+      {
+        "material": "HDF 4",
+        "dimensions_mm": [
+          700.0,
+          580.0,
+          4.0
+        ],
+        "count": 1,
+        "parts": [
+          "carcass/back"
+        ]
+      },
+      {
+        "material": "board",
+        "dimensions_mm": [
+          562.0,
+          334.0,
+          18.0
+        ],
+        "count": 2,
+        "parts": [
+          "shelves/1",
+          "shelves/2"
+        ]
+      },
+      {
+        "material": "board",
+        "dimensions_mm": [
+          564.0,
+          350.0,
+          18.0
+        ],
+        "count": 2,
+        "parts": [
+          "carcass/bottom",
+          "carcass/top"
+        ]
+      },
+      {
+        "material": "board",
+        "dimensions_mm": [
+          720.0,
+          350.0,
+          18.0
+        ],
+        "count": 2,
+        "parts": [
+          "carcass/left",
+          "carcass/right"
+        ]
+      }
+    ],
+    "hardware": [
+      {
+        "item": "dowel 8x30",
+        "count": 8
+      }
+    ],
+    "machining": [
+      {
+        "part": "carcass/left",
+        "size_mm": [
+          18.0,
+          350.0,
+          720.0
+        ],
+        "operations": [
+          {
+            "id": "dowel:carcass/bottom:1",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              50.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "dowel:carcass/bottom:2",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              300.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "dowel:carcass/top:1",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              50.0,
+              711.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "dowel:carcass/top:2",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              300.0,
+              711.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "h5",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              114.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h6",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              146.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h7",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              178.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h8",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              210.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h9",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              242.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h10",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              274.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h11",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              306.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h12",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              338.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h13",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              370.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h14",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              402.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h15",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              434.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h16",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              466.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h17",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              498.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h18",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              530.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h19",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              562.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h20",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              37.0,
+              594.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h21",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              114.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h22",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              146.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h23",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              178.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h24",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              210.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h25",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              242.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h26",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              274.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h27",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              306.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h28",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              338.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h29",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              370.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h30",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              402.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h31",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              434.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h32",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              466.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h33",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              498.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h34",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              530.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h35",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              562.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h36",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              297.0,
+              594.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "p1",
+            "kind": "pocket",
+            "face": "x+",
+            "position_mm": [
+              336.0,
+              0.0,
+              340.0,
+              720.0
+            ],
+            "depth_mm": 8.0
+          }
+        ]
+      },
+      {
+        "part": "carcass/right",
+        "size_mm": [
+          18.0,
+          350.0,
+          720.0
+        ],
+        "operations": [
+          {
+            "id": "dowel:carcass/bottom:1",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              50.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "dowel:carcass/bottom:2",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              300.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "dowel:carcass/top:1",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              50.0,
+              711.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "dowel:carcass/top:2",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              300.0,
+              711.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 12.0
+          },
+          {
+            "id": "h5",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              114.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h6",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              146.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h7",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              178.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h8",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              210.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h9",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              242.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h10",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              274.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h11",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              306.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h12",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              338.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h13",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              370.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h14",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              402.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h15",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              434.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h16",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              466.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h17",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              498.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h18",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              530.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h19",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              562.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h20",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              37.0,
+              594.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h21",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              114.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h22",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              146.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h23",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              178.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h24",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              210.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h25",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              242.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h26",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              274.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h27",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              306.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h28",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              338.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h29",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              370.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h30",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              402.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h31",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              434.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h32",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              466.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h33",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              498.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h34",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              530.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h35",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              562.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "h36",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              297.0,
+              594.0
+            ],
+            "diameter_mm": 5.0,
+            "depth_mm": 10.0
+          },
+          {
+            "id": "p1",
+            "kind": "pocket",
+            "face": "x-",
+            "position_mm": [
+              336.0,
+              0.0,
+              340.0,
+              720.0
+            ],
+            "depth_mm": 8.0
+          }
+        ]
+      },
+      {
+        "part": "carcass/bottom",
+        "size_mm": [
+          564.0,
+          350.0,
+          18.0
+        ],
+        "operations": [
+          {
+            "id": "dowel:carcass/left:1",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              50.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "dowel:carcass/left:2",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              300.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "dowel:carcass/right:1",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              50.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "dowel:carcass/right:2",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              300.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "p1",
+            "kind": "pocket",
+            "face": "z+",
+            "position_mm": [
+              0.0,
+              336.0,
+              564.0,
+              340.0
+            ],
+            "depth_mm": 8.0
+          }
+        ]
+      },
+      {
+        "part": "carcass/top",
+        "size_mm": [
+          564.0,
+          350.0,
+          18.0
+        ],
+        "operations": [
+          {
+            "id": "dowel:carcass/left:1",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              50.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "dowel:carcass/left:2",
+            "kind": "drill",
+            "face": "x-",
+            "position_mm": [
+              300.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "dowel:carcass/right:1",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              50.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "dowel:carcass/right:2",
+            "kind": "drill",
+            "face": "x+",
+            "position_mm": [
+              300.0,
+              9.0
+            ],
+            "diameter_mm": 8.0,
+            "depth_mm": 21.0
+          },
+          {
+            "id": "p1",
+            "kind": "pocket",
+            "face": "z-",
+            "position_mm": [
+              0.0,
+              336.0,
+              564.0,
+              340.0
+            ],
+            "depth_mm": 8.0
+          }
+        ]
+      }
+    ],
+    "total_parts": 7
+  },
+  "log": [],
+  "unused_overrides": []
+}

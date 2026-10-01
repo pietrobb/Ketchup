@@ -3,6 +3,7 @@
 
 mod document;
 mod exact_shapes;
+mod example_programs;
 mod expect;
 mod face_at;
 mod faces;

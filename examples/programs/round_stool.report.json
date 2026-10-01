@@ -1,0 +1,275 @@
+{
+  "ok": true,
+  "errors": 0,
+  "warnings": 0,
+  "issues": [],
+  "relations": [
+    {
+      "parts": [
+        "seat",
+        "leg1"
+      ],
+      "kind": "overlap",
+      "depth_mm": 42.6,
+      "status": "subtracted",
+      "cut_in": "seat",
+      "direction": [
+        0.0,
+        0.297,
+        -0.955
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "seat",
+        "leg2"
+      ],
+      "kind": "overlap",
+      "depth_mm": 46.8,
+      "status": "subtracted",
+      "cut_in": "seat",
+      "direction": [
+        -0.257,
+        -0.149,
+        -0.955
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "seat",
+        "leg3"
+      ],
+      "kind": "overlap",
+      "depth_mm": 46.8,
+      "status": "subtracted",
+      "cut_in": "seat",
+      "direction": [
+        0.257,
+        -0.149,
+        -0.955
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "leg1",
+        "rail1"
+      ],
+      "kind": "overlap",
+      "depth_mm": 28.3,
+      "status": "subtracted",
+      "cut_in": "leg1",
+      "direction": [
+        -0.5,
+        -0.866,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "leg1",
+        "rail3"
+      ],
+      "kind": "overlap",
+      "depth_mm": 28.3,
+      "status": "subtracted",
+      "cut_in": "leg1",
+      "direction": [
+        0.5,
+        -0.866,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "leg2",
+        "rail1"
+      ],
+      "kind": "overlap",
+      "depth_mm": 28.4,
+      "status": "subtracted",
+      "cut_in": "leg2",
+      "direction": [
+        0.5,
+        0.866,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "leg2",
+        "rail2"
+      ],
+      "kind": "overlap",
+      "depth_mm": 22.0,
+      "status": "subtracted",
+      "cut_in": "leg2",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "leg3",
+        "rail2"
+      ],
+      "kind": "overlap",
+      "depth_mm": 22.0,
+      "status": "subtracted",
+      "cut_in": "leg3",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "leg3",
+        "rail3"
+      ],
+      "kind": "overlap",
+      "depth_mm": 28.4,
+      "status": "subtracted",
+      "cut_in": "leg3",
+      "direction": [
+        -0.5,
+        0.866,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "rail1",
+        "rail2"
+      ],
+      "kind": "gap",
+      "gap_mm": 8.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "rail2",
+        "rail3"
+      ],
+      "kind": "gap",
+      "gap_mm": 8.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "height",
+      "value": 450.0,
+      "default": 450.0,
+      "min": 300.0,
+      "max": 800.0,
+      "doc": "seat top above the floor"
+    },
+    {
+      "name": "splay",
+      "value": 260.0,
+      "default": 260.0,
+      "min": 130.0,
+      "max": 400.0,
+      "doc": "distance of each foot from the centre"
+    },
+    {
+      "name": "seat_radius",
+      "value": 180.0,
+      "default": 180.0,
+      "min": 150.0,
+      "max": 300.0
+    },
+    {
+      "name": "seat_thickness",
+      "value": 30.0,
+      "default": 30.0,
+      "min": 18.0,
+      "max": 60.0
+    }
+  ],
+  "bom": {
+    "cut_list": [
+      {
+        "material": "timber",
+        "dimensions_mm": [
+          326.3953521818685,
+          22.0,
+          22.0
+        ],
+        "count": 1,
+        "parts": [
+          "rail3"
+        ]
+      },
+      {
+        "material": "timber",
+        "dimensions_mm": [
+          342.5611597191779,
+          22.0,
+          22.0
+        ],
+        "count": 1,
+        "parts": [
+          "rail2"
+        ]
+      },
+      {
+        "material": "timber",
+        "dimensions_mm": [
+          358.7269672564875,
+          22.0,
+          22.0
+        ],
+        "count": 1,
+        "parts": [
+          "rail1"
+        ]
+      },
+      {
+        "material": "timber",
+        "dimensions_mm": [
+          565.5298400615126,
+          36.0,
+          36.0
+        ],
+        "count": 3,
+        "parts": [
+          "leg1",
+          "leg2",
+          "leg3"
+        ]
+      },
+      {
+        "material": "unspecified",
+        "dimensions_mm": [
+          360.0,
+          360.0,
+          30.0
+        ],
+        "count": 1,
+        "parts": [
+          "seat"
+        ]
+      }
+    ],
+    "hardware": [],
+    "machining": [],
+    "total_parts": 7
+  },
+  "log": [],
+  "unused_overrides": []
+}
