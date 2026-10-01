@@ -43,7 +43,6 @@ crates/ketchup-application/src/validation.rs:cup_bore 2
 crates/ketchup-application/src/validation.rs:panel 40
 crates/ketchup-application/src/validation_rules.rs:beam 3
 crates/ketchup-application/src/validation_rules.rs:panel 1
-crates/ketchup-assistant/src/sidecar.rs:board 2
 crates/ketchup-assistant/src/sidecar.rs:panel 12
 crates/ketchup-assistant/src/sidecar.rs:weldment 13
 crates/ketchup-manufacturing/src/fabrication.rs:beam 3

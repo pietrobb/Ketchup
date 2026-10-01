@@ -11,7 +11,7 @@ use ketchup_application::{
 };
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
-    AssistantPinJointFace,
+    AssistantPinHoles, AssistantPinJointFace,
 };
 use ketchup_model::{
     assembly_joint::{
@@ -637,13 +637,14 @@ fn physical_pin_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
-        },
+        }
+        .into(),
         face_origin_local_mm: [0.0, 0.0, face_z],
         inward_unit_local,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let joint = |name: &str| AssistantCadEditOperation::CreatePhysicalPinJoint {
+    let joint = |name: &str| AssistantCadEditOperation::CreatePinJoint {
         joint_id: None,
         name: name.into(),
         first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -657,7 +658,9 @@ fn physical_pin_document(count: u32, duplicate_joint: bool) -> DocumentStore {
             length_mm: 30.0,
             hole_clearance_mm: 1.0,
         },
-        first_insertion_mm: None,
+        holes: AssistantPinHoles::Drill {
+            first_insertion_mm: None,
+        },
     };
     let pins = plan_assistant_cad_edit_program(
         &document,

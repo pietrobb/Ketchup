@@ -447,17 +447,19 @@ class Document:
 
     def pin_joint(self, name, first, second, first_center_local_mm,
                     row_unit_first_local, count, spacing_mm, *, pin,
-                    physical_hole_pairs=()):
-        """Persist one relational row and optionally bind its physical pocket pairs.
+                    holes=None):
+        """Persist one row of pins between two faces.
 
-        ``pin`` is ``{"diameter_mm", "length_mm", "hole_clearance_mm"}``.
+        ``pin`` is ``{"diameter_mm", "length_mm", "hole_clearance_mm"}``. ``holes`` is
+        ``{"type": "logical"}`` (default, no holes), ``{"type": "existing", "pairs": [...]}``
+        or ``{"type": "drill", "first_insertion_mm"?: number}``.
         """
         return self.apply([{"operation": "create_pin_joint", "name": name,
                             "first": dict(first), "second": dict(second),
                             "first_center_local_mm": list(first_center_local_mm),
                             "row_unit_first_local": list(row_unit_first_local),
                             "count": count, "spacing_mm": spacing_mm, "pin": dict(pin),
-                            "physical_hole_pairs": [dict(pair) for pair in physical_hole_pairs]}])
+                            "holes": dict(holes) if holes else {"type": "logical"}}])
 
     def create_sketch(self, definition_id, name, entities, *, constraints=(), workplane=None):
         return self.apply([{"operation": "create_sketch", "definition_id": definition_id,

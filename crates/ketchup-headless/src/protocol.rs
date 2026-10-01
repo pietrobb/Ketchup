@@ -1993,13 +1993,12 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 38);
+        assert_eq!(variants.len(), 36);
         for operation in [
             "move_physical_pin_pair",
             "append_feature",
             "create_panel",
             "create_pin_joint",
-            "create_program_pin_joint",
             "bind_program_output",
             "create_tag",
             "set_occurrence_tag",

@@ -1242,8 +1242,6 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::CreatePinJoint { .. }
-                | AssistantCadEditOperation::CreateProgramPinJoint { .. }
-                | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
                 | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
                 | AssistantCadEditOperation::MovePhysicalPinPair { .. }
                 | AssistantCadEditOperation::CreateTag { .. }

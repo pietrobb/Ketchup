@@ -591,7 +591,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
     use ketchup_assistant::sidecar::AssistantCadParameterValueType;
     use ketchup_assistant::sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
-        AssistantPinJointFace,
+        AssistantPinHoles, AssistantPinJointFace,
     };
     use ketchup_model::exact_product::ExactResultRegistry;
     use ketchup_model::pin_joint::project_pin_joint_contract;
@@ -624,7 +624,8 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
-        },
+        }
+        .into(),
         face_origin_local_mm: origin,
         inward_unit_local: inward,
         bounds_min_local_mm: [0.0; 3],
@@ -633,7 +634,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
     let rear = |origin, inward| face(6, origin, inward, [464.0, 218.0, 8.0]);
     let side = |id| face(id, [0.0; 3], [0.0, 0.0, 1.0], [350.0, 432.0, 18.0]);
     let row = |name: &str, first, second, center, direction, spacing| {
-        AssistantCadEditOperation::CreatePhysicalPinJoint {
+        AssistantCadEditOperation::CreatePinJoint {
             joint_id: None,
             name: name.into(),
             first,
@@ -647,7 +648,9 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
                 length_mm: 30.0,
                 hole_clearance_mm: 1.0,
             },
-            first_insertion_mm: None,
+            holes: AssistantPinHoles::Drill {
+                first_insertion_mm: None,
+            },
         }
     };
     let program = AssistantCadEditProgram {
@@ -1382,7 +1385,7 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
     use ketchup_application::plan_assistant_cad_edit_program;
     use ketchup_assistant::sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantInstancePath, AssistantPin,
-        AssistantPinJointFace,
+        AssistantPinHoles, AssistantPinJointFace,
     };
     use ketchup_model::exact_product::ExactResultRegistry;
     use ketchup_model::pin_joint::project_pin_joint_contract;
@@ -1425,7 +1428,8 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
-        },
+        }
+        .into(),
         face_origin_local_mm: [0.0, 0.0, z],
         inward_unit_local: inward,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
@@ -1434,7 +1438,7 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
     let program = AssistantCadEditProgram {
         operations: first_ids
             .iter()
-            .map(|&first| AssistantCadEditOperation::CreatePhysicalPinJoint {
+            .map(|&first| AssistantCadEditOperation::CreatePinJoint {
                 joint_id: None,
                 name: format!("Cabinet {first} physical row"),
                 first: face(first, 18.0, [0.0, 0.0, -1.0], 400.0, 300.0),
@@ -1448,7 +1452,9 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
                     length_mm: 30.0,
                     hole_clearance_mm: 1.0,
                 },
-                first_insertion_mm: None,
+                holes: AssistantPinHoles::Drill {
+                    first_insertion_mm: None,
+                },
             })
             .collect(),
     };

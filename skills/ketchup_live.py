@@ -550,12 +550,13 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         transform: {"operation":"transform","selector":{"type":"occurrences","occurrence_ids":[54]},"translation_mm":[0,0,10]}
         delete: {"operation":"delete","selector":{"type":"occurrences","occurrence_ids":[54]},
           "dependency_policy":"remove_references"}   (or "reject_if_referenced")
-        create_physical_pin_joint: {"operation":"create_physical_pin_joint","name":"Roh","first":FACE,"second":FACE,
+        create_pin_joint: {"operation":"create_pin_joint","name":"Roh","first":FACE,"second":FACE,
           "first_center_local_mm":[x,y,z],"row_unit_first_local":[0,0,1],"count":2,"spacing_mm":250,
-          "pin":{"diameter_mm":8,"length_mm":30,"hole_clearance_mm":1}}
+          "pin":{"diameter_mm":8,"length_mm":30,"hole_clearance_mm":1},"holes":{"type":"drill"}}
           FACE={"instance_path":{"root_occurrence_id":N,"steps":[]},"face_origin_local_mm":[..],"inward_unit_local":[..],
           "bounds_min_local_mm":[0,0,0],"bounds_max_local_mm":dims}; both faces in one world plane; center in first
-          part's local frame; pin is any size (e.g. an 8x30 dowel); first_insertion_mm? for boards < 16 mm thick.
+          part's local frame; pin is any size (e.g. an 8x30 dowel); holes {"type":"drill","first_insertion_mm"?} drills
+          (first_insertion_mm for boards < 16 mm thick), {"type":"logical"} only records the row.
         move_physical_pin_pair: {"operation":"move_physical_pin_pair","joint_id":8,"pair_index":1,
           "offset_first_local_mm":[35,0,0]}  (offset from the evenly spaced row position)
         delete_physical_pin_joint: {"operation":"delete_physical_pin_joint","joint_id":11}

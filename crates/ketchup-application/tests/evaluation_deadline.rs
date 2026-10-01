@@ -112,7 +112,9 @@ fn assert_timeout_unchanged(session: &mut DocumentSession, timeout: Duration) {
 
 #[test]
 fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence() {
-    use ketchup_assistant::sidecar::{AssistantInstancePath, AssistantPin, AssistantPinJointFace};
+    use ketchup_assistant::sidecar::{
+        AssistantInstancePath, AssistantPin, AssistantPinHoles, AssistantPinJointFace,
+    };
     use ketchup_manufacturing::fabrication::{
         FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
     };
@@ -179,7 +181,8 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
-        },
+        }
+        .into(),
         face_origin_local_mm: [0.0, 0.0, z],
         inward_unit_local: normal,
         bounds_min_local_mm: [0.0; 3],
@@ -188,7 +191,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
     session
         .apply_cad_program(
             &AssistantCadEditProgram {
-                operations: vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
+                operations: vec![AssistantCadEditOperation::CreatePinJoint {
                     joint_id: None,
                     name: "row".into(),
                     first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -202,7 +205,9 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                         length_mm: 30.0,
                         hole_clearance_mm: 1.0,
                     },
-                    first_insertion_mm: None,
+                    holes: AssistantPinHoles::Drill {
+                        first_insertion_mm: None,
+                    },
                 }],
             },
             &BTreeSet::new(),

@@ -2614,7 +2614,8 @@ fn one_pin_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_pa
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
-        },
+        }
+        .into(),
         face_origin_local_mm: [0.0, 0.0, face_z],
         inward_unit_local,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
@@ -2625,6 +2626,7 @@ fn one_pin_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_pa
         &BTreeSet::new(),
         &ExactResultRegistry::default(),
         &program(vec![AssistantCadEditOperation::CreatePinJoint {
+            joint_id: None,
             name: "Shelf row".into(),
             first: face(1, 18.0, [0.0, 0.0, -1.0]),
             second: face(2, 0.0, [0.0, 0.0, 1.0]),
@@ -2637,7 +2639,7 @@ fn one_pin_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_pa
                 length_mm: 30.0,
                 hole_clearance_mm: 1.0,
             },
-            physical_hole_pairs: Vec::new(),
+            holes: AssistantPinHoles::Logical,
         }]),
     )
     .unwrap();
@@ -2665,7 +2667,8 @@ fn physical_pin_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
-        },
+        }
+        .into(),
         face_origin_local_mm: origin,
         inward_unit_local: inward,
         bounds_min_local_mm: [0.0; 3],
@@ -2689,7 +2692,7 @@ fn physical_pin_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
                 translation_mm: [0.0, 15.0, 0.0],
                 rotation: None,
             },
-            AssistantCadEditOperation::CreatePhysicalPinJoint {
+            AssistantCadEditOperation::CreatePinJoint {
                 joint_id: None,
                 name: "Corner".into(),
                 first: face(2, [0.0; 3], [0.0, 1.0, 0.0], [15.0, 50.0, 60.0]),
@@ -2703,7 +2706,7 @@ fn physical_pin_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
                     length_mm: 30.0,
                     hole_clearance_mm: 1.0,
                 },
-                first_insertion_mm,
+                holes: AssistantPinHoles::Drill { first_insertion_mm },
             },
         ])
     };
@@ -2764,13 +2767,14 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
-        },
+        }
+        .into(),
         face_origin_local_mm: [0.0, 0.0, face_z],
         inward_unit_local,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let input = program(vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
+    let input = program(vec![AssistantCadEditOperation::CreatePinJoint {
         joint_id: None,
         name: "Physical shelf row".into(),
         first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -2784,7 +2788,9 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
             length_mm: 30.0,
             hole_clearance_mm: 1.0,
         },
-        first_insertion_mm: None,
+        holes: AssistantPinHoles::Drill {
+            first_insertion_mm: None,
+        },
     }]);
     let input: AssistantCadEditProgram =
         serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
@@ -2874,7 +2880,7 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
     document.redo().unwrap();
     assert_eq!(document.current().canonical_digest(), committed_digest);
 
-    let update = program(vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
+    let update = program(vec![AssistantCadEditOperation::CreatePinJoint {
         joint_id: Some(1),
         name: "Physical shelf row".into(),
         first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -2888,7 +2894,9 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
             length_mm: 30.0,
             hole_clearance_mm: 1.0,
         },
-        first_insertion_mm: None,
+        holes: AssistantPinHoles::Drill {
+            first_insertion_mm: None,
+        },
     }]);
     let update_batch = plan(
         &document,
@@ -3065,25 +3073,27 @@ fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
-        },
+        }
+        .into(),
         face_origin_local_mm: [0.0, 0.0, face_z],
         inward_unit_local,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let joint =
-        |second_normal, count, spacing_mm, pin| AssistantCadEditOperation::CreatePhysicalPinJoint {
-            joint_id: None,
-            name: "Guarded physical row".into(),
-            first: face(1, 18.0, [0.0, 0.0, -1.0]),
-            second: face(2, 0.0, second_normal),
-            first_center_local_mm: [20.0, 20.0, 18.0],
-            row_unit_first_local: [1.0, 0.0, 0.0],
-            count,
-            spacing_mm,
-            pin,
+    let joint = |second_normal, count, spacing_mm, pin| AssistantCadEditOperation::CreatePinJoint {
+        joint_id: None,
+        name: "Guarded physical row".into(),
+        first: face(1, 18.0, [0.0, 0.0, -1.0]),
+        second: face(2, 0.0, second_normal),
+        first_center_local_mm: [20.0, 20.0, 18.0],
+        row_unit_first_local: [1.0, 0.0, 0.0],
+        count,
+        spacing_mm,
+        pin,
+        holes: AssistantPinHoles::Drill {
             first_insertion_mm: None,
-        };
+        },
+    };
     let assert_rejected_without_mutation =
         |document: &DocumentStore, operation: AssistantCadEditOperation| {
             let before = document.current();
@@ -3294,7 +3304,8 @@ fn physical_pin_joint_refuses_shared_root_and_nested_definitions_without_mutatio
                 instance_path: AssistantInstancePath {
                     root_occurrence_id: id,
                     steps: vec![],
-                },
+                }
+                .into(),
                 face_origin_local_mm: [0.0, 0.0, z],
                 inward_unit_local,
                 bounds_min_local_mm: [0.0; 3],
@@ -3304,7 +3315,7 @@ fn physical_pin_joint_refuses_shared_root_and_nested_definitions_without_mutatio
                 &document,
                 &BTreeSet::new(),
                 &ExactResultRegistry::default(),
-                &program(vec![AssistantCadEditOperation::CreatePhysicalPinJoint {
+                &program(vec![AssistantCadEditOperation::CreatePinJoint {
                     joint_id: None,
                     name: "Must not drill sibling".into(),
                     first: face(1, 18.0, [0.0, 0.0, -1.0]),
@@ -3318,7 +3329,9 @@ fn physical_pin_joint_refuses_shared_root_and_nested_definitions_without_mutatio
                         length_mm: 30.0,
                         hole_clearance_mm: 1.0,
                     },
-                    first_insertion_mm: None,
+                    holes: AssistantPinHoles::Drill {
+                        first_insertion_mm: None,
+                    },
                 }]),
             )
             .unwrap_err();
@@ -3388,13 +3401,14 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
-        },
+        }
+        .into(),
         face_origin_local_mm,
         inward_unit_local,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
     };
-    let top_joint = AssistantCadEditOperation::CreatePhysicalPinJoint {
+    let top_joint = AssistantCadEditOperation::CreatePinJoint {
         joint_id: None,
         name: "Existing top row".into(),
         first: face(1, [0.0, 0.0, 18.0], [0.0, 0.0, -1.0]),
@@ -3408,7 +3422,9 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
             length_mm: 30.0,
             hole_clearance_mm: 1.0,
         },
-        first_insertion_mm: None,
+        holes: AssistantPinHoles::Drill {
+            first_insertion_mm: None,
+        },
     };
     let top_batch = plan(
         &document,
@@ -3429,7 +3445,7 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
         .unwrap()
         .id();
     let side_joint = |name: &str, first, second, first_center_local_mm| {
-        AssistantCadEditOperation::CreatePhysicalPinJoint {
+        AssistantCadEditOperation::CreatePinJoint {
             joint_id: None,
             name: name.into(),
             first,
@@ -3443,7 +3459,9 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
                 length_mm: 30.0,
                 hole_clearance_mm: 1.0,
             },
-            first_insertion_mm: None,
+            holes: AssistantPinHoles::Drill {
+                first_insertion_mm: None,
+            },
         }
     };
     let sides = program(vec![
@@ -3592,16 +3610,25 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
             output,
         },
     };
-    let named = |name: &str, output| AssistantCadNamedProgramOutputReference {
-        name: name.into(),
+    let output = |operation_index, output| AssistantCadProgramFeatureReference {
+        operation_index,
         output,
     };
-    let face = |name: &str, face_z, inward_unit_local| AssistantProgramPinJointFace {
-        occurrence: named(name, AssistantCadProgramFeatureOutput::Occurrence),
+    let face = |operation_index, face_z, inward_unit_local| AssistantPinJointFace {
+        instance_path: AssistantInstanceReference::ProgramOutput(output(
+            operation_index,
+            AssistantCadProgramFeatureOutput::Occurrence,
+        )),
         face_origin_local_mm: [0.0, 0.0, face_z],
         inward_unit_local,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
         bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let hole = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(output(
+            operation_index,
+            AssistantCadProgramFeatureOutput::BodyFeature,
+        ))
     };
     let input = program(vec![
         panel("Lower panel", [0.0, 0.0, 0.0], 18.0, [0.0, 0.0, -1.0]),
@@ -3618,10 +3645,11 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
             3,
             AssistantCadProgramFeatureOutput::BodyFeature,
         ),
-        AssistantCadEditOperation::CreateProgramPinJoint {
+        AssistantCadEditOperation::CreatePinJoint {
+            joint_id: None,
             name: "Bound row".into(),
-            first: face("lower", 18.0, [0.0, 0.0, -1.0]),
-            second: face("upper", 0.0, [0.0, 0.0, 1.0]),
+            first: face(0, 18.0, [0.0, 0.0, -1.0]),
+            second: face(3, 0.0, [0.0, 0.0, 1.0]),
             first_center_local_mm: [20.0, 20.0, 18.0],
             row_unit_first_local: [1.0, 0.0, 0.0],
             count: 1,
@@ -3631,16 +3659,12 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
                 length_mm: 30.0,
                 hole_clearance_mm: 1.0,
             },
-            physical_hole_pairs: vec![AssistantProgramPinPhysicalHolePair {
-                first_pocket_feature: named(
-                    "lower-hole",
-                    AssistantCadProgramFeatureOutput::BodyFeature,
-                ),
-                second_pocket_feature: named(
-                    "upper-hole",
-                    AssistantCadProgramFeatureOutput::BodyFeature,
-                ),
-            }],
+            holes: AssistantPinHoles::Existing {
+                pairs: vec![AssistantPinHolePair {
+                    first_pocket_feature_id: hole(0),
+                    second_pocket_feature_id: hole(3),
+                }],
+            },
         },
         bind("joint", 6, AssistantCadProgramFeatureOutput::PinJoint),
     ]);
@@ -3779,17 +3803,17 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
     let missing_or_forward: AssistantCadEditProgram = serde_json::from_value(serde_json::json!({
         "operations": [
             {
-                "operation": "create_program_pin_joint",
+                "operation": "create_pin_joint",
                 "name": "Invalid",
                 "first": {
-                    "occurrence": {"name": "later", "output": "occurrence"},
+                    "instance_path": {"operation_index": 2, "output": "occurrence"},
                     "face_origin_local_mm": [0.0, 0.0, 18.0],
                     "inward_unit_local": [0.0, 0.0, -1.0],
                     "bounds_min_local_mm": [0.0, 0.0, 0.0],
                     "bounds_max_local_mm": [100.0, 50.0, 18.0]
                 },
                 "second": {
-                    "occurrence": {"name": "wrong-type", "output": "occurrence"},
+                    "instance_path": {"operation_index": 1, "output": "occurrence"},
                     "face_origin_local_mm": [0.0, 0.0, 0.0],
                     "inward_unit_local": [0.0, 0.0, 1.0],
                     "bounds_min_local_mm": [0.0, 0.0, 0.0],
@@ -3800,10 +3824,10 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
                 "count": 1,
                 "spacing_mm": 0.0,
                 "pin": {"diameter_mm": 8.0, "length_mm": 30.0, "hole_clearance_mm": 1.0},
-                "physical_hole_pairs": [{
-                    "first_pocket_feature": {"name": "first-hole", "output": "body_feature"},
-                    "second_pocket_feature": {"name": "second-hole", "output": "body_feature"}
-                }]
+                "holes": {"type": "existing", "pairs": [{
+                    "first_pocket_feature_id": {"operation_index": 2, "output": "body_feature"},
+                    "second_pocket_feature_id": {"operation_index": 2, "output": "body_feature"}
+                }]}
             },
             {
                 "operation": "bind_program_output",
@@ -3893,7 +3917,8 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         instance_path: AssistantInstancePath {
             root_occurrence_id: occurrence_id,
             steps: Vec::new(),
-        },
+        }
+        .into(),
         face_origin_local_mm: [0.0, 0.0, face_z],
         inward_unit_local,
         bounds_min_local_mm: [0.0, 0.0, 0.0],
@@ -3902,9 +3927,9 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     let physical_hole_pairs = first_pockets
         .iter()
         .zip(&second_pockets)
-        .map(|(first, second)| AssistantPinPhysicalHolePair {
-            first_pocket_feature_id: first.0,
-            second_pocket_feature_id: second.0,
+        .map(|(first, second)| AssistantPinHolePair {
+            first_pocket_feature_id: first.0.into(),
+            second_pocket_feature_id: second.0.into(),
         })
         .collect();
     let batch = plan(
@@ -3912,6 +3937,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
         &BTreeSet::new(),
         &ExactResultRegistry::default(),
         &program(vec![AssistantCadEditOperation::CreatePinJoint {
+            joint_id: None,
             name: "Bound shelf row".into(),
             first: face(1, 18.0, [0.0, 0.0, -1.0]),
             second: face(2, 0.0, [0.0, 0.0, 1.0]),
@@ -3924,7 +3950,9 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
                 length_mm: 30.0,
                 hole_clearance_mm: 1.0,
             },
-            physical_hole_pairs,
+            holes: AssistantPinHoles::Existing {
+                pairs: physical_hole_pairs,
+            },
         }]),
     )
     .unwrap();

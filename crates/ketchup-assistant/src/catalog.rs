@@ -178,12 +178,7 @@ mod tests {
             .iter()
             .map(|entry| entry["operation"].as_str().unwrap())
             .collect();
-        for expected in [
-            "create_panel",
-            "create_physical_pin_joint",
-            "delete",
-            "transform",
-        ] {
+        for expected in ["create_panel", "create_pin_joint", "delete", "transform"] {
             assert!(names.contains(&expected), "{expected} missing");
         }
         let panel = cad_operation_catalog(Some("create_panel")).unwrap();
@@ -195,8 +190,14 @@ mod tests {
         );
         assert!(panel["types"]["AssistantPanelHole"].is_string());
         assert!(panel["types"]["AssistantCadRotation"].is_string());
-        let pin = cad_operation_catalog(Some("create_physical_pin_joint")).unwrap();
-        assert!(pin["field_notes"]["first_insertion_mm"].is_string());
+        let pin = cad_operation_catalog(Some("create_pin_joint")).unwrap();
+        assert!(pin["types"]["AssistantPinHoles"].is_string());
+        assert!(
+            pin["description"]
+                .as_str()
+                .unwrap()
+                .contains("first_insertion_mm")
+        );
         assert_eq!(
             cad_operation_catalog(Some("nope")),
             Err("unknown_operation")

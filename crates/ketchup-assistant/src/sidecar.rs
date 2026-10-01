@@ -644,18 +644,69 @@ impl AssistantPanelPocket {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantPinJointFace {
-    pub instance_path: AssistantInstancePath,
+    pub instance_path: AssistantInstanceReference,
     pub face_origin_local_mm: [f64; 3],
     pub inward_unit_local: [f64; 3],
     pub bounds_min_local_mm: [f64; 3],
     pub bounds_max_local_mm: [f64; 3],
 }
 
+/// A part instance: an existing instance path, or the occurrence an earlier
+/// operation of the same CAD program created.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum AssistantInstanceReference {
+    Existing(AssistantInstancePath),
+    ProgramOutput(AssistantCadProgramFeatureReference),
+}
+
+impl From<AssistantInstancePath> for AssistantInstanceReference {
+    fn from(value: AssistantInstancePath) -> Self {
+        Self::Existing(value)
+    }
+}
+
+impl AssistantInstanceReference {
+    fn validate_for(
+        &self,
+        operation_index: usize,
+        operations: &[AssistantCadEditOperation],
+    ) -> Result<(), AssistantRequestInvalid> {
+        match self {
+            Self::Existing(path) => path.validate(),
+            Self::ProgramOutput(reference) => reference.validate_for(
+                operation_index,
+                operations,
+                AssistantCadProgramFeatureOutput::Occurrence,
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantPinPhysicalHolePair {
-    pub first_pocket_feature_id: u64,
-    pub second_pocket_feature_id: u64,
+pub struct AssistantPinHolePair {
+    pub first_pocket_feature_id: AssistantCadFeatureReference,
+    pub second_pocket_feature_id: AssistantCadFeatureReference,
+}
+
+/// Where the pins of a joint sit. A joint is the same row of pins in every
+/// case; only the holes differ.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantPinHoles {
+    /// Pin positions only; neither part is drilled.
+    Logical,
+    /// The holes already exist as pocket features, one pair per pin.
+    Existing { pairs: Vec<AssistantPinHolePair> },
+    /// The host drills one blind hole per pin end into each part.
+    Drill {
+        /// Pin length inserted into the first part; the rest goes into the
+        /// second. Omitted means half each. Lets a pin go shallow into a thin
+        /// part's face and deep into the mating part's end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_insertion_mm: Option<f64>,
+    },
 }
 
 /// A cylindrical pin: its size and how much longer than the pin end each
@@ -790,12 +841,9 @@ impl AssistantCadProgramFeatureReference {
                 producer,
                 AssistantCadEditOperation::CreateAssemblyJoint { .. }
             ),
-            AssistantCadProgramFeatureOutput::PinJoint => matches!(
-                producer,
-                AssistantCadEditOperation::CreatePinJoint { .. }
-                    | AssistantCadEditOperation::CreateProgramPinJoint { .. }
-                    | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
-            ),
+            AssistantCadProgramFeatureOutput::PinJoint => {
+                matches!(producer, AssistantCadEditOperation::CreatePinJoint { .. })
+            }
         };
         if available {
             Ok(())
@@ -818,45 +866,6 @@ impl From<u64> for AssistantCadFeatureReference {
     fn from(value: u64) -> Self {
         Self::Existing(value)
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantCadNamedProgramOutputReference {
-    pub name: String,
-    pub output: AssistantCadProgramFeatureOutput,
-}
-
-impl AssistantCadNamedProgramOutputReference {
-    fn validate_name(&self) -> Result<(), AssistantRequestInvalid> {
-        if self.name.trim().is_empty()
-            || self.name.len() > MAX_ASSISTANT_NAME_BYTES
-            || self.name.chars().any(char::is_control)
-        {
-            Err(AssistantRequestInvalid::invalid(
-                "CAD named program output reference",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantProgramPinJointFace {
-    pub occurrence: AssistantCadNamedProgramOutputReference,
-    pub face_origin_local_mm: [f64; 3],
-    pub inward_unit_local: [f64; 3],
-    pub bounds_min_local_mm: [f64; 3],
-    pub bounds_max_local_mm: [f64; 3],
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantProgramPinPhysicalHolePair {
-    pub first_pocket_feature: AssistantCadNamedProgramOutputReference,
-    pub second_pocket_feature: AssistantCadNamedProgramOutputReference,
 }
 
 impl AssistantCadFeatureReference {
@@ -1913,30 +1922,12 @@ pub enum AssistantCadEditOperation {
         child_instance_path: AssistantInstancePath,
         kind: AssistantAssemblyJointKind,
     },
+    /// A row of pins between two coincident opposed part faces. `holes` says
+    /// whether the parts stay undrilled, already carry paired pockets, or are
+    /// drilled by the host; a drill's `first_insertion_mm` is the pin length in
+    /// the first part (default half), e.g. shallow into a thin part.
+    /// `joint_id` replaces an earlier drilled joint.
     CreatePinJoint {
-        name: String,
-        first: AssistantPinJointFace,
-        second: AssistantPinJointFace,
-        first_center_local_mm: [f64; 3],
-        row_unit_first_local: [f64; 3],
-        count: u32,
-        spacing_mm: f64,
-        pin: AssistantPin,
-        #[serde(default)]
-        physical_hole_pairs: Vec<AssistantPinPhysicalHolePair>,
-    },
-    CreateProgramPinJoint {
-        name: String,
-        first: AssistantProgramPinJointFace,
-        second: AssistantProgramPinJointFace,
-        first_center_local_mm: [f64; 3],
-        row_unit_first_local: [f64; 3],
-        count: u32,
-        spacing_mm: f64,
-        pin: AssistantPin,
-        physical_hole_pairs: Vec<AssistantProgramPinPhysicalHolePair>,
-    },
-    CreatePhysicalPinJoint {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         joint_id: Option<u64>,
         name: String,
@@ -1947,11 +1938,7 @@ pub enum AssistantCadEditOperation {
         count: u32,
         spacing_mm: f64,
         pin: AssistantPin,
-        /// Pin length inserted into the first part; the rest goes into the
-        /// second. Omitted means half each. Lets a pin go shallow into a thin
-        /// board face and deep into the mating board's end.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        first_insertion_mm: Option<f64>,
+        holes: AssistantPinHoles,
     },
     DeletePhysicalPinJoint {
         joint_id: u64,
@@ -2829,8 +2816,6 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
                 | AssistantCadEditOperation::CreateAssemblyJoint { .. }
                 | AssistantCadEditOperation::CreatePinJoint { .. }
-                | AssistantCadEditOperation::CreateProgramPinJoint { .. }
-                | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
                 | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
                 | AssistantCadEditOperation::MovePhysicalPinPair { .. }
                 | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
@@ -3234,57 +3219,6 @@ impl AssistantCadEditProgram {
                     0
                 }
                 AssistantCadEditOperation::CreatePinJoint {
-                    name,
-                    first,
-                    second,
-                    first_center_local_mm,
-                    row_unit_first_local,
-                    count,
-                    spacing_mm,
-                    physical_hole_pairs,
-                    ..
-                } => {
-                    first.instance_path.validate()?;
-                    second.instance_path.validate()?;
-                    let first_holes = physical_hole_pairs
-                        .iter()
-                        .map(|pair| pair.first_pocket_feature_id)
-                        .collect::<BTreeSet<_>>();
-                    let second_holes = physical_hole_pairs
-                        .iter()
-                        .map(|pair| pair.second_pocket_feature_id)
-                        .collect::<BTreeSet<_>>();
-                    if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || first.instance_path == second.instance_path
-                        || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
-                        || !assistant_cad_vector_is_bounded(first.inward_unit_local)
-                        || !assistant_cad_vector_is_bounded(first.bounds_min_local_mm)
-                        || !assistant_cad_vector_is_bounded(first.bounds_max_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.face_origin_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.inward_unit_local)
-                        || !assistant_cad_vector_is_bounded(second.bounds_min_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.bounds_max_local_mm)
-                        || !assistant_cad_vector_is_bounded(*first_center_local_mm)
-                        || !assistant_cad_vector_is_bounded(*row_unit_first_local)
-                        || !assistant_cad_vector_is_nonzero(*row_unit_first_local)
-                        || !(1..=128).contains(count)
-                        || !spacing_mm.is_finite()
-                        || *spacing_mm < 0.0
-                        || (!physical_hole_pairs.is_empty()
-                            && physical_hole_pairs.len() != *count as usize)
-                        || physical_hole_pairs.iter().any(|pair| {
-                            pair.first_pocket_feature_id == 0 || pair.second_pocket_feature_id == 0
-                        })
-                        || first_holes.len() != physical_hole_pairs.len()
-                        || second_holes.len() != physical_hole_pairs.len()
-                    {
-                        return Err(AssistantRequestInvalid::invalid("pin joint creation"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::CreatePhysicalPinJoint {
                     joint_id,
                     name,
                     first,
@@ -3293,14 +3227,46 @@ impl AssistantCadEditProgram {
                     row_unit_first_local,
                     count,
                     spacing_mm,
-                    first_insertion_mm,
+                    holes,
                     ..
                 } => {
-                    first.instance_path.validate()?;
-                    second.instance_path.validate()?;
-                    if joint_id == &Some(0)
-                        || first_insertion_mm
-                            .is_some_and(|value| !value.is_finite() || value <= 0.0)
+                    first
+                        .instance_path
+                        .validate_for(operation_index, &self.operations)?;
+                    second
+                        .instance_path
+                        .validate_for(operation_index, &self.operations)?;
+                    let holes_valid = match holes {
+                        AssistantPinHoles::Logical => joint_id.is_none(),
+                        AssistantPinHoles::Existing { pairs } => {
+                            let distinct = |side: fn(&AssistantPinHolePair) -> _| {
+                                pairs.iter().map(side).collect::<BTreeSet<_>>().len() == pairs.len()
+                            };
+                            joint_id.is_none()
+                                && pairs.len() == *count as usize
+                                && distinct(|pair| pair.first_pocket_feature_id)
+                                && distinct(|pair| pair.second_pocket_feature_id)
+                                && pairs.iter().all(|pair| {
+                                    [pair.first_pocket_feature_id, pair.second_pocket_feature_id]
+                                        .into_iter()
+                                        .all(|feature| {
+                                            feature
+                                                .validate_output(
+                                                    operation_index,
+                                                    &self.operations,
+                                                    AssistantCadProgramFeatureOutput::BodyFeature,
+                                                )
+                                                .is_ok()
+                                        })
+                                })
+                        }
+                        AssistantPinHoles::Drill { first_insertion_mm } => {
+                            *joint_id != Some(0)
+                                && !first_insertion_mm
+                                    .is_some_and(|value| !value.is_finite() || value <= 0.0)
+                        }
+                    };
+                    if !holes_valid
                         || name.trim().is_empty()
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
@@ -3320,9 +3286,7 @@ impl AssistantCadEditProgram {
                         || !spacing_mm.is_finite()
                         || *spacing_mm < 0.0
                     {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "physical pin joint creation",
-                        ));
+                        return Err(AssistantRequestInvalid::invalid("pin joint creation"));
                     }
                     0
                 }
@@ -3341,76 +3305,6 @@ impl AssistantCadEditProgram {
                 } => {
                     if *joint_id == 0 || !assistant_cad_vector_is_bounded(*offset_first_local_mm) {
                         return Err(AssistantRequestInvalid::invalid("physical pin pair move"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::CreateProgramPinJoint {
-                    name,
-                    first,
-                    second,
-                    first_center_local_mm,
-                    row_unit_first_local,
-                    count,
-                    spacing_mm,
-                    physical_hole_pairs,
-                    ..
-                } => {
-                    let named_output_is = |reference: &AssistantCadNamedProgramOutputReference,
-                                           expected| {
-                        reference.validate_name().is_ok()
-                            && reference.output == expected
-                            && named_outputs.get(&reference.name) == Some(&expected)
-                    };
-                    let first_holes = physical_hole_pairs
-                        .iter()
-                        .map(|pair| pair.first_pocket_feature.name.as_str())
-                        .collect::<BTreeSet<_>>();
-                    let second_holes = physical_hole_pairs
-                        .iter()
-                        .map(|pair| pair.second_pocket_feature.name.as_str())
-                        .collect::<BTreeSet<_>>();
-                    if name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || !named_output_is(
-                            &first.occurrence,
-                            AssistantCadProgramFeatureOutput::Occurrence,
-                        )
-                        || !named_output_is(
-                            &second.occurrence,
-                            AssistantCadProgramFeatureOutput::Occurrence,
-                        )
-                        || first.occurrence.name == second.occurrence.name
-                        || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
-                        || !assistant_cad_vector_is_bounded(first.inward_unit_local)
-                        || !assistant_cad_vector_is_bounded(first.bounds_min_local_mm)
-                        || !assistant_cad_vector_is_bounded(first.bounds_max_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.face_origin_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.inward_unit_local)
-                        || !assistant_cad_vector_is_bounded(second.bounds_min_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.bounds_max_local_mm)
-                        || !assistant_cad_vector_is_bounded(*first_center_local_mm)
-                        || !assistant_cad_vector_is_bounded(*row_unit_first_local)
-                        || !assistant_cad_vector_is_nonzero(*row_unit_first_local)
-                        || !(1..=128).contains(count)
-                        || !spacing_mm.is_finite()
-                        || *spacing_mm < 0.0
-                        || physical_hole_pairs.len() != *count as usize
-                        || first_holes.len() != physical_hole_pairs.len()
-                        || second_holes.len() != physical_hole_pairs.len()
-                        || physical_hole_pairs.iter().any(|pair| {
-                            !named_output_is(
-                                &pair.first_pocket_feature,
-                                AssistantCadProgramFeatureOutput::BodyFeature,
-                            ) || !named_output_is(
-                                &pair.second_pocket_feature,
-                                AssistantCadProgramFeatureOutput::BodyFeature,
-                            )
-                        })
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "named-output pin joint creation",
-                        ));
                     }
                     0
                 }

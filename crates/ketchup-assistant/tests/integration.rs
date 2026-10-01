@@ -3,6 +3,7 @@
 
 mod assistant_sidecar;
 mod intent_review_and_commit;
+mod pin_joint_schema;
 mod workplane_frame_schema;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

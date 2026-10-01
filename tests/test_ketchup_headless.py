@@ -193,6 +193,12 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(operation["pin"],
                          {"diameter_mm": 8, "length_mm": 30, "hole_clearance_mm": 1})
         self.assertEqual(operation["count"], 3)
+        self.assertEqual(operation["holes"], {"type": "logical"})
+        doc.pin_joint("Drilled", face, face, [20, 10, 18], [1, 0, 0], 1, 0,
+                      pin={"diameter_mm": 8, "length_mm": 30, "hole_clearance_mm": 1},
+                      holes={"type": "drill", "first_insertion_mm": 10})
+        self.assertEqual(process.requests[-1]["params"]["program"]["operations"][0]["holes"],
+                         {"type": "drill", "first_insertion_mm": 10})
 
     def test_surface_helpers_emit_only_typed_append_feature_operations(self):
         process = FakeProcess()

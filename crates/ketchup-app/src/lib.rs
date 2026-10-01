@@ -456,8 +456,6 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreatePinJoint { .. }
-            | AssistantCadEditOperation::CreateProgramPinJoint { .. }
-            | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
             | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
             | AssistantCadEditOperation::MovePhysicalPinPair { .. }
             | AssistantCadEditOperation::CreateTag { .. }

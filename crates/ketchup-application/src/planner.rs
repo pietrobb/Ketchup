@@ -13,11 +13,11 @@ use ketchup_assistant::sidecar::{
     AssistantAssemblyJointAxis, AssistantAssemblyJointKind, AssistantAssemblyJointLimits,
     AssistantAxisSpec, AssistantCadBodyFeature, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadFeatureReference, AssistantCadNamedProgramOutputReference,
-    AssistantCadParameterValueType, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantCadSurfaceBodySource, AssistantCamToolKind,
-    AssistantCamWorkOffset, AssistantInstancePath, AssistantInstancePathStep, AssistantPanelHole,
-    AssistantPanelPocket, AssistantPrincipalPlane, AssistantProgramPinJointFace,
+    AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadPartFeature,
+    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
+    AssistantCadSurfaceBodySource, AssistantCamToolKind, AssistantCamWorkOffset,
+    AssistantInstancePath, AssistantInstancePathStep, AssistantInstanceReference,
+    AssistantPanelHole, AssistantPanelPocket, AssistantPinHoles, AssistantPrincipalPlane,
     AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
     AssistantWorkplaneSpec, validated_spatial_path_segments,
 };
@@ -254,54 +254,34 @@ impl StagedPlanningContext {
         Ok(())
     }
 
-    fn resolve_named_output(
+    /// An instance path as given, or the root occurrence an earlier operation of this program
+    /// created; either way it must resolve in the staged document.
+    fn resolve_instance_reference(
         &self,
-        reference: &AssistantCadNamedProgramOutputReference,
-        expected_output: AssistantCadProgramFeatureOutput,
+        reference: &AssistantInstanceReference,
         operation: &str,
-    ) -> AssistantPlanningResult<u64> {
-        let output = self.named_outputs.get(&reference.name).copied();
-        let id = match (expected_output, output) {
-            (
-                AssistantCadProgramFeatureOutput::Definition,
-                Some(StagedProgramOutput::Definition(id)),
-            ) => Some(id.0),
-            (
-                AssistantCadProgramFeatureOutput::Occurrence,
-                Some(StagedProgramOutput::Occurrence(id)),
-            ) => Some(id.0),
-            (
-                AssistantCadProgramFeatureOutput::SketchFeature,
-                Some(StagedProgramOutput::SketchFeature(id)),
-            ) => Some(id.0),
-            (
-                AssistantCadProgramFeatureOutput::ConstructionFeature,
-                Some(StagedProgramOutput::ConstructionFeature(id)),
-            ) => Some(id.0),
-            (
-                AssistantCadProgramFeatureOutput::BodyFeature,
-                Some(StagedProgramOutput::BodyFeature(id)),
-            ) => Some(id.0),
-            (
-                AssistantCadProgramFeatureOutput::AssemblyJoint,
-                Some(StagedProgramOutput::AssemblyJoint(id)),
-            ) => Some(id.0),
-            (
-                AssistantCadProgramFeatureOutput::PinJoint,
-                Some(StagedProgramOutput::PinJoint(id)),
-            ) => Some(id.0),
-            _ => None,
-        };
-        id.filter(|_| reference.output == expected_output)
-            .ok_or_else(|| {
-                assistant_planning_rejection(
-                    "planning.cad_named_program_output_unavailable",
+        field: &str,
+    ) -> AssistantPlanningResult<InstancePath> {
+        let path = match reference {
+            AssistantInstanceReference::Existing(path) => {
+                resolve_assistant_instance_path(path, self.staged_snapshot())
+            }
+            AssistantInstanceReference::ProgramOutput(reference) => {
+                let occurrence = self.resolve_program_output(
+                    *reference,
+                    AssistantCadProgramFeatureOutput::Occurrence,
                     operation,
-                    &reference.name,
-                    "The named earlier output is missing or has a different type.",
-                    "Bind a unique compatible output before referencing it.",
-                )
-            })
+                )?;
+                let path = InstancePath::root(OccurrenceId(occurrence));
+                self.staged_snapshot()
+                    .resolve_instance_path(&path)
+                    .is_ok()
+                    .then_some(path)
+            }
+        };
+        path.ok_or_else(|| {
+            assistant_canonical_rejection(CanonicalError::InvalidInstancePath, operation, field)
+        })
     }
 
     fn resolved_named_outputs(&self) -> BTreeMap<String, AssistantCadResolvedProgramOutput> {
@@ -909,7 +889,7 @@ fn append_physical_pin_hole(
         staged.staged_snapshot(),
         definition_id,
         hole,
-        "create_physical_pin_joint",
+        "create_pin_joint",
         None,
     )?;
     let panel_hole = AssistantPanelHole {
@@ -950,7 +930,7 @@ fn append_physical_pin_hole(
         })
         .expect("CreateSketch always creates a sketch");
     staged.extend(sketch_commands);
-    staged.refresh("create_physical_pin_joint", document_target)?;
+    staged.refresh("create_pin_joint", document_target)?;
 
     let feature = AssistantCadBodyFeature::Pocket {
         target_feature_id: target_feature_id.0.into(),
@@ -962,12 +942,12 @@ fn append_physical_pin_hole(
         &staged.topology(&ExactResultRegistry::default()),
         definition_id,
         &feature,
-        "create_physical_pin_joint",
+        "create_pin_joint",
     )?;
     let pocket_id = next_feature.map(FeatureId).ok_or_else(|| {
         assistant_canonical_rejection(
             CanonicalError::IdExhausted,
-            "create_physical_pin_joint",
+            "create_pin_joint",
             document_target,
         )
     })?;
@@ -1870,8 +1850,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             AssistantCadEditOperation::MakeOccurrenceUnique { .. } => "make_occurrence_unique",
             AssistantCadEditOperation::CreateAssemblyJoint { .. } => "create_assembly_joint",
             AssistantCadEditOperation::CreatePinJoint { .. } => "create_pin_joint",
-            AssistantCadEditOperation::CreateProgramPinJoint { .. } => "create_program_pin_joint",
-            AssistantCadEditOperation::CreatePhysicalPinJoint { .. } => "create_physical_pin_joint",
             AssistantCadEditOperation::DeletePhysicalPinJoint { .. } => "delete_physical_pin_joint",
             AssistantCadEditOperation::MovePhysicalPinPair { .. } => "move_physical_pin_pair",
             AssistantCadEditOperation::SetAssemblyJointPosition { .. } => {
@@ -1999,8 +1977,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
             | AssistantCadEditOperation::CreateAssemblyJoint { .. }
             | AssistantCadEditOperation::CreatePinJoint { .. }
-            | AssistantCadEditOperation::CreateProgramPinJoint { .. }
-            | AssistantCadEditOperation::CreatePhysicalPinJoint { .. }
             | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
             | AssistantCadEditOperation::MovePhysicalPinPair { .. }
             | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
@@ -2649,179 +2625,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     .record_output(operation_index, StagedProgramOutput::AssemblyJoint(id));
             }
             AssistantCadEditOperation::CreatePinJoint {
-                name,
-                first,
-                second,
-                first_center_local_mm,
-                row_unit_first_local,
-                count,
-                spacing_mm,
-                pin,
-                physical_hole_pairs,
-            } => {
-                let id = next_pin_joint.map(PinJointId).ok_or_else(|| {
-                    assistant_canonical_rejection(
-                        CanonicalError::IdExhausted,
-                        operation_name,
-                        &document_target,
-                    )
-                })?;
-                next_pin_joint = id.0.checked_add(1);
-                let face = |input: &ketchup_assistant::sidecar::AssistantPinJointFace| {
-                    resolve_assistant_instance_path(
-                        &input.instance_path,
-                        staged_planning.staged_snapshot(),
-                    )
-                    .map(|instance_path| PinJointFace {
-                        instance_path,
-                        face_origin_local_mm: input.face_origin_local_mm,
-                        inward_unit_local: input.inward_unit_local,
-                        bounds_min_local_mm: input.bounds_min_local_mm,
-                        bounds_max_local_mm: input.bounds_max_local_mm,
-                    })
-                };
-                let contract = PinJointContract {
-                    id,
-                    name: name.clone(),
-                    first: face(first).ok_or_else(|| {
-                        assistant_canonical_rejection(
-                            CanonicalError::InvalidInstancePath,
-                            operation_name,
-                            "first.instance_path",
-                        )
-                    })?,
-                    second: face(second).ok_or_else(|| {
-                        assistant_canonical_rejection(
-                            CanonicalError::InvalidInstancePath,
-                            operation_name,
-                            "second.instance_path",
-                        )
-                    })?,
-                    first_center_local_mm: *first_center_local_mm,
-                    row_unit_first_local: *row_unit_first_local,
-                    count: *count,
-                    spacing_mm: *spacing_mm,
-                    pin: pin.spec(),
-                    pair_offsets_first_local_mm: Vec::new(),
-                    physical_hole_pairs: (!physical_hole_pairs.is_empty()).then(|| {
-                        physical_hole_pairs
-                            .iter()
-                            .map(|pair| PinPhysicalHolePair {
-                                first_pocket_feature_id: FeatureId(pair.first_pocket_feature_id),
-                                second_pocket_feature_id: FeatureId(pair.second_pocket_feature_id),
-                            })
-                            .collect()
-                    }),
-                };
-                project_pin_joint_contract(staged_planning.staged_snapshot(), &contract).map_err(
-                    |error| {
-                        assistant_planning_rejection(
-                            "planning.pin_joint_invalid",
-                            operation_name,
-                            &format!("pin_joint:{}", id.0),
-                            error.to_string(),
-                            "Use two coincident opposed part faces and a row that remains inside both parts.",
-                        )
-                    },
-                )?;
-                staged_planning.push(CanonicalCommand::UpsertPinJoint(contract));
-                staged_planning.record_output(operation_index, StagedProgramOutput::PinJoint(id));
-            }
-            AssistantCadEditOperation::CreateProgramPinJoint {
-                name,
-                first,
-                second,
-                first_center_local_mm,
-                row_unit_first_local,
-                count,
-                spacing_mm,
-                pin,
-                physical_hole_pairs,
-            } => {
-                staged_planning.refresh(operation_name, &document_target)?;
-                let id = next_pin_joint.map(PinJointId).ok_or_else(|| {
-                    assistant_canonical_rejection(
-                        CanonicalError::IdExhausted,
-                        operation_name,
-                        &document_target,
-                    )
-                })?;
-                next_pin_joint = id.0.checked_add(1);
-                let face = |input: &AssistantProgramPinJointFace| -> AssistantPlanningResult<_> {
-                    let occurrence_id = OccurrenceId(staged_planning.resolve_named_output(
-                        &input.occurrence,
-                        AssistantCadProgramFeatureOutput::Occurrence,
-                        operation_name,
-                    )?);
-                    let instance_path = InstancePath::root(occurrence_id);
-                    staged_planning
-                        .staged_snapshot()
-                        .resolve_instance_path(&instance_path)
-                        .map_err(|error| {
-                            assistant_canonical_rejection(
-                                CanonicalError::InvalidInstancePath,
-                                operation_name,
-                                &input.occurrence.name,
-                            )
-                            .caused_by(&error)
-                        })?;
-                    Ok(PinJointFace {
-                        instance_path,
-                        face_origin_local_mm: input.face_origin_local_mm,
-                        inward_unit_local: input.inward_unit_local,
-                        bounds_min_local_mm: input.bounds_min_local_mm,
-                        bounds_max_local_mm: input.bounds_max_local_mm,
-                    })
-                };
-                let pairs = physical_hole_pairs
-                    .iter()
-                    .map(|pair| {
-                        Ok(PinPhysicalHolePair {
-                            first_pocket_feature_id: FeatureId(
-                                staged_planning.resolve_named_output(
-                                    &pair.first_pocket_feature,
-                                    AssistantCadProgramFeatureOutput::BodyFeature,
-                                    operation_name,
-                                )?,
-                            ),
-                            second_pocket_feature_id: FeatureId(
-                                staged_planning.resolve_named_output(
-                                    &pair.second_pocket_feature,
-                                    AssistantCadProgramFeatureOutput::BodyFeature,
-                                    operation_name,
-                                )?,
-                            ),
-                        })
-                    })
-                    .collect::<AssistantPlanningResult<Vec<_>>>()?;
-                let contract = PinJointContract {
-                    id,
-                    name: name.clone(),
-                    first: face(first)?,
-                    second: face(second)?,
-                    first_center_local_mm: *first_center_local_mm,
-                    row_unit_first_local: *row_unit_first_local,
-                    count: *count,
-                    spacing_mm: *spacing_mm,
-                    pin: pin.spec(),
-                    pair_offsets_first_local_mm: Vec::new(),
-                    physical_hole_pairs: Some(pairs),
-                };
-                project_pin_joint_contract(staged_planning.staged_snapshot(), &contract).map_err(
-                    |error| {
-                        assistant_planning_rejection(
-                            "planning.pin_joint_invalid",
-                            operation_name,
-                            &format!("pin_joint:{}", id.0),
-                            error.to_string(),
-                            "Use two coincident opposed part faces and paired physical pocket outputs.",
-                        )
-                    },
-                )?;
-                staged_planning.push(CanonicalCommand::UpsertPinJoint(contract));
-                staged_planning.record_output(operation_index, StagedProgramOutput::PinJoint(id));
-            }
-            AssistantCadEditOperation::CreatePhysicalPinJoint {
                 joint_id,
                 name,
                 first,
@@ -2831,11 +2634,14 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 count,
                 spacing_mm,
                 pin,
-                first_insertion_mm,
+                holes,
             } => {
                 staged_planning.refresh(operation_name, &document_target)?;
                 let mut pin_spec = pin.spec();
-                if let Some(first_insertion) = *first_insertion_mm {
+                if let AssistantPinHoles::Drill {
+                    first_insertion_mm: Some(first_insertion),
+                } = *holes
+                {
                     if !(first_insertion > 0.0 && first_insertion < pin_spec.length_mm) {
                         return Err(assistant_planning_rejection(
                             "planning.physical_pin_insertion_invalid",
@@ -2861,44 +2667,71 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     next_pin_joint = id.0.checked_add(1);
                     id
                 };
-                let face = |input: &ketchup_assistant::sidecar::AssistantPinJointFace| {
-                    resolve_assistant_instance_path(
-                        &input.instance_path,
-                        staged_planning.staged_snapshot(),
-                    )
-                    .map(|instance_path| PinJointFace {
-                        instance_path,
-                        face_origin_local_mm: input.face_origin_local_mm,
-                        inward_unit_local: input.inward_unit_local,
-                        bounds_min_local_mm: input.bounds_min_local_mm,
-                        bounds_max_local_mm: input.bounds_max_local_mm,
-                    })
+                let face = |input: &ketchup_assistant::sidecar::AssistantPinJointFace, field| {
+                    staged_planning
+                        .resolve_instance_reference(&input.instance_path, operation_name, field)
+                        .map(|instance_path| PinJointFace {
+                            instance_path,
+                            face_origin_local_mm: input.face_origin_local_mm,
+                            inward_unit_local: input.inward_unit_local,
+                            bounds_min_local_mm: input.bounds_min_local_mm,
+                            bounds_max_local_mm: input.bounds_max_local_mm,
+                        })
+                };
+                let pocket = |reference| {
+                    staged_planning
+                        .resolve_program_feature(
+                            reference,
+                            AssistantCadProgramFeatureOutput::BodyFeature,
+                            operation_name,
+                        )
+                        .map(FeatureId)
+                };
+                let physical_hole_pairs = match holes {
+                    AssistantPinHoles::Existing { pairs } => Some(
+                        pairs
+                            .iter()
+                            .map(|pair| {
+                                Ok(PinPhysicalHolePair {
+                                    first_pocket_feature_id: pocket(pair.first_pocket_feature_id)?,
+                                    second_pocket_feature_id: pocket(
+                                        pair.second_pocket_feature_id,
+                                    )?,
+                                })
+                            })
+                            .collect::<AssistantPlanningResult<Vec<_>>>()?,
+                    ),
+                    AssistantPinHoles::Logical | AssistantPinHoles::Drill { .. } => None,
                 };
                 let mut contract = PinJointContract {
                     id,
                     name: name.clone(),
-                    first: face(first).ok_or_else(|| {
-                        assistant_canonical_rejection(
-                            CanonicalError::InvalidInstancePath,
-                            operation_name,
-                            "first.instance_path",
-                        )
-                    })?,
-                    second: face(second).ok_or_else(|| {
-                        assistant_canonical_rejection(
-                            CanonicalError::InvalidInstancePath,
-                            operation_name,
-                            "second.instance_path",
-                        )
-                    })?,
+                    first: face(first, "first.instance_path")?,
+                    second: face(second, "second.instance_path")?,
                     first_center_local_mm: *first_center_local_mm,
                     row_unit_first_local: *row_unit_first_local,
                     count: *count,
                     spacing_mm: *spacing_mm,
                     pin: pin_spec,
                     pair_offsets_first_local_mm: Vec::new(),
-                    physical_hole_pairs: None,
+                    physical_hole_pairs,
                 };
+                if !matches!(holes, AssistantPinHoles::Drill { .. }) {
+                    project_pin_joint_contract(staged_planning.staged_snapshot(), &contract)
+                        .map_err(|error| {
+                            assistant_planning_rejection(
+                                "planning.pin_joint_invalid",
+                                operation_name,
+                                &format!("pin_joint:{}", id.0),
+                                error.to_string(),
+                                "Use two coincident opposed part faces, a row that remains inside both parts and one existing pocket pair per pin.",
+                            )
+                        })?;
+                    staged_planning.push(CanonicalCommand::UpsertPinJoint(contract));
+                    staged_planning
+                        .record_output(operation_index, StagedProgramOutput::PinJoint(id));
+                    continue;
+                }
                 if joint_id.is_some() {
                     if let Some(existing) = staged_planning.staged_snapshot().pin_joint(id) {
                         let mut unchanged = contract.clone();

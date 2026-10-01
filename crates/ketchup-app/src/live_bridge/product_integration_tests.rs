@@ -6,7 +6,7 @@ use egui_kittest::{Harness, kittest::Queryable as _};
 fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geometry() {
     use ketchup_assistant::sidecar::{
         AssistantCadEditOperation as Op, AssistantCadParameterValueType, AssistantInstancePath,
-        AssistantPin, AssistantPinJointFace,
+        AssistantPin, AssistantPinHoles, AssistantPinJointFace,
     };
     use ketchup_model::document::FeatureParameterTarget;
     use ketchup_model::pin_joint::project_pin_joint_contract;
@@ -66,7 +66,8 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         instance_path: AssistantInstancePath {
             root_occurrence_id: id,
             steps: vec![],
-        },
+        }
+        .into(),
         face_origin_local_mm: origin,
         inward_unit_local: inward,
         bounds_min_local_mm: [0.0; 3],
@@ -74,7 +75,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     };
     let rear = |origin, inward| face(6, origin, inward, [464.0, 218.0, 8.0]);
     let side = |id| face(id, [0.0; 3], [0.0, 0.0, 1.0], [350.0, 432.0, 18.0]);
-    let row = |name: &str, first, second, center, direction, spacing| Op::CreatePhysicalPinJoint {
+    let row = |name: &str, first, second, center, direction, spacing| Op::CreatePinJoint {
         joint_id: None,
         name: name.into(),
         first,
@@ -88,7 +89,9 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             length_mm: 30.0,
             hole_clearance_mm: 1.0,
         },
-        first_insertion_mm: None,
+        holes: AssistantPinHoles::Drill {
+            first_insertion_mm: None,
+        },
     };
     let program = AssistantCadEditProgram {
         operations: vec![
