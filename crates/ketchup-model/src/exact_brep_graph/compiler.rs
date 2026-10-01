@@ -358,9 +358,9 @@ impl<'a> GraphCompiler<'a> {
                     .map(|feature| feature.kind())
                 {
                     Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch
-                            .solved_regions()
-                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let regions = sketch.solved_regions().map_err(|error| {
+                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
+                        })?;
                         let [region] = regions.as_slice() else {
                             return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
                         };
@@ -387,9 +387,9 @@ impl<'a> GraphCompiler<'a> {
                     .map(|feature| feature.kind())
                 {
                     Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch
-                            .solved_regions()
-                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let regions = sketch.solved_regions().map_err(|error| {
+                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
+                        })?;
                         let [region] = regions.as_slice() else {
                             return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
                         };
@@ -414,9 +414,9 @@ impl<'a> GraphCompiler<'a> {
                     .map(|feature| feature.kind())
                 {
                     Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch
-                            .solved_regions()
-                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let regions = sketch.solved_regions().map_err(|error| {
+                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
+                        })?;
                         let [region] = regions.as_slice() else {
                             return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
                         };
@@ -475,9 +475,9 @@ impl<'a> GraphCompiler<'a> {
                     .map(|feature| feature.kind())
                 {
                     Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch
-                            .solved_regions()
-                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let regions = sketch.solved_regions().map_err(|error| {
+                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
+                        })?;
                         let [region] = regions.as_slice() else {
                             return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
                         };
@@ -517,9 +517,9 @@ impl<'a> GraphCompiler<'a> {
                     .map(|feature| feature.kind())
                 {
                     Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch
-                            .solved_regions()
-                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(spec.profile))?;
+                        let regions = sketch.solved_regions().map_err(|error| {
+                            ExactBRepGraphError::UnsolvedProfile(spec.profile, error)
+                        })?;
                         let [region] = regions.as_slice() else {
                             return Err(ExactBRepGraphError::UnsupportedProfile(spec.profile));
                         };
@@ -718,7 +718,7 @@ impl<'a> GraphCompiler<'a> {
             self.nodes
                 .len()
                 .try_into()
-                .map_err(|_| ExactBRepGraphError::ResourceLimit)?,
+                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
         );
         if self.nodes.len() >= MAX_EXACT_BREP_GRAPH_NODES {
             return Err(ExactBRepGraphError::ResourceLimit);
@@ -786,7 +786,7 @@ impl<'a> GraphCompiler<'a> {
                 Some(FeatureKind::Sketch(sketch)) => {
                     let regions = sketch
                         .solved_regions()
-                        .map_err(|_| ExactBRepGraphError::UnsupportedProfile(feature_id))?;
+                        .map_err(|error| ExactBRepGraphError::UnsolvedProfile(feature_id, error))?;
                     let [region] = regions.as_slice() else {
                         return Err(ExactBRepGraphError::UnsupportedProfile(feature_id));
                     };
@@ -1011,8 +1011,7 @@ impl<'a> GraphCompiler<'a> {
             self.snapshot,
             reference.definition_id,
             reference.producer_feature_id,
-        )
-        .map_err(|_| ExactBRepGraphError::UnresolvedExtent)?;
+        )?;
         if !face_graph.names_durable_reference(reference) {
             return Err(ExactBRepGraphError::UnresolvedExtent);
         }
@@ -1072,7 +1071,9 @@ impl<'a> GraphCompiler<'a> {
                     geometry,
                     (1..=segment_count)
                         .map(|index| {
-                            u64::try_from(index).map_err(|_| ExactBRepGraphError::ResourceLimit)
+                            u64::try_from(index).map_err(|_: std::num::TryFromIntError| {
+                                ExactBRepGraphError::ResourceLimit
+                            })
                         })
                         .collect::<Result<Vec<_>, _>>()?,
                 )
@@ -1080,7 +1081,7 @@ impl<'a> GraphCompiler<'a> {
             (FeatureKind::Sketch(sketch), Some(region_id)) => {
                 let region = sketch
                     .solved_regions()
-                    .map_err(|_| ExactBRepGraphError::UnsupportedProfile(feature_id))?
+                    .map_err(|error| ExactBRepGraphError::UnsolvedProfile(feature_id, error))?
                     .into_iter()
                     .find(|region| region.id == region_id)
                     .ok_or(ExactBRepGraphError::UnsupportedProfile(feature_id))?;
@@ -1110,7 +1111,7 @@ impl<'a> GraphCompiler<'a> {
             self.profiles
                 .len()
                 .try_into()
-                .map_err(|_| ExactBRepGraphError::ResourceLimit)?,
+                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
         );
         self.profiles.push(ExactBRepProfile {
             id,
@@ -1142,7 +1143,7 @@ impl<'a> GraphCompiler<'a> {
             self.profiles
                 .len()
                 .try_into()
-                .map_err(|_| ExactBRepGraphError::ResourceLimit)?,
+                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
         );
         profile.id = id;
         profile.source_feature_id = member_feature_id.0;
@@ -1247,7 +1248,7 @@ impl<'a> GraphCompiler<'a> {
             self.profiles
                 .len()
                 .try_into()
-                .map_err(|_| ExactBRepGraphError::ResourceLimit)?,
+                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
         );
         profile.id = id;
         profile.frame_bits = identity_frame();

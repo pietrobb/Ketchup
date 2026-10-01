@@ -74,6 +74,8 @@ pub enum TopologicalReferenceError {
     InvalidIdentity,
     InvalidBodyReference,
     InvalidEncoding,
+    /// A stored token is not UTF-8.
+    InvalidToken(std::str::Utf8Error),
     UnsupportedElementType(String),
     ResourceLimit,
 }
@@ -84,6 +86,12 @@ impl fmt::Display for TopologicalReferenceError {
             Self::InvalidIdentity => formatter.write_str("invalid topological identity"),
             Self::InvalidBodyReference => formatter.write_str("invalid body subshape reference"),
             Self::InvalidEncoding => formatter.write_str("invalid topological reference encoding"),
+            Self::InvalidToken(error) => {
+                write!(
+                    formatter,
+                    "topological reference token is not UTF-8: {error}"
+                )
+            }
             Self::UnsupportedElementType(value) => {
                 write!(formatter, "unsupported topological element type {value}")
             }
@@ -334,8 +342,8 @@ fn push_topological_reference_token(
     if token.len() > MAX_TOPOLOGICAL_REFERENCE_TOKEN_BYTES {
         return Err(TopologicalReferenceError::ResourceLimit);
     }
-    let length =
-        u32::try_from(token.len()).map_err(|_| TopologicalReferenceError::ResourceLimit)?;
+    let length = u32::try_from(token.len())
+        .map_err(|_: std::num::TryFromIntError| TopologicalReferenceError::ResourceLimit)?;
     bytes.extend_from_slice(&length.to_le_bytes());
     bytes.extend_from_slice(token.as_bytes());
     Ok(())
@@ -369,37 +377,43 @@ impl<'a> TopologicalReferenceCursor<'a> {
     }
 
     fn read_u16(&mut self) -> Result<u16, TopologicalReferenceError> {
-        let bytes: [u8; 2] = self
-            .take(2)?
-            .try_into()
-            .map_err(|_| TopologicalReferenceError::InvalidEncoding)?;
+        let bytes: [u8; 2] =
+            self.take(2)?
+                .try_into()
+                .map_err(|_: std::array::TryFromSliceError| {
+                    TopologicalReferenceError::InvalidEncoding
+                })?;
         Ok(u16::from_le_bytes(bytes))
     }
 
     fn read_u32(&mut self) -> Result<u32, TopologicalReferenceError> {
-        let bytes: [u8; 4] = self
-            .take(4)?
-            .try_into()
-            .map_err(|_| TopologicalReferenceError::InvalidEncoding)?;
+        let bytes: [u8; 4] =
+            self.take(4)?
+                .try_into()
+                .map_err(|_: std::array::TryFromSliceError| {
+                    TopologicalReferenceError::InvalidEncoding
+                })?;
         Ok(u32::from_le_bytes(bytes))
     }
 
     fn read_u64(&mut self) -> Result<u64, TopologicalReferenceError> {
-        let bytes: [u8; 8] = self
-            .take(8)?
-            .try_into()
-            .map_err(|_| TopologicalReferenceError::InvalidEncoding)?;
+        let bytes: [u8; 8] =
+            self.take(8)?
+                .try_into()
+                .map_err(|_: std::array::TryFromSliceError| {
+                    TopologicalReferenceError::InvalidEncoding
+                })?;
         Ok(u64::from_le_bytes(bytes))
     }
 
     fn read_token(&mut self) -> Result<String, TopologicalReferenceError> {
         let length = usize::try_from(self.read_u32()?)
-            .map_err(|_| TopologicalReferenceError::ResourceLimit)?;
+            .map_err(|_: std::num::TryFromIntError| TopologicalReferenceError::ResourceLimit)?;
         if length > MAX_TOPOLOGICAL_REFERENCE_TOKEN_BYTES {
             return Err(TopologicalReferenceError::ResourceLimit);
         }
         let token = std::str::from_utf8(self.take(length)?)
-            .map_err(|_| TopologicalReferenceError::InvalidEncoding)?;
+            .map_err(TopologicalReferenceError::InvalidToken)?;
         Ok(token.to_owned())
     }
 

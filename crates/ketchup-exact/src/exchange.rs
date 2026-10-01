@@ -46,7 +46,8 @@ pub struct StepXdeExportNode {
 pub enum StepXdeManifestError {
     InvalidPath,
     Reader(String),
-    Malformed,
+    /// The worker manifest is malformed; the text names what was wrong.
+    Malformed(String),
     OutOfEnvelope,
 }
 
@@ -55,7 +56,9 @@ impl std::fmt::Display for StepXdeManifestError {
         match self {
             Self::InvalidPath => formatter.write_str("STEP XDE path must not be empty"),
             Self::Reader(diagnostic) => formatter.write_str(diagnostic),
-            Self::Malformed => formatter.write_str("STEP XDE manifest is malformed"),
+            Self::Malformed(reason) => {
+                write!(formatter, "STEP XDE manifest is malformed: {reason}")
+            }
             Self::OutOfEnvelope => {
                 formatter.write_str("STEP XDE manifest exceeds the bounded envelope")
             }
@@ -118,20 +121,25 @@ pub(super) fn transform_is_rigid(matrix: &[f64; 16]) -> bool {
 
 pub(super) fn parse_step_xde_manifest(raw: &str) -> Result<StepXdeManifest, StepXdeManifestError> {
     if let Some(diagnostic) = raw.strip_prefix("ERR\t") {
-        let text = String::from_utf8(
-            decode_manifest_hex(diagnostic).ok_or(StepXdeManifestError::Malformed)?,
-        )
-        .map_err(|_| StepXdeManifestError::Malformed)?;
+        let bytes = decode_manifest_hex(diagnostic)
+            .ok_or_else(|| malformed("reader diagnostic is not hex"))?;
+        let text = String::from_utf8(bytes).map_err(malformed)?;
         return Err(StepXdeManifestError::Reader(text));
     }
     let mut lines = raw.lines();
     if lines.next() != Some("KETCHUP_STEP_XDE_V1") {
-        return Err(StepXdeManifestError::Malformed);
+        return Err(malformed("first line is not KETCHUP_STEP_XDE_V1"));
     }
     let mut parts = Vec::new();
     let mut nodes = Vec::new();
     for line in lines {
         let fields = line.split('\t').collect::<Vec<_>>();
+        let field = |index: usize, what: &str| {
+            malformed(format!(
+                "{what} {:?} in line {line:?} is invalid",
+                fields[index]
+            ))
+        };
         match fields.first().copied() {
             Some("P") if fields.len() == 5 => {
                 if parts.len() >= MAX_STEP_XDE_NODES {
@@ -139,20 +147,19 @@ pub(super) fn parse_step_xde_manifest(raw: &str) -> Result<StepXdeManifest, Step
                 }
                 let index = fields[1]
                     .parse::<u32>()
-                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                    .map_err(|error| field(1, &format!("part index ({error})")))?;
                 if index as usize != parts.len() {
-                    return Err(StepXdeManifestError::Malformed);
+                    return Err(field(1, "part index (out of sequence)"));
                 }
                 parts.push(StepXdePart {
                     index,
-                    name: parse_manifest_text(fields[2]).ok_or(StepXdeManifestError::Malformed)?,
+                    name: parse_manifest_text(fields[2]).ok_or_else(|| field(2, "part name"))?,
                     name_from_source: match fields[3] {
                         "0" => false,
                         "1" => true,
-                        _ => return Err(StepXdeManifestError::Malformed),
+                        _ => return Err(field(3, "part name source flag")),
                     },
-                    color: parse_manifest_color(fields[4])
-                        .ok_or(StepXdeManifestError::Malformed)?,
+                    color: parse_manifest_color(fields[4]).ok_or_else(|| field(4, "part color"))?,
                 });
             }
             Some("N") if fields.len() == 23 => {
@@ -161,52 +168,51 @@ pub(super) fn parse_step_xde_manifest(raw: &str) -> Result<StepXdeManifest, Step
                 }
                 let id = fields[1]
                     .parse::<u32>()
-                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                    .map_err(|error| field(1, &format!("node id ({error})")))?;
                 if id as usize != nodes.len() {
-                    return Err(StepXdeManifestError::Malformed);
+                    return Err(field(1, "node id (out of sequence)"));
                 }
                 let parent = fields[2]
                     .parse::<i32>()
-                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                    .map_err(|error| field(2, &format!("node parent ({error})")))?;
                 let parent_id = match parent {
                     -1 => None,
                     value if value >= 0 && (value as u32) < id => Some(value as u32),
-                    _ => return Err(StepXdeManifestError::Malformed),
+                    _ => return Err(field(2, "node parent (must be -1 or an earlier node)")),
                 };
                 let part = fields[3]
                     .parse::<i32>()
-                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                    .map_err(|error| field(3, &format!("node part ({error})")))?;
                 let part_index = match part {
                     -1 => None,
                     value if value >= 0 && (value as usize) < parts.len() => Some(value as u32),
-                    _ => return Err(StepXdeManifestError::Malformed),
+                    _ => return Err(field(3, "node part (must be -1 or a listed part)")),
                 };
                 let mut transform = [0.0; 16];
-                for (target, field) in transform.iter_mut().zip(&fields[7..]) {
-                    *target = f64::from_bits(
-                        u64::from_str_radix(field, 16)
-                            .map_err(|_| StepXdeManifestError::Malformed)?,
-                    );
+                for (offset, (target, value)) in transform.iter_mut().zip(&fields[7..]).enumerate()
+                {
+                    *target = f64::from_bits(u64::from_str_radix(value, 16).map_err(|error| {
+                        field(7 + offset, &format!("transform entry ({error})"))
+                    })?);
                 }
                 if !transform_is_rigid(&transform) {
-                    return Err(StepXdeManifestError::Malformed);
+                    return Err(malformed(format!("node {id} transform is not rigid")));
                 }
                 nodes.push(StepXdeNode {
                     id,
                     parent_id,
                     part_index,
-                    name: parse_manifest_text(fields[4]).ok_or(StepXdeManifestError::Malformed)?,
+                    name: parse_manifest_text(fields[4]).ok_or_else(|| field(4, "node name"))?,
                     name_from_source: match fields[5] {
                         "0" => false,
                         "1" => true,
-                        _ => return Err(StepXdeManifestError::Malformed),
+                        _ => return Err(field(5, "node name source flag")),
                     },
-                    color: parse_manifest_color(fields[6])
-                        .ok_or(StepXdeManifestError::Malformed)?,
+                    color: parse_manifest_color(fields[6]).ok_or_else(|| field(6, "node color"))?,
                     transform,
                 });
             }
-            _ => return Err(StepXdeManifestError::Malformed),
+            _ => return Err(malformed(format!("line {line:?} is not a P or N record"))),
         }
     }
     if parts.is_empty()
@@ -216,9 +222,15 @@ pub(super) fn parse_step_xde_manifest(raw: &str) -> Result<StepXdeManifest, Step
             .iter()
             .any(|part| !nodes.iter().any(|node| node.part_index == Some(part.index)))
     {
-        return Err(StepXdeManifestError::Malformed);
+        return Err(malformed(
+            "manifest needs parts, nodes, a root node and a node for every part",
+        ));
     }
     Ok(StepXdeManifest { parts, nodes })
+}
+
+fn malformed(reason: impl std::fmt::Display) -> StepXdeManifestError {
+    StepXdeManifestError::Malformed(reason.to_string())
 }
 
 impl ExactBackend {

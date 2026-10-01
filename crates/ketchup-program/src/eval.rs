@@ -163,15 +163,28 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
     Ok(number)
 }
 
+/// Iterates `value`; on failure names the `expected` shape and Starlark's reason.
+fn iterate<'v>(
+    value: Value<'v>,
+    heap: &'v Heap,
+    expected: std::fmt::Arguments<'_>,
+) -> anyhow::Result<impl Iterator<Item = Value<'v>> + 'v> {
+    value
+        .iterate(heap)
+        .map_err(|error| anyhow::anyhow!("{expected}: {error}"))
+}
+
 fn numbers<'v, const N: usize>(
     value: Value<'v>,
     heap: &'v Heap,
     what: &str,
 ) -> anyhow::Result<[f64; N]> {
-    let items = value
-        .iterate(heap)
-        .map_err(|_| anyhow::anyhow!("{what} must be a list or tuple of {N} numbers"))?
-        .collect::<Vec<_>>();
+    let items = iterate(
+        value,
+        heap,
+        format_args!("{what} must be a list or tuple of {N} numbers"),
+    )?
+    .collect::<Vec<_>>();
     if items.len() != N {
         anyhow::bail!("{what} must have exactly {N} numbers, got {}", items.len());
     }
@@ -187,10 +200,12 @@ fn profile_segments<'v>(
     heap: &'v Heap,
     what: &str,
 ) -> anyhow::Result<Vec<ProgramProfileSegment>> {
-    let items = value
-        .iterate(heap)
-        .map_err(|_| anyhow::anyhow!("{what} must be a list of 2D points or named segments"))?
-        .collect::<Vec<_>>();
+    let items = iterate(
+        value,
+        heap,
+        format_args!("{what} must be a list of 2D points or named segments"),
+    )?
+    .collect::<Vec<_>>();
     let named = items.first().is_some_and(|item| {
         item.iterate(heap)
             .ok()
@@ -205,12 +220,12 @@ fn profile_segments<'v>(
         return items
             .into_iter()
             .map(|segment| {
-                let fields = segment
-                    .iterate(heap)
-                    .map_err(|_| {
-                        anyhow::anyhow!("{what} named segment must be [name, start, end]")
-                    })?
-                    .collect::<Vec<_>>();
+                let fields = iterate(
+                    segment,
+                    heap,
+                    format_args!("{what} named segment must be [name, start, end]"),
+                )?
+                .collect::<Vec<_>>();
                 let (name, start, end, arc) = match fields.as_slice() {
                     [name, start, end] => (name, start, end, None),
                     [name, start, end, arc] => (name, start, end, Some(*arc)),
@@ -280,11 +295,13 @@ fn bezier_controls<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Optio
     if dict.len() != 1 {
         anyhow::bail!("a curve is {{\"controls\": [(x1, y1), (x2, y2)]}} with no other keys");
     }
-    let points = controls
-        .iterate(heap)
-        .map_err(|_| anyhow::anyhow!("curve controls must be two points"))?
-        .map(|point| numbers::<2>(point, heap, "curve control"))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let points = iterate(
+        controls,
+        heap,
+        format_args!("curve controls must be two points"),
+    )?
+    .map(|point| numbers::<2>(point, heap, "curve control"))
+    .collect::<anyhow::Result<Vec<_>>>()?;
     let [first, second] = points.as_slice() else {
         anyhow::bail!("curve controls must be two points, got {}", points.len());
     };
@@ -386,26 +403,30 @@ fn profile_arc<'v>(
 }
 
 fn named_edges<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Vec<[String; 2]>> {
-    value
-        .iterate(heap)
-        .map_err(|_| anyhow::anyhow!("edges must be a list of [face_a, face_b] pairs"))?
-        .map(|edge| {
-            let faces = edge
-                .iterate(heap)
-                .map_err(|_| anyhow::anyhow!("each edge must be [face_a, face_b]"))?
-                .collect::<Vec<_>>();
-            let [first, second] = faces.as_slice() else {
-                anyhow::bail!("each edge must contain exactly two face names");
-            };
-            let face = |value: Value<'v>| {
-                value
-                    .unpack_str()
-                    .map(ToOwned::to_owned)
-                    .ok_or_else(|| anyhow::anyhow!("edge face names must be strings"))
-            };
-            Ok([face(*first)?, face(*second)?])
-        })
-        .collect()
+    iterate(
+        value,
+        heap,
+        format_args!("edges must be a list of [face_a, face_b] pairs"),
+    )?
+    .map(|edge| {
+        let faces = iterate(
+            edge,
+            heap,
+            format_args!("each edge must be [face_a, face_b]"),
+        )?
+        .collect::<Vec<_>>();
+        let [first, second] = faces.as_slice() else {
+            anyhow::bail!("each edge must contain exactly two face names");
+        };
+        let face = |value: Value<'v>| {
+            value
+                .unpack_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("edge face names must be strings"))
+        };
+        Ok([face(*first)?, face(*second)?])
+    })
+    .collect()
 }
 
 fn part_name<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<String> {
@@ -453,10 +474,7 @@ fn face_name<'v>(value: Value<'v>, heap: &'v Heap, part: Option<&str>) -> anyhow
 }
 
 fn items<'v>(value: Value<'v>, heap: &'v Heap, what: &str) -> anyhow::Result<Vec<Value<'v>>> {
-    Ok(value
-        .iterate(heap)
-        .map_err(|_| anyhow::anyhow!("{what} must be a list or tuple, got {}", value.get_type()))?
-        .collect())
+    Ok(iterate(value, heap, format_args!("{what} must be a list or tuple"))?.collect())
 }
 
 /// `(x, y, z)` in world, or `(part, "z+")`: that face's outward normal
@@ -1155,9 +1173,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         let segments = profile_segments(profile, heap, "profile")?;
-        let axis_points = axis
-            .iterate(heap)
-            .map_err(|_| anyhow::anyhow!("axis must contain two 2D points"))?
+        let axis_points = iterate(axis, heap, format_args!("axis must contain two 2D points"))?
             .map(|point| numbers::<2>(point, heap, "axis"))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let [axis_start_mm, axis_end_mm] = axis_points.as_slice() else {
@@ -1666,9 +1682,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let name = part_name(part, heap)?;
         let among = given(among)
             .map(|among| {
-                among
-                    .iterate(heap)
-                    .map_err(|_| anyhow::anyhow!("among must be a list of parts"))?
+                iterate(among, heap, format_args!("among must be a list of parts"))?
                     .map(|other| part_name(other, heap))
                     .collect::<anyhow::Result<Vec<_>>>()
             })
@@ -1987,18 +2001,18 @@ fn builtins(builder: &mut GlobalsBuilder) {
         }
         let fasteners = match given(fasteners) {
             None => Vec::new(),
-            Some(list) => list
-                .iterate(heap)
-                .map_err(|_| anyhow::anyhow!("fasteners must be a list of (x, y, z) points"))?
-                .enumerate()
-                .map(|(index, point)| numbers::<3>(point, heap, &format!("fasteners[{index}]")))
-                .collect::<anyhow::Result<Vec<_>>>()?,
+            Some(list) => iterate(
+                list,
+                heap,
+                format_args!("fasteners must be a list of (x, y, z) points"),
+            )?
+            .enumerate()
+            .map(|(index, point)| numbers::<3>(point, heap, &format!("fasteners[{index}]")))
+            .collect::<anyhow::Result<Vec<_>>>()?,
         };
         let volume = given(volume)
             .map(|volume| {
-                let corners = volume
-                    .iterate(heap)
-                    .map_err(|_| anyhow::anyhow!("volume must be (min, max)"))?
+                let corners = iterate(volume, heap, format_args!("volume must be (min, max)"))?
                     .collect::<Vec<_>>();
                 let [min, max] = corners.as_slice() else {
                     anyhow::bail!("volume must be (min, max)");
@@ -2235,8 +2249,15 @@ pub fn evaluate(
     drop(module);
     STATE.with(|slot| *slot.borrow_mut() = None);
     result?;
-    let state = std::rc::Rc::try_unwrap(state)
-        .map_err(|_| evaluation_error("internal_error", "program state is still shared"))?;
+    let state = std::rc::Rc::try_unwrap(state).map_err(|state| {
+        evaluation_error(
+            "internal_error",
+            format!(
+                "program state is still shared by {} references",
+                std::rc::Rc::strong_count(&state)
+            ),
+        )
+    })?;
     let model = state.model.into_inner();
     let unused_overrides = overrides
         .keys()

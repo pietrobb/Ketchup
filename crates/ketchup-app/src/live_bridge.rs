@@ -345,6 +345,16 @@ fn record_rejection(rejection: &Rejection, details: Value) {
     ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
 }
 
+/// Records that `code` failed because of `cause` (kept as the rejection's
+/// cause chain under the catalog reason) and returns the code.
+fn failed_because(
+    code: &'static str,
+    cause: impl std::error::Error + Send + Sync + 'static,
+) -> &'static str {
+    record_rejection(&rejected(code).caused_by(cause), json!({}));
+    code
+}
+
 /// Records why `code` failed for the client and returns the code.
 fn failure(code: &'static str, reason: impl Into<String>, details: Value) -> &'static str {
     record_rejection(&rejected(code).reason(reason), details);
@@ -683,7 +693,14 @@ impl OccurrenceBatchDocument for KetchupApp {
         proposal: &Proposal,
     ) -> Result<VerifiedProposalCommit, OccurrenceBatchError> {
         self.commit_verified_proposal_with_work_recovery(proposal)
-            .map_err(|_| OccurrenceBatchError::HostTransaction)
+            .map_err(|error| match error {
+                crate::WorkRecoveryMutationError::Mutation(error) => {
+                    OccurrenceBatchError::host_transaction(error)
+                }
+                crate::WorkRecoveryMutationError::Recovery(error) => {
+                    OccurrenceBatchError::host_transaction(error)
+                }
+            })
     }
 }
 
@@ -1389,7 +1406,7 @@ impl LiveBridge {
         Self::require_request_authority(&cancelled)?;
         let (candidate_exact, candidate_topology, exact_report) =
             materialize_exact_products(candidate, render, topology, &exact_task, products)
-                .map_err(|_| "exact_evaluation_rejected")?;
+                .map_err(|error| failure("exact_evaluation_rejected", error, json!({})))?;
         // A candidate without exact geometry (e.g. a cleared document) has
         // nothing to verify; every producer it does have must be evaluated.
         if exact_report
@@ -1699,11 +1716,11 @@ impl LiveBridge {
                     for reference in exact_references {
                         document
                             .register_exact_reference_evidence(reference)
-                            .map_err(|_| "exact_reference_rejected")?;
+                            .map_err(|error| failed_because("exact_reference_rejected", error))?;
                     }
                     document
                         .register_exact_reference_evidence(&candidate_exact)
-                        .map_err(|_| "exact_reference_rejected")?;
+                        .map_err(|error| failed_because("exact_reference_rejected", error))?;
                     *exact_results = candidate_exact;
                     *topology_results = candidate_topology;
                     Ok(committed)
@@ -2024,7 +2041,7 @@ impl LiveBridge {
                 let receipt = self.batch_jobs[index]
                     .task
                     .commit_next(app)
-                    .map_err(|e| e.code())?;
+                    .map_err(|error| failed_because(error.code(), error))?;
                 if receipt.is_some() {
                     self.query.invalidate();
                     self.observed = Some(app.live_bridge_stamp());

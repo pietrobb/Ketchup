@@ -33,6 +33,8 @@ CONTENT_FREE = {
     "TryFromIntError", "TryFromSliceError", "PoisonError", "TryLockError", "SendError",
     "TrySendError", "RecvError", "TryRecvError", "RecvTimeoutError", "Infallible",
     "fmt::Error",
+    # wgpu reports a failed buffer map as a unit struct.
+    "wgpu::BufferAsyncError",
     # Opaque by design: a failed signature check must not reveal why it failed.
     "ed25519_dalek::SignatureError",
 }

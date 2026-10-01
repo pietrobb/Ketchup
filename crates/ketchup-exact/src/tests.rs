@@ -806,12 +806,29 @@ fn step_xde_manifest_parser_rejects_non_rigid_and_forward_parent_payloads() {
     assert!(parse_step_xde_manifest(&valid).is_ok());
     assert_eq!(
         parse_step_xde_manifest(&valid.replacen("N\t0\t-1", "N\t0\t0", 1)),
-        Err(StepXdeManifestError::Malformed)
+        Err(StepXdeManifestError::Malformed(format!(
+            "node parent (must be -1 or an earlier node) \"0\" in line {:?} is invalid",
+            valid
+                .lines()
+                .nth(2)
+                .unwrap()
+                .replacen("N\t0\t-1", "N\t0\t0", 1)
+        )))
     );
     let scaled = valid.replacen("3ff0000000000000", "4000000000000000", 1);
     assert_eq!(
         parse_step_xde_manifest(&scaled),
-        Err(StepXdeManifestError::Malformed)
+        Err(StepXdeManifestError::Malformed(
+            "node 0 transform is not rigid".to_owned()
+        ))
+    );
+    let unreadable = valid.replacen("3ff0000000000000", "3ff000000000000x", 1);
+    let error = parse_step_xde_manifest(&unreadable)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("transform entry (invalid digit found in string) \"3ff000000000000x\""),
+        "{error}"
     );
 }
 

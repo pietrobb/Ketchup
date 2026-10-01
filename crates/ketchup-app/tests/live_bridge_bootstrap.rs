@@ -89,7 +89,7 @@ fn explicit_flag_and_absolute_optional_path_only() {
 }
 
 #[test]
-fn malformed_oversized_and_invalid_tokens_are_generic_errors() {
+fn malformed_oversized_and_invalid_tokens_name_the_step_but_never_the_input() {
     let mut invalid = vec![
         vec![],
         b"not json\n".to_vec(),
@@ -114,12 +114,48 @@ fn malformed_oversized_and_invalid_tokens_are_generic_errors() {
     }
     for bytes in invalid {
         let error = opted_in()
-            .read_from(Cursor::new(bytes))
+            .read_from(Cursor::new(bytes.clone()))
             .err()
             .expect("must reject");
-        assert_eq!(error.to_string(), "live bridge bootstrap failed");
-        assert_eq!(format!("{error:?}"), "BootstrapError");
+        for shown in [error.to_string(), format!("{error:?}")] {
+            assert!(
+                !shown.contains("aaaa") && !shown.contains(&TOKEN[..8]),
+                "{shown}"
+            );
+            assert!(!shown.contains("not json"), "{shown}");
+        }
+        assert!(
+            error
+                .to_string()
+                .starts_with("live bridge bootstrap failed: "),
+            "{error}"
+        );
     }
+    let reject = |bytes: Vec<u8>| opted_in().read_from(Cursor::new(bytes)).err().unwrap();
+    assert_eq!(
+        reject(vec![]),
+        BootstrapError::Read(io::ErrorKind::UnexpectedEof)
+    );
+    assert_eq!(
+        reject(b"not json\n".to_vec()),
+        BootstrapError::MalformedMessage(serde_json::error::Category::Syntax)
+    );
+    assert_eq!(
+        reject(b"{\"version\":1}\n".to_vec()),
+        BootstrapError::MalformedMessage(serde_json::error::Category::Data)
+    );
+    assert_eq!(
+        reject(format!("{{\"version\":2,\"token\":\"{TOKEN}\"}}\n").into_bytes()),
+        BootstrapError::UnsupportedMessage
+    );
+    assert_eq!(
+        reject([vec![b' '; MAX_BOOTSTRAP_BYTES], line()].concat()),
+        BootstrapError::MessageTooLong
+    );
+    assert_eq!(
+        reject(b"not json\n".to_vec()).to_string(),
+        "live bridge bootstrap failed: the launcher line is not a bootstrap message (Syntax)"
+    );
 }
 
 struct CountedReader {
@@ -1148,8 +1184,11 @@ fn native_invalid_bootstrap_exits_without_window_or_credential_output() {
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap().trim(),
-        "live bridge bootstrap failed"
+        stderr.trim(),
+        "live bridge bootstrap failed: the launcher line needs version 1 and a token of 64 \
+         lowercase hex digits"
     );
+    assert!(!stderr.contains(&TOKEN[..8]));
 }

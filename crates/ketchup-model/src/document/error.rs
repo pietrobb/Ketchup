@@ -143,6 +143,11 @@ pub enum CanonicalError {
     Graph(GraphError),
     Prismatic(PrismaticError),
     Space(SpaceError),
+    /// `error` raised because of a lower-level failure named by `cause`.
+    Caused {
+        error: Box<CanonicalError>,
+        cause: String,
+    },
 }
 
 impl CanonicalError {
@@ -326,6 +331,16 @@ impl CanonicalError {
             Self::Graph(..) => "canonical.graph",
             Self::Prismatic(..) => "canonical.prismatic",
             Self::Space(..) => "canonical.space",
+            Self::Caused { error, .. } => error.code(),
+        }
+    }
+
+    /// Wraps this error with the lower-level failure that caused it; `code` is unchanged.
+    #[must_use]
+    pub fn because(self, cause: impl fmt::Display) -> Self {
+        Self::Caused {
+            error: Box::new(self),
+            cause: cause.to_string(),
         }
     }
 }
@@ -702,6 +717,7 @@ impl fmt::Display for CanonicalError {
             Self::Graph(error) => error.fmt(formatter),
             Self::Prismatic(error) => error.fmt(formatter),
             Self::Space(error) => error.fmt(formatter),
+            Self::Caused { error, cause } => write!(formatter, "{error}: {cause}"),
         }
     }
 }
@@ -729,5 +745,23 @@ impl From<crate::tolerance::InvalidTolerance> for CanonicalError {
 impl From<SpaceError> for CanonicalError {
     fn from(error: SpaceError) -> Self {
         Self::Space(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_caused_error_keeps_its_code_and_appends_the_cause() {
+        let error = CanonicalError::InvalidSolidToolPlan.because("feature 7 was not found");
+        assert_eq!(error.code(), "canonical.invalid_solid_tool_plan");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}: feature 7 was not found",
+                CanonicalError::InvalidSolidToolPlan
+            )
+        );
     }
 }

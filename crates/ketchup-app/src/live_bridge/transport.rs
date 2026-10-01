@@ -31,7 +31,7 @@ impl Drop for ConnectionPermit {
 
 pub(super) fn start(context: egui::Context) -> io::Result<LiveBridge> {
     let mut random = [0_u8; 32];
-    getrandom::fill(&mut random).map_err(|_| io::Error::other("OS randomness unavailable"))?;
+    getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
     let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
     start_with_token(context, token)
 }

@@ -16,6 +16,14 @@ const PROFILE: FeatureId = FeatureId(10);
 const SOLID: FeatureId = FeatureId(11);
 const PLAN: CamPlanId = CamPlanId(1);
 
+fn sha256_hex(content: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(content)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn dimension(value: f64) -> Dimension {
     Dimension::new(value.to_string(), value).unwrap()
 }
@@ -616,6 +624,24 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
     ] {
         assert!(gcode.contains(required), "missing {required} in {gcode}");
     }
+
+    let mut malformed = iso.clone();
+    malformed.content = gcode.replacen("T1 M6", "T1 M7", 1).into_bytes();
+    malformed.content_digest = sha256_hex(&malformed.content);
+    assert_eq!(
+        malformed.parse(),
+        Err(CamPostprocessorError::Parse(
+            "tool line \"T1 M7\" is not T<n> M6".to_owned()
+        ))
+    );
+    let mut unreadable = iso.clone();
+    unreadable.content = gcode.replacen("S12000 M3", "S12x00 M3", 1).into_bytes();
+    unreadable.content_digest = sha256_hex(&unreadable.content);
+    let error = unreadable.parse().unwrap_err().to_string();
+    assert!(
+        error.contains("\"12x00\" is not an unsigned integer: invalid digit"),
+        "{error}"
+    );
     for expected in [
         CamPostprocessedMotionKind::Rapid,
         CamPostprocessedMotionKind::Plunge,

@@ -497,6 +497,30 @@ fn serialized_reference_survives_recompute_undo_redo_and_byte_stable_save_open()
         TopologicalElementRef::from_bytes(&forged_encoding),
         Err(TopologicalReferenceError::InvalidEncoding)
     );
+    let payload_length = encoded_reference.len() - 64;
+    let mut non_utf8_token = encoded_reference[..payload_length].to_vec();
+    let schema_at = non_utf8_token
+        .windows(selected.schema.len())
+        .position(|window| window == selected.schema.as_bytes())
+        .unwrap();
+    non_utf8_token[schema_at] = 0xff;
+    use sha2::Digest as _;
+    let checksum: String = sha2::Sha256::digest(&non_utf8_token)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    non_utf8_token.extend_from_slice(checksum.as_bytes());
+    let error = TopologicalElementRef::from_bytes(&non_utf8_token).unwrap_err();
+    assert!(
+        matches!(error, TopologicalReferenceError::InvalidToken(_)),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("invalid utf-8 sequence of 1 bytes from index 0"),
+        "{error}"
+    );
 
     let package = ExactBodyPackage::Imported(imported.clone());
     let registry = ExactResultRegistry::accept(&committed, [Arc::new(package.clone())]).unwrap();

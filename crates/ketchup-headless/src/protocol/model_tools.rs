@@ -84,10 +84,9 @@ fn batch_error(error: OccurrenceBatchError) -> Error {
             Error::new(error.code(), format!("batch query rejected: {error:?}"))
         }
         OccurrenceBatchError::Session(error) => error.into(),
-        OccurrenceBatchError::HostTransaction => Error::new(
-            "batch_transaction_failed",
-            "batch host rejected the transaction",
-        ),
+        error @ OccurrenceBatchError::HostTransaction(_) => {
+            Error::new("batch_transaction_failed", error.to_string())
+        }
         OccurrenceBatchError::Cancelled => Error::new("batch_cancelled", "batch job cancelled"),
         OccurrenceBatchError::StaleTask { expected, actual } => {
             let mut error = Error::new(

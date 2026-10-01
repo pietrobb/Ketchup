@@ -100,7 +100,7 @@ pub(super) fn remap_topological_reference(
         reference.result_fingerprint.clone(),
         reference.corroborating_geometry_fingerprint.clone(),
     )
-    .map_err(|_| CanonicalError::InvalidFeatureMap)
+    .map_err(|error| CanonicalError::InvalidFeatureMap.because(error))
 }
 
 pub(super) fn remap_loft_sections(
@@ -716,7 +716,7 @@ pub(super) fn exact_solid_tool_dependency_closure_for_snapshot(
         .get(&feature_id)
         .ok_or(CanonicalError::FeatureNotFound(feature_id))?;
     ExactBRepGraph::from_snapshot(snapshot, source.definition_id, feature_id)
-        .map_err(|_| CanonicalError::InvalidSolidToolPlan)?;
+        .map_err(|error| CanonicalError::InvalidSolidToolPlan.because(error))?;
     let graph = snapshot.feature_dependency_graph()?;
     let mut closure = BTreeSet::from([feature_id]);
     let mut pending = vec![feature_id];
@@ -995,7 +995,7 @@ pub(super) fn apply_graph_exact_solid_tool(
         plan.target_feature_id,
     )
     .and_then(|graph| graph.producer_bounds_mm())
-    .map_err(|_| CanonicalError::InvalidSolidToolPlan)?
+    .map_err(|error| CanonicalError::InvalidSolidToolPlan.because(error))?
     .is_some()
         && ExactBRepGraph::from_snapshot(
             &snapshot,
@@ -1003,7 +1003,7 @@ pub(super) fn apply_graph_exact_solid_tool(
             plan.tool_feature_id,
         )
         .and_then(|graph| graph.producer_bounds_mm())
-        .map_err(|_| CanonicalError::InvalidSolidToolPlan)?
+        .map_err(|error| CanonicalError::InvalidSolidToolPlan.because(error))?
         .is_some();
     let target_inverse = snapshot
         .world_transform_for_occurrence(plan.target_occurrence_id)
@@ -1130,11 +1130,11 @@ pub(super) fn apply_graph_exact_solid_tool(
     };
     let result_graph =
         ExactBRepGraph::from_snapshot(&result_snapshot, plan.result_definition_id, result_id)
-            .map_err(|_| CanonicalError::InvalidSolidToolPlan)?;
+            .map_err(|error| CanonicalError::InvalidSolidToolPlan.because(error))?;
     if bounded_overlap_required
         && result_graph
             .producer_bounds_mm()
-            .map_err(|_| CanonicalError::InvalidSolidToolPlan)?
+            .map_err(|error| CanonicalError::InvalidSolidToolPlan.because(error))?
             .is_none()
     {
         return Err(CanonicalError::InvalidSolidToolPlan);

@@ -347,6 +347,20 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
     );
     assert!(!rejected.ok);
     assert_eq!(rejected.error.as_deref(), Some("batch_transaction_failed"));
+    // The rejection names why the host refused: the recovery write failed.
+    let causes = rejected.result.as_ref().unwrap()["causes"].clone();
+    let causes = causes.as_array().expect("the rejection lists its causes");
+    assert!(
+        causes[0]
+            .as_str()
+            .unwrap()
+            .starts_with("batch host rejected the transaction: "),
+        "{causes:?}"
+    );
+    assert!(
+        causes.len() >= 2,
+        "the host error is kept below: {causes:?}"
+    );
     let rolled_back = shell.app().live_bridge_stamp();
     assert_eq!(rolled_back.revision, expected.revision);
     assert_eq!(rolled_back.canonical_digest, expected.canonical_digest);

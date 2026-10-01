@@ -15,8 +15,8 @@ use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePoli
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, PadOperation, PadProfile,
-    SketchRegionId, SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
-    WorkplaneFrame,
+    SketchError, SketchRegionId, SolvedSketchRegion, SolvedSketchRegionEdge,
+    SolvedSketchRegionProfile, WorkplaneFrame,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1492,6 +1492,8 @@ pub enum ExactBRepGraphError {
     FeatureNotFound(FeatureId),
     UnsupportedFeature(FeatureId),
     UnsupportedProfile(FeatureId),
+    /// The feature's profile sketch does not solve.
+    UnsolvedProfile(FeatureId, SketchError),
     SuppressedFeature(FeatureId),
     DependencyCycle(FeatureId),
     InvalidDependencyGraph,
@@ -1521,6 +1523,13 @@ impl fmt::Display for ExactBRepGraphError {
                 write!(
                     formatter,
                     "feature {} is not a supported planar profile",
+                    id.0
+                )
+            }
+            Self::UnsolvedProfile(id, error) => {
+                write!(
+                    formatter,
+                    "feature {} profile sketch does not solve: {error}",
                     id.0
                 )
             }

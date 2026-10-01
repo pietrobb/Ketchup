@@ -37,19 +37,19 @@ impl Readback {
             .0
             .state
             .lock()
-            .map_err(|_| "image_unavailable")?
+            .map_err(|_: std::sync::PoisonError<_>| "image_unavailable")?
             .device
             .clone();
         // Never wait on the UI thread. map_async completion needs device polling.
         if let Some(device) = device {
             device
                 .poll(wgpu::PollType::Poll)
-                .map_err(|_| "image_unavailable")?;
+                .map_err(|error| super::failed_because("image_unavailable", error))?;
         }
         self.0
             .state
             .lock()
-            .map_err(|_| "image_unavailable")?
+            .map_err(|_: std::sync::PoisonError<_>| "image_unavailable")?
             .result
             .take()
             .transpose()
@@ -244,7 +244,7 @@ impl IsolatedCapture {
         self.shared
             .state
             .lock()
-            .map_err(|_| "image_unavailable")?
+            .map_err(|_: std::sync::PoisonError<_>| "image_unavailable")?
             .device = Some(device.clone());
         let shared = self.shared.clone();
         let cancelled = self.cancelled.clone();
@@ -261,18 +261,22 @@ impl IsolatedCapture {
                     }
                     return;
                 }
-                let result = result.map_err(|_| "image_unavailable").map(|()| {
-                    let bytes = mapped.slice(..).get_mapped_range();
-                    let mut rgba = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);
-                    for row in bytes.chunks_exact(stride as usize) {
-                        rgba.extend_from_slice(&row[..row_bytes as usize]);
-                    }
-                    let image =
-                        egui::ColorImage::from_rgba_unmultiplied(size.map(|v| v as usize), &rgba);
-                    drop(bytes);
-                    mapped.unmap();
-                    Pixels { nonce, pass, image }
-                });
+                let result = result
+                    .map_err(|_: wgpu::BufferAsyncError| "image_unavailable")
+                    .map(|()| {
+                        let bytes = mapped.slice(..).get_mapped_range();
+                        let mut rgba = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);
+                        for row in bytes.chunks_exact(stride as usize) {
+                            rgba.extend_from_slice(&row[..row_bytes as usize]);
+                        }
+                        let image = egui::ColorImage::from_rgba_unmultiplied(
+                            size.map(|v| v as usize),
+                            &rgba,
+                        );
+                        drop(bytes);
+                        mapped.unmap();
+                        Pixels { nonce, pass, image }
+                    });
                 if let Ok(mut state) = shared.state.lock()
                     && !shared.revoked.load(Ordering::Acquire)
                     && !cancelled.load(Ordering::Acquire)

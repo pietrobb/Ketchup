@@ -1,5 +1,5 @@
 use crate::document::{BodyKind, DefinitionId, FeatureId, Snapshot};
-use crate::exact_brep_graph::ExactBRepGraph;
+use crate::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError};
 use crate::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -361,13 +361,14 @@ pub struct CamPostprocessorOutput {
     pub program: CamPostprocessedProgram,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CamPostprocessorError {
     Plan(CamPlannerError),
     UnsafeSimulation,
     UnsafeFinalRetract,
     ArtifactTooLarge,
-    Parse,
+    /// The artifact is malformed; the text names what was wrong.
+    Parse(String),
     DigestMismatch,
     RoundtripMismatch,
 }
@@ -385,7 +386,9 @@ impl std::fmt::Display for CamPostprocessorError {
             Self::ArtifactTooLarge => {
                 formatter.write_str("CAM postprocessor artifact exceeds the bounded size")
             }
-            Self::Parse => formatter.write_str("CAM postprocessor artifact is malformed"),
+            Self::Parse(reason) => {
+                write!(formatter, "CAM postprocessor artifact is malformed: {reason}")
+            }
             Self::DigestMismatch => {
                 formatter.write_str("CAM postprocessor artifact digest does not match its content")
             }
@@ -404,7 +407,7 @@ impl From<CamPlannerError> for CamPostprocessorError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CamPlannerError {
     Plan(CamError),
     InvalidOperations,
@@ -462,10 +465,12 @@ pub enum CamPlanHealth {
     Invalid,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CamError {
     InvalidPlan,
     TargetMissing,
+    /// The target's exact B-Rep graph could not be built or bounded.
+    TargetGraph(ExactBRepGraphError),
     WrongBodyKind,
     StaleTarget,
     StockDoesNotContainTarget,
@@ -476,6 +481,9 @@ impl std::fmt::Display for CamError {
         formatter.write_str(match self {
             Self::InvalidPlan => "CAM stock, tool, setup, or cutting parameters are invalid",
             Self::TargetMissing => "CAM target is missing or has no exact bounded result",
+            Self::TargetGraph(error) => {
+                return write!(formatter, "CAM target has no exact bounded result: {error}");
+            }
             Self::WrongBodyKind => "CAM target must be a solid body",
             Self::StaleTarget => "CAM target exact graph changed since the plan was created",
             Self::StockDoesNotContainTarget => "CAM stock does not contain the exact target bounds",
@@ -649,7 +657,7 @@ impl CamPlan {
     pub fn health(&self, snapshot: &Snapshot) -> CamPlanHealth {
         match self.validate(snapshot) {
             Ok(()) => CamPlanHealth::Current,
-            Err(CamError::TargetMissing) => CamPlanHealth::TargetMissing,
+            Err(CamError::TargetMissing | CamError::TargetGraph(_)) => CamPlanHealth::TargetMissing,
             Err(CamError::WrongBodyKind) => CamPlanHealth::WrongBodyKind,
             Err(CamError::StaleTarget) => CamPlanHealth::StaleTarget,
             Err(CamError::InvalidPlan | CamError::StockDoesNotContainTarget) => {
@@ -671,7 +679,7 @@ impl CamPlan {
         let bounds = setup_bounds(
             graph
                 .producer_bounds_mm()
-                .map_err(|_| CamError::TargetMissing)?
+                .map_err(CamError::TargetGraph)?
                 .ok_or(CamError::TargetMissing)?,
             &self.setup,
         );
@@ -697,7 +705,7 @@ impl CamPlan {
         }
         let bounds = graph
             .producer_bounds_mm()
-            .map_err(|_| CamError::TargetMissing)?
+            .map_err(CamError::TargetGraph)?
             .ok_or(CamError::TargetMissing)?;
         if (0..3).any(|axis| {
             self.stock.minimum_mm[axis] > bounds[0][axis]
@@ -734,7 +742,7 @@ impl CamToolpath {
         let graph = target_graph(snapshot, plan.target.definition_id, plan.target.feature_id)?;
         let world_target_bounds = graph
             .producer_bounds_mm()
-            .map_err(|_| CamError::TargetMissing)?
+            .map_err(CamError::TargetGraph)?
             .ok_or(CamError::TargetMissing)?;
         let target_bounds = setup_bounds(world_target_bounds, &plan.setup);
         let stock_bounds =
@@ -1077,7 +1085,7 @@ impl CamPostprocessorOutput {
                 render_iso_metric_gcode(&program).into_bytes()
             }
             CamPostprocessorDialect::ControllerNeutralJson => {
-                serde_json::to_vec_pretty(&program).map_err(|_| CamPostprocessorError::Parse)?
+                serde_json::to_vec_pretty(&program).map_err(|error| malformed(error.to_string()))?
             }
         };
         if content.len() > MAX_CAM_POSTPROCESSOR_BYTES {
@@ -1101,16 +1109,17 @@ impl CamPostprocessorOutput {
             || self.content.is_empty()
             || self.content.len() > MAX_CAM_POSTPROCESSOR_BYTES
         {
-            return Err(CamPostprocessorError::Parse);
+            return Err(malformed(format!(
+                "schema must be {CAM_POSTPROCESSOR_SCHEMA_V1} and content 1..={MAX_CAM_POSTPROCESSOR_BYTES} bytes"
+            )));
         }
         if self.content_digest != content_digest(&self.content) {
             return Err(CamPostprocessorError::DigestMismatch);
         }
         let mut parsed = match self.dialect {
             CamPostprocessorDialect::IsoMetricGCode => parse_iso_metric_gcode(&self.content)?,
-            CamPostprocessorDialect::ControllerNeutralJson => {
-                serde_json::from_slice(&self.content).map_err(|_| CamPostprocessorError::Parse)?
-            }
+            CamPostprocessorDialect::ControllerNeutralJson => serde_json::from_slice(&self.content)
+                .map_err(|error| malformed(error.to_string()))?,
         };
         canonicalize_postprocessed_program(&mut parsed);
         validate_postprocessed_program(&parsed)?;
@@ -1270,7 +1279,9 @@ fn validate_postprocessed_program(
         || program.motions.is_empty()
         || program.motions.len() > 100_000
     {
-        return Err(CamPostprocessorError::Parse);
+        return Err(malformed(
+            "header values (units, tool, spindle, feeds, retract, motion count) are out of range",
+        ));
     }
     for motion in &program.motions {
         if motion
@@ -1278,7 +1289,9 @@ fn validate_postprocessed_program(
             .into_iter()
             .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
         {
-            return Err(CamPostprocessorError::Parse);
+            return Err(malformed(
+                "motion end point is not finite or exceeds the coordinate limit",
+            ));
         }
         let expected_feed = matches!(
             motion.kind,
@@ -1292,7 +1305,9 @@ fn validate_postprocessed_program(
                 .feed_mm_per_min
                 .is_some_and(|feed| !valid_postprocessor_number(feed))
         {
-            return Err(CamPostprocessorError::Parse);
+            return Err(malformed(
+                "motion feed must be present exactly for feed motions and valid",
+            ));
         }
         let expected_center = matches!(
             motion.kind,
@@ -1306,10 +1321,15 @@ fn validate_postprocessed_program(
                     .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             })
         {
-            return Err(CamPostprocessorError::Parse);
+            return Err(malformed(
+                "arc center offset must be present exactly for arcs and finite",
+            ));
         }
     }
-    let last = program.motions.last().ok_or(CamPostprocessorError::Parse)?;
+    let last = program
+        .motions
+        .last()
+        .ok_or_else(|| malformed("program has no motions"))?;
     if last.kind != CamPostprocessedMotionKind::Retract
         || (last.end_mm[2] - program.safe_retract_z_mm).abs() > GEOMETRY_TOLERANCE_MM
     {
@@ -1384,7 +1404,7 @@ fn render_iso_metric_gcode(program: &CamPostprocessedProgram) -> String {
 }
 
 fn parse_iso_metric_gcode(bytes: &[u8]) -> Result<CamPostprocessedProgram, CamPostprocessorError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| CamPostprocessorError::Parse)?;
+    let text = std::str::from_utf8(bytes).map_err(|error| malformed(error.to_string()))?;
     let lines = text.lines().collect::<Vec<_>>();
     if lines.len() < 18
         || lines[0] != "%"
@@ -1395,7 +1415,9 @@ fn parse_iso_metric_gcode(bytes: &[u8]) -> Result<CamPostprocessedProgram, CamPo
         || !matches!(lines[8], "G54" | "G55" | "G56" | "G57" | "G58" | "G59")
         || lines[lines.len() - 3..] != ["M5", "M30", "%"]
     {
-        return Err(CamPostprocessorError::Parse);
+        return Err(malformed(
+            "G-code preamble or trailer does not match the Ketchup V1 layout",
+        ));
     }
     let plan_digest = prefixed_value(lines[2], ";PLAN_DIGEST=")?.to_owned();
     let toolpath_digest = prefixed_value(lines[3], ";TOOLPATH_DIGEST=")?.to_owned();
@@ -1403,12 +1425,12 @@ fn parse_iso_metric_gcode(bytes: &[u8]) -> Result<CamPostprocessedProgram, CamPo
     let tool_line = lines[9]
         .strip_prefix('T')
         .and_then(|line| line.strip_suffix(" M6"))
-        .ok_or(CamPostprocessorError::Parse)?;
+        .ok_or_else(|| malformed(format!("tool line {:?} is not T<n> M6", lines[9])))?;
     let tool_number = parse_u32(tool_line)?;
     let spindle_line = lines[10]
         .strip_prefix('S')
         .and_then(|line| line.strip_suffix(" M3"))
-        .ok_or(CamPostprocessorError::Parse)?;
+        .ok_or_else(|| malformed(format!("spindle line {:?} is not S<rpm> M3", lines[10])))?;
     let spindle_rpm = parse_u32(spindle_line)?;
     let cutting_feed_mm_per_min =
         parse_f64(prefixed_value(lines[11], ";CUTTING_FEED_MM_PER_MIN=")?)?;
@@ -1435,9 +1457,13 @@ fn parse_iso_metric_gcode(bytes: &[u8]) -> Result<CamPostprocessedProgram, CamPo
 }
 
 fn parse_iso_motion(line: &str) -> Result<CamPostprocessedMotion, CamPostprocessorError> {
-    let (words, label) = line.rsplit_once(" ;").ok_or(CamPostprocessorError::Parse)?;
+    let (words, label) = line
+        .rsplit_once(" ;")
+        .ok_or_else(|| malformed(format!("motion {line:?} has no ; label")))?;
     let mut words = words.split_whitespace();
-    let code = words.next().ok_or(CamPostprocessorError::Parse)?;
+    let code = words
+        .next()
+        .ok_or_else(|| malformed(format!("motion {line:?} has no G code")))?;
     let x = parse_axis(words.next(), 'X')?;
     let y = parse_axis(words.next(), 'Y')?;
     let z = parse_axis(words.next(), 'Z')?;
@@ -1448,7 +1474,11 @@ fn parse_iso_motion(line: &str) -> Result<CamPostprocessedMotion, CamPostprocess
         ("G1", "CUT") => CamPostprocessedMotionKind::Cut,
         ("G2", "CUT_ARC") => CamPostprocessedMotionKind::ArcClockwise,
         ("G3", "CUT_ARC") => CamPostprocessedMotionKind::ArcCounterclockwise,
-        _ => return Err(CamPostprocessorError::Parse),
+        _ => {
+            return Err(malformed(format!(
+                "motion {line:?} has an unknown code and label"
+            )));
+        }
     };
     let is_arc = matches!(
         kind,
@@ -1472,7 +1502,7 @@ fn parse_iso_motion(line: &str) -> Result<CamPostprocessedMotion, CamPostprocess
         None
     };
     if words.next().is_some() {
-        return Err(CamPostprocessorError::Parse);
+        return Err(malformed(format!("motion {line:?} has extra words")));
     }
     Ok(CamPostprocessedMotion {
         kind,
@@ -1485,23 +1515,31 @@ fn parse_iso_motion(line: &str) -> Result<CamPostprocessedMotion, CamPostprocess
 fn prefixed_value<'a>(line: &'a str, prefix: &str) -> Result<&'a str, CamPostprocessorError> {
     line.strip_prefix(prefix)
         .filter(|value| !value.is_empty())
-        .ok_or(CamPostprocessorError::Parse)
+        .ok_or_else(|| malformed(format!("line {line:?} is not {prefix}<value>")))
 }
 
 fn parse_axis(word: Option<&str>, axis: char) -> Result<f64, CamPostprocessorError> {
-    let word = word.ok_or(CamPostprocessorError::Parse)?;
+    let word = word.ok_or_else(|| malformed(format!("motion is missing its {axis} word")))?;
     let value = word
         .strip_prefix(axis)
-        .ok_or(CamPostprocessorError::Parse)?;
+        .ok_or_else(|| malformed(format!("motion word {word:?} is not {axis}<number>")))?;
     parse_f64(value)
 }
 
 fn parse_f64(value: &str) -> Result<f64, CamPostprocessorError> {
-    value.parse().map_err(|_| CamPostprocessorError::Parse)
+    value
+        .parse()
+        .map_err(|error| malformed(format!("{value:?} is not a number: {error}")))
 }
 
 fn parse_u32(value: &str) -> Result<u32, CamPostprocessorError> {
-    value.parse().map_err(|_| CamPostprocessorError::Parse)
+    value
+        .parse()
+        .map_err(|error| malformed(format!("{value:?} is not an unsigned integer: {error}")))
+}
+
+fn malformed(reason: impl Into<String>) -> CamPostprocessorError {
+    CamPostprocessorError::Parse(reason.into())
 }
 
 fn canonicalize_postprocessed_program(program: &mut CamPostprocessedProgram) {
@@ -2029,7 +2067,7 @@ fn target_graph(
         return Err(CamError::WrongBodyKind);
     }
     ExactBRepGraph::from_snapshot(snapshot, definition_id, feature_id)
-        .map_err(|_| CamError::TargetMissing)
+        .map_err(CamError::TargetGraph)
 }
 
 fn validate_scalar_data(plan: &CamPlan) -> Result<(), CamError> {

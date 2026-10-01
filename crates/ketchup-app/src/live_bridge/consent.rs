@@ -312,7 +312,7 @@ fn prepare_discovery_root(root: &Path) -> io::Result<()> {
 
 fn random_instance_id() -> io::Result<String> {
     let mut random = [0_u8; INSTANCE_ID_BYTES];
-    getrandom::fill(&mut random).map_err(|_| io::Error::other("OS randomness unavailable"))?;
+    getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
     Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -470,7 +470,9 @@ fn serve(
         if request.action == "list" {
             let state = discovery
                 .lock()
-                .map_err(|_| io::Error::other("discovery state unavailable"))?
+                .map_err(|_: std::sync::PoisonError<_>| {
+                    io::Error::other("discovery state unavailable")
+                })?
                 .clone();
             return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
         }
@@ -573,8 +575,8 @@ fn read_request(
         }
         bytes.push(byte[0]);
         if byte[0] == b'\n' {
-            let request: AttachRequest =
-                serde_json::from_slice(&bytes).map_err(|_| io::ErrorKind::InvalidData)?;
+            let request: AttachRequest = serde_json::from_slice(&bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             if request.version != 1
                 || !matches!(request.action.as_str(), "list" | "attach")
                 || !valid_nonce(&request.nonce)

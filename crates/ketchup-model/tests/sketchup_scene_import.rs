@@ -144,6 +144,17 @@ fn sketchup_scene_parser_refuses_unknown_schema_dangling_instances_and_open_mesh
         Err(SketchupSceneImportError::UnsupportedSchema)
     ));
 
+    let mut not_utf8 = source.clone();
+    not_utf8[1] = 0xff;
+    let error = inspect_sketchup_scene(&not_utf8).unwrap_err();
+    assert!(
+        matches!(error, SketchupSceneImportError::InvalidUtf8(_))
+            && error
+                .to_string()
+                .ends_with("invalid utf-8 sequence of 1 bytes from index 1"),
+        "{error}"
+    );
+
     let mut value: serde_json::Value = serde_json::from_slice(&source).unwrap();
     value["instances"][0]["definition"] = json!("missing");
     assert!(matches!(

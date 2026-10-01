@@ -1,11 +1,11 @@
 use ketchup_application::DocumentSession;
 use ketchup_application::batch_task::{
-    MAX_OCCURRENCE_BATCH_ITEMS, OccurrenceBatchError, OccurrenceBatchOperation,
-    OccurrenceBatchState,
+    MAX_OCCURRENCE_BATCH_ITEMS, OccurrenceBatchDocument, OccurrenceBatchError,
+    OccurrenceBatchOperation, OccurrenceBatchState,
 };
 use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest, QueryError};
 use ketchup_model::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, OccurrenceId, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, OccurrenceId, Transform,
 };
 use std::cell::Cell;
 
@@ -248,4 +248,34 @@ fn non_occurrence_worksets_cannot_be_coerced_into_occurrence_batches() {
         OccurrenceBatchOperation::SetColor { color: None },
     );
     assert!(matches!(result, Err(QueryError::UnsupportedWorksetScope)));
+}
+
+#[test]
+fn host_transaction_rejections_keep_the_store_error_as_their_cause() {
+    let mut store = DocumentStore::new();
+    let proposal = store
+        .batch_plan(CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Batch part".into(),
+            },
+        ]))
+        .unwrap();
+    store.batch_commit(&proposal).unwrap();
+
+    let Err(error) = store.batch_commit(&proposal) else {
+        panic!("committing the same proposal twice must be rejected");
+    };
+    assert_eq!(error.code(), "batch_transaction_failed");
+    let OccurrenceBatchError::HostTransaction(cause) = &error else {
+        panic!("expected a host transaction rejection, got {error:?}");
+    };
+    let cause = cause.to_string();
+    assert!(!cause.is_empty());
+    assert_eq!(
+        error.to_string(),
+        format!("batch host rejected the transaction: {cause}")
+    );
+    let source = std::error::Error::source(&error).expect("the store error is kept");
+    assert_eq!(source.to_string(), cause);
 }

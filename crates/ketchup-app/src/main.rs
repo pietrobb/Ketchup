@@ -7,8 +7,9 @@ use ketchup_app::{
 use ketchup_assistant::sidecar::AssistantDistribution;
 use ketchup_model::persistence::{self, LoadOutcome};
 
-fn bootstrap_failed() -> ! {
-    eprintln!("live bridge bootstrap failed");
+/// Reports why the launcher-requested live bridge could not start; never prints input.
+fn bootstrap_failed(reason: impl std::fmt::Display) -> ! {
+    eprintln!("{reason}");
     std::process::exit(2);
 }
 
@@ -17,7 +18,7 @@ fn main() -> eframe::Result {
     // Parsing the explicit flag is the only gateway to stdin. No environment,
     // automatic discovery, token argv, or token output fallback is supported.
     let live = LiveStdinBootstrap::from_arguments(all_arguments.clone())
-        .unwrap_or_else(|_| bootstrap_failed());
+        .unwrap_or_else(|error| bootstrap_failed(error));
     let mut arguments = all_arguments.into_iter();
     let first_argument = arguments.next();
     if first_argument.as_deref() == Some(std::ffi::OsStr::new("--verify-public-assistant-runtime"))
@@ -106,7 +107,10 @@ fn main() -> eframe::Result {
     let (bootstrap, document_path) = if let Some(live) = live {
         // Fail before creating a native window when input is absent or invalid.
         (
-            Some(live.read_stdin().unwrap_or_else(|_| bootstrap_failed())),
+            Some(
+                live.read_stdin()
+                    .unwrap_or_else(|error| bootstrap_failed(error)),
+            ),
             None,
         )
     } else {
@@ -126,9 +130,13 @@ fn main() -> eframe::Result {
             if let Some(bootstrap) = bootstrap {
                 bootstrap
                     .enable(&mut app, &creation_context.egui_ctx, std::io::stdout())
-                    .unwrap_or_else(|_| bootstrap_failed());
+                    .unwrap_or_else(|error| bootstrap_failed(error));
                 app.enable_live_consent_broker(&creation_context.egui_ctx)
-                    .unwrap_or_else(|_| bootstrap_failed());
+                    .unwrap_or_else(|error| {
+                        bootstrap_failed(format_args!(
+                            "live bridge bootstrap failed: consent broker unavailable: {error}"
+                        ))
+                    });
             } else {
                 if let Err(error) = app.enable_live_consent_broker(&creation_context.egui_ctx) {
                     eprintln!(
@@ -142,8 +150,10 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     );
-    if live_requested && result.is_err() {
-        bootstrap_failed();
+    if live_requested && let Err(error) = &result {
+        bootstrap_failed(format_args!(
+            "live bridge bootstrap failed: window failed: {error}"
+        ));
     }
     result
 }

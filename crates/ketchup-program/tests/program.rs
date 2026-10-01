@@ -443,6 +443,20 @@ fn errors_name_the_line_and_the_cause() {
 }
 
 #[test]
+fn a_value_that_is_not_a_list_names_the_expected_shape_and_the_starlark_reason() {
+    let error = run("size.star", "a = box(\"a\", 18)\n", &BTreeMap::new()).unwrap_err();
+    assert_eq!(error.code, "evaluation_error");
+    assert!(
+        error
+            .message
+            .contains("must be a list or tuple of 3 numbers: ")
+            && error.message.contains("int"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
 fn divide_splits_a_span_into_rounded_fields_that_add_up() {
     let source = "fields = divide(4930, 12)\nprint(fields)\nprint(sum(fields))\n";
     let (evaluated, _) = run("divide.star", source, &BTreeMap::new()).unwrap();

@@ -123,10 +123,24 @@ pub enum QueryError {
     UnsupportedWorksetScope,
     MissingWorksetIdentity,
     NotFound,
+    /// `error` raised because of a lower-level failure named by `cause`.
+    Caused {
+        error: Box<QueryError>,
+        cause: String,
+    },
 }
 impl QueryError {
+    #[must_use]
+    pub fn because(self, cause: impl std::fmt::Display) -> Self {
+        Self::Caused {
+            error: Box::new(self),
+            cause: cause.to_string(),
+        }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
+            Self::Caused { error, .. } => error.code(),
             Self::InvalidInput => "invalid_params",
             Self::InvalidCursor => "invalid_cursor",
             Self::StaleCursor => "stale_cursor",
@@ -313,7 +327,7 @@ impl ModelQuery {
         };
         let packages = topology_results
             .body_values(snapshot)
-            .map_err(|_| QueryError::InvalidInput)?;
+            .map_err(|error| QueryError::InvalidInput.because(error))?;
         let mut targets = Vec::with_capacity(request.targets.len());
         let mut total_features = 0_usize;
         let mut total_faces = 0_usize;
@@ -326,7 +340,7 @@ impl ModelQuery {
                 .ok_or(QueryError::NotFound)?;
             let resolved = snapshot
                 .resolve_instance_path(&path)
-                .map_err(|_| QueryError::NotFound)?;
+                .map_err(|error| QueryError::NotFound.because(error))?;
             let definition = snapshot
                 .definition(resolved.definition_id)
                 .ok_or(QueryError::NotFound)?;
@@ -459,7 +473,7 @@ impl ModelQuery {
         let mut byte_limited = false;
         let packages = topology_results
             .body_values(snapshot)
-            .map_err(|_| QueryError::InvalidInput)?;
+            .map_err(|error| QueryError::InvalidInput.because(error))?;
         for package in packages.into_values() {
             let ExactBodyPackage::Graph(package) = package.as_ref() else {
                 continue;
@@ -793,7 +807,8 @@ impl ModelQuery {
         }
         let (_, positions, spatial) = cached_filter.as_ref().expect("instance filter initialized");
         let total = positions.len() as u64;
-        let start = usize::try_from(after).map_err(|_| QueryError::InvalidCursor)?;
+        let start = usize::try_from(after)
+            .map_err(|_: std::num::TryFromIntError| QueryError::InvalidCursor)?;
         if start > positions.len() {
             return Err(QueryError::InvalidCursor);
         }
@@ -1159,7 +1174,7 @@ impl ModelQuery {
         let mut item = None;
         let packages = topology_results
             .body_values(snapshot)
-            .map_err(|_| QueryError::InvalidInput)?;
+            .map_err(|error| QueryError::InvalidInput.because(error))?;
         for package in packages.into_values() {
             let ExactBodyPackage::Graph(package) = package.as_ref() else {
                 continue;
@@ -1303,7 +1318,7 @@ impl ModelQuery {
         {
             return Err(QueryError::InvalidCursor);
         }
-        serde_json::from_str(payload).map_err(|_| QueryError::InvalidCursor)
+        serde_json::from_str(payload).map_err(|error| QueryError::InvalidCursor.because(error))
     }
 
     fn encode_workset(&self, snapshot: &Snapshot, id: u64) -> String {
@@ -1327,7 +1342,7 @@ impl ModelQuery {
         {
             return Err(QueryError::WorksetNotFound);
         }
-        serde_json::from_str(payload).map_err(|_| QueryError::WorksetNotFound)
+        serde_json::from_str(payload).map_err(|error| QueryError::WorksetNotFound.because(error))
     }
 }
 
@@ -1771,7 +1786,7 @@ fn canonical_instance_path(
     }
     snapshot
         .resolve_instance_path(&path)
-        .map_err(|_| QueryError::NotFound)?;
+        .map_err(|error| QueryError::NotFound.because(error))?;
     Ok(path)
 }
 
@@ -2102,6 +2117,14 @@ fn feature_kind(kind: &FeatureKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_caused_query_error_keeps_its_code_and_names_the_cause() {
+        let cause = ketchup_model::document::CanonicalError::OccurrenceNotFound(OccurrenceId(7));
+        let error = QueryError::NotFound.because(cause);
+        assert_eq!(error.code(), "entity_not_found");
+        assert!(format!("{error:?}").contains("occurrence 7"), "{error:?}");
+    }
 
     #[test]
     fn oversized_instance_item_fails_instead_of_issuing_a_non_progressing_cursor() {

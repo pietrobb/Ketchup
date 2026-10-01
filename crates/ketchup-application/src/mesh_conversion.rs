@@ -38,7 +38,8 @@ pub enum MeshConversionError {
     NoMatch(String),
     Ambiguous(String),
     IdentifierOverflow,
-    InvalidCandidate,
+    /// The recognized exact candidate cannot be built; the text names why.
+    InvalidCandidate(String),
     InvalidBatch(String),
     ExactGraph(String),
     ExactVerificationRequired,
@@ -61,7 +62,9 @@ impl fmt::Display for MeshConversionError {
             Self::IdentifierOverflow => {
                 formatter.write_str("feature identifier space is exhausted")
             }
-            Self::InvalidCandidate => formatter.write_str("recognized exact candidate is invalid"),
+            Self::InvalidCandidate(reason) => {
+                write!(formatter, "recognized exact candidate is invalid: {reason}")
+            }
             Self::InvalidBatch(reason) => {
                 write!(formatter, "conversion batch is invalid: {reason}")
             }
@@ -339,7 +342,7 @@ pub fn start_mesh_conversion(
             };
             let result = (|| {
                 send_progress(MeshConversionStage::Recognizing, 0)
-                    .map_err(|_| MeshConversionError::Cancelled)?;
+                    .map_err(|_: mpsc::SendError<_>| MeshConversionError::Cancelled)?;
                 let plan = prepare_mesh_conversion_from_snapshot(
                     snapshot,
                     mutation_epoch,
@@ -352,7 +355,7 @@ pub fn start_mesh_conversion(
                     return Err(MeshConversionError::Cancelled);
                 }
                 send_progress(MeshConversionStage::EvaluatingExact, 1)
-                    .map_err(|_| MeshConversionError::Cancelled)?;
+                    .map_err(|_: mpsc::SendError<_>| MeshConversionError::Cancelled)?;
                 let mut worker =
                     ExactWorkerSupervisor::spawn_with_cancellation(executable, &worker_cancelled)
                         .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
@@ -364,7 +367,7 @@ pub fn start_mesh_conversion(
                     )
                     .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
                 send_progress(MeshConversionStage::Verifying, 2)
-                    .map_err(|_| MeshConversionError::Cancelled)?;
+                    .map_err(|_: mpsc::SendError<_>| MeshConversionError::Cancelled)?;
                 let verification =
                     verify_mesh_conversion_with_cancellation(&plan, package, &worker_cancelled)?;
                 Ok(PreparedMeshConversion { plan, verification })
@@ -682,15 +685,17 @@ fn candidate_feature_chain(
     }
     ensure_counter_clockwise_profile(&mut profile);
     if !height_mm.is_finite() || height_mm <= 0.0 {
-        return Err(MeshConversionError::InvalidCandidate);
+        return Err(invalid_candidate(format!(
+            "height {height_mm} mm must be finite and positive"
+        )));
     }
     let transform = Transform::from_matrix([
         basis_u[0], basis_v[0], axis[0], origin[0], basis_u[1], basis_v[1], axis[1], origin[1],
         basis_u[2], basis_v[2], axis[2], origin[2], 0.0, 0.0, 0.0, 1.0,
     ])
-    .map_err(|_| MeshConversionError::InvalidCandidate)?;
+    .map_err(invalid_candidate)?;
     if transform.rigid_inverse().is_none() {
-        return Err(MeshConversionError::InvalidCandidate);
+        return Err(invalid_candidate("placement transform is not rigid"));
     }
     let mut commands = vec![
         CanonicalCommand::DeleteFeature { id: profile_id },
@@ -706,8 +711,7 @@ fn candidate_feature_chain(
             name: "Recognized extrusion".to_owned(),
             kind: FeatureKind::extrusion(
                 profile_id,
-                Dimension::new(format!("{height_mm:.17}"), height_mm)
-                    .map_err(|_| MeshConversionError::InvalidCandidate)?,
+                Dimension::new(format!("{height_mm:.17}"), height_mm).map_err(invalid_candidate)?,
             ),
         },
     ];
@@ -743,15 +747,17 @@ fn cylinder_feature_chain(
         || !cylinder.height_mm.is_finite()
         || cylinder.height_mm <= 0.0
     {
-        return Err(MeshConversionError::InvalidCandidate);
+        return Err(invalid_candidate(format!(
+            "cylinder radius {} mm and height {} mm must be finite and positive",
+            cylinder.radius_mm, cylinder.height_mm
+        )));
     }
     let [basis_u, basis_v] = perpendicular_basis(cylinder.axis)?;
     let origin = subtract_3d(
         cylinder.center_mm,
         scale_3d(cylinder.axis, cylinder.height_mm * 0.5),
     );
-    let frame = WorkplaneFrame::from_axes(origin, basis_u, basis_v)
-        .map_err(|_| MeshConversionError::InvalidCandidate)?;
+    let frame = WorkplaneFrame::from_axes(origin, basis_u, basis_v).map_err(invalid_candidate)?;
     let sketch = SketchSpec {
         workplane: workplane_id,
         entities: vec![SketchEntity::Circle {
@@ -763,10 +769,10 @@ fn cylinder_feature_chain(
     };
     let region = sketch
         .solved_regions()
-        .map_err(|_| MeshConversionError::InvalidCandidate)?
+        .map_err(invalid_candidate)?
         .into_iter()
         .next()
-        .ok_or(MeshConversionError::InvalidCandidate)?
+        .ok_or_else(|| invalid_candidate("circle sketch has no region"))?
         .id;
     Ok(CandidateFeatureChain {
         commands: vec![
@@ -798,7 +804,7 @@ fn cylinder_feature_chain(
                     direction: FeatureDirection::AlongNormal,
                     extent: FeatureExtent::Blind(
                         Dimension::new(format!("{:.17}", cylinder.height_mm), cylinder.height_mm)
-                            .map_err(|_| MeshConversionError::InvalidCandidate)?,
+                            .map_err(invalid_candidate)?,
                     ),
                     operation: PadOperation::NewBody,
                 }),
@@ -834,10 +840,14 @@ fn ensure_counter_clockwise_profile(profile: &mut FeatureKind) {
     }
 }
 
+fn invalid_candidate(reason: impl fmt::Display) -> MeshConversionError {
+    MeshConversionError::InvalidCandidate(reason.to_string())
+}
+
 fn perpendicular_basis(axis: [f64; 3]) -> Result<[[f64; 3]; 2], MeshConversionError> {
     let axis_length = length_3d(axis);
     if !axis_length.is_finite() || axis_length <= f64::EPSILON {
-        return Err(MeshConversionError::InvalidCandidate);
+        return Err(invalid_candidate(format!("axis {axis:?} has no direction")));
     }
     let axis = scale_3d(axis, axis_length.recip());
     let helper = if axis[0].abs() <= axis[1].abs() && axis[0].abs() <= axis[2].abs() {
@@ -850,7 +860,9 @@ fn perpendicular_basis(axis: [f64; 3]) -> Result<[[f64; 3]; 2], MeshConversionEr
     let basis_u = cross_3d(helper, axis);
     let basis_u_length = length_3d(basis_u);
     if !basis_u_length.is_finite() || basis_u_length <= f64::EPSILON {
-        return Err(MeshConversionError::InvalidCandidate);
+        return Err(invalid_candidate(format!(
+            "axis {axis:?} has no perpendicular basis"
+        )));
     }
     let basis_u = scale_3d(basis_u, basis_u_length.recip());
     let basis_v = cross_3d(axis, basis_u);
@@ -1279,7 +1291,9 @@ mod tests {
         assert!((determinant(basis_u, basis_v, axis) - 1.0).abs() <= 1.0e-12);
         assert_eq!(
             perpendicular_basis([0.0, 0.0, 0.0]),
-            Err(MeshConversionError::InvalidCandidate)
+            Err(MeshConversionError::InvalidCandidate(
+                "axis [0.0, 0.0, 0.0] has no direction".to_owned()
+            ))
         );
     }
 

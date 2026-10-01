@@ -1,11 +1,12 @@
 use crate::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, FeatureId, FeatureKind,
-    FeatureParameterTarget, InstancePath, ParameterValueType, Snapshot, Transform,
+    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, FeatureId,
+    FeatureKind, FeatureParameterTarget, InstancePath, ParameterValueType, Snapshot, Transform,
 };
 use crate::pin_joint::{
-    PinHole, PinJointContract, PinJointFace, PinJointId, project_pin_joint_contract,
+    PinHole, PinJointContract, PinJointError, PinJointFace, PinJointId, project_pin_joint_contract,
 };
 use crate::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
+use ketchup_geometry::dimension::DimensionError;
 use ketchup_geometry::sketch::{
     FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchEntity, WorkplaneFrame,
     WorkplaneSupport,
@@ -199,15 +200,20 @@ impl AssemblyRecipe {
         for request in part_requests {
             let resolved = snapshot
                 .resolve_instance_path(&request.instance_path)
-                .map_err(|_| AssemblyRecipeError::UnresolvedPart(request.key.clone()))?;
+                .map_err(|error| {
+                    AssemblyRecipeError::UnresolvedPart(request.key.clone(), Box::new(error))
+                })?;
             if request.edit_scope != RecipeEditScope::Occurrence(request.instance_path.clone())
                 && request.edit_scope != RecipeEditScope::SharedDefinition(resolved.definition_id)
             {
                 return Err(AssemblyRecipeError::InvalidEditScope(request.key));
             }
-            let definition = snapshot
-                .definition(resolved.definition_id)
-                .ok_or_else(|| AssemblyRecipeError::UnresolvedPart(request.key.clone()))?;
+            let definition = snapshot.definition(resolved.definition_id).ok_or_else(|| {
+                AssemblyRecipeError::UnresolvedPart(
+                    request.key.clone(),
+                    Box::new(CanonicalError::DefinitionNotFound(resolved.definition_id)),
+                )
+            })?;
             let declared = request
                 .features
                 .iter()
@@ -303,7 +309,9 @@ impl AssemblyRecipe {
         for part in self.parts.values() {
             let resolved = snapshot
                 .resolve_instance_path(&part.instance_path)
-                .map_err(|_| AssemblyRecipeError::UnresolvedPart(part.key.clone()))?;
+                .map_err(|error| {
+                    AssemblyRecipeError::UnresolvedPart(part.key.clone(), Box::new(error))
+                })?;
             if resolved.definition_id != part.definition_id
                 || resolved.local_transform != part.placement
             {
@@ -606,7 +614,9 @@ pub fn compile_assembly_recipe_patch(
                 let base_transform = path_transforms.get(&path).copied().unwrap_or(
                     snapshot
                         .resolve_instance_path(&path)
-                        .map_err(|_| AssemblyRecipeCompileError::PartChanged(part.clone()))?
+                        .map_err(|error| {
+                            AssemblyRecipeCompileError::PartChanged(part.clone(), error)
+                        })?
                         .local_transform,
                 );
                 let translated = translate_in_local_axis(base_transform, local_axis, anchor_offset)
@@ -619,8 +629,9 @@ pub fn compile_assembly_recipe_patch(
         }
         commands.push(CanonicalCommand::SetFeatureParameter {
             target: target.clone(),
-            dimension: Dimension::new(value.to_string(), value)
-                .map_err(|_| AssemblyRecipeCompileError::InvalidValue(node.key.clone()))?,
+            dimension: Dimension::new(value.to_string(), value).map_err(|error| {
+                AssemblyRecipeCompileError::InvalidDimension(node.key.clone(), error)
+            })?,
         });
         updated_recipe
             .parts
@@ -681,7 +692,7 @@ pub fn compile_assembly_recipe_patch(
     for part in updated_recipe.parts.values_mut() {
         part.placement = candidate
             .resolve_instance_path(&part.instance_path)
-            .map_err(|_| AssemblyRecipeCompileError::PartChanged(part.key.clone()))?
+            .map_err(|error| AssemblyRecipeCompileError::PartChanged(part.key.clone(), error))?
             .local_transform;
     }
     for owned in updated_recipe.owned_features.values_mut() {
@@ -851,8 +862,8 @@ fn rebind_affected_joinery(
             let mut geometric_contract = updated.clone();
             geometric_contract.physical_hole_pairs = None;
             let projection =
-                project_pin_joint_contract(candidate, &geometric_contract).map_err(|_| {
-                    AssemblyRecipeCompileError::UnsupportedDependentJoinery(item.key.clone())
+                project_pin_joint_contract(candidate, &geometric_contract).map_err(|error| {
+                    AssemblyRecipeCompileError::DependentJoineryProjection(item.key.clone(), error)
                 })?;
             if bindings.len() != projection.pairs.len() {
                 return Err(AssemblyRecipeCompileError::UnsupportedDependentJoinery(
@@ -1103,10 +1114,10 @@ fn solve_extend_until_contact(
     }
     let moving_resolved = snapshot
         .resolve_instance_path(&moving_part.instance_path)
-        .map_err(|_| AssemblyRecipeCompileError::PartChanged(part.clone()))?;
+        .map_err(|error| AssemblyRecipeCompileError::PartChanged(part.clone(), error))?;
     let target_resolved = snapshot
         .resolve_instance_path(&target_part.instance_path)
-        .map_err(|_| AssemblyRecipeCompileError::PartChanged(target_ref.part.clone()))?;
+        .map_err(|error| AssemblyRecipeCompileError::PartChanged(target_ref.part.clone(), error))?;
     let moving_normal = transform_vector(moving_resolved.world_transform, moving_face.normal_local);
     let target_normal = transform_vector(target_resolved.world_transform, target_face.normal_local);
     if (dot(moving_normal, target_normal) + 1.0).abs() > ACCUMULATED_ROUNDING
@@ -1495,7 +1506,8 @@ pub enum AssemblyRecipeCompileError {
     DuplicateDependency(RecipeKey),
     DependencyCycle(RecipeKey),
     PartMissing(RecipeKey),
-    PartChanged(RecipeKey),
+    /// The part's instance path no longer resolves.
+    PartChanged(RecipeKey, CanonicalError),
     ParameterMissing {
         part: RecipeKey,
         parameter: RecipeKey,
@@ -1522,7 +1534,10 @@ pub enum AssemblyRecipeCompileError {
     AmbiguousContact(RecipeKey),
     ContactUnreachable(RecipeKey),
     UnsupportedDependentJoinery(RecipeKey),
+    /// The dependent joint's contract no longer projects onto the parts.
+    DependentJoineryProjection(RecipeKey, PinJointError),
     InvalidValue(RecipeKey),
+    InvalidDimension(RecipeKey, DimensionError),
     OwnedFeatureChanged(RecipeKey),
     Canonical(crate::document::CanonicalError),
 }
@@ -1542,7 +1557,7 @@ pub enum AssemblyRecipeError {
     DuplicateKey(RecipeKey),
     NonCanonicalKey(RecipeKey),
     ResourceLimit,
-    UnresolvedPart(RecipeKey),
+    UnresolvedPart(RecipeKey, Box<CanonicalError>),
     PartChanged(RecipeKey),
     InvalidEditScope(RecipeKey),
     InvalidParameter(RecipeKey),

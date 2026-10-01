@@ -119,7 +119,8 @@ pub struct OccurrenceBatchStatus {
 pub enum OccurrenceBatchError {
     Query(QueryError),
     Session(SessionError),
-    HostTransaction,
+    /// The host refused to plan or commit the batch transaction.
+    HostTransaction(Box<dyn std::error::Error + Send + Sync>),
     Cancelled,
     StaleTask {
         expected: BatchDocumentStamp,
@@ -131,10 +132,42 @@ impl OccurrenceBatchError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Query(error) => error.code(),
-            Self::Session(_) | Self::HostTransaction => "batch_transaction_failed",
+            Self::Session(_) | Self::HostTransaction(_) => "batch_transaction_failed",
             Self::Cancelled => "batch_cancelled",
             Self::StaleTask { .. } => "stale_batch_task",
         }
+    }
+}
+
+impl std::fmt::Display for OccurrenceBatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Query(error) => write!(formatter, "batch query rejected: {error:?}"),
+            Self::Session(error) => write!(formatter, "batch session rejected: {error}"),
+            Self::HostTransaction(error) => {
+                write!(formatter, "batch host rejected the transaction: {error}")
+            }
+            Self::Cancelled => formatter.write_str("batch job cancelled"),
+            Self::StaleTask { .. } => {
+                formatter.write_str("batch job no longer matches the document mutation epoch")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OccurrenceBatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Session(error) => Some(error),
+            Self::HostTransaction(error) => Some(error.as_ref()),
+            Self::Query(_) | Self::Cancelled | Self::StaleTask { .. } => None,
+        }
+    }
+}
+
+impl OccurrenceBatchError {
+    pub fn host_transaction(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::HostTransaction(Box::new(error))
     }
 }
 
@@ -182,7 +215,7 @@ impl OccurrenceBatchDocument for DocumentStore {
 
     fn batch_plan(&self, batch: CommandBatch) -> Result<Proposal, OccurrenceBatchError> {
         self.prepare_proposal_with_context(batch, ProposalContext::local_assistant_model())
-            .map_err(|_| OccurrenceBatchError::HostTransaction)
+            .map_err(OccurrenceBatchError::host_transaction)
     }
 
     fn batch_commit(
@@ -190,7 +223,7 @@ impl OccurrenceBatchDocument for DocumentStore {
         proposal: &Proposal,
     ) -> Result<VerifiedProposalCommit, OccurrenceBatchError> {
         self.commit_verified_proposal(proposal)
-            .map_err(|_| OccurrenceBatchError::HostTransaction)
+            .map_err(OccurrenceBatchError::host_transaction)
     }
 }
 

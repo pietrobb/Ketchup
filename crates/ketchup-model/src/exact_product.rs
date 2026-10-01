@@ -344,7 +344,7 @@ impl ExactBRepGraphPackage {
     ) -> Result<Self, ExactProductError> {
         graph
             .validate()
-            .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+            .map_err(|error| ExactProductError::InvalidWorkerEvidence.because(error))?;
         let vertex_count = mesh.vertices_mm.len();
         let valid_terminal = if graph.terminal_is_planar_offset() {
             evidence.volume_mm3.is_finite()
@@ -567,7 +567,7 @@ impl ExactBRepGraphPackage {
             &evidence.faces,
             &evidence.edges,
         )
-        .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+        .map_err(|error| ExactProductError::InvalidWorkerEvidence.because(error))?;
         // Triangles of a named face carry its role so picks resolve to a
         // durable face reference.
         let face_roles = evidence
@@ -928,7 +928,7 @@ impl ImportedExactPackage {
                 publish_imported_topological_references(&identity, &source_sha256, counts)
             })
             .transpose()
-            .map_err(|_| ExactProductError::InvalidWorkerEvidence)?
+            .map_err(|error| ExactProductError::InvalidWorkerEvidence.because(error))?
             .unwrap_or_default();
         Ok(Self {
             identity,
@@ -1462,7 +1462,7 @@ impl<'a> ExactSnapshotPreparation<'a> {
     pub fn new(snapshot: &'a Snapshot) -> Result<Self, ExactProductError> {
         let dependencies = snapshot
             .feature_dependency_graph()
-            .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+            .map_err(|error| ExactProductError::UnsupportedDefinition.because(error))?;
         Ok(Self {
             snapshot,
             dependencies,
@@ -1496,7 +1496,7 @@ pub fn exact_body_terminal_features(
 ) -> Result<BTreeMap<BodyId, FeatureId>, ExactProductError> {
     let graph = snapshot
         .feature_dependency_graph()
-        .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+        .map_err(|error| ExactProductError::UnsupportedDefinition.because(error))?;
     exact_body_terminal_features_with_graph(snapshot, definition_id, &graph)
 }
 
@@ -1510,7 +1510,7 @@ pub fn producer_exact_graph(
         return Err(ExactProductError::UnsupportedDefinition);
     }
     ExactBRepGraph::from_snapshot(snapshot, definition_id, producer_feature_id)
-        .map_err(|_| ExactProductError::UnsupportedDefinition)
+        .map_err(|error| ExactProductError::UnsupportedDefinition.because(error))
 }
 
 /// Compiles the exact B-Rep graph of the terminal producer of `body_id`.
@@ -1703,7 +1703,7 @@ impl ExactResultRegistry {
         let source_digest = snapshot.canonical_digest();
         let graph = snapshot
             .feature_dependency_graph()
-            .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+            .map_err(|error| ExactProductError::UnsupportedDefinition.because(error))?;
         for (result_key, package) in &self.packages {
             if result_key.document_id != document_id
                 || result_key.source_revision != source_revision
@@ -3761,7 +3761,8 @@ impl<'a> ExactProducerCompilation<'a> {
             Ok(graph) => Ok(Some(ExactProducerPlan::Graph(Box::new(graph)))),
             Err(
                 ExactBRepGraphError::UnsupportedFeature(_)
-                | ExactBRepGraphError::UnsupportedProfile(_),
+                | ExactBRepGraphError::UnsupportedProfile(_)
+                | ExactBRepGraphError::UnsolvedProfile(..),
             ) => Ok(None),
             Err(error) => Err(error),
         }
@@ -3812,6 +3813,11 @@ pub enum ExactProductError {
     },
     DuplicateDerivedResult {
         piece: DerivedIdentity,
+    },
+    /// `error` raised because of a lower-level failure named by `cause`.
+    Caused {
+        error: Box<ExactProductError>,
+        cause: String,
     },
 }
 
@@ -3896,11 +3902,23 @@ impl fmt::Display for ExactProductError {
                 "duplicate exact result for derived rule {} slot path",
                 piece.root_rule_node_id.0
             ),
+            Self::Caused { error, cause } => write!(formatter, "{error}: {cause}"),
         }
     }
 }
 
 impl std::error::Error for ExactProductError {}
+
+impl ExactProductError {
+    /// Wraps this error with the lower-level failure that caused it.
+    #[must_use]
+    pub fn because(self, cause: impl fmt::Display) -> Self {
+        Self::Caused {
+            error: Box::new(self),
+            cause: cause.to_string(),
+        }
+    }
+}
 
 fn is_simple_linear_profile(segments: &[ProfileSegment], tolerance_mm: f64) -> bool {
     let points = segments

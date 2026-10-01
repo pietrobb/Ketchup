@@ -221,7 +221,7 @@ fn resolve_detail(
             target.kind,
             target.entity_id,
         )
-        .map_err(|_| "invalid_image_framing")?;
+        .map_err(|error| failure("invalid_image_framing", format!("{error:?}"), json!({})))?;
     let item = detail.get("item").ok_or("invalid_image_framing")?;
     let definition_id = item["definition_id"]
         .as_u64()
@@ -253,7 +253,7 @@ fn resolve_detail(
         .exact
         .topology_results
         .body_values(&snapshot)
-        .map_err(|_| "invalid_image_framing")?
+        .map_err(|error| failed_because("invalid_image_framing", error))?
     {
         let ExactBodyPackage::Graph(package) = package.as_ref() else {
             continue;
@@ -486,7 +486,8 @@ impl LiveBridge {
                 return Err("busy");
             }
             let mut nonce = [0; 32];
-            getrandom::fill(&mut nonce).map_err(|_| "image_unavailable")?;
+            getrandom::fill(&mut nonce)
+                .map_err(|error| failure("image_unavailable", error.to_string(), json!({})))?;
             let initial = VisualState::read(app)?;
             let detail = match (*framing, detail_target.as_ref()) {
                 (ImageFraming::Viewport | ImageFraming::Selection, None) => None,

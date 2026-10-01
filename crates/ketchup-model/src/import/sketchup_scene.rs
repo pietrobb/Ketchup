@@ -10,8 +10,8 @@ use super::{
     ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
 };
 use crate::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, MESH_BODY_SCHEMA_V1,
-    MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
+    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, FeatureId, FeatureKind,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
 
 pub const SKETCHUP_SCENE_SCHEMA_V1: &str = "ketchup.sketchup-scene.v1";
@@ -242,7 +242,7 @@ struct MetadataFile {
 pub enum SketchupSceneImportError {
     Empty,
     SourceTooLarge,
-    InvalidUtf8,
+    InvalidUtf8(std::str::Utf8Error),
     InvalidJson,
     UnsupportedSchema,
     UnsupportedUnits,
@@ -257,6 +257,8 @@ pub enum SketchupSceneImportError {
     InvalidGeometry,
     InvalidTransform,
     InvalidSourceIdentity(ImportContractError),
+    InvalidReport(ImportContractError),
+    RejectedByDocument(CanonicalError),
     IdSpaceExhausted,
 }
 
@@ -265,7 +267,12 @@ impl fmt::Display for SketchupSceneImportError {
         formatter.write_str(match self {
             Self::Empty => "SketchUp scene package is empty",
             Self::SourceTooLarge => "SketchUp scene package exceeds the bounded 32 MiB envelope",
-            Self::InvalidUtf8 => "SketchUp scene package is not valid UTF-8",
+            Self::InvalidUtf8(error) => {
+                return write!(
+                    formatter,
+                    "SketchUp scene package is not valid UTF-8: {error}"
+                );
+            }
             Self::InvalidJson => {
                 "SketchUp scene package JSON is malformed or contains unknown fields"
             }
@@ -294,6 +301,15 @@ impl fmt::Display for SketchupSceneImportError {
                     formatter,
                     "SketchUp scene package source name or provenance is invalid: {error}"
                 );
+            }
+            Self::InvalidReport(error) => {
+                return write!(
+                    formatter,
+                    "SketchUp scene import report is invalid: {error}"
+                );
+            }
+            Self::RejectedByDocument(error) => {
+                return write!(formatter, "SketchUp scene package was rejected: {error}");
             }
             Self::IdSpaceExhausted => "canonical import ID space is exhausted",
         })
@@ -332,7 +348,7 @@ pub fn inspect_sketchup_scene(
     if source.len() as u64 > MAX_SKETCHUP_SCENE_SOURCE_BYTES {
         return Err(SketchupSceneImportError::SourceTooLarge);
     }
-    let text = std::str::from_utf8(source).map_err(|_| SketchupSceneImportError::InvalidUtf8)?;
+    let text = std::str::from_utf8(source).map_err(SketchupSceneImportError::InvalidUtf8)?;
     let file: SceneFile =
         serde_json::from_str(text).map_err(|error| classify_json_error(&error))?;
     if file.schema != SKETCHUP_SCENE_SCHEMA_V1 {
@@ -457,8 +473,8 @@ pub fn inspect_sketchup_scene(
         }) {
             return Err(SketchupSceneImportError::InvalidTransform);
         }
-        let transform = Transform::from_matrix(matrix)
-            .map_err(|_| SketchupSceneImportError::InvalidTransform)?;
+        let transform =
+            Transform::from_matrix(matrix).map_err(SketchupSceneImportError::RejectedByDocument)?;
         instances.push(ParsedInstance {
             definition: instance.definition,
             name: instance.name,
@@ -489,7 +505,7 @@ pub fn inspect_sketchup_scene(
             None,
             instance_count as u32,
         )
-        .map_err(|_| SketchupSceneImportError::InvalidGeometry)?,
+        .map_err(SketchupSceneImportError::InvalidReport)?,
     ];
     for (count, code) in [
         (
@@ -507,7 +523,7 @@ pub fn inspect_sketchup_scene(
         if count > 0 {
             diagnostics.push(
                 ImportDiagnostic::new(ImportDiagnosticSeverity::Warning, code, None, count)
-                    .map_err(|_| SketchupSceneImportError::InvalidGeometry)?,
+                    .map_err(SketchupSceneImportError::InvalidReport)?,
             );
         }
     }
@@ -544,8 +560,8 @@ pub fn plan_sketchup_scene_import(
     let mut commands = Vec::new();
     let mut outputs = Vec::new();
     for (offset, definition) in scene.definitions.iter().enumerate() {
-        let offset =
-            u64::try_from(offset).map_err(|_| SketchupSceneImportError::IdSpaceExhausted)?;
+        let offset = u64::try_from(offset)
+            .map_err(|_: std::num::TryFromIntError| SketchupSceneImportError::IdSpaceExhausted)?;
         let definition_id = DefinitionId(
             definition_start
                 .checked_add(offset)
@@ -576,8 +592,8 @@ pub fn plan_sketchup_scene_import(
         });
     }
     for (offset, instance) in scene.instances.iter().enumerate() {
-        let offset =
-            u64::try_from(offset).map_err(|_| SketchupSceneImportError::IdSpaceExhausted)?;
+        let offset = u64::try_from(offset)
+            .map_err(|_: std::num::TryFromIntError| SketchupSceneImportError::IdSpaceExhausted)?;
         let occurrence_id = OccurrenceId(
             occurrence_start
                 .checked_add(offset)
