@@ -3560,7 +3560,8 @@ fn append_machining_detail(
                 format_number((end_mm - start_mm).abs())
             ));
         }
-        GeneralMachiningGeometry::TimberStock { .. } => unreachable!(),
+        // Stock is the blank the operations cut, not a machining: it has no detail.
+        GeneralMachiningGeometry::TimberStock { .. } => {}
     }
     svg.push_str("</g>\n");
 }

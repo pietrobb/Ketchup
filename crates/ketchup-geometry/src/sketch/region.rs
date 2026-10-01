@@ -74,12 +74,12 @@ pub(super) fn profile_curves(
                         end_mm,
                         center_mm,
                         clockwise,
-                    } => curves.push(RegionCurve::Arc {
+                    } => curves.push(RegionCurve::Arc(RegionArc {
                         start: *start_mm,
                         end: *end_mm,
                         center: *center_mm,
                         clockwise: *clockwise,
-                    }),
+                    })),
                     SolvedSketchRegionEdge::CubicBezier {
                         start_mm,
                         control_1_mm,
@@ -103,18 +103,18 @@ pub(super) fn profile_curves(
             let right = [center_mm[0] + radius_mm, center_mm[1]];
             let left = [center_mm[0] - radius_mm, center_mm[1]];
             curves.extend([
-                RegionCurve::Arc {
+                RegionCurve::Arc(RegionArc {
                     start: right,
                     end: left,
                     center: *center_mm,
                     clockwise: false,
-                },
-                RegionCurve::Arc {
+                }),
+                RegionCurve::Arc(RegionArc {
                     start: left,
                     end: right,
                     center: *center_mm,
                     clockwise: false,
-                },
+                }),
             ]);
         }
     }
@@ -155,13 +155,11 @@ pub(super) fn curves_intersect(left: RegionCurve, right: RegionCurve) -> bool {
                 end: right_end,
             },
         ) => line_segments_intersect(left_start, left_end, right_start, right_end),
-        (RegionCurve::Line { start, end }, arc @ RegionCurve::Arc { .. })
-        | (arc @ RegionCurve::Arc { .. }, RegionCurve::Line { start, end }) => {
+        (RegionCurve::Line { start, end }, RegionCurve::Arc(arc))
+        | (RegionCurve::Arc(arc), RegionCurve::Line { start, end }) => {
             line_arc_intersects(start, end, arc)
         }
-        (left @ RegionCurve::Arc { .. }, right @ RegionCurve::Arc { .. }) => {
-            arcs_intersect(left, right)
-        }
+        (RegionCurve::Arc(left), RegionCurve::Arc(right)) => arcs_intersect(left, right),
     }
 }
 
@@ -231,21 +229,13 @@ pub(super) fn point_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64
     )
 }
 
-pub(super) fn arc_parts(curve: RegionCurve) -> ([f64; 2], [f64; 2], [f64; 2], bool) {
-    let RegionCurve::Arc {
+pub(super) fn point_on_arc(point: [f64; 2], arc: RegionArc) -> bool {
+    let RegionArc {
         start,
         end,
         center,
         clockwise,
-    } = curve
-    else {
-        unreachable!()
-    };
-    (start, end, center, clockwise)
-}
-
-pub(super) fn point_on_arc(point: [f64; 2], curve: RegionCurve) -> bool {
-    let (start, end, center, clockwise) = arc_parts(curve);
+    } = arc;
     let radius = distance2(start, center);
     if (distance2(point, center) - radius).abs() > radius.max(1.0) * ACCUMULATED_ROUNDING {
         return false;
@@ -266,11 +256,11 @@ pub(super) fn point_on_arc(point: [f64; 2], curve: RegionCurve) -> bool {
     offset <= total + ROUNDING
 }
 
-pub(super) fn line_arc_intersects(start: [f64; 2], end: [f64; 2], arc: RegionCurve) -> bool {
-    let (_, _, center, _) = arc_parts(arc);
+pub(super) fn line_arc_intersects(start: [f64; 2], end: [f64; 2], arc: RegionArc) -> bool {
+    let center = arc.center;
     let direction = subtract2(end, start);
     let offset = subtract2(start, center);
-    let radius = distance2(arc_parts(arc).0, center);
+    let radius = distance2(arc.start, center);
     let a = direction[0] * direction[0] + direction[1] * direction[1];
     let b = 2.0 * (offset[0] * direction[0] + offset[1] * direction[1]);
     let c = offset[0] * offset[0] + offset[1] * offset[1] - radius * radius;
@@ -293,9 +283,9 @@ pub(super) fn line_arc_intersects(start: [f64; 2], end: [f64; 2], arc: RegionCur
         })
 }
 
-pub(super) fn arcs_intersect(left: RegionCurve, right: RegionCurve) -> bool {
-    let (left_start, _, left_center, _) = arc_parts(left);
-    let (right_start, _, right_center, _) = arc_parts(right);
+pub(super) fn arcs_intersect(left: RegionArc, right: RegionArc) -> bool {
+    let (left_start, left_center) = (left.start, left.center);
+    let (right_start, right_center) = (right.start, right.center);
     let left_radius = distance2(left_start, left_center);
     let right_radius = distance2(right_start, right_center);
     let center_distance = distance2(left_center, right_center);
@@ -360,10 +350,15 @@ pub(super) fn point_in_profile(
                     winding -= 1;
                 }
             }
-            arc @ RegionCurve::Arc {
-                center, clockwise, ..
-            } => {
-                let radius = distance2(arc_parts(arc).0, center);
+            RegionCurve::Arc(
+                arc @ RegionArc {
+                    start,
+                    center,
+                    clockwise,
+                    ..
+                },
+            ) => {
+                let radius = distance2(start, center);
                 let relative_y = (point[1] - center[1]) / radius;
                 if relative_y.abs() > 1.0 {
                     continue;
@@ -523,7 +518,7 @@ pub(super) fn region_curve_bounds(curve: RegionCurve) -> [[f64; 2]; 2] {
             [start[0].min(end[0]), start[1].min(end[1])],
             [start[0].max(end[0]), start[1].max(end[1])],
         ],
-        RegionCurve::Arc { start, center, .. } => {
+        RegionCurve::Arc(RegionArc { start, center, .. }) => {
             let radius = distance2(start, center);
             [
                 [center[0] - radius, center[1] - radius],

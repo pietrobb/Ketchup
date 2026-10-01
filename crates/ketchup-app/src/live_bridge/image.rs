@@ -20,7 +20,7 @@ const MAX_SOURCE_PIXELS: usize = 16_777_216;
 
 #[derive(Default)]
 pub(super) struct ImageState {
-    pending: Option<ImageRequest>,
+    pending: Option<PendingImage>,
     painted: Option<Result<Painted, &'static str>>,
 }
 impl ImageState {
@@ -42,7 +42,7 @@ impl ImageState {
         }
     }
 }
-struct ImageRequest {
+struct PendingImage {
     queued: Queued,
     deadline: Instant,
     initial: VisualState,
@@ -62,6 +62,8 @@ const FIT_WAIT_RESERVE: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 struct ResolvedImageDetail {
     request: ImageDetailTarget,
+    /// The wire name of the framed element: "edge" or "face".
+    kind_name: &'static str,
     reference_id: String,
     world_points: Vec<Vec3>,
 }
@@ -243,9 +245,9 @@ fn resolve_detail(
         .find(|occurrence| occurrence.instance_path == occurrence_path)
         .filter(|occurrence| occurrence.body.definition_id.0 == definition_id)
         .ok_or("invalid_image_framing")?;
-    let kind = match target.kind {
-        EntityKind::Edges => TopologicalElementKind::Edge,
-        EntityKind::Faces => TopologicalElementKind::Face,
+    let (kind, kind_name) = match target.kind {
+        EntityKind::Edges => (TopologicalElementKind::Edge, "edge"),
+        EntityKind::Faces => (TopologicalElementKind::Face, "face"),
         _ => return Err("invalid_image_framing"),
     };
     let mut local_bounds = None;
@@ -326,6 +328,7 @@ fn resolve_detail(
     }
     Ok(ResolvedImageDetail {
         request: target.clone(),
+        kind_name,
         reference_id,
         world_points,
     })
@@ -460,20 +463,23 @@ impl KetchupApp {
     }
 }
 impl LiveBridge {
-    pub(super) fn request_image(&mut self, app: &KetchupApp, ctx: &egui::Context, queued: Queued) {
+    pub(super) fn request_image(
+        &mut self,
+        app: &KetchupApp,
+        ctx: &egui::Context,
+        image: ImageRequest,
+        queued: Queued,
+    ) {
         self.image.purge_abandoned(self.session);
         let result = (|| {
-            let Request::Image {
+            let ImageRequest {
                 expected,
                 image_protocol_version,
                 capture_mode,
                 max_side_px,
                 framing,
                 detail_target,
-            } = &queued.request
-            else {
-                unreachable!()
-            };
+            } = &image;
             if *image_protocol_version != IMAGE_PROTOCOL_VERSION {
                 return Err("unsupported_image_protocol");
             }
@@ -510,7 +516,7 @@ impl LiveBridge {
         })();
         match result {
             Ok((initial, mode, max_side_px, framing, detail, nonce)) => {
-                self.image.pending = Some(ImageRequest {
+                self.image.pending = Some(PendingImage {
                     queued,
                     deadline: Instant::now() + Duration::from_secs(5),
                     initial,
@@ -634,34 +640,42 @@ impl LiveBridge {
                 self.image.pending = Some(request);
                 ctx.request_repaint_after(Duration::from_millis(10));
             }
-            result => {
-                // Revoke retained callbacks, including ones from discarded passes.
-                let mut response = match result {
-                    Ok(Some(value)) => Response {
+            Ok(Some(value)) => {
+                let id = request.queued.id;
+                finish_image_request(
+                    app,
+                    request,
+                    Response {
                         version: 1,
-                        id: request.queued.id,
+                        id,
                         ok: true,
                         stamp: None,
                         result: Some(value),
                         error: None,
                     },
-                    Err(code) => Response::error(request.queued.id, code),
-                    Ok(None) => unreachable!(),
-                };
-                response.stamp = Some(request.capture.as_ref().map_or_else(
-                    || app.live_bridge_stamp(),
-                    |(p, _, _)| p.state.stamp.clone(),
-                ));
-                if serde_json::to_vec(&response).map_or(true, |v| v.len() > MAX_IMAGE_FRAME_BYTES) {
-                    response = Response::error(request.queued.id, "response_limit");
-                }
-                if !request.queued.cancelled.load(Ordering::Acquire) {
-                    let _ = request.queued.reply.try_send(response);
-                }
-                drop(request.capture);
+                );
+            }
+            Err(code) => {
+                let response = Response::error(request.queued.id, code);
+                finish_image_request(app, request, response);
             }
         }
     }
+}
+/// Answers a finished image request and revokes its retained callbacks,
+/// including ones from discarded passes.
+fn finish_image_request(app: &KetchupApp, request: PendingImage, mut response: Response) {
+    response.stamp = Some(request.capture.as_ref().map_or_else(
+        || app.live_bridge_stamp(),
+        |(p, _, _)| p.state.stamp.clone(),
+    ));
+    if serde_json::to_vec(&response).map_or(true, |v| v.len() > MAX_IMAGE_FRAME_BYTES) {
+        response = Response::error(request.queued.id, "response_limit");
+    }
+    if !request.queued.cancelled.load(Ordering::Acquire) {
+        let _ = request.queued.reply.try_send(response);
+    }
+    drop(request.capture);
 }
 fn thumbnail(
     capture: &Painted,
@@ -717,7 +731,7 @@ fn thumbnail(
             .ok_or("invalid_image_framing")?,
     };
     let framing_detail = detail.map(|target| {
-        json!({"kind":match target.request.kind { EntityKind::Edges => "edge", EntityKind::Faces => "face", _ => unreachable!() },
+        json!({"kind":target.kind_name,
             "entity_id":target.request.entity_id,"reference_id":target.reference_id})
     });
     Ok(

@@ -250,18 +250,23 @@ pub enum Request {
         expected: Option<Stamp>,
         view: View,
     },
-    Image {
-        #[serde(default)]
-        expected: Option<Stamp>,
-        image_protocol_version: u32,
-        capture_mode: CaptureMode,
-        max_side_px: u32,
-        #[serde(default)]
-        framing: ImageFraming,
-        #[serde(default)]
-        detail_target: Option<ImageDetailTarget>,
-    },
+    Image(ImageRequest),
     Disconnect {},
+}
+
+/// What a client asks of one CAD image; it answers only after a painted frame.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRequest {
+    #[serde(default)]
+    pub expected: Option<Stamp>,
+    pub image_protocol_version: u32,
+    pub capture_mode: CaptureMode,
+    pub max_side_px: u32,
+    #[serde(default)]
+    pub framing: ImageFraming,
+    #[serde(default)]
+    pub detail_target: Option<ImageDetailTarget>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -813,8 +818,9 @@ impl KetchupApp {
                 }
                 bridge.observed = Some(stamp);
             }
-            if matches!(queued.request, Request::Image { .. }) {
-                bridge.request_image(self, context, queued);
+            if let Request::Image(image) = &queued.request {
+                let image = image.clone();
+                bridge.request_image(self, context, image, queued);
                 continue;
             }
             let Queued {
@@ -2242,11 +2248,11 @@ impl LiveBridge {
                 app.dispatch_command(command);
                 Ok(json!({"view":view,"canonical_mutation":false,"image":"not_requested"}))
             }
-            Request::Image {
+            Request::Image(ImageRequest {
                 expected,
                 image_protocol_version,
                 ..
-            } => {
+            }) => {
                 if image_protocol_version != IMAGE_PROTOCOL_VERSION {
                     return Err("unsupported_image_protocol");
                 }

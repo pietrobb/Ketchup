@@ -53,14 +53,14 @@ fn send_request_version_mode(
         version: 1,
         id: 1,
         token: credentials.token,
-        request: Request::Image {
+        request: Request::Image(ImageRequest {
             expected: Some(h.state().live_bridge_stamp()),
             image_protocol_version,
             capture_mode,
             max_side_px: MIN_IMAGE_SIDE_PX,
             framing: ketchup_app::live_bridge::ImageFraming::Viewport,
             detail_target: None,
-        },
+        }),
     })
     .unwrap();
     socket

@@ -683,16 +683,16 @@ struct SolvedSketchLoop {
 
 #[derive(Clone, Copy)]
 enum RegionCurve {
-    Line {
-        start: [f64; 2],
-        end: [f64; 2],
-    },
-    Arc {
-        start: [f64; 2],
-        end: [f64; 2],
-        center: [f64; 2],
-        clockwise: bool,
-    },
+    Line { start: [f64; 2], end: [f64; 2] },
+    Arc(RegionArc),
+}
+
+#[derive(Clone, Copy)]
+struct RegionArc {
+    start: [f64; 2],
+    end: [f64; 2],
+    center: [f64; 2],
+    clockwise: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1222,23 +1222,16 @@ impl SketchSpec {
             .iter_mut()
             .find(|entity| entity.id() == entity_id)
             .ok_or(SketchError::EntityNotFound(entity_id))?;
-        let constraint = self
+        let stored_target = self
             .constraints
             .iter_mut()
-            .find(|constraint| {
-                matches!(
-                    constraint.kind,
-                    SketchConstraintKind::Projection { entity, .. } if entity == entity_id
-                )
+            .find_map(|constraint| match &mut constraint.kind {
+                SketchConstraintKind::Projection { entity, target, .. } if *entity == entity_id => {
+                    Some(target)
+                }
+                _ => None,
             })
             .ok_or(SketchError::InvalidProjectionSource)?;
-        let SketchConstraintKind::Projection {
-            target: stored_target,
-            ..
-        } = &mut constraint.kind
-        else {
-            unreachable!();
-        };
         *entity = target.clone();
         **stored_target = target;
         self.solve()?;
@@ -2163,52 +2156,6 @@ impl SketchSpec {
             .iter()
             .position(|entity| entity.id() == entity_id)
             .ok_or(SketchError::EntityNotFound(entity_id))?;
-        if matches!(self.entities[source_index], SketchEntity::Circle { .. }) {
-            return Err(SketchError::UnsupportedExtendEntity(entity_id));
-        }
-        let point_is_changed = |point: SketchPointRef| {
-            point.entity == entity_id
-                && match point.point {
-                    SketchPointKind::Start => extends_start,
-                    SketchPointKind::End => extends_end,
-                    SketchPointKind::Center => false,
-                    SketchPointKind::Control1 | SketchPointKind::Control2 => true,
-                }
-        };
-        for constraint in &self.constraints {
-            let ambiguous = match &constraint.kind {
-                SketchConstraintKind::Horizontal { entity }
-                | SketchConstraintKind::Vertical { entity }
-                | SketchConstraintKind::Radius { entity, .. } => *entity == entity_id,
-                SketchConstraintKind::Coincident { a, b }
-                | SketchConstraintKind::Distance { a, b, .. } => {
-                    point_is_changed(*a) || point_is_changed(*b)
-                }
-                SketchConstraintKind::FixedPoint { point, .. } => point_is_changed(*point),
-                SketchConstraintKind::Parallel { a, b }
-                | SketchConstraintKind::Perpendicular { a, b }
-                | SketchConstraintKind::Tangent { a, b }
-                | SketchConstraintKind::Angle { a, b, .. }
-                | SketchConstraintKind::Equal { a, b }
-                | SketchConstraintKind::Concentric { a, b }
-                | SketchConstraintKind::Collinear { a, b } => *a == entity_id || *b == entity_id,
-                SketchConstraintKind::Symmetric { a, b, axis } => {
-                    point_is_changed(*a) || point_is_changed(*b) || *axis == entity_id
-                }
-                SketchConstraintKind::Midpoint { point, line } => {
-                    point_is_changed(*point) || *line == entity_id
-                }
-                SketchConstraintKind::PointOnCurve { point, curve } => {
-                    point_is_changed(*point) || *curve == entity_id
-                }
-                SketchConstraintKind::Projection { entity, .. } => *entity == entity_id,
-                SketchConstraintKind::Construction { .. } => false,
-            };
-            if ambiguous {
-                return Err(SketchError::AmbiguousExtendConstraint);
-            }
-        }
-
         let lerp =
             |a: [f64; 2], b: [f64; 2], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
         let extended = match self.entities[source_index].clone() {
@@ -2284,8 +2231,53 @@ impl SketchSpec {
                     end_mm: extended[3],
                 }
             }
-            SketchEntity::Circle { .. } => unreachable!(),
+            SketchEntity::Circle { .. } => {
+                return Err(SketchError::UnsupportedExtendEntity(entity_id));
+            }
         };
+        let point_is_changed = |point: SketchPointRef| {
+            point.entity == entity_id
+                && match point.point {
+                    SketchPointKind::Start => extends_start,
+                    SketchPointKind::End => extends_end,
+                    SketchPointKind::Center => false,
+                    SketchPointKind::Control1 | SketchPointKind::Control2 => true,
+                }
+        };
+        for constraint in &self.constraints {
+            let ambiguous = match &constraint.kind {
+                SketchConstraintKind::Horizontal { entity }
+                | SketchConstraintKind::Vertical { entity }
+                | SketchConstraintKind::Radius { entity, .. } => *entity == entity_id,
+                SketchConstraintKind::Coincident { a, b }
+                | SketchConstraintKind::Distance { a, b, .. } => {
+                    point_is_changed(*a) || point_is_changed(*b)
+                }
+                SketchConstraintKind::FixedPoint { point, .. } => point_is_changed(*point),
+                SketchConstraintKind::Parallel { a, b }
+                | SketchConstraintKind::Perpendicular { a, b }
+                | SketchConstraintKind::Tangent { a, b }
+                | SketchConstraintKind::Angle { a, b, .. }
+                | SketchConstraintKind::Equal { a, b }
+                | SketchConstraintKind::Concentric { a, b }
+                | SketchConstraintKind::Collinear { a, b } => *a == entity_id || *b == entity_id,
+                SketchConstraintKind::Symmetric { a, b, axis } => {
+                    point_is_changed(*a) || point_is_changed(*b) || *axis == entity_id
+                }
+                SketchConstraintKind::Midpoint { point, line } => {
+                    point_is_changed(*point) || *line == entity_id
+                }
+                SketchConstraintKind::PointOnCurve { point, curve } => {
+                    point_is_changed(*point) || *curve == entity_id
+                }
+                SketchConstraintKind::Projection { entity, .. } => *entity == entity_id,
+                SketchConstraintKind::Construction { .. } => false,
+            };
+            if ambiguous {
+                return Err(SketchError::AmbiguousExtendConstraint);
+            }
+        }
+
         let mut updated = self.clone();
         updated.entities[source_index] = extended;
         updated.solve()?;

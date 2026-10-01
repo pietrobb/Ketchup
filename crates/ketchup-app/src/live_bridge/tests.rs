@@ -1612,34 +1612,36 @@ fn image_protocol_is_versioned_declared_and_required() {
     assert_eq!(
         bridge.execute(
             &mut app,
-            Request::Image {
+            Request::Image(ImageRequest {
                 expected: Some(stamp),
                 image_protocol_version: IMAGE_PROTOCOL_VERSION - 1,
                 capture_mode: CaptureMode::Offscreen,
                 max_side_px: MIN_IMAGE_SIDE_PX,
                 framing: ImageFraming::Viewport,
                 detail_target: None,
-            },
+            }),
             false,
         ),
         Err("unsupported_image_protocol")
     );
     for max_side_px in [MIN_IMAGE_SIDE_PX - 1, MAX_IMAGE_SIDE_PX + 1] {
         let (reply, receiver) = mpsc::sync_channel(1);
+        let image = ImageRequest {
+            expected: Some(app.live_bridge_stamp()),
+            image_protocol_version: IMAGE_PROTOCOL_VERSION,
+            capture_mode: CaptureMode::Offscreen,
+            max_side_px,
+            framing: ImageFraming::Viewport,
+            detail_target: None,
+        };
         bridge.request_image(
             &app,
             &egui::Context::default(),
+            image.clone(),
             Queued {
                 session: bridge.session,
                 id: u64::from(max_side_px),
-                request: Request::Image {
-                    expected: Some(app.live_bridge_stamp()),
-                    image_protocol_version: IMAGE_PROTOCOL_VERSION,
-                    capture_mode: CaptureMode::Offscreen,
-                    max_side_px,
-                    framing: ImageFraming::Viewport,
-                    detail_target: None,
-                },
+                request: Request::Image(image),
                 connection_closed: false,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 reply,

@@ -31,20 +31,22 @@ fn queue_with_options(
     let mut bridge = app.live.bridge.take().unwrap();
     bridge.session = session;
     let (reply, rx) = mpsc::sync_channel(1);
+    let image = ImageRequest {
+        expected: Some(app.live_bridge_stamp()),
+        image_protocol_version: IMAGE_PROTOCOL_VERSION,
+        capture_mode: CaptureMode::Offscreen,
+        max_side_px,
+        framing,
+        detail_target,
+    };
     bridge.request_image(
         app,
         &ctx,
+        image.clone(),
         Queued {
             session,
             id: session,
-            request: Request::Image {
-                expected: Some(app.live_bridge_stamp()),
-                image_protocol_version: IMAGE_PROTOCOL_VERSION,
-                capture_mode: CaptureMode::Offscreen,
-                max_side_px,
-                framing,
-                detail_target,
-            },
+            request: Request::Image(image),
             connection_closed: false,
             cancelled: Arc::new(AtomicBool::new(false)),
             reply,

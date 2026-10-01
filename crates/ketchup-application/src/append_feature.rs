@@ -752,14 +752,34 @@ pub(crate) fn plan_feature_kind(
                         "feature.distance_mm",
                     )
                 })?;
-            match mode {
-                AssistantCadChamferMode::Symmetric => {
+            let advanced_mode = match mode {
+                AssistantCadChamferMode::Symmetric => None,
+                AssistantCadChamferMode::TwoDistance { second_distance_mm } => {
+                    Some(ChamferMode::TwoDistance {
+                        second_distance: Dimension::new(
+                            second_distance_mm.to_string(),
+                            *second_distance_mm,
+                        )
+                        .map_err(|error| {
+                            assistant_canonical_rejection(
+                                error.into(),
+                                operation_name,
+                                "feature.mode.second_distance_mm",
+                            )
+                        })?,
+                    })
+                }
+                AssistantCadChamferMode::DistanceAngle { angle_degrees } => {
+                    Some(ChamferMode::DistanceAngle {
+                        angle_degrees: *angle_degrees,
+                    })
+                }
+            };
+            match advanced_mode {
+                None => {
                     plan_topology_finish_kind(GeneralFinishKind::Chamfer, target, edges, distance)
                 }
-                AssistantCadChamferMode::TwoDistance { second_distance_mm }
-                | AssistantCadChamferMode::DistanceAngle {
-                    angle_degrees: second_distance_mm,
-                } => {
+                Some(mode) => {
                     let available_faces = assistant_topology_references(
                         snapshot,
                         topology_results,
@@ -790,27 +810,6 @@ pub(crate) fn plan_feature_kind(
                             side_face: (*side_face).clone(),
                         });
                     }
-                    let mode = match mode {
-                        AssistantCadChamferMode::TwoDistance { .. } => ChamferMode::TwoDistance {
-                            second_distance: Dimension::new(
-                                second_distance_mm.to_string(),
-                                *second_distance_mm,
-                            )
-                            .map_err(|error| {
-                                assistant_canonical_rejection(
-                                    error.into(),
-                                    operation_name,
-                                    "feature.mode.second_distance_mm",
-                                )
-                            })?,
-                        },
-                        AssistantCadChamferMode::DistanceAngle { .. } => {
-                            ChamferMode::DistanceAngle {
-                                angle_degrees: *second_distance_mm,
-                            }
-                        }
-                        AssistantCadChamferMode::Symmetric => unreachable!(),
-                    };
                     plan_topology_advanced_chamfer_kind(target, edge_sides, distance, mode)
                 }
             }

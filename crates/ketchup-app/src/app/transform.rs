@@ -3134,11 +3134,8 @@ pub(crate) fn push_pull_batch(
         }
         Axis::X | Axis::Y => {
             let points_mm = profile.kind().polygon_points()?;
-            let coordinate = |point: &[f64; 2]| match axis {
-                Axis::X => point[0],
-                Axis::Y => point[1],
-                Axis::Z => unreachable!(),
-            };
+            let index = usize::from(matches!(axis, Axis::Y));
+            let coordinate = |point: &[f64; 2]| point[index];
             let minimum = points_mm.iter().map(coordinate).min_by(f64::total_cmp)?;
             let maximum = points_mm.iter().map(coordinate).max_by(f64::total_cmp)?;
             let old_extent = maximum - minimum;
@@ -3146,11 +3143,7 @@ pub(crate) fn push_pull_batch(
             for point in &mut resized {
                 let normalized = (coordinate(point) - minimum) / old_extent;
                 let value = minimum + normalized * new_extent_mm;
-                match axis {
-                    Axis::X => point[0] = value,
-                    Axis::Y => point[1] = value,
-                    Axis::Z => unreachable!(),
-                }
+                point[index] = value;
             }
             commands.push(CanonicalCommand::SetProfilePoints {
                 id: item.profile_feature_id,

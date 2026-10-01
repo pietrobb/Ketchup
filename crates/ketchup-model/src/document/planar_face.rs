@@ -61,47 +61,41 @@ pub(super) fn frame_on_planar_face(
     }
 }
 
+/// `feature` with `kind` in place of its own, everything else kept.
+fn with_kind(feature: &Feature, kind: FeatureKind) -> Arc<Feature> {
+    Arc::new(Feature {
+        kind,
+        ..feature.clone()
+    })
+}
+
 pub(super) fn set_planar_face_reference_health(
     product: &mut ProductModel,
     lineage_digest: &str,
     health: WorkplaneSupportHealth,
 ) {
-    let anchored = product
+    let updated = product
         .features
         .values()
         .filter_map(|feature| match &feature.kind {
-            FeatureKind::Workplane(WorkplaneSpec {
-                support: WorkplaneSupport::PlanarFace { reference, .. },
-                ..
-            }) if reference.lineage_digest == lineage_digest => Some(feature.id),
+            FeatureKind::Workplane(
+                spec @ WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace { reference, .. },
+                    ..
+                },
+            ) if reference.lineage_digest == lineage_digest => {
+                let mut spec = spec.clone();
+                spec.support = WorkplaneSupport::PlanarFace {
+                    reference: reference.clone(),
+                    health,
+                };
+                Some(with_kind(feature, FeatureKind::Workplane(spec)))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
-    for id in anchored {
-        let feature = Arc::clone(
-            product
-                .features
-                .get(&id)
-                .expect("collected workplane exists"),
-        );
-        let FeatureKind::Workplane(spec) = &feature.kind else {
-            unreachable!("collected feature is a workplane");
-        };
-        let WorkplaneSupport::PlanarFace { reference, .. } = &spec.support else {
-            unreachable!("collected workplane has planar-face support");
-        };
-        let mut updated = spec.clone();
-        updated.support = WorkplaneSupport::PlanarFace {
-            reference: reference.clone(),
-            health,
-        };
-        product.features.insert(
-            id,
-            Arc::new(Feature {
-                kind: FeatureKind::Workplane(updated),
-                ..feature.as_ref().clone()
-            }),
-        );
+    for feature in updated {
+        product.features.insert(feature.id, feature);
     }
 }
 
@@ -109,74 +103,43 @@ pub(super) fn rebind_planar_face_reference(
     product: &mut ProductModel,
     reference: &BodySubshapeRef,
 ) -> Result<(), CanonicalError> {
-    let anchored = product
+    let updated = product
         .features
         .values()
         .filter_map(|feature| match &feature.kind {
-            FeatureKind::Workplane(WorkplaneSpec {
-                support:
-                    WorkplaneSupport::PlanarFace {
-                        reference: support, ..
-                    },
-                ..
-            }) if support.lineage_digest == reference.lineage_digest => Some(feature.id),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    for id in anchored {
-        let feature = Arc::clone(
-            product
-                .features
-                .get(&id)
-                .expect("collected workplane exists"),
-        );
-        let FeatureKind::Workplane(spec) = &feature.kind else {
-            unreachable!("collected feature is a workplane");
-        };
-        let mut updated = spec.clone();
-        updated.support = WorkplaneSupport::PlanarFace {
-            reference: Box::new(reference.clone()),
-            health: WorkplaneSupportHealth::Resolved,
-        };
-        product.features.insert(
-            id,
-            Arc::new(Feature {
-                kind: FeatureKind::Workplane(updated),
-                ..feature.as_ref().clone()
-            }),
-        );
-    }
-    let dependent_pockets = product
-        .features
-        .values()
-        .filter_map(|feature| match &feature.kind {
+            FeatureKind::Workplane(
+                spec @ WorkplaneSpec {
+                    support:
+                        WorkplaneSupport::PlanarFace {
+                            reference: support, ..
+                        },
+                    ..
+                },
+            ) if support.lineage_digest == reference.lineage_digest => {
+                let mut spec = spec.clone();
+                spec.support = WorkplaneSupport::PlanarFace {
+                    reference: Box::new(reference.clone()),
+                    health: WorkplaneSupportHealth::Resolved,
+                };
+                Some(with_kind(feature, FeatureKind::Workplane(spec)))
+            }
             FeatureKind::Pad(spec)
                 if spec
                     .operation
                     .support()
                     .is_some_and(|support| support.lineage_digest == reference.lineage_digest) =>
             {
-                Some(feature.id)
+                let mut spec = spec.clone();
+                if let PadOperation::Cut { start, .. } = &mut spec.operation {
+                    *start = CutStart::Support(Box::new(reference.clone()));
+                }
+                Some(with_kind(feature, FeatureKind::Pad(spec)))
             }
             _ => None,
         })
         .collect::<Vec<_>>();
-    for id in dependent_pockets {
-        let feature = Arc::clone(product.features.get(&id).expect("collected pad exists"));
-        let FeatureKind::Pad(spec) = &feature.kind else {
-            unreachable!("collected feature is a pad");
-        };
-        let mut updated = spec.clone();
-        if let PadOperation::Cut { start, .. } = &mut updated.operation {
-            *start = CutStart::Support(Box::new(reference.clone()));
-        }
-        product.features.insert(
-            id,
-            Arc::new(Feature {
-                kind: FeatureKind::Pad(updated),
-                ..feature.as_ref().clone()
-            }),
-        );
+    for feature in updated {
+        product.features.insert(feature.id, feature);
     }
     refresh_supported_planar_face_frames(product, None)
 }
@@ -185,14 +148,17 @@ pub(super) fn refresh_supported_planar_face_frames(
     product: &mut ProductModel,
     previous: Option<&Snapshot>,
 ) -> Result<(), CanonicalError> {
+    let tolerance_mm = product.tolerance.linear_mm();
     let updates = product
         .features
         .values()
         .filter_map(|feature| {
-            let FeatureKind::Workplane(WorkplaneSpec {
-                support: WorkplaneSupport::PlanarFace { reference, .. },
-                ..
-            }) = &feature.kind
+            let FeatureKind::Workplane(
+                spec @ WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace { reference, .. },
+                    ..
+                },
+            ) = &feature.kind
             else {
                 return None;
             };
@@ -212,34 +178,22 @@ pub(super) fn refresh_supported_planar_face_frames(
                     return None;
                 }
             }
-            Some((
-                feature.id,
-                supported_planar_face_frame(product, reference).ok_or(CanonicalError::Sketch(
-                    SketchError::InvalidPlanarFaceSupport,
-                )),
-            ))
+            Some(
+                supported_planar_face_frame(product, reference)
+                    .ok_or(CanonicalError::Sketch(
+                        SketchError::InvalidPlanarFaceSupport,
+                    ))
+                    .map(|frame| {
+                        let mut spec = spec.clone();
+                        spec.frame = frame_on_planar_face(spec.frame, frame, tolerance_mm);
+                        with_kind(feature, FeatureKind::Workplane(spec))
+                    }),
+            )
         })
         .collect::<Vec<_>>();
-    for (id, frame) in updates {
-        let frame = frame?;
-        let feature = Arc::clone(
-            product
-                .features
-                .get(&id)
-                .expect("collected workplane exists"),
-        );
-        let FeatureKind::Workplane(spec) = &feature.kind else {
-            unreachable!("collected feature is a workplane");
-        };
-        let mut updated = spec.clone();
-        updated.frame = frame_on_planar_face(spec.frame, frame, product.tolerance.linear_mm());
-        product.features.insert(
-            id,
-            Arc::new(Feature {
-                kind: FeatureKind::Workplane(updated),
-                ..feature.as_ref().clone()
-            }),
-        );
+    for feature in updates {
+        let feature = feature?;
+        product.features.insert(feature.id, feature);
     }
     Ok(())
 }

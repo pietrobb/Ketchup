@@ -27,6 +27,28 @@ pub(super) fn constraint_entity_ids(kind: &SketchConstraintKind) -> Vec<SketchEn
     ids
 }
 
+/// Signs a constraint between two distinct lines: `code`, then the pair in canonical order.
+fn line_pair_signature(
+    signature: &mut Vec<u8>,
+    entities: &BTreeMap<SketchEntityId, &SketchEntity>,
+    constraint: &SketchConstraint,
+    code: u8,
+    a: SketchEntityId,
+    b: SketchEntityId,
+) -> Result<(), SketchError> {
+    if a == b
+        || !matches!(entities.get(&a).copied(), Some(SketchEntity::Line { .. }))
+        || !matches!(entities.get(&b).copied(), Some(SketchEntity::Line { .. }))
+    {
+        return Err(SketchError::InvalidConstraintReference(constraint.id));
+    }
+    signature[0] = code;
+    let (first, second) = canonical_entity_pair(a, b);
+    signature.extend_from_slice(&first.0.to_le_bytes());
+    signature.extend_from_slice(&second.0.to_le_bytes());
+    Ok(())
+}
+
 pub(super) fn evaluate_constraint(
     constraint: &SketchConstraint,
     entities: &BTreeMap<SketchEntityId, &SketchEntity>,
@@ -121,29 +143,17 @@ pub(super) fn evaluate_constraint(
             signature.extend_from_slice(&position_mm[1].to_bits().to_le_bytes());
             2
         }
-        SketchConstraintKind::Parallel { a, b }
-        | SketchConstraintKind::Perpendicular { a, b }
-        | SketchConstraintKind::Collinear { a, b } => {
-            if a == b
-                || !matches!(entities.get(a).copied(), Some(SketchEntity::Line { .. }))
-                || !matches!(entities.get(b).copied(), Some(SketchEntity::Line { .. }))
-            {
-                return Err(SketchError::InvalidConstraintReference(constraint.id));
-            }
-            signature[0] = match constraint.kind {
-                SketchConstraintKind::Parallel { .. } => 7,
-                SketchConstraintKind::Perpendicular { .. } => 8,
-                SketchConstraintKind::Collinear { .. } => 14,
-                _ => unreachable!(),
-            };
-            let (first, second) = canonical_entity_pair(*a, *b);
-            signature.extend_from_slice(&first.0.to_le_bytes());
-            signature.extend_from_slice(&second.0.to_le_bytes());
-            if matches!(constraint.kind, SketchConstraintKind::Collinear { .. }) {
-                2
-            } else {
-                1
-            }
+        SketchConstraintKind::Parallel { a, b } => {
+            line_pair_signature(&mut signature, entities, constraint, 7, *a, *b)?;
+            1
+        }
+        SketchConstraintKind::Perpendicular { a, b } => {
+            line_pair_signature(&mut signature, entities, constraint, 8, *a, *b)?;
+            1
+        }
+        SketchConstraintKind::Collinear { a, b } => {
+            line_pair_signature(&mut signature, entities, constraint, 14, *a, *b)?;
+            2
         }
         SketchConstraintKind::Tangent { a, b } => {
             if a == b || !supports_tangent(entities.get(a).copied(), entities.get(b).copied()) {

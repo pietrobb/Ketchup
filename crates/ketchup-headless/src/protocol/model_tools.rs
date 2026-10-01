@@ -165,10 +165,7 @@ impl Server {
         if method_requires_guard(method) {
             self.guard(p)?;
         }
-        if matches!(
-            method,
-            "verify_job_start" | "verify_job_status" | "verify_job_cancel"
-        ) {
+        'verify_jobs: {
             let result = match method {
                 "verify_job_start" => {
                     let request: VerifyJobStart = serde_json::from_value(Value::Object(p.clone()))
@@ -252,14 +249,11 @@ impl Server {
                     }
                     self.verify_job_value(index)
                 }
-                _ => unreachable!(),
+                _ => break 'verify_jobs,
             };
             return Ok(result);
         }
-        if matches!(
-            method,
-            "batch_job_start" | "batch_job_status" | "batch_job_step" | "batch_job_cancel"
-        ) {
+        'batch_jobs: {
             let result = match method {
                 "batch_job_start" => {
                     let request: BatchJobStart = serde_json::from_value(Value::Object(p.clone()))
@@ -346,14 +340,11 @@ impl Server {
                     let status = self.batch_jobs[index].task.status(&self.session);
                     json!({"job_handle":request.handle,"status":status,"receipt":receipt})
                 }
-                _ => unreachable!(),
+                _ => break 'batch_jobs,
             };
             return Ok(result);
         }
-        if matches!(
-            method,
-            "summary" | "edit_context" | "query" | "detail" | "workset_create" | "workset_status"
-        ) {
+        'model_queries: {
             let snapshot = self.session.snapshot();
             let result = match method {
                 "summary" => {
@@ -464,7 +455,7 @@ impl Server {
                     self.model_queries
                         .workset_status(&snapshot, &request.handle)
                 }
-                _ => unreachable!(),
+                _ => break 'model_queries,
             };
             return result
                 .map_err(|e| Error::new(e.code(), format!("model query rejected: {e:?}")));

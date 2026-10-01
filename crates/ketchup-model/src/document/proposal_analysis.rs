@@ -299,29 +299,27 @@ pub(super) fn proposal_value(
                     )),
                 })
         }
-        AuthoritativeDependency::Collection(id)
-            if matches!(
-                goal,
-                ProposalGoal::SetCollectionOccurrences(_)
-                    | ProposalGoal::CreateCollection(_)
-                    | ProposalGoal::DeleteCollection(_)
-            ) =>
-        {
-            snapshot
-                .collection(id)
-                .map_or(ProposalValue::Missing, |collection| match goal {
-                    ProposalGoal::CreateCollection(_) => {
+        AuthoritativeDependency::Collection(id) => {
+            let collection = snapshot.collection(id);
+            match goal {
+                ProposalGoal::CreateCollection(_) => collection
+                    .map_or(ProposalValue::Missing, |collection| {
                         ProposalValue::Text(collection.name().to_owned())
-                    }
-                    ProposalGoal::SetCollectionOccurrences(_) => {
+                    }),
+                ProposalGoal::SetCollectionOccurrences(_) => collection
+                    .map_or(ProposalValue::Missing, |collection| {
                         ProposalValue::Occurrences(collection.occurrence_ids().collect())
-                    }
-                    ProposalGoal::DeleteCollection(_) => ProposalValue::CollectionState {
-                        name: collection.name().to_owned(),
-                        occurrence_ids: collection.occurrence_ids().collect(),
-                    },
-                    _ => unreachable!(),
-                })
+                    }),
+                ProposalGoal::DeleteCollection(_) => {
+                    collection.map_or(ProposalValue::Missing, |collection| {
+                        ProposalValue::CollectionState {
+                            name: collection.name().to_owned(),
+                            occurrence_ids: collection.occurrence_ids().collect(),
+                        }
+                    })
+                }
+                _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
+            }
         }
         AuthoritativeDependency::Definition(id) => {
             snapshot
@@ -407,31 +405,25 @@ pub(super) fn proposal_value(
                     parent: group.parent(),
                 })
         }
-        AuthoritativeDependency::Group(id)
-            if matches!(
-                goal,
-                ProposalGoal::SetGroupTranslation(_)
-                    | ProposalGoal::SetGroupParent(_)
-                    | ProposalGoal::CreateGroup(_)
-                    | ProposalGoal::DeleteGroup(_)
-            ) =>
-        {
-            snapshot
-                .group(id)
-                .map_or(ProposalValue::Missing, |group| match goal {
-                    ProposalGoal::SetGroupTranslation(_) => {
+        AuthoritativeDependency::Group(id) => {
+            let group = snapshot.group(id);
+            match goal {
+                ProposalGoal::SetGroupTranslation(_) => group
+                    .map_or(ProposalValue::Missing, |group| {
                         ProposalValue::Transform(group.transform())
-                    }
-                    ProposalGoal::SetGroupParent(_) => ProposalValue::Group(group.parent()),
-                    ProposalGoal::CreateGroup(_) | ProposalGoal::DeleteGroup(_) => {
-                        ProposalValue::GroupState {
-                            name: group.name().to_owned(),
-                            transform: group.transform(),
-                            parent: group.parent(),
-                        }
-                    }
-                    _ => unreachable!(),
-                })
+                    }),
+                ProposalGoal::SetGroupParent(_) => group.map_or(ProposalValue::Missing, |group| {
+                    ProposalValue::Group(group.parent())
+                }),
+                ProposalGoal::CreateGroup(_) | ProposalGoal::DeleteGroup(_) => {
+                    group.map_or(ProposalValue::Missing, |group| ProposalValue::GroupState {
+                        name: group.name().to_owned(),
+                        transform: group.transform(),
+                        parent: group.parent(),
+                    })
+                }
+                _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
+            }
         }
         _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
     }

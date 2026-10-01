@@ -239,14 +239,14 @@ impl From<RuleProgramApplyError> for Error {
 
 impl From<SessionError> for Error {
     fn from(error: SessionError) -> Self {
-        if let SessionError::Planning(diagnostic) = error {
-            return Self {
-                code: diagnostic.code.clone(),
-                message: diagnostic.failed_invariant.clone(),
-                details: Some(json!(diagnostic)),
-            };
-        }
         let code = match &error {
+            SessionError::Planning(diagnostic) => {
+                return Self {
+                    code: diagnostic.code.clone(),
+                    message: diagnostic.failed_invariant.clone(),
+                    details: Some(json!(diagnostic)),
+                };
+            }
             SessionError::Canonical(e) => e.code(),
             SessionError::Prepare(_) => "proposal_prepare_rejected",
             SessionError::Commit(_) => "proposal_commit_rejected",
@@ -255,7 +255,6 @@ impl From<SessionError> for Error {
             SessionError::NoUndo => "no_undo",
             SessionError::NoRedo => "no_redo",
             SessionError::Evaluation(_) => "evaluation_error",
-            SessionError::Planning(_) => unreachable!(),
         };
         Self {
             code: code.into(),
@@ -1164,7 +1163,7 @@ impl Server {
                     .evaluate_with_timeout(std::time::Duration::from_millis(timeout))?;
                 Ok(evaluation_report(&self.session, &report))
             }
-            _ => unreachable!(),
+            _ => unreachable!("the field table above answers unknown_method for {method}"),
         }
     }
     pub fn handle(&mut self, line: &[u8]) -> Value {

@@ -226,14 +226,14 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
     assert_eq!(shell.app().live_bridge_stamp(), stamp);
     let image = client.call(
         &mut shell,
-        Request::Image {
+        Request::Image(ImageRequest {
             expected: Some(stamp),
             image_protocol_version: IMAGE_PROTOCOL_VERSION,
             capture_mode: CaptureMode::Offscreen,
             max_side_px: MIN_IMAGE_SIDE_PX,
             framing: ImageFraming::Viewport,
             detail_target: None,
-        },
+        }),
     );
     assert!(
         matches!(

@@ -3004,16 +3004,16 @@ const MAX_PLANAR_OFFSET_CLEARANCE_COMPARISONS: usize = 16_777_216;
 
 #[derive(Clone, Copy)]
 enum PlanarOffsetClearanceCurve {
-    Line {
-        start: [f64; 2],
-        end: [f64; 2],
-    },
-    Arc {
-        start: [f64; 2],
-        end: [f64; 2],
-        center: [f64; 2],
-        clockwise: bool,
-    },
+    Line { start: [f64; 2], end: [f64; 2] },
+    Arc(ClearanceArc),
+}
+
+#[derive(Clone, Copy)]
+struct ClearanceArc {
+    start: [f64; 2],
+    end: [f64; 2],
+    center: [f64; 2],
+    clockwise: bool,
 }
 
 fn planar_offset_loop_displacement_mm(
@@ -3043,18 +3043,18 @@ fn planar_offset_loop_clearance_curves(
             let right = [center[0] + radius, center[1]];
             let left = [center[0] - radius, center[1]];
             curves.extend([
-                PlanarOffsetClearanceCurve::Arc {
+                PlanarOffsetClearanceCurve::Arc(ClearanceArc {
                     start: right,
                     end: left,
                     center,
                     clockwise: false,
-                },
-                PlanarOffsetClearanceCurve::Arc {
+                }),
+                PlanarOffsetClearanceCurve::Arc(ClearanceArc {
                     start: left,
                     end: right,
                     center,
                     clockwise: false,
-                },
+                }),
             ]);
         }
         ExactBRepPlanarLoop::Boundary { segments } => {
@@ -3072,12 +3072,12 @@ fn planar_offset_loop_clearance_curves(
                         end_bits,
                         center_bits,
                         clockwise,
-                    } => curves.push(PlanarOffsetClearanceCurve::Arc {
+                    } => curves.push(PlanarOffsetClearanceCurve::Arc(ClearanceArc {
                         start: start_bits.map(f64::from_bits),
                         end: end_bits.map(f64::from_bits),
                         center: center_bits.map(f64::from_bits),
                         clockwise: *clockwise,
-                    }),
+                    })),
                     ExactBRepPlanarSegment::CubicBezier {
                         start_bits,
                         control_1_bits,
@@ -3134,7 +3134,7 @@ fn planar_offset_loop_clearance_curves(
 fn planar_offset_clearance_curve_start(curve: PlanarOffsetClearanceCurve) -> [f64; 2] {
     match curve {
         PlanarOffsetClearanceCurve::Line { start, .. }
-        | PlanarOffsetClearanceCurve::Arc { start, .. } => start,
+        | PlanarOffsetClearanceCurve::Arc(ClearanceArc { start, .. }) => start,
     }
 }
 
@@ -3160,12 +3160,14 @@ fn point_in_planar_offset_clearance_curves(
                     winding -= 1;
                 }
             }
-            arc @ PlanarOffsetClearanceCurve::Arc {
-                start,
-                center,
-                clockwise,
-                ..
-            } => {
+            PlanarOffsetClearanceCurve::Arc(
+                arc @ ClearanceArc {
+                    start,
+                    center,
+                    clockwise,
+                    ..
+                },
+            ) => {
                 let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
                 let relative_y = (point[1] - center[1]) / radius;
                 if relative_y.abs() > 1.0 {
@@ -3208,16 +3210,13 @@ fn point_to_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) ->
         .hypot(point[1] - start[1] - parameter * direction[1])
 }
 
-fn point_is_on_clearance_arc(point: [f64; 2], arc: PlanarOffsetClearanceCurve) -> bool {
-    let PlanarOffsetClearanceCurve::Arc {
+fn point_is_on_clearance_arc(point: [f64; 2], arc: ClearanceArc) -> bool {
+    let ClearanceArc {
         start,
         end,
         center,
         clockwise,
-    } = arc
-    else {
-        return false;
-    };
+    } = arc;
     let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
     let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
     let candidate = (point[1] - center[1]).atan2(point[0] - center[0]);
@@ -3225,13 +3224,10 @@ fn point_is_on_clearance_arc(point: [f64; 2], arc: PlanarOffsetClearanceCurve) -
         .is_some_and(|sweep| angle_on_directed_arc(start_angle, sweep, candidate))
 }
 
-fn point_to_clearance_arc_distance(point: [f64; 2], arc: PlanarOffsetClearanceCurve) -> f64 {
-    let PlanarOffsetClearanceCurve::Arc {
+fn point_to_clearance_arc_distance(point: [f64; 2], arc: ClearanceArc) -> f64 {
+    let ClearanceArc {
         start, end, center, ..
-    } = arc
-    else {
-        unreachable!()
-    };
+    } = arc;
     let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
     let center_distance = (point[0] - center[0]).hypot(point[1] - center[1]);
     let mut distance = (point[0] - start[0])
@@ -3276,17 +3272,10 @@ fn line_to_line_clearance(
         .min(point_to_segment_distance(right_end, left_start, left_end))
 }
 
-fn line_to_arc_clearance(
-    line_start: [f64; 2],
-    line_end: [f64; 2],
-    arc: PlanarOffsetClearanceCurve,
-) -> f64 {
-    let PlanarOffsetClearanceCurve::Arc {
+fn line_to_arc_clearance(line_start: [f64; 2], line_end: [f64; 2], arc: ClearanceArc) -> f64 {
+    let ClearanceArc {
         start, end, center, ..
-    } = arc
-    else {
-        unreachable!()
-    };
+    } = arc;
     let direction = [line_end[0] - line_start[0], line_end[1] - line_start[1]];
     let offset = [line_start[0] - center[0], line_start[1] - center[1]];
     let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
@@ -3332,28 +3321,19 @@ fn line_to_arc_clearance(
         ))
 }
 
-fn arc_to_arc_clearance(
-    left: PlanarOffsetClearanceCurve,
-    right: PlanarOffsetClearanceCurve,
-) -> f64 {
-    let PlanarOffsetClearanceCurve::Arc {
+fn arc_to_arc_clearance(left: ClearanceArc, right: ClearanceArc) -> f64 {
+    let ClearanceArc {
         start: left_start,
         end: left_end,
         center: left_center,
         ..
-    } = left
-    else {
-        unreachable!()
-    };
-    let PlanarOffsetClearanceCurve::Arc {
+    } = left;
+    let ClearanceArc {
         start: right_start,
         end: right_end,
         center: right_center,
         ..
-    } = right
-    else {
-        unreachable!()
-    };
+    } = right;
     let left_radius = (left_start[0] - left_center[0]).hypot(left_start[1] - left_center[1]);
     let right_radius = (right_start[0] - right_center[0]).hypot(right_start[1] - right_center[1]);
     let center_delta = [
@@ -3443,18 +3423,13 @@ fn planar_offset_curves_clearance(
                 end: right_end,
             },
         ) => line_to_line_clearance(left_start, left_end, right_start, right_end),
-        (
-            PlanarOffsetClearanceCurve::Line { start, end },
-            arc @ PlanarOffsetClearanceCurve::Arc { .. },
-        )
-        | (
-            arc @ PlanarOffsetClearanceCurve::Arc { .. },
-            PlanarOffsetClearanceCurve::Line { start, end },
-        ) => line_to_arc_clearance(start, end, arc),
-        (
-            left @ PlanarOffsetClearanceCurve::Arc { .. },
-            right @ PlanarOffsetClearanceCurve::Arc { .. },
-        ) => arc_to_arc_clearance(left, right),
+        (PlanarOffsetClearanceCurve::Line { start, end }, PlanarOffsetClearanceCurve::Arc(arc))
+        | (PlanarOffsetClearanceCurve::Arc(arc), PlanarOffsetClearanceCurve::Line { start, end }) => {
+            line_to_arc_clearance(start, end, arc)
+        }
+        (PlanarOffsetClearanceCurve::Arc(left), PlanarOffsetClearanceCurve::Arc(right)) => {
+            arc_to_arc_clearance(left, right)
+        }
     }
 }
 

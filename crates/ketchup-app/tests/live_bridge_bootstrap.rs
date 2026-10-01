@@ -5,8 +5,8 @@ use ketchup_app::{
     AppCommand,
     dialogs::ScriptedFileDialogs,
     live_bridge::{
-        CaptureMode, Envelope, IMAGE_PROTOCOL_VERSION, ImageFraming, Request, Response,
-        bootstrap::*,
+        CaptureMode, Envelope, IMAGE_PROTOCOL_VERSION, ImageFraming, ImageRequest, Request,
+        Response, bootstrap::*,
     },
 };
 use ketchup_assistant::sidecar::{
@@ -310,14 +310,14 @@ fn readiness_authentication_and_detach_use_the_actual_app() {
         &mut shell,
         &mut stream,
         TOKEN,
-        Request::Image {
+        Request::Image(ImageRequest {
             expected: Some(before.clone()),
             image_protocol_version: IMAGE_PROTOCOL_VERSION,
             capture_mode: CaptureMode::Offscreen,
             max_side_px: ketchup_app::live_bridge::MIN_IMAGE_SIDE_PX,
             framing: ImageFraming::Viewport,
             detail_target: None,
-        },
+        }),
     );
     assert!(matches!(
         image.error.as_deref(),

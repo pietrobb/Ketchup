@@ -685,14 +685,9 @@ impl KetchupApp {
                     )
                     .map_err(FeatureHistoryPreviewError::failed)?;
                     let affected = impact.affected_fork_feature_ids.clone();
-                    let suppressed = match kind {
-                        FeatureHistoryPreviewKind::Suppress { .. } => affected.clone(),
-                        FeatureHistoryPreviewKind::Resume => Vec::new(),
-                        FeatureHistoryPreviewKind::ExactEdit
-                        | FeatureHistoryPreviewKind::ProfileTranslation
-                        | FeatureHistoryPreviewKind::ReplaceComponent
-                        | FeatureHistoryPreviewKind::SketchConstruction
-                        | FeatureHistoryPreviewKind::SketchConstraint => unreachable!(),
+                    let suppressed = match request.mutation {
+                        BodyHistoryMutation::SuppressFrom(_) => affected.clone(),
+                        BodyHistoryMutation::Resume => Vec::new(),
                     };
                     (
                         FeatureHistoryExecutionPlan::Fork(impact),
@@ -708,18 +703,13 @@ impl KetchupApp {
                     ) {
                         Ok(impact) => {
                             let affected = impact.affected_feature_ids.clone();
-                            let suppressed = match kind {
-                                FeatureHistoryPreviewKind::Suppress { boundary } => affected
+                            let suppressed = match request.mutation {
+                                BodyHistoryMutation::SuppressFrom(boundary) => affected
                                     .iter()
                                     .copied()
                                     .filter(|feature_id| *feature_id >= boundary)
                                     .collect(),
-                                FeatureHistoryPreviewKind::Resume => Vec::new(),
-                                FeatureHistoryPreviewKind::ExactEdit
-                                | FeatureHistoryPreviewKind::ProfileTranslation
-                                | FeatureHistoryPreviewKind::ReplaceComponent
-                                | FeatureHistoryPreviewKind::SketchConstruction
-                                | FeatureHistoryPreviewKind::SketchConstraint => unreachable!(),
+                                BodyHistoryMutation::Resume => Vec::new(),
                             };
                             (
                                 FeatureHistoryExecutionPlan::Shared(impact),
@@ -743,14 +733,9 @@ impl KetchupApp {
                         Err(error) => return Err(FeatureHistoryPreviewError::failed(error)),
                     }
                 };
-                let action = self.catalog.text(match kind {
-                    FeatureHistoryPreviewKind::Suppress { .. } => "feature-history-action-suppress",
-                    FeatureHistoryPreviewKind::Resume => "feature-history-action-resume",
-                    FeatureHistoryPreviewKind::ExactEdit
-                    | FeatureHistoryPreviewKind::ProfileTranslation
-                    | FeatureHistoryPreviewKind::ReplaceComponent
-                    | FeatureHistoryPreviewKind::SketchConstruction
-                    | FeatureHistoryPreviewKind::SketchConstraint => unreachable!(),
+                let action = self.catalog.text(match request.mutation {
+                    BodyHistoryMutation::SuppressFrom(_) => "feature-history-action-suppress",
+                    BodyHistoryMutation::Resume => "feature-history-action-resume",
                 });
                 (execution, kind, affected, suppressed, action)
             }
@@ -1405,6 +1390,30 @@ impl KetchupApp {
         true
     }
 
+    /// Starts the exact worker that recomputes the bodies a propagated change touches,
+    /// cancelling the background evaluation it replaces. Reports a failure and
+    /// answers `None` when no worker can run.
+    fn feature_history_exact_worker(&mut self) -> Option<ExactWorkerSupervisor> {
+        let executable = match self.exact_worker_executable() {
+            Ok(executable) => executable,
+            Err(error) => {
+                self.feature_history_error(error);
+                return None;
+            }
+        };
+        let worker = match ExactWorkerSupervisor::spawn(executable) {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.feature_history_error(error);
+                return None;
+            }
+        };
+        if let Some(task) = self.exact.task.take() {
+            task.cancelled.store(true, Ordering::Release);
+        }
+        Some(worker)
+    }
+
     fn confirm_feature_history_preview(&mut self) -> bool {
         let Some(preview) = self.feature_history.preview.take() else {
             return false;
@@ -1434,66 +1443,41 @@ impl KetchupApp {
                 )
                 .map(|_| ())
                 .map_err(|error| error.to_string()),
-            FeatureHistoryExecutionPlan::Shared(_) | FeatureHistoryExecutionPlan::Fork(_) => {
-                let executable = match self.exact_worker_executable() {
-                    Ok(executable) => executable,
-                    Err(error) => {
-                        self.feature_history_error(error);
-                        return false;
-                    }
+            FeatureHistoryExecutionPlan::Shared(impact) => {
+                let Some(mut worker) = self.feature_history_exact_worker() else {
+                    return false;
                 };
-                let mut worker = match ExactWorkerSupervisor::spawn(executable) {
-                    Ok(worker) => worker,
-                    Err(error) => {
-                        self.feature_history_error(error);
-                        return false;
-                    }
+                self.complete_mutation_and_exact_results_with_work_recovery(
+                    |document, exact_results, _topology_results| {
+                        commit_shared_definition_change(document, exact_results, impact, |graph| {
+                            worker
+                                .evaluate_exact_brep_graph(graph)
+                                .map(ExactBodyPackage::from)
+                                .map(Arc::new)
+                                .map_err(|error| error.to_string())
+                        })
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            }
+            FeatureHistoryExecutionPlan::Fork(impact) => {
+                let Some(mut worker) = self.feature_history_exact_worker() else {
+                    return false;
                 };
-                if let Some(task) = self.exact.task.take() {
-                    task.cancelled.store(true, Ordering::Release);
-                }
-                match &preview.execution {
-                    FeatureHistoryExecutionPlan::Shared(impact) => self
-                        .complete_mutation_and_exact_results_with_work_recovery(
-                            |document, exact_results, _topology_results| {
-                                commit_shared_definition_change(
-                                    document,
-                                    exact_results,
-                                    impact,
-                                    |graph| {
-                                        worker
-                                            .evaluate_exact_brep_graph(graph)
-                                            .map(ExactBodyPackage::from)
-                                            .map(Arc::new)
-                                            .map_err(|error| error.to_string())
-                                    },
-                                )
-                            },
-                        )
-                        .map(|_| ())
-                        .map_err(|error| error.to_string()),
-                    FeatureHistoryExecutionPlan::Fork(impact) => self
-                        .complete_mutation_and_exact_results_with_work_recovery(
-                            |document, exact_results, _topology_results| {
-                                commit_occurrence_fork_change(
-                                    document,
-                                    exact_results,
-                                    impact,
-                                    |graph| {
-                                        worker
-                                            .evaluate_exact_brep_graph(graph)
-                                            .map(ExactBodyPackage::from)
-                                            .map(Arc::new)
-                                            .map_err(|error| error.to_string())
-                                    },
-                                )
-                            },
-                        )
-                        .map(|_| ())
-                        .map_err(|error| error.to_string()),
-                    FeatureHistoryExecutionPlan::Local(_)
-                    | FeatureHistoryExecutionPlan::Replacement(_) => unreachable!(),
-                }
+                self.complete_mutation_and_exact_results_with_work_recovery(
+                    |document, exact_results, _topology_results| {
+                        commit_occurrence_fork_change(document, exact_results, impact, |graph| {
+                            worker
+                                .evaluate_exact_brep_graph(graph)
+                                .map(ExactBodyPackage::from)
+                                .map(Arc::new)
+                                .map_err(|error| error.to_string())
+                        })
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
             }
         };
         match result {

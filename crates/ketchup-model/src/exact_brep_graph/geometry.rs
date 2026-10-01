@@ -201,13 +201,9 @@ pub(super) fn solved_loop(
     tolerance_mm: f64,
 ) -> Result<ExactBRepPlanarLoop, ExactBRepGraphError> {
     match profile {
-        SolvedSketchRegionProfile::Polyline(points) => {
-            let ExactBRepPlanarGeometry::Boundary { segments, .. } = polygon_geometry(points)?
-            else {
-                unreachable!()
-            };
-            Ok(ExactBRepPlanarLoop::Boundary { segments })
-        }
+        SolvedSketchRegionProfile::Polyline(points) => Ok(ExactBRepPlanarLoop::Boundary {
+            segments: polygon_segments(points)?,
+        }),
         SolvedSketchRegionProfile::Boundary(edges) => Ok(ExactBRepPlanarLoop::Boundary {
             segments: edges
                 .iter()
@@ -246,22 +242,19 @@ pub(super) fn solved_loop(
     }
 }
 
-pub(super) fn polygon_geometry(
+/// The closed straight-edged loop through `points`, last point back to the first.
+pub(super) fn polygon_segments(
     points: &[[f64; 2]],
-) -> Result<ExactBRepPlanarGeometry, ExactBRepGraphError> {
+) -> Result<Vec<ExactBRepPlanarSegment>, ExactBRepGraphError> {
     if points.len() < 3 {
         return Err(ExactBRepGraphError::InvalidParameter);
     }
-    let segments = points
+    points
         .iter()
         .zip(points.iter().cycle().skip(1))
         .take(points.len())
         .map(|(start, end)| profile_segment(*start, *end, None, false))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ExactBRepPlanarGeometry::Boundary {
-        closed: true,
-        segments,
-    })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 pub(super) fn boundary_geometry(
