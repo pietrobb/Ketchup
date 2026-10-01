@@ -10,6 +10,7 @@ use crate::frame::{self, Mat3, Obb};
 use ketchup_geometry::linalg::{CubicBezier, dot};
 use ketchup_model::tolerance::ROUNDING;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Param {
@@ -502,11 +503,12 @@ pub struct Part {
     pub rotation: Mat3,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub material: Option<String>,
-    /// Axis index of the grain direction, if the material has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub grain_axis: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
+    /// Free named attributes the program attaches for its own use, e.g. a
+    /// library's direction of a material's texture.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
     pub body: ProgramPartBody,
     /// Cuts, finishes, moved faces and booleans in program order.
     #[serde(skip_serializing_if = "Vec::is_empty")]

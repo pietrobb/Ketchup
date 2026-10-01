@@ -8,8 +8,11 @@
 #@topic basics: Parts, frames, faces, parameters, numbers
 #
 #   param(name, default, min=, max=, doc=)  -> number the user can override
-#   box(name, size, at=, material=, grain=, color=, tool=)  -> part
+#   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, color=)  -> a panel for the cut list
+#   Every body (box, extrude, revolve, sweep, loft) takes material=, color=
+#   (0-255 channels) and attributes= (a dict of strings, kept on the part).
+#   grain= of board() and member() is the attribute "grain": "x", "y" or "z".
 #   member(name, start, end, section, across=)  -> a bar from point to point
 #   rotate(part, axis=(x, y, z), angle=degrees, pivot=(x, y, z))  -> part
 #   place(part, origin=(x, y, z), z=(x, y, z), x=(x, y, z))  -> part
@@ -67,9 +70,17 @@ def face_axes(face):
         return (1, 0, 2)
     return (2, 0, 1)
 
+def grain_attributes(grain):
+    """The attributes recording a material's grain direction ("x", "y", "z")."""
+    if grain == None:
+        return {}
+    if grain not in AXES:
+        fail("grain must be \"x\", \"y\" or \"z\", got %r" % grain)
+    return {"grain": grain}
+
 def board(name, size, at = (0, 0, 0), material = "board", grain = None, color = None):
     """A flat panel: an axis-aligned cuboid with a material for the cut list."""
-    return box(name, size, at = at, material = material, grain = grain, color = color)
+    return box(name, size, at = at, material = material, color = color, attributes = grain_attributes(grain))
 
 def vec_sub(a, b):
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -118,7 +129,7 @@ def member(name, start, end, section, across = None, material = "timber", grain 
         fail("member(%r): start and end must differ" % name)
     if across == None:
         across = (0, 1, 0) if abs(direction[0]) > 0.9 * length else (1, 0, 0)
-    part = box(name, (section[0], section[1], length), material = material, grain = grain, color = color)
+    part = box(name, (section[0], section[1], length), material = material, color = color, attributes = grain_attributes(grain))
     placed = place(part, origin = start, z = direction, x = across)
     offset = vec_add(vec_scale(placed.x, -section[0] / 2.0), vec_scale(placed.y, -section[1] / 2.0))
     return place(part, origin = vec_add(start, offset), z = direction, x = across)

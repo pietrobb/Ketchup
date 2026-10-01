@@ -15,6 +15,7 @@ use crate::model::{
 use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_model::tolerance::APPROXIMATION;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 /// The surface a face lies on.
@@ -598,8 +599,8 @@ impl Part {
                 at_mm: self.to_world(corner),
                 rotation: frame::multiply(&self.rotation, &axes),
                 material: None,
-                grain_axis: None,
                 color: None,
+                attributes: BTreeMap::new(),
                 body,
                 operations: Vec::new(),
                 features: Vec::new(),

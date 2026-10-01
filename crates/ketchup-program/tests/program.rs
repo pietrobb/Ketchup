@@ -1012,3 +1012,35 @@ fn split_halves_only_touch_but_trims_that_overlap_still_collide() {
     ));
     assert_eq!(overlapping, [COLLISION_UNVERIFIED]);
 }
+
+#[test]
+fn every_body_takes_material_color_and_attributes() {
+    let model = eval(concat!(
+        "square = [(0, 0), (40, 0), (40, 40), (0, 40)]\n",
+        "box(\"a\", [10, 10, 10], material=\"steel\", color=[200, 10, 0], attributes={\"finish\": \"brushed\"})\n",
+        "extrude(\"b\", profile=square, distance=5, at=[50, 0, 0], material=\"oak\", attributes={\"grade\": \"A\", \"note\": None})\n",
+        "revolve(\"c\", profile=[(0, 0), (10, 0), (10, 20), (0, 20)], axis=[(0, 0), (0, 1)], at=[100, 0, 0], color=[1, 2, 3])\n",
+        "sweep(\"d\", profile=[(-2, -2), (2, -2), (2, 2), (-2, 2)], path=[(0, 0, 0), (0, 0, 30)], at=[150, 0, 0], material=\"pvc\")\n",
+        "loft(\"e\", sections=[(square, 0), (square, 10)], at=[200, 0, 0], material=\"cast\")\n",
+        "board(\"f\", [100, 50, 18], at=[0, 100, 0], grain=\"x\")\n",
+    ));
+    let part = |name: &str| model.part(name).unwrap();
+    assert_eq!(part("a").material.as_deref(), Some("steel"));
+    assert_eq!(part("a").color, Some([200, 10, 0]));
+    assert_eq!(part("a").attributes["finish"], "brushed");
+    assert_eq!(part("b").material.as_deref(), Some("oak"));
+    assert_eq!(
+        part("b").attributes.iter().collect::<Vec<_>>(),
+        [(&"grade".to_owned(), &"A".to_owned())]
+    );
+    assert_eq!(part("c").color, Some([1, 2, 3]));
+    assert_eq!(part("d").material.as_deref(), Some("pvc"));
+    assert_eq!(part("e").material.as_deref(), Some("cast"));
+    assert_eq!(part("f").material.as_deref(), Some("board"));
+    assert_eq!(part("f").attributes["grain"], "x");
+    let error = run("bad.star", "board(\"g\", [10, 10, 10], grain=\"w\")", &BTreeMap::new())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("grain must be"), "{error}");
+}

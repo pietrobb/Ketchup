@@ -4,11 +4,8 @@ crates/ketchup-app/src/lib.rs:furniture 1
 crates/ketchup-app/src/lib.rs:hinge 1
 crates/ketchup-app/src/lib.rs:shelf 1
 crates/ketchup-program/src/eval.rs:dowel 2
-crates/ketchup-program/src/eval.rs:grain 9
-crates/ketchup-program/src/faces.rs:grain 1
 crates/ketchup-program/src/lib.rs:dowel 1
 crates/ketchup-program/src/model.rs:dowel 1
-crates/ketchup-program/src/model.rs:grain 2
 crates/ketchup-program/src/model.rs:shelf 1
 crates/ketchup-program/src/validate.rs:dowel 3
 crates/ketchup-program/src/validate.rs:hinge 1
