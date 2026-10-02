@@ -695,6 +695,48 @@ pub fn regular_polygon_points(
         .collect()
 }
 
+/// An ellipse with half-axes `radius_x_mm` (turned `rotation_radians` from +x) and
+/// `radius_y_mm` around `center_mm`: four quarter cubics counter-clockwise from the
+/// +x end, each within 0.03 % of the true ellipse.
+#[must_use]
+pub fn ellipse_segments(
+    center_mm: [f64; 2],
+    radius_x_mm: f64,
+    radius_y_mm: f64,
+    rotation_radians: f64,
+) -> Vec<ProfileSegment> {
+    // 4/3 (sqrt(2) - 1) puts the quarter cubic through the arc's midpoint.
+    let kappa = 4.0 * (std::f64::consts::SQRT_2 - 1.0) / 3.0;
+    let (sin, cos) = rotation_radians.sin_cos();
+    let place = |[x, y]: [f64; 2]| {
+        [
+            center_mm[0] + cos * x - sin * y,
+            center_mm[1] + sin * x + cos * y,
+        ]
+    };
+    let (rx, ry) = (radius_x_mm, radius_y_mm);
+    let ends = [[rx, 0.0], [0.0, ry], [-rx, 0.0], [0.0, -ry]];
+    let tangents = [[0.0, ry], [-rx, 0.0], [0.0, -ry], [rx, 0.0]];
+    (0..4)
+        .map(|quarter| {
+            let next = (quarter + 1) % 4;
+            let (start, end) = (ends[quarter], ends[next]);
+            ProfileSegment::CubicBezier {
+                start_mm: place(start),
+                control_1_mm: place([
+                    start[0] + kappa * tangents[quarter][0],
+                    start[1] + kappa * tangents[quarter][1],
+                ]),
+                control_2_mm: place([
+                    end[0] - kappa * tangents[next][0],
+                    end[1] - kappa * tangents[next][1],
+                ]),
+                end_mm: place(end),
+            }
+        })
+        .collect()
+}
+
 /// The corners of a closed chain of straight lines, or `None` when a segment is curved
 /// or the chain is not connected end to start.
 #[must_use]

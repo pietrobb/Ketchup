@@ -1025,16 +1025,34 @@ impl KetchupApp {
             })
     }
 
-    /// Corners of the closed shape being drawn, in world coordinates, while its
-    /// second point follows the pointer; `None` when no such shape is in progress.
+    /// Outline of the closed shape being drawn, in world coordinates, while its
+    /// next point follows the pointer; `None` when no such shape is in progress.
     #[must_use]
     pub fn closed_shape_preview_outline(&self) -> Option<Vec<Vec3>> {
         let center = self.gesture.sketch.start?;
         let cursor = self.gesture.sketch.cursor?;
-        let corners = match self.active_tool {
-            ActiveTool::Polygon => {
+        let ellipse = |radius_x: f64, radius_y: f64, turn: f64| {
+            let (sin, cos) = turn.sin_cos();
+            (0..PREVIEW_CURVE_SEGMENTS)
+                .map(|step| {
+                    let angle = std::f64::consts::TAU * step as f64 / PREVIEW_CURVE_SEGMENTS as f64;
+                    let (x, y) = (radius_x * angle.cos(), radius_y * angle.sin());
+                    [cos * x - sin * y, sin * x + cos * y]
+                })
+                .collect::<Vec<_>>()
+        };
+        let corners = match (self.active_tool, self.gesture.sketch.end) {
+            (ActiveTool::Polygon, _) => {
                 let direction = cursor - center;
                 self.polygon_corners(center, length(direction), direction)
+            }
+            (ActiveTool::Circle, _) | (ActiveTool::Ellipse, None) => {
+                let radius = length(self.drawing_local_delta(center, cursor));
+                ellipse(radius, radius, 0.0)
+            }
+            (ActiveTool::Ellipse, Some(major_end)) => {
+                let (radius_x, radius_y, turn) = self.ellipse_axes(center, major_end, cursor)?;
+                ellipse(radius_x, radius_y, turn)
             }
             _ => return None,
         };
@@ -2413,6 +2431,131 @@ impl KetchupApp {
         created
     }
 
+    /// Places the next point of the shape being drawn: the first point starts
+    /// it, later points finish it or fix one more of its dimensions.
+    pub(crate) fn place_sketch_point(&mut self, point: Vec3) {
+        let Some(start) = self.gesture.sketch.start else {
+            self.gesture.sketch.start = Some(point);
+            self.gesture.sketch.cursor = Some(point);
+            if self.active_tool == ActiveTool::Line {
+                self.gesture.sketch.chain_origin = Some(point);
+                self.gesture.sketch.chain_points.clear();
+                self.gesture.sketch.chain_points.push(point);
+                self.gesture.sketch.chain_items.clear();
+            }
+            self.value_box.input.clear();
+            self.status_key = match self.active_tool {
+                ActiveTool::Line => "status-line-end",
+                ActiveTool::Circle => "status-circle-radius",
+                ActiveTool::Polygon => "status-polygon-corner",
+                ActiveTool::Ellipse => "status-ellipse-major",
+                ActiveTool::Arc => "status-arc-end",
+                _ => "status-sketch-second-point",
+            };
+            return;
+        };
+        match (self.active_tool, self.gesture.sketch.end) {
+            (ActiveTool::Line, _) => {
+                self.complete_line_sketch(start, point);
+            }
+            (ActiveTool::Circle, _) => {
+                self.complete_circle_sketch(start, point);
+            }
+            (ActiveTool::Polygon, _) => {
+                self.complete_polygon_sketch(start, point);
+            }
+            (ActiveTool::Arc, Some(end)) => {
+                self.complete_arc_sketch(start, end, point);
+            }
+            (ActiveTool::Ellipse, Some(end)) => {
+                self.complete_ellipse_sketch(start, end, point);
+            }
+            (ActiveTool::Arc | ActiveTool::Ellipse, None) => {
+                if length(point - start) > limits::MIN_LENGTH_MM {
+                    self.gesture.sketch.end = Some(point);
+                    self.gesture.sketch.cursor = Some(point);
+                    self.value_box.input.clear();
+                    self.status_key = if self.active_tool == ActiveTool::Arc {
+                        "status-arc-bulge"
+                    } else {
+                        "status-ellipse-minor"
+                    };
+                }
+            }
+            _ => {
+                self.complete_rectangle_sketch(start, point);
+            }
+        }
+    }
+
+    /// Half-axes and turn of the ellipse centred on `center` whose first
+    /// half-axis ends at `major_end` and whose second one reaches `minor_point`'s
+    /// distance from the first, all in the drawing plane.
+    pub(crate) fn ellipse_axes(
+        &self,
+        center: Vec3,
+        major_end: Vec3,
+        minor_point: Vec3,
+    ) -> Option<(f64, f64, f64)> {
+        let major = self.drawing_local_delta(center, major_end);
+        let radius_x = length(major);
+        if radius_x <= limits::MIN_LENGTH_MM {
+            return None;
+        }
+        let minor = self.drawing_local_delta(center, minor_point);
+        let radius_y = (major.x * minor.y - major.y * minor.x).abs() / radius_x;
+        (radius_y > limits::MIN_LENGTH_MM).then(|| (radius_x, radius_y, major.y.atan2(major.x)))
+    }
+
+    pub(crate) fn complete_ellipse_sketch(
+        &mut self,
+        center: Vec3,
+        major_end: Vec3,
+        minor_point: Vec3,
+    ) -> bool {
+        self.ellipse_axes(center, major_end, minor_point)
+            .is_some_and(|(radius_x, radius_y, turn)| {
+                self.complete_ellipse(center, radius_x, radius_y, turn)
+            })
+    }
+
+    pub(crate) fn complete_ellipse(
+        &mut self,
+        center: Vec3,
+        radius_x_mm: f64,
+        radius_y_mm: f64,
+        turn_radians: f64,
+    ) -> bool {
+        if !(radius_x_mm.is_finite() && radius_y_mm.is_finite())
+            || radius_x_mm.min(radius_y_mm) <= limits::MIN_LENGTH_MM
+        {
+            return false;
+        }
+        let created = self.create_segment_profile_at(
+            self.drawing_transform(center),
+            ellipse_segments([0.0, 0.0], radius_x_mm, radius_y_mm, turn_radians),
+            true,
+            "model-default-ellipse",
+            "model-ellipse-profile",
+        );
+        if created {
+            self.gesture.sketch.armed = self.uses_drawing_plane();
+            self.gesture.sketch.start = None;
+            self.gesture.sketch.end = None;
+            self.gesture.sketch.cursor = None;
+            self.value_box.input = format_height(radius_y_mm);
+            self.status_key = "status-ellipse-created";
+            self.digest = self.catalog.format(
+                "digest-exact-ellipse",
+                &BTreeMap::from([
+                    ("radius_x", format_height(radius_x_mm)),
+                    ("radius_y", format_height(radius_y_mm)),
+                ]),
+            );
+        }
+        created
+    }
+
     pub(crate) fn complete_polygon_sketch(&mut self, center: Vec3, corner: Vec3) -> bool {
         let direction = corner - center;
         self.complete_polygon(center, length(direction), direction)
@@ -2741,6 +2884,7 @@ impl KetchupApp {
                 | ActiveTool::Circle
                 | ActiveTool::Arc
                 | ActiveTool::Polygon
+                | ActiveTool::Ellipse
         ) && (!context.wants_keyboard_input()
             || context.memory(|memory| memory.has_focus(egui::Id::new("value-box-input"))))
         {
@@ -2825,13 +2969,14 @@ impl KetchupApp {
     pub(crate) fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
         // Grouped the way the design groups them: pick, draw, modify, measure,
         // navigate. A group boundary draws a hairline.
-        const TOOLS: [(AppCommand, u8); 12] = [
+        const TOOLS: [(AppCommand, u8); 13] = [
             (AppCommand::Select, 0),
             (AppCommand::Line, 1),
             (AppCommand::Rectangle, 1),
             (AppCommand::Circle, 1),
             (AppCommand::Arc, 1),
             (AppCommand::Polygon, 1),
+            (AppCommand::Ellipse, 1),
             (AppCommand::PushPull, 2),
             (AppCommand::Move, 2),
             (AppCommand::Rotate, 2),

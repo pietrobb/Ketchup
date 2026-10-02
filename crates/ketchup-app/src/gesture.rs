@@ -14,7 +14,7 @@ pub(crate) struct Gesture {
     pub(crate) drag: Option<PointerDrag>,
 }
 
-/// A line, rectangle, circle or arc being drawn.
+/// A line, rectangle, circle, arc, polygon or ellipse being drawn.
 #[derive(Default)]
 pub(crate) struct SketchGesture {
     /// The drawing tool waits for points.
@@ -29,6 +29,9 @@ pub(crate) struct SketchGesture {
     /// Corners of the next polygon, typed before its centre is placed; kept
     /// between polygons like the rest of the tool's settings.
     pub(crate) polygon_sides: Option<usize>,
+    /// The held press placed the first point; releasing it after a drag
+    /// places the next point where the pointer is let go.
+    pub(crate) dragging_first_point: bool,
 }
 
 /// Corners of a polygon until the user types another count.

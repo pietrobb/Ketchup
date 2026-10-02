@@ -116,3 +116,115 @@ fn polygon_takes_sides_and_radius_by_click_drag_or_typing_in_one_undo_step() {
     assert!((radius - 15.0).abs() < 1.0e-3, "dragged radius {radius}");
     assert_regular(&second, second_center, radius, 5, 1.0e-6);
 }
+
+/// Ends of the newest drawn ellipse's four quarters and its centre, in world
+/// coordinates.
+fn latest_ellipse(shell: &Shell) -> ([Vec3; 4], Vec3) {
+    let (transform, segments) = shell.app().latest_profile().unwrap();
+    assert_eq!(segments.len(), 4, "four quarter curves");
+    let ends: Vec<Vec3> = segments
+        .iter()
+        .map(|segment| match segment {
+            ProfileSegment::CubicBezier { start_mm, .. } => world(&transform, *start_mm),
+            other => panic!("an ellipse quarter is a cubic, got {other:?}"),
+        })
+        .collect();
+    (ends.try_into().unwrap(), world(&transform, [0.0, 0.0]))
+}
+
+#[test]
+fn ellipse_takes_centre_and_both_half_axes_by_drag_click_or_typing_in_one_undo_step() {
+    let mut shell = Shell::new();
+    assert!(shell.offers(AppCommand::Ellipse), "Ellipse is in the rail");
+    shell.press_key(Key::E);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().format(
+            "digest-tool-active",
+            &BTreeMap::from([("tool", shell.catalog().text("tool-ellipse"))]),
+        )
+    );
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+
+    // Drag from the centre to the end of the first half-axis, then follow the
+    // pointer for the second one: the preview is that ellipse, nothing is saved.
+    let center = Vec3::new(10.0, 10.0, 0.0);
+    let major_end = Vec3::new(10.0, 30.0, 0.0);
+    shell.drag(
+        shell.app().viewport_position(center).unwrap(),
+        shell.app().viewport_position(major_end).unwrap(),
+    );
+    assert_eq!(shell.app().document_revision(), before_revision);
+    shell.move_pointer(
+        shell
+            .app()
+            .viewport_position(Vec3::new(16.0, 10.0, 0.0))
+            .unwrap(),
+    );
+    let preview = shell.app().closed_shape_preview_outline().unwrap();
+    let widest = preview
+        .iter()
+        .map(|point| point.distance(preview[0]))
+        .fold(0.0, f64::max);
+    assert_eq!(shell.app().document_revision(), before_revision);
+
+    // The typed second half-axis finishes it exactly, as one Undo step.
+    shell.type_text("8");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    let (ends, committed_center) = latest_ellipse(&shell);
+    let radius_x = ends[0].distance(committed_center);
+    assert!(
+        (widest - 2.0 * radius_x).abs() < 1.0e-6,
+        "the preview spanned the committed first axis: {widest} vs {radius_x}"
+    );
+    assert!((ends[2].distance(committed_center) - radius_x).abs() < 1.0e-9);
+    assert!((ends[1].distance(committed_center) - 8.0).abs() < 1.0e-9);
+    assert!((ends[3].distance(committed_center) - 8.0).abs() < 1.0e-9);
+    let first_digest = shell.app().canonical_digest();
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_digest);
+
+    // Escape drops an ellipse in progress.
+    shell.click_command(AppCommand::Ellipse);
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(Vec3::new(-40.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    assert!(shell.app().closed_shape_preview_outline().is_some());
+    shell.press_key(Key::Escape);
+    assert!(shell.app().closed_shape_preview_outline().is_none());
+    assert_eq!(shell.app().canonical_digest(), first_digest);
+
+    // Click-move-click with both half-axes typed: the centre snaps to the end
+    // of the first ellipse's axis and the sizes are exact.
+    shell.click_command(AppCommand::Ellipse);
+    let snapped = ends[0];
+    shell.click_at(
+        shell.app().viewport_position(snapped).unwrap() + eframe::egui::Vec2::new(2.0, 0.0),
+    );
+    shell.move_pointer(
+        shell
+            .app()
+            .viewport_position(snapped + Vec3::new(25.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    shell.type_text("30");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    shell.type_text("10");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().document_revision(), before_revision + 2);
+    let (ends, second_center) = latest_ellipse(&shell);
+    assert!(
+        second_center.distance(snapped) < 1.0e-6,
+        "the centre snaps to the axis end it was clicked near"
+    );
+    assert!((ends[0].distance(second_center) - 30.0).abs() < 1.0e-9);
+    assert!((ends[1].distance(second_center) - 10.0).abs() < 1.0e-9);
+}

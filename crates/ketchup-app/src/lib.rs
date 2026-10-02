@@ -80,7 +80,8 @@ use ketchup_model::document::{
     ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
     SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
     SolidToolPlan, SpatialPathSegment, TagId, TipReplacementParent, TipReplacementProposal,
-    Transform, TrustedConfirmationSurface, polygon_segments, regular_polygon_points,
+    Transform, TrustedConfirmationSurface, ellipse_segments, polygon_segments,
+    regular_polygon_points,
 };
 #[cfg(test)]
 use ketchup_model::document::{
@@ -1726,6 +1727,9 @@ struct ArcGeometry {
 type ExactArcProfileGeometry = ([f64; 2], [f64; 2], [f64; 2], bool);
 pub type LoftPreviewParameters = (Vec<(FeatureId, f64)>, [[f64; 3]; 2]);
 
+/// Straight pieces that draw one curve of a drawing-tool preview.
+const PREVIEW_CURVE_SEGMENTS: usize = 64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActiveTool {
     Select,
@@ -1734,6 +1738,7 @@ enum ActiveTool {
     Circle,
     Arc,
     Polygon,
+    Ellipse,
     SolidSubtract,
     SolidTrim,
     SolidUnion,
@@ -1766,6 +1771,7 @@ impl ActiveTool {
             Self::Circle => "tool-circle",
             Self::Arc => "tool-arc",
             Self::Polygon => "tool-polygon",
+            Self::Ellipse => "tool-ellipse",
             Self::SolidSubtract => "solid-tool-subtract",
             Self::SolidTrim => "solid-tool-trim",
             Self::SolidUnion => "solid-tool-union",
@@ -1798,6 +1804,7 @@ impl ActiveTool {
             Self::Circle => "hint-circle",
             Self::Arc => "hint-arc",
             Self::Polygon => "hint-polygon",
+            Self::Ellipse => "hint-ellipse",
             Self::SolidSubtract => "hint-solid-subtract",
             Self::SolidTrim => "hint-solid-trim",
             Self::SolidUnion => "hint-solid-union",
@@ -1862,6 +1869,7 @@ pub enum AppCommand {
     Circle,
     Arc,
     Polygon,
+    Ellipse,
     SolidSubtract,
     SolidTrim,
     SolidUnion,

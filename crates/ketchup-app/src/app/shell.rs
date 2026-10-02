@@ -524,6 +524,8 @@ impl KetchupApp {
             ActiveTool::Circle => "value-label-radius",
             ActiveTool::Polygon if self.gesture.sketch.start.is_none() => "value-label-sides",
             ActiveTool::Polygon => "value-label-radius",
+            ActiveTool::Ellipse if self.gesture.sketch.end.is_none() => "value-label-radius",
+            ActiveTool::Ellipse => "value-label-second-radius",
             ActiveTool::Arc => "value-label-bulge",
             ActiveTool::Revolve => "value-label-angle",
             ActiveTool::Shell => "value-label-thickness",
@@ -907,6 +909,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Circle);
                 self.menu_command(ui, AppCommand::Arc);
                 self.menu_command(ui, AppCommand::Polygon);
+                self.menu_command(ui, AppCommand::Ellipse);
             });
             ui.menu_button(self.catalog.text("menu-tools"), |ui| {
                 self.menu_command(ui, AppCommand::Select);

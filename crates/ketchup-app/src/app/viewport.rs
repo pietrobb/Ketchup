@@ -1720,49 +1720,8 @@ impl KetchupApp {
                 self.sketch_point_at_screen(pointer, response.rect, plane_z)
             };
             if let Some(point) = point {
-                if let Some(start) = self.gesture.sketch.start {
-                    match self.active_tool {
-                        ActiveTool::Line => {
-                            self.complete_line_sketch(start, point);
-                        }
-                        ActiveTool::Circle => {
-                            self.complete_circle_sketch(start, point);
-                        }
-                        ActiveTool::Polygon => {
-                            self.complete_polygon_sketch(start, point);
-                        }
-                        ActiveTool::Arc => {
-                            if let Some(end) = self.gesture.sketch.end {
-                                self.complete_arc_sketch(start, end, point);
-                            } else if length(point - start) > 0.01 {
-                                self.gesture.sketch.end = Some(point);
-                                self.gesture.sketch.cursor = Some(point);
-                                self.value_box.input.clear();
-                                self.status_key = "status-arc-bulge";
-                            }
-                        }
-                        _ => {
-                            self.complete_rectangle_sketch(start, point);
-                        }
-                    }
-                } else {
-                    self.gesture.sketch.start = Some(point);
-                    self.gesture.sketch.cursor = Some(point);
-                    if self.active_tool == ActiveTool::Line {
-                        self.gesture.sketch.chain_origin = Some(point);
-                        self.gesture.sketch.chain_points.clear();
-                        self.gesture.sketch.chain_points.push(point);
-                        self.gesture.sketch.chain_items.clear();
-                    }
-                    self.value_box.input.clear();
-                    self.status_key = match self.active_tool {
-                        ActiveTool::Line => "status-line-end",
-                        ActiveTool::Circle => "status-circle-radius",
-                        ActiveTool::Polygon => "status-polygon-corner",
-                        ActiveTool::Arc => "status-arc-end",
-                        _ => "status-sketch-second-point",
-                    };
-                }
+                self.gesture.sketch.dragging_first_point = self.gesture.sketch.start.is_none();
+                self.place_sketch_point(point);
             }
         } else if self.active_tool == ActiveTool::Revolve {
             if let Some(plane_z) = self
@@ -2218,23 +2177,20 @@ impl KetchupApp {
         response: &egui::Response,
         primary_release: bool,
     ) {
-        // Dragging from the first point to the second draws the shape the same
-        // way as clicking both points.
-        if response.drag_stopped_by(egui::PointerButton::Primary)
-            && self.gesture.sketch.armed
-            && matches!(
-                self.active_tool,
-                ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Polygon
-            )
-            && let (Some(start), Some(end)) =
-                (self.gesture.sketch.start, self.gesture.sketch.cursor)
-            && length(end - start) > limits::MIN_LENGTH_MM
-        {
-            match self.active_tool {
-                ActiveTool::Circle => self.complete_circle_sketch(start, end),
-                ActiveTool::Polygon => self.complete_polygon_sketch(start, end),
-                _ => self.complete_rectangle_sketch(start, end),
-            };
+        // Releasing the press that placed the first point after dragging places
+        // the next point there, so a drag draws what two clicks draw.
+        let dragged = response.drag_stopped_by(egui::PointerButton::Primary);
+        if dragged || primary_release {
+            let placed_first_point = std::mem::take(&mut self.gesture.sketch.dragging_first_point);
+            if dragged
+                && placed_first_point
+                && self.gesture.sketch.armed
+                && let (Some(start), Some(cursor)) =
+                    (self.gesture.sketch.start, self.gesture.sketch.cursor)
+                && length(cursor - start) > limits::MIN_LENGTH_MM
+            {
+                self.place_sketch_point(cursor);
+            }
         }
         if response.drag_stopped_by(egui::PointerButton::Primary)
             || (response.hovered() && primary_release)
@@ -2311,6 +2267,15 @@ impl KetchupApp {
                         cursor.y - start.y,
                         cursor.z - start.z,
                     ))),
+                    ActiveTool::Ellipse => self.gesture.sketch.end.map_or_else(
+                        || format_height(length(cursor - start)),
+                        |end| {
+                            self.ellipse_axes(start, end, cursor)
+                                .map_or_else(String::new, |(_, radius_y, _)| {
+                                    format_height(radius_y)
+                                })
+                        },
+                    ),
                     ActiveTool::Circle | ActiveTool::Polygon => format_height(length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
@@ -3247,7 +3212,7 @@ impl KetchupApp {
                     && let Some(arc) = self.drawing_arc(start, end, cursor)
                 {
                     let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
-                    let points = arc_polyline(arc, 64)
+                    let points = arc_polyline(arc, PREVIEW_CURVE_SEGMENTS)
                         .into_iter()
                         .map(|point| {
                             self.project(self.drawing_world_delta(start, point), response.rect)
@@ -3280,32 +3245,23 @@ impl KetchupApp {
                     .collect();
                 points.extend(points.first().copied());
                 painter.add(egui::Shape::line(points, stroke));
-                painter.text(
-                    self.project(start, response.rect),
-                    egui::Align2::CENTER_CENTER,
-                    format!("R {} mm", format_height(length(cursor - start))),
-                    egui::FontId::proportional(14.0),
-                    Color32::WHITE,
-                );
-            } else if self.active_tool == ActiveTool::Circle {
-                let radius = length(cursor - start);
-                let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
-                let mut points = Vec::with_capacity(65);
-                for segment in 0..=64 {
-                    let angle = std::f64::consts::TAU * segment as f64 / 64.0;
-                    points.push(self.project(
-                        self.drawing_world_delta(
-                            start,
-                            Vec3::new(radius * angle.cos(), radius * angle.sin(), 0.0),
-                        ),
-                        response.rect,
-                    ));
+                if let Some(end) = self.gesture.sketch.end {
+                    painter.line_segment(
+                        [
+                            self.project(start, response.rect),
+                            self.project(end, response.rect),
+                        ],
+                        Stroke::new(1.0_f32, Color32::from_rgb(160, 160, 170)),
+                    );
                 }
-                painter.add(egui::Shape::line(points, stroke));
                 painter.text(
                     self.project(start, response.rect),
                     egui::Align2::CENTER_CENTER,
-                    format!("R {} mm", format_height(radius)),
+                    format!(
+                        "{} {} mm",
+                        self.catalog.text(self.value_label_key()),
+                        self.value_box.input
+                    ),
                     egui::FontId::proportional(14.0),
                     Color32::WHITE,
                 );

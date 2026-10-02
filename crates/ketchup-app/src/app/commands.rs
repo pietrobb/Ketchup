@@ -237,6 +237,7 @@ impl KetchupApp {
                     | ActiveTool::Circle
                     | ActiveTool::Arc
                     | ActiveTool::Polygon
+                    | ActiveTool::Ellipse
             ) {
                 self.gesture.sketch.armed = true;
                 self.status_key = match tool {
@@ -244,6 +245,7 @@ impl KetchupApp {
                     ActiveTool::Circle => "status-circle-center",
                     ActiveTool::Arc => "status-arc-start",
                     ActiveTool::Polygon => "status-polygon-center",
+                    ActiveTool::Ellipse => "status-ellipse-center",
                     _ => "status-sketch-first-point",
                 };
                 if tool == ActiveTool::Polygon {
@@ -454,6 +456,7 @@ impl KetchupApp {
             | AppCommand::Circle
             | AppCommand::Arc
             | AppCommand::Polygon
+            | AppCommand::Ellipse
             | AppCommand::SolidSubtract
             | AppCommand::SolidTrim
             | AppCommand::SolidUnion
@@ -529,6 +532,7 @@ impl KetchupApp {
                 ActiveTool::Circle => self.complete_exact_circle(),
                 ActiveTool::Arc => self.complete_exact_arc(),
                 ActiveTool::Polygon => self.complete_exact_polygon(),
+                ActiveTool::Ellipse => self.complete_exact_ellipse(),
                 _ => self.complete_exact_rectangle(),
             };
         }

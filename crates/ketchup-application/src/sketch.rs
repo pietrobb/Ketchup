@@ -6,7 +6,7 @@ use ketchup_geometry::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
     SketchEntityId, SketchPointKind, SketchPointRef,
 };
-use ketchup_model::document::{CanonicalError, Dimension, ProfileSegment};
+use ketchup_model::document::{CanonicalError, Dimension, ProfileSegment, ellipse_segments};
 
 pub(crate) fn assistant_principal_plane(plane: AssistantPrincipalPlane) -> PrincipalPlane {
     match plane {
@@ -143,39 +143,30 @@ pub(crate) fn assistant_sketch_entities(entity: &AssistantSketchEntity) -> Vec<S
         maximum_deviation_mm: _,
     } = entity
     {
-        let angle = rotation_degrees.to_radians();
-        let (sin, cos) = angle.sin_cos();
-        let point = |local: [f64; 2]| {
-            [
-                center_mm[0] + cos * local[0] - sin * local[1],
-                center_mm[1] + sin * local[0] + cos * local[1],
-            ]
-        };
-        let kappa = 4.0 * (2.0_f64.sqrt() - 1.0) / 3.0;
-        let rx = *radius_x_mm;
-        let ry = *radius_y_mm;
-        let points = [
-            [[rx, 0.0], [rx, kappa * ry], [kappa * rx, ry], [0.0, ry]],
-            [[0.0, ry], [-kappa * rx, ry], [-rx, kappa * ry], [-rx, 0.0]],
-            [
-                [-rx, 0.0],
-                [-rx, -kappa * ry],
-                [-kappa * rx, -ry],
-                [0.0, -ry],
-            ],
-            [[0.0, -ry], [kappa * rx, -ry], [rx, -kappa * ry], [rx, 0.0]],
-        ];
-        return points
-            .into_iter()
-            .zip(segment_ids)
-            .map(|(points, id)| SketchEntity::CubicBezier {
+        return ellipse_segments(
+            *center_mm,
+            *radius_x_mm,
+            *radius_y_mm,
+            rotation_degrees.to_radians(),
+        )
+        .into_iter()
+        .zip(segment_ids)
+        .filter_map(|(segment, id)| match segment {
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => Some(SketchEntity::CubicBezier {
                 id: SketchEntityId(*id),
-                start_mm: point(points[0]),
-                control_1_mm: point(points[1]),
-                control_2_mm: point(points[2]),
-                end_mm: point(points[3]),
-            })
-            .collect();
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            }),
+            _ => None,
+        })
+        .collect();
     }
 
     if let AssistantSketchEntity::RoundedRectangle {

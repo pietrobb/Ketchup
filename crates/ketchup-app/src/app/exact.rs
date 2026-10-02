@@ -956,6 +956,33 @@ impl KetchupApp {
         self.complete_polygon(center, radius_mm, direction)
     }
 
+    /// The typed value is the first half-axis until its end is placed, then
+    /// the second one.
+    pub(crate) fn complete_exact_ellipse(&mut self) -> bool {
+        let Some(center) = self.gesture.sketch.start else {
+            return false;
+        };
+        let Some(radius_mm) = parse_distance_mm(&self.value_box.input)
+            .filter(|radius| *radius > limits::MIN_LENGTH_MM)
+        else {
+            return false;
+        };
+        let Some(major_end) = self.gesture.sketch.end else {
+            let direction = self
+                .gesture
+                .sketch
+                .cursor
+                .map(|cursor| self.drawing_local_delta(center, cursor))
+                .filter(|direction| length(*direction) > limits::MIN_LENGTH_MM)
+                .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+            let unit = direction * (1.0 / length(direction));
+            self.place_sketch_point(self.drawing_world_delta(center, unit * radius_mm));
+            return true;
+        };
+        let major = self.drawing_local_delta(center, major_end);
+        self.complete_ellipse(center, length(major), radius_mm, major.y.atan2(major.x))
+    }
+
     pub(crate) fn complete_exact_arc(&mut self) -> bool {
         let (Some(start), Some(end)) = (self.gesture.sketch.start, self.gesture.sketch.end) else {
             return false;
