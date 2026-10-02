@@ -3796,7 +3796,7 @@ pub fn plan_part_batch(
         AssistantCadEditProgram {
             operations: vec![operation.clone()],
         }
-        .validate()
+        .validate_rule_parts()
         .map_err(|error| {
             assistant_rejection(
                 AssistantRejectionPhase::IntentValidation,

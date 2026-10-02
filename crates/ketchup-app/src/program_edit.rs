@@ -123,7 +123,7 @@ impl KetchupApp {
         };
         let proposal = self
             .document
-            .prepare_proposal_with_context(batch, ProposalContext::local_assistant_model())
+            .prepare_proposal_with_context(batch, ProposalContext::rule_program())
             .map_err(|error| RuleProgramApplyError::Session(SessionError::Prepare(error)))?;
         self.complete_mutation_with_work_recovery(|document| {
             document

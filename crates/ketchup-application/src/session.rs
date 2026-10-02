@@ -67,6 +67,7 @@ impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Persistence(error) => error.fmt(f),
+            Self::Prepare(error) => error.fmt(f),
             _ => write!(f, "{self:?}"),
         }
     }
@@ -441,7 +442,10 @@ impl DocumentSession {
         batch: CommandBatch,
         source: ketchup_model::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
-        let proposal = self.plan_commands(batch)?;
+        let proposal = self
+            .document
+            .prepare_proposal_with_context(batch, ProposalContext::rule_program())
+            .map_err(SessionError::Prepare)?;
         let before = self.snapshot();
         self.mutate_with_work_recovery(|document| {
             document

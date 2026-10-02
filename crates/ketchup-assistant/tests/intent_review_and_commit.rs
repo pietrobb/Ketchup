@@ -2095,12 +2095,12 @@ fn capability_value_and_budget_failures_leave_the_document_unchanged() {
             max_write_targets: 1,
         },
     };
-    assert_eq!(
+    assert!(matches!(
         propose_intent(&store, insufficient),
         Err(IntentError::Proposal(
-            ProposalPrepareError::RequestedBudgetExceeded
-        ))
-    );
+            ProposalPrepareError::RequestedBudgetExceeded { budget, cost }
+        )) if budget.max_commands == 0 && cost.commands == 1
+    ));
 
     assert_eq!(store.current().canonical_digest(), digest);
     assert_eq!(store.revision_count(), revisions);

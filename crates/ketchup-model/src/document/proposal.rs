@@ -684,7 +684,10 @@ impl std::error::Error for HumanConfirmationError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalPrepareError {
     HostBudgetExceeded,
-    RequestedBudgetExceeded,
+    RequestedBudgetExceeded {
+        budget: ProposalBudget,
+        cost: ProposalCost,
+    },
     Confirmation(HumanConfirmationError),
     Canonical(CanonicalError),
 }
@@ -693,9 +696,17 @@ impl fmt::Display for ProposalPrepareError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::HostBudgetExceeded => formatter.write_str("proposal budget exceeds host policy"),
-            Self::RequestedBudgetExceeded => {
-                formatter.write_str("proposal work exceeds its requested budget")
-            }
+            Self::RequestedBudgetExceeded { budget, cost } => write!(
+                formatter,
+                "proposal budget exceeded: needs {} commands (limit {}), {} read dependencies \
+                 (limit {}), {} write targets (limit {})",
+                cost.commands,
+                budget.max_commands,
+                cost.read_dependencies,
+                budget.max_read_dependencies,
+                cost.write_targets,
+                budget.max_write_targets
+            ),
             Self::Confirmation(error) => error.fmt(formatter),
             Self::Canonical(error) => error.fmt(formatter),
         }
@@ -929,9 +940,11 @@ pub(super) fn validate_proposal_budget(
     requested: ProposalBudget,
     cost: ProposalCost,
 ) -> Result<(), ProposalPrepareError> {
-    if requested.max_commands > ProposalBudget::HOST_MAX.max_commands
-        || requested.max_read_dependencies > ProposalBudget::HOST_MAX.max_read_dependencies
-        || requested.max_write_targets > ProposalBudget::HOST_MAX.max_write_targets
+    let host = ProposalBudget::HOST_MAX;
+    if requested != ProposalBudget::RULE_PROGRAM
+        && (requested.max_commands > host.max_commands
+            || requested.max_read_dependencies > host.max_read_dependencies
+            || requested.max_write_targets > host.max_write_targets)
     {
         return Err(ProposalPrepareError::HostBudgetExceeded);
     }
@@ -939,7 +952,10 @@ pub(super) fn validate_proposal_budget(
         || cost.read_dependencies > requested.max_read_dependencies
         || cost.write_targets > requested.max_write_targets
     {
-        return Err(ProposalPrepareError::RequestedBudgetExceeded);
+        return Err(ProposalPrepareError::RequestedBudgetExceeded {
+            budget: requested,
+            cost,
+        });
     }
     Ok(())
 }

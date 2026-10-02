@@ -33,6 +33,8 @@ const MAX_ASSISTANT_ROTATIONS: usize = 100;
 const MAX_ASSISTANT_SELECTION_EDITS: usize = 1;
 /// Most holes, and most pockets, one created part may carry.
 const MAX_ASSISTANT_PART_CUTS: usize = 128;
+/// Most holes, and most pockets, one part of a rule program may carry.
+const MAX_RULE_PART_CUTS: usize = 4_096;
 const MAX_ASSISTANT_ARRAYS: usize = 16;
 const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
@@ -2866,6 +2868,16 @@ fn validate_assistant_sketch_payload(
 
 impl AssistantCadEditProgram {
     pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
+        self.validate_with_part_cuts(MAX_ASSISTANT_PART_CUTS)
+    }
+
+    /// Validates parts compiled from a rule program, whose panels may carry
+    /// far more holes (shelf-pin rows, dowels) than one AI edit.
+    pub fn validate_rule_parts(&self) -> Result<(), AssistantRequestInvalid> {
+        self.validate_with_part_cuts(MAX_RULE_PART_CUTS)
+    }
+
+    fn validate_with_part_cuts(&self, max_part_cuts: usize) -> Result<(), AssistantRequestInvalid> {
         if self.operations.is_empty() || self.operations.len() > MAX_CAD_EDIT_OPERATIONS {
             return Err(AssistantRequestInvalid::invalid(
                 "CAD edit program operation count",
@@ -2974,10 +2986,10 @@ impl AssistantCadEditProgram {
                         (holes.len(), "part hole count"),
                         (pockets.len(), "part pocket count"),
                     ] {
-                        if cuts > MAX_ASSISTANT_PART_CUTS {
+                        if cuts > max_part_cuts {
                             return Err(AssistantRequestInvalid::new(
                                 label,
-                                AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_PART_CUTS),
+                                AssistantRequestProblem::ExceedsLimit(max_part_cuts),
                             ));
                         }
                     }

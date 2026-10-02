@@ -3404,12 +3404,12 @@ fn assistant_proposal_prepare_rejection(
             "Reduce the number of requested edits and retry.",
             true,
         ),
-        ProposalPrepareError::RequestedBudgetExceeded => assistant_rejection(
+        ProposalPrepareError::RequestedBudgetExceeded { .. } => assistant_rejection(
             AssistantRejectionPhase::ProposalPlanning,
             "planning.requested_budget_exceeded",
             operation,
             target,
-            "The proposal exceeds its declared work budget.",
+            error.to_string(),
             "Split the request into smaller atomic edits and retry.",
             true,
         ),

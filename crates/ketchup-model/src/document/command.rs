@@ -536,6 +536,15 @@ impl ProposalBudget {
         max_write_targets: 1_024,
     };
 
+    /// A rule program is compiled into commands by Kečup itself, not proposed
+    /// command by command, so one program (a whole cabinet with every dowel
+    /// hole) gets a budget far above the per-edit [`Self::HOST_MAX`].
+    pub const RULE_PROGRAM: Self = Self {
+        max_commands: 200_000,
+        max_read_dependencies: 200_000,
+        max_write_targets: 200_000,
+    };
+
     pub const M7A_SINGLE_CHANGE: Self = Self {
         max_commands: 1,
         max_read_dependencies: 64,
@@ -856,6 +865,15 @@ impl ProposalContext {
             risk: ProposalRisk::Standard,
             confirmation: ProposalConfirmation::ReviewRequired,
             requested_budget: ProposalBudget::HOST_MAX,
+        }
+    }
+
+    /// The assistant publishing a compiled rule program.
+    #[must_use]
+    pub fn rule_program() -> Self {
+        Self {
+            requested_budget: ProposalBudget::RULE_PROGRAM,
+            ..Self::local_assistant_model()
         }
     }
 

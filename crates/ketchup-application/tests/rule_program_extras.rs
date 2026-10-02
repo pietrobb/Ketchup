@@ -412,3 +412,49 @@ fn degenerate_profiles_are_refused() {
     );
     assert!(controls.contains("two points"), "{controls}");
 }
+
+// --- program size --------------------------------------------------------
+
+fn program_source(source: String) -> ketchup_model::document::RuleProgramSource {
+    ketchup_model::document::RuleProgramSource {
+        file_name: "size.star".to_owned(),
+        source,
+        overrides: BTreeMap::new(),
+    }
+}
+
+/// `count` boards, 5 commands each: 110 of them already exceed the
+/// 512-command budget of one AI edit.
+fn boards(count: usize) -> ketchup_model::document::RuleProgramSource {
+    program_source(
+        (0..count)
+            .map(|i| format!("board(\"b{i}\", (100, 50, 18), at = (0, 0, {}))\n", 20 * i))
+            .collect(),
+    )
+}
+
+#[test]
+fn a_program_larger_than_one_ai_edit_builds_and_grows_in_one_step() {
+    let mut session = ketchup_application::DocumentSession::default();
+    let built = session
+        .apply_rule_program(boards(110), false)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(built.snapshot.occurrences().count(), 110);
+    let grown = session
+        .apply_rule_program(boards(220), false)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(!grown.replaced_document);
+    assert_eq!(grown.snapshot.occurrences().count(), 220);
+}
+
+#[test]
+fn a_program_panel_may_carry_more_holes_than_one_ai_part() {
+    let source = "panel = board(\"panel\", (2000, 600, 18))\n\
+                  hole_row(panel, \"z+\", (40, 40), 16, 65, 5, 10)\n\
+                  hole_row(panel, \"z+\", (40, 560), 16, 65, 5, 10)\n";
+    let mut session = ketchup_application::DocumentSession::default();
+    session
+        .apply_rule_program(program_source(source.to_owned()), false)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(session.snapshot().occurrences().count(), 1);
+}
