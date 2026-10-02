@@ -222,4 +222,20 @@ fn tool_calls_reach_the_open_window_as_bridge_requests() {
     let image_request = received.recv().unwrap();
     assert_eq!(image_request["framing"], "viewport");
     assert_eq!(image_request["capture_mode"], "offscreen");
+
+    // Schema defaults a client fills in must not turn selection framing
+    // into a detail request.
+    call(
+        &mut tools,
+        "view",
+        json!({"action": "image", "framing": "selection", "detail_occurrence_id": 0,
+               "detail_kind": "", "detail_entity_id": 0, "view": ""}),
+    );
+    let image_request = received.recv().unwrap();
+    assert_eq!(image_request["framing"], "selection");
+    assert!(
+        image_request.get("detail_target").is_none(),
+        "{image_request}"
+    );
+    assert!(image_request.get("view").is_none(), "{image_request}");
 }

@@ -246,11 +246,7 @@ impl Tools {
         if action != "image" {
             return self.send(&action, args, DEFAULT_WAIT);
         }
-        let framing = args
-            .get("framing")
-            .and_then(Value::as_str)
-            .unwrap_or("viewport")
-            .to_owned();
+        args.retain(|_, value| is_set(value));
         let detail: Map<String, Value> = [
             ("detail_occurrence_id", "occurrence_id"),
             ("detail_kind", "kind"),
@@ -259,7 +255,19 @@ impl Tools {
         .into_iter()
         .filter_map(|(from, to)| args.remove(from).map(|value| (to.to_owned(), value)))
         .collect();
-        if framing == "detail_selection" || !detail.is_empty() {
+        // Clients often send every schema field with its default (0, ""); a
+        // detail only means something for detail framing, so it is dropped
+        // for the others instead of turning them into an invalid request.
+        let framing = args
+            .get("framing")
+            .and_then(Value::as_str)
+            .unwrap_or(if detail.is_empty() {
+                "viewport"
+            } else {
+                "detail_selection"
+            })
+            .to_owned();
+        if framing == "detail_selection" {
             args.insert("detail_target".into(), Value::Object(detail));
         }
         args.insert(
@@ -554,6 +562,16 @@ fn take_text(args: &mut Map<String, Value>, key: &str) -> Result<Option<String>,
 fn rename(args: &mut Map<String, Value>, from: &str, to: &str) {
     if let Some(value) = args.remove(from) {
         args.insert(to.into(), value);
+    }
+}
+
+/// Whether a client gave a real value rather than a schema default (0, "").
+fn is_set(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Number(number) => number.as_f64() != Some(0.0),
+        Value::String(text) => !text.is_empty(),
+        _ => true,
     }
 }
 

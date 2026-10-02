@@ -527,6 +527,62 @@ fn selection_framing_crops_real_cad_pixels_without_mutating_view_or_selection() 
     assert_eq!(h.state().selection.primary, primary);
 }
 
+/// Splayed legs, a turned board and a profile extrusion are not axis boxes;
+/// selection framing must still find them on screen.
+#[test]
+fn selection_framing_finds_program_parts_that_are_not_boxes() {
+    let _gpu = gpu_test_guard();
+    let mut h = native_harness(1.0);
+    let program = "seat = board(\"chair/seat\", (420, 420, 28), at = (0, 0, 450))\n\
+        leg = member(\"chair/leg\", (20, 20, 0), (60, 60, 450), (34, 34))\n\
+        back = rotate(board(\"chair/back\", (420, 20, 110), at = (0, 400, 720)), axis = (1, 0, 0), angle = 10, pivot = (0, 400, 720))\n\
+        knob = extrude(\"chair/knob\", profile = polygon(6, 30), distance = 20)\n";
+    let mut bridge = h.state_mut().live.bridge.take().unwrap();
+    let created = bridge
+        .execute(
+            h.state_mut(),
+            Request::ApplyProgram {
+                expected: None,
+                source: program.to_owned(),
+                overrides: BTreeMap::new(),
+                file_name: Some("chair.star".to_owned()),
+                replace_document: true,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(created["parts"], 4, "{created}");
+    h.state_mut().live.bridge = Some(bridge);
+    h.state_mut().camera.zoom_fit_pending = true;
+    for _ in 0..5 {
+        h.step();
+    }
+    settle_exact(&mut h);
+    let ids = h
+        .state()
+        .document
+        .current()
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<Vec<_>>();
+    h.state_mut().selection.clear();
+    for id in &ids {
+        h.state_mut().selection.select_occurrence(*id, true);
+    }
+    let rx = queue_with_framing(&mut h, 3, ImageFraming::Selection);
+    h.step();
+    render_private_capture(&mut h, "selection of non-box program parts");
+    let reply = response(&mut h, &rx);
+    assert!(reply.ok, "{:?}", reply.error);
+    assert_eq!(
+        reply.result.unwrap()["framing"]["occurrence_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        ids.len()
+    );
+}
+
 #[test]
 fn host_topology_detail_framing_crops_real_pixels_without_gui_selection() {
     let _gpu = gpu_test_guard();

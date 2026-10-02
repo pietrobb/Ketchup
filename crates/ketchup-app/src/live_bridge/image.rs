@@ -164,6 +164,22 @@ fn selection_crop(
             .map(|point| Rect::from_min_max(*point, *point))
             .reduce(|left, right| left.union(right))
     });
+    let selected = |id: &SelectionId| selection.contains(&id.instance_path.root_occurrence().0);
+    if target.is_none() {
+        // What is drawn of the selected parts, whatever their shape.
+        target = faces
+            .iter()
+            .filter(|face| selected(&face.selection))
+            .flat_map(|face| face.polygon.points())
+            .chain(
+                edges
+                    .iter()
+                    .filter(|edge| selected(&edge.selection))
+                    .flat_map(|edge| edge.points.iter()),
+            )
+            .map(|point| Rect::from_min_max(*point, *point))
+            .reduce(|left, right| left.union(right));
+    }
     if target.is_none() {
         target = selection
             .iter()
@@ -175,11 +191,22 @@ fn selection_crop(
             .map(|point| Rect::from_min_max(point, point))
             .reduce(|left, right| left.union(right));
     }
-    let target = target.ok_or("invalid_image_framing")?;
+    let target = target.ok_or_else(|| {
+        failure(
+            "invalid_image_framing",
+            "The selected parts have nothing drawn in the view: they are hidden or still being evaluated.",
+            json!({"selection": selection}),
+        )
+    })?;
     let padding = target.width().max(target.height()).mul_add(0.12, 8.0);
     let crop = target.expand(padding).intersect(viewport.shrink(2.0));
     if crop.width() < 2.0 || crop.height() < 2.0 {
-        return Err("invalid_image_framing");
+        return Err(failure(
+            "invalid_image_framing",
+            "The selected parts are outside the current view, or the window is too small to draw them. Set view zoom_fit and retry.",
+            json!({"selection": selection,
+                "viewport_px": [viewport.width(), viewport.height()]}),
+        ));
     }
     Ok(crop)
 }
@@ -499,10 +526,30 @@ impl LiveBridge {
                 (ImageFraming::DetailSelection, Some(target)) => {
                     Some(resolve_detail(app, &self.query, target)?)
                 }
-                _ => return Err("invalid_image_framing"),
+                (ImageFraming::DetailSelection, None) => {
+                    return Err(failure(
+                        "invalid_image_framing",
+                        "framing detail_selection needs a detail target (occurrence, kind and entity ID from a faces/edges query).",
+                        json!({}),
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(failure(
+                        "invalid_image_framing",
+                        format!(
+                            "A detail target only applies to framing detail_selection, not {}.",
+                            framing.as_str()
+                        ),
+                        json!({}),
+                    ));
+                }
             };
             if *framing == ImageFraming::Selection && initial.selection.is_empty() {
-                return Err("invalid_image_framing");
+                return Err(failure(
+                    "invalid_image_framing",
+                    "Nothing is selected in the window. Select parts with the selection action first.",
+                    json!({}),
+                ));
             }
             Ok((
                 initial,
