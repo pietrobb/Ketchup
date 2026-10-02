@@ -3064,7 +3064,7 @@ impl KetchupApp {
     pub(crate) fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
         // Grouped the way the design groups them: pick, draw, modify, measure,
         // navigate. A group boundary draws a hairline.
-        const TOOLS: [(AppCommand, u8); 14] = [
+        const TOOLS: [(AppCommand, u8); 15] = [
             (AppCommand::Select, 0),
             (AppCommand::Line, 1),
             (AppCommand::Rectangle, 1),
@@ -3076,6 +3076,7 @@ impl KetchupApp {
             (AppCommand::PushPull, 2),
             (AppCommand::Move, 2),
             (AppCommand::Rotate, 2),
+            (AppCommand::Mirror, 2),
             (AppCommand::Measure, 3),
             (AppCommand::Orbit, 4),
             (AppCommand::Pan, 4),

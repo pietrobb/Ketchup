@@ -10,6 +10,7 @@ mod drawing;
 mod exact;
 mod export;
 mod import;
+mod mirror;
 mod patterns;
 mod selection;
 mod shell;

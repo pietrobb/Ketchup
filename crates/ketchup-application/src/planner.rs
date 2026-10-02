@@ -6,8 +6,8 @@ use crate::diagnostics::{
 };
 use crate::rule_operations::OperationPlanner;
 use crate::transforms::{
-    rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
-    world_plane_mirror_transform,
+    MirrorCopyError, mirrored_copy_commands, rotation_in_parent_space, translated_transform,
+    world_axis_rotation_transform, world_plane_mirror_transform,
 };
 use ketchup_assistant::sidecar::{
     AssistantAssemblyJointAxis, AssistantAssemblyJointKind, AssistantAssemblyJointLimits,
@@ -3685,41 +3685,6 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     .caused_by(&error)
                 })?;
                 for id in targets {
-                    let source = staged_planning
-                        .staged_snapshot()
-                        .occurrence(id)
-                        .cloned()
-                        .expect("resolved CAD selector targets a staged occurrence");
-                    let parent_transform = source
-                        .parent()
-                        .map_or(Some(Transform::identity()), |parent| {
-                            staged_planning
-                                .staged_snapshot()
-                                .world_transform_for_group(parent)
-                        })
-                        .ok_or_else(|| {
-                            assistant_planning_rejection(
-                                "planning.cad_parent_transform_unavailable",
-                                operation_name,
-                                &format!("occurrence:{}", id.0),
-                                "The occurrence parent transform could not be resolved.",
-                                "Refresh the document context and retry the mirror.",
-                            )
-                        })?;
-                    let transform = rotation_in_parent_space(
-                        world_mirror,
-                        parent_transform,
-                        source.transform(),
-                    )
-                    .ok_or_else(|| {
-                        assistant_planning_rejection(
-                            "planning.cad_mirror_invalid",
-                            operation_name,
-                            &format!("occurrence:{}", id.0),
-                            "The requested mirror could not be represented in the occurrence parent.",
-                            "Use a finite invertible parent transform and mirror plane.",
-                        )
-                    })?;
                     let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
                         assistant_canonical_rejection(
                             CanonicalError::IdExhausted,
@@ -3728,23 +3693,37 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         )
                     })?;
                     next_occurrence = occurrence_id.0.checked_add(1);
-                    staged_planning.push(CanonicalCommand::CreateOccurrence {
-                        id: occurrence_id,
-                        definition_id: source.definition_id(),
-                        name: source.name().to_owned(),
-                        transform,
-                        parent: source.parent(),
-                        tag: source.tag(),
-                        visible: source.visible(),
-                    });
-                    if source.color().is_some() {
-                        staged_planning.push(CanonicalCommand::SetOccurrenceColor {
-                            id: occurrence_id,
-                            color: source.color(),
-                        });
+                    let commands = mirrored_copy_commands(
+                        staged_planning.staged_snapshot(),
+                        id,
+                        world_mirror,
+                        occurrence_id,
+                    )
+                    .map_err(|error| match error {
+                        MirrorCopyError::MissingOccurrence => {
+                            unreachable!("resolved CAD selector targets a staged occurrence")
+                        }
+                        MirrorCopyError::ParentTransform => assistant_planning_rejection(
+                            "planning.cad_parent_transform_unavailable",
+                            operation_name,
+                            &format!("occurrence:{}", id.0),
+                            "The occurrence parent transform could not be resolved.",
+                            "Refresh the document context and retry the mirror.",
+                        ),
+                        MirrorCopyError::Transform => assistant_planning_rejection(
+                            "planning.cad_mirror_invalid",
+                            operation_name,
+                            &format!("occurrence:{}", id.0),
+                            "The requested mirror could not be represented in the occurrence parent.",
+                            "Use a finite invertible parent transform and mirror plane.",
+                        ),
+                    })?;
+                    for command in commands {
+                        staged_planning.push(command);
                     }
                 }
             }
+
             AssistantCadEditOperation::FilletEdges { .. }
             | AssistantCadEditOperation::ChamferEdges { .. } => {
                 unreachable!("direct edge finishes are normalized before planning")

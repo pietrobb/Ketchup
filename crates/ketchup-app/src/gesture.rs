@@ -11,7 +11,17 @@ pub(crate) struct Gesture {
     pub(crate) sketch: SketchGesture,
     pub(crate) measure: MeasureGesture,
     pub(crate) transform: TransformModifiers,
+    /// The face plane under the pointer while the Mirror tool is active.
+    pub(crate) mirror: Option<MirrorPlane>,
     pub(crate) drag: Option<PointerDrag>,
+}
+
+/// A point on a picked face and the face's outward normal; the Mirror tool
+/// reflects across this plane, shifted along the normal by the typed offset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MirrorPlane {
+    pub(crate) point_mm: Vec3,
+    pub(crate) normal: Vec3,
 }
 
 /// A line, rectangle, circle, arc, polygon or ellipse being drawn.

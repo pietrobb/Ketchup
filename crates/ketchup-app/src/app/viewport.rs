@@ -1322,21 +1322,28 @@ impl KetchupApp {
         self.camera.pan += old_position - new_position;
     }
 
-    pub(crate) fn surface_point_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
+    /// The nearest exact or mesh surface under the pointer: the point hit and
+    /// the outward normal there.
+    pub(crate) fn surface_hit_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<(Vec3, Vec3)> {
         let ray = self.view_ray(pointer, rect)?;
         let snapshot = self.document.current();
         let exact = self
             .exact_projection(&snapshot)
             .exact_surface_pick(ray)
-            .map(|hit| (hit.ray_distance_mm, hit.position_mm));
+            .map(|hit| (hit.ray_distance_mm, hit.position_mm, hit.outward_normal));
         let mesh = MeshInteractionProjection::from_snapshot(&snapshot)
             .exact_surface_pick(ray)
-            .map(|hit| (hit.ray_distance_mm, hit.position_mm));
+            .map(|hit| (hit.ray_distance_mm, hit.position_mm, hit.outward_normal));
         [exact, mesh]
             .into_iter()
             .flatten()
             .min_by(|left, right| left.0.total_cmp(&right.0))
-            .map(|(_, point)| point)
+            .map(|(_, point, normal)| (point, normal))
+    }
+
+    pub(crate) fn surface_point_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
+        self.surface_hit_at_screen(pointer, rect)
+            .map(|(point, _)| point)
             .or_else(|| {
                 self.pick_result_at_screen(pointer, rect, 8.0)
                     .map(|pick| pick.primary.position_mm)
@@ -1926,6 +1933,9 @@ impl KetchupApp {
             }
         } else if self.active_tool == ActiveTool::Scale {
             self.begin_scale_drag_at(pointer, response.rect);
+        } else if self.active_tool == ActiveTool::Mirror {
+            self.gesture.mirror = self.mirror_plane_at_screen(pointer, response.rect);
+            self.commit_mirror();
         } else if self.active_tool == ActiveTool::Measure {
             let plane_z = self.measure_anchor().map_or_else(
                 || self.rectangle_plane_z(pointer, response.rect),
@@ -2308,6 +2318,12 @@ impl KetchupApp {
                     ),
                 };
             }
+        }
+        if self.active_tool == ActiveTool::Mirror
+            && response.hovered()
+            && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
+        {
+            self.gesture.mirror = self.mirror_plane_at_screen(pointer, response.rect);
         }
         if let Some(start) = self.measure_anchor()
             && response.hovered()
@@ -3325,6 +3341,7 @@ impl KetchupApp {
 
         self.paint_origin_snap(painter, response.hover_pos(), response.rect);
         self.paint_rotation_guide(painter, response.rect);
+        self.paint_mirror_preview(painter, response.rect);
 
         if let Some((start, end)) = self.measure_span() {
             let from = self.project(start, response.rect);

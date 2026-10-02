@@ -183,6 +183,7 @@ pub enum Icon {
     Polygon,
     Ellipse,
     Spline,
+    Mirror,
     PushPull,
     Move,
     Tape,
@@ -230,6 +231,10 @@ impl Icon {
             Self::Spline => [
                 "M4 16 C6 6 10 6 12 12 C14 18 18 18 20 8",
                 "M4 16 m-1 0 h2 M12 12 m-1 0 h2 M20 8 m-1 0 h2",
+            ],
+            Self::Mirror => [
+                "M10 6 L4 18 L10 18 Z M14 6 L20 18 L14 18 Z",
+                "M12 3 v2 M12 7 v2 M12 11 v2 M12 15 v2 M12 19 v2",
             ],
             Self::PushPull => [
                 "M12 10.4 L19.4 14.2 L12 18 L4.6 14.2 Z",
@@ -689,6 +694,7 @@ mod tests {
             Icon::Polygon,
             Icon::Ellipse,
             Icon::Spline,
+            Icon::Mirror,
             Icon::PushPull,
             Icon::Move,
             Icon::Tape,

@@ -1122,6 +1122,11 @@ impl KetchupApp {
             self.active_tool = ActiveTool::Select;
             self.status_key = "status-ready";
             self.digest = self.catalog.text("digest-cancelled");
+        } else if self.active_tool == ActiveTool::Mirror {
+            self.gesture.mirror = None;
+            self.active_tool = ActiveTool::Select;
+            self.status_key = "status-ready";
+            self.digest = self.catalog.text("digest-cancelled");
         } else if self.active_tool == ActiveTool::ZoomWindow {
             self.gesture.drag.close::<ZoomWindowDrag>();
             self.active_tool = ActiveTool::Select;

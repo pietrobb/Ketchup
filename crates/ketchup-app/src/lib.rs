@@ -4,7 +4,7 @@
 #![deny(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use gesture::{Gesture, PushPullAnchor, ZoomWindowDrag};
+use gesture::{Gesture, MirrorPlane, PushPullAnchor, ZoomWindowDrag};
 use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_application::cam_workflow::{CamReviewRequest, CamReviewSummary, CamReviewWorkflow};
 use ketchup_application::diagnostics::{
@@ -22,8 +22,8 @@ use ketchup_application::pdm_workflow::{
 pub use ketchup_application::topology::GeneralFinishKind;
 use ketchup_application::topology::{assistant_topology_references, plan_topology_finish_kind};
 use ketchup_application::transforms::{
-    rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
-    world_edit_in_parent_space,
+    mirrored_copy_commands, rotation_in_parent_space, translated_transform,
+    world_axis_rotation_transform, world_edit_in_parent_space, world_plane_mirror_transform,
 };
 use ketchup_application::validation::*;
 use ketchup_assistant::intent::{IntentRequest, WorkflowIntent, propose_intent};
@@ -1740,6 +1740,7 @@ enum ActiveTool {
     Polygon,
     Ellipse,
     Spline,
+    Mirror,
     SolidSubtract,
     SolidTrim,
     SolidUnion,
@@ -1774,6 +1775,7 @@ impl ActiveTool {
             Self::Polygon => "tool-polygon",
             Self::Ellipse => "tool-ellipse",
             Self::Spline => "tool-spline",
+            Self::Mirror => "tool-mirror",
             Self::SolidSubtract => "solid-tool-subtract",
             Self::SolidTrim => "solid-tool-trim",
             Self::SolidUnion => "solid-tool-union",
@@ -1808,6 +1810,7 @@ impl ActiveTool {
             Self::Polygon => "hint-polygon",
             Self::Ellipse => "hint-ellipse",
             Self::Spline => "hint-spline",
+            Self::Mirror => "hint-mirror",
             Self::SolidSubtract => "hint-solid-subtract",
             Self::SolidTrim => "hint-solid-trim",
             Self::SolidUnion => "hint-solid-union",
@@ -1874,6 +1877,7 @@ pub enum AppCommand {
     Polygon,
     Ellipse,
     Spline,
+    Mirror,
     SolidSubtract,
     SolidTrim,
     SolidUnion,

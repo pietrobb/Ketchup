@@ -1,6 +1,8 @@
 use ketchup_geometry::linalg::length;
 use ketchup_interaction::Vec3;
-use ketchup_model::document::{CanonicalError, GroupId, Snapshot, Transform};
+use ketchup_model::document::{
+    CanonicalCommand, CanonicalError, GroupId, OccurrenceId, Snapshot, Transform,
+};
 
 pub fn translated_transform(
     transform: Transform,
@@ -68,6 +70,54 @@ pub fn world_plane_mirror_transform(
     }
     matrix[15] = 1.0;
     Transform::from_matrix(matrix)
+}
+
+/// Why a mirrored copy of an occurrence cannot be added.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MirrorCopyError {
+    /// The occurrence is not in the snapshot.
+    MissingOccurrence,
+    /// The world placement of the occurrence's parent group is unknown.
+    ParentTransform,
+    /// The mirrored placement is not a valid transform in the parent.
+    Transform,
+}
+
+/// Commands that add occurrence `id`: a copy of `source` mirrored by
+/// `world_mirror` in the same parent, with its name, tag, visibility and colour.
+pub fn mirrored_copy_commands(
+    snapshot: &Snapshot,
+    source: OccurrenceId,
+    world_mirror: Transform,
+    id: OccurrenceId,
+) -> Result<Vec<CanonicalCommand>, MirrorCopyError> {
+    let source = snapshot
+        .occurrence(source)
+        .ok_or(MirrorCopyError::MissingOccurrence)?;
+    let parent_transform = source
+        .parent()
+        .map_or(Some(Transform::identity()), |parent| {
+            snapshot.world_transform_for_group(parent)
+        })
+        .ok_or(MirrorCopyError::ParentTransform)?;
+    let transform = rotation_in_parent_space(world_mirror, parent_transform, source.transform())
+        .ok_or(MirrorCopyError::Transform)?;
+    let mut commands = vec![CanonicalCommand::CreateOccurrence {
+        id,
+        definition_id: source.definition_id(),
+        name: source.name().to_owned(),
+        transform,
+        parent: source.parent(),
+        tag: source.tag(),
+        visible: source.visible(),
+    }];
+    if source.color().is_some() {
+        commands.push(CanonicalCommand::SetOccurrenceColor {
+            id,
+            color: source.color(),
+        });
+    }
+    Ok(commands)
 }
 
 pub fn world_axis_rotation_transform(

@@ -330,3 +330,109 @@ fn spline_takes_points_by_drag_click_or_typed_distance_and_closes_in_one_undo_st
         assert_eq!(latest_spline(&shell).len(), 4);
     }
 }
+
+/// World box of a root occurrence: its lowest corner and its size.
+fn occurrence_box(shell: &Shell, id: u64) -> (Vec3, Vec3) {
+    shell
+        .app()
+        .occurrence_box_geometry(id)
+        .unwrap_or_else(|| panic!("occurrence {id} has a box"))
+}
+
+fn assert_near(actual: Vec3, expected: Vec3, what: &str) {
+    assert!(
+        actual.distance(expected) < 1.0e-6,
+        "{what}: {actual:?} is not {expected:?}"
+    );
+}
+
+#[test]
+fn mirror_copies_the_selection_across_the_clicked_face_or_a_typed_offset_in_one_undo_step() {
+    let mut shell = Shell::new();
+    assert!(shell.offers(AppCommand::Mirror), "Mirror is in the rail");
+    assert_eq!(shell.app().occurrence_count(), 1);
+    let (origin, size) = occurrence_box(&shell, 1);
+    let top_centre = origin + Vec3::new(size.x / 2.0, size.y / 2.0, size.z);
+
+    // The shortcut picks the tool once something is selected.
+    shell.key(Key::A, ctrl());
+    shell.press_key(Key::I);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().format(
+            "digest-tool-active",
+            &BTreeMap::from([("tool", shell.catalog().text("tool-mirror"))]),
+        )
+    );
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+
+    // Hovering the top face previews the copy above it without editing.
+    let top = shell.app().viewport_position(top_centre).unwrap();
+    shell.move_pointer(top);
+    let preview = shell.app().mirror_preview_corners();
+    assert_eq!(preview.len(), 1, "one mirrored box is previewed");
+    let lowest = preview[0].iter().fold(
+        Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+        |low, corner| {
+            Vec3::new(
+                low.x.min(corner.x),
+                low.y.min(corner.y),
+                low.z.min(corner.z),
+            )
+        },
+    );
+    assert_near(
+        lowest,
+        origin + Vec3::new(0.0, 0.0, size.z),
+        "preview corner",
+    );
+    assert_eq!(shell.app().document_revision(), before_revision);
+
+    // A click adds the mirrored copy as one Undo step.
+    shell.click_at(top);
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().occurrence_count(), 2);
+    let (copy_origin, copy_size) = occurrence_box(&shell, 2);
+    assert_near(
+        copy_origin,
+        origin + Vec3::new(0.0, 0.0, size.z),
+        "copy origin",
+    );
+    assert_near(copy_size, size, "copy size");
+    assert_eq!(
+        shell
+            .app()
+            .occurrence_definition_id(ketchup_model::document::OccurrenceId(2)),
+        shell
+            .app()
+            .occurrence_definition_id(ketchup_model::document::OccurrenceId(1)),
+        "the copy uses the same definition"
+    );
+    let first_digest = shell.app().canonical_digest();
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_digest);
+
+    // A typed offset moves the plane off the face before Enter mirrors.
+    shell.key(Key::Z, ctrl());
+    shell.move_pointer(top);
+    shell.type_text("10");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().occurrence_count(), 2);
+    let (offset_origin, _) = occurrence_box(&shell, 2);
+    assert_near(
+        offset_origin,
+        origin + Vec3::new(0.0, 0.0, size.z + 20.0),
+        "offset copy origin",
+    );
+
+    // Escape leaves the tool without touching the document.
+    let second_digest = shell.app().canonical_digest();
+    shell.move_pointer(top);
+    assert!(!shell.app().mirror_preview_corners().is_empty());
+    shell.press_key(Key::Escape);
+    assert!(shell.app().mirror_preview_corners().is_empty());
+    assert_eq!(shell.app().canonical_digest(), second_digest);
+}

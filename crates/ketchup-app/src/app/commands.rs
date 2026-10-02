@@ -93,6 +93,7 @@ impl KetchupApp {
                         .count()
                         >= 2
                 }
+                AppCommand::Mirror => self.mirror_sources().is_some(),
                 AppCommand::Group => self.group_selection_source_plan().is_some(),
                 AppCommand::Ungroup => self.ungroup_selection_source_plan().is_some(),
                 AppCommand::MakeComponent => self.make_component_source_plan().is_some(),
@@ -253,6 +254,8 @@ impl KetchupApp {
                 if tool == ActiveTool::Polygon {
                     self.value_box.input = self.gesture.sketch.polygon_sides().to_string();
                 }
+            } else if tool == ActiveTool::Mirror {
+                self.status_key = "status-mirror-face";
             } else if tool == ActiveTool::Measure {
                 self.status_key = "status-measure-first-point";
             } else if matches!(
@@ -460,6 +463,7 @@ impl KetchupApp {
             | AppCommand::Polygon
             | AppCommand::Ellipse
             | AppCommand::Spline
+            | AppCommand::Mirror
             | AppCommand::SolidSubtract
             | AppCommand::SolidTrim
             | AppCommand::SolidUnion
@@ -595,6 +599,9 @@ impl KetchupApp {
                 return self.commit_rotate_drag(&drag);
             }
             return self.rotate_selected(angle_degrees);
+        }
+        if self.active_tool == ActiveTool::Mirror {
+            return self.commit_mirror();
         }
         if self.active_tool == ActiveTool::PlanarOffset {
             return self.refresh_planar_offset_preview() && self.confirm_planar_offset_preview();

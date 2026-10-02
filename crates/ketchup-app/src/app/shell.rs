@@ -515,6 +515,7 @@ impl KetchupApp {
         self.gesture.drag.close::<ZoomWindowDrag>();
         self.gesture.drag.close::<SelectionWindowDrag>();
         self.clear_measurement();
+        self.gesture.mirror = None;
     }
 
     pub(crate) fn value_label_key(&self) -> &'static str {
@@ -532,6 +533,7 @@ impl KetchupApp {
             ActiveTool::Shell => "value-label-thickness",
             ActiveTool::Fillet | ActiveTool::Chamfer => "value-label-radius-distance",
             ActiveTool::Rotate => "value-label-angle",
+            ActiveTool::Mirror => "value-label-mirror-offset",
             ActiveTool::Scale => "value-label-scale-factor",
             ActiveTool::PushPull | ActiveTool::Move | ActiveTool::Measure => "value-label-distance",
             _ => "value-label-dimensions",
@@ -918,6 +920,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::PushPull);
                 self.menu_command(ui, AppCommand::Move);
                 self.menu_command(ui, AppCommand::Rotate);
+                self.menu_command(ui, AppCommand::Mirror);
                 self.menu_command(ui, AppCommand::Scale);
                 self.menu_command(ui, AppCommand::Measure);
                 self.menu_command(ui, AppCommand::Orbit);
