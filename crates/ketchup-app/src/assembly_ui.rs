@@ -14,7 +14,6 @@ use ketchup_model::assembly_joint::{
     preview_assembly_joint_drag_clearance, solve_assembly_joint_kinematics_with_drivers,
     solve_assembly_joint_kinematics_with_kind_overrides, solve_assembly_motion_study,
 };
-use ketchup_model::drawing::project_orthographic_drawing;
 use ketchup_model::drawing::{
     DrawingBomBalloon, DrawingBomBalloonId, DrawingSheet, DrawingSheetId, DrawingSource,
     OrthographicViewKind, prepare_create_drawing_sheet,
@@ -3008,13 +3007,13 @@ impl KetchupApp {
         self.document.current().assembly_motion_studies().count()
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_set_assembly_joint_parameters(&mut self, position: f64, lead: f64) {
         self.assembly_editor.joint_position_input = position.to_string();
         self.assembly_editor.joint_lead_input = lead.to_string();
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_set_assembly_coupling_parameters(
         &mut self,
         joint_ids: [u64; 2],
@@ -3031,7 +3030,7 @@ impl KetchupApp {
         self.assembly_editor.coupling_option = option;
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_set_assembly_drag(
         &mut self,
         joint_id: u64,
@@ -3043,7 +3042,7 @@ impl KetchupApp {
         self.assembly_editor.drag_clamp_to_limits = clamp_to_limits;
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_set_assembly_drag_collision_policy(
         &mut self,
         check_collisions: bool,
@@ -3053,7 +3052,7 @@ impl KetchupApp {
         self.assembly_editor.drag_allow_contact = allow_contact;
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_set_assembly_motion_position(&mut self, position: f64) {
         self.assembly_editor.motion_position_input = position.to_string();
     }
@@ -3128,29 +3127,19 @@ impl KetchupApp {
             .map(AssemblySolveResult::status)
     }
 
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn headless_capstone_assembly_summary(
-        &self,
-    ) -> Option<(AssemblySolveStatus, usize, usize, usize)> {
-        let solved =
-            solve_rigid_assembly(&self.document.current(), AssemblySolverPolicy::default()).ok()?;
-        Some((
-            solved.status(),
-            solved.remaining_dof(),
-            solved.redundant_mate_ids().len(),
-            solved.conflicting_mate_ids().len(),
-        ))
-    }
-
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_drawing_fingerprint(
         &self,
         sheet_id: DrawingSheetId,
     ) -> Option<(String, Vec<String>)> {
         let snapshot = self.document.current();
         let sheet = snapshot.drawing_sheet(sheet_id)?;
-        let drawing = project_orthographic_drawing(&snapshot, &self.exact.results, sheet).ok()?;
+        let drawing = ketchup_model::drawing::project_orthographic_drawing(
+            &snapshot,
+            &self.exact.results,
+            sheet,
+        )
+        .ok()?;
         Some((
             drawing.result_digest,
             drawing
@@ -3159,242 +3148,6 @@ impl KetchupApp {
                 .map(|view| view.kind.stable_name())
                 .collect(),
         ))
-    }
-
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn headless_capstone_drawing_fingerprint(&self) -> Option<(String, Vec<String>)> {
-        let snapshot = self.document.current();
-        let sheet = snapshot.drawing_sheets().next()?;
-        let drawing = project_orthographic_drawing(&snapshot, &self.exact.results, sheet).ok()?;
-        Some((
-            drawing.result_digest,
-            drawing
-                .views
-                .iter()
-                .map(|view| view.kind.stable_name())
-                .collect(),
-        ))
-    }
-
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn headless_capstone_assembly_refusal_paths(&self) -> Vec<&'static str> {
-        let snapshot = self.document.current();
-        // Derived from the document rather than from a named product fixture:
-        // the refusal contract is a property of any planar-plus-axial rigid
-        // assembly, so a second document with the same shape is covered too.
-        let Some(planar) = snapshot
-            .assembly_mates()
-            .find(|mate| matches!(mate.kind(), AssemblyMateKind::CoincidentPlanar { .. }))
-            .cloned()
-        else {
-            return Vec::new();
-        };
-        let Some(axial) = snapshot
-            .assembly_mates()
-            .find(|mate| matches!(mate.kind(), AssemblyMateKind::ConcentricAxial { .. }))
-            .cloned()
-        else {
-            return Vec::new();
-        };
-        let Some(sheet_id) = snapshot.drawing_sheets().next().map(DrawingSheet::id) else {
-            return Vec::new();
-        };
-        // The occurrence that is grounded without carrying the planar mate:
-        // ungrounding it is what leaves the assembly under-constrained.
-        let Some(free_grounded) = snapshot
-            .occurrences()
-            .map(|occurrence| occurrence.id())
-            .filter(|id| snapshot.occurrence_is_grounded(*id))
-            .find(|id| {
-                *id != planar.endpoint_a().occurrence_id()
-                    && *id != planar.endpoint_b().occurrence_id()
-            })
-        else {
-            return Vec::new();
-        };
-        let encoded = ketchup_model::persistence::save(&snapshot);
-        let clone_document = || {
-            let mut document = ketchup_model::persistence::load(&encoded)
-                .ok()?
-                .into_editable()
-                .ok()?;
-            document
-                .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::DeleteDrawingSheet { id: sheet_id },
-                ]))
-                .ok()?;
-            Some(document)
-        };
-        let mut paths = Vec::new();
-
-        if let Some(mut document) = clone_document()
-            && document
-                .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::DeleteAssemblyMate { id: axial.id() },
-                    CanonicalCommand::SetOccurrenceGrounded {
-                        id: free_grounded,
-                        grounded: false,
-                    },
-                ]))
-                .is_ok()
-            && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
-                .is_ok_and(|solve| solve.status() == AssemblySolveStatus::UnderConstrained)
-        {
-            paths.push("under-constrained");
-        }
-
-        if let Some(mut document) = clone_document() {
-            let duplicate = AssemblyMate::new(
-                AssemblyMateId(90_001),
-                axial.endpoint_a().clone(),
-                axial.endpoint_b().clone(),
-                axial.kind(),
-            );
-            if document
-                .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::CreateAssemblyMate(duplicate),
-                ]))
-                .is_ok()
-                && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
-                    .is_ok_and(|solve| !solve.redundant_mate_ids().is_empty())
-            {
-                paths.push("redundant");
-            }
-        }
-
-        if let Some(mut document) = clone_document()
-            && let AssemblyMateKind::CoincidentPlanar { offset_mm, .. } = planar.kind()
-        {
-            let conflicting_a = AssemblyMate::new(
-                AssemblyMateId(90_002),
-                planar.endpoint_a().clone(),
-                planar.endpoint_b().clone(),
-                AssemblyMateKind::Distance {
-                    distance_mm: offset_mm,
-                },
-            );
-            let conflicting_b = AssemblyMate::new(
-                AssemblyMateId(90_003),
-                planar.endpoint_a().clone(),
-                planar.endpoint_b().clone(),
-                AssemblyMateKind::Distance {
-                    distance_mm: offset_mm + 5.0,
-                },
-            );
-            if document
-                .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::DeleteAssemblyMate { id: planar.id() },
-                    CanonicalCommand::DeleteAssemblyMate { id: axial.id() },
-                    CanonicalCommand::CreateAssemblyMate(conflicting_a),
-                    CanonicalCommand::CreateAssemblyMate(conflicting_b),
-                ]))
-                .is_ok()
-                && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
-                    .is_ok_and(|solve| {
-                        solve.status() == AssemblySolveStatus::OverConstrained
-                            && !solve.conflicting_mate_ids().is_empty()
-                            && solve.publication_batch(&document.current()).is_err()
-                    })
-            {
-                paths.push("conflicting-over-constrained");
-            }
-        }
-
-        if let Some(mut document) = clone_document()
-            && let Ok(proposal) = document.prepare_proposal(CommandBatch::new(vec![
-                CanonicalCommand::SetOccurrenceGrounded {
-                    id: free_grounded,
-                    grounded: false,
-                },
-            ]))
-            && document
-                .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::SetOccurrenceGrounded {
-                        id: free_grounded,
-                        grounded: false,
-                    },
-                ]))
-                .is_ok()
-        {
-            let before = (
-                document.current().revision_id(),
-                document.current().canonical_digest(),
-                document.visible_undo_steps(),
-                document.visible_redo_steps(),
-            );
-            if document.commit_verified_proposal(&proposal).is_err()
-                && before
-                    == (
-                        document.current().revision_id(),
-                        document.current().canonical_digest(),
-                        document.visible_undo_steps(),
-                        document.visible_redo_steps(),
-                    )
-            {
-                paths.push("stale-confirmation");
-            }
-        }
-
-        for (name, endpoint) in [
-            (
-                "ambiguous",
-                AssemblyMateEndpoint::ambiguous(
-                    planar.endpoint_a().occurrence_id(),
-                    planar.endpoint_a().reference().clone(),
-                    2,
-                ),
-            ),
-            (
-                "lost",
-                AssemblyMateEndpoint::lost(
-                    planar.endpoint_a().occurrence_id(),
-                    planar.endpoint_a().reference().clone(),
-                ),
-            ),
-        ] {
-            if let Some(mut document) = clone_document() {
-                let unresolved = AssemblyMate::new(
-                    planar.id(),
-                    endpoint,
-                    planar.endpoint_b().clone(),
-                    planar.kind(),
-                );
-                if let Ok(proposal) = document.prepare_proposal(CommandBatch::new(vec![
-                    CanonicalCommand::RebindAssemblyMate(unresolved),
-                ])) && document.commit_verified_proposal(&proposal).is_ok()
-                    && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
-                        .is_err()
-                {
-                    paths.push(name);
-                }
-            }
-        }
-
-        if let Some(document) = clone_document() {
-            let mut unsupported_reference = planar.endpoint_a().reference().clone();
-            unsupported_reference.expected_type = "unsupported".to_owned();
-            let unsupported = AssemblyMate::new(
-                planar.id(),
-                AssemblyMateEndpoint::resolved(
-                    planar.endpoint_a().occurrence_id(),
-                    unsupported_reference,
-                ),
-                planar.endpoint_b().clone(),
-                planar.kind(),
-            );
-            if document
-                .prepare_proposal(CommandBatch::new(vec![
-                    CanonicalCommand::RebindAssemblyMate(unsupported),
-                ]))
-                .is_err()
-            {
-                paths.push("unsupported");
-            }
-        }
-
-        paths
     }
 }
 

@@ -612,14 +612,12 @@ fn rotate_point_about_axis(
 
 fn wait_for_assistant_proposal(shell: &mut Shell) {
     let confirm = shell.catalog().text("assistant-confirm");
-    for _ in 0..2_000 {
+    let reviewable = shell.wait_until(|shell| {
         shell.step();
-        if shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!(
+        shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm)
+    });
+    assert!(
+        reviewable,
         "scripted assistant response did not reach accessible proposal review: {:?}",
         shell.app().assistant_messages()
     );
@@ -627,22 +625,24 @@ fn wait_for_assistant_proposal(shell: &mut Shell) {
 
 /// Steps the shell until the assistant replied to the latest user message and returns the reply.
 fn wait_for_assistant_reply(shell: &mut Shell) -> AssistantChatMessage {
-    for _ in 0..2_000 {
+    let mut reply = None;
+    shell.wait_until(|shell| {
         shell.step();
         let messages = shell.app().assistant_messages();
         let user = messages
             .iter()
             .rposition(|message| message.role == AssistantMessageRole::User);
-        if let Some(reply) = user.and_then(|index| messages.get(index + 1)).cloned() {
-            shell.settle();
-            return reply;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!(
-        "scripted assistant request did not finish: {:?}",
-        shell.app().assistant_messages()
-    );
+        reply = user.and_then(|index| messages.get(index + 1)).cloned();
+        reply.is_some()
+    });
+    let Some(reply) = reply else {
+        panic!(
+            "scripted assistant request did not finish: {:?}",
+            shell.app().assistant_messages()
+        );
+    };
+    shell.settle();
+    reply
 }
 
 /// Sends a CAD edit program request and waits until apply-and-verify committed it.

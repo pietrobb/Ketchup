@@ -68,14 +68,13 @@ fn digest_starts_like(shell: &Shell, key: &str) -> bool {
 }
 
 fn wait_for_visible_label(shell: &mut Shell, label: &str) {
-    for _ in 0..300 {
-        shell.settle();
-        if shell.has_visible_label(label) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("timed out waiting for visible label {label:?}");
+    assert!(
+        shell.wait_until(|shell| {
+            shell.settle();
+            shell.has_visible_label(label)
+        }),
+        "timed out waiting for visible label {label:?}"
+    );
 }
 
 static EXACT_FILE_EXPORT_LOCK: Mutex<()> = Mutex::new(());
@@ -160,14 +159,12 @@ fn imported_exact_feature_id(shell: &Shell) -> FeatureId {
 }
 
 fn wait_for_hovered_pick(shell: &mut Shell, position: Pos2) {
-    for _ in 0..100 {
+    let pickable = shell.wait_until(|shell| {
         shell.move_pointer(position);
-        if shell.app().hovered_selection().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
+        shell.app().hovered_selection().is_some()
+    });
+    assert!(
+        pickable,
         "the current painted exact body must become pickable: producers={:?}, triangles={}",
         shell.app().exact_current_producer_ids(),
         shell.app().instanced_scene_triangle_count()
@@ -212,17 +209,14 @@ fn submit_applied_assistant_request(shell: &mut Shell, request: &str) {
 }
 
 fn wait_for_current_exact_body(shell: &mut Shell) {
-    for _ in 0..100 {
+    shell.wait_until(|shell| {
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        shell.app().exact_render_body_count() == 1
+    });
     assert_eq!(
         shell.app().exact_render_body_count(),
         1,
-        "the real worker must publish current exact evidence within two seconds"
+        "the real worker must publish current exact evidence"
     );
 }
 

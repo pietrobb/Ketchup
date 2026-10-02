@@ -1,6 +1,6 @@
 use crate::harness;
 
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use eframe::egui::{Key, Modifiers, accesskit::Role};
 use harness::{Shell, shift};
@@ -20,15 +20,11 @@ fn exact_worker_path() -> PathBuf {
 }
 
 fn wait_for_stable_references(shell: &mut Shell) {
-    for _ in 0..150 {
-        shell.settle();
-        if shell.app().exact_stable_reference_count() >= 2 {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
     assert!(
-        shell.app().exact_stable_reference_count() >= 2,
+        shell.wait_until(|shell| {
+            shell.settle();
+            shell.app().exact_stable_reference_count() >= 2
+        }),
         "exact planar placement references were not published"
     );
 }

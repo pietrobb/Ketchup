@@ -335,11 +335,6 @@ fn resolve_detail(
 }
 
 impl KetchupApp {
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn headless_live_image_command(&mut self, command: AppCommand) {
-        self.dispatch_command(command);
-    }
     pub(crate) fn begin_live_image_frame(&mut self) {
         if let Some(bridge) = self.live.bridge.as_mut() {
             bridge.image.painted = None;

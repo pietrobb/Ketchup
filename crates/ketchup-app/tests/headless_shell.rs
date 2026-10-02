@@ -188,14 +188,10 @@ fn exact_worker_path() -> PathBuf {
 }
 
 fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while std::time::Instant::now() < deadline {
+    shell.wait_until(|shell| {
         shell.settle();
-        if shell.app().exact_render_body_count() == expected {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        shell.app().exact_render_body_count() == expected
+    });
     assert_eq!(shell.app().exact_render_body_count(), expected);
 }
 

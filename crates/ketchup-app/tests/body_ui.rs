@@ -55,18 +55,15 @@ fn copy_exact_worker_with_runtime(destination: &Path) {
 }
 
 fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
-    for _ in 0..500 {
+    let published = shell.wait_until(|shell| {
         shell.step();
         shell.settle();
-        if shell.app().exact_render_body_count() == expected {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(
+        shell.app().exact_render_body_count() == expected
+    });
+    assert!(
+        published,
+        "expected {expected} exact bodies, found {}: producers={:?}, digest={}",
         shell.app().exact_render_body_count(),
-        expected,
-        "producers={:?}, digest={}",
         shell.app().exact_current_producer_ids(),
         shell.app().action_digest()
     );

@@ -144,6 +144,9 @@ pub(crate) struct AssistantState {
     pub(crate) inspector_tab: AssistantInspectorTab,
     pub(crate) memory_search: String,
     pub(crate) transport: Arc<dyn AssistantTransport>,
+    /// Test-only hold before context preparation, so a test can act while a request is
+    /// still being prepared.
+    #[cfg(feature = "testing")]
     pub(crate) context_preparation_delay: Duration,
     pub(crate) chat_task: Option<AssistantChatTask>,
     pub(crate) pending_execution: Option<AssistantPendingExecution>,

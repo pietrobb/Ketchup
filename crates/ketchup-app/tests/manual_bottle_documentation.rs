@@ -4,23 +4,17 @@ use eframe::egui::Key;
 use harness::Shell;
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_model::document::{OccurrenceId, ProfileSegment, SpatialPathSegment};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 fn exact_worker_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
 fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
-    for _ in 0..3000 {
+    shell.wait_until(|shell| {
         shell.settle();
-        if shell.app().exact_render_body_count() == expected {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        shell.app().exact_render_body_count() == expected
+    });
     assert_eq!(shell.app().exact_render_body_count(), expected);
 }
 

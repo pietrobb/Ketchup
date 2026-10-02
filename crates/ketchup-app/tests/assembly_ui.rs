@@ -5,7 +5,6 @@ use crate::harness;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use eframe::egui::{Key, Modifiers, accesskit::Role};
 use harness::Shell;
@@ -34,15 +33,11 @@ fn exact_worker_path() -> PathBuf {
 }
 
 fn wait_for_stable_references(shell: &mut Shell) {
-    for _ in 0..150 {
-        shell.settle();
-        if shell.app().exact_stable_reference_count() >= 2 {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
     assert!(
-        shell.app().exact_stable_reference_count() >= 2,
+        shell.wait_until(|shell| {
+            shell.settle();
+            shell.app().exact_stable_reference_count() >= 2
+        }),
         "the exact worker must publish current selectable assembly references"
     );
 }

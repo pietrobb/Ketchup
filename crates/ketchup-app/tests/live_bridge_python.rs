@@ -82,14 +82,11 @@ fn exact_worker_path() -> PathBuf {
 }
 
 fn wait_for_exact_body(shell: &mut Shell) {
-    for _ in 0..2000 {
+    shell.wait_until(|shell| {
         shell.step();
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        shell.app().exact_render_body_count() == 1
+    });
     assert_eq!(shell.app().exact_render_body_count(), 1);
 }
 

@@ -3,7 +3,7 @@
 use crate::*;
 
 impl KetchupApp {
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_select_occurrence(&mut self, occurrence_id: OccurrenceId) -> bool {
         if self.document.current().occurrence(occurrence_id).is_none() {
             return false;

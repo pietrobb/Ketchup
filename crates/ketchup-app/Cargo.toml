@@ -12,6 +12,8 @@ repository.workspace = true
 default = ["private-oauth"]
 private-oauth = ["ketchup-assistant/private-oauth", "ketchup-scheduler/private-oauth"]
 manual-alpha = ["private-oauth"]
+# Hooks only tests may use; the app's own tests enable it through the dev-dependency below.
+testing = []
 
 [dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
@@ -38,6 +40,7 @@ wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 winreg = "0.56.0"
 
 [dev-dependencies]
+ketchup-app = { path = ".", features = ["testing"] }
 ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 egui_kittest = { version = "0.32.0", features = ["wgpu"] }
 pollster = "0.4.0"

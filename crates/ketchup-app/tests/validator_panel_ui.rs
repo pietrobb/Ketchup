@@ -158,11 +158,13 @@ fn the_panel_runs_only_the_validators_the_operator_selected() {
 }
 
 fn wait_for_validation(shell: &mut Shell) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while shell.app().validator_panel_pending() {
-        assert!(std::time::Instant::now() < deadline, "validator timed out");
+    let finished = shell.wait_until(|shell| {
+        if !shell.app().validator_panel_pending() {
+            return true;
+        }
         shell.step();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+        false
+    });
+    assert!(finished, "validator timed out");
     shell.settle();
 }

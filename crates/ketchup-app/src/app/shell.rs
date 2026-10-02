@@ -167,6 +167,7 @@ impl KetchupApp {
                 inspector_tab: AssistantInspectorTab::default(),
                 memory_search: String::new(),
                 transport: Arc::new(ProcessAssistantTransport),
+                #[cfg(feature = "testing")]
                 context_preparation_delay: Duration::ZERO,
                 chat_task: None,
                 pending_execution: None,

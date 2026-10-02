@@ -2970,6 +2970,7 @@ struct AssistantRequestSnapshot {
     selected_group_id: Option<u64>,
     selected_profile_translation_target: serde_json::Value,
     selected_parameter_edit_target: serde_json::Value,
+    #[cfg(feature = "testing")]
     preparation_delay: Duration,
 }
 
@@ -2982,12 +2983,15 @@ impl AssistantRequestSnapshot {
         if cancellation.is_cancelled() {
             return Err(ketchup_scheduler::assistant::AssistantProcessError::Cancelled);
         }
-        let delay_started = Instant::now();
-        while delay_started.elapsed() < self.preparation_delay {
-            if cancellation.is_cancelled() {
-                return Err(ketchup_scheduler::assistant::AssistantProcessError::Cancelled);
+        #[cfg(feature = "testing")]
+        {
+            let delay_started = Instant::now();
+            while delay_started.elapsed() < self.preparation_delay {
+                if cancellation.is_cancelled() {
+                    return Err(ketchup_scheduler::assistant::AssistantProcessError::Cancelled);
+                }
+                std::thread::sleep(Duration::from_millis(1));
             }
-            std::thread::sleep(Duration::from_millis(1));
         }
         let semantic_state = encode_semantic_state(&self.snapshot);
         let state_view = bounded_assistant_state_view(&semantic_state.agent());

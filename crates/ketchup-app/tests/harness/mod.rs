@@ -37,6 +37,11 @@ use std::sync::{
 };
 
 const SCREEN: Vec2 = Vec2::new(1600.0, 1000.0);
+/// Longest [`Shell::wait_until`] waits; generous because the whole workspace's tests share
+/// the machine with exact workers.
+pub const WAIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+/// Pause between polls of [`Shell::wait_until`].
+const WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 
 pub struct ScriptedAssistantTransport {
     responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
@@ -330,6 +335,24 @@ impl Shell {
     /// Run frames until the shell stops asking for a repaint.
     pub fn settle(&mut self) {
         self.harness.run();
+    }
+
+    /// Poll `done` (which drives frames with `step` or `settle` and checks the condition)
+    /// until it holds, letting background work (exact worker, Assistant, file I/O) publish
+    /// between polls. Returns false after [`WAIT_DEADLINE`] so the caller can report the
+    /// state it was waiting on. This is the one place a UI test waits: a slow machine needs
+    /// one deadline raised, not a guess in every test.
+    pub fn wait_until(&mut self, mut done: impl FnMut(&mut Self) -> bool) -> bool {
+        let deadline = std::time::Instant::now() + WAIT_DEADLINE;
+        loop {
+            if done(self) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(WAIT_POLL);
+        }
     }
 
     pub fn step(&mut self) {

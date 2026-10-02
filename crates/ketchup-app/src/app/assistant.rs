@@ -926,6 +926,7 @@ impl KetchupApp {
             selected_group_id: self.selection.selected_group.map(|id| id.0),
             selected_profile_translation_target,
             selected_parameter_edit_target,
+            #[cfg(feature = "testing")]
             preparation_delay: self.assistant.context_preparation_delay,
         }
     }
@@ -2312,7 +2313,7 @@ impl KetchupApp {
         }
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_set_assistant_context_preparation_delay(&mut self, delay: Duration) {
         self.assistant.context_preparation_delay = delay;
     }

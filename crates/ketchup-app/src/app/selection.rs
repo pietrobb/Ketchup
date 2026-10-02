@@ -3,7 +3,7 @@
 use crate::*;
 
 impl KetchupApp {
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_select_solid_tool_operand(
         &mut self,
         occurrence_id: OccurrenceId,

@@ -334,13 +334,13 @@ impl KetchupApp {
         ));
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_force_exact_worker_path(&mut self, executable: impl AsRef<Path>) {
         self.exact.worker_path = Some(executable.as_ref().to_owned());
         self.exact.worker_attempted = true;
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     pub fn headless_install_exact_package(&mut self, package: ExactBodyPackage) -> bool {
         if let Some(task) = self.exact.task.take() {
             task.cancelled.store(true, Ordering::Release);

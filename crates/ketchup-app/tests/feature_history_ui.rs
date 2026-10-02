@@ -24,7 +24,6 @@ use ketchup_model::persistence;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const BODY: BodyId = BodyId(1);
@@ -53,30 +52,26 @@ fn exact_worker_path() -> PathBuf {
 }
 
 fn wait_for_exact_body(shell: &mut Shell) {
-    for _ in 0..500 {
+    let published = shell.wait_until(|shell| {
         shell.step();
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
+        shell.app().exact_render_body_count() == 1
+    });
+    assert!(
+        published,
         "current exact body unavailable: {}",
         shell.app().action_digest()
     );
 }
 
 fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
-    for _ in 0..500 {
+    let published = shell.wait_until(|shell| {
         shell.step();
         shell.settle();
-        if shell.app().exact_render_body_count() == expected {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
+        shell.app().exact_render_body_count() == expected
+    });
+    assert!(
+        published,
         "expected {expected} current exact bodies, found {}: {}",
         shell.app().exact_render_body_count(),
         shell.app().action_digest()

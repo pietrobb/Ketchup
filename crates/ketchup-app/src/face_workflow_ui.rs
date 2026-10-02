@@ -222,13 +222,13 @@ impl KetchupApp {
         Ok(())
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     #[must_use]
     pub fn headless_face_workflow_exact_output_stamp(&self) -> u64 {
         self.exact.results.contents_stamp()
     }
 
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     #[must_use]
     pub fn headless_face_workflow_exact_output_fingerprints(&self) -> Vec<String> {
         self.exact
