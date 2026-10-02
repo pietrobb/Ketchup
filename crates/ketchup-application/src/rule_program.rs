@@ -26,10 +26,10 @@ impl std::fmt::Display for RuleProgramApplyError {
                 "this change cannot yet update the existing program model; the document and undo history were not replaced",
             ),
             Self::ReplacementConfirmationRequired => f.write_str(
-                "the existing document is not owned by this program; pass discard_unsaved=true to replace it",
+                "the existing document is not owned by this program; replacing it needs explicit confirmation",
             ),
             Self::UnsavedChanges => f.write_str(
-                "replacing the document would lose unsaved changes; save first or pass discard_unsaved=true",
+                "replacing the document would lose unsaved changes",
             ),
             Self::Session(error) => error.fmt(f),
         }

@@ -10,7 +10,10 @@ Fastest way to model: program action=read, then program action=apply with the WH
 Starlark program. For a new model first read program action=docs (topics basics and \
 placement, then one of the listed examples).
 Single edits of existing geometry: inspect action=status/summary/query, model \
-action=apply_and_verify with typed operations (catalog: inspect action=operations).
+action=apply_and_verify with typed operations (catalog: inspect action=operations). A typed edit \
+of a document that a program owns detaches the program (parameters stop driving the model); \
+when program read returns a source, change the model through program apply instead.
+Undo and redo: edit action=undo / action=redo, one Undo step per call.
 To look at the model use view action=image only when asked or when the result is unclear; \
 the validation report of an edit is the check, not a picture.
 Every result carries a stamp; pass it back as expected only to guard against concurrent edits \
@@ -46,7 +49,7 @@ pub fn tools() -> Value {
             "description": "Model by editing the window's Starlark program: the fastest path. \
     read returns {source, overrides, parts:[{name, occurrence_id, lines}]} (source null when no program owns the document). \
     apply sends the WHOLE edited program: the window re-evaluates it, rebuilds only the changed parts (unchanged parts keep their IDs) and publishes one Undo step; \
-    the result lists added/removed parts and the report (issues = collisions, missing contacts, ...; relations = touching faces, overlaps, gaps within 20 mm). \
+    the result lists added/removed parts (added_total/removed_total count all of them; truncated=true when a list was cut) and the report (issues = collisions, missing contacts, ...; relations = touching faces, overlaps, gaps within 20 mm). \
     A rejected program changes nothing and names its line. \
     docs returns the program library index (topics with their helpers for parts, placement, profiles, machining and joints; example programs); with name, one topic or example in full. \
     \"This face\"/\"this edge\": inspect action=status -> selected_context.program names the user's pick in program terms.",
@@ -66,12 +69,12 @@ pub fn tools() -> Value {
             "description": "Read the model. status = document, selection and selected_context; summary = overview; \
     operations = catalog of typed CAD operations for model/edit (operation=<name> for one with all its types); \
     query = one page of occurrences/instances/definitions/features/relations/faces/edges (topology rows carry stable reference IDs and exact geometry); \
-    detail = one entity; workset_create/workset_status = a complete occurrence set for batch.",
+    detail = one entity (needs kind and entity_id); workset_create/workset_status = a complete occurrence set for batch.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["status", "summary", "operations", "query", "detail", "workset_create", "workset_status"]},
                 "operation": {"type": "string", "description": "For operations: one operation name, e.g. create_part."},
-                "kind": {"type": "string", "enum": ["occurrences", "instances", "definitions", "features", "relations", "faces", "edges"]},
-                "entity_id": {"type": "integer", "minimum": 1, "description": "For detail."},
+                "kind": {"type": "string", "enum": ["occurrences", "instances", "definitions", "features", "relations", "faces", "edges"], "description": "For query, workset_create and detail (required for detail)."},
+                "entity_id": {"type": "integer", "minimum": 1, "description": "For detail, with kind."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "search": {"type": "string", "description": "Name substring, or relation type (uses_definition, member_of_group, assembly_mate)."},
                 "definition_id": {"type": "integer", "minimum": 1},
@@ -89,7 +92,8 @@ pub fn tools() -> Value {
             "name": "model",
             "description": "edit_context returns the editable features, parameters and faces of 1 to 8 parts. \
     apply_and_verify applies one typed CAD program ({\"operations\": [...]}, catalog in inspect action=operations), evaluates exact geometry, runs collision (plus validators) and publishes one Undo step. \
-    Issues are reported in validation.issues and the edit stays; fix them with a follow-up edit, or pass strict=true to reject instead. One user request = one apply_and_verify.",
+    Issues are reported in validation.issues and the edit stays; fix them with a follow-up edit, or pass strict=true to reject instead. One user request = one apply_and_verify. \
+    On a document owned by a program the edit detaches the program (result program_detached=true with a warning; strict=true rejects it instead with program_owned_document); prefer program action=apply there.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["edit_context", "apply_and_verify"]},
                 "targets": {"type": "array", "items": {"type": "object"}, "description": "For edit_context: instance paths {root_occurrence_id, steps: []}."},
@@ -104,9 +108,10 @@ pub fn tools() -> Value {
         },
         {
             "name": "edit",
-            "description": "propose a typed CAD program without applying it, commit a proposal, undo or redo.",
+            "description": "undo or redo the last change in the window (one Undo step per call; the result says whether a program owns the document again: program_owned), \
+    or propose a typed CAD program without applying it and commit that proposal.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
-                "action": {"type": "string", "enum": ["propose", "commit", "undo", "redo"]},
+                "action": {"type": "string", "enum": ["undo", "redo", "propose", "commit"]},
                 "program": {"type": "object", "description": "For propose: {\"operations\": [...]}."},
                 "selection": {"type": "array", "items": {"type": "integer"}},
                 "proposal_id": {"type": "integer", "minimum": 1, "description": "For commit."},
@@ -124,7 +129,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "view",
-            "description": "selection sets the window selection; view sets the camera (iso, top, front, zoom_fit); \
+            "description": "selection sets the window selection; view sets the camera (iso, top, front, zoom_fit; every view frames the whole model); \
     image returns a PNG render of the CAD viewport (not a screenshot, not a geometry check).",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["selection", "view", "image"]},

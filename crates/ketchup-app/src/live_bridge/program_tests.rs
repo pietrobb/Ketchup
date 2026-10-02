@@ -113,6 +113,84 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
     assert_eq!(app.document.current_rule_program().unwrap().source, TABLE);
 }
 
+#[test]
+fn a_typed_edit_says_it_detaches_the_program_and_strict_refuses_it() {
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
+    let leg = names(&app)["table/leg-back-left"];
+    let move_leg = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::Transform {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![leg],
+            },
+            translation_mm: [5.0, 0.0, 0.0],
+            rotation: None,
+        }],
+    };
+    let before = app.live_bridge_stamp();
+    let strict = Request::ApplyAndVerify {
+        expected: None,
+        selection: None,
+        program: move_leg.clone(),
+        validators: Vec::new(),
+        timeout_ms: 60_000,
+        save: None,
+        strict: true,
+    };
+    assert_eq!(
+        bridge.execute(&mut app, strict, false),
+        Err("program_owned_document")
+    );
+    assert!(
+        Response::error(1, "program_owned_document").result.unwrap()["fix_hint"]
+            .as_str()
+            .unwrap()
+            .contains("program action=apply")
+    );
+    assert_eq!(app.live_bridge_stamp(), before);
+
+    let proposed = bridge
+        .execute(
+            &mut app,
+            Request::Propose {
+                expected: None,
+                selection: None,
+                program: move_leg,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(proposed["detaches_program"], true);
+    let committed = bridge
+        .execute(
+            &mut app,
+            Request::Commit {
+                expected: None,
+                proposal_id: proposed["proposal_id"].as_u64().unwrap(),
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(committed["program_detached"], true, "{committed}");
+    assert!(
+        committed["warning"]
+            .as_str()
+            .unwrap()
+            .contains("edit action=undo")
+    );
+    let read = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert!(read["source"].is_null());
+    assert!(read["hint"].as_str().unwrap().contains("undo"));
+
+    let undone = bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert_eq!(undone["program_owned"], true, "{undone}");
+    assert_eq!(app.document.current_rule_program().unwrap().source, TABLE);
+}
+
 fn evaluate_exact(app: &mut KetchupApp) {
     let worker = exact_worker_candidates()
         .into_iter()

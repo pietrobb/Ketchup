@@ -482,9 +482,13 @@ impl LiveBridge {
                 return Err("invalid_image_dimensions");
             }
             Self::guard(app, expected)?;
-            Self::available(app, ctx.wants_keyboard_input() || ctx.is_using_pointer())?;
+            Self::available(app, super::ui_busy(ctx))?;
             if self.image.pending.is_some() {
-                return Err("busy");
+                return Err(failure(
+                    "busy",
+                    "An earlier image request is still waiting for its frame.",
+                    json!({}),
+                ));
             }
             let mut nonce = [0; 32];
             getrandom::fill(&mut nonce)
@@ -546,7 +550,7 @@ impl LiveBridge {
             if request.initial.stamp.mutation_epoch != app.document.mutation_epoch() {
                 return Err("stale_document");
             }
-            Self::available(app, ctx.wants_keyboard_input() || ctx.is_using_pointer())?;
+            Self::available(app, super::ui_busy(ctx))?;
             if request.mode == CaptureMode::VisibleViewport
                 && (ctx.viewport_id() != egui::ViewportId::ROOT
                     || ctx.input(|i| i.viewport().minimized == Some(true) || !i.focused))

@@ -97,7 +97,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "busy",
         Validation,
         "window",
-        "Another client's image or job is running in this window.",
+        "The window is busy with an earlier request or a user interaction.",
         "Wait until it finishes, then send the request again.",
     ),
     entry(
@@ -323,6 +323,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "program",
         "No edit could be planned for the program; nothing was published.",
         "Change the operation named in the reason as its hint says.",
+    ),
+    entry(
+        "program_owned_document",
+        Planning,
+        "program",
+        "A typed edit would detach the Starlark program that owns this document; nothing was published.",
+        "Change the parts through program action=apply, or repeat without strict to detach the program.",
     ),
     entry(
         "program_rejected",

@@ -128,7 +128,16 @@ impl LiveBridge {
     ) {
         take_error_details();
         if self.program_check_job.is_some() {
-            Self::reply(app, id, &reply, Err("busy"));
+            Self::reply(
+                app,
+                id,
+                &reply,
+                Err(failure(
+                    "busy",
+                    "An earlier program apply is still checking its geometry in the window.",
+                    json!({}),
+                )),
+            );
             return;
         }
         let applied = match self.apply_program(app, request, ui_busy, &cancelled) {

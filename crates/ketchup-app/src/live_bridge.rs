@@ -393,6 +393,40 @@ fn rejection_result(code: &str, recorded: Option<Value>) -> Value {
     }
 }
 
+/// Why a typed edit of a program-owned document matters: it ends program ownership.
+const PROGRAM_DETACHED_WARNING: &str = "This document was owned by a Starlark program; the typed \
+edit detached it, so parameters no longer drive the model and program read returns no source. \
+Undo this step (edit action=undo) to get the program back, and change program parts through \
+program action=apply.";
+
+/// The user is holding the mouse in the window or typing into a focused field.
+/// A text field left focused in a window the user switched away from does not count.
+fn ui_busy(context: &egui::Context) -> bool {
+    context.is_using_pointer()
+        || (context.wants_keyboard_input() && context.input(|input| input.focused))
+}
+
+fn program_owned(app: &KetchupApp) -> bool {
+    app.document.current_rule_program().is_some()
+}
+
+/// Rejects a typed edit of a program-owned document when the caller asked for strict.
+fn reject_program_detach(app: &KetchupApp, strict: bool) -> Result<(), &'static str> {
+    if strict && program_owned(app) {
+        return Err("program_owned_document");
+    }
+    Ok(())
+}
+
+/// The result fields that tell the client a typed edit detached the program.
+fn add_detach_warning(value: &mut Value, owned_before: bool, app: &KetchupApp) {
+    let detached = owned_before && !program_owned(app);
+    value["program_detached"] = detached.into();
+    if detached {
+        value["warning"] = PROGRAM_DETACHED_WARNING.into();
+    }
+}
+
 const MAX_PROGRAM_MESSAGE_CHARS: usize = 4000;
 const MAX_PROGRAM_LOG_LINES: usize = 20;
 
@@ -410,11 +444,11 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
         ),
         Error::ReplacementConfirmationRequired => (
             "not_program_document".to_owned(),
-            "No program owns this document. Pass replace_document=true to replace it, or open a new empty document first.",
+            "No program owns this document. If a typed edit detached the program, undo (edit action=undo) until program read returns the source again; otherwise pass replace_document=true to replace the document.",
         ),
         Error::UnsavedChanges => (
             "unsaved_changes".to_owned(),
-            "Replacing would lose unsaved changes; save or undo them first.",
+            "Replacing would lose unsaved changes. Undo them (edit action=undo) until program read returns the source again, or save the document (file action=save or save_as) and apply with replace_document=true.",
         ),
         Error::Session(_) => (
             "not_published".to_owned(),
@@ -444,18 +478,30 @@ fn program_edit_result(
     undo_steps: usize,
     exact: Option<Value>,
 ) -> Value {
+    let added_total = after
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .count();
     let added = after
         .occurrences()
         .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
         .map(|occurrence| json!({"name": occurrence.name(), "occurrence_id": occurrence.id().0}))
-        .take(MAX_REPORTED_ISSUES)
+        .take(MAX_REPORTED_PARTS)
         .collect::<Vec<_>>();
+    let removed_total = before
+        .occurrences()
+        .filter(|occurrence| after.occurrence(occurrence.id()).is_none())
+        .count();
     let removed = before
         .occurrences()
         .filter(|occurrence| after.occurrence(occurrence.id()).is_none())
         .map(|occurrence| occurrence.name().to_owned())
-        .take(MAX_REPORTED_ISSUES)
+        .take(MAX_REPORTED_PARTS)
         .collect::<Vec<_>>();
+    let truncated = added.len() < added_total
+        || removed.len() < removed_total
+        || report.issues.len() > MAX_REPORTED_ISSUES
+        || report.relations.len() > MAX_REPORTED_RELATIONS;
     let issues = report
         .issues
         .iter()
@@ -469,12 +515,16 @@ fn program_edit_result(
         "undo_steps": undo_steps,
         "parts": after.occurrences().count(),
         "added": added,
+        "added_total": added_total,
         "removed": removed,
+        "removed_total": removed_total,
+        "truncated": truncated,
         "report": {
             "ok": report.ok,
             "errors": report.errors,
             "warnings": report.warnings,
             "issues": issues,
+            "issues_total": report.issues.len(),
             "relations": &report.relations[..report.relations.len().min(MAX_REPORTED_RELATIONS)],
             "relations_total": report.relations.len(),
             "params": report.params,
@@ -494,6 +544,7 @@ pub(crate) fn take_error_details() -> Option<Value> {
 
 const MAX_REPORTED_ISSUES: usize = 12;
 const MAX_REPORTED_RELATIONS: usize = 40;
+const MAX_REPORTED_PARTS: usize = 100;
 const MAX_ISSUE_BYTES: usize = 1024;
 
 /// One issue reduced to its scalar fields when it is too large for a frame.
@@ -783,7 +834,7 @@ impl KetchupApp {
             return;
         };
         let mut revoke_consent = false;
-        let ui_busy = context.wants_keyboard_input() || context.is_using_pointer();
+        let ui_busy = ui_busy(context);
         bridge.poll_apply_and_verify_job(self, context, ui_busy);
         bridge.poll_program_check_job(self, context);
         for _ in 0..4 {
@@ -806,6 +857,11 @@ impl KetchupApp {
                     || bridge.apply_and_verify_job.is_some()
                     || bridge.program_check_job.is_some())
             {
+                failure(
+                    "busy",
+                    "A request of an earlier connection (another client, or this client before it reconnected) is still running in the window.",
+                    json!({}),
+                );
                 let _ = queued.reply.try_send(Response::error(queued.id, "busy"));
                 continue;
             }
@@ -959,7 +1015,11 @@ impl LiveBridge {
 
     // Deliberately inspect raw state: validity-filtered preview helpers can hide stale human work.
     fn busy(app: &KetchupApp) -> bool {
-        app.tool_preview.is_some()
+        Self::busy_reason(app).is_some()
+    }
+    /// What in the window blocks a change right now, in words for the client.
+    fn busy_reason(app: &KetchupApp) -> Option<&'static str> {
+        let tool = app.tool_preview.is_some()
             || app.push_pull.smart_proposal.is_some()
             || app.push_pull.smart_planning.is_some()
             || app.solid_tools.target.is_some()
@@ -968,11 +1028,11 @@ impl LiveBridge {
             || app.solid_tools.loft_input_sections.is_some()
             || app.solid_tools.pocket_editor_feature.is_some()
             || app.parameter.editor_node.is_some()
-            || app.parameter.provenance.is_some()
-            || app.assistant.proposal.is_some()
+            || app.parameter.provenance.is_some();
+        let assistant = app.assistant.proposal.is_some()
             || app.assistant.pending_execution.is_some()
-            || app.assistant.chat_task.is_some()
-            || app.gesture.drag.is_some()
+            || app.assistant.chat_task.is_some();
+        let gesture = app.gesture.drag.is_some()
             || app.transform_gesture_active()
             || app.camera.drag_active
             || app.camera.wheel_active
@@ -986,15 +1046,28 @@ impl LiveBridge {
             || app.value_box.focus
             || app.gesture.measure.start.is_some()
             || app.gesture.measure.cursor.is_some()
-            || app.gesture.measure.end.is_some()
-            || app.modal.is_some()
-            || app.mesh_conversion_active()
+            || app.gesture.measure.end.is_some();
+        let preview = app.mesh_conversion_active()
             || app.file.migration_review_plan.is_some()
             || app.assembly_preview_pending()
             || app.body_preview_pending()
             || app.feature_history_preview_pending()
-            || app.face_workflow.xray_preview()
-            || Self::fixture_busy(app)
+            || app.face_workflow.xray_preview();
+        if tool {
+            Some(
+                "A tool or parameter editor is open in the window; the user must finish or cancel it (Escape).",
+            )
+        } else if assistant {
+            Some("The built-in Assistant in the window has a pending proposal or request.")
+        } else if gesture {
+            Some("The user is drawing, measuring, dragging or typing a value in the window.")
+        } else if app.modal.is_some() {
+            Some("A dialog is open in the window; the user must close it.")
+        } else if preview || Self::fixture_busy(app) {
+            Some("The window is computing a preview or conversion.")
+        } else {
+            None
+        }
     }
     fn fixture_busy(_app: &KetchupApp) -> bool {
         false
@@ -1003,10 +1076,15 @@ impl LiveBridge {
         if app.file.review_candidate.is_some() {
             return Err("read_only_document");
         }
-        if ui_busy || Self::busy(app) {
-            return Err("busy");
+        let reason = if ui_busy {
+            Some("The user is typing or holding the mouse button in the window.")
+        } else {
+            Self::busy_reason(app)
+        };
+        match reason {
+            Some(reason) => Err(failure("busy", reason, json!({}))),
+            None => Ok(()),
         }
-        Ok(())
     }
     /// Every document mutation (including Undo/Redo and Open) draws a fresh
     /// process-unique epoch, so the epoch alone detects any intervening change.
@@ -1503,6 +1581,7 @@ impl LiveBridge {
             .validate()
             .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
         Self::program_scope(app, &program)?;
+        reject_program_detach(app, strict)?;
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Planning) {
             return Err(PlanRejection::Code("planning_rejected"));
@@ -1696,6 +1775,7 @@ impl LiveBridge {
         if fault == Some(ApplyAndVerifyFault::Publication) {
             return Err("commit_rejected");
         }
+        let owned_before = program_owned(app);
         let committed = app
             .complete_mutation_and_exact_results_with_work_recovery(
                 |document, exact_results, topology_results| {
@@ -1748,7 +1828,7 @@ impl LiveBridge {
             (false, "not_requested", None)
         };
         let finished_at = Instant::now();
-        Ok(json!({
+        let mut value = json!({
             "before": before,
             "after": after,
             "diff": {
@@ -1786,7 +1866,9 @@ impl LiveBridge {
             "save_path": save_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
             "save_error": save_error,
             "undo_steps": app.undo_step_count(),
-        }))
+        });
+        add_detach_warning(&mut value, owned_before, app);
+        Ok(value)
     }
 
     /// Synchronous variant for callers already off the bridge queue.
@@ -2030,6 +2112,7 @@ impl LiveBridge {
                     .position(|job| job.handle == handle)
                     .ok_or("batch_job_not_found")?;
                 Self::require_request_authority(cancelled)?;
+                let owned_before = program_owned(app);
                 let receipt = self.batch_jobs[index]
                     .task
                     .commit_next(app)
@@ -2043,7 +2126,9 @@ impl LiveBridge {
                     app.status_key = "status-ready";
                 }
                 let status = self.batch_jobs[index].task.status(&app.document);
-                Ok(json!({"job_handle":handle,"status":status,"receipt":receipt}))
+                let mut value = json!({"job_handle":handle,"status":status,"receipt":receipt});
+                add_detach_warning(&mut value, owned_before, app);
+                Ok(value)
             }
             Request::Propose {
                 expected,
@@ -2064,7 +2149,8 @@ impl LiveBridge {
                 self.next_proposal = id.checked_add(1).ok_or("proposal_ids_exhausted")?;
                 let value = json!({"proposal_id":id,
                     "command_digest":proposal.command_digest(),"result_digest":proposal.intended_result_digest(),
-                    "write_count":proposal.authoritative_writes().len()});
+                    "write_count":proposal.authoritative_writes().len(),
+                    "detaches_program":program_owned(app)});
                 self.pending = Some(Pending {
                     id,
                     epoch: app.document.mutation_epoch(),
@@ -2088,6 +2174,7 @@ impl LiveBridge {
                 }
                 Self::check_selection_guard(app, &pending.selection)?;
                 Self::require_request_authority(cancelled)?;
+                let owned_before = program_owned(app);
                 let committed = app
                     .commit_verified_proposal_with_work_recovery(&pending.proposal)
                     .map_err(|error| match error {
@@ -2095,10 +2182,11 @@ impl LiveBridge {
                         WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
                     })?;
                 self.pending.take().expect("committed pending proposal");
-                let value = json!({"proposal_id":proposal_id,"committed":true,
+                let mut value = json!({"proposal_id":proposal_id,"committed":true,
                     "after":app.live_bridge_stamp(),"command_digest":committed.command_digest(),
                     "result_digest":committed.result_digest(),"write_count":committed.verified_writes().len(),
                     "undo_steps":app.undo_step_count(),"geometry_evaluated":false});
+                add_detach_warning(&mut value, owned_before, app);
                 app.invalidate_pending_import_reviews();
                 app.clear_ephemeral_edit_state();
                 app.reconcile_selection();
@@ -2133,7 +2221,7 @@ impl LiveBridge {
             Request::Program { expected } => {
                 Self::guard(app, &expected)?;
                 Ok(app.program_source_view().unwrap_or_else(|| {
-                    json!({"source": null, "hint": "No Starlark program owns this document. apply_program creates one in an empty document; replace_document=true replaces a saved one."})
+                    json!({"source": null, "hint": "No Starlark program owns this document. A typed edit (apply_and_verify, commit) detaches the program: undo it to get the program back. apply_program creates a program in an empty document; replace_document=true replaces a saved one."})
                 }))
             }
             request @ Request::ApplyProgram { .. } => self
@@ -2146,7 +2234,8 @@ impl LiveBridge {
                     return Err("undo_unavailable");
                 }
                 Self::require_request_authority(cancelled)?;
-                Ok(json!({"changed":app.undo()}))
+                let changed = app.undo();
+                Ok(json!({"changed":changed,"program_owned":program_owned(app)}))
             }
             Request::Redo { expected } => {
                 Self::guard(app, &expected)?;
@@ -2155,7 +2244,8 @@ impl LiveBridge {
                     return Err("redo_unavailable");
                 }
                 Self::require_request_authority(cancelled)?;
-                Ok(json!({"changed":app.redo()}))
+                let changed = app.redo();
+                Ok(json!({"changed":changed,"program_owned":program_owned(app)}))
             }
             Request::Save { expected } => {
                 Self::guard(app, &expected)?;
@@ -2245,6 +2335,10 @@ impl LiveBridge {
                     return Err("view_unavailable");
                 }
                 app.dispatch_command(command);
+                // A client cannot see the viewport: a standard view always frames the model.
+                if command != AppCommand::ZoomFit && app.command_enabled(AppCommand::ZoomFit) {
+                    app.dispatch_command(AppCommand::ZoomFit);
+                }
                 Ok(json!({"view":view,"canonical_mutation":false,"image":"not_requested"}))
             }
             Request::Image(ImageRequest {
