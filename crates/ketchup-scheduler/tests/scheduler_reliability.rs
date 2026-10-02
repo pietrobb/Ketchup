@@ -2,11 +2,13 @@ use ketchup_exact::GeometryErrorCode;
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
+use ketchup_scheduler::protocol::{MAX_REQUEST_FRAME_BYTES, WorkerRequest, encode_frame};
 use ketchup_scheduler::{
     DerivedResult, EvaluationScheduler, ExactWorkerClient, InsertOutcome, JobToken,
 };
 use std::fmt::Write as _;
-use std::process::Command;
+use std::io::Write as _;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -63,6 +65,21 @@ fn scheduler_survives_races_crashes_and_cancellation_within_limits() {
     assert!(metrics.cache_plateau_bytes <= 512 * 1024 * 1024);
     assert!(metrics.cache_growth_bytes_per_100 <= 1024 * 1024);
     assert!(metrics.private_bytes <= 2 * 1024 * 1024 * 1024);
+}
+
+/// A simulated crash ends the worker with a plain failure status. abort() would go
+/// through Windows Error Reporting, which archives a report and holds the process
+/// for seconds per crash, long enough to break the crash() deadline.
+#[test]
+fn simulated_worker_crash_ends_without_os_crash_reporting() {
+    let mut worker = Command::new(worker_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let frame = encode_frame(&WorkerRequest::Crash, MAX_REQUEST_FRAME_BYTES).unwrap();
+    worker.stdin.take().unwrap().write_all(&frame).unwrap();
+    assert_eq!(worker.wait().unwrap().code(), Some(1));
 }
 
 fn exercise_schedule_permutations() -> usize {

@@ -167,7 +167,9 @@ fn handle_request(
             std::thread::sleep(Duration::from_millis(milliseconds));
             Ok(WorkerReply::Done)
         }
-        WorkerRequest::Crash => std::process::abort(),
+        // Ends without a reply like a crash, but without abort(): on Windows every abort
+        // files a Windows Error Reporting report and holds the process ~1.5 s.
+        WorkerRequest::Crash => std::process::exit(1),
     }
 }
 
