@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use ketchup_model::tolerance::limits::UNDO_REVISIONS;
 use serde_json::{Value, json};
 
 fn exchange(lines: &[String]) -> Vec<Value> {
@@ -66,47 +67,70 @@ fn program_source_survives_native_save_open_and_follows_document_undo() {
 }
 
 #[test]
-fn canonical_program_history_keeps_ten_changes_across_save_open() {
+fn canonical_program_history_keeps_the_undo_limit_across_save_open() {
+    let limit = UNDO_REVISIONS as u64;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bounded.ketchup");
-    let mut requests = (0..=15)
+    let version_source =
+        |version: u64| format!("# version {version}\nbox(\"part\", [100, 20, 10])");
+    let last = limit + 5;
+    let mut requests = (0..=last)
         .map(|version| {
             request(
                 version + 1,
                 "program_apply",
-                json!({"source":format!("# version {version}\nbox(\"part\", [100, 20, 10])")}),
+                json!({"source":version_source(version)}),
             )
         })
         .collect::<Vec<_>>();
-    requests.push(request(17, "save", json!({"path":path.to_str().unwrap()})));
-    requests.push(request(18, "open", json!({"path":path.to_str().unwrap()})));
-    for id in 19..=28 {
-        requests.push(request(id, "undo", json!({})));
+    let mut id = last + 1;
+    let mut next = || {
+        id += 1;
+        id
+    };
+    requests.push(request(
+        next(),
+        "save",
+        json!({"path":path.to_str().unwrap()}),
+    ));
+    requests.push(request(
+        next(),
+        "open",
+        json!({"path":path.to_str().unwrap()}),
+    ));
+    for _ in 0..limit {
+        requests.push(request(next(), "undo", json!({})));
     }
-    requests.push(request(29, "program_source", json!({})));
-    requests.push(request(30, "redo", json!({})));
-    requests.push(request(31, "program_source", json!({})));
+    requests.push(request(next(), "program_source", json!({})));
+    requests.push(request(next(), "redo", json!({})));
+    requests.push(request(next(), "program_source", json!({})));
     let responses = exchange(&requests);
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
     }
-    assert_eq!(responses[15]["result"]["state"]["undo_steps"], 10);
-    assert_eq!(responses[17]["result"]["state"]["undo_steps"], 10);
-    assert_eq!(responses[27]["result"]["state"]["undo_steps"], 0);
+    let applied = last as usize;
+    assert_eq!(responses[applied]["result"]["state"]["undo_steps"], limit);
     assert_eq!(
-        responses[28]["result"]["source"]["source"],
-        "# version 5\nbox(\"part\", [100, 20, 10])"
+        responses[applied + 2]["result"]["state"]["undo_steps"],
+        limit
+    );
+    let undone = applied + 2 + UNDO_REVISIONS;
+    assert_eq!(responses[undone]["result"]["state"]["undo_steps"], 0);
+    assert_eq!(
+        responses[undone + 1]["result"]["source"]["source"],
+        version_source(last - limit)
     );
     assert_eq!(
-        responses[30]["result"]["source"]["source"],
-        "# version 6\nbox(\"part\", [100, 20, 10])"
+        responses[undone + 3]["result"]["source"]["source"],
+        version_source(last - limit + 1)
     );
 }
 
 #[test]
 fn canonical_program_history_bounds_geometry_edits_too() {
     let source = "W = param(\"width\", 100)\nbox(\"part\", [W, 20, 10])";
-    let requests = (0..=12)
+    let last = UNDO_REVISIONS as u64 + 2;
+    let requests = (0..=last)
         .map(|step| {
             request(
                 step + 1,
@@ -119,13 +143,14 @@ fn canonical_program_history_bounds_geometry_edits_too() {
     for response in &responses {
         assert!(response.get("error").is_none(), "{response:?}");
     }
-    assert_eq!(responses[12]["result"]["state"]["undo_steps"], 10);
+    let applied = &responses[last as usize]["result"]["state"];
+    assert_eq!(applied["undo_steps"], UNDO_REVISIONS);
     assert_eq!(
-        responses[12]["result"]["state"]["occurrences"],
+        applied["occurrences"],
         responses[0]["result"]["state"]["occurrences"]
     );
     assert_ne!(
-        responses[12]["result"]["state"]["canonical_digest"],
+        applied["canonical_digest"],
         responses[0]["result"]["state"]["canonical_digest"]
     );
 }
