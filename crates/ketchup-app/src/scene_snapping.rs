@@ -119,23 +119,37 @@ impl SceneSnapGeometry {
     ) {
         let positions_f32: Vec<_> = positions.iter().map(|p| p.map(|v| v as f32)).collect();
         let mut boundaries = BTreeMap::<Option<u32>, Vec<[u32; 2]>>::new();
+        // Candidate evidence per face: a drilled panel has thousands of mesh
+        // edges and hundreds of B-rep edges, so testing every pair took ~0.1 s.
+        let evidence_faces: Vec<BTreeSet<u32>> = evidence
+            .iter()
+            .map(|e| e.adjacent_face_ordinals.iter().copied().collect())
+            .collect();
+        let mut evidence_by_face = BTreeMap::<u32, Vec<usize>>::new();
+        for (index, faces) in evidence_faces.iter().enumerate() {
+            for face in faces {
+                evidence_by_face.entry(*face).or_default().push(index);
+            }
+        }
         for (edge, uses) in renderer::feature_edge_triangles(&positions_f32, triangles, groups) {
             let faces: BTreeSet<_> = uses.iter().filter_map(|i| groups[*i as usize]).collect();
-            let mut matches = evidence.iter().filter(|e| {
-                !faces.is_empty()
-                    && faces.is_subset(&e.adjacent_face_ordinals.iter().copied().collect())
+            let candidates = faces
+                .first()
+                .and_then(|face| evidence_by_face.get(face))
+                .map_or(&[][..], Vec::as_slice);
+            let mut matches = candidates.iter().filter_map(|index| {
+                let e = &evidence[*index];
+                (faces.is_subset(&evidence_faces[*index])
                     && edge.iter().all(|i| {
                         (0..3).all(|axis| {
                             positions[*i as usize][axis] >= e.bounds_mm[0][axis] - APPROXIMATION
                                 && positions[*i as usize][axis]
                                     <= e.bounds_mm[1][axis] + APPROXIMATION
                         })
-                    })
+                    }))
+                .then_some(e.edge_ordinal)
             });
-            let ordinal = matches
-                .next()
-                .map(|e| e.edge_ordinal)
-                .filter(|_| matches.next().is_none());
+            let ordinal = matches.next().filter(|_| matches.next().is_none());
             boundaries.entry(ordinal).or_default().push(edge);
         }
         for (ordinal, edges) in boundaries {
@@ -336,6 +350,14 @@ impl KetchupApp {
     fn build_scene_snap_geometry(&self, snapshot: &Snapshot) -> SceneSnapGeometry {
         let mut geometry = SceneSnapGeometry::default();
         let results = self.interaction_exact_registry(snapshot);
+        // One freshness pass over every package, not one per occurrence.
+        let mut packages_by_definition = BTreeMap::<_, Vec<_>>::new();
+        for package in results.render_values(snapshot) {
+            packages_by_definition
+                .entry(package.definition_id())
+                .or_default()
+                .push(package);
+        }
         for occurrence in snapshot.scene_query().into_iter().filter(|o| o.visible) {
             let Some(definition) = snapshot.definition(occurrence.definition_id) else {
                 continue;
@@ -402,11 +424,7 @@ impl KetchupApp {
                 }
                 _ => geometry.profile(snapshot, id, &reference, occurrence.transform, Vec3::ZERO),
             };
-            let packages: Vec<_> = results
-                .render_values(snapshot)
-                .filter(|p| p.definition_id() == occurrence.definition_id)
-                .collect();
-            if !packages.is_empty() {
+            if let Some(packages) = packages_by_definition.get(&occurrence.definition_id) {
                 for package in packages {
                     let positions: Vec<_> =
                         package.vertices().iter().map(|v| v.position_mm).collect();
@@ -659,6 +677,17 @@ impl KetchupApp {
             }
         }
         for (reference, center, x, y, radius) in &geometry.circles {
+            // The circle lies inside its bounding square. A pointer farther
+            // than the widest (locked) tolerance from the square's projection
+            // cannot snap to it, so skip the ~250 projections of the search.
+            let corners = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)]
+                .map(|(s, t)| *center + *x * (*radius * s) + *y * (*radius * t));
+            if self
+                .projected_hull_bounds(&corners, rect)
+                .is_some_and(|bounds| !bounds.expand(tolerance_px * 1.5).contains(pointer))
+            {
+                continue;
+            }
             let at =
                 |angle: f64| *center + *x * (*radius * angle.cos()) + *y * (*radius * angle.sin());
             let distance = |angle: f64| self.project(at(angle), rect).distance_sq(pointer);

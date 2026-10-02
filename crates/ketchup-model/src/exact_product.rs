@@ -1131,11 +1131,20 @@ impl ExactBodyPackage {
         &self,
         triangle_index: usize,
     ) -> Option<&TopologicalElementRef> {
-        let face_ordinal = match self {
+        self.topological_reference(
+            TopologicalElementKind::Face,
+            self.triangle_face_ordinal(triangle_index)?,
+        )
+    }
+
+    /// Ordinal among the face references of the face this triangle belongs to.
+    #[must_use]
+    pub fn triangle_face_ordinal(&self, triangle_index: usize) -> Option<u32> {
+        match self {
             Self::Graph(package) => package.triangle_face_ordinals.get(triangle_index),
             Self::Imported(package) => package.triangle_face_ordinals.get(triangle_index),
-        }?;
-        self.topological_reference(TopologicalElementKind::Face, *face_ordinal)
+        }
+        .copied()
     }
 
     #[must_use]

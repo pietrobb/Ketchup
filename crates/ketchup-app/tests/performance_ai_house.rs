@@ -148,50 +148,64 @@ fn ai_house_follow_up_fits_the_sidecar_request_envelope() {
 /// Keep separate from the legacy 64-body fixture and use default OAuth features.
 #[test]
 fn garden_studio_exact_load_idle_and_orbit_performance() {
+    exact_load_idle_and_orbit_performance("garden-studio.ketchup", 93);
+}
+
+/// Program-built wardrobe with drawers, dowel holes, a table and a chair
+/// (82 bodies, ~800 features): the many drilled holes make dense exact meshes.
+#[test]
+fn wardrobe_exact_load_idle_and_orbit_performance() {
+    exact_load_idle_and_orbit_performance("wardrobe-chair-table.ketchup", 82);
+}
+
+fn exact_load_idle_and_orbit_performance(example: &str, bodies: usize) {
     use eframe::egui::{Event, Modifiers, PointerButton, Vec2};
     use ketchup_app::KetchupApp;
 
-    const BODIES: usize = 93;
     const FRAMES: usize = 20;
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/garden-studio.ketchup");
+        .join("../../examples")
+        .join(example);
     let worker = exact_worker_path();
     eprintln!(
-        "garden path=headless-instanced debug={} private-oauth={} fixture_bytes={} worker={}",
+        "{example} path=headless-instanced debug={} private-oauth={} fixture_bytes={} worker={}",
         cfg!(debug_assertions),
         cfg!(feature = "private-oauth"),
         std::fs::metadata(&fixture).unwrap().len(),
         worker.display()
     );
 
-    eprintln!("garden stage=app-create begin");
+    eprintln!("{example} stage=app-create begin");
     let started = Instant::now();
     let mut app = KetchupApp::new().with_dialogs(Box::new(ScriptedFileDialogs::new()));
     app.enable_headless_instanced_scene();
-    eprintln!("garden stage=app-create elapsed={:?}", started.elapsed());
+    eprintln!("{example} stage=app-create elapsed={:?}", started.elapsed());
 
-    eprintln!("garden stage=open-document begin");
+    eprintln!("{example} stage=open-document begin");
     let started = Instant::now();
     assert!(app.open_document_path(&fixture));
-    eprintln!("garden stage=open-document elapsed={:?}", started.elapsed());
+    eprintln!(
+        "{example} stage=open-document elapsed={:?}",
+        started.elapsed()
+    );
     assert_eq!(app.document_path(), Some(fixture.as_path()));
-    assert_eq!(app.document_snapshot().definitions().count(), BODIES);
-    assert_eq!(app.document_snapshot().occurrences().count(), BODIES);
+    assert_eq!(app.document_snapshot().definitions().count(), bodies);
+    assert_eq!(app.document_snapshot().occurrences().count(), bodies);
     assert!(!app.is_dirty());
     let digest = app.canonical_digest();
     let revision = app.document_revision();
 
-    eprintln!("garden stage=worker-connect begin");
+    eprintln!("{example} stage=worker-connect begin");
     let started = Instant::now();
     app.connect_exact_worker(&worker).unwrap();
     eprintln!(
-        "garden stage=worker-connect elapsed={:?}",
+        "{example} stage=worker-connect elapsed={:?}",
         started.elapsed()
     );
 
     // Explicit steps rather than run/settle: exactly one input frame per sample,
     // and a wall-clock deadline instead of an arbitrary number of worker polls.
-    eprintln!("garden stage=harness-first-frame begin");
+    eprintln!("{example} stage=harness-first-frame begin");
     let exact_started = Instant::now();
     let mut ui = egui_kittest::Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
@@ -200,21 +214,24 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
             |ctx, app: &mut KetchupApp| {
                 let started = Instant::now();
                 app.ui(ctx);
-                eprintln!("garden stage=app-ui-pass elapsed={:?}", started.elapsed());
+                eprintln!(
+                    "{example} stage=app-ui-pass elapsed={:?}",
+                    started.elapsed()
+                );
             },
             app,
         );
     ui.ctx.style_mut(|style| style.animation_time = 0.0);
     eprintln!(
-        "garden stage=harness-first-frame elapsed={:?}",
+        "{example} stage=harness-first-frame elapsed={:?}",
         exact_started.elapsed()
     );
-    eprintln!("garden stage=exact-publication begin");
+    eprintln!("{example} stage=exact-publication begin");
     let mut poll = 0;
-    while ui.state().exact_render_body_count() != BODIES {
+    while ui.state().exact_render_body_count() != bodies {
         assert!(
             exact_started.elapsed() < Duration::from_secs(120),
-            "garden exact publication timed out: {}/93 bodies after {:?}",
+            "{example} exact publication timed out: {}/{bodies} bodies after {:?}",
             ui.state().exact_render_body_count(),
             exact_started.elapsed()
         );
@@ -224,17 +241,17 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
         poll += 1;
         if elapsed > Duration::from_millis(250) || poll % 100 == 0 {
             eprintln!(
-                "garden stage=exact-poll frame={poll} elapsed={elapsed:?} bodies={}/93 wall={:?}",
+                "{example} stage=exact-poll frame={poll} elapsed={elapsed:?} bodies={}/{bodies} wall={:?}",
                 ui.state().exact_render_body_count(),
                 exact_started.elapsed()
             );
         }
-        if ui.state().exact_render_body_count() != BODIES {
+        if ui.state().exact_render_body_count() != bodies {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
     eprintln!(
-        "garden stage=exact-ready elapsed={:?} polls={poll} bodies={} triangles={}",
+        "{example} stage=exact-ready elapsed={:?} polls={poll} bodies={} triangles={}",
         exact_started.elapsed(),
         ui.state().exact_render_body_count(),
         ui.state().exact_render_triangle_count()
@@ -246,23 +263,44 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
         ui.step();
     }
     eprintln!(
-        "garden stage=warmup frames=3 elapsed={:?}",
+        "{example} stage=warmup frames=3 elapsed={:?}",
         started.elapsed()
     );
     assert!(ui.state().instanced_scene_triangle_count() > 0);
 
     let mut idle = Vec::with_capacity(FRAMES);
-    eprintln!("garden stage=idle begin frames={FRAMES}");
+    eprintln!("{example} stage=idle begin frames={FRAMES}");
     for frame in 0..FRAMES {
         let started = Instant::now();
         ui.step();
         let elapsed = started.elapsed();
         idle.push(elapsed);
-        eprintln!("garden stage=idle frame={} elapsed={elapsed:?}", frame + 1);
+        eprintln!(
+            "{example} stage=idle frame={} elapsed={elapsed:?}",
+            frame + 1
+        );
     }
-    let idle_total = report_garden_frames("idle", &idle);
+    let idle_total = report_frames(example, "idle", &idle);
 
+    // Moving the pointer over the model hovers bodies, which picks, snaps and
+    // draws a CPU highlight every frame; orbit starts and ends this way.
     let mut pointer = ui.state().viewport_rect().unwrap().center();
+    let mut hover = Vec::with_capacity(FRAMES);
+    eprintln!("{example} stage=hover begin frames={FRAMES}");
+    for frame in 0..FRAMES {
+        let step = frame as f32;
+        let hovered = pointer + Vec2::new(-60.0 + 6.0 * step, 40.0 - 4.0 * step);
+        ui.input_mut().events.push(Event::PointerMoved(hovered));
+        let started = Instant::now();
+        ui.step();
+        let elapsed = started.elapsed();
+        hover.push(elapsed);
+        eprintln!(
+            "{example} stage=hover frame={} elapsed={elapsed:?}",
+            frame + 1
+        );
+    }
+    let hover_total = report_frames(example, "hover", &hover);
     ui.input_mut().events.push(Event::PointerMoved(pointer));
     ui.step();
     ui.input_mut().events.push(Event::PointerButton {
@@ -275,7 +313,7 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
     let probe = ketchup_interaction::Vec3::new(1000.0, 2000.0, 3000.0);
     let before = ui.state().viewport_position(probe).unwrap();
     let mut orbit = Vec::with_capacity(FRAMES);
-    eprintln!("garden stage=orbit begin frames={FRAMES}");
+    eprintln!("{example} stage=orbit begin frames={FRAMES}");
     for frame in 0..FRAMES {
         pointer += Vec2::new(3.0, -2.0);
         ui.input_mut().events.push(Event::PointerMoved(pointer));
@@ -283,9 +321,12 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
         ui.step();
         let elapsed = started.elapsed();
         orbit.push(elapsed);
-        eprintln!("garden stage=orbit frame={} elapsed={elapsed:?}", frame + 1);
+        eprintln!(
+            "{example} stage=orbit frame={} elapsed={elapsed:?}",
+            frame + 1
+        );
     }
-    let orbit_total = report_garden_frames("orbit", &orbit);
+    let orbit_total = report_frames(example, "orbit", &orbit);
     let after = ui.state().viewport_position(probe).unwrap();
     ui.input_mut().events.push(Event::PointerButton {
         pos: pointer,
@@ -299,26 +340,31 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
         before.distance(after) > 1.0,
         "orbit must actually move the camera"
     );
-    assert_eq!(ui.state().exact_render_body_count(), BODIES);
+    assert_eq!(ui.state().exact_render_body_count(), bodies);
     assert!(ui.state().instanced_scene_triangle_count() > 0);
     assert_eq!(ui.state().canonical_digest(), digest);
     assert_eq!(ui.state().document_revision(), revision);
     assert!(!ui.state().is_dirty());
     // Same generous 20-frame responsiveness guard as the legacy regression.
-    // Report both series before asserting so a slow baseline remains diagnostic.
+    // Report every series before asserting so a slow baseline remains diagnostic.
+    // Hover gets 2 s: the drilled wardrobe takes ~1.4 s in a debug build and
+    // ~0.16 s in release; rebuilding the exact registry and matching every
+    // mesh edge against every B-rep edge took >1 s in release before.
     assert!(
-        idle_total < Duration::from_secs(1) && orbit_total < Duration::from_secs(1),
-        "garden 20-frame budget exceeded: idle={idle_total:?}, orbit={orbit_total:?} (budget=1s each)"
+        idle_total < Duration::from_secs(1)
+            && hover_total < Duration::from_secs(2)
+            && orbit_total < Duration::from_secs(1),
+        "{example} 20-frame budget exceeded: idle={idle_total:?}, hover={hover_total:?}, orbit={orbit_total:?} (budget=1s, hover 2s)"
     );
 }
 
-fn report_garden_frames(stage: &str, samples: &[Duration]) -> Duration {
+fn report_frames(example: &str, stage: &str, samples: &[Duration]) -> Duration {
     let total: Duration = samples.iter().copied().sum();
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     let count = u32::try_from(samples.len()).unwrap();
     eprintln!(
-        "garden summary stage={stage} frames={count} total={total:?} mean={:?} p95={:?} max={:?}",
+        "{example} summary stage={stage} frames={count} total={total:?} mean={:?} p95={:?} max={:?}",
         total / count,
         sorted[(samples.len() * 95).div_ceil(100) - 1],
         sorted.last().unwrap()

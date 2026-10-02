@@ -46,14 +46,32 @@ pub(super) fn face_ordinal(
         .and_then(|ordinal| u32::try_from(ordinal).ok())
 }
 
+/// `face_ordinal` of every face reference, by its position among the faces:
+/// computed once per body so classifying each triangle stays O(1).
+pub(super) fn canonical_face_ordinals(package: &ExactBodyPackage) -> Vec<Option<u32>> {
+    let mut first = BTreeMap::new();
+    package
+        .topological_references()
+        .iter()
+        .filter(|reference| reference.kind == TopologicalElementKind::Face)
+        .enumerate()
+        .map(|(ordinal, reference)| {
+            *first
+                .entry(reference)
+                .or_insert_with(|| u32::try_from(ordinal).ok())
+        })
+        .collect()
+}
+
 pub(super) fn triangle_element(
     package: &ExactBodyPackage,
+    face_ordinals: &[Option<u32>],
     index: usize,
     normal: Vec3,
 ) -> ElementId {
     package
-        .topological_reference_for_triangle(index)
-        .and_then(|reference| face_ordinal(package, reference))
+        .triangle_face_ordinal(index)
+        .and_then(|ordinal| face_ordinals.get(ordinal as usize).copied().flatten())
         .map(ElementId::TopologicalFace)
         .unwrap_or_else(|| {
             package.triangles()[index]
@@ -285,13 +303,20 @@ impl KetchupApp {
 
     pub(super) fn interaction_exact_registry(&self, snapshot: &Snapshot) -> ExactResultRegistry {
         let topology = self.topology_results_for_snapshot(snapshot);
+        // One pass over the topology results instead of one per render package.
+        let mut topology_counts = BTreeMap::<DefinitionId, usize>::new();
+        for package in topology
+            .into_iter()
+            .flat_map(|registry| registry.render_values(snapshot))
+        {
+            *topology_counts.entry(package.definition_id()).or_default() += 1;
+        }
         let mut registry = ExactResultRegistry::default();
         if let Some(render) = self.exact_results_for_snapshot(snapshot) {
             for package in render.render_values(snapshot) {
-                if topology
-                    .and_then(|registry| registry.get_render(snapshot, package.definition_id()))
-                    .is_none()
-                {
+                // `get_render` is unique-or-nothing: render results stand in
+                // unless topology has exactly one package for this definition.
+                if topology_counts.get(&package.definition_id()) != Some(&1) {
                     let _ = registry.insert_current(snapshot, Arc::clone(package));
                 }
             }
@@ -302,6 +327,27 @@ impl KetchupApp {
             }
         }
         registry
+    }
+
+    /// `interaction_exact_registry(snapshot).get_render(definition_id)`
+    /// without building the registry: called per hovered or selected body
+    /// every frame, where rebuilding it checked every body's freshness.
+    pub(super) fn interaction_render_package(
+        &self,
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+    ) -> Option<Arc<ExactBodyPackage>> {
+        if let Some(topology) = self.topology_results_for_snapshot(snapshot) {
+            let mut matches = topology
+                .render_values(snapshot)
+                .filter(|package| package.definition_id() == definition_id);
+            if let Some(package) = matches.next() {
+                return matches.next().is_none().then(|| Arc::clone(package));
+            }
+        }
+        self.exact_results_for_snapshot(snapshot)?
+            .get_render(snapshot, definition_id)
+            .cloned()
     }
 
     pub(super) fn exact_hit_element(&self, hit: &ExactSurfaceHit) -> Option<ElementId> {

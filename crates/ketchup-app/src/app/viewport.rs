@@ -2804,13 +2804,10 @@ impl KetchupApp {
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
             }
-            let combined = self.interaction_exact_registry(snapshot);
             let preview_package = self.face_offset_preview_package(occurrence.body.definition_id);
             let previewed = preview_package.is_some();
             let Some(package) = preview_package.or_else(|| {
-                combined
-                    .get_render(snapshot, occurrence.body.definition_id)
-                    .cloned()
+                self.interaction_render_package(snapshot, occurrence.body.definition_id)
             }) else {
                 continue;
             };
@@ -2892,6 +2889,7 @@ impl KetchupApp {
                     });
                 }
             }
+            let face_ordinals = planar_push_pull::canonical_face_ordinals(&package);
             for (triangle_index, triangle) in package.triangles().iter().enumerate() {
                 let points_mm = triangle.vertex_indices.map(|index| {
                     let position = package.vertices()[index as usize].position_mm;
@@ -2901,7 +2899,12 @@ impl KetchupApp {
                     )
                 });
                 let normal = triangle_normal(points_mm);
-                let element = planar_push_pull::triangle_element(&package, triangle_index, normal);
+                let element = planar_push_pull::triangle_element(
+                    &package,
+                    &face_ordinals,
+                    triangle_index,
+                    normal,
+                );
                 let hovered = !previewed
                     && self.hover.target.as_ref().is_some_and(|hovered| {
                         hovered.definition_id == occurrence.body.definition_id
@@ -4213,6 +4216,29 @@ impl KetchupApp {
             }
         }
         Some(points.map(|point| self.project(point, rect)))
+    }
+
+    /// Screen bounds that contain the projection of the convex hull of
+    /// `points`, or `None` when part of it lies at or behind the eye (where the
+    /// projection is clamped and no longer convex).
+    pub(crate) fn projected_hull_bounds(&self, points: &[Vec3], rect: Rect) -> Option<Rect> {
+        if self.camera.projection_mode == ProjectionMode::Perspective {
+            let (_, _, forward) = self.camera_basis();
+            let target = self.camera_target();
+            let distance = self.camera_distance();
+            if points
+                .iter()
+                .any(|point| distance + dot(*point - target, forward) <= PERSPECTIVE_NEAR_MM)
+            {
+                return None;
+            }
+        }
+        Some(Rect::from_points(
+            &points
+                .iter()
+                .map(|point| self.project(*point, rect))
+                .collect::<Vec<_>>(),
+        ))
     }
 }
 
