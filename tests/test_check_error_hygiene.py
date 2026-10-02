@@ -74,11 +74,14 @@ def test_inline_test_modules_are_not_production_code(tmp_path):
         tmp_path,
         "crates/a/src/lib.rs",
         'fn f() -> Result<(), String> { Err("x".to_owned()) }\n'
-        '#[cfg(test)]\nmod tests {\n    fn g() { x.map_err(|_| "bad"); }\n}\n',
+        '#[cfg(test)]\nmod tests {\n    fn g() { x.map_err(|_| "bad"); }\n}\n'
+        '#[cfg(all(test, windows))]\nmod windows_tests {\n    fn h() { y.unwrap(); }\n}\n'
+        '#[cfg(not(test))]\nmod production {\n    fn k() { z.unwrap(); }\n}\n',
     )
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs string": 1,
         "crates/a/src/lib.rs string_result": 1,
+        "crates/a/src/lib.rs unwrap": 1,
     }
 
 

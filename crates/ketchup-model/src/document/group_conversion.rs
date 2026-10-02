@@ -124,12 +124,11 @@ pub(super) fn conversion_mappings(
             groups: old_groups,
             occurrence: Some(occurrence.id),
         };
-        let resolution = if occurrence
+        let resolution = if let Some(parent) = occurrence
             .parent
-            .is_some_and(|parent| converted_group_set.contains(&parent))
+            .filter(|parent| converted_group_set.contains(parent))
         {
-            let converted_lineage =
-                group_lineage(product, plan.group_id, occurrence.parent.unwrap())?;
+            let converted_lineage = group_lineage(product, plan.group_id, parent)?;
             let mut new_path = InstancePath::root(plan.new_occurrence_id);
             new_path.steps.extend(
                 converted_lineage

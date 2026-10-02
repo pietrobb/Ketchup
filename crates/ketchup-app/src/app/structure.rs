@@ -472,12 +472,9 @@ impl KetchupApp {
             return false;
         }
         let root = snapshot.occurrence(instance_path.root_occurrence());
-        let context = match (self.selection.edit_context.last(), root) {
-            (None, Some(occurrence))
-                if instance_path.is_root() && occurrence.parent().is_some() =>
-            {
-                EditContext::Group(occurrence.parent().unwrap())
-            }
+        let parent = root.and_then(|occurrence| occurrence.parent());
+        let context = match (self.selection.edit_context.last(), parent) {
+            (None, Some(parent)) if instance_path.is_root() => EditContext::Group(parent),
             _ => EditContext::Definition {
                 definition_id: resolved.definition_id,
                 instance_path,

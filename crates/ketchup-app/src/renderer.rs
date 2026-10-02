@@ -1071,24 +1071,6 @@ fn vertex_bytes(vertices: &[RenderVertex]) -> Vec<u8> {
         .collect()
 }
 
-#[test]
-fn instance_color_bytes_keep_transform_stride_and_linear_srgb() {
-    let instances = [None, Some([0, 128, 255])].map(|color| RenderInstance {
-        transform: [0.0; 16],
-        color,
-    });
-    let bytes = instance_bytes(&instances);
-    assert_eq!(bytes.len(), 160);
-    let floats = bytes
-        .chunks_exact(4)
-        .map(|bytes| f32::from_ne_bytes(bytes.try_into().unwrap()))
-        .collect::<Vec<_>>();
-    assert_eq!(&floats[16..20], &[0.0; 4]);
-    assert_eq!(floats[36], 0.0);
-    assert!((floats[37] - 0.2158605).abs() < 0.000001);
-    assert_eq!(&floats[38..40], &[1.0, 1.0]);
-}
-
 fn instance_bytes(instances: &[RenderInstance]) -> Vec<u8> {
     instances
         .iter()
@@ -1229,7 +1211,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extrude_planar_profile_mesh, feature_edges};
+    use super::{RenderInstance, extrude_planar_profile_mesh, feature_edges, instance_bytes};
     use ketchup_interaction::mesh_projection::segment_profile_mesh;
     use ketchup_model::document::ProfileSegment;
     use ketchup_model::exact_product::ExactFaceRole;
@@ -1242,6 +1224,24 @@ mod tests {
         [0.0, 1.0, 0.0],
     ];
     const TRIANGLES: [[u32; 3]; 2] = [[0, 1, 2], [0, 2, 3]];
+
+    #[test]
+    fn instance_color_bytes_keep_transform_stride_and_linear_srgb() {
+        let instances = [None, Some([0, 128, 255])].map(|color| RenderInstance {
+            transform: [0.0; 16],
+            color,
+        });
+        let bytes = instance_bytes(&instances);
+        assert_eq!(bytes.len(), 160);
+        let floats = bytes
+            .chunks_exact(4)
+            .map(|bytes| f32::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(&floats[16..20], &[0.0; 4]);
+        assert_eq!(floats[36], 0.0);
+        assert!((floats[37] - 0.2158605).abs() < 0.000001);
+        assert_eq!(&floats[38..40], &[1.0, 1.0]);
+    }
 
     #[test]
     fn same_cad_face_keeps_only_quad_boundary() {

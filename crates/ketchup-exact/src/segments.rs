@@ -668,14 +668,10 @@ pub(super) fn spatial_sweep_path_self_intersects(
     {
         return true;
     }
-    let closed = spatial_segment_endpoints(segments.first().unwrap()).0
-        == spatial_segment_endpoints(segments.last().unwrap()).1;
-    if closed
-        && !spatial_sweep_path_join_is_separated(
-            segments.last().unwrap(),
-            segments.first().unwrap(),
-            metrics.last().unwrap().2,
-        )
+    if let (Some((first, last)), Some(last_metric)) =
+        (segments.first().zip(segments.last()), metrics.last())
+        && spatial_segment_endpoints(first).0 == spatial_segment_endpoints(last).1
+        && !spatial_sweep_path_join_is_separated(last, first, last_metric.2)
     {
         return true;
     }
@@ -720,17 +716,19 @@ pub(super) fn validate_spatial_sweep_path(
             diagnostic.to_owned(),
         )
     };
-    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len()) {
+    let (Some((first, last)), true) = (
+        segments.first().zip(segments.last()),
+        segments.len() <= limits::PATH_SEGMENTS,
+    ) else {
         return Err(invalid(
             "Spatial Sweep requires between one and 64 path segments",
         ));
-    }
+    };
     let metrics = segments
         .iter()
         .map(|segment| spatial_sweep_path_metrics(segment, operation, input))
         .collect::<Result<Vec<_>, _>>()?;
-    let closed = segments.first().map(spatial_segment_endpoints).unwrap().0
-        == segments.last().map(spatial_segment_endpoints).unwrap().1;
+    let closed = spatial_segment_endpoints(first).0 == spatial_segment_endpoints(last).1;
     for (segments, metrics) in segments.windows(2).zip(metrics.windows(2)) {
         if spatial_segment_endpoints(&segments[0]).1 != spatial_segment_endpoints(&segments[1]).0 {
             return Err(invalid("Spatial Sweep path segments are disconnected"));
@@ -743,9 +741,10 @@ pub(super) fn validate_spatial_sweep_path(
             ));
         }
     }
-    if closed {
-        let outgoing = metrics.last().unwrap().2;
-        let incoming = metrics.first().unwrap().1;
+    if let (true, Some((first_metric, last_metric))) = (closed, metrics.first().zip(metrics.last()))
+    {
+        let outgoing = last_metric.2;
+        let incoming = first_metric.1;
         if dot(outgoing, incoming) < 1.0 - ROUNDING
             || spatial_length(cross(outgoing, incoming)) > ROUNDING
         {

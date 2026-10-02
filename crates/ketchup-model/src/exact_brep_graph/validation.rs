@@ -143,7 +143,9 @@ pub(super) fn validate_geometry(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             if endpoints.windows(2).any(|pair| pair[0].1 != pair[1].0)
-                || (*closed && endpoints.last().unwrap().1 != endpoints[0].0)
+                || (*closed
+                    && endpoints.last().map(|last| last.1)
+                        != endpoints.first().map(|first| first.0))
             {
                 return Err(ExactBRepGraphError::InvalidGraph);
             }

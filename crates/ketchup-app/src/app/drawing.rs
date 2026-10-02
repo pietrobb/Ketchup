@@ -1067,14 +1067,14 @@ impl KetchupApp {
     /// Current non-authoritative endpoint-bulge Arc preview.
     #[must_use]
     pub fn arc_preview_geometry(&self) -> Option<(Vec3, Vec3, Vec3, bool)> {
+        let start = self.gesture.sketch.start?;
         (self.active_tool == ActiveTool::Arc)
             .then_some(self.drawing_arc(
-                self.gesture.sketch.start?,
+                start,
                 self.gesture.sketch.end?,
                 self.gesture.sketch.cursor?,
             )?)
             .map(|arc| {
-                let start = self.gesture.sketch.start.unwrap();
                 (
                     start,
                     self.drawing_world_delta(start, arc.end),

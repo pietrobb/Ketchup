@@ -167,7 +167,7 @@ fn parse_manifest(line: &str) -> Result<PluginManifest, PluginHostError> {
     ] = fields.as_slice()
     else {
         return Err(PluginHostError::MalformedProtocol(
-            "expected 11-field HELLO".to_owned(),
+            PluginProtocolViolation::HelloFieldCount,
         ));
     };
     if *protocol != PLUGIN_PROTOCOL_V1 {
@@ -200,9 +200,9 @@ fn parse_capability(value: &str) -> Result<PluginCapability, PluginHostError> {
         "query.agent-state.v1" => Ok(PluginCapability::QueryAgentState),
         "intent.set-rule-dimension.v1" => Ok(PluginCapability::SetRuleDimension),
         "intent.set-feature-dimension.v1" => Ok(PluginCapability::SetFeatureDimension),
-        _ => Err(PluginHostError::MalformedProtocol(format!(
-            "unknown capability {value:?}"
-        ))),
+        _ => Err(PluginHostError::MalformedProtocol(
+            PluginProtocolViolation::UnknownCapability(value.to_owned()),
+        )),
     }
 }
 
@@ -221,20 +221,20 @@ fn parse_request(line: &str) -> Result<PluginRequest, PluginHostError> {
             })
         }
         _ => Err(PluginHostError::MalformedProtocol(
-            "request is outside the bounded plugin vocabulary".to_owned(),
+            PluginProtocolViolation::RequestOutsideVocabulary,
         )),
     }
 }
 
-fn parse_u64(value: &str, field: &str) -> Result<u64, PluginHostError> {
+fn parse_u64(value: &str, field: &'static str) -> Result<u64, PluginHostError> {
     value.parse().map_err(|_: std::num::ParseIntError| {
-        PluginHostError::MalformedProtocol(format!("{field} must be an unsigned integer"))
+        PluginHostError::MalformedProtocol(PluginProtocolViolation::NotUnsignedInteger { field })
     })
 }
 
-fn parse_usize(value: &str, field: &str) -> Result<usize, PluginHostError> {
+fn parse_usize(value: &str, field: &'static str) -> Result<usize, PluginHostError> {
     value.parse().map_err(|_: std::num::ParseIntError| {
-        PluginHostError::MalformedProtocol(format!("{field} must be an unsigned integer"))
+        PluginHostError::MalformedProtocol(PluginProtocolViolation::NotUnsignedInteger { field })
     })
 }
 
@@ -424,12 +424,36 @@ fn hex_encode(bytes: &[u8]) -> String {
     output
 }
 
+/// What a plugin sent that the bounded plugin protocol does not allow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginProtocolViolation {
+    HelloFieldCount,
+    UnknownCapability(String),
+    RequestOutsideVocabulary,
+    NotUnsignedInteger { field: &'static str },
+}
+
+impl fmt::Display for PluginProtocolViolation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HelloFieldCount => formatter.write_str("expected 11-field HELLO"),
+            Self::UnknownCapability(value) => write!(formatter, "unknown capability {value:?}"),
+            Self::RequestOutsideVocabulary => {
+                formatter.write_str("request is outside the bounded plugin vocabulary")
+            }
+            Self::NotUnsignedInteger { field } => {
+                write!(formatter, "{field} must be an unsigned integer")
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum PluginHostError {
     Spawn(String),
     Transport(String),
     ProtocolMismatch(String),
-    MalformedProtocol(String),
+    MalformedProtocol(PluginProtocolViolation),
     Gateway(PluginGatewayError),
     MultipleProposals,
     ResponseLineTooLarge,
@@ -448,8 +472,8 @@ impl fmt::Display for PluginHostError {
             Self::ProtocolMismatch(protocol) => {
                 write!(formatter, "unsupported plugin protocol {protocol:?}")
             }
-            Self::MalformedProtocol(message) => {
-                write!(formatter, "malformed plugin protocol: {message}")
+            Self::MalformedProtocol(violation) => {
+                write!(formatter, "malformed plugin protocol: {violation}")
             }
             Self::Gateway(error) => error.fmt(formatter),
             Self::MultipleProposals => formatter.write_str("plugin emitted more than one proposal"),

@@ -145,6 +145,35 @@ fn remapped(
         .ok_or(CanonicalError::InvalidFeatureMap)
 }
 
+/// Points the pin-joint pockets drilled into the occurrence at `path` to the
+/// cloned pocket features.
+fn repoint_pin_joint_pockets(
+    product: &mut ProductModel,
+    path: &InstancePath,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<(), CanonicalError> {
+    for joint in product.pin_joints.values_mut() {
+        let first = joint.first.instance_path == *path;
+        let second = joint.second.instance_path == *path;
+        if !(first || second) || joint.physical_hole_pairs.is_none() {
+            continue;
+        }
+        for pair in Arc::make_mut(joint)
+            .physical_hole_pairs
+            .iter_mut()
+            .flatten()
+        {
+            if first {
+                pair.first_pocket_feature_id = remapped(mapping, &pair.first_pocket_feature_id)?;
+            }
+            if second {
+                pair.second_pocket_feature_id = remapped(mapping, &pair.second_pocket_feature_id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn clone_definition_and_repoint(
     product: &mut ProductModel,
     plan: &CloneDefinitionPlan,
@@ -578,22 +607,7 @@ pub(super) fn clone_definition_and_repoint(
         }),
     );
     let path = InstancePath::root(occurrence_id);
-    for joint in product.pin_joints.values_mut() {
-        let first = joint.first.instance_path == path;
-        let second = joint.second.instance_path == path;
-        if (first || second) && joint.physical_hole_pairs.is_some() {
-            for pair in Arc::make_mut(joint).physical_hole_pairs.as_mut().unwrap() {
-                if first {
-                    pair.first_pocket_feature_id =
-                        remapped(&mapping, &pair.first_pocket_feature_id)?;
-                }
-                if second {
-                    pair.second_pocket_feature_id =
-                        remapped(&mapping, &pair.second_pocket_feature_id)?;
-                }
-            }
-        }
-    }
+    repoint_pin_joint_pockets(product, &path, &mapping)?;
     if let Some(recipe) = &mut product.assembly_recipe {
         let recipe = Arc::make_mut(recipe);
         for part in recipe

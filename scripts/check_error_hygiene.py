@@ -67,9 +67,11 @@ STRINGIFIED_CAUSE = re.compile(
     r"map_err\(\s*(?:move\s*)?\|\s*(\w+)\s*\|\s*\1\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
 UNWRAP = re.compile(r"\.unwrap\(\)")
-# An inline `#[cfg(test)] mod name { ... }` at the top level of a Rust file.
-TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod \w+ \{\n.*?^\}",
-                         re.MULTILINE | re.DOTALL)
+# An inline test module at the top level of a Rust file: `#[cfg(test)]` or
+# `#[cfg(all(test, ...))]` before `mod name { ... }`.
+TEST_MODULE = re.compile(
+    r"^#\[cfg\((?:test|all\(test(?:,[^()\n]*)?\))\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod \w+ \{\n.*?^\}",
+    re.MULTILINE | re.DOTALL)
 
 
 def content_free(type_text: str) -> bool:

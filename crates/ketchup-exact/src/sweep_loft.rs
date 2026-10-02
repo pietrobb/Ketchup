@@ -441,22 +441,23 @@ impl ExactBackend {
                 ));
             }
             previous_elevation = section.elevation_mm;
-            match &section.profile {
+            let segment_count = match &section.profile {
                 PlanarProfileLoop::Segments(profile_segments) => {
                     validate_mixed_profile(profile_segments, operation, &input)?;
-                    section_segment_counts.push(profile_segments.len() as u32);
+                    profile_segments.len() as u32
                 }
                 PlanarProfileLoop::Circle {
                     center_mm,
                     radius_mm,
                 } => {
                     validate_circle(*center_mm, *radius_mm, operation, &input)?;
-                    section_segment_counts.push(1);
+                    1
                 }
-            }
+            };
+            section_segment_counts.push(segment_count);
             input.push_str(&format!(
                 ":{}:{:016x}:{:?}",
-                section_segment_counts.last().unwrap(),
+                segment_count,
                 section.elevation_mm.to_bits(),
                 digest_bits(&planar_loop_digest_values(&section.profile))
             ));

@@ -11,7 +11,6 @@ use crate::space::ClearanceVolumeId;
 use ciborium::Value;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fmt::Write;
 
 pub const COMPLETE_STATE_VIEW: &str = "ketchup.state-view.complete.v2";
 pub const AGENT_STATE_VIEW: &str = "ketchup.state-view.agent.v2";
@@ -88,19 +87,25 @@ pub fn encode_semantic_state_with_evaluation(
 
     let mut complete = header(COMPLETE_STATE_VIEW, snapshot);
     let mut agent = header(AGENT_STATE_VIEW, snapshot);
-    writeln!(agent, "summary.counts={}", counts(&identity)).unwrap();
+    push_line(
+        &mut agent,
+        format_args!("summary.counts={}", counts(&identity)),
+    );
     match evaluation {
         Some(report) => {
             let report = form(report);
             for output in [&mut complete, &mut agent] {
-                writeln!(output, "evaluation.current={evaluation_is_current}").unwrap();
+                push_line(
+                    output,
+                    format_args!("evaluation.current={evaluation_is_current}"),
+                );
             }
             write_lines(&mut complete, "evaluation", &report, None);
             write_lines(&mut agent, "evaluation", &report, Some(AGENT_LINE_DEPTH));
         }
         None => {
             for output in [&mut complete, &mut agent] {
-                writeln!(output, "evaluation=not_supplied").unwrap();
+                push_line(output, format_args!("evaluation=not_supplied"));
             }
         }
     }
@@ -108,8 +113,17 @@ pub fn encode_semantic_state_with_evaluation(
     write_lines(&mut complete, "analysis", &analysis, None);
     write_lines(&mut agent, "", &identity, Some(AGENT_LINE_DEPTH));
     write_lines(&mut agent, "analysis", &analysis, Some(AGENT_LINE_DEPTH));
-    writeln!(agent, "intended_actions=canonical_command_batch_only").unwrap();
+    push_line(
+        &mut agent,
+        format_args!("intended_actions=canonical_command_batch_only"),
+    );
     SemanticState { complete, agent }
+}
+
+/// Appends `line` and a newline to `output`.
+fn push_line(output: &mut String, line: std::fmt::Arguments<'_>) {
+    output.push_str(&line.to_string());
+    output.push('\n');
 }
 
 fn form(value: &impl Serialize) -> Value {
@@ -118,14 +132,15 @@ fn form(value: &impl Serialize) -> Value {
 
 fn header(schema: &str, snapshot: &Snapshot) -> String {
     let mut output = String::new();
-    writeln!(output, "schema={schema}").unwrap();
-    writeln!(output, "source.revision={}", snapshot.revision_id()).unwrap();
-    writeln!(
-        output,
-        "source.canonical_digest={}",
-        snapshot.canonical_digest()
-    )
-    .unwrap();
+    push_line(&mut output, format_args!("schema={schema}"));
+    push_line(
+        &mut output,
+        format_args!("source.revision={}", snapshot.revision_id()),
+    );
+    push_line(
+        &mut output,
+        format_args!("source.canonical_digest={}", snapshot.canonical_digest()),
+    );
     output
 }
 
@@ -162,7 +177,7 @@ fn write_lines(output: &mut String, path: &str, value: &Value, line_depth: Optio
             .collect(),
         Value::Tag(_, inner) => return write_lines(output, path, inner, line_depth),
         _ => {
-            writeln!(output, "{path}={}", inline(value)).unwrap();
+            push_line(output, format_args!("{path}={}", inline(value)));
             return;
         }
     };

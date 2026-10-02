@@ -2247,9 +2247,12 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm
         }
     }
 
-    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len()) {
+    let (Some((first, last)), true) = (
+        segments.first().zip(segments.last()),
+        segments.len() <= limits::PATH_SEGMENTS,
+    ) else {
         return false;
-    }
+    };
     let Some(metrics) = segments
         .iter()
         .map(|segment| metrics(segment, tolerance_mm))
@@ -2261,7 +2264,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm
     if !(limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&total_length) {
         return false;
     }
-    let closed = segments.first().unwrap().start_mm() == segments.last().unwrap().end_mm();
+    let closed = first.start_mm() == last.end_mm();
     if segments
         .windows(2)
         .zip(metrics.windows(2))
@@ -2298,11 +2301,10 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm
     {
         return false;
     }
-    if closed {
-        let last = segments.last().unwrap();
-        let first = segments.first().unwrap();
-        let outgoing = metrics.last().unwrap().2;
-        let incoming = metrics.first().unwrap().1;
+    if let (true, Some((first_metric, last_metric))) = (closed, metrics.first().zip(metrics.last()))
+    {
+        let outgoing = last_metric.2;
+        let incoming = first_metric.1;
         if !join_is_separated(last, first, outgoing, tolerance_mm)
             || dot(outgoing, incoming) < 1.0 - ROUNDING
             || length(cross(outgoing, incoming)) > ROUNDING

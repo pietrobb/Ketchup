@@ -1,10 +1,10 @@
-use ketchup_analysis::fea::FeaSolveSettings;
+use ketchup_analysis::fea::{FeaError, FeaSolveSettings};
 use ketchup_model::document::{DefinitionId, FeatureId, Snapshot};
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::tolerance::NEGLIGIBLE;
-use ketchup_scheduler::ExactWorkerSupervisor;
 pub use ketchup_scheduler::{ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions};
+use ketchup_scheduler::{ExactFeaSetupError, ExactWorkerSupervisor};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
@@ -61,8 +61,9 @@ pub enum FeaReviewError {
     InvalidRefinementLevels,
     InvalidTarget(String),
     Meshing(String),
-    Setup(String),
-    Solve(String),
+    Setup(ExactFeaSetupError),
+    MeshNotRefined,
+    Solve(FeaError),
 }
 
 impl std::fmt::Display for FeaReviewError {
@@ -77,8 +78,9 @@ impl std::fmt::Display for FeaReviewError {
             }
             Self::InvalidTarget(reason) => write!(formatter, "FEA target rejected: {reason}"),
             Self::Meshing(reason) => write!(formatter, "FEA meshing rejected: {reason}"),
-            Self::Setup(reason) => write!(formatter, "FEA setup rejected: {reason}"),
-            Self::Solve(reason) => write!(formatter, "FEA solve rejected: {reason}"),
+            Self::Setup(cause) => write!(formatter, "FEA setup rejected: {cause:?}"),
+            Self::MeshNotRefined => formatter.write_str("FEA solve rejected: MeshNotRefined"),
+            Self::Solve(cause) => write!(formatter, "FEA solve rejected: {cause:?}"),
         }
     }
 }
@@ -131,7 +133,7 @@ impl FeaReviewWorkflow {
                 .map_err(|error| FeaReviewError::Meshing(error.to_string()))?;
             let bound = package
                 .occurrence_bound_model(snapshot, &request.setup)
-                .map_err(|error| FeaReviewError::Setup(format!("{error:?}")))?;
+                .map_err(FeaReviewError::Setup)?;
             models.push(bound.model);
             packages.push(package);
         }
@@ -139,14 +141,14 @@ impl FeaReviewWorkflow {
             pair[1].mesh.tetrahedra.len() <= pair[0].mesh.tetrahedra.len()
                 || pair[1].mesh.mesh_fingerprint == pair[0].mesh.mesh_fingerprint
         }) {
-            return Err(FeaReviewError::Solve("MeshNotRefined".to_owned()));
+            return Err(FeaReviewError::MeshNotRefined);
         }
         let solutions = models
             .iter()
             .map(|model| {
                 model
                     .solve(request.solve_settings)
-                    .map_err(|error| FeaReviewError::Solve(format!("{error:?}")))
+                    .map_err(FeaReviewError::Solve)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let previous = &solutions[solutions.len() - 2];

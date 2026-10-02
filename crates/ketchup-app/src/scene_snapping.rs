@@ -68,22 +68,22 @@ fn boundary_paths(
 
 impl SceneSnapGeometry {
     fn edge(&mut self, reference: &SelectionId, points: Vec<Vec3>, endpoints: bool) {
-        if points.len() < 2 {
-            return;
-        }
+        let (first, last) = match points.as_slice() {
+            [first, .., last] => (*first, *last),
+            _ => return,
+        };
         let mut reference = reference.clone();
         if let ElementId::Snap { index, .. } = &mut reference.element {
             *index = self.edges.len() as u32 * 4;
         }
         if endpoints {
             self.points
-                .push((reference.clone(), SnapKind::Endpoint, points[0]));
+                .push((reference.clone(), SnapKind::Endpoint, first));
             let mut end = reference.clone();
             if let ElementId::Snap { index, .. } = &mut end.element {
                 *index += 1;
             }
-            self.points
-                .push((end, SnapKind::Endpoint, *points.last().unwrap()));
+            self.points.push((end, SnapKind::Endpoint, last));
         }
         let length: f64 = points.windows(2).map(|s| s[0].distance(s[1])).sum();
         let mut remaining = length * 0.5;
@@ -683,7 +683,7 @@ impl KetchupApp {
             let best = (0..128)
                 .map(|i| f64::from(i) * step)
                 .min_by(|a, b| distance(*a).total_cmp(&distance(*b)))
-                .unwrap();
+                .expect("the circle is sampled at 128 angles");
             let (mut low, mut high) = (best - step, best + step);
             for _ in 0..24 {
                 let a = low + (high - low) / 3.0;

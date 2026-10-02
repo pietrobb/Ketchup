@@ -616,10 +616,12 @@ impl KetchupApp {
                 return false;
             }
         };
+        let Some(evaluation) = self.push_pull.face_offset_evaluation.as_ref() else {
+            return false;
+        };
         let Some(proposal) = self.push_pull.smart_proposal.take() else {
             return false;
         };
-        let evaluation = self.push_pull.face_offset_evaluation.as_ref().unwrap();
         let mut render = ExactResultRegistry::carried_forward(&snapshot, &self.exact.results);
         let mut topology =
             ExactResultRegistry::carried_forward(&snapshot, &self.exact.topology_results);

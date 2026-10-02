@@ -167,7 +167,7 @@ impl From<FeaReviewError> for Error {
             FeaReviewError::InvalidTarget(_) => "fea_target_rejected",
             FeaReviewError::Meshing(_) => "fea_meshing_rejected",
             FeaReviewError::Setup(_) => "fea_setup_rejected",
-            FeaReviewError::Solve(_) => "fea_solve_rejected",
+            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(_) => "fea_solve_rejected",
         };
         Self::new(code, error.to_string())
     }

@@ -612,13 +612,17 @@ impl LiveBridge {
                 {
                     return Err("stale_image");
                 }
-                let direct = request.mode == CaptureMode::Offscreen
-                    && app.render.wgpu_device.is_some()
-                    && app.render.wgpu_queue.is_some();
-                let readback = if direct {
+                let gpu = match (&app.render.wgpu_device, &app.render.wgpu_queue) {
+                    (Some(device), Some(queue)) if request.mode == CaptureMode::Offscreen => {
+                        Some((device, queue))
+                    }
+                    _ => None,
+                };
+                let direct = gpu.is_some();
+                let readback = if let Some((device, queue)) = gpu {
                     target::submit(
-                        app.render.wgpu_device.as_ref().unwrap(),
-                        app.render.wgpu_queue.as_ref().unwrap(),
+                        device,
+                        queue,
                         &painted,
                         request.nonce.clone(),
                         request.queued.cancelled.clone(),

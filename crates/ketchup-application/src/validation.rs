@@ -489,12 +489,20 @@ fn recipe_face_evidence(
         _ => return None,
     };
     let geometry = participant.geometry_evidence();
-    let axes: [[f64; 3]; 3] =
-        std::array::from_fn(|index| geometry.source_axis_world_direction(index).unwrap());
+    let [Some(x_axis), Some(y_axis), Some(z_axis)] =
+        [0, 1, 2].map(|index| geometry.source_axis_world_direction(index))
+    else {
+        return None;
+    };
+    let [Some(x_scale), Some(y_scale), Some(z_scale)] =
+        [0, 1, 2].map(|index| geometry.source_axis_world_scale(index))
+    else {
+        return None;
+    };
+    let axes = [x_axis, y_axis, z_axis];
+    let scales = [x_scale, y_scale, z_scale];
     let half_extents: [f64; 3] = std::array::from_fn(|index| {
-        geometry.source_frame_extents_mm()[index]
-            * geometry.source_axis_world_scale(index).unwrap()
-            * 0.5
+        geometry.source_frame_extents_mm()[index] * scales[index] * 0.5
     });
     let sign = if maximum { 1.0 } else { -1.0 };
     let center_world_mm = std::array::from_fn(|coordinate| {
@@ -3069,39 +3077,43 @@ fn assistant_static_load_report_filtered(
         let loaded_role = roles
             .role(loaded_id)
             .and_then(|role| PartRole::parse(role.as_str()));
-        let missing_reason = if loaded_name.is_none() {
-            Some("loaded_occurrence_not_visible")
-        } else if loaded_role.is_none_or(|role| role.function != RoleFunction::StaticLoad) {
-            Some("missing_or_invalid_static_load_role")
-        } else if mass_declarations.is_none_or(|values| values.len() != 1) {
-            Some("missing_or_ambiguous_mass")
-        } else if mass_declarations.unwrap()[0].1 < 0.0 {
-            Some("negative_mass")
-        } else if load_declarations.is_none_or(|values| values.len() != 1) {
-            Some("missing_or_ambiguous_applied_load")
-        } else if load_declarations.unwrap()[0].1 < 0.0 {
-            Some("negative_applied_load")
-        } else {
-            None
+        let single = |values: Option<&Vec<(u64, f64)>>| match values.map(Vec::as_slice) {
+            Some(&[value]) => Some(value),
+            _ => None,
         };
-        if let Some(reason) = missing_reason {
-            if let Some(role) = loaded_role.filter(|role| role.function == RoleFunction::StaticLoad)
-            {
-                incomplete_cases.insert(role.group.to_owned());
-            }
-            not_evaluated.push(serde_json::json!({
+        let static_role = loaded_role.filter(|role| role.function == RoleFunction::StaticLoad);
+        let declared = match (
+            loaded_name,
+            static_role,
+            single(mass_declarations),
+            single(load_declarations),
+        ) {
+            (None, ..) => Err("loaded_occurrence_not_visible"),
+            (_, None, ..) => Err("missing_or_invalid_static_load_role"),
+            (_, _, None, _) => Err("missing_or_ambiguous_mass"),
+            (_, _, Some((_, mass_kg)), _) if mass_kg < 0.0 => Err("negative_mass"),
+            (_, _, _, None) => Err("missing_or_ambiguous_applied_load"),
+            (_, _, _, Some((_, load_n))) if load_n < 0.0 => Err("negative_applied_load"),
+            (Some(_), Some(role), Some(mass), Some(load)) => Ok((role, mass, load)),
+        };
+        let (role, (mass_node_id, mass_kg), (applied_load_node_id, applied_load_n)) = match declared
+        {
+            Ok(declared) => declared,
+            Err(reason) => {
+                if let Some(role) = static_role {
+                    incomplete_cases.insert(role.group.to_owned());
+                }
+                not_evaluated.push(serde_json::json!({
                 "validator": "static_load",
                 "reason": reason,
                 "occurrence_id": loaded_id.0,
                 "name": loaded_name,
-            }));
-            continue;
-        }
-
-        let (mass_node_id, mass_kg) = mass_declarations.unwrap()[0];
-        let (applied_load_node_id, applied_load_n) = load_declarations.unwrap()[0];
+                }));
+                continue;
+            }
+        };
         loads_by_case
-            .entry(loaded_role.unwrap().group.to_owned())
+            .entry(role.group.to_owned())
             .or_default()
             .push(PreparedStaticLoad {
                 occurrence_id: loaded_id,

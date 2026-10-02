@@ -6,7 +6,7 @@ use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     ProposalCommitError, ProposalPrincipal,
 };
-use ketchup_scheduler::plugin::{PluginHostError, run_plugin_process};
+use ketchup_scheduler::plugin::{PluginHostError, PluginProtocolViolation, run_plugin_process};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{
@@ -385,7 +385,12 @@ fn process_rejects_direct_mutation_vocabulary_and_oversized_input() {
         Duration::from_secs(5),
         &AtomicBool::new(false),
     );
-    assert!(matches!(result, Err(PluginHostError::MalformedProtocol(_))));
+    assert!(matches!(
+        result,
+        Err(PluginHostError::MalformedProtocol(
+            PluginProtocolViolation::RequestOutsideVocabulary
+        ))
+    ));
 
     let oversized = "print('X' * 5000, flush=True)";
     let result = run_plugin_process(

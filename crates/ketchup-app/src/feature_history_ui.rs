@@ -2031,28 +2031,17 @@ impl KetchupApp {
             return;
         };
         let current = self.document.current();
-        let revision_exists = |id| catalog.iter().any(|entry| entry.revision_id == id);
-        if self
-            .feature_history
-            .revision_before
-            .is_none_or(|id| !revision_exists(id))
-        {
-            self.feature_history.revision_before = Some(first.revision_id);
-        }
-        if self
-            .feature_history
-            .revision_after
-            .is_none_or(|id| !revision_exists(id))
-        {
-            self.feature_history.revision_after = Some(current.revision_id());
-        }
-        if self
-            .feature_history
-            .rollback_revision
-            .is_none_or(|id| !revision_exists(id))
-        {
-            self.feature_history.rollback_revision = Some(first.revision_id);
-        }
+        let existing_or = |chosen: Option<u64>, fallback: u64| {
+            chosen
+                .filter(|id| catalog.iter().any(|entry| entry.revision_id == *id))
+                .unwrap_or(fallback)
+        };
+        let mut before = existing_or(self.feature_history.revision_before, first.revision_id);
+        let mut after = existing_or(self.feature_history.revision_after, current.revision_id());
+        let mut rollback = existing_or(self.feature_history.rollback_revision, first.revision_id);
+        self.feature_history.revision_before = Some(before);
+        self.feature_history.revision_after = Some(after);
+        self.feature_history.rollback_revision = Some(rollback);
 
         ui.label(self.catalog.text("revision-history-title"));
         let checkpoint_label = self.catalog.text("revision-history-checkpoint-name");
@@ -2155,7 +2144,6 @@ impl KetchupApp {
         };
         ui.separator();
         ui.label(self.catalog.text("revision-history-compare"));
-        let mut before = self.feature_history.revision_before.unwrap();
         egui::ComboBox::from_id_salt("revision-history-before")
             .selected_text(revision_label(before))
             .show_ui(ui, |ui| {
@@ -2168,7 +2156,6 @@ impl KetchupApp {
                 }
             });
         self.feature_history.revision_before = Some(before);
-        let mut after = self.feature_history.revision_after.unwrap();
         egui::ComboBox::from_id_salt("revision-history-after")
             .selected_text(revision_label(after))
             .show_ui(ui, |ui| {
@@ -2203,7 +2190,6 @@ impl KetchupApp {
         }
 
         ui.label(self.catalog.text("revision-history-rollback-target"));
-        let mut rollback = self.feature_history.rollback_revision.unwrap();
         egui::ComboBox::from_id_salt("revision-history-rollback")
             .selected_text(revision_label(rollback))
             .show_ui(ui, |ui| {
