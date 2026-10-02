@@ -52,6 +52,18 @@ fn cabinet_evaluates_without_issues_and_lists_parts_and_hardware() {
 }
 
 #[test]
+fn the_cut_list_gives_the_blank_a_push_pull_grew() {
+    let (_, report) = run(
+        "test.star",
+        "top = board(\"top\", (600, 400, 20))\n\
+         push_pull(top, face = \"x+\", distance = 30, name = \"longer\")\n",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(report.bom.cut_list[0].dimensions_mm, [630.0, 400.0, 20.0]);
+}
+
+#[test]
 fn a_wider_cabinet_recomputes_every_dependent_part_and_hole() {
     let overrides = BTreeMap::from([("width".to_owned(), 700.0)]);
     let (evaluated, report) = run("cabinet.star", CABINET, &overrides).unwrap();
