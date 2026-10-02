@@ -18,7 +18,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE_TESTS = (
     "tests/test_headless_acceptance.py",
-    "tests/test_ketchup_model_skill.py",
     "tests/test_model_tools_errors.py",
     "tests/test_model_tools_protocol.py",
 )
@@ -180,25 +179,10 @@ def main() -> int:
     os.environ["KETCHUP_HEADLESS"] = str(headless)
     os.environ["KETCHUP_EXACT_WORKER"] = str(worker)
     os.environ["KETCHUP_PYTHON"] = str(Path(sys.executable).resolve())
-    run([sys.executable, "-c", "import anthropic"])
     print(f"Python: {Path(sys.executable).resolve()}")
     print(f"KETCHUP_HEADLESS={headless} sha256={sha256(headless)}")
     print(f"KETCHUP_EXACT_WORKER={worker} sha256={sha256(worker)}")
     print(f"MANUAL_ALPHA={manual_alpha} sha256={sha256(manual_alpha)}")
-    run([
-        cargo,
-        "test",
-        "--locked",
-        "-p",
-        "ketchup-app",
-        "--no-default-features",
-        "--test",
-        "integration",
-        "--",
-        "live_bridge_python::",
-        "--ignored",
-        "--nocapture",
-    ])
 
     missing_tests = [relative for relative in NATIVE_TESTS if not (ROOT / relative).is_file()]
     if missing_tests:

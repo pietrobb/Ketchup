@@ -1,15 +1,14 @@
-"""Offline Session plus discovery-capable, non-owning live GUI clients.
+"""Offline headless Session client.
 
 Set PYTHONPATH to sdk/python, then ``from ketchup import Session``. The old
 ketchup_sdk package is the separate plugin SDK, not this process client.
+AI agents drive an open Kečup window through ``ketchup-app --mcp`` instead.
 """
 from .client import (
     Document, HeadlessError, ProtocolError, Session, SessionClosedError,
     TransportError, TransportTimeout, rectangle,
 )
-from .live import LiveConsentError, LiveSession, attach_live_instance, list_live_instances
 __all__ = [
     "Document", "HeadlessError", "ProtocolError", "Session", "SessionClosedError",
-    "TransportError", "TransportTimeout", "rectangle", "LiveConsentError",
-    "LiveSession", "attach_live_instance", "list_live_instances",
+    "TransportError", "TransportTimeout", "rectangle",
 ]

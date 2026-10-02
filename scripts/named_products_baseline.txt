@@ -73,10 +73,3 @@ crates/ketchup-scheduler/src/exact_worker.rs:weldment 10
 sdk/python/ketchup_assistant_protocol.py:beam 2
 sdk/python/ketchup_assistant_protocol.py:panel 1
 sdk/python/ketchup_assistant_protocol.py:weldment 6
-skills/ketchup_live.py:board 2
-skills/ketchup_live.py:dowel 2
-skills/ketchup_live.py:furniture 1
-skills/ketchup_model.py:board 1
-skills/ketchup_model.py:dowel 1
-skills/ketchup_model.py:furniture 1
-skills/ketchup_model.py:timber 1

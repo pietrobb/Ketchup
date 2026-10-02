@@ -25,7 +25,6 @@ mod instanced_rendering;
 mod line_spatial_ui;
 mod live_bridge_bootstrap;
 mod live_bridge_image;
-mod live_bridge_python;
 mod live_bridge_transactions;
 mod manual_bottle_documentation;
 mod nested_transform_ui;

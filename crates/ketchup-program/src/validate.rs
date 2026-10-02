@@ -316,8 +316,8 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
                         round(max[2] - min[2]),
                     ),
                     where_mm: Some((min.map(round), max.map(round))),
-                    hint: "KetchupProgram check/build and the Kečup window settle this on the \
-                           exact solids; a box-only check cannot."
+                    hint: "The Kečup window (program apply) settles this on the exact solids; \
+                           a box-only check cannot."
                         .to_owned(),
                 });
                 continue;

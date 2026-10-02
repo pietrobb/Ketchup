@@ -43,7 +43,6 @@ def test_skip_plugin_changes_success_to_failure():
 def test_required_production_set_covers_acceptance_and_model_tools():
     assert runner.NATIVE_TESTS == (
         "tests/test_headless_acceptance.py",
-        "tests/test_ketchup_model_skill.py",
         "tests/test_model_tools_errors.py",
         "tests/test_model_tools_protocol.py",
     )

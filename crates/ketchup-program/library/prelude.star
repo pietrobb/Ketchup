@@ -928,7 +928,7 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 # hold is an `expectation_failed` error naming the measured and required mm.
 # Faces follow the same rule as on(): the target's own frame, or a world
 # direction. Measures use the body before cuts and booleans, except that
-# KetchupProgram check/build and the window take distance and contact_area
+# the Kečup window (program apply) takes distance and contact_area
 # of a pair from the exact solids when a part of it is not its box (profile
 # body, push_pull, subtract/intersect); the same holds for collisions,
 # floating parts, joints and the relation map (relations lose "approx").
@@ -1009,7 +1009,7 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
                op = "<=", tolerance = tolerance,
                hint = "The part sticks out of that face of the container by this much.")
 
-#@topic report: What KetchupProgram check/build returns
+#@topic report: What program apply returns
 #
 # ok, errors, warnings and issues: each issue has kind, severity, parts,
 #   location in mm and a fix hint (collisions, floating parts, joints
@@ -1020,5 +1020,5 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
 # params: every param() with its value and limits (override by name).
 # bom: cut_list (material, dimensions, count, parts), hardware (item,
 #   count), machining per part (holes and pockets with face, position,
-#   diameter, depth; KetchupProgram machining=true lists them all).
+#   diameter, depth).
 # log: lines from print(); unused_overrides: override names no param() has.

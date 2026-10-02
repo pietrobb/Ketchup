@@ -26,7 +26,7 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 | Command line, no OCCT or GUI needed | `ketchup-program check cabinet.star --set width=700` |
 | Headless protocol | `program_check` (report only), `program_apply` (replace the document, one undo step) |
 | Python SDK | `session.check_program(source, params={...})`, `session.program_document(source, ...)` |
-| Agent skill | `KetchupProgram` with `action=check` or `action=build`; `KetchupDiscover section=program` lists the library topics, `name=<topic>` returns one |
+| AI agent (MCP, `ketchup-app --mcp`) | `program` with `action=apply` in the open window; `action=docs` lists the library topics, `name=<topic>` returns one |
 
 Every run returns the same report:
 - `issues`: severity, kind, parts, message, location in mm, and a hint;
@@ -131,7 +131,7 @@ topic it belongs to.
 
 The checks measure boxes. Where a part is not exactly its box (profile body,
 push_pull, subtract/intersect) and its box touches or overlaps another,
-KetchupProgram `check` (in a scratch document), `build` and the window measure
+the headless `program_check`/`program_apply` and the window measure
 that pair on the exact solids with the same native pair query, and collisions,
 floating parts, joints, `expect*` distances/contact areas and the relation map
 use those answers. The standalone `ketchup-program` binary has no OCCT and

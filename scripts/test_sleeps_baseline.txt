@@ -20,8 +20,7 @@ crates/ketchup-app/tests/gravity_support_panel.rs 1
 crates/ketchup-app/tests/harness/mod.rs 2
 crates/ketchup-app/tests/headless_shell.rs 11
 crates/ketchup-app/tests/live_bridge_bootstrap.rs 10
-crates/ketchup-app/tests/live_bridge_image.rs 5
-crates/ketchup-app/tests/live_bridge_python.rs 6
+crates/ketchup-app/tests/live_bridge_image.rs 3
 crates/ketchup-app/tests/live_bridge_transactions.rs 1
 crates/ketchup-app/tests/performance_ai_house.rs 4
 crates/ketchup-app/tests/production_performance.rs 2
