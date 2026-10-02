@@ -573,88 +573,54 @@ fn plan_part(
             })?;
     }
 
+    // Each cut is a sketch on its face and a pocket of the previous solid.
+    // The sketches only need the part's definition, so they are previewed
+    // together once and every pocket is planned against that preview,
+    // instead of re-validating the whole document for every hole.
+    let mut cuts = Vec::with_capacity(holes.len() + pockets.len());
     for hole in holes {
-        staged.refresh("create_part", document_target)?;
-        let sketch = AssistantCadEditOperation::CreateSketch {
-            definition_id: definition_id.0.into(),
-            name: format!("{name} hole {}", hole.id),
-            workplane: hole_workplane(hole.entry_local_mm, hole.inward_unit_local),
-            entities: vec![AssistantSketchEntity::Circle {
-                id: 1,
-                center_mm: [0.0, 0.0],
-                radius_mm: hole.diameter_mm * 0.5,
-            }],
-            constraints: Vec::new(),
-        };
-        let sketch_commands = plan_creation(
-            staged.staged_snapshot(),
-            &sketch,
-            next_definition,
-            next_feature,
-            next_occurrence,
-            document_target,
-        )?;
-        let sketch_id = sketch_commands
-            .iter()
-            .find_map(|command| match command {
-                CanonicalCommand::CreateFeature {
-                    id,
-                    kind: FeatureKind::Sketch(_),
-                    ..
-                } => Some(*id),
-                _ => None,
-            })
-            .expect("CreateSketch always creates a sketch");
-        staged.extend(sketch_commands);
-        staged.refresh("create_part", document_target)?;
-        let feature = AssistantCadBodyFeature::Pocket {
-            target_feature_id: target_feature_id.0.into(),
-            profile_feature_id: sketch_id.0.into(),
-            depth_mm: hole.depth_mm,
-        };
-        let kind = plan_feature_kind(
-            staged.staged_snapshot(),
-            &staged.topology(&ExactResultRegistry::default()),
-            definition_id,
-            &feature,
-            "create_part",
-        )?;
-        let id = next_feature.map(FeatureId).ok_or_else(|| {
-            assistant_canonical_rejection(
-                CanonicalError::IdExhausted,
-                "create_part",
-                document_target,
-            )
-        })?;
-        *next_feature = id.0.checked_add(1);
-        staged.push(CanonicalCommand::CreateFeature {
-            id,
-            definition_id,
-            name: format!("{name} hole {} pocket", hole.id),
-            kind,
-        });
-        target_feature_id = id;
+        cuts.push((
+            AssistantCadEditOperation::CreateSketch {
+                definition_id: definition_id.0.into(),
+                name: format!("{name} hole {}", hole.id),
+                workplane: hole_workplane(hole.entry_local_mm, hole.inward_unit_local),
+                entities: vec![AssistantSketchEntity::Circle {
+                    id: 1,
+                    center_mm: [0.0, 0.0],
+                    radius_mm: hole.diameter_mm * 0.5,
+                }],
+                constraints: Vec::new(),
+            },
+            hole.depth_mm,
+            format!("{name} hole {} pocket", hole.id),
+        ));
     }
     for pocket in pockets {
-        staged.refresh("create_part", document_target)?;
         let (workplane, [x_min, y_min, x_max, y_max], depth_mm) = pocket_sketch(pocket);
         let line = |id, start_mm, end_mm| AssistantSketchEntity::Line {
             id,
             start_mm,
             end_mm,
         };
-        let sketch = AssistantCadEditOperation::CreateSketch {
-            definition_id: definition_id.0.into(),
-            name: format!("{name} pocket {}", pocket.id),
-            workplane,
-            entities: vec![
-                line(1, [x_min, y_min], [x_max, y_min]),
-                line(2, [x_max, y_min], [x_max, y_max]),
-                line(3, [x_max, y_max], [x_min, y_max]),
-                line(4, [x_min, y_max], [x_min, y_min]),
-            ],
-            constraints: Vec::new(),
-        };
+        cuts.push((
+            AssistantCadEditOperation::CreateSketch {
+                definition_id: definition_id.0.into(),
+                name: format!("{name} pocket {}", pocket.id),
+                workplane,
+                entities: vec![
+                    line(1, [x_min, y_min], [x_max, y_min]),
+                    line(2, [x_max, y_min], [x_max, y_max]),
+                    line(3, [x_max, y_max], [x_min, y_max]),
+                    line(4, [x_min, y_max], [x_min, y_min]),
+                ],
+                constraints: Vec::new(),
+            },
+            depth_mm,
+            format!("{name} pocket {} cut", pocket.id),
+        ));
+    }
+    let mut planned = Vec::with_capacity(cuts.len());
+    for (sketch, depth_mm, pocket_name) in cuts {
         let sketch_commands = plan_creation(
             staged.staged_snapshot(),
             &sketch,
@@ -674,35 +640,46 @@ fn plan_part(
                 _ => None,
             })
             .expect("CreateSketch always creates a sketch");
-        staged.extend(sketch_commands);
-        staged.refresh("create_part", document_target)?;
-        let feature = AssistantCadBodyFeature::Pocket {
-            target_feature_id: target_feature_id.0.into(),
-            profile_feature_id: sketch_id.0.into(),
-            depth_mm,
-        };
-        let kind = plan_feature_kind(
-            staged.staged_snapshot(),
-            &staged.topology(&ExactResultRegistry::default()),
-            definition_id,
-            &feature,
-            "create_part",
-        )?;
-        let id = next_feature.map(FeatureId).ok_or_else(|| {
+        let pocket_id = next_feature.map(FeatureId).ok_or_else(|| {
             assistant_canonical_rejection(
                 CanonicalError::IdExhausted,
                 "create_part",
                 document_target,
             )
         })?;
-        *next_feature = id.0.checked_add(1);
-        staged.push(CanonicalCommand::CreateFeature {
-            id,
-            definition_id,
-            name: format!("{name} pocket {} cut", pocket.id),
-            kind,
-        });
-        target_feature_id = id;
+        *next_feature = pocket_id.0.checked_add(1);
+        planned.push((sketch_commands, sketch_id, pocket_id, depth_mm, pocket_name));
+    }
+    if !planned.is_empty() {
+        let sketched = staged
+            .staged_snapshot()
+            .preview_batch(&CommandBatch::new(
+                planned
+                    .iter()
+                    .flat_map(|(commands, ..)| commands.iter().cloned())
+                    .collect(),
+            ))
+            .map_err(|error| {
+                assistant_canonical_rejection(error, "create_part", document_target)
+            })?;
+        let topology = ExactResultRegistry::default();
+        for (sketch_commands, sketch_id, pocket_id, depth_mm, pocket_name) in planned {
+            let feature = AssistantCadBodyFeature::Pocket {
+                target_feature_id: target_feature_id.0.into(),
+                profile_feature_id: sketch_id.0.into(),
+                depth_mm,
+            };
+            let kind =
+                plan_feature_kind(&sketched, &topology, definition_id, &feature, "create_part")?;
+            staged.extend(sketch_commands);
+            staged.push(CanonicalCommand::CreateFeature {
+                id: pocket_id,
+                definition_id,
+                name: pocket_name,
+                kind,
+            });
+            target_feature_id = pocket_id;
+        }
     }
     Ok((
         definition_id,
