@@ -3,11 +3,10 @@ use std::{
     fmt,
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
+        mpsc::{RecvTimeoutError, TryRecvError},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use ketchup_geometry::sketch::{
@@ -25,6 +24,7 @@ use ketchup_model::mesh_recognition::{
     recognize_mesh_body_cancellable,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
+use ketchup_scheduler::background::{BackgroundTask, TaskContext, TaskEvent, TaskStop};
 
 const MESH_CONVERSION_PROGRESS_STEPS: u8 = 3;
 const MAX_VERIFICATION_WORK_UNITS: usize = 32_000_000;
@@ -235,71 +235,60 @@ pub enum MeshConversionTaskEvent {
     Finished(Box<Result<PreparedMeshConversion, MeshConversionError>>),
 }
 
+type ConversionTask =
+    BackgroundTask<MeshConversionProgress, Result<PreparedMeshConversion, MeshConversionError>>;
+
 pub struct MeshConversionTask {
     pub source: MeshConversionSource,
-    cancelled: Arc<AtomicBool>,
-    receiver: Receiver<MeshConversionTaskEvent>,
-    worker: Option<std::thread::JoinHandle<()>>,
+    task: ConversionTask,
 }
 
-impl Drop for MeshConversionTask {
-    fn drop(&mut self) {
-        self.cancel();
-        if let Some(worker) = self.worker.take() {
-            if worker.is_finished() {
-                let _ = worker.join();
-            } else {
-                let _ = std::thread::Builder::new()
-                    .name("mesh-conversion-reaper".to_owned())
-                    .spawn(move || {
-                        let _ = worker.join();
-                    });
-            }
+impl From<TaskStop> for MeshConversionError {
+    fn from(stop: TaskStop) -> Self {
+        match stop {
+            TaskStop::Cancelled => Self::Cancelled,
+            TaskStop::TimedOut => Self::TimedOut,
         }
+    }
+}
+
+fn conversion_event(
+    event: TaskEvent<MeshConversionProgress, Result<PreparedMeshConversion, MeshConversionError>>,
+) -> MeshConversionTaskEvent {
+    match event {
+        TaskEvent::Progress(progress) => MeshConversionTaskEvent::Progress(progress),
+        TaskEvent::Finished(result) => MeshConversionTaskEvent::Finished(Box::new(
+            result
+                .map_err(MeshConversionError::from)
+                .and_then(|prepared| prepared),
+        )),
     }
 }
 
 impl MeshConversionTask {
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.task.cancel();
     }
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.task.is_cancelled()
     }
 
     pub fn poll(&self) -> Result<MeshConversionTaskEvent, TryRecvError> {
-        self.receiver.try_recv().map(|event| match event {
-            MeshConversionTaskEvent::Finished(result) if self.is_cancelled() && result.is_ok() => {
-                MeshConversionTaskEvent::Finished(Box::new(Err(MeshConversionError::Cancelled)))
-            }
-            event => event,
-        })
+        self.task.poll().map(conversion_event)
+    }
+
+    /// The next event, blocking up to `timeout`.
+    pub fn next_event(
+        &self,
+        timeout: Duration,
+    ) -> Result<MeshConversionTaskEvent, RecvTimeoutError> {
+        self.task.next_event(timeout).map(conversion_event)
     }
 
     pub fn wait(self, timeout: Duration) -> Result<PreparedMeshConversion, MeshConversionError> {
-        let started_at = Instant::now();
-        loop {
-            let remaining = timeout.saturating_sub(started_at.elapsed());
-            match self.receiver.recv_timeout(remaining) {
-                Ok(MeshConversionTaskEvent::Progress(_)) => {}
-                Ok(MeshConversionTaskEvent::Finished(result)) => {
-                    return if self.is_cancelled() && result.is_ok() {
-                        Err(MeshConversionError::Cancelled)
-                    } else {
-                        *result
-                    };
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    self.cancel();
-                    return Err(MeshConversionError::TimedOut);
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(MeshConversionError::Cancelled);
-                }
-            }
-        }
+        self.task.wait(timeout)?
     }
 }
 
@@ -315,88 +304,47 @@ pub fn start_mesh_conversion(
     let mutation_epoch = document.mutation_epoch();
     let next_revision_id = document.next_revision_id();
     let source = MeshConversionSource::new(&snapshot, mutation_epoch);
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let worker_cancelled = Arc::clone(&cancelled);
-    let (sender, receiver) = mpsc::channel();
-    let started_at = Instant::now();
-    let worker = std::thread::Builder::new()
-        .name("mesh-to-exact-conversion".to_owned())
-        .spawn(move || {
-            let timed_out = Arc::new(AtomicBool::new(false));
-            let timeout_cancelled = Arc::clone(&worker_cancelled);
-            let timeout_flag = Arc::clone(&timed_out);
-            let (done_sender, done_receiver) = mpsc::channel();
-            let watchdog_started_at = started_at;
-            let watchdog = std::thread::spawn(move || {
-                let remaining = timeout.saturating_sub(watchdog_started_at.elapsed());
-                if done_receiver.recv_timeout(remaining).is_err() {
-                    timeout_flag.store(true, Ordering::Release);
-                    timeout_cancelled.store(true, Ordering::Release);
-                }
-            });
-            let send_progress = |stage, completed| {
-                sender.send(MeshConversionTaskEvent::Progress(MeshConversionProgress {
+    let task = BackgroundTask::spawn(
+        "mesh-to-exact-conversion",
+        timeout,
+        move |context: &TaskContext<_, _>| {
+            let cancelled = context.cancellation();
+            let progress = |stage, completed| {
+                context.progress(MeshConversionProgress {
                     stage,
                     completed,
                     total: MESH_CONVERSION_PROGRESS_STEPS,
-                }))
+                })
             };
-            let result = (|| {
-                send_progress(MeshConversionStage::Recognizing, 0)
-                    .map_err(|_: mpsc::SendError<_>| MeshConversionError::Cancelled)?;
-                let plan = prepare_mesh_conversion_from_snapshot(
-                    snapshot,
-                    mutation_epoch,
-                    next_revision_id,
-                    source_feature_id,
-                    tolerance_mm,
-                    &worker_cancelled,
-                )?;
-                if worker_cancelled.load(Ordering::Acquire) {
-                    return Err(MeshConversionError::Cancelled);
-                }
-                send_progress(MeshConversionStage::EvaluatingExact, 1)
-                    .map_err(|_: mpsc::SendError<_>| MeshConversionError::Cancelled)?;
-                let mut worker =
-                    ExactWorkerSupervisor::spawn_with_cancellation(executable, &worker_cancelled)
-                        .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
-                let package = worker
-                    .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
-                        plan.graph(),
-                        &[],
-                        &worker_cancelled,
-                    )
-                    .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
-                send_progress(MeshConversionStage::Verifying, 2)
-                    .map_err(|_: mpsc::SendError<_>| MeshConversionError::Cancelled)?;
-                let verification =
-                    verify_mesh_conversion_with_cancellation(&plan, package, &worker_cancelled)?;
-                Ok(PreparedMeshConversion { plan, verification })
-            })();
-            let _ = done_sender.send(());
-            let _ = watchdog.join();
-            let result = if timed_out.load(Ordering::Acquire) || started_at.elapsed() >= timeout {
-                Err(MeshConversionError::TimedOut)
-            } else if worker_cancelled.load(Ordering::Acquire) {
-                Err(MeshConversionError::Cancelled)
-            } else {
-                result
-            };
-            if sender
-                .send(MeshConversionTaskEvent::Finished(Box::new(result)))
-                .is_ok()
-            {
-                let _ = std::thread::Builder::new()
-                    .name("mesh-conversion-completed".to_owned())
-                    .spawn(completed);
+            progress(MeshConversionStage::Recognizing, 0)?;
+            let plan = prepare_mesh_conversion_from_snapshot(
+                snapshot,
+                mutation_epoch,
+                next_revision_id,
+                source_feature_id,
+                tolerance_mm,
+                cancelled,
+            )?;
+            if context.is_cancelled() {
+                return Err(MeshConversionError::Cancelled);
             }
-        })?;
-    Ok(MeshConversionTask {
-        source,
-        cancelled,
-        receiver,
-        worker: Some(worker),
-    })
+            progress(MeshConversionStage::EvaluatingExact, 1)?;
+            let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, cancelled)
+                .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
+            let package = worker
+                .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+                    plan.graph(),
+                    &[],
+                    cancelled,
+                )
+                .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
+            progress(MeshConversionStage::Verifying, 2)?;
+            let verification = verify_mesh_conversion_with_cancellation(&plan, package, cancelled)?;
+            Ok(PreparedMeshConversion { plan, verification })
+        },
+        completed,
+    )?;
+    Ok(MeshConversionTask { source, task })
 }
 
 pub fn prepare_mesh_conversion(
@@ -1252,31 +1200,5 @@ mod tests {
                 "axis [0.0, 0.0, 0.0] has no direction".to_owned()
             ))
         );
-    }
-
-    #[test]
-    fn timed_out_wait_reaps_an_unresponsive_worker_asynchronously() {
-        let document = DocumentStore::new();
-        let source = MeshConversionSource::new(&document.current(), document.mutation_epoch());
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let (_event_sender, receiver) = mpsc::channel();
-        let (release_sender, release_receiver) = mpsc::channel::<()>();
-        let worker = std::thread::spawn(move || {
-            let _ = release_receiver.recv();
-        });
-        let task = MeshConversionTask {
-            source,
-            cancelled,
-            receiver,
-            worker: Some(worker),
-        };
-
-        let started_at = Instant::now();
-        let result = task.wait(Duration::ZERO);
-        let elapsed = started_at.elapsed();
-        let _ = release_sender.send(());
-
-        assert!(matches!(result, Err(MeshConversionError::TimedOut)));
-        assert!(elapsed < Duration::from_millis(500), "elapsed={elapsed:?}");
     }
 }

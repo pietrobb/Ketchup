@@ -27,7 +27,6 @@ crates/ketchup-app/tests/performance_ai_house.rs 4
 crates/ketchup-app/tests/production_performance.rs 2
 crates/ketchup-app/tests/timber_frame_house.rs 2
 crates/ketchup-application/tests/document_session.rs 1
-crates/ketchup-application/tests/mesh_conversion.rs 1
 crates/ketchup-headless/src/protocol.rs 3
 crates/ketchup-model/tests/exact_brep_graph_resources.rs 1
 crates/ketchup-scheduler/src/assistant_deadline_tests.rs 3
