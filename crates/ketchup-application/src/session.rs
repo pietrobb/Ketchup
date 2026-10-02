@@ -89,6 +89,7 @@ pub struct DocumentSession {
     recovery: Option<RecoveryState>,
     file_identity: Option<persistence::FileIdentity>,
     work_recovery_identity: Option<persistence::FileIdentity>,
+    work_recovery_lock: Option<persistence::WorkRecoveryLock>,
     pending_work_recovery_cleanup: Option<(PathBuf, persistence::FileIdentity)>,
     saved_digest: Option<String>,
     exact_results: ExactResultRegistry,
@@ -111,6 +112,7 @@ impl DocumentSession {
             recovery: None,
             file_identity: None,
             work_recovery_identity: None,
+            work_recovery_lock: None,
             pending_work_recovery_cleanup: None,
             saved_digest: None,
             exact_results: ExactResultRegistry::default(),
@@ -122,6 +124,8 @@ impl DocumentSession {
     /// Review-only and invalid input never replaces a live session.
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
         let requested_path = path.as_ref();
+        let recovery_lock = persistence::WorkRecoveryLock::acquire(requested_path)
+            .map_err(SessionError::Persistence)?;
         let loaded = persistence::load_file_with_source(requested_path)
             .map_err(SessionError::Persistence)?;
         let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
@@ -142,6 +146,7 @@ impl DocumentSession {
                 .is_none()
                 .then(|| persistence::FileIdentity::from_bytes(&source_bytes)),
             work_recovery_identity,
+            work_recovery_lock: work_recovery_identity.map(|_| recovery_lock),
             pending_work_recovery_cleanup: None,
             recovery,
             saved_digest,
@@ -176,6 +181,28 @@ impl DocumentSession {
         preserve_history: bool,
     ) -> Result<(), SessionError> {
         self.retry_pending_work_recovery_cleanup()?;
+        let owns_target = self.work_recovery_lock.is_some()
+            && (self.path.as_deref() == Some(path)
+                || self
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|recovery| recovery.requested_path == path));
+        let _target_lock = if owns_target {
+            None
+        } else {
+            Some(persistence::WorkRecoveryLock::acquire(path).map_err(SessionError::Persistence)?)
+        };
+        let active_target = self.path.as_deref() == Some(path)
+            || self
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.requested_path == path);
+        let expected_recovery = active_target
+            .then_some(self.work_recovery_identity)
+            .flatten();
+        persistence::check_work_recovery_identity(path, expected_recovery)
+            .map_err(SessionError::Persistence)?;
+        let mut publication_error = None;
         let saved_bytes = if preserve_history {
             persistence::save_document_store(&self.document, &self.container_data)
         } else {
@@ -221,7 +248,12 @@ impl DocumentSession {
                     )
                 }
             };
-            result.map_err(SessionError::Persistence)?;
+            if let Err(error) = result {
+                if error.published_identity(path).is_none() {
+                    return Err(SessionError::Persistence(error));
+                }
+                publication_error = Some(error);
+            }
         } else {
             let result = if preserve_history {
                 persistence::save_atomic_document_store_with_container_if_absent(
@@ -236,7 +268,12 @@ impl DocumentSession {
                     &self.container_data,
                 )
             };
-            result.map_err(SessionError::Persistence)?;
+            if let Err(error) = result {
+                if error.published_identity(path).is_none() {
+                    return Err(SessionError::Persistence(error));
+                }
+                publication_error = Some(error);
+            }
         }
         if !preserve_history {
             self.document.discard_history_before_current();
@@ -256,8 +293,12 @@ impl DocumentSession {
         self.recovery = None;
         self.file_identity = Some(saved_identity);
         self.work_recovery_identity = None;
+        self.work_recovery_lock = None;
         self.saved_digest = Some(self.document.history_digest());
-        Ok(())
+        match publication_error {
+            Some(error) => Err(SessionError::Persistence(error)),
+            None => Ok(()),
+        }
     }
     pub fn snapshot(&self) -> Snapshot {
         self.document.current()
@@ -286,19 +327,20 @@ impl DocumentSession {
         self.pending_work_recovery_cleanup = None;
         Ok(())
     }
+    fn acquire_work_recovery_lock(&mut self) -> Result<(), SessionError> {
+        if self.work_recovery_lock.is_none()
+            && let Some(path) = &self.path
+        {
+            self.work_recovery_lock = Some(
+                persistence::WorkRecoveryLock::acquire(path).map_err(SessionError::Persistence)?,
+            );
+        }
+        Ok(())
+    }
     pub fn write_work_recovery_checkpoint(&mut self) -> Result<bool, SessionError> {
         let _ = self.retry_pending_work_recovery_cleanup();
-        let identity = Self::write_work_recovery_checkpoint_for(
-            &self.document,
-            &self.container_data,
-            self.path.as_deref(),
-            self.file_identity,
-            self.saved_digest.as_deref(),
-            self.work_recovery_identity,
-        )?;
-        let written = identity.is_some();
-        self.work_recovery_identity = identity;
-        Ok(written)
+        self.mutate_with_work_recovery(|_| Ok(()))?;
+        Ok(self.work_recovery_identity.is_some())
     }
     fn write_work_recovery_checkpoint_for(
         document: &DocumentStore,
@@ -317,11 +359,12 @@ impl DocumentSession {
                 .map_err(SessionError::Persistence)?;
             return Ok(None);
         }
-        persistence::save_work_recovery_document_store_with_container(
+        persistence::save_work_recovery_document_store_with_container_if_unchanged(
             path,
             document,
             container_data,
             identity,
+            work_recovery_identity,
         )
         .map(Some)
         .map_err(SessionError::Persistence)
@@ -374,25 +417,52 @@ impl DocumentSession {
         &mut self,
         mutate: impl FnOnce(&mut DocumentStore) -> Result<T, SessionError>,
     ) -> Result<T, SessionError> {
+        self.acquire_work_recovery_lock()?;
+        let before = self.snapshot();
         let container_data = &self.container_data;
         let path = self.path.as_deref();
         let file_identity = self.file_identity;
         let saved_digest = self.saved_digest.as_deref();
         let work_recovery_identity = self.work_recovery_identity;
         let mut next_work_recovery_identity = work_recovery_identity;
+        let mut publication_error = None;
         let result = self.document.try_canonical_transaction(mutate, |document| {
-            next_work_recovery_identity = Self::write_work_recovery_checkpoint_for(
+            let checkpoint = Self::write_work_recovery_checkpoint_for(
                 document,
                 container_data,
                 path,
                 file_identity,
                 saved_digest,
                 work_recovery_identity,
-            )?;
+            );
+            match checkpoint {
+                Ok(identity) => next_work_recovery_identity = identity,
+                Err(SessionError::Persistence(error))
+                    if path.is_some_and(|path| {
+                        error
+                            .published_identity(&persistence::work_recovery_path(path))
+                            .is_some()
+                    }) =>
+                {
+                    next_work_recovery_identity = path.and_then(|path| {
+                        error.published_identity(&persistence::work_recovery_path(path))
+                    });
+                    publication_error = Some(SessionError::Persistence(error));
+                }
+                Err(error) => return Err(error),
+            }
             Ok(())
         });
         if result.is_ok() {
             self.work_recovery_identity = next_work_recovery_identity;
+        }
+        if self.work_recovery_identity.is_none() {
+            self.work_recovery_lock = None;
+        }
+        if let Some(error) = publication_error {
+            self.update_incremental_exact_plan(&before);
+            self.rebind();
+            return Err(error);
         }
         result
     }

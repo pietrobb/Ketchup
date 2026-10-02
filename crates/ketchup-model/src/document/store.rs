@@ -130,6 +130,19 @@ impl DocumentStore {
         self.revisions[self.cursor].snapshot.clone()
     }
 
+    /// An independent planning view sharing immutable history, without confirmation authority.
+    #[must_use]
+    pub fn fork_for_planning(&self) -> Self {
+        Self {
+            revisions: self.revisions.clone(),
+            cursor: self.cursor,
+            next_revision_id: self.next_revision_id,
+            mutation_epoch: Self::fresh_mutation_epoch(),
+            evaluation_registry: self.evaluation_registry.clone(),
+            human_confirmation_policy: None,
+        }
+    }
+
     #[must_use]
     pub fn current_rule_program(&self) -> Option<&RuleProgramSource> {
         self.revisions[self.cursor].rule_program()
@@ -707,7 +720,9 @@ impl DocumentStore {
             .find(|revision| revision.id == target_revision)
             .cloned()
             .ok_or(RevisionHistoryError::RevisionNotFound(target_revision))?;
-        if target.snapshot.canonical_digest() == current.snapshot.canonical_digest() {
+        if target.snapshot.canonical_digest() == current.snapshot.canonical_digest()
+            && target.rule_program == current.rule_program
+        {
             return Err(RevisionHistoryError::NoOpRollback);
         }
         let revision_id = self.next_revision_id;

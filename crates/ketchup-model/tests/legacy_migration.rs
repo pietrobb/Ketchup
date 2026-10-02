@@ -1,6 +1,6 @@
-//! Every native document committed to the repository was written by an older
-//! schema. Each must still open, migrate to the current format, and reopen as the
-//! same model. Digests the old files store must name the current digests afterwards.
+//! Every committed native document must open and roundtrip without changing its
+//! model. Older writers can have different digests; current documents need no
+//! migration. The fixture set must exercise both cases.
 
 use std::path::{Path, PathBuf};
 
@@ -57,6 +57,8 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
 
     let mut audited_recipes = 0;
     let mut rejected = 0;
+    let mut changed_digests = 0;
+    let mut unchanged_digests = 0;
     for path in documents {
         let bytes = std::fs::read(&path).unwrap();
         if path
@@ -76,12 +78,11 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
         let source_schema = loaded.source_schema();
         let snapshot = loaded.snapshot();
         let editable = loaded.is_editable();
-        assert_ne!(
-            loaded.audit().source_canonical_digest,
-            snapshot.canonical_digest(),
-            "{} keeps the digest its writer computed",
-            path.display()
-        );
+        if loaded.audit().source_canonical_digest == snapshot.canonical_digest() {
+            unchanged_digests += 1;
+        } else {
+            changed_digests += 1;
+        }
         if let Some(recipe) = snapshot.assembly_recipe() {
             recipe.audit(&snapshot).unwrap_or_else(|error| {
                 panic!(
@@ -103,14 +104,27 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
             path.display()
         );
         assert_eq!(reopened.is_editable(), editable, "{}", path.display());
+        let reopened_snapshot = reopened.snapshot();
+        assert_eq!(
+            reopened_snapshot.occurrences().collect::<Vec<_>>(),
+            snapshot.occurrences().collect::<Vec<_>>(),
+            "{} changed occurrence geometry or placement",
+            path.display()
+        );
+        assert_eq!(
+            reopened_snapshot.features().collect::<Vec<_>>(),
+            snapshot.features().collect::<Vec<_>>(),
+            "{} changed model features",
+            path.display()
+        );
         assert_eq!(
             reopened.audit().source_canonical_digest,
-            reopened.snapshot().canonical_digest(),
+            reopened_snapshot.canonical_digest(),
             "{}",
             path.display()
         );
         assert_eq!(
-            reopened.snapshot().canonical_digest(),
+            reopened_snapshot.canonical_digest(),
             snapshot.canonical_digest(),
             "{} (schema {source_schema}) changed during migration",
             path.display()
@@ -122,4 +136,9 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
         "no committed document has an assembly recipe"
     );
     assert!(rejected > 0, "no committed invalid document is exercised");
+    assert!(changed_digests > 0, "no older writer digest is migrated");
+    assert!(
+        unchanged_digests > 0,
+        "no unchanged writer digest is exercised"
+    );
 }

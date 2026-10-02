@@ -148,7 +148,7 @@ def gravity_current(doc, expected_state, unsupported_id=None):
     assert any("native BRep face intersection" in text and
                "OBB-only contact remains unresolved" in text
                for text in gravity["assumptions"])
-    # floor_z_mm is legacy report metadata, NOT a synthetic supporting solid.
+    # Derived roles include the world XY floor under -Z gravity.
     count = 0 if unsupported_id is None else 1
     assert gravity["unsupported_count"] == report["issue_count"] == count
     assert report["issues"] == gravity["issues"]
@@ -224,14 +224,14 @@ def test_from_empty_hole_support_and_fresh_process_roundtrip(native_paths, tmp_p
         evaluate_current(doc, expected)
         gravity_current(doc, "passed")
 
-        # Negative control: merely touching world z=0 never seeds support.
+        # Floor support is automatic; lifting the ungrounded assembly removes it.
         doc.set_grounded([foundation_id], False)
-        ungrounded = doc.state
+        gravity_current(doc, "passed"); doc.move([foundation_id, second_id], [0, 0, 50]); ungrounded = doc.state
         no_ground = doc.validators.run(["gravity_support"])
         assert_bound(no_ground, ungrounded)
         assert no_ground["state"] == no_ground["gravity_support"]["state"] == "not_evaluated"
         assert no_ground["complete"] is False and no_ground["not_evaluated"]
-        doc.set_grounded([foundation_id], True)
+        doc.move([foundation_id, second_id], [0, 0, -50]); doc.set_grounded([foundation_id], True)
         _, saved_geometry = evaluate_current(doc, expected)
         saved_gravity = gravity_current(doc, "passed")
         before_save = doc.state

@@ -12,6 +12,93 @@ use ketchup_model::testing::with_document_id;
 use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_model::tolerance::limits;
 
+#[test]
+fn duplicate_extension_keeps_original_payload_and_requirement_after_roundtrip() {
+    let mut data = persistence::ContainerData::default();
+    let original =
+        persistence::ExtensionEntry::new("org.example.audit", "data.bin", false, b"A".to_vec())
+            .unwrap();
+    data.insert_extension(original.clone()).unwrap();
+    assert!(
+        data.insert_extension(
+            persistence::ExtensionEntry::new("org.example.audit", "data.bin", true, b"B".to_vec())
+                .unwrap()
+        )
+        .is_err()
+    );
+    assert_eq!(data.extensions().next(), Some(&original));
+    let bytes = persistence::save_document_store(&graph_document(), &data).unwrap();
+    let (_, reopened) = persistence::load(&bytes)
+        .unwrap()
+        .into_editable_with_container()
+        .unwrap_or_else(|_| panic!("expected editable roundtrip"));
+    assert_eq!(reopened.extensions().next(), Some(&original));
+}
+
+#[test]
+fn source_only_rollback_restores_source_and_overrides_through_save_open() {
+    use ketchup_model::document::RuleProgramSource;
+    let mut document = graph_document();
+    let source = RuleProgramSource {
+        file_name: "model.star".into(),
+        source: "# A\n".into(),
+        overrides: std::collections::BTreeMap::from([("H".into(), 10.0)]),
+    };
+    document.bind_rule_program(source.clone()).unwrap();
+    let target = document.current().revision_id();
+    let mut changed = source.clone();
+    changed.source = "# B\n".into();
+    changed.overrides.insert("H".into(), 20.0);
+    document
+        .replace_rule_program_source(changed.clone())
+        .unwrap();
+    let before = document.current();
+    document
+        .rollback_to_revision(
+            before.revision_id(),
+            &before.canonical_digest(),
+            target,
+            ProposalPrincipal::ManualClient,
+        )
+        .unwrap();
+    assert_eq!(document.current_rule_program(), Some(&source));
+    document.undo().unwrap();
+    assert_eq!(document.current_rule_program(), Some(&changed));
+    document.redo().unwrap();
+    assert_eq!(document.current_rule_program(), Some(&source));
+    let bytes = persistence::save_document_store(&document, &persistence::ContainerData::default())
+        .unwrap();
+    let (reopened, _) = persistence::load(&bytes)
+        .unwrap()
+        .into_editable_with_container()
+        .unwrap_or_else(|_| panic!("expected editable roundtrip"));
+    assert_eq!(reopened.current_rule_program(), Some(&source));
+    let current = document.current();
+    assert!(matches!(
+        document.rollback_to_revision(
+            current.revision_id(),
+            &current.canonical_digest(),
+            target,
+            ProposalPrincipal::ManualClient
+        ),
+        Err(RevisionHistoryError::NoOpRollback)
+    ));
+    // Overrides alone also form a distinct revision with the same product.
+    let mut override_only = source.clone();
+    override_only.overrides.insert("H".into(), 30.0);
+    document.replace_rule_program_source(override_only).unwrap();
+    let current = document.current();
+    document
+        .rollback_to_revision(
+            current.revision_id(),
+            &current.canonical_digest(),
+            target,
+            ProposalPrincipal::ManualClient,
+        )
+        .unwrap();
+    assert_eq!(document.current_rule_program(), Some(&source));
+}
+
 fn load_error(bytes: &[u8]) -> PersistenceError {
     match persistence::load(bytes) {
         Ok(_) => panic!("invalid document loaded"),
@@ -1346,6 +1433,15 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
     let clean = persistence::load_file_with_source(&path).unwrap();
     assert_eq!(clean.source_path(), path);
     assert_ne!(clean.outcome().snapshot().canonical_digest(), dirty_digest);
+    assert!(
+        persistence::clear_work_recovery(
+            &path,
+            Some(persistence::FileIdentity::from_bytes(
+                b"interrupted checkpoint"
+            ))
+        )
+        .unwrap()
+    );
 
     persistence::save_work_recovery_document_store_with_container(
         &path,
@@ -1399,6 +1495,17 @@ fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
     )
     .unwrap();
 
+    let preserved = std::fs::read(&work_recovery).unwrap();
+    assert!(
+        persistence::save_work_recovery_document_store_with_container(
+            &path,
+            &graph_document(),
+            &container_data,
+            base_identity
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&work_recovery).unwrap(), preserved);
     let mut second = graph_document();
     second
         .apply_batch(&CommandBatch::new(vec![
@@ -1408,13 +1515,15 @@ fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
             },
         ]))
         .unwrap();
-    let second_checkpoint_identity = persistence::save_work_recovery_document_store_with_container(
-        &path,
-        &second,
-        &container_data,
-        base_identity,
-    )
-    .unwrap();
+    let second_checkpoint_identity =
+        persistence::save_work_recovery_document_store_with_container_if_unchanged(
+            &path,
+            &second,
+            &container_data,
+            base_identity,
+            Some(first_checkpoint_identity),
+        )
+        .unwrap();
     let newer_checkpoint = std::fs::read(&work_recovery).unwrap();
 
     assert!(!persistence::clear_work_recovery(&path, Some(first_checkpoint_identity)).unwrap());

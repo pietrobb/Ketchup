@@ -34,6 +34,78 @@ use std::{
 mod product_integration;
 #[path = "program_tests.rs"]
 mod program_edit;
+#[test]
+fn optional_expected_rejects_replaced_document_without_camera_or_query_effects() {
+    let (mut app, mut bridge) = setup();
+    let expected = app.live_bridge_stamp();
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("other.ketchup");
+    let mut other = KetchupApp::new();
+    other.new_document();
+    ketchup_model::persistence::save_atomic(&path, &other.document.current()).unwrap();
+    assert!(app.open_document_path(&path));
+    let camera = (
+        app.camera.yaw,
+        app.camera.pitch,
+        app.camera.zoom,
+        app.camera.pan,
+    );
+    let scene = app.document.current().scene_query();
+    let history = (app.undo_step_count(), app.redo_step_count());
+    let requests = [
+        json!({"method":"query","query":{"kind":"occurrences","limit":10}}),
+        json!({"method":"detail","kind":"occurrences","entity_id":1}),
+        json!({"method":"edit_context","targets":[{"root_occurrence_id":1,"steps":[]}]}),
+        json!({"method":"workset_status","handle":"missing"}),
+        json!({"method":"batch_job_status","handle":"missing"}),
+        json!({"method":"view","view":"top"}),
+    ];
+    for mut request in requests {
+        request["expected"] = serde_json::to_value(&expected).unwrap();
+        assert_eq!(
+            bridge.execute(&mut app, serde_json::from_value(request).unwrap(), false),
+            Err("stale_document")
+        );
+    }
+    assert_eq!(
+        (
+            app.camera.yaw,
+            app.camera.pitch,
+            app.camera.zoom,
+            app.camera.pan
+        ),
+        camera
+    );
+    assert_eq!(app.document.current().scene_query(), scene);
+    assert_eq!((app.undo_step_count(), app.redo_step_count()), history);
+    for expected in [None, Some(app.live_bridge_stamp())] {
+        let page = bridge
+            .execute(
+                &mut app,
+                Request::Query {
+                    expected: expected.clone(),
+                    query: serde_json::from_value(json!({"kind":"occurrences","limit":10}))
+                        .unwrap(),
+                },
+                false,
+            )
+            .unwrap();
+        assert!(page["items"].as_array().unwrap().is_empty());
+        assert!(
+            bridge
+                .execute(
+                    &mut app,
+                    Request::View {
+                        expected,
+                        view: View::Top
+                    },
+                    false
+                )
+                .is_ok()
+        );
+    }
+}
+
 fn program() -> AssistantCadEditProgram {
     AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::SetColor {
@@ -113,7 +185,7 @@ fn exact_fingerprints(app: &KetchupApp) -> Vec<String> {
     fingerprints.sort();
     fingerprints
 }
-fn setup() -> (KetchupApp, LiveBridge) {
+pub(super) fn setup() -> (KetchupApp, LiveBridge) {
     let mut app = KetchupApp::new();
     app.selection.clear();
     let bridge = transport::start(egui::Context::default()).unwrap();

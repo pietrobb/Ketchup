@@ -216,9 +216,18 @@ impl PendingBootstrap {
             .map_err(|error| BootstrapError::BridgeStart(error.kind()))?;
         let address = bridge.address;
         app.live.bridge = Some(bridge);
+        // A launcher reads only its child's pipe, never a global discovery race.
+        let mut ready =
+            serde_json::json!({"version": 1, "live_bridge_address": address.to_string()});
+        if let (Some(instance_id), Some(consent_address)) =
+            (app.live_consent_instance_id(), app.live_consent_address())
+        {
+            ready["instance_id"] = instance_id.into();
+            ready["consent_address"] = consent_address.to_string().into();
+        }
         let result = with_deadline(move || {
-            // SocketAddr is bound internally to IPv4 loopback; never credential data.
-            let line = format!("{{\"version\":1,\"live_bridge_address\":\"{address}\"}}\n");
+            // Readiness contains public addresses/identity only, never the token.
+            let line = format!("{ready}\n");
             readiness
                 .write_all(line.as_bytes())
                 .map_err(|error| BootstrapError::Readiness(error.kind()))?;

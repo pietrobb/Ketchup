@@ -9,7 +9,11 @@ pub(super) fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, CanonicalEr
 
 pub(super) fn group_is_descendant(product: &ProductModel, root: GroupId, target: GroupId) -> bool {
     let mut cursor = Some(target);
+    let mut visited = BTreeSet::new();
     while let Some(candidate) = cursor {
+        if !visited.insert(candidate) {
+            return false;
+        }
         if candidate == root {
             return true;
         }
@@ -42,7 +46,11 @@ pub(super) fn world_group_lineage(
 ) -> Result<Vec<GroupId>, CanonicalError> {
     let mut lineage = Vec::new();
     let mut cursor = Some(target);
+    let mut visited = BTreeSet::new();
     while let Some(id) = cursor {
+        if !visited.insert(id) {
+            return Err(CanonicalError::GroupCycle(id));
+        }
         let group = product
             .groups
             .get(&id)
@@ -61,7 +69,11 @@ pub(super) fn group_lineage(
 ) -> Result<Vec<GroupId>, CanonicalError> {
     let mut lineage = Vec::new();
     let mut cursor = Some(target);
+    let mut visited = BTreeSet::new();
     while let Some(id) = cursor {
+        if !visited.insert(id) {
+            return Err(CanonicalError::GroupCycle(id));
+        }
         lineage.push(id);
         if id == root {
             lineage.reverse();

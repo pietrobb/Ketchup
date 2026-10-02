@@ -442,6 +442,7 @@ fn background_wait_does_not_join_a_blocked_completion_callback() {
 
 #[test]
 fn background_task_commits_on_the_monotonic_revision_after_undo_branch() {
+    let _turn = crate::integration_support::file_turn();
     let mut document = document(prism(
         &[[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
         8.0,

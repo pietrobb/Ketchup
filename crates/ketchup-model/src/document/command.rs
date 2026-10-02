@@ -537,8 +537,8 @@ impl ProposalBudget {
     };
 
     /// A rule program is compiled into commands by Kečup itself, not proposed
-    /// command by command, so one program (a whole cabinet with every dowel
-    /// hole) gets a budget far above the per-edit [`Self::HOST_MAX`].
+    /// command by command, so one program (a whole assembly with every
+    /// machined feature) gets a budget far above the per-edit [`Self::HOST_MAX`].
     pub const RULE_PROGRAM: Self = Self {
         max_commands: 200_000,
         max_read_dependencies: 200_000,

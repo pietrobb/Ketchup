@@ -1,8 +1,8 @@
 //! In-window consent broker for attaching to an already-open Ketchup window.
 //!
-//! The loopback request carries no credential. Every local attach is granted at once
-//! and receives a fresh bridge credential over that same socket; a newer attach
-//! replaces the previous client.
+//! Attach requires a random bootstrap from the OS-protected per-user registry.
+//! Only authenticated requests reach the UI and can replace a previous client.
+//! No manual token entry or additional confirmation is needed.
 use super::{KetchupApp, egui, transport};
 use crate::dialogs::HighRiskConfirmationRequest;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,8 @@ struct AttachRequest {
     version: u32,
     action: String,
     nonce: String,
+    #[serde(default)]
+    bootstrap: String,
 }
 
 #[derive(Serialize)]
@@ -103,10 +105,11 @@ struct RegistryEntry<'a> {
     version: u32,
     instance_id: &'a str,
     consent_address: String,
+    bootstrap: &'a str,
 }
 
 impl KetchupApp {
-    /// Start the nonsecret loopback consent endpoint for this already-open window.
+    /// Start the bootstrap-authenticated endpoint for this already-open window.
     pub fn enable_live_consent_broker(
         &mut self,
         context: &egui::Context,
@@ -324,14 +327,16 @@ fn publish_registry_entry(
     root: &Path,
     instance_id: &str,
     address: SocketAddr,
+    bootstrap: &str,
 ) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
-    publish_registry_entry_before_publish(root, instance_id, address, || {})
+    publish_registry_entry_before_publish(root, instance_id, address, bootstrap, || {})
 }
 
 fn publish_registry_entry_before_publish(
     root: &Path,
     instance_id: &str,
     address: SocketAddr,
+    bootstrap: &str,
     before_publish: impl FnOnce(),
 ) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
     prepare_discovery_root(root)?;
@@ -340,6 +345,7 @@ fn publish_registry_entry_before_publish(
         version: 1,
         instance_id,
         consent_address: address.to_string(),
+        bootstrap,
     })
     .map_err(io::Error::other)?;
     if bytes.len() > MAX_CONSENT_BYTES {
@@ -347,7 +353,7 @@ fn publish_registry_entry_before_publish(
     }
     let mut temporary = tempfile::Builder::new()
         .prefix(".ketchup-registry-")
-        .tempfile_in(root)?;
+        .make_in(root, ketchup_mcp::local_auth::create)?;
     temporary.write_all(&bytes)?;
     temporary.as_file_mut().sync_all()?;
     before_publish();
@@ -378,8 +384,9 @@ fn start(
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?;
     let instance_id = random_instance_id()?;
+    let bootstrap = format!("{}{}", random_instance_id()?, random_instance_id()?);
     let (registry_path, registry_identity) =
-        publish_registry_entry(discovery_root, &instance_id, address)?;
+        publish_registry_entry(discovery_root, &instance_id, address, &bootstrap)?;
     let discovery = Arc::new(Mutex::new(DiscoveryState {
         document,
         available,
@@ -411,6 +418,7 @@ fn start(
                         let connection_delivery_sender = delivery_sender.clone();
                         let connection_context = context.clone();
                         let connection_instance_id = worker_instance_id.clone();
+                        let connection_bootstrap = bootstrap.clone();
                         let connection_discovery = Arc::clone(&worker_discovery);
                         let connection_stop = Arc::clone(&stop);
                         if let Ok(handler) = std::thread::Builder::new()
@@ -422,6 +430,7 @@ fn start(
                                     &connection_delivery_sender,
                                     &connection_context,
                                     &connection_instance_id,
+                                    &connection_bootstrap,
                                     &connection_discovery,
                                     &connection_stop,
                                 );
@@ -458,12 +467,14 @@ fn start(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve(
     mut stream: TcpStream,
     sender: &mpsc::SyncSender<PendingConsent>,
     delivery_sender: &mpsc::Sender<bool>,
     context: &egui::Context,
     instance_id: &str,
+    bootstrap: &str,
     discovery: &Mutex<DiscoveryState>,
     stop: &AtomicBool,
 ) {
@@ -480,6 +491,23 @@ fn serve(
                 })?
                 .clone();
             return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
+        }
+        if !valid_nonce(&request.bootstrap)
+            || request
+                .bootstrap
+                .as_bytes()
+                .iter()
+                .zip(bootstrap.bytes())
+                .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+                != 0
+        {
+            return write_response(
+                &mut stream,
+                &nonce,
+                instance_id,
+                ConsentDecision::Reject,
+                stop,
+            );
         }
         let (decision, receiver) = mpsc::sync_channel(1);
         if sender.try_send(PendingConsent { decision }).is_err() {
@@ -700,6 +728,7 @@ mod tests {
             directory.path(),
             instance_id,
             "127.0.0.1:12345".parse().unwrap(),
+            &"a".repeat(64),
             || {
                 assert!(
                     !path.exists(),
@@ -725,12 +754,11 @@ mod tests {
         )
         .unwrap();
         let mut attach = TcpStream::connect(broker.address).unwrap();
-        attach
-            .write_all(
-                br#"{"version":1,"action":"attach","nonce":"0000000000000000000000000000000000000000000000000000000000000000"}
-"#,
-            )
-            .unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        writeln!(attach, "{}", serde_json::json!({"version":1,"action":"attach","nonce":"0".repeat(64),"bootstrap":registry["bootstrap"]})).unwrap();
         let pending = broker
             .requests
             .recv_timeout(Duration::from_secs(1))
@@ -763,12 +791,11 @@ mod tests {
         )
         .unwrap();
         let mut attach = TcpStream::connect(broker.address).unwrap();
-        attach
-            .write_all(
-                br#"{"version":1,"action":"attach","nonce":"2222222222222222222222222222222222222222222222222222222222222222"}
-"#,
-            )
-            .unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        writeln!(attach, "{}", serde_json::json!({"version":1,"action":"attach","nonce":"2".repeat(64),"bootstrap":registry["bootstrap"]})).unwrap();
         let pending = broker
             .requests
             .recv_timeout(Duration::from_secs(1))
@@ -809,6 +836,7 @@ mod tests {
             directory.path(),
             instance_id,
             "127.0.0.1:12345".parse().unwrap(),
+            &"a".repeat(64),
         )
         .unwrap_err();
 

@@ -1,17 +1,17 @@
-//! `apply_program` publishes on the UI thread at once. When parts whose solid
-//! is not their box (profile bodies, moved faces, booleans) touch or overlap
-//! others, the reply waits for the native exact pair check of the applied
-//! solids, which runs on a worker thread so the window stays responsive.
+//! Program planning and exact checks run off the UI thread. Publication remains
+//! one UI-thread transaction, guarded by the original document and request authority.
+#[cfg(test)]
+#[path = "program_plan_tests.rs"]
+mod tests;
 use super::*;
 use crate::program_edit::ProgramEdit;
+use ketchup_application::{RuleProgramApplyError, RuleProgramPlan};
+use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
 
-/// Host budget for the exact check of one applied program; the SDK waits longer.
 pub(super) const PROGRAM_EXACT_TIMEOUT: Duration = Duration::from_secs(20);
-/// Extra time for worker startup and graph preparation before the poller gives up.
 const PROGRAM_EXACT_GRACE: Duration = Duration::from_secs(5);
 
-/// A published program edit, before its reply is built.
 pub(super) struct AppliedProgram {
     edit: ProgramEdit,
     report: Report,
@@ -40,7 +40,22 @@ impl AppliedProgram {
     }
 }
 
-pub(super) struct ProgramCheckJob {
+pub(super) enum ProgramCheckJob {
+    Planning(ProgramPlanJob),
+    Checking(Box<ExactCheckJob>),
+}
+
+pub(super) struct ProgramPlanJob {
+    id: u64,
+    reply: mpsc::SyncSender<Response>,
+    cancelled: Arc<AtomicBool>,
+    source: RuleProgramSource,
+    replace: bool,
+    before: Stamp,
+    receiver: mpsc::Receiver<Result<RuleProgramPlan, RuleProgramApplyError>>,
+}
+
+pub(super) struct ExactCheckJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
     cancelled: Arc<AtomicBool>,
@@ -55,14 +70,12 @@ fn unfinished(reason: &str) -> Value {
 }
 
 impl LiveBridge {
-    /// Evaluates and publishes one `Request::ApplyProgram` as one Undo step.
-    pub(super) fn apply_program(
-        &mut self,
-        app: &mut KetchupApp,
+    fn program_source(
+        app: &KetchupApp,
         request: Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-    ) -> Result<AppliedProgram, &'static str> {
+    ) -> Result<(RuleProgramSource, bool), &'static str> {
         let Request::ApplyProgram {
             expected,
             source,
@@ -75,6 +88,7 @@ impl LiveBridge {
         };
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
+        Self::require_request_authority(cancelled)?;
         let file_name = file_name
             .or_else(|| {
                 app.document
@@ -82,18 +96,46 @@ impl LiveBridge {
                     .map(|program| program.file_name.clone())
             })
             .unwrap_or_else(|| "model.star".to_owned());
+        Ok((
+            RuleProgramSource {
+                file_name,
+                source,
+                overrides,
+            },
+            replace_document,
+        ))
+    }
+
+    // The synchronous executor is used by the in-process harness. The live queue
+    // uses start_queued_apply_program, but both publish through this same path.
+    pub(super) fn apply_program(
+        &mut self,
+        app: &mut KetchupApp,
+        request: Request,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<AppliedProgram, &'static str> {
+        let (source, replace) = Self::program_source(app, request, ui_busy, cancelled)?;
+        let before = app.live_bridge_stamp();
+        let plan = ketchup_application::plan_rule_program(&app.document, &source)
+            .map_err(program_failure)?;
+        self.publish_program(app, source, replace, plan, &before, cancelled)
+    }
+
+    fn publish_program(
+        &mut self,
+        app: &mut KetchupApp,
+        source: RuleProgramSource,
+        replace: bool,
+        plan: RuleProgramPlan,
+        before_stamp: &Stamp,
+        cancelled: &AtomicBool,
+    ) -> Result<AppliedProgram, &'static str> {
+        Self::guard(app, &Some(before_stamp.clone()))?;
         Self::require_request_authority(cancelled)?;
         let before = app.document.current();
-        let before_stamp = app.live_bridge_stamp();
         let (edit, report, model) = app
-            .apply_program_source(
-                ketchup_model::document::RuleProgramSource {
-                    file_name,
-                    source,
-                    overrides,
-                },
-                replace_document,
-            )
+            .publish_program_plan(source, replace, Vec::new(), plan)
             .map_err(program_failure)?;
         self.pending = None;
         let stamp = app.live_bridge_stamp();
@@ -114,7 +156,6 @@ impl LiveBridge {
         })
     }
 
-    /// Publishes the program, then replies at once or after the exact check.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn start_queued_apply_program(
         &mut self,
@@ -134,19 +175,112 @@ impl LiveBridge {
                 &reply,
                 Err(failure(
                     "busy",
-                    "An earlier program apply is still checking its geometry in the window.",
+                    "An earlier program apply is still planning or checking its geometry.",
                     json!({}),
                 )),
             );
             return;
         }
-        let applied = match self.apply_program(app, request, ui_busy, &cancelled) {
-            Ok(applied) => applied,
+        let (source, replace) = match Self::program_source(app, request, ui_busy, &cancelled) {
+            Ok(source) => source,
             Err(code) => {
                 Self::reply(app, id, &reply, Err(code));
                 return;
             }
         };
+        let document = app.document.fork_for_planning();
+        let before = app.live_bridge_stamp();
+        let worker_source = source.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let repaint = context.clone();
+        let spawn = std::thread::Builder::new()
+            .name("ketchup-live-program-plan".into())
+            .spawn(move || {
+                let result = ketchup_application::plan_rule_program(&document, &worker_source);
+                let _ = sender.try_send(result);
+                repaint.request_repaint();
+            });
+        if let Err(error) = spawn {
+            Self::reply(
+                app,
+                id,
+                &reply,
+                Err(failure(
+                    "job_worker_unavailable",
+                    "Could not start the program planner.",
+                    json!({"cause": error.to_string()}),
+                )),
+            );
+            return;
+        }
+        self.program_check_job = Some(ProgramCheckJob::Planning(ProgramPlanJob {
+            id,
+            reply,
+            cancelled,
+            source,
+            replace,
+            before,
+            receiver,
+        }));
+        context.request_repaint_after(Duration::from_millis(10));
+    }
+
+    fn poll_program_plan(
+        &mut self,
+        app: &mut KetchupApp,
+        context: &egui::Context,
+        job: ProgramPlanJob,
+    ) {
+        let result = match job.receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => {
+                self.program_check_job = Some(ProgramCheckJob::Planning(job));
+                context.request_repaint_after(Duration::from_millis(10));
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Self::reply(
+                    app,
+                    job.id,
+                    &job.reply,
+                    Err(failure(
+                        "program_worker_disconnected",
+                        "The program planner stopped before returning a result.",
+                        json!({}),
+                    )),
+                );
+                return;
+            }
+        };
+        take_error_details();
+        let result = Self::available(app, ui_busy(context)).and_then(|()| {
+            let plan = result.map_err(program_failure)?;
+            self.publish_program(
+                app,
+                job.source,
+                job.replace,
+                plan,
+                &job.before,
+                &job.cancelled,
+            )
+        });
+        match result {
+            Ok(applied) => {
+                self.start_program_exact(app, context, job.id, job.reply, job.cancelled, applied)
+            }
+            Err(code) => Self::reply(app, job.id, &job.reply, Err(code)),
+        }
+    }
+
+    fn start_program_exact(
+        &mut self,
+        app: &KetchupApp,
+        context: &egui::Context,
+        id: u64,
+        reply: mpsc::SyncSender<Response>,
+        cancelled: Arc<AtomicBool>,
+        applied: AppliedProgram,
+    ) {
         if !applied.needs_exact_check() {
             Self::reply(app, id, &reply, Ok(applied.result(None)));
             return;
@@ -176,11 +310,15 @@ impl LiveBridge {
                 repaint.request_repaint();
             });
         if spawn.is_err() {
-            let result = applied.result(Some(unfinished("job_worker_unavailable")));
-            Self::reply(app, id, &reply, Ok(result));
+            Self::reply(
+                app,
+                id,
+                &reply,
+                Ok(applied.result(Some(unfinished("job_worker_unavailable")))),
+            );
             return;
         }
-        self.program_check_job = Some(ProgramCheckJob {
+        self.program_check_job = Some(ProgramCheckJob::Checking(Box::new(ExactCheckJob {
             id,
             reply,
             cancelled,
@@ -188,15 +326,20 @@ impl LiveBridge {
             started: Instant::now(),
             applied,
             receiver,
-        });
+        })));
         context.request_repaint_after(Duration::from_millis(10));
     }
 
-    /// Replies to a finished exact check. The edit is already published, so a
-    /// cancelled or overdue check still answers, with the overlaps unverified.
-    pub(super) fn poll_program_check_job(&mut self, app: &KetchupApp, context: &egui::Context) {
-        let Some(mut job) = self.program_check_job.take() else {
+    pub(super) fn poll_program_check_job(&mut self, app: &mut KetchupApp, context: &egui::Context) {
+        let Some(job) = self.program_check_job.take() else {
             return;
+        };
+        let mut job = match job {
+            ProgramCheckJob::Planning(job) => {
+                self.poll_program_plan(app, context, job);
+                return;
+            }
+            ProgramCheckJob::Checking(job) => job,
         };
         let exact = if job.cancelled.load(Ordering::Acquire) {
             job.worker_cancelled.store(true, Ordering::Release);
@@ -220,7 +363,7 @@ impl LiveBridge {
             Self::reply(app, job.id, &job.reply, Ok(job.applied.result(Some(exact))));
             context.request_repaint();
         } else {
-            self.program_check_job = Some(job);
+            self.program_check_job = Some(ProgramCheckJob::Checking(job));
             context.request_repaint_after(Duration::from_millis(10));
         }
     }

@@ -38,6 +38,26 @@ pub(super) enum HullRelation {
     Overlapping,
 }
 
+pub(super) fn measure(
+    a: &WorldHull,
+    b: &WorldHull,
+    graphs: [&ExactBRepGraph; 2],
+    tolerance_mm: f64,
+) -> Option<(f64, Option<f64>)> {
+    match relate(a, b, tolerance_mm) {
+        HullRelation::Overlapping => None,
+        HullRelation::Separated => Some((0.0, None)),
+        HullRelation::Touching { area_mm2 } => graphs
+            .iter()
+            .all(|graph| {
+                matches!(
+                    graph.nodes.last().map(|node| &node.operation),
+                    Some(ExactBRepOperation::Extrude { .. })
+                )
+            })
+            .then_some((area_mm2, Some(0.0))),
+    }
+}
 fn axis_aligned(v: [f64; 3]) -> bool {
     let mut ones = 0;
     for c in v {

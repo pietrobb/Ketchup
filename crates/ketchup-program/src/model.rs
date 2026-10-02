@@ -989,12 +989,14 @@ impl Part {
                     Some(caps),
                 )
             }
-            ProgramPartBody::Revolve { segments, .. } => {
-                let (min, max) = profile_bounds(segments);
-                let radius = self.size_mm[0] * 0.5;
+            ProgramPartBody::Revolve { .. } => {
+                let support = |axis: usize, sign: f64| {
+                    let direction = std::array::from_fn(|i| if i == axis { sign } else { 0.0 });
+                    sign * self.revolve_support(direction)
+                };
                 self.grown_by_pushed_faces(
-                    [-radius, min[1], -radius],
-                    [radius, max[1], radius],
+                    std::array::from_fn(|i| support(i, -1.0)),
+                    std::array::from_fn(|i| support(i, 1.0)),
                     &[],
                     None,
                 )
@@ -1011,6 +1013,53 @@ impl Part {
                 )
             }
         }
+    }
+
+    /// Exact support of the swept profile, including offset axes and partial turns.
+    /// For each signed radial coordinate only the extrema of A cos(t) + B sin(t)
+    /// matter. The remaining maximization is the profile's existing support query.
+    fn revolve_support(&self, direction: [f64; 3]) -> f64 {
+        let ProgramPartBody::Revolve {
+            segments,
+            axis_start_mm: origin,
+            axis_end_mm: end,
+            angle_degrees,
+        } = &self.body
+        else {
+            return f64::NEG_INFINITY;
+        };
+        let delta = [end[0] - origin[0], end[1] - origin[1]];
+        let length = delta[0].hypot(delta[1]);
+        let axis = delta.map(|v| v / length);
+        let radial = [-axis[1], axis[0]];
+        let axial = dot(direction, [axis[0], axis[1], 0.0]);
+        let a = dot(direction, [radial[0], radial[1], 0.0]);
+        let b = direction[2]; // axis × radial = +Z
+        let sweep = angle_degrees.to_radians().min(std::f64::consts::TAU);
+        let mut values = vec![a, a * sweep.cos() + b * sweep.sin()];
+        let extremum = b.atan2(a).rem_euclid(std::f64::consts::TAU);
+        for angle in [
+            extremum,
+            (extremum + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU),
+        ] {
+            if angle <= sweep {
+                values.push(a * angle.cos() + b * angle.sin());
+            }
+        }
+        values
+            .into_iter()
+            .map(|radial_support| {
+                let d = std::array::from_fn(|i| axial * axis[i] + radial_support * radial[i]);
+                let translation = dot(
+                    [direction[0] - d[0], direction[1] - d[1], 0.0],
+                    [origin[0], origin[1], 0.0],
+                );
+                segments
+                    .iter()
+                    .map(|segment| segment.support(d) + translation)
+                    .fold(f64::NEG_INFINITY, f64::max)
+            })
+            .fold(f64::NEG_INFINITY, f64::max)
     }
 
     fn pushes_faces_out(&self) -> bool {
@@ -1092,10 +1141,9 @@ impl Part {
 
     /// How far the body (before cuts, finishes and booleans) reaches along a
     /// world `direction`: the largest `direction · p` over its points. Exact
-    /// for boxes, extruded profiles, sweeps and full revolutions about the
-    /// local y axis; other revolutions use their bounds in the part's own
-    /// frame, lofts their sections (exact for two, a smooth loft through more
-    /// may bulge slightly past them).
+    /// for boxes, extruded profiles, sweeps and revolutions about any in-plane
+    /// axis, including partial turns. Lofts use their sections (exact for two;
+    /// a smooth loft through more may bulge slightly past them).
     #[must_use]
     pub fn reach(&self, direction: [f64; 3]) -> f64 {
         let local = frame::apply_transposed(&self.rotation, direction);
@@ -1121,26 +1169,7 @@ impl Part {
                 largest(&mut segments.iter().map(|s| s.support([local[0], local[1]])))
                     + (local[2] * distance_mm).max(0.0)
             }
-            ProgramPartBody::Revolve {
-                segments,
-                axis_start_mm,
-                axis_end_mm,
-                angle_degrees,
-            } if *angle_degrees >= 360.0
-                && axis_start_mm[0].abs() <= f64::EPSILON
-                && axis_end_mm[0].abs() <= f64::EPSILON
-                && (axis_start_mm[1] - axis_end_mm[1]).abs() > f64::EPSILON =>
-            {
-                // A profile point (x, y) sweeps a circle of radius |x|; the
-                // farthest point along `local` has local y = y and lies |x|
-                // across, and |x| = max(x, -x).
-                let across = local[0].hypot(local[2]);
-                largest(&mut segments.iter().map(|s| {
-                    s.support([across, local[1]])
-                        .max(s.support([-across, local[1]]))
-                }))
-            }
-            ProgramPartBody::Revolve { .. } => bounds_reach(),
+            ProgramPartBody::Revolve { .. } => self.revolve_support(local),
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => self.local_reach(local),
         };
         self.joined()
@@ -1220,6 +1249,12 @@ impl Part {
     }
 
     pub fn refresh_feature_tree(&mut self) {
+        if matches!(self.body, ProgramPartBody::Revolve { .. }) {
+            self.size_mm = std::array::from_fn(|i| {
+                let axis = std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 });
+                self.revolve_support(axis) + self.revolve_support(axis.map(|v| -v))
+            });
+        }
         let length = |path: &str, value| ProgramFeatureParameter {
             path: path.to_owned(),
             value_type: ProgramParameterValueType::Length,

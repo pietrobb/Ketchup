@@ -10,6 +10,7 @@
 mod bridge;
 mod discovery;
 mod docs;
+pub mod local_auth;
 mod schema;
 mod server;
 #[cfg(test)]

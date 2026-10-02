@@ -62,10 +62,10 @@ def test_program_document_builds_exact_parts_as_one_undo_step(session, tmp_path)
     sides = [body for body in evaluation["geometry"]
              if body["bounds_mm"] == [[0.0, 0.0, 0.0], [18.0, 350.0, 720.0]]]
     assert len(sides) == 2
-    # 18 x 350 x 720 minus four 8 mm dowel holes (16 deep), 32 shelf-pin holes
+    # 18 x 350 x 720 minus four 8 mm dowel holes (12 deep, 6 mm rest), 32 shelf-pin holes
     # (5 mm, 10 deep) and a 4 x 8 mm groove over the full height.
     expected = (18 * 350 * 720
-                - 4 * math.pi * 4 ** 2 * 16
+                - 4 * math.pi * 4 ** 2 * (18 - 6)
                 - 32 * math.pi * 2.5 ** 2 * 10
                 - 4 * 8 * 720)
     for side in sides:

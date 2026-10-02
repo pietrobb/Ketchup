@@ -14,6 +14,7 @@ pub mod contact;
 pub mod document;
 pub mod eval;
 pub mod exact;
+mod execution_budget;
 pub mod expect;
 mod face_at;
 pub mod faces;

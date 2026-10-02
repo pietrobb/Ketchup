@@ -275,6 +275,36 @@ fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request
 }
 
 #[test]
+fn readiness_identifies_the_actual_child_window_when_broker_is_enabled() {
+    let root = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let context = eframe::egui::Context::default();
+    shell
+        .app_mut()
+        .enable_live_consent_broker_in(&context, root.path())
+        .unwrap();
+    let output = Output::default();
+    pending()
+        .enable(shell.app_mut(), &context, output.clone())
+        .unwrap();
+    let bytes = output.bytes();
+    let ready: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        ready["instance_id"],
+        shell.app().live_consent_instance_id().unwrap()
+    );
+    assert_eq!(
+        ready["consent_address"],
+        shell.app().live_consent_address().unwrap().to_string()
+    );
+    assert!(!String::from_utf8(bytes).unwrap().contains(TOKEN));
+    let mut client = TcpStream::connect(ready["live_bridge_address"].as_str().unwrap()).unwrap();
+    let response = call(&mut shell, &mut client, TOKEN, Request::Status {});
+    assert!(response.ok);
+    assert_eq!(response.stamp, Some(shell.app().live_bridge_stamp()));
+}
+
+#[test]
 fn readiness_authentication_and_detach_use_the_actual_app() {
     let mut shell = Shell::new();
     let before = shell.app().live_bridge_stamp();
@@ -350,6 +380,15 @@ fn readiness_authentication_and_detach_use_the_actual_app() {
 }
 
 fn request_broker(address: std::net::SocketAddr, action: &str, nonce: &str) -> serde_json::Value {
+    request_broker_authenticated(address, action, nonce, "")
+}
+
+fn request_broker_authenticated(
+    address: std::net::SocketAddr,
+    action: &str,
+    nonce: &str,
+    bootstrap: &str,
+) -> serde_json::Value {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -358,6 +397,7 @@ fn request_broker(address: std::net::SocketAddr, action: &str, nonce: &str) -> s
         "version": 1,
         "action": action,
         "nonce": nonce,
+        "bootstrap": bootstrap,
     });
     let mut bytes = serde_json::to_vec(&request).unwrap();
     bytes.push(b'\n');
@@ -374,8 +414,31 @@ fn request_broker(address: std::net::SocketAddr, action: &str, nonce: &str) -> s
     serde_json::from_slice(&response).unwrap()
 }
 
-fn request_consent(address: std::net::SocketAddr, nonce: &str) -> serde_json::Value {
-    request_broker(address, "attach", nonce)
+fn request_consent(
+    address: std::net::SocketAddr,
+    nonce: &str,
+    bootstrap: &str,
+) -> serde_json::Value {
+    request_broker_authenticated(address, "attach", nonce, bootstrap)
+}
+
+fn bootstrap(shell: &Shell, root: Option<&std::path::Path>) -> String {
+    let default = std::env::var_os(if cfg!(windows) {
+        "LOCALAPPDATA"
+    } else {
+        "XDG_RUNTIME_DIR"
+    })
+    .map(std::path::PathBuf::from)
+    .map(|p| p.join("Ketchup/live-instances"));
+    let path = root
+        .unwrap_or_else(|| default.as_deref().unwrap())
+        .join(format!(
+            "{}.json",
+            shell.app().live_consent_instance_id().unwrap()
+        ));
+    let entry: serde_json::Value =
+        serde_json::from_slice(&ketchup_mcp::local_auth::read_private(&path).unwrap()).unwrap();
+    entry["bootstrap"].as_str().unwrap().to_owned()
 }
 
 fn finish_attach(
@@ -473,7 +536,9 @@ fn bootstrap_window_reconnects_in_place_after_client_loss() {
         "available"
     );
 
-    let reconnect = std::thread::spawn(move || request_consent(broker, &"c".repeat(64)));
+    let bootstrap = bootstrap(&shell, Some(directory.path()));
+    let reconnect =
+        std::thread::spawn(move || request_consent(broker, &"c".repeat(64), &bootstrap));
     let allowed = finish_attach(&mut shell, reconnect);
     assert_eq!(allowed["status"], "allowed");
     let new_token = allowed["token"].as_str().unwrap();
@@ -545,7 +610,7 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
         let bytes = std::fs::read(&registry_path).unwrap();
         assert!(bytes.len() <= 512);
         let entry: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(entry.as_object().unwrap().len(), 3);
+        assert_eq!(entry.as_object().unwrap().len(), 4);
         assert_eq!(entry["version"], 1);
         assert_eq!(entry["instance_id"], instance_id);
         assert_eq!(entry["consent_address"], address.to_string());
@@ -707,10 +772,12 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
     assert!(consent_address.ip().is_loopback());
     assert!(shell.app().live_bridge_credentials().is_none());
 
+    let bootstrap = bootstrap(&shell, None);
     let allowed_nonce = "2".repeat(64);
     let allow_client = std::thread::spawn({
         let allowed_nonce = allowed_nonce.clone();
-        move || request_consent(consent_address, &allowed_nonce)
+        let bootstrap = bootstrap.clone();
+        move || request_consent(consent_address, &allowed_nonce, &bootstrap)
     });
     let allowed = finish_attach(&mut shell, allow_client);
     assert_eq!(allowed["nonce"], allowed_nonce);
@@ -728,7 +795,18 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
 
     // A new attach takes the window over even though the first client never
     // disconnected (it may be gone or forgotten); the old credential dies.
-    let second = std::thread::spawn(move || request_consent(consent_address, &"3".repeat(64)));
+    // Missing and wrong bootstrap cannot revoke the active credential.
+    let mut active = TcpStream::connect(address).unwrap();
+    for wrong in ["", &"0".repeat(64)] {
+        let denied =
+            request_broker_authenticated(consent_address, "attach", &"f".repeat(64), wrong);
+        assert_eq!(denied["status"], "rejected");
+        shell.step();
+        assert_eq!(shell.app().live_bridge_credentials().unwrap().token, token);
+        assert!(call(&mut shell, &mut active, token, Request::Status {}).ok);
+    }
+    let second =
+        std::thread::spawn(move || request_consent(consent_address, &"3".repeat(64), &bootstrap));
     let second = finish_attach(&mut shell, second);
     assert_eq!(second["status"], "allowed");
     let second_token = second["token"].as_str().unwrap();
@@ -773,7 +851,9 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
     let before_digest = shell.app().canonical_digest();
     shell.enable_live_consent_broker();
     let consent_address = shell.app().live_consent_address().unwrap();
-    let attach = std::thread::spawn(move || request_consent(consent_address, &"c".repeat(64)));
+    let bootstrap = bootstrap(&shell, None);
+    let attach =
+        std::thread::spawn(move || request_consent(consent_address, &"c".repeat(64), &bootstrap));
     let allowed = finish_attach(&mut shell, attach);
     let token = allowed["token"].as_str().unwrap();
     let mut live = TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
@@ -818,6 +898,7 @@ fn disconnected_attach_requester_cannot_leave_window_busy() {
     let mut shell = Shell::new();
     shell.enable_live_consent_broker();
     let consent_address = shell.app().live_consent_address().unwrap();
+    let bootstrap = bootstrap(&shell, None);
     let mut abandoned = TcpStream::connect(consent_address).unwrap();
     writeln!(
         abandoned,
@@ -826,6 +907,7 @@ fn disconnected_attach_requester_cannot_leave_window_busy() {
             "version": 1,
             "action": "attach",
             "nonce": "a".repeat(64),
+            "bootstrap": bootstrap,
         })
     )
     .unwrap();
@@ -842,7 +924,8 @@ fn disconnected_attach_requester_cannot_leave_window_busy() {
     assert!(!shell.app().live_consent_attached());
     assert!(shell.app().live_bridge_credentials().is_none());
 
-    let client = std::thread::spawn(move || request_consent(consent_address, &"b".repeat(64)));
+    let client =
+        std::thread::spawn(move || request_consent(consent_address, &"b".repeat(64), &bootstrap));
     assert_eq!(finish_attach(&mut shell, client)["status"], "allowed");
     assert!(shell.app().live_consent_attached());
 }
@@ -860,10 +943,11 @@ fn file_new_preserves_window_live_services_and_invalidates_document_authority() 
     let registry_path = directory.path().join(format!("{instance_id}.json"));
     assert!(registry_path.is_file());
 
+    let bootstrap = bootstrap(&shell, Some(directory.path()));
     let nonce = "4".repeat(64);
     let attach = std::thread::spawn({
         let nonce = nonce.clone();
-        move || request_consent(consent_address, &nonce)
+        move || request_consent(consent_address, &nonce, &bootstrap)
     });
     let allowed = finish_attach(&mut shell, attach);
     assert_eq!(allowed["status"], "allowed");

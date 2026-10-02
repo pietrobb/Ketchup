@@ -1138,8 +1138,8 @@ fn collision_report(
         let mut candidates = candidates.into_iter().collect::<Vec<_>>();
         candidates
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
-        // Panel hulls decide every pair whose boxes do not penetrate, at any
-        // rotation; only penetrating hulls (e.g. pin in hole) need OCCT.
+        // Separated hulls prove no contact; touching hulls prove contact only for
+        // uncut boxes. Cuts may remove the entire bearing face, so ask OCCT.
         let local_hulls = graphs.iter().map(hull::local_hull).collect::<Vec<_>>();
         let world_hulls = bodies
             .iter()
@@ -1157,11 +1157,8 @@ fn collision_report(
                 continue;
             };
             if let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right]) {
-                let decided = match hull::relate(a, b, tolerance.linear_mm()) {
-                    hull::HullRelation::Overlapping => None,
-                    hull::HullRelation::Separated => Some((0.0, None)),
-                    hull::HullRelation::Touching { area_mm2 } => Some((area_mm2, Some(0.0))),
-                };
+                let decided = hull::measure(a, b, [&graphs[l], &graphs[r]], tolerance.linear_mm());
+
                 if let Some((area_mm2, distance_mm)) = decided {
                     checked += 1;
                     hull_decided += 1;

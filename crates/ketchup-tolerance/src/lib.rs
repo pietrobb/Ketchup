@@ -42,6 +42,13 @@ pub const ACCUMULATED_ROUNDING: f64 = 1.0e-8;
 /// Absolute (mm, mm², mm³) for magnitudes up to 1; scale it by larger magnitudes.
 pub const APPROXIMATION: f64 = 1.0e-6;
 
+/// Chord error for material face boundaries used by planar contact queries, in mm.
+pub const BOUNDARY_CHORD_MM: f64 = 0.001;
+/// Smallest angular sampling step for a material boundary, in radians.
+pub const BOUNDARY_MIN_ANGLE_RAD: f64 = 0.001;
+/// Fraction of an edge interval used to sample either side of a Boolean boundary.
+pub const BOUNDARY_PROBE_FRACTION: f64 = 1.0e-4;
+
 /// Numeric guard: a scaled quantity at most this large counts as zero. It marks a singular
 /// determinant or pivot, a degenerate area, and a residual that has converged relative to
 /// where it started. Such quantities are products of several values, so the bound is

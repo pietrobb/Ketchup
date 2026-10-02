@@ -71,6 +71,23 @@ impl KetchupApp {
         RuleProgramApplyError,
     > {
         let plan = ketchup_application::plan_rule_program(&self.document, &source)?;
+        self.publish_program_plan(source, replace, also, plan)
+    }
+
+    pub(crate) fn publish_program_plan(
+        &mut self,
+        source: RuleProgramSource,
+        replace: bool,
+        also: Vec<CanonicalCommand>,
+        plan: ketchup_application::RuleProgramPlan,
+    ) -> Result<
+        (
+            ProgramEdit,
+            ketchup_program::Report,
+            ketchup_program::ProgramModel,
+        ),
+        RuleProgramApplyError,
+    > {
         let change = match plan.change {
             RuleProgramChange::Unchanged | RuleProgramChange::SourceOnly if !also.is_empty() => {
                 RuleProgramChange::Incremental(CommandBatch::new(Vec::new()))

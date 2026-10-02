@@ -28,6 +28,7 @@ pub struct Window {
     /// Another client is attached; attaching replaces it.
     pub in_use: bool,
     attach_address: SocketAddr,
+    registry_path: PathBuf,
 }
 
 pub struct Grant {
@@ -64,7 +65,7 @@ pub fn list_windows(root: &Path) -> Vec<Window> {
     let mut windows: Vec<Window> = std::thread::scope(|scope| {
         let probes: Vec<_> = registered
             .iter()
-            .map(|(instance_id, address)| scope.spawn(move || probe(instance_id, *address)))
+            .map(|(instance_id, address)| scope.spawn(move || probe(root, instance_id, *address)))
             .collect();
         probes
             .into_iter()
@@ -75,12 +76,71 @@ pub fn list_windows(root: &Path) -> Vec<Window> {
     windows
 }
 
+/// Readiness comes exclusively from the spawned child's private stdout pipe.
+pub(crate) fn launched_window(
+    reader: impl Read,
+    document: String,
+) -> io::Result<(Window, SocketAddr)> {
+    let mut bytes = Vec::new();
+    BufReader::new(reader.take(MAX_LINE_BYTES)).read_until(b'\n', &mut bytes)?;
+    if bytes.pop() != Some(b'\n') {
+        return Err(invalid(
+            "child readiness exceeds the bounded line or ended early",
+        ));
+    }
+    let ready: Value = serde_json::from_slice(&bytes)?;
+    if ready["version"] != 1 {
+        return Err(invalid("unsupported child readiness version"));
+    }
+    let instance_id = ready["instance_id"]
+        .as_str()
+        .filter(|id| is_lower_hex(id, 32))
+        .ok_or_else(|| invalid("child readiness has no window identity"))?
+        .to_owned();
+    let attach_address = ready["consent_address"]
+        .as_str()
+        .and_then(loopback_address)
+        .ok_or_else(|| invalid("child readiness has no loopback attach address"))?;
+    let address = ready["live_bridge_address"]
+        .as_str()
+        .and_then(loopback_address)
+        .ok_or_else(|| invalid("child readiness has no loopback bridge address"))?;
+    Ok((
+        Window {
+            registry_path: default_root()
+                .ok_or_else(|| invalid("per-user discovery directory unavailable"))?
+                .join(format!("{instance_id}.json")),
+            instance_id,
+            document,
+            in_use: true,
+            attach_address,
+        },
+        address,
+    ))
+}
+
 pub fn attach(window: &Window) -> io::Result<Grant> {
+    let entry: Value =
+        serde_json::from_slice(&crate::local_auth::read_private(&window.registry_path)?)?;
+    if entry["version"] != 1
+        || entry["instance_id"] != window.instance_id
+        || entry["consent_address"].as_str().and_then(loopback_address)
+            != Some(window.attach_address)
+    {
+        return Err(invalid(
+            "private bootstrap does not identify the selected window",
+        ));
+    }
+    let bootstrap = entry["bootstrap"]
+        .as_str()
+        .filter(|value| is_lower_hex(value, 64))
+        .ok_or_else(|| invalid("private registry has no bootstrap credential"))?;
     let reply = exchange(
         window.attach_address,
         "attach",
         &window.instance_id,
         ATTACH_TIMEOUT,
+        Some(bootstrap),
     )?;
     if reply["status"] != "allowed" {
         return Err(io::Error::new(
@@ -117,13 +177,14 @@ fn registry_entry(path: &Path) -> Option<(String, SocketAddr)> {
     Some((instance_id.to_owned(), address))
 }
 
-fn probe(instance_id: &str, attach_address: SocketAddr) -> io::Result<Window> {
-    let reply = exchange(attach_address, "list", instance_id, PROBE_TIMEOUT)?;
+fn probe(root: &Path, instance_id: &str, attach_address: SocketAddr) -> io::Result<Window> {
+    let reply = exchange(attach_address, "list", instance_id, PROBE_TIMEOUT, None)?;
     let document = reply["document"]
         .as_str()
         .ok_or_else(|| invalid("list reply without a document name"))?
         .to_owned();
     Ok(Window {
+        registry_path: root.join(format!("{instance_id}.json")),
         instance_id: instance_id.to_owned(),
         document,
         in_use: reply["status"] == "busy",
@@ -136,12 +197,17 @@ fn exchange(
     action: &str,
     instance_id: &str,
     timeout: Duration,
+    bootstrap: Option<&str>,
 ) -> io::Result<Value> {
     let nonce = nonce()?;
     let mut stream = TcpStream::connect_timeout(&address, PROBE_TIMEOUT)?;
     stream.set_write_timeout(Some(PROBE_TIMEOUT))?;
     stream.set_read_timeout(Some(timeout))?;
-    let mut line = json!({"version": 1, "action": action, "nonce": nonce}).to_string();
+    let mut request = json!({"version": 1, "action": action, "nonce": nonce});
+    if let Some(bootstrap) = bootstrap {
+        request["bootstrap"] = Value::String(bootstrap.to_owned());
+    }
+    let mut line = request.to_string();
     line.push('\n');
     stream.write_all(line.as_bytes())?;
     let mut reply = Vec::new();
@@ -158,7 +224,7 @@ fn exchange(
     Ok(reply)
 }
 
-fn nonce() -> io::Result<String> {
+pub(crate) fn nonce() -> io::Result<String> {
     let mut random = [0_u8; 32];
     getrandom::fill(&mut random).map_err(io::Error::other)?;
     Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())

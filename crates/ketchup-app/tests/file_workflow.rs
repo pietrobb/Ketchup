@@ -1745,7 +1745,7 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
 }
 
 #[test]
-fn gui_retries_failed_post_save_work_recovery_cleanup() {
+fn gui_save_rejects_replaced_work_recovery_before_publication() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("retry-save-cleanup.ketchup");
     let recovery = ketchup_model::persistence::work_recovery_path(&primary);
@@ -1761,12 +1761,14 @@ fn gui_retries_failed_post_save_work_recovery_cleanup() {
 
     std::fs::remove_file(&recovery).unwrap();
     std::fs::create_dir(&recovery).unwrap();
+    let primary_before = std::fs::read(&primary).unwrap();
     shell.click_menu_command("menu-file", AppCommand::Save);
-    assert!(!shell.app().is_dirty());
-
+    assert!(shell.app().is_dirty());
+    assert_eq!(std::fs::read(&primary).unwrap(), primary_before);
+    assert!(digest_starts_like(&shell, "error-save-document"));
     std::fs::remove_dir(&recovery).unwrap();
     std::fs::write(&recovery, owned_checkpoint).unwrap();
-    shell.settle();
+    shell.click_menu_command("menu-file", AppCommand::Save);
     assert!(!recovery.exists());
 }
 
@@ -1783,6 +1785,7 @@ fn gui_undo_and_redo_roll_back_when_work_recovery_checkpoint_fails() {
     assert!(recovery.is_file());
 
     let before = canonical_state(&shell);
+    let checkpoint = std::fs::read(&recovery).unwrap();
     std::fs::remove_file(&recovery).unwrap();
     std::fs::create_dir(&recovery).unwrap();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
@@ -1790,6 +1793,7 @@ fn gui_undo_and_redo_roll_back_when_work_recovery_checkpoint_fails() {
     assert!(digest_starts_like(&shell, "error-save-document"));
 
     std::fs::remove_dir(&recovery).unwrap();
+    std::fs::write(&recovery, checkpoint).unwrap();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert!(recovery.is_file());
     let undone = canonical_state(&shell);
@@ -1805,6 +1809,68 @@ fn gui_undo_and_redo_roll_back_when_work_recovery_checkpoint_fails() {
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(canonical_state(&shell), undone);
     assert!(digest_starts_like(&shell, "error-save-document"));
+}
+
+#[test]
+fn gui_published_checkpoint_error_preserves_edit_undo_redo_and_recovery() {
+    use ketchup_model::persistence::headless_with_parent_sync_failure;
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("published-checkpoint.ketchup");
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(shell.app_mut().create_box());
+    let first_edit = shell.app().canonical_digest();
+    assert!(!headless_with_parent_sync_failure(|| shell
+        .app_mut()
+        .create_box()));
+    let edited = shell.app().canonical_digest();
+    assert_ne!(edited, first_edit);
+    assert!(shell.app().action_digest().contains("published"));
+    assert!(shell.app().is_dirty());
+    assert_eq!(
+        ketchup_model::persistence::load_file(&primary)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        edited
+    );
+    assert!(!headless_with_parent_sync_failure(|| shell
+        .app_mut()
+        .undo()));
+    assert_eq!(shell.app().canonical_digest(), first_edit);
+    assert!(shell.app().action_digest().contains("published"));
+    assert!(!headless_with_parent_sync_failure(|| shell
+        .app_mut()
+        .redo()));
+    assert_eq!(shell.app().canonical_digest(), edited);
+    assert!(shell.app().action_digest().contains("published"));
+    drop(shell);
+    let mut recovered = Shell::with_dialogs(ScriptedFileDialogs::new());
+    assert!(recovered.app_mut().open_document_path(&primary));
+    assert_eq!(recovered.app().canonical_digest(), edited);
+}
+
+#[test]
+fn gui_published_save_as_error_keeps_binding_and_allows_next_save() {
+    use ketchup_model::persistence::headless_with_parent_sync_failure;
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("published-save.ketchup");
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    let expected = shell.app().canonical_digest();
+    headless_with_parent_sync_failure(|| shell.click_menu_command("menu-file", AppCommand::SaveAs));
+    assert_eq!(shell.app().document_path(), Some(primary.as_path()));
+    assert_eq!(
+        ketchup_model::persistence::load_file(&primary)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        expected
+    );
+    assert!(shell.app().action_digest().contains("published"));
+    assert!(!shell.app().is_dirty());
+    assert!(shell.app_mut().create_box());
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(!shell.app().is_dirty());
 }
 
 #[test]
@@ -1863,7 +1929,7 @@ fn step_import_publishes_its_blob_in_the_same_work_recovery_transaction() {
 }
 
 #[test]
-fn gui_save_as_cleanup_preserves_another_windows_newer_checkpoint() {
+fn gui_recovery_owner_rejects_second_writer_open_and_save_but_allows_save_as() {
     let directory = tempfile::tempdir().unwrap();
     let shared = directory.path().join("shared-recovery.ketchup");
     let alternate = directory.path().join("first-copy.ketchup");
@@ -1871,32 +1937,38 @@ fn gui_save_as_cleanup_preserves_another_windows_newer_checkpoint() {
     let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&shared));
     author.click_menu_command("menu-file", AppCommand::Save);
 
-    let mut first = Shell::with_dialogs(
+    let mut first = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&shared));
+    let mut second = Shell::with_dialogs(
         ScriptedFileDialogs::new()
             .queue_open(&shared)
             .queue_save(&alternate),
     );
-    let mut second = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&shared));
     first.click_menu_command("menu-file", AppCommand::Open);
     second.click_menu_command("menu-file", AppCommand::Open);
     assert!(first.app_mut().create_box());
     first.settle();
+    let first_digest = first.app().canonical_digest();
+    let checkpoint = std::fs::read(&recovery).unwrap();
+    let second_before = canonical_state(&second);
+    assert!(!second.app_mut().create_box());
+    assert_eq!(canonical_state(&second), second_before);
+    assert!(digest_starts_like(&second, "error-save-document"));
+    assert!(!second.app_mut().open_document_path(&shared));
+    assert!(!first.app_mut().open_document_path(&shared));
+    second.click_menu_command("menu-file", AppCommand::Save);
+    assert!(digest_starts_like(&second, "error-save-document"));
+    assert_eq!(std::fs::read(&recovery).unwrap(), checkpoint);
+    second.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert_eq!(second.app().document_path(), Some(alternate.as_path()));
     assert!(second.app_mut().create_box());
-    assert!(second.app_mut().create_box());
-    second.settle();
-    let second_digest = second.app().canonical_digest();
-    let newer_checkpoint = std::fs::read(&recovery).unwrap();
-
-    first.click_menu_command("menu-file", AppCommand::SaveAs);
-
-    assert_eq!(first.app().document_path(), Some(alternate.as_path()));
-    assert_eq!(std::fs::read(&recovery).unwrap(), newer_checkpoint);
-    let recovered = ketchup_model::persistence::load_file_with_source(&shared).unwrap();
-    assert_eq!(recovered.source_path(), recovery);
-    assert_eq!(
-        recovered.outcome().snapshot().canonical_digest(),
-        second_digest
-    );
+    second.click_menu_command("menu-file", AppCommand::Save);
+    assert_eq!(std::fs::read(&recovery).unwrap(), checkpoint);
+    drop(first); // Simulate process exit: release ownership, not the checkpoint.
+    let mut recovered = Shell::with_dialogs(ScriptedFileDialogs::new());
+    assert!(recovered.app_mut().open_document_path(&shared));
+    assert_eq!(recovered.app().canonical_digest(), first_digest);
+    assert!(recovered.app().is_dirty());
+    assert!(!author.app_mut().open_document_path(&shared));
 }
 
 #[test]

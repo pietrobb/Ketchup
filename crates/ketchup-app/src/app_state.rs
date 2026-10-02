@@ -13,6 +13,7 @@ pub(crate) struct FileState {
     pub(crate) path: Option<PathBuf>,
     pub(crate) identity: Option<ketchup_model::persistence::FileIdentity>,
     pub(crate) work_recovery_identity: Option<ketchup_model::persistence::FileIdentity>,
+    pub(crate) work_recovery_lock: Option<ketchup_model::persistence::WorkRecoveryLock>,
     pub(crate) pending_work_recovery_cleanup:
         Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,

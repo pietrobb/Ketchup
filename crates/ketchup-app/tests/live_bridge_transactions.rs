@@ -338,6 +338,7 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
     let (expected, job_handle) = create_job(&mut client, &mut shell);
     let undo_before = shell.app().undo_step_count();
     let redo_before = shell.app().redo_step_count();
+    let checkpoint = std::fs::read(&recovery).unwrap();
     std::fs::remove_file(&recovery).unwrap();
     std::fs::create_dir(&recovery).unwrap();
     let rejected = client.call(
@@ -381,6 +382,7 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
     assert_eq!(status["status"]["completed_count"], 0);
 
     std::fs::remove_dir(&recovery).unwrap();
+    std::fs::write(&recovery, checkpoint).unwrap();
     let (expected, job_handle) = create_job(&mut client, &mut shell);
     let retried = client.call(
         &mut shell,

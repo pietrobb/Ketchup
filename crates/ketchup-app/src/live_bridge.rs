@@ -1999,6 +1999,15 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         take_error_details();
         Self::require_request_authority(cancelled)?;
+        match &request {
+            Request::EditContext { expected, .. }
+            | Request::Query { expected, .. }
+            | Request::Detail { expected, .. }
+            | Request::WorksetStatus { expected, .. }
+            | Request::BatchJobStatus { expected, .. }
+            | Request::View { expected, .. } => Self::guard(app, expected)?,
+            _ => {}
+        }
         match request {
             Request::Status {} => Ok(
                 json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
@@ -2291,7 +2300,7 @@ impl LiveBridge {
                     return Err("open_rejected");
                 }
                 Self::require_request_authority(cancelled)?;
-                if !app.open_document_from(Path::new(&path)) {
+                if !app.open_document_with_discard(Path::new(&path), true) {
                     return Err("open_rejected");
                 }
                 self.invalidate_document_context();

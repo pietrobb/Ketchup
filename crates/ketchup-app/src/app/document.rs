@@ -165,7 +165,51 @@ impl KetchupApp {
     }
 
     pub(crate) fn open_document_from(&mut self, path: &Path) -> bool {
+        self.open_document_with_discard(path, false)
+    }
+
+    pub(crate) fn open_document_with_discard(
+        &mut self,
+        path: &Path,
+        discard_confirmed: bool,
+    ) -> bool {
         self.cancel_pending_assistant_work();
+        let discard_owned = discard_confirmed
+            && self.file.work_recovery_lock.is_some()
+            && (self.file.path.as_deref() == Some(path)
+                || self
+                    .file
+                    .recovery_open
+                    .as_ref()
+                    .is_some_and(|recovery| recovery.requested_path == path));
+        // Keep ownership throughout a confirmed reopen, including failed loads.
+        let recovery_lock = if discard_owned {
+            let result = ketchup_model::persistence::check_work_recovery_identity(
+                path,
+                self.file.work_recovery_identity,
+            )
+            .and_then(|()| {
+                ketchup_model::persistence::clear_work_recovery(
+                    path,
+                    self.file.work_recovery_identity,
+                )
+            });
+            if let Err(error) = result {
+                self.report_file_persistence_error("error-open-document", path, &error);
+                return false;
+            }
+            self.file.work_recovery_identity = None;
+            self.file.work_recovery_digest = None;
+            None
+        } else {
+            match ketchup_model::persistence::WorkRecoveryLock::acquire(path) {
+                Ok(lock) => Some(lock),
+                Err(error) => {
+                    self.report_file_persistence_error("error-open-document", path, &error);
+                    return false;
+                }
+            }
+        };
         match ketchup_model::persistence::load_file_with_source(path) {
             Ok(loaded_file) => {
                 let (outcome, effective_path, source, work_recovery_identity) =
@@ -229,6 +273,8 @@ impl KetchupApp {
                 self.file.recovery_open = recovery_open;
                 self.file.identity = file_identity;
                 self.file.work_recovery_identity = work_recovery_identity;
+                self.file.work_recovery_lock = work_recovery_identity
+                    .and(recovery_lock.or_else(|| self.file.work_recovery_lock.take()));
                 self.file.work_recovery_digest = None;
                 self.file.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
@@ -352,23 +398,64 @@ impl KetchupApp {
         Ok(())
     }
 
+    fn report_file_persistence_error(
+        &mut self,
+        key: &str,
+        path: &Path,
+        error: &ketchup_model::persistence::FilePersistenceError,
+    ) {
+        let reason = match error {
+            ketchup_model::persistence::FilePersistenceError::ExternalConflict => format!(
+                "{error}; another window may own its unsaved recovery. Keep this window and use Save As to a different file, or close the other writer before reopening."
+            ),
+            _ => error.to_string(),
+        };
+        self.digest = self.catalog.format(
+            key,
+            &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
+        );
+    }
+
+    fn acquire_work_recovery_lock(
+        &mut self,
+    ) -> Result<(), ketchup_model::persistence::FilePersistenceError> {
+        if self.file.work_recovery_lock.is_none()
+            && let Some(path) = &self.file.path
+        {
+            self.file.work_recovery_lock =
+                Some(ketchup_model::persistence::WorkRecoveryLock::acquire(path)?);
+        }
+        Ok(())
+    }
+
     pub(crate) fn refresh_work_recovery_checkpoint(&mut self) {
-        let _ = self.retry_pending_work_recovery_cleanup();
+        if let Err(error) = self.retry_pending_work_recovery_cleanup() {
+            let path = self
+                .file
+                .pending_work_recovery_cleanup
+                .as_ref()
+                .expect("failed cleanup remains pending")
+                .0
+                .clone();
+            self.report_file_persistence_error("error-save-document", &path, &error);
+            return;
+        }
         let checkpoint_digest = format!(
             "{}:{}",
             self.document.history_digest(),
             assistant_conversation_digest(&self.assistant.messages)
         );
         if !self.is_dirty() {
-            if let Some(path) = self.file.path.as_deref()
-                && ketchup_model::persistence::clear_work_recovery(
-                    path,
+            if let Some(path) = self.file.path.clone()
+                && let Err(error) = ketchup_model::persistence::clear_work_recovery(
+                    &path,
                     self.file.work_recovery_identity,
                 )
-                .is_err()
             {
+                self.report_file_persistence_error("error-save-document", &path, &error);
                 return;
             }
+            self.file.work_recovery_lock = None;
             self.file.work_recovery_identity = None;
             self.file.work_recovery_digest = None;
             return;
@@ -381,16 +468,32 @@ impl KetchupApp {
         };
         self.store_assistant_conversation();
         self.store_assistant_memory();
-        if let Ok(checkpoint_identity) =
-            ketchup_model::persistence::save_work_recovery_document_store_with_container(
+        let result = self.acquire_work_recovery_lock().and_then(|()| {
+            ketchup_model::persistence::save_work_recovery_document_store_with_container_if_unchanged(
                 &path,
                 &self.document,
                 &self.file.container_data,
                 identity,
+                self.file.work_recovery_identity,
             )
-        {
-            self.file.work_recovery_identity = Some(checkpoint_identity);
-            self.file.work_recovery_digest = Some(checkpoint_digest);
+        });
+        match result {
+            Ok(checkpoint_identity) => {
+                self.file.work_recovery_identity = Some(checkpoint_identity);
+                self.file.work_recovery_digest = Some(checkpoint_digest);
+            }
+            Err(error) => {
+                if let Some(identity) =
+                    error.published_identity(&ketchup_model::persistence::work_recovery_path(&path))
+                {
+                    self.file.work_recovery_identity = Some(identity);
+                    self.file.work_recovery_digest = Some(checkpoint_digest);
+                }
+                self.report_file_persistence_error("error-save-document", &path, &error);
+            }
+        }
+        if self.file.work_recovery_identity.is_none() {
+            self.file.work_recovery_lock = None;
         }
     }
 
@@ -424,6 +527,33 @@ impl KetchupApp {
                     ("reason", error.to_string()),
                 ]),
             );
+            return false;
+        }
+        let active_target = self.file.path.as_deref() == Some(path)
+            || self
+                .file
+                .recovery_open
+                .as_ref()
+                .is_some_and(|recovery| recovery.requested_path == path);
+        let _target_lock = if active_target && self.file.work_recovery_lock.is_some() {
+            None
+        } else {
+            match ketchup_model::persistence::WorkRecoveryLock::acquire(path) {
+                Ok(lock) => Some(lock),
+                Err(error) => {
+                    self.report_file_persistence_error("error-save-document", path, &error);
+                    return false;
+                }
+            }
+        };
+        // Save As must not overwrite an abandoned recovery branch either.
+        let expected_recovery = active_target
+            .then_some(self.file.work_recovery_identity)
+            .flatten();
+        if let Err(error) =
+            ketchup_model::persistence::check_work_recovery_identity(path, expected_recovery)
+        {
+            self.report_file_persistence_error("error-save-document", path, &error);
             return false;
         }
         self.store_assistant_conversation();
@@ -573,6 +703,10 @@ impl KetchupApp {
             )
             .map(|_| ()),
         };
+        let (result, publication_error) = match result {
+            Err(error) if error.published_identity(path).is_some() => (Ok(()), Some(error)),
+            result => (result, None),
+        };
         match result {
             Ok(()) => {
                 if truncate_history {
@@ -598,6 +732,7 @@ impl KetchupApp {
                 self.file.path = Some(path.to_owned());
                 self.file.recovery_open = None;
                 self.file.identity = Some(saved_identity);
+                self.file.work_recovery_lock = None;
                 self.file.work_recovery_identity = None;
                 self.file.work_recovery_digest = None;
                 self.file.saved_digest = self.document.history_digest();
@@ -612,6 +747,10 @@ impl KetchupApp {
                     digest_key,
                     &BTreeMap::from([("path", path.display().to_string())]),
                 );
+                if let Some(error) = publication_error {
+                    self.report_file_persistence_error("error-save-document", path, &error);
+                    return false;
+                }
                 true
             }
             Err(error) => {
@@ -654,32 +793,7 @@ impl KetchupApp {
             AppCommand::New if self.confirm_discard_if_dirty() => self.new_document(),
             AppCommand::Open if self.confirm_discard_if_dirty() => {
                 if let Some(path) = self.choose_open_path() {
-                    let reopening_active = self.file.path.as_deref() == Some(path.as_path())
-                        || self
-                            .file
-                            .recovery_open
-                            .as_ref()
-                            .is_some_and(|recovery| recovery.requested_path == path);
-                    if reopening_active {
-                        if let Some(identity) = self.file.work_recovery_identity
-                            && let Err(error) = ketchup_model::persistence::clear_work_recovery(
-                                &path,
-                                Some(identity),
-                            )
-                        {
-                            self.digest = self.catalog.format(
-                                "error-open-document",
-                                &BTreeMap::from([
-                                    ("path", path.display().to_string()),
-                                    ("reason", error.to_string()),
-                                ]),
-                            );
-                            return;
-                        }
-                        self.file.work_recovery_identity = None;
-                        self.file.work_recovery_digest = None;
-                    }
-                    self.open_document_from(&path);
+                    self.open_document_with_discard(&path, true);
                 }
             }
             AppCommand::Save => {
@@ -1082,7 +1196,15 @@ impl KetchupApp {
     pub(crate) fn mutate_document_with_work_recovery<T, E>(
         &mut self,
         mutate: impl FnOnce(&mut DocumentStore) -> Result<T, E>,
-    ) -> Result<T, WorkRecoveryMutationError<E>> {
+    ) -> Result<
+        (T, Option<ketchup_model::persistence::FilePersistenceError>),
+        WorkRecoveryMutationError<E>,
+    > {
+        if let Err(error) = self.acquire_work_recovery_lock() {
+            let path = self.file.path.clone().unwrap_or_default();
+            self.report_file_persistence_error("error-save-document", &path, &error);
+            return Err(WorkRecoveryMutationError::Recovery(error));
+        }
         self.store_assistant_conversation();
         self.store_assistant_memory();
         let document_path = self.file.path.clone();
@@ -1094,6 +1216,7 @@ impl KetchupApp {
         let container_data = &self.file.container_data;
         let work_recovery_identity = self.file.work_recovery_identity;
         let mut next_work_recovery_identity = work_recovery_identity;
+        let mut publication_error = None;
         let result = self.document.try_canonical_transaction(
             |document| mutate(document).map_err(WorkRecoveryMutationError::Mutation),
             |document| {
@@ -1114,18 +1237,27 @@ impl KetchupApp {
                 let (Some(path), Some(identity)) = (document_path.as_deref(), file_identity) else {
                     return Ok(());
                 };
-                next_work_recovery_identity = Some(
-                    ketchup_model::persistence::save_work_recovery_document_store_with_container(
-                        path,
-                        document,
-                        container_data,
-                        identity,
-                    )
-                    .map_err(WorkRecoveryMutationError::Recovery)?,
-                );
+                match ketchup_model::persistence::save_work_recovery_document_store_with_container_if_unchanged(
+                    path, document, container_data, identity, work_recovery_identity,
+                ) {
+                    Ok(identity) => next_work_recovery_identity = Some(identity),
+                    Err(error) => {
+                        if let Some(identity) = error.published_identity(&ketchup_model::persistence::work_recovery_path(path)) {
+                            next_work_recovery_identity = Some(identity);
+                            publication_error = Some(error);
+                        } else {
+                            return Err(WorkRecoveryMutationError::Recovery(error));
+                        }
+                    }
+                }
                 Ok(())
             },
         );
+        if (result.is_ok() && next_work_recovery_identity.is_none())
+            || (result.is_err() && work_recovery_identity.is_none())
+        {
+            self.file.work_recovery_lock = None;
+        }
         match result {
             Ok(value) => {
                 self.file.work_recovery_identity = next_work_recovery_identity;
@@ -1133,7 +1265,11 @@ impl KetchupApp {
                     && document_path.is_some()
                     && file_identity.is_some())
                 .then(|| format!("{}:{conversation_digest}", self.document.history_digest()));
-                Ok(value)
+                if let Some(error) = &publication_error {
+                    let path = document_path.as_deref().unwrap_or_else(|| Path::new(""));
+                    self.report_file_persistence_error("error-save-document", path, error);
+                }
+                Ok((value, publication_error))
             }
             Err(error @ WorkRecoveryMutationError::Mutation(_)) => Err(error),
             Err(WorkRecoveryMutationError::Recovery(error)) => {
@@ -1203,7 +1339,14 @@ impl KetchupApp {
     > {
         let previous_container = std::mem::replace(&mut self.file.container_data, staged_container);
         let result = self.commit_verified_proposal_with_work_recovery(proposal);
-        if result.is_err() {
+        if result.as_ref().is_err_and(|error| {
+            !matches!(
+                error,
+                WorkRecoveryMutationError::Recovery(
+                    ketchup_model::persistence::FilePersistenceError::Published { .. }
+                )
+            )
+        }) {
             self.file.container_data = previous_container;
         }
         result

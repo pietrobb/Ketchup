@@ -9,6 +9,121 @@ use std::{
     sync::mpsc,
 };
 
+#[test]
+fn bounded_program_read_rejects_oversize_utf8_errors_and_special_files() {
+    use crate::{
+        bridge::MAX_REQUEST_BYTES,
+        tools::{read_bounded_source, read_program_source},
+    };
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("source.star");
+    std::fs::write(&path, "# žltý\\\"\n").unwrap();
+    assert_eq!(read_program_source(&path).unwrap(), "# žltý\\\"\n");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(1024 * 1024 * 1024)
+        .unwrap();
+    assert!(read_program_source(&path).is_err());
+    assert!(read_program_source(root.path()).is_err());
+    assert!(read_program_source(Path::new("relative.star")).is_err());
+    assert!(read_bounded_source(&[0xff][..]).is_err());
+    let mut endless = std::io::repeat(b'x');
+    let mut counted = (&mut endless).take((MAX_REQUEST_BYTES * 10) as u64);
+    assert!(read_bounded_source(&mut counted).is_err());
+    assert_eq!(
+        counted.limit(),
+        (MAX_REQUEST_BYTES * 9 - 1) as u64,
+        "consume only limit+1 bytes"
+    );
+    #[cfg(windows)]
+    assert!(read_program_source(Path::new(r"\\.\NUL")).is_err());
+    #[cfg(unix)]
+    {
+        assert!(read_program_source(Path::new("/dev/zero")).is_err());
+        let socket = root.path().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(read_program_source(&socket).is_err());
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
+        assert!(read_program_source(&link).is_err());
+    }
+}
+
+#[test]
+fn escaped_source_envelope_is_refused_before_send_and_connection_remains_usable() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let path = root.path().join("escaped.star");
+    std::fs::write(&path, "\u{1}".repeat(crate::bridge::MAX_REQUEST_BYTES / 2)).unwrap();
+    let result = call(
+        &mut tools,
+        "program",
+        json!({"action":"apply", "source_path":path}),
+    );
+    assert_eq!(text(&result)["error"], "request_too_large");
+    let source = "# žltý \\\"\n";
+    std::fs::write(&path, source).unwrap();
+    assert_eq!(
+        call(
+            &mut tools,
+            "program",
+            json!({"action":"apply", "source_path":path})
+        )["isError"],
+        false
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"apply_program", "source":source})
+    );
+}
+
+#[test]
+fn concurrent_launch_readiness_is_bound_to_each_private_stream_not_registration_order() {
+    let first = TcpListener::bind("127.0.0.1:0").unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut first_writer = std::net::TcpStream::connect(first.local_addr().unwrap()).unwrap();
+    let mut second_writer = std::net::TcpStream::connect(second.local_addr().unwrap()).unwrap();
+    let first_reader = first.accept().unwrap().0;
+    let second_reader = second.accept().unwrap().0;
+    let a = "a".repeat(32);
+    let b = "b".repeat(32);
+    let ready = |id: &str, port| {
+        format!(
+            "{}\n",
+            json!({"version":1,"instance_id":id,"consent_address":"127.0.0.1:1234","live_bridge_address":format!("127.0.0.1:{port}")})
+        )
+    };
+    let waiting = std::thread::spawn(move || {
+        crate::discovery::launched_window(first_reader, "A".into()).unwrap()
+    });
+    second_writer.write_all(ready(&b, 2222).as_bytes()).unwrap();
+    let (second_window, second_address) =
+        crate::discovery::launched_window(second_reader, "B".into()).unwrap();
+    first_writer.write_all(ready(&a, 1111).as_bytes()).unwrap();
+    let (first_window, first_address) = waiting.join().unwrap();
+    assert_eq!(
+        (
+            first_window.instance_id,
+            first_window.document,
+            first_address.port()
+        ),
+        (a, "A".into(), 1111)
+    );
+    assert_eq!(
+        (
+            second_window.instance_id,
+            second_window.document,
+            second_address.port()
+        ),
+        (b, "B".into(), 2222)
+    );
+    assert!(crate::discovery::launched_window(&b"{}\n"[..], "missing".into()).is_err());
+    assert!(crate::discovery::launched_window(&vec![b'x'; 513][..], "oversize".into()).is_err());
+}
+
 const INSTANCE: &str = "0123456789abcdef0123456789abcdef";
 const TOKEN: &str = "abababababababababababababababababababababababababababababababab";
 
@@ -17,13 +132,15 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
     let attach = TcpListener::bind("127.0.0.1:0").unwrap();
     let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
     let bridge_address = bridge.local_addr().unwrap().to_string();
-    std::fs::write(
-        root.join(format!("{INSTANCE}.json")),
+    let mut registry = crate::local_auth::create(&root.join(format!("{INSTANCE}.json"))).unwrap();
+    write!(
+        registry,
+        "{}",
         json!({"version": 1, "instance_id": INSTANCE,
-               "consent_address": attach.local_addr().unwrap().to_string()})
-        .to_string(),
+        "consent_address": attach.local_addr().unwrap().to_string(), "bootstrap": TOKEN})
     )
     .unwrap();
+    drop(registry);
     std::thread::spawn(move || {
         for stream in attach.incoming() {
             let mut stream = stream.unwrap();
@@ -36,6 +153,7 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
                 reply["status"] = "available".into();
                 reply["document"] = "stolik.ketchup".into();
             } else {
+                assert_eq!(request["bootstrap"], TOKEN);
                 reply["status"] = "allowed".into();
                 reply["live_bridge_address"] = bridge_address.clone().into();
                 reply["token"] = TOKEN.into();

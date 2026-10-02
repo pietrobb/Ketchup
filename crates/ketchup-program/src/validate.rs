@@ -1,7 +1,7 @@
 //! Generic checks over an evaluated model. They report issues; they never
 //! reject the model. Production export decides whether issues block.
 
-use crate::contact::contact;
+use crate::contact::ContactFaces;
 use crate::eval::TOLERANCE_MM;
 use crate::exact::ExactShapes;
 use crate::faces::FaceKind;
@@ -345,26 +345,30 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
 
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for part in &model.parts {
+        let faces = part.holes().next().map(|_| part.face_frames());
         for (hole, (local_entry, local_inward)) in part.finished_holes() {
             let radius = hole.diameter_mm / 2.0;
             let entry = part.to_world(local_entry);
             let inward = frame::apply(&part.rotation, local_inward);
             let thickness = part.reach(inward) - dot(entry, inward);
             // The hole's circle, in face coordinates, must lie on the face.
-            let fit = part.face_frame(&hole.face).ok().map(|face| {
-                let at = face.coordinates(local_entry);
-                let reach = match face.kind {
-                    FaceKind::Planar => [radius, radius],
-                    FaceKind::Cylindrical { radius_mm } => {
-                        [(radius / radius_mm).to_degrees(), radius]
-                    }
-                };
-                let inside = (0..2).all(|i| {
-                    at[i] - reach[i] >= face.min[i] - TOLERANCE_MM
-                        && at[i] + reach[i] <= face.max[i] + TOLERANCE_MM
+            let fit = faces
+                .as_ref()
+                .and_then(|faces| faces.iter().find(|face| face.name == hole.face))
+                .map(|face| {
+                    let at = face.coordinates(local_entry);
+                    let reach = match face.kind {
+                        FaceKind::Planar => [radius, radius],
+                        FaceKind::Cylindrical { radius_mm } => {
+                            [(radius / radius_mm).to_degrees(), radius]
+                        }
+                    };
+                    let inside = (0..2).all(|i| {
+                        at[i] - reach[i] >= face.min[i] - TOLERANCE_MM
+                            && at[i] + reach[i] <= face.max[i] + TOLERANCE_MM
+                    });
+                    (inside, at, face)
                 });
-                (inside, at, face)
-            });
             if let Some((false, at, face)) = fit {
                 issues.push(Issue {
                     severity: Severity::Error,
@@ -429,7 +433,12 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
 /// side shows or breaks out (a 13 mm hinge cup in a 16 mm door leaves 3 mm).
 const THIN_WALL_MM: f64 = 3.0;
 
-fn joints(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
+fn joints<'a>(
+    model: &'a ProgramModel,
+    exact: &ExactShapes,
+    issues: &mut Vec<Issue>,
+    faces: &mut ContactFaces<'a>,
+) {
     for joint in &model.joints {
         let (Some(a), Some(b)) = (model.part(&joint.parts[0]), model.part(&joint.parts[1])) else {
             continue;
@@ -439,7 +448,7 @@ fn joints(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
             Some(pair) => pair.gap_mm().map_or(Some(None), |gap| {
                 (gap > joint.max_gap_mm + TOLERANCE_MM).then_some(Some(gap))
             }),
-            None => (contact(a, b).is_none()
+            None => (faces.contact(a, b).is_none()
                 && overlap(a, b).is_none()
                 && gap(a, b) > joint.max_gap_mm + TOLERANCE_MM)
                 .then(|| Some(gap(a, b))),
@@ -499,7 +508,12 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
 
 /// Parts that neither rest on z = 0 nor touch, through other parts, something
 /// that does. Contact is face contact or a declared joint.
-fn support(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
+fn support<'a>(
+    model: &'a ProgramModel,
+    exact: &ExactShapes,
+    issues: &mut Vec<Issue>,
+    faces: &mut ContactFaces<'a>,
+) {
     let count = model.parts.len();
     let mut supported: Vec<bool> = model
         .parts
@@ -526,11 +540,11 @@ fn support(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
                 continue;
             }
             let part = &model.parts[left];
-            let joined = |other: &Part| {
+            let mut joined = |other: &'a Part| {
                 let touching = match exact.decides(part, other) {
                     Some(pair) => pair.penetrating() || pair.touching(),
                     None => {
-                        contact(part, other).is_some()
+                        faces.contact(part, other).is_some()
                             || overlap(part, other).is_some()
                             || ((part.is_rotated() || other.is_rotated())
                                 && gap(part, other) <= TOLERANCE_MM)
@@ -581,8 +595,9 @@ pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
     params(model, &mut issues);
     collisions(model, exact, &mut issues);
     holes(model, &mut issues);
-    joints(model, exact, &mut issues);
-    support(model, exact, &mut issues);
+    let mut faces = ContactFaces::default();
+    joints(model, exact, &mut issues, &mut faces);
+    support(model, exact, &mut issues, &mut faces);
     crate::expect::check(model, exact, &mut issues);
     issues.sort_by_key(|issue| issue.severity);
     issues

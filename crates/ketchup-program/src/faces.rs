@@ -7,11 +7,14 @@
 //! world. A face that is neither flat nor cylindrical (a cone, a sphere, a
 //! Bezier side) has no frame.
 
+#[path = "faces_boundary.rs"]
+mod boundary;
 use crate::frame::{self, Mat3};
 use crate::model::{
     FaceNameError, Hole, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
     ProgramOperation, ProgramPartBody, ProgramProfileSegment, profile_bounds,
 };
+use boundary::{extrusion_section, profile_outline};
 use ketchup_geometry::linalg::{cross, dot, length};
 use ketchup_model::tolerance::APPROXIMATION;
 use serde::Serialize;
@@ -44,6 +47,8 @@ pub struct FaceFrame {
     /// Face coordinates the face spans (its bounding rectangle on a plane).
     pub min: [f64; 2],
     pub max: [f64; 2],
+    /// Actual planar boundary rings; None denotes the rectangular span.
+    pub boundary: Option<crate::contact::polygon::Rings>,
 }
 
 /// How close, in mm, a neighbour's edge must lie to a pulled face to follow it.
@@ -80,12 +85,30 @@ impl FaceFrame {
             v,
             min: [0.0; 2],
             max: [0.0; 2],
+            boundary: None,
         }
     }
 
     fn spanning(mut self, min: [f64; 2], max: [f64; 2]) -> Self {
         self.min = min;
         self.max = max;
+        self
+    }
+
+    /// Boundary rings in face coordinates, with even/odd filling.
+    pub(crate) fn planar_rings(&self) -> crate::contact::polygon::Rings {
+        self.boundary.clone().unwrap_or_else(|| {
+            vec![vec![
+                self.min,
+                [self.max[0], self.min[1]],
+                self.max,
+                [self.min[0], self.max[1]],
+            ]]
+        })
+    }
+
+    fn with_profile(mut self, segments: &[ProgramProfileSegment]) -> Self {
+        self.boundary = Some(vec![profile_outline(segments)]);
         self
     }
 
@@ -158,6 +181,12 @@ impl FaceFrame {
             return false;
         }
         let at = self.coordinates(point);
+        if self.kind == FaceKind::Planar
+            && let Some(rings) = &self.boundary
+        {
+            return crate::contact::polygon::contains(rings, at)
+                || crate::contact::polygon::on_boundary(rings, at, tolerance);
+        }
         let slack = match self.kind {
             FaceKind::Planar => [tolerance; 2],
             FaceKind::Cylindrical { radius_mm } => [
@@ -261,6 +290,18 @@ impl FaceFrame {
         if edge.len() > 1 && !overlaps {
             return;
         }
+        if let Some(rings) = &mut self.boundary {
+            let base = dot(self.origin_mm, normal);
+            let norm = ketchup_geometry::linalg::dot2(along, along);
+            for p in rings.iter_mut().flatten() {
+                if (base + ketchup_geometry::linalg::dot2(*p, along) - plane).abs() <= tolerance
+                    && norm > APPROXIMATION
+                {
+                    p[0] += distance_mm * along[0] / norm;
+                    p[1] += distance_mm * along[1] / norm;
+                }
+            }
+        }
         for axis in (0..2).filter(|&axis| axes[axis]) {
             let shift = distance_mm * along[axis];
             if along[axis] > APPROXIMATION {
@@ -336,8 +377,12 @@ fn extrusion_faces(
     let (min, max) = profile_bounds(segments);
     let (x, y, z) = (unit(0), unit(1), unit(2));
     let mut faces = vec![
-        FaceFrame::planar(&caps[0], [0.0; 3], scaled(z, -1.0), x, y).spanning(min, max),
-        FaceFrame::planar(&caps[1], [0.0, 0.0, distance_mm], z, x, y).spanning(min, max),
+        FaceFrame::planar(&caps[0], [0.0; 3], scaled(z, -1.0), x, y)
+            .spanning(min, max)
+            .with_profile(segments),
+        FaceFrame::planar(&caps[1], [0.0, 0.0, distance_mm], z, x, y)
+            .spanning(min, max)
+            .with_profile(segments),
     ];
     let turn = turn(segments);
     for segment in segments {
@@ -368,26 +413,11 @@ fn extrusion_faces(
                 v: z,
                 min: [0.0; 2],
                 max: [span, distance_mm],
+                boundary: None,
             });
         }
     }
     faces
-}
-
-/// The faces of the box `min..max`, named and measured as a cuboid's.
-pub(crate) fn box_faces(min: [f64; 3], max: [f64; 3]) -> Vec<FaceFrame> {
-    let ProgramPartBody::Extrusion {
-        segments,
-        distance_mm,
-        caps,
-    } = ProgramPartBody::cuboid(std::array::from_fn(|axis| max[axis] - min[axis]))
-    else {
-        unreachable!("a cuboid is an extrusion")
-    };
-    extrusion_faces(&segments, distance_mm, &caps)
-        .into_iter()
-        .map(|face| face.placed(&frame::IDENTITY, min, false))
-        .collect()
 }
 
 fn revolve_faces(
@@ -419,7 +449,8 @@ fn revolve_faces(
         let (min, max) = profile_bounds(segments);
         let turned = frame::axis_angle(axis, angle_degrees).unwrap_or(frame::IDENTITY);
         let start = FaceFrame::planar("start", [0.0; 3], scaled(tangent, -1.0), unit(0), unit(1))
-            .spanning(min, max);
+            .spanning(min, max)
+            .with_profile(segments);
         let mut end = start.placed(&turned, minus(origin, frame::apply(&turned, origin)), false);
         end.name = "end".to_owned();
         end.normal = frame::apply(&turned, tangent);
@@ -450,6 +481,7 @@ fn revolve_faces(
                 v: axis,
                 min: [0.0, heights[0].min(heights[1])],
                 max: [angle_degrees.min(360.0), heights[0].max(heights[1])],
+                boundary: None,
             });
         } else if along.abs() <= APPROXIMATION {
             // A flat ring (or disc) across the axis; its rectangle bounds the
@@ -472,16 +504,43 @@ fn revolve_faces(
                     }
                 }
             }
-            faces.push(
-                FaceFrame::planar(
-                    &segment.name,
-                    plus(origin, scaled(axis, height)),
-                    outward,
-                    radial,
-                    tangent,
-                )
-                .spanning(min, max),
-            );
+            let count = ((sweep.to_radians()
+                / (2.0 * (1.0 - 0.001 / outer.max(0.001)).acos()).max(0.001))
+            .ceil() as usize)
+                .max(2);
+            let arc = |radius: f64| {
+                (0..=count)
+                    .map(|i| {
+                        let angle = sweep.to_radians() * i as f64 / count as f64;
+                        [radius * angle.cos(), radius * angle.sin()]
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut outer_ring = arc(outer);
+            let rings = if full {
+                outer_ring.pop();
+                let mut rings = vec![outer_ring];
+                if inner > APPROXIMATION {
+                    let mut hole = arc(inner);
+                    hole.pop();
+                    hole.reverse();
+                    rings.push(hole);
+                }
+                rings
+            } else {
+                outer_ring.extend(arc(inner).into_iter().rev());
+                vec![outer_ring]
+            };
+            let mut face = FaceFrame::planar(
+                &segment.name,
+                plus(origin, scaled(axis, height)),
+                scaled(axis, dot(outward, axis).signum()),
+                radial,
+                tangent,
+            )
+            .spanning(min, max);
+            face.boundary = Some(rings);
+            faces.push(face);
         }
     }
     faces
@@ -512,6 +571,9 @@ impl Part {
     /// walls (`<shell>.<face>`), in program order.
     #[must_use]
     pub fn face_frames(&self) -> Vec<FaceFrame> {
+        self.face_frames_with_boundaries(true)
+    }
+    fn face_frames_with_boundaries(&self, boundaries: bool) -> Vec<FaceFrame> {
         let mut faces = self.body_face_frames();
         for operation in &self.operations {
             match operation {
@@ -539,18 +601,37 @@ impl Part {
                 }
                 ProgramOperation::Boolean(boolean) => {
                     let tool = &boolean.tool;
+                    if boundaries && boolean.kind == ProgramBooleanKind::Subtract {
+                        self.trim_faces(&mut faces, tool);
+                    }
                     let rotation =
                         frame::multiply(&frame::transposed(&self.rotation), &tool.rotation);
                     let shift = self.to_local(tool.at_mm);
-                    faces.extend(tool.face_frames().into_iter().map(|face| {
-                        let mut placed = face.placed(&rotation, shift, false);
-                        placed.name = format!("{}.{}", boolean.name, face.name);
-                        if boolean.kind == ProgramBooleanKind::Subtract {
-                            placed.reversed()
-                        } else {
-                            placed
-                        }
-                    }));
+                    faces.extend(
+                        tool.face_frames_with_boundaries(boundaries)
+                            .into_iter()
+                            .map(|face| {
+                                let mut placed = face.placed(&rotation, shift, false);
+                                placed.name = format!("{}.{}", boolean.name, face.name);
+                                if boundaries
+                                    && boolean.kind == ProgramBooleanKind::Subtract
+                                    && placed.kind == FaceKind::Planar
+                                {
+                                    let section =
+                                        extrusion_section(self, &self.world_face(&placed));
+                                    placed.boundary = Some(crate::contact::polygon::boolean(
+                                        &placed.planar_rings(),
+                                        &section,
+                                        false,
+                                    ));
+                                }
+                                if boolean.kind == ProgramBooleanKind::Subtract {
+                                    placed.reversed()
+                                } else {
+                                    placed
+                                }
+                            }),
+                    );
                 }
                 ProgramOperation::Shell(shell) => {
                     faces.retain(|face| !shell.open.contains(&face.name));
@@ -565,6 +646,12 @@ impl Part {
                         .collect::<Vec<_>>();
                     faces.extend(inner);
                 }
+                ProgramOperation::Hole(hole) if boundaries => {
+                    self.trim_faces(&mut faces, &self.hole_tool(hole).tool)
+                }
+                ProgramOperation::Pocket(pocket) if boundaries => {
+                    self.trim_faces(&mut faces, &self.pocket_tool(pocket).tool)
+                }
                 ProgramOperation::Cut(_)
                 | ProgramOperation::Finish(_)
                 | ProgramOperation::Hole(_)
@@ -574,12 +661,32 @@ impl Part {
         faces
     }
 
+    fn trim_faces(&self, faces: &mut [FaceFrame], tool: &Part) {
+        for face in faces.iter_mut().filter(|f| f.kind == FaceKind::Planar) {
+            let section = extrusion_section(tool, &self.world_face(face));
+            if !section.is_empty() {
+                face.boundary = Some(crate::contact::polygon::boolean(
+                    &face.planar_rings(),
+                    &section,
+                    true,
+                ));
+            }
+        }
+    }
+
     /// The frame of face `name` in the part's own frame.
     ///
     /// # Errors
     /// Names the face and lists the faces the part has.
     pub fn face_frame(&self, name: &str) -> Result<FaceFrame, FaceNameError> {
-        let faces = self.face_frames();
+        self.named_frame(name, true)
+    }
+    #[doc = "Surface coordinates only: use face_frame for material containment or contact."]
+    pub(crate) fn machining_frame(&self, name: &str) -> Result<FaceFrame, FaceNameError> {
+        self.named_frame(name, false)
+    }
+    fn named_frame(&self, name: &str, boundaries: bool) -> Result<FaceFrame, FaceNameError> {
+        let faces = self.face_frames_with_boundaries(boundaries);
         if let Some(face) = faces.iter().find(|face| face.name == name) {
             return Ok(face.clone());
         }

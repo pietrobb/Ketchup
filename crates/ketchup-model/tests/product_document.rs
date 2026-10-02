@@ -623,6 +623,89 @@ fn m6_invalid_profile_or_revolve_axis_rolls_back_atomically() {
 }
 
 #[test]
+fn cyclic_group_conversion_rejects_without_publishing_partial_groups() {
+    use ketchup_model::document::ConvertGroupPlan;
+    let mut document = seed_product_document();
+    let before = document.current();
+    for parent in [GroupId(42), GROUP] {
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GroupId(41),
+                name: "First".into(),
+                parent: Some(parent),
+                transform: Transform::identity(),
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(42),
+                name: "Second".into(),
+                parent: Some(GroupId(41)),
+                transform: Transform::identity(),
+            },
+            CanonicalCommand::SetGroupParent {
+                id: GROUP,
+                parent: Some(GroupId(42)),
+            },
+            CanonicalCommand::ConvertGroupToComponent(ConvertGroupPlan::new(
+                GROUP,
+                DefinitionId(50),
+                OccurrenceId(51),
+                "Converted".into(),
+            )),
+        ]);
+        assert!(document.apply_batch(&batch).is_err());
+        let after = document.current();
+        assert_eq!(
+            after.groups().collect::<Vec<_>>(),
+            before.groups().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            after.occurrences().collect::<Vec<_>>(),
+            before.occurrences().collect::<Vec<_>>()
+        );
+        assert!(after.definition(DefinitionId(50)).is_none());
+    }
+}
+
+#[test]
+fn forward_group_references_can_still_be_converted_in_one_batch() {
+    use ketchup_model::document::ConvertGroupPlan;
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GroupId(41),
+                name: "Child".into(),
+                parent: Some(GroupId(42)),
+                transform: Transform::identity(),
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(42),
+                name: "Parent".into(),
+                parent: Some(GROUP),
+                transform: Transform::identity(),
+            },
+            CanonicalCommand::ConvertGroupToComponent(ConvertGroupPlan::new(
+                GROUP,
+                DefinitionId(50),
+                OccurrenceId(51),
+                "Converted".into(),
+            )),
+        ]))
+        .unwrap();
+    let after = document.current();
+    assert!(after.group(GROUP).is_none());
+    assert!(after.group(GroupId(41)).is_none());
+    assert!(after.definition(DefinitionId(50)).is_some());
+    assert_eq!(
+        after.occurrence(OccurrenceId(51)).unwrap().name(),
+        "Converted"
+    );
+    document.undo().unwrap();
+    assert!(document.current().group(GROUP).is_some());
+    assert!(document.current().definition(DefinitionId(50)).is_none());
+}
+
+#[test]
 fn bound_nested_scene_query_blocks_stale_hidden_and_out_of_context_entities() {
     let mut document = seed_product_document();
     let inner = document

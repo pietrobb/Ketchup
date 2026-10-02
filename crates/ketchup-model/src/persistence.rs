@@ -13,6 +13,10 @@ use crate::document::{
 use crate::graph::SlotResolution;
 
 mod legacy;
+mod work_recovery;
+#[cfg(feature = "testing")]
+pub use work_recovery::headless_with_parent_sync_failure;
+pub use work_recovery::{WorkRecoveryLock, check_work_recovery_identity};
 pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
 
@@ -122,10 +126,15 @@ impl ContainerData {
 
     pub fn insert_extension(&mut self, entry: ExtensionEntry) -> Result<(), PersistenceError> {
         let key = (entry.namespace.clone(), entry.path.clone());
-        if self.extensions.insert(key, entry).is_some() {
-            return Err(PersistenceError::DuplicateContainerEntry);
+        match self.extensions.entry(key) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(entry);
+                Ok(())
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                Err(PersistenceError::DuplicateContainerEntry)
+            }
         }
-        Ok(())
     }
 
     pub fn set_extension(&mut self, entry: ExtensionEntry) {
@@ -889,7 +898,11 @@ fn save_atomic_bytes_if_absent_after_check(
             FilePersistenceError::Io(error.error)
         }
     })?;
-    sync_parent(parent)?;
+    sync_parent(parent).map_err(|error| FilePersistenceError::Published {
+        path: path.to_owned(),
+        identity: FileIdentity::from_bytes(bytes),
+        error,
+    })?;
     Ok(())
 }
 
@@ -962,11 +975,19 @@ fn write_atomic_after_prepare(
     temporary
         .persist(path)
         .map_err(|error| FilePersistenceError::Io(error.error))?;
-    sync_parent(parent)?;
+    sync_parent(parent).map_err(|error| FilePersistenceError::Published {
+        path: path.to_owned(),
+        identity: FileIdentity::from_bytes(bytes),
+        error,
+    })?;
     Ok(())
 }
 
 fn sync_parent_directory(parent: &Path) -> io::Result<()> {
+    #[cfg(feature = "testing")]
+    if work_recovery::FAIL_PARENT_SYNC.get() {
+        return Err(io::Error::other("injected parent sync failure"));
+    }
     #[cfg(unix)]
     {
         fs::File::open(parent)?.sync_all()
@@ -991,11 +1012,31 @@ pub fn save_work_recovery_document_store_with_container(
     container_data: &ContainerData,
     base_identity: FileIdentity,
 ) -> Result<FileIdentity, FilePersistenceError> {
+    let _owner = WorkRecoveryLock::acquire(path)?;
+    save_work_recovery_document_store_with_container_if_unchanged(
+        path,
+        document,
+        container_data,
+        base_identity,
+        None,
+    )
+}
+
+/// Replaces only the checkpoint observed by this writer; None requires absence.
+/// Live sessions must also retain a WorkRecoveryLock to protect recovery reopen.
+pub fn save_work_recovery_document_store_with_container_if_unchanged(
+    path: &Path,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+    base_identity: FileIdentity,
+    expected_recovery: Option<FileIdentity>,
+) -> Result<FileIdentity, FilePersistenceError> {
     save_work_recovery_document_store_with_container_after_compare(
         path,
         document,
         container_data,
         base_identity,
+        expected_recovery,
         || {},
     )
 }
@@ -1005,6 +1046,7 @@ fn save_work_recovery_document_store_with_container_after_compare(
     document: &DocumentStore,
     container_data: &ContainerData,
     base_identity: FileIdentity,
+    expected_recovery: Option<FileIdentity>,
     after_compare: impl FnOnce(),
 ) -> Result<FileIdentity, FilePersistenceError> {
     let lock_path = save_lock_path(path);
@@ -1018,6 +1060,7 @@ fn save_work_recovery_document_store_with_container_after_compare(
     if read_native_document_identity(path)? != base_identity {
         return Err(FilePersistenceError::ExternalConflict);
     }
+    check_work_recovery_identity(path, expected_recovery)?;
     after_compare();
     let payload = match save_document_store(document, container_data) {
         Ok(payload) => payload,
@@ -1034,7 +1077,17 @@ fn save_work_recovery_document_store_with_container_after_compare(
     bytes.extend_from_slice(&base_identity.sha256());
     push_u64(&mut bytes, payload.len() as u64);
     bytes.extend_from_slice(&payload);
-    write_atomic(&work_recovery_path(path), &bytes)?;
+    write_atomic_after_prepare(
+        &work_recovery_path(path),
+        &bytes,
+        || {
+            if read_native_document_identity(path)? != base_identity {
+                return Err(FilePersistenceError::ExternalConflict);
+            }
+            check_work_recovery_identity(path, expected_recovery)
+        },
+        sync_parent_directory,
+    )?;
     Ok(FileIdentity::from_bytes(&bytes))
 }
 
@@ -1233,7 +1286,10 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
             try_load_recovery(path)?.ok_or(FilePersistenceError::Io(primary_error))
         }
         Err(FilePersistenceError::Format(error)) => Err(FilePersistenceError::Format(error)),
-        Err(FilePersistenceError::ExternalConflict) => Err(FilePersistenceError::ExternalConflict),
+        Err(
+            error @ (FilePersistenceError::ExternalConflict
+            | FilePersistenceError::Published { .. }),
+        ) => Err(error),
     }
 }
 
@@ -1248,8 +1304,11 @@ fn try_load_recovery(path: &Path) -> Result<Option<LoadedFile>, FilePersistenceE
         Err(FilePersistenceError::Format(error)) => {
             return Err(FilePersistenceError::Format(error));
         }
-        Err(FilePersistenceError::ExternalConflict) => {
-            return Err(FilePersistenceError::ExternalConflict);
+        Err(
+            error @ (FilePersistenceError::ExternalConflict
+            | FilePersistenceError::Published { .. }),
+        ) => {
+            return Err(error);
         }
     };
     let mut outcome = match load(&bytes) {
@@ -1733,12 +1792,36 @@ pub enum FilePersistenceError {
     Io(io::Error),
     Format(PersistenceError),
     ExternalConflict,
+    /// The complete file is visible, but directory durability could not be confirmed.
+    Published {
+        path: PathBuf,
+        identity: FileIdentity,
+        error: io::Error,
+    },
+}
+
+impl FilePersistenceError {
+    pub fn published_identity(&self, path: &Path) -> Option<FileIdentity> {
+        match self {
+            Self::Published {
+                path: published,
+                identity,
+                ..
+            } if published == path => Some(*identity),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for FilePersistenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => error.fmt(formatter),
+            Self::Published { path, error, .. } => write!(
+                formatter,
+                "{} was published, but its durability is unconfirmed: {error}; keep the current state and retry saving",
+                path.display()
+            ),
             Self::Format(error) => error.fmt(formatter),
             Self::ExternalConflict => {
                 formatter.write_str("the document changed outside this session")
@@ -1747,7 +1830,15 @@ impl fmt::Display for FilePersistenceError {
     }
 }
 
-impl std::error::Error for FilePersistenceError {}
+impl std::error::Error for FilePersistenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) | Self::Published { error, .. } => Some(error),
+            Self::Format(error) => Some(error),
+            Self::ExternalConflict => None,
+        }
+    }
+}
 impl From<io::Error> for FilePersistenceError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
@@ -2218,6 +2309,7 @@ mod tests {
                 &dirty,
                 &container_data,
                 base_identity,
+                None,
                 || {
                     recovery_compared_tx.send(()).unwrap();
                     release_rx.recv().unwrap();

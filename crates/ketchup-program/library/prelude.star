@@ -166,7 +166,12 @@ def member(name, start, end, section, across = None, material = "timber", grain 
 #     the largest patch where a flat face of `a` lies against a flat face of
 #     `b`, for any bodies (boxes, extrusions, revolves, cut or mirrored,
 #     rotated or not); face_a/face_b are face names as in faces(), e.g.
-#     "x+", "segment2" or "<boolean>.z+" for the face a cut left
+#     "x+", "segment2" or "<boolean>.z+" for the face a cut left.
+#     points is an even/odd boundary walk, not a convex hull: holes and
+#     disconnected regions use doubled zero-area connectors. Cancel reverse
+#     edge pairs when measuring clearance. origin/size are only bounds.
+#     Curved boundaries use 0.001 mm chord sampling. Sweep/loft faces have no
+#     analytic boundary and are not replaced by their boxes.
 
 def face_normal(part, face):
     """World outward normal of the part's face named `face` (see faces(); on
@@ -821,21 +826,62 @@ def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clear
     if c == None:
         fail("dowels(%s, %s): the parts do not touch; place them face to face first" % (part_info(a).name, part_info(b).name))
     depth_a, depth_b = _dowel_depths(a, b, c.face_a, c.face_b, dowel, length, clearance, rest)
-    if c.size[0] >= c.size[1]:
-        row, across, row_length, width = c.u, c.v, c.size[0], c.size[1]
-    else:
-        row, across, row_length, width = c.v, c.u, c.size[1], c.size[0]
-    if row_length < 2 * margin:
-        fail("dowels(%s, %s): the contact is %s mm long, shorter than twice the margin (%s mm)" % (part_info(a).name, part_info(b).name, row_length, margin))
-    if count == None:
-        count = max(2, 1 + int((row_length - 2 * margin) / spacing))
-    start = vec_add(c.origin, vec_scale(across, width / 2.0))
-    points = [vec_add(start, vec_scale(row, s)) for s in spread(margin, row_length - margin, count)]
+    points = _contact_row(c, count, margin, spacing, diameter)
+    if points == None:
+        fail("dowels(%s, %s): no row fits inside the contact with margin %s mm and diameter %s mm; reduce count/margin or use a larger contact" % (part_info(a).name, part_info(b).name, margin, diameter))
     for i, point in enumerate(points):
         hole(a, c.face_a, world = point, diameter = diameter, depth = depth_a, id = "dowel:%s:%d" % (part_info(b).name, i + 1))
         hole(b, c.face_b, world = point, diameter = diameter, depth = depth_b, id = "dowel:%s:%d" % (part_info(a).name, i + 1))
     joint(a, b, kind = "dowel", fasteners = points, fastener = "dowel " + dowel)
     return points
+
+def _contact_row(c, count, margin, spacing, diameter):
+    """A row inside actual material. Margin is end-to-centre; the entire
+    bore must clear every real boundary, including holes and concave notches.
+    Doubled connectors in contact.points carry no boundary clearance."""
+    if margin < 0 or spacing <= 0 or (count != None and (count < 1 or count != int(count))):
+        fail("dowels(): use nonnegative margin, positive spacing and a positive integer count")
+    points = c.points
+    edges = [(points[i], points[(i + 1) % len(points)]) for i in range(len(points))]
+    edges = [(a, b) for a, b in edges if a != b and (b, a) not in edges]
+    best, best_length = None, -1
+    inset = max(margin, diameter / 2.0)
+    directions = [c.u, c.v] + [vec_sub(b, a) for a, b in edges if vec_length(vec_sub(b, a)) >= diameter]
+    for delta in directions:
+        length = vec_length(delta)
+        row = vec_scale(delta, 1.0 / length)
+        if _dot(row, c.u if abs(_dot(row, c.u)) >= abs(_dot(row, c.v)) else c.v) < 0:
+            row = vec_scale(row, -1)
+        across = vec_sub(vec_scale(c.v, _dot(row, c.u)), vec_scale(c.u, _dot(row, c.v)))
+        vertices = [(_dot(vec_sub(p, c.origin), row), _dot(vec_sub(p, c.origin), across)) for p in points]
+        levels = sorted([p[1] for p in vertices])
+        heights = [(levels[0] + levels[-1]) / 2.0] + [(levels[i] + levels[i + 1]) / 2.0 for i in range(len(levels) - 1) if levels[i + 1] - levels[i] >= diameter]
+        for height in heights:
+            hits = []
+            for i, p in enumerate(vertices):
+                q = vertices[(i + 1) % len(vertices)]
+                if (p[1] > height) != (q[1] > height):
+                    hits.append(p[0] + (q[0] - p[0]) * (height - p[1]) / (q[1] - p[1]))
+            hits = sorted(hits)
+            for i in range(0, len(hits) - 1, 2):
+                low, high = hits[i] + inset, hits[i + 1] - inset
+                if high < low or high - low <= best_length:
+                    continue
+                n = count if count != None else max(2, 1 + int((high - low) / spacing))
+                if n > 1 and (high - low) / (n - 1) < diameter:
+                    continue
+                candidate = [vec_add(c.origin, vec_add(vec_scale(row, s), vec_scale(across, height))) for s in spread(low, high, n)]
+                safe = True
+                for p in candidate:
+                    for x, y in edges:
+                        d = vec_sub(y, x)
+                        t = max(0, min(1, _dot(vec_sub(p, x), d) / _dot(d, d)))
+                        offset = vec_sub(p, vec_add(x, vec_scale(d, t)))
+                        if _dot(offset, offset) < (diameter / 2.0 - 0.000001) * (diameter / 2.0 - 0.000001):
+                            safe = False
+                if safe:
+                    best, best_length = candidate, high - low
+    return best
 
 def _dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]

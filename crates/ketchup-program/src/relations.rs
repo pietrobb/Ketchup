@@ -3,7 +3,7 @@
 //! allowed, and the clearance between nearby parts. It lets a caller check a
 //! model against its intent without a picture.
 
-use crate::contact::contact;
+use crate::contact::{ContactFaces, contact};
 use crate::eval::TOLERANCE_MM;
 use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
@@ -211,12 +211,13 @@ fn overlap_status(model: &ProgramModel, a: &Part, b: &Part) -> (OverlapStatus, O
     (OverlapStatus::Collision, None)
 }
 
-fn relate(
+fn relate<'a>(
     model: &ProgramModel,
     exact: &ExactShapes,
-    a: &Part,
-    b: &Part,
+    a: &'a Part,
+    b: &'a Part,
     joint: Option<&str>,
+    faces: &mut ContactFaces<'a>,
 ) -> Option<Relation> {
     let (oa, ob) = (a.obb(), b.obb());
     let (direction, separation) = oa.separating_axis(&ob);
@@ -240,7 +241,7 @@ fn relate(
         }
         relation.gap_mm = Some(round1(gap));
     } else if separation >= -TOLERANCE_MM {
-        match contact(a, b) {
+        match faces.contact(a, b) {
             Some(patch) => {
                 relation.kind = RelationKind::Contact;
                 relation.faces = Some([patch.face_a.clone(), patch.face_b.clone()]);
@@ -359,12 +360,13 @@ pub fn relations_with(
     }
     pairs.sort_unstable();
     pairs.dedup();
+    let mut faces = ContactFaces::default();
     let mut relations: Vec<Relation> = pairs
         .into_iter()
         .filter(|(a, b)| a != b)
         .filter_map(|(a, b)| {
             let (a, b) = (&parts[a], &parts[b]);
-            relate(model, exact, a, b, joint_of(a, b))
+            relate(model, exact, a, b, joint_of(a, b), &mut faces)
         })
         .collect();
     sync_with_issues(&mut relations, issues);

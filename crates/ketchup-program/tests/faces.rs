@@ -476,7 +476,19 @@ dowels(w, post, dowel = \"6x30\", margin = 10)
         ["back", "x-"]
     );
     assert_near(found.normal, [1.0, 0.0, 0.0], "out of the back");
-    assert_eq!(found.points_mm.len(), 4);
+    let area: f64 = found
+        .points_mm
+        .iter()
+        .zip(found.points_mm.iter().cycle().skip(1))
+        .take(found.points_mm.len())
+        .map(|(a, b)| a[1] * b[2] - b[1] * a[2])
+        .sum::<f64>()
+        .abs()
+        * 0.5;
+    assert!(
+        (area - (1000.0 - 2.0 * std::f64::consts::PI * 9.0)).abs() < 0.1,
+        "{area}"
+    );
     assert!(
         (found.size_mm[0] * found.size_mm[1] - 1000.0).abs() < 1e-6,
         "{:?}",

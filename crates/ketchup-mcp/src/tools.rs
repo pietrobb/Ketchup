@@ -10,9 +10,10 @@ use crate::{
 };
 use serde_json::{Map, Value, json};
 use std::{
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const DEFAULT_WAIT: Duration = Duration::from_secs(35);
@@ -23,7 +24,7 @@ const APPLY_AND_VERIFY_MARGIN: Duration = Duration::from_secs(20);
 const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
 const IMAGE_PROTOCOL_VERSION: u32 = 4;
 const WINDOW_START_TIMEOUT: Duration = Duration::from_secs(30);
-const WINDOW_START_POLL: Duration = Duration::from_millis(250);
+
 /// Fields of a model query that the bridge nests under `query`.
 const QUERY_FIELDS: &[&str] = &[
     "kind",
@@ -173,12 +174,7 @@ impl Tools {
                             "Give either source or source_path, not both.",
                         ));
                     }
-                    let source = std::fs::read_to_string(&path).map_err(|error| {
-                        ToolError::new(
-                            "invalid_path",
-                            format!("Cannot read program file {path}: {error}"),
-                        )
-                    })?;
+                    let source = read_program_source(Path::new(&path))?;
                     args.insert("source".into(), source.into());
                 }
                 self.send("apply_program", args, APPLY_PROGRAM_WAIT)
@@ -358,40 +354,26 @@ impl Tools {
                 format!("document_path must be an absolute path of an existing file: {path}"),
             ));
         }
-        let before: Vec<String> = self
-            .list_windows()
-            .into_iter()
-            .map(|window| window.instance_id)
-            .collect();
-        let mut child = spawn_window(&executable, document).map_err(|error| {
+        let failed = |error| {
             ToolError::new(
                 "open_failed",
                 format!("Cannot start {}: {error}", executable.display()),
             )
-        })?;
-        let deadline = Instant::now() + WINDOW_START_TIMEOUT;
-        while Instant::now() < deadline {
-            std::thread::sleep(WINDOW_START_POLL);
-            if let Ok(Some(status)) = child.try_wait() {
-                return Err(ToolError::new(
-                    "open_failed",
-                    format!("The new Kečup window exited during start ({status})."),
-                ));
+        };
+        let token = discovery::nonce().map_err(failed)?;
+        let mut child = spawn_window(&executable, document).map_err(failed)?;
+        let launched = launch_connection(&mut child, token, document.unwrap_or("Untitled"));
+        let (window, connection) = match launched {
+            Ok(launched) => launched,
+            Err(error) => {
+                // Only our failed child is stopped; never select or touch another window.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(failed(error));
             }
-            if let Some(window) = self
-                .list_windows()
-                .into_iter()
-                .find(|window| !before.contains(&window.instance_id))
-            {
-                self.attached = None;
-                self.attach(window)?;
-                return self.send("status", Map::new(), DEFAULT_WAIT);
-            }
-        }
-        Err(ToolError::new(
-            "open_failed",
-            "The new Kečup window did not become reachable within 30 s; call windows to check.",
-        ))
+        };
+        self.attached = Some(Attached { window, connection });
+        self.send("status", Map::new(), DEFAULT_WAIT)
     }
 
     fn list_windows(&self) -> Vec<Window> {
@@ -509,14 +491,45 @@ impl Tools {
     }
 }
 
+fn launch_connection(
+    child: &mut std::process::Child,
+    token: String,
+    document: &str,
+) -> io::Result<(Window, Connection)> {
+    let mut input = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("missing child stdin"))?;
+    writeln!(input, "{}", json!({"version": 1, "token": token}))?;
+    drop(input);
+    let mut output = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("missing child stdout"))?;
+    let document = document.to_owned();
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("ketchup-child-readiness".into())
+        .spawn(move || {
+            let ready = discovery::launched_window(&mut output, document);
+            let _ = send.send(ready);
+            // The detached window may outlive this MCP connection. Drain, never retain logs.
+            let _ = io::copy(&mut output, &mut io::sink());
+        })?;
+    let (window, address) = receive
+        .recv_timeout(WINDOW_START_TIMEOUT)
+        .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))??;
+    Ok((window, Connection::open(address, token)?))
+}
+
 /// Starts a new window detached from this server, so it outlives the AI client.
 fn spawn_window(executable: &Path, document: Option<&str>) -> std::io::Result<std::process::Child> {
     let command = || {
         let mut command = Command::new(executable);
-        command.args(document);
+        command.arg("--supervisor-live-stdin").args(document);
         command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
         command
     };
@@ -535,6 +548,88 @@ fn spawn_window(executable: &Path, document: Option<&str>) -> std::io::Result<st
     }
     #[cfg(not(windows))]
     command().spawn()
+}
+
+pub(crate) fn read_program_source(path: &Path) -> Result<String, ToolError> {
+    let failed = |error: io::Error| {
+        ToolError::new(
+            "invalid_path",
+            format!(
+                "Cannot read program file {}: {error}. Choose a regular UTF-8 file.",
+                path.display()
+            ),
+        )
+    };
+    if !path.is_absolute() {
+        return Err(ToolError::new(
+            "invalid_path",
+            "source_path must be an absolute regular-file path.",
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(failed)?;
+    if !metadata.is_file() {
+        return Err(ToolError::new(
+            "invalid_path",
+            "source_path must name a regular file, not a link, directory or device.",
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A raced-in FIFO must not block open; a final symlink must not be followed.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Open the final reparse point itself and refuse it below, rather than following it.
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path).map_err(failed)?;
+    let metadata = file.metadata().map_err(failed)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(ToolError::new(
+            "invalid_path",
+            "The opened source is not a regular file.",
+        ));
+    }
+    if metadata.len() > MAX_REQUEST_BYTES as u64 {
+        return Err(source_too_large());
+    }
+    read_bounded_source(file)
+}
+
+fn source_too_large() -> ToolError {
+    ToolError::new(
+        "request_too_large",
+        format!(
+            "Program source exceeds {MAX_REQUEST_BYTES} bytes; shorten the program. The escaped request envelope must also fit this limit."
+        ),
+    )
+}
+
+pub(crate) fn read_bounded_source(reader: impl Read) -> Result<String, ToolError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_REQUEST_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            ToolError::new(
+                "invalid_path",
+                format!("Cannot read program source: {error}"),
+            )
+        })?;
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(source_too_large());
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        ToolError::new(
+            "invalid_path",
+            format!("Program source must be UTF-8: {error}"),
+        )
+    })
 }
 
 fn take_action(args: &mut Map<String, Value>, choices: &[&str]) -> Result<String, ToolError> {

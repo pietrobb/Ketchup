@@ -2,6 +2,38 @@
 
 use crate::*;
 
+/// Prefer discrete hardware for normal startup; explicit diagnostics remain unique.
+fn select_native_adapter(
+    candidates: impl IntoIterator<Item = (eframe::wgpu::AdapterInfo, bool)>,
+    requirement: Option<&AdapterRequirement>,
+) -> Result<usize, &'static str> {
+    use eframe::wgpu::{Backend, DeviceType};
+    let mut selected = None;
+    for (index, (info, surface_supported)) in candidates.into_iter().enumerate() {
+        if !surface_supported
+            || info.backend != Backend::Dx12
+            || matches!(info.device_type, DeviceType::Cpu | DeviceType::VirtualGpu)
+            || requirement.is_some_and(|r| r.name != info.name || r.device_type != info.device_type)
+        {
+            continue;
+        }
+        let rank = match info.device_type {
+            DeviceType::DiscreteGpu => 0,
+            DeviceType::IntegratedGpu => 1,
+            _ => 2,
+        };
+        if requirement.is_some() && selected.is_some() {
+            return Err("multiple Direct3D 12 physical adapters matched the frozen requirement");
+        }
+        if selected.is_none_or(|(_, best)| rank < best) {
+            selected = Some((index, rank));
+        }
+    }
+    selected
+        .map(|(index, _)| index)
+        .ok_or("no Direct3D 12 physical adapter matched the requested configuration")
+}
+
 impl KetchupApp {
     pub(crate) fn validate_exact_exchange_extension(
         path: &Path,
@@ -118,27 +150,15 @@ impl KetchupApp {
         let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::default();
         setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
         setup.native_adapter_selector = Some(Arc::new(move |adapters, surface| {
-            let mut matching = adapters.iter().filter(|adapter| {
-                let info = adapter.get_info();
-                info.backend == eframe::wgpu::Backend::Dx12
-                    && !matches!(
-                        info.device_type,
-                        eframe::wgpu::DeviceType::Cpu | eframe::wgpu::DeviceType::VirtualGpu
-                    )
-                    && requirement.as_ref().is_none_or(|required| {
-                        info.name == required.name && info.device_type == required.device_type
-                    })
-                    && surface.is_none_or(|surface| adapter.is_surface_supported(surface))
+            let candidates = adapters.iter().map(|adapter| {
+                (
+                    adapter.get_info(),
+                    surface.is_none_or(|surface| adapter.is_surface_supported(surface)),
+                )
             });
-            let selected = matching.next().ok_or_else(|| {
-                "no Direct3D 12 physical adapter matched the frozen requirement".to_owned()
-            })?;
-            if matching.next().is_some() {
-                return Err(
-                    "multiple Direct3D 12 physical adapters matched the frozen requirement"
-                        .to_owned(),
-                );
-            }
+            let index =
+                select_native_adapter(candidates, requirement.as_ref()).map_err(str::to_owned)?;
+            let selected = &adapters[index];
             let info = selected.get_info();
             *selected_info
                 .lock()
@@ -176,6 +196,19 @@ impl KetchupApp {
             &self.exact.topology_results,
             &mut self.exact.topology_result_history,
         );
+        // Include the redo branch as well as Undo/current. Branch replacement and
+        // history truncation must release packages that can no longer be restored.
+        let reachable: BTreeSet<_> = self
+            .document
+            .revision_history()
+            .map(|revision| ketchup_application::evaluation::exact_source(revision.snapshot()))
+            .collect();
+        self.exact
+            .result_history
+            .retain(|source, _| reachable.contains(source));
+        self.exact
+            .topology_result_history
+            .retain(|source, _| reachable.contains(source));
         let source = ketchup_application::evaluation::exact_source(snapshot);
         if let Some(saved) = self.exact.result_history.get(&source) {
             self.exact.results = saved.clone();
@@ -1085,4 +1118,64 @@ pub(crate) fn exact_worker_unavailable() -> Rejection {
     Rejection::new("exact_worker.unavailable", RejectionPhase::Io)
         .reason("exact worker is unavailable")
         .fix_hint("Install or rebuild ketchup-exact-worker next to the application.")
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    use eframe::wgpu::{AdapterInfo, Backend, DeviceType};
+
+    fn adapter(name: &str, device_type: DeviceType) -> (AdapterInfo, bool) {
+        (
+            AdapterInfo {
+                name: name.into(),
+                vendor: 0,
+                device: 0,
+                device_type,
+                driver: String::new(),
+                driver_info: String::new(),
+                backend: Backend::Dx12,
+            },
+            true,
+        )
+    }
+
+    #[test]
+    fn normal_start_selects_preferred_hardware_for_zero_one_and_two_gpus() {
+        assert!(select_native_adapter([], None).is_err());
+        let integrated = adapter("integrated", DeviceType::IntegratedGpu);
+        let discrete = adapter("discrete", DeviceType::DiscreteGpu);
+        assert_eq!(select_native_adapter([integrated.clone()], None), Ok(0));
+        assert_eq!(
+            select_native_adapter([integrated.clone(), discrete.clone()], None),
+            Ok(1)
+        );
+        assert_eq!(
+            select_native_adapter([discrete.clone(), integrated], None),
+            Ok(0)
+        );
+        let mut unsupported = discrete;
+        unsupported.1 = false;
+        assert!(
+            select_native_adapter([unsupported, adapter("cpu", DeviceType::Cpu)], None).is_err()
+        );
+    }
+
+    #[test]
+    fn diagnostic_selection_still_requires_one_exact_match() {
+        let gpu = adapter("requested", DeviceType::IntegratedGpu);
+        let requirement = AdapterRequirement {
+            name: "requested".into(),
+            device_type: DeviceType::IntegratedGpu,
+        };
+        assert_eq!(
+            select_native_adapter(
+                [gpu.clone(), adapter("other", DeviceType::DiscreteGpu)],
+                Some(&requirement)
+            ),
+            Ok(0)
+        );
+        assert!(select_native_adapter([gpu.clone(), gpu], Some(&requirement)).is_err());
+        assert!(select_native_adapter([], Some(&requirement)).is_err());
+    }
 }

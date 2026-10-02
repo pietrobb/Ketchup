@@ -140,15 +140,15 @@ fn main() -> eframe::Result {
         Box::new(move |creation_context| {
             let mut app = KetchupApp::from_creation_context(creation_context);
             if let Some(bootstrap) = bootstrap {
-                bootstrap
-                    .enable(&mut app, &creation_context.egui_ctx, std::io::stdout())
-                    .unwrap_or_else(|error| bootstrap_failed(error));
                 app.enable_live_consent_broker(&creation_context.egui_ctx)
                     .unwrap_or_else(|error| {
                         bootstrap_failed(format_args!(
                             "live bridge bootstrap failed: consent broker unavailable: {error}"
                         ))
                     });
+                bootstrap
+                    .enable(&mut app, &creation_context.egui_ctx, std::io::stdout())
+                    .unwrap_or_else(|error| bootstrap_failed(error));
             } else {
                 if let Err(error) = app.enable_live_consent_broker(&creation_context.egui_ctx) {
                     eprintln!(

@@ -503,6 +503,7 @@ fn missing_worker_and_partial_analytic_coverage_never_pass() {
 }
 #[test]
 fn full_140_house_has_no_silent_collision_cap() {
+    let _turn = crate::integration_support::file_turn();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/garden-studio-colored.ketchup");
     let legacy = persistence::load_file(&path).unwrap();

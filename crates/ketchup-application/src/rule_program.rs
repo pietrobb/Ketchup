@@ -128,7 +128,9 @@ pub fn rewrite_rule_program_push_pull(
             probe_source
                 .overrides
                 .insert(parameter.name.clone(), probed);
-            let (probe, _) = evaluate(&probe_source)?;
+            let Ok((probe, _)) = evaluate(&probe_source) else {
+                continue; // A speculative parameter step may cross a valid program branch.
+            };
             let Some(probe_value) = controlled_value(&probe.model) else {
                 continue;
             };
@@ -146,7 +148,17 @@ pub fn rewrite_rule_program_push_pull(
     let mut rewritten = source.clone();
     if let [(parameter, value)] = drivers.as_slice() {
         rewritten.overrides.insert(parameter.clone(), *value);
-    } else {
+        // A finite-difference probe is only a proposal, not a linearity contract.
+        // Never publish a successful evaluation that moved the face by another amount.
+        if let Ok((candidate, _)) = evaluate(&rewritten)
+            && let (Some(before), Some(after)) = (baseline, controlled_value(&candidate.model))
+            && (after - before - distance_mm).abs() <= ACCUMULATED_ROUNDING
+        {
+            return Ok(rewritten);
+        }
+        rewritten = source.clone();
+    }
+    {
         let quote = |value: &str| serde_json::to_string(value).expect("strings serialize");
         let feature_name = format!("GUI Push/Pull {}", part.face_offsets().count() + 1);
         rewritten.source.push_str(&format!(

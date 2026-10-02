@@ -3,6 +3,77 @@
 use super::*;
 
 #[test]
+fn exact_history_releases_evicted_and_abandoned_packages_but_keeps_redo() {
+    let mut app = KetchupApp::new();
+    let mut packages = Vec::new();
+    for step in 0..(ketchup_model::tolerance::limits::UNDO_REVISIONS + 3) {
+        let snapshot = app.document.current();
+        let package = Arc::new(current_box_package(&app));
+        packages.push(Arc::downgrade(&package));
+        app.exact.results.clear();
+        app.exact.topology_results.clear();
+        app.exact
+            .results
+            .insert_current(&snapshot, Arc::clone(&package))
+            .unwrap();
+        app.exact
+            .topology_results
+            .insert_current(&snapshot, package)
+            .unwrap();
+        app.rebind_exact_results(&snapshot);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: FeatureId(2),
+                    dimension: Dimension::from_decimal((40 + step).to_string()).unwrap(),
+                },
+            ]))
+            .unwrap();
+        app.rebind_exact_results(&app.document.current());
+    }
+    assert!(
+        packages[0].upgrade().is_none(),
+        "evicted geometry must be freed, not just hidden"
+    );
+    let retained = packages.last().unwrap();
+    assert!(retained.upgrade().is_some());
+    app.document.undo().unwrap();
+    app.rebind_exact_results(&app.document.current());
+    assert!(
+        !app.exact_render_bounds().is_empty(),
+        "Undo must recover exact geometry"
+    );
+    let undo_bounds = app.exact_render_bounds();
+    app.document.undo().unwrap();
+    app.rebind_exact_results(&app.document.current());
+    assert!(
+        retained.upgrade().is_some(),
+        "redo geometry must stay alive"
+    );
+    app.document.redo().unwrap();
+    app.rebind_exact_results(&app.document.current());
+    assert_eq!(app.exact_render_bounds(), undo_bounds);
+    app.document.undo().unwrap();
+    app.rebind_exact_results(&app.document.current());
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: FeatureId(2),
+                dimension: Dimension::from_decimal("999").unwrap(),
+            },
+        ]))
+        .unwrap();
+    app.rebind_exact_results(&app.document.current());
+    assert!(
+        retained.upgrade().is_none(),
+        "abandoned redo geometry must be released"
+    );
+    app.document.discard_history_before_current();
+    app.rebind_exact_results(&app.document.current());
+    assert!(packages.iter().all(|package| package.upgrade().is_none()));
+}
+
+#[test]
 fn active_boxes_cache_invalidates_on_transform_visibility_and_undo_redo() {
     let mut app = KetchupApp::new();
     let initial = app.active_boxes(); // Warm the render-box cache before canonical mutation.

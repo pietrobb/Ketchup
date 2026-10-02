@@ -2871,8 +2871,8 @@ impl AssistantCadEditProgram {
         self.validate_with_part_cuts(MAX_ASSISTANT_PART_CUTS)
     }
 
-    /// Validates parts compiled from a rule program, whose panels may carry
-    /// far more holes (shelf-pin rows, dowels) than one AI edit.
+    /// Validates parts compiled from a rule program, which may carry
+    /// far more holes and pockets than one AI edit.
     pub fn validate_rule_parts(&self) -> Result<(), AssistantRequestInvalid> {
         self.validate_with_part_cuts(MAX_RULE_PART_CUTS)
     }
@@ -2886,714 +2886,19 @@ impl AssistantCadEditProgram {
         let mut generated_occurrences = 0usize;
         let mut named_outputs = BTreeMap::<String, AssistantCadProgramFeatureOutput>::new();
         for (operation_index, operation) in self.operations.iter().enumerate() {
-            let bounded_targets = match operation {
-                AssistantCadEditOperation::CreateSketch { .. }
-                | AssistantCadEditOperation::AppendFeature { .. }
-                | AssistantCadEditOperation::FilletEdges { .. }
-                | AssistantCadEditOperation::ChamferEdges { .. }
-                | AssistantCadEditOperation::BindProgramOutput { .. }
-                | AssistantCadEditOperation::SetDimension { .. }
-                | AssistantCadEditOperation::SetFeatureParameter { .. }
-                | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
-                | AssistantCadEditOperation::CreateAssemblyJoint { .. }
-                | AssistantCadEditOperation::CreatePinJoint { .. }
-                | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
-                | AssistantCadEditOperation::MovePhysicalPinPair { .. }
-                | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
-                | AssistantCadEditOperation::CreateDrawing { .. }
-                | AssistantCadEditOperation::UpsertCamPlan { .. }
-                | AssistantCadEditOperation::CreateTag { .. }
-                | AssistantCadEditOperation::SetTagVisibility { .. }
-                | AssistantCadEditOperation::UpsertClassificationDimension { .. }
-                | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
-                AssistantCadEditOperation::CreatePart { .. }
-                | AssistantCadEditOperation::CreateSpatialPath { .. }
-                | AssistantCadEditOperation::CreateConstructionPoint { .. }
-                | AssistantCadEditOperation::CreateConstructionAxis { .. }
-                | AssistantCadEditOperation::CreateConstructionPlane { .. }
-                | AssistantCadEditOperation::CreateHelix { .. } => 1,
-                AssistantCadEditOperation::Delete { selector, .. }
-                | AssistantCadEditOperation::SetColor { selector, .. }
-                | AssistantCadEditOperation::SetGrounded { selector, .. }
-                | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
-                | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
-                | AssistantCadEditOperation::Transform { selector, .. }
-                | AssistantCadEditOperation::Copy { selector, .. }
-                | AssistantCadEditOperation::LinearPattern { selector, .. }
-                | AssistantCadEditOperation::CircularPattern { selector, .. }
-                | AssistantCadEditOperation::Mirror { selector, .. } => {
-                    selector.bounded_target_count()?
-                }
-            };
-            let generated_per_target = match operation {
-                AssistantCadEditOperation::CreateSketch {
-                    definition_id,
-                    name,
-                    workplane,
-                    entities,
-                    constraints,
-                } => {
-                    definition_id.validate_output(
+            let bounded_targets = Self::bounded_operation_targets(operation)?;
+            let generated_per_target =
+                self.validate_part_operation(operation_index, operation, max_part_cuts)?
+                    + self.validate_construction_operation(operation_index, operation)?
+                    + self.validate_feature_operation(
                         operation_index,
-                        &self.operations,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    )?;
-                    // An offset workplane leans on a face of a definition that exists before
-                    // this program runs.
-                    if matches!(
-                        definition_id,
-                        AssistantCadFeatureReference::ProgramOutput(_)
-                    ) && matches!(workplane, AssistantWorkplaneSpec::Offset { .. })
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "sketch workplane reference",
-                        ));
-                    }
-                    if let AssistantWorkplaneSpec::ConstructionPlane {
-                        plane: AssistantCadFeatureReference::ProgramOutput(plane),
-                    } = workplane
-                    {
-                        plane.validate_for(
-                            operation_index,
-                            &self.operations,
-                            AssistantCadProgramFeatureOutput::ConstructionFeature,
-                        )?;
-                        if !matches!(
-                            self.operations.get(plane.operation_index as usize),
-                            Some(AssistantCadEditOperation::CreateConstructionPlane { .. })
-                        ) {
-                            return Err(AssistantRequestInvalid::invalid(
-                                "construction-plane workplane reference",
-                            ));
-                        }
-                    }
-                    validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
-                    0
-                }
-                AssistantCadEditOperation::CreatePart {
-                    name,
-                    workplane,
-                    entities,
-                    constraints,
-                    feature,
-                    holes,
-                    pockets,
-                    translation_mm,
-                    rotation,
-                } => {
-                    validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
-                    for (cuts, label) in [
-                        (holes.len(), "part hole count"),
-                        (pockets.len(), "part pocket count"),
-                    ] {
-                        if cuts > max_part_cuts {
-                            return Err(AssistantRequestInvalid::new(
-                                label,
-                                AssistantRequestProblem::ExceedsLimit(max_part_cuts),
-                            ));
-                        }
-                    }
-                    let mut hole_ids = BTreeSet::new();
-                    for hole in holes {
-                        hole.validate()?;
-                        if !hole_ids.insert(hole.id.as_str()) {
-                            return Err(AssistantRequestInvalid::new(
-                                "part hole id",
-                                AssistantRequestProblem::Duplicate,
-                            )
-                            .item(&hole.id));
-                        }
-                    }
-                    let mut pocket_ids = BTreeSet::new();
-                    for pocket in pockets {
-                        pocket.validate()?;
-                        if !pocket_ids.insert(pocket.id.as_str()) {
-                            return Err(AssistantRequestInvalid::new(
-                                "part pocket id",
-                                AssistantRequestProblem::Duplicate,
-                            )
-                            .item(&pocket.id));
-                        }
-                    }
-                    if matches!(workplane, AssistantWorkplaneSpec::ConstructionPlane { .. }) {
-                        return Err(AssistantRequestInvalid::invalid("part workplane reference"));
-                    }
-                    feature.validate()?;
-                    if let AssistantCadPartFeature::Revolve { axis, .. } = feature {
-                        axis.validate_reference_for_operation(operation_index, &self.operations)?;
-                    }
-                    if !assistant_cad_vector_is_bounded(*translation_mm) {
-                        return Err(AssistantRequestInvalid::invalid("CAD part placement"));
-                    }
-                    if let Some(rotation) = rotation {
-                        rotation.validate()?;
-                    }
-                    1
-                }
-                AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("spatial path creation"));
-                    }
-                    // Structural pre-check; the document validates the path again with its own
-                    // tolerance when the lowered commands apply.
-                    validated_spatial_path_segments(segments, DEFAULT_LINEAR_TOLERANCE_MM)?;
-                    1
-                }
-                AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || !assistant_cad_vector_is_bounded(*position_mm)
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "construction point creation",
-                        ));
-                    }
-                    1
-                }
-                AssistantCadEditOperation::CreateConstructionAxis {
-                    name,
-                    origin_mm,
-                    direction,
-                } => {
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || !assistant_cad_vector_is_bounded(*origin_mm)
-                        || !assistant_cad_vector_is_bounded(*direction)
-                        || !assistant_cad_vector_is_nonzero(*direction)
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "construction axis creation",
-                        ));
-                    }
-                    1
-                }
-                AssistantCadEditOperation::CreateConstructionPlane {
-                    name,
-                    origin_mm,
-                    normal,
-                    x_direction,
-                } => {
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || !assistant_cad_vector_is_bounded(*origin_mm)
-                        || !assistant_cad_vector_is_bounded(*normal)
-                        || !assistant_cad_vector_is_bounded(*x_direction)
-                        || !assistant_cad_vector_is_nonzero(*normal)
-                        || !assistant_cad_vector_is_nonzero(*x_direction)
-                        || !assistant_cad_vectors_are_perpendicular(*normal, *x_direction)
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "construction plane creation",
-                        ));
-                    }
-                    1
-                }
-                AssistantCadEditOperation::CreateHelix {
-                    name,
-                    parameters,
-                    profile,
-                } => {
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("Helix creation"));
-                    }
-                    parameters.validate()?;
-                    parameters
-                        .axis
-                        .validate_reference_for_operation(operation_index, &self.operations)?;
-                    validate_assistant_profile_entities(profile)?;
-                    1
-                }
-                AssistantCadEditOperation::FilletEdges {
-                    definition_id,
-                    name,
-                    target_feature_id,
-                    edge_reference_ids,
-                    radius_mm,
-                } => {
-                    if *definition_id == 0
-                        || name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD Fillet"));
-                    }
-                    AssistantCadBodyFeature::TopologyFillet {
-                        target_feature_id: *target_feature_id,
-                        edge_reference_ids: edge_reference_ids.clone(),
-                        radius_mm: *radius_mm,
-                        radius_stations: Vec::new(),
-                    }
-                    .validate()?;
-                    0
-                }
-                AssistantCadEditOperation::ChamferEdges {
-                    definition_id,
-                    name,
-                    target_feature_id,
-                    edge_reference_ids,
-                    distance_mm,
-                } => {
-                    if *definition_id == 0
-                        || name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD Chamfer"));
-                    }
-                    AssistantCadBodyFeature::TopologyChamfer {
-                        target_feature_id: *target_feature_id,
-                        edge_reference_ids: edge_reference_ids.clone(),
-                        distance_mm: *distance_mm,
-                        mode: AssistantCadChamferMode::Symmetric,
-                        side_face_reference_ids: Vec::new(),
-                    }
-                    .validate()?;
-                    0
-                }
-                AssistantCadEditOperation::AppendFeature {
-                    definition_id,
-                    name,
-                    feature,
-                } => {
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD feature append"));
-                    }
-                    definition_id.validate_output(
-                        operation_index,
-                        &self.operations,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    )?;
-                    feature.validate()?;
-                    feature.validate_program_references(operation_index, &self.operations)?;
-                    0
-                }
-                AssistantCadEditOperation::BindProgramOutput { name, source } => {
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || named_outputs.contains_key(name)
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "CAD program output binding",
-                        ));
-                    }
-                    source.validate_for(operation_index, &self.operations, source.output)?;
-                    named_outputs.insert(name.clone(), source.output);
-                    0
-                }
-                AssistantCadEditOperation::SetDimension {
-                    feature_id,
-                    constraint_id,
-                    value_mm,
-                } => {
-                    if *feature_id == 0
-                        || constraint_id == &Some(0)
-                        || !value_mm.is_finite()
-                        || *value_mm <= 0.0
-                        || *value_mm > MAX_COORDINATE_MM
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD dimension edit"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::SetFeatureParameter {
-                    feature_id,
-                    parameter_path,
-                    value_type,
-                    value,
-                } => {
-                    if *feature_id == 0
-                        || parameter_path.trim().is_empty()
-                        || parameter_path.len() > limits::NAME_BYTES
-                        || parameter_path.chars().any(char::is_control)
-                        || !value.is_finite()
-                        || value.abs() > MAX_COORDINATE_MM
-                        || (*value_type == AssistantCadParameterValueType::Length && *value <= 0.0)
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "CAD feature parameter edit",
-                        ));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::MakeOccurrenceUnique { occurrence_id } => {
-                    if *occurrence_id == 0 {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "occurrence make-unique target",
-                        ));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::CreateAssemblyJoint {
-                    parent_instance_path,
-                    child_instance_path,
-                    kind,
-                } => {
-                    parent_instance_path.validate()?;
-                    child_instance_path.validate()?;
-                    kind.validate()?;
-                    if parent_instance_path == child_instance_path {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "assembly joint endpoint pair",
-                        ));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::CreatePinJoint {
-                    joint_id,
-                    name,
-                    first,
-                    second,
-                    first_center_local_mm,
-                    row_unit_first_local,
-                    count,
-                    spacing_mm,
-                    holes,
-                    ..
-                } => {
-                    first
-                        .instance_path
-                        .validate_for(operation_index, &self.operations)?;
-                    second
-                        .instance_path
-                        .validate_for(operation_index, &self.operations)?;
-                    let holes_valid = match holes {
-                        AssistantPinHoles::Logical => joint_id.is_none(),
-                        AssistantPinHoles::Existing { pairs } => {
-                            let distinct = |side: fn(&AssistantPinHolePair) -> _| {
-                                pairs.iter().map(side).collect::<BTreeSet<_>>().len() == pairs.len()
-                            };
-                            joint_id.is_none()
-                                && pairs.len() == *count as usize
-                                && distinct(|pair| pair.first_pocket_feature_id)
-                                && distinct(|pair| pair.second_pocket_feature_id)
-                                && pairs.iter().all(|pair| {
-                                    [pair.first_pocket_feature_id, pair.second_pocket_feature_id]
-                                        .into_iter()
-                                        .all(|feature| {
-                                            feature
-                                                .validate_output(
-                                                    operation_index,
-                                                    &self.operations,
-                                                    AssistantCadProgramFeatureOutput::BodyFeature,
-                                                )
-                                                .is_ok()
-                                        })
-                                })
-                        }
-                        AssistantPinHoles::Drill { first_insertion_mm } => {
-                            *joint_id != Some(0)
-                                && !first_insertion_mm
-                                    .is_some_and(|value| !value.is_finite() || value <= 0.0)
-                        }
-                    };
-                    if !holes_valid
-                        || name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || first.instance_path == second.instance_path
-                        || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
-                        || !assistant_cad_vector_is_bounded(first.inward_unit_local)
-                        || !assistant_cad_vector_is_bounded(first.bounds_min_local_mm)
-                        || !assistant_cad_vector_is_bounded(first.bounds_max_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.face_origin_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.inward_unit_local)
-                        || !assistant_cad_vector_is_bounded(second.bounds_min_local_mm)
-                        || !assistant_cad_vector_is_bounded(second.bounds_max_local_mm)
-                        || !assistant_cad_vector_is_bounded(*first_center_local_mm)
-                        || !assistant_cad_vector_is_bounded(*row_unit_first_local)
-                        || !assistant_cad_vector_is_nonzero(*row_unit_first_local)
-                        || !(1..=128).contains(count)
-                        || !spacing_mm.is_finite()
-                        || *spacing_mm < 0.0
-                    {
-                        return Err(AssistantRequestInvalid::invalid("pin joint creation"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::DeletePhysicalPinJoint { joint_id } => {
-                    if *joint_id == 0 {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "physical pin joint deletion",
-                        ));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::MovePhysicalPinPair {
-                    joint_id,
-                    offset_first_local_mm,
-                    ..
-                } => {
-                    if *joint_id == 0 || !assistant_cad_vector_is_bounded(*offset_first_local_mm) {
-                        return Err(AssistantRequestInvalid::invalid("physical pin pair move"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::SetAssemblyJointPosition { joint_id, position } => {
-                    if *joint_id == 0
-                        || !position.is_finite()
-                        || position.abs() > MAX_COORDINATE_MM
-                        || self.operations.len() != 1
-                    {
-                        return Err(AssistantRequestInvalid::invalid("assembly joint edit"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::CreateDrawing {
-                    name,
-                    instance_paths,
-                } => {
-                    let unique = instance_paths.iter().collect::<BTreeSet<_>>();
-                    if name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || instance_paths.is_empty()
-                        || instance_paths.len() > MAX_CAD_SELECTOR_TARGETS
-                        || unique.len() != instance_paths.len()
-                    {
-                        return Err(AssistantRequestInvalid::invalid("drawing creation"));
-                    }
-                    for path in instance_paths {
-                        path.validate()?;
-                    }
-                    0
-                }
-                AssistantCadEditOperation::UpsertCamPlan {
-                    plan_id,
-                    name,
-                    target_definition_id,
-                    target_feature_id,
-                    stock_minimum_mm,
-                    stock_maximum_mm,
-                    tool_number,
-                    tool_diameter_mm,
-                    flute_length_mm,
-                    overall_length_mm,
-                    holder_diameter_mm,
-                    holder_length_mm,
-                    spindle_rpm,
-                    feed_mm_per_min,
-                    plunge_mm_per_min,
-                    origin_mm,
-                    x_axis,
-                    y_axis,
-                    safe_height_mm,
-                    maximum_stepdown_mm,
-                    stepover_ratio,
-                    radial_allowance_mm,
-                    axial_allowance_mm,
-                    ..
-                } => {
-                    let positive = [
-                        *tool_diameter_mm,
-                        *flute_length_mm,
-                        *overall_length_mm,
-                        *holder_diameter_mm,
-                        *holder_length_mm,
-                        *feed_mm_per_min,
-                        *plunge_mm_per_min,
-                        *maximum_stepdown_mm,
-                    ];
-                    let signed = [
-                        *safe_height_mm,
-                        *stepover_ratio,
-                        *radial_allowance_mm,
-                        *axial_allowance_mm,
-                    ];
-                    if *plan_id == 0
-                        || *target_definition_id == 0
-                        || *target_feature_id == 0
-                        || *tool_number == 0
-                        || *spindle_rpm == 0
-                        || name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || !assistant_cad_vector_is_bounded(*stock_minimum_mm)
-                        || !assistant_cad_vector_is_bounded(*stock_maximum_mm)
-                        || !assistant_cad_vector_is_bounded(*origin_mm)
-                        || !assistant_cad_vector_is_bounded(*x_axis)
-                        || !assistant_cad_vector_is_bounded(*y_axis)
-                        || !assistant_cad_vector_is_nonzero(*x_axis)
-                        || !assistant_cad_vector_is_nonzero(*y_axis)
-                        || positive
-                            .iter()
-                            .any(|value| !value.is_finite() || *value <= 0.0)
-                        || signed.iter().any(|value| !value.is_finite())
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAM plan"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::UpsertClassificationDimension {
-                    dimension_id,
-                    name,
-                    categories,
-                } => {
-                    let mut category_ids = BTreeSet::new();
-                    if *dimension_id == 0
-                        || name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || categories.is_empty()
-                        || categories.len() > MAX_CAD_EDIT_OPERATIONS
-                        || categories.iter().any(|category| {
-                            category.id == 0
-                                || category.name.trim().is_empty()
-                                || category.name.len() > limits::NAME_BYTES
-                                || category.name.chars().any(char::is_control)
-                                || !category_ids.insert(category.id)
-                        })
-                    {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "CAD classification dimension",
-                        ));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::SetOccurrenceClassification {
-                    dimension_id,
-                    category_id,
-                    ..
-                } => {
-                    if *dimension_id == 0 || category_id == &Some(0) {
-                        return Err(AssistantRequestInvalid::invalid(
-                            "CAD classification assignment",
-                        ));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::CreateEvaluatorInput {
-                    node_id,
-                    name,
-                    value,
-                } => {
-                    if *node_id == 0
-                        || name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || !value.is_finite()
-                        || value.abs() > MAX_COORDINATE_MM
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD evaluator input"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::CreateTag { tag_id, name, .. } => {
-                    if *tag_id == 0
-                        || name.trim().is_empty()
-                        || name.len() > limits::NAME_BYTES
-                        || name.chars().any(char::is_control)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD tag creation"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::SetOccurrenceTag { tag_id, .. } => {
-                    if tag_id == &Some(0) {
-                        return Err(AssistantRequestInvalid::invalid("CAD tag assignment"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::SetTagVisibility { tag_id, .. } => {
-                    if *tag_id == 0 {
-                        return Err(AssistantRequestInvalid::invalid("CAD tag visibility"));
-                    }
-                    0
-                }
-                AssistantCadEditOperation::SetColor { .. }
-                | AssistantCadEditOperation::SetGrounded { .. }
-                | AssistantCadEditOperation::Delete { .. } => 0,
-                AssistantCadEditOperation::Transform {
-                    translation_mm,
-                    rotation,
-                    ..
-                } => {
-                    if !assistant_cad_vector_is_bounded(*translation_mm)
-                        || (!assistant_cad_vector_is_nonzero(*translation_mm) && rotation.is_none())
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD transform"));
-                    }
-                    if let Some(rotation) = rotation {
-                        rotation.validate()?;
-                    }
-                    0
-                }
-                AssistantCadEditOperation::Copy { translation_mm, .. } => {
-                    if !assistant_cad_vector_is_bounded(*translation_mm)
-                        || !assistant_cad_vector_is_nonzero(*translation_mm)
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD copy"));
-                    }
-                    1
-                }
-                AssistantCadEditOperation::LinearPattern {
-                    instances, step_mm, ..
-                } => {
-                    if !(2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances)
-                        || !assistant_cad_vector_is_bounded(*step_mm)
-                        || !assistant_cad_vector_is_nonzero(*step_mm)
-                        || step_mm.iter().any(|value| {
-                            (*value * f64::from(instances.saturating_sub(1))).abs()
-                                > MAX_COORDINATE_MM
-                        })
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD linear pattern"));
-                    }
-                    instances.saturating_sub(1) as usize
-                }
-                AssistantCadEditOperation::CircularPattern {
-                    instances,
-                    axis,
-                    angle_step_degrees,
-                    ..
-                } => {
-                    let valid_count = (2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances);
-                    let duplicate_angle = valid_count
-                        && (1..*instances).any(|instance| {
-                            let normalized =
-                                (angle_step_degrees * f64::from(instance)).rem_euclid(360.0);
-                            normalized.min(360.0 - normalized) < 0.01
-                        });
-                    if !valid_count
-                        || axis.validate().is_err()
-                        || !angle_step_degrees.is_finite()
-                        || angle_step_degrees.abs() > MAX_COORDINATE_MM
-                        || duplicate_angle
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD circular pattern"));
-                    }
-                    axis.validate_reference_for_operation(operation_index, &self.operations)?;
-                    instances.saturating_sub(1) as usize
-                }
-                AssistantCadEditOperation::Mirror {
-                    plane_origin_mm,
-                    plane_normal,
-                    ..
-                } => {
-                    let normal_length_squared =
-                        plane_normal.iter().map(|value| value * value).sum::<f64>();
-                    if !assistant_cad_vector_is_bounded(*plane_origin_mm)
-                        || !assistant_cad_vector_is_bounded(*plane_normal)
-                        || !normal_length_squared.is_finite()
-                        || normal_length_squared <= f64::EPSILON
-                    {
-                        return Err(AssistantRequestInvalid::invalid("CAD mirror"));
-                    }
-                    1
-                }
-            };
+                        operation,
+                        &mut named_outputs,
+                    )?
+                    + self.validate_joint_operation(operation_index, operation)?
+                    + Self::validate_cam_operation(operation)?
+                    + Self::validate_metadata_operation(operation)?
+                    + self.validate_transform_operation(operation_index, operation)?;
             generated_occurrences = generated_occurrences
                 .checked_add(bounded_targets.checked_mul(generated_per_target).ok_or(
                     AssistantRequestInvalid::invalid("CAD generated occurrence count"),
@@ -3609,6 +2914,781 @@ impl AssistantCadEditProgram {
             }
         }
         Ok(())
+    }
+
+    fn bounded_operation_targets(
+        operation: &AssistantCadEditOperation,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::CreateSketch { .. }
+            | AssistantCadEditOperation::AppendFeature { .. }
+            | AssistantCadEditOperation::FilletEdges { .. }
+            | AssistantCadEditOperation::ChamferEdges { .. }
+            | AssistantCadEditOperation::BindProgramOutput { .. }
+            | AssistantCadEditOperation::SetDimension { .. }
+            | AssistantCadEditOperation::SetFeatureParameter { .. }
+            | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
+            | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+            | AssistantCadEditOperation::CreatePinJoint { .. }
+            | AssistantCadEditOperation::DeletePhysicalPinJoint { .. }
+            | AssistantCadEditOperation::MovePhysicalPinPair { .. }
+            | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
+            | AssistantCadEditOperation::CreateDrawing { .. }
+            | AssistantCadEditOperation::UpsertCamPlan { .. }
+            | AssistantCadEditOperation::CreateTag { .. }
+            | AssistantCadEditOperation::SetTagVisibility { .. }
+            | AssistantCadEditOperation::UpsertClassificationDimension { .. }
+            | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
+            AssistantCadEditOperation::CreatePart { .. }
+            | AssistantCadEditOperation::CreateSpatialPath { .. }
+            | AssistantCadEditOperation::CreateConstructionPoint { .. }
+            | AssistantCadEditOperation::CreateConstructionAxis { .. }
+            | AssistantCadEditOperation::CreateConstructionPlane { .. }
+            | AssistantCadEditOperation::CreateHelix { .. } => 1,
+            AssistantCadEditOperation::Delete { selector, .. }
+            | AssistantCadEditOperation::SetColor { selector, .. }
+            | AssistantCadEditOperation::SetGrounded { selector, .. }
+            | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
+            | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
+            | AssistantCadEditOperation::Transform { selector, .. }
+            | AssistantCadEditOperation::Copy { selector, .. }
+            | AssistantCadEditOperation::LinearPattern { selector, .. }
+            | AssistantCadEditOperation::CircularPattern { selector, .. }
+            | AssistantCadEditOperation::Mirror { selector, .. } => {
+                selector.bounded_target_count()?
+            }
+        })
+    }
+
+    fn validate_part_operation(
+        &self,
+        operation_index: usize,
+        operation: &AssistantCadEditOperation,
+        max_part_cuts: usize,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::CreateSketch {
+                definition_id,
+                name,
+                workplane,
+                entities,
+                constraints,
+            } => {
+                definition_id.validate_output(
+                    operation_index,
+                    &self.operations,
+                    AssistantCadProgramFeatureOutput::Definition,
+                )?;
+                // An offset workplane leans on a face of a definition that exists before
+                // this program runs.
+                if matches!(
+                    definition_id,
+                    AssistantCadFeatureReference::ProgramOutput(_)
+                ) && matches!(workplane, AssistantWorkplaneSpec::Offset { .. })
+                {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "sketch workplane reference",
+                    ));
+                }
+                if let AssistantWorkplaneSpec::ConstructionPlane {
+                    plane: AssistantCadFeatureReference::ProgramOutput(plane),
+                } = workplane
+                {
+                    plane.validate_for(
+                        operation_index,
+                        &self.operations,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    )?;
+                    if !matches!(
+                        self.operations.get(plane.operation_index as usize),
+                        Some(AssistantCadEditOperation::CreateConstructionPlane { .. })
+                    ) {
+                        return Err(AssistantRequestInvalid::invalid(
+                            "construction-plane workplane reference",
+                        ));
+                    }
+                }
+                validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
+                0
+            }
+            AssistantCadEditOperation::CreatePart {
+                name,
+                workplane,
+                entities,
+                constraints,
+                feature,
+                holes,
+                pockets,
+                translation_mm,
+                rotation,
+            } => {
+                validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
+                for (cuts, label) in [
+                    (holes.len(), "part hole count"),
+                    (pockets.len(), "part pocket count"),
+                ] {
+                    if cuts > max_part_cuts {
+                        return Err(AssistantRequestInvalid::new(
+                            label,
+                            AssistantRequestProblem::ExceedsLimit(max_part_cuts),
+                        ));
+                    }
+                }
+                let mut hole_ids = BTreeSet::new();
+                for hole in holes {
+                    hole.validate()?;
+                    if !hole_ids.insert(hole.id.as_str()) {
+                        return Err(AssistantRequestInvalid::new(
+                            "part hole id",
+                            AssistantRequestProblem::Duplicate,
+                        )
+                        .item(&hole.id));
+                    }
+                }
+                let mut pocket_ids = BTreeSet::new();
+                for pocket in pockets {
+                    pocket.validate()?;
+                    if !pocket_ids.insert(pocket.id.as_str()) {
+                        return Err(AssistantRequestInvalid::new(
+                            "part pocket id",
+                            AssistantRequestProblem::Duplicate,
+                        )
+                        .item(&pocket.id));
+                    }
+                }
+                if matches!(workplane, AssistantWorkplaneSpec::ConstructionPlane { .. }) {
+                    return Err(AssistantRequestInvalid::invalid("part workplane reference"));
+                }
+                feature.validate()?;
+                if let AssistantCadPartFeature::Revolve { axis, .. } = feature {
+                    axis.validate_reference_for_operation(operation_index, &self.operations)?;
+                }
+                if !assistant_cad_vector_is_bounded(*translation_mm) {
+                    return Err(AssistantRequestInvalid::invalid("CAD part placement"));
+                }
+                if let Some(rotation) = rotation {
+                    rotation.validate()?;
+                }
+                1
+            }
+            _ => 0,
+        })
+    }
+
+    fn validate_construction_operation(
+        &self,
+        operation_index: usize,
+        operation: &AssistantCadEditOperation,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("spatial path creation"));
+                }
+                // Structural pre-check; the document validates the path again with its own
+                // tolerance when the lowered commands apply.
+                validated_spatial_path_segments(segments, DEFAULT_LINEAR_TOLERANCE_MM)?;
+                1
+            }
+            AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || !assistant_cad_vector_is_bounded(*position_mm)
+                {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "construction point creation",
+                    ));
+                }
+                1
+            }
+            AssistantCadEditOperation::CreateConstructionAxis {
+                name,
+                origin_mm,
+                direction,
+            } => {
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || !assistant_cad_vector_is_bounded(*origin_mm)
+                    || !assistant_cad_vector_is_bounded(*direction)
+                    || !assistant_cad_vector_is_nonzero(*direction)
+                {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "construction axis creation",
+                    ));
+                }
+                1
+            }
+            AssistantCadEditOperation::CreateConstructionPlane {
+                name,
+                origin_mm,
+                normal,
+                x_direction,
+            } => {
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || !assistant_cad_vector_is_bounded(*origin_mm)
+                    || !assistant_cad_vector_is_bounded(*normal)
+                    || !assistant_cad_vector_is_bounded(*x_direction)
+                    || !assistant_cad_vector_is_nonzero(*normal)
+                    || !assistant_cad_vector_is_nonzero(*x_direction)
+                    || !assistant_cad_vectors_are_perpendicular(*normal, *x_direction)
+                {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "construction plane creation",
+                    ));
+                }
+                1
+            }
+            AssistantCadEditOperation::CreateHelix {
+                name,
+                parameters,
+                profile,
+            } => {
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("Helix creation"));
+                }
+                parameters.validate()?;
+                parameters
+                    .axis
+                    .validate_reference_for_operation(operation_index, &self.operations)?;
+                validate_assistant_profile_entities(profile)?;
+                1
+            }
+            _ => 0,
+        })
+    }
+
+    fn validate_feature_operation(
+        &self,
+        operation_index: usize,
+        operation: &AssistantCadEditOperation,
+        named_outputs: &mut BTreeMap<String, AssistantCadProgramFeatureOutput>,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::FilletEdges {
+                definition_id,
+                name,
+                target_feature_id,
+                edge_reference_ids,
+                radius_mm,
+            } => {
+                if *definition_id == 0
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD Fillet"));
+                }
+                AssistantCadBodyFeature::TopologyFillet {
+                    target_feature_id: *target_feature_id,
+                    edge_reference_ids: edge_reference_ids.clone(),
+                    radius_mm: *radius_mm,
+                    radius_stations: Vec::new(),
+                }
+                .validate()?;
+                0
+            }
+            AssistantCadEditOperation::ChamferEdges {
+                definition_id,
+                name,
+                target_feature_id,
+                edge_reference_ids,
+                distance_mm,
+            } => {
+                if *definition_id == 0
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD Chamfer"));
+                }
+                AssistantCadBodyFeature::TopologyChamfer {
+                    target_feature_id: *target_feature_id,
+                    edge_reference_ids: edge_reference_ids.clone(),
+                    distance_mm: *distance_mm,
+                    mode: AssistantCadChamferMode::Symmetric,
+                    side_face_reference_ids: Vec::new(),
+                }
+                .validate()?;
+                0
+            }
+            AssistantCadEditOperation::AppendFeature {
+                definition_id,
+                name,
+                feature,
+            } => {
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD feature append"));
+                }
+                definition_id.validate_output(
+                    operation_index,
+                    &self.operations,
+                    AssistantCadProgramFeatureOutput::Definition,
+                )?;
+                feature.validate()?;
+                feature.validate_program_references(operation_index, &self.operations)?;
+                0
+            }
+            AssistantCadEditOperation::BindProgramOutput { name, source } => {
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || named_outputs.contains_key(name)
+                {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "CAD program output binding",
+                    ));
+                }
+                source.validate_for(operation_index, &self.operations, source.output)?;
+                named_outputs.insert(name.clone(), source.output);
+                0
+            }
+            AssistantCadEditOperation::SetDimension {
+                feature_id,
+                constraint_id,
+                value_mm,
+            } => {
+                if *feature_id == 0
+                    || constraint_id == &Some(0)
+                    || !value_mm.is_finite()
+                    || *value_mm <= 0.0
+                    || *value_mm > MAX_COORDINATE_MM
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD dimension edit"));
+                }
+                0
+            }
+            AssistantCadEditOperation::SetFeatureParameter {
+                feature_id,
+                parameter_path,
+                value_type,
+                value,
+            } => {
+                if *feature_id == 0
+                    || parameter_path.trim().is_empty()
+                    || parameter_path.len() > limits::NAME_BYTES
+                    || parameter_path.chars().any(char::is_control)
+                    || !value.is_finite()
+                    || value.abs() > MAX_COORDINATE_MM
+                    || (*value_type == AssistantCadParameterValueType::Length && *value <= 0.0)
+                {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "CAD feature parameter edit",
+                    ));
+                }
+                0
+            }
+            AssistantCadEditOperation::MakeOccurrenceUnique { occurrence_id } => {
+                if *occurrence_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "occurrence make-unique target",
+                    ));
+                }
+                0
+            }
+            _ => 0,
+        })
+    }
+
+    fn validate_joint_operation(
+        &self,
+        operation_index: usize,
+        operation: &AssistantCadEditOperation,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::CreateAssemblyJoint {
+                parent_instance_path,
+                child_instance_path,
+                kind,
+            } => {
+                parent_instance_path.validate()?;
+                child_instance_path.validate()?;
+                kind.validate()?;
+                if parent_instance_path == child_instance_path {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "assembly joint endpoint pair",
+                    ));
+                }
+                0
+            }
+            AssistantCadEditOperation::CreatePinJoint {
+                joint_id,
+                name,
+                first,
+                second,
+                first_center_local_mm,
+                row_unit_first_local,
+                count,
+                spacing_mm,
+                holes,
+                ..
+            } => {
+                first
+                    .instance_path
+                    .validate_for(operation_index, &self.operations)?;
+                second
+                    .instance_path
+                    .validate_for(operation_index, &self.operations)?;
+                let holes_valid = match holes {
+                    AssistantPinHoles::Logical => joint_id.is_none(),
+                    AssistantPinHoles::Existing { pairs } => {
+                        let distinct = |side: fn(&AssistantPinHolePair) -> _| {
+                            pairs.iter().map(side).collect::<BTreeSet<_>>().len() == pairs.len()
+                        };
+                        joint_id.is_none()
+                            && pairs.len() == *count as usize
+                            && distinct(|pair| pair.first_pocket_feature_id)
+                            && distinct(|pair| pair.second_pocket_feature_id)
+                            && pairs.iter().all(|pair| {
+                                [pair.first_pocket_feature_id, pair.second_pocket_feature_id]
+                                    .into_iter()
+                                    .all(|feature| {
+                                        feature
+                                            .validate_output(
+                                                operation_index,
+                                                &self.operations,
+                                                AssistantCadProgramFeatureOutput::BodyFeature,
+                                            )
+                                            .is_ok()
+                                    })
+                            })
+                    }
+                    AssistantPinHoles::Drill { first_insertion_mm } => {
+                        *joint_id != Some(0)
+                            && !first_insertion_mm
+                                .is_some_and(|value| !value.is_finite() || value <= 0.0)
+                    }
+                };
+                if !holes_valid
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || first.instance_path == second.instance_path
+                    || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
+                    || !assistant_cad_vector_is_bounded(first.inward_unit_local)
+                    || !assistant_cad_vector_is_bounded(first.bounds_min_local_mm)
+                    || !assistant_cad_vector_is_bounded(first.bounds_max_local_mm)
+                    || !assistant_cad_vector_is_bounded(second.face_origin_local_mm)
+                    || !assistant_cad_vector_is_bounded(second.inward_unit_local)
+                    || !assistant_cad_vector_is_bounded(second.bounds_min_local_mm)
+                    || !assistant_cad_vector_is_bounded(second.bounds_max_local_mm)
+                    || !assistant_cad_vector_is_bounded(*first_center_local_mm)
+                    || !assistant_cad_vector_is_bounded(*row_unit_first_local)
+                    || !assistant_cad_vector_is_nonzero(*row_unit_first_local)
+                    || !(1..=128).contains(count)
+                    || !spacing_mm.is_finite()
+                    || *spacing_mm < 0.0
+                {
+                    return Err(AssistantRequestInvalid::invalid("pin joint creation"));
+                }
+                0
+            }
+            AssistantCadEditOperation::DeletePhysicalPinJoint { joint_id } => {
+                if *joint_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "physical pin joint deletion",
+                    ));
+                }
+                0
+            }
+            AssistantCadEditOperation::MovePhysicalPinPair {
+                joint_id,
+                offset_first_local_mm,
+                ..
+            } => {
+                if *joint_id == 0 || !assistant_cad_vector_is_bounded(*offset_first_local_mm) {
+                    return Err(AssistantRequestInvalid::invalid("physical pin pair move"));
+                }
+                0
+            }
+            AssistantCadEditOperation::SetAssemblyJointPosition { joint_id, position } => {
+                if *joint_id == 0
+                    || !position.is_finite()
+                    || position.abs() > MAX_COORDINATE_MM
+                    || self.operations.len() != 1
+                {
+                    return Err(AssistantRequestInvalid::invalid("assembly joint edit"));
+                }
+                0
+            }
+            _ => 0,
+        })
+    }
+
+    fn validate_cam_operation(
+        operation: &AssistantCadEditOperation,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::CreateDrawing {
+                name,
+                instance_paths,
+            } => {
+                let unique = instance_paths.iter().collect::<BTreeSet<_>>();
+                if name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || instance_paths.is_empty()
+                    || instance_paths.len() > MAX_CAD_SELECTOR_TARGETS
+                    || unique.len() != instance_paths.len()
+                {
+                    return Err(AssistantRequestInvalid::invalid("drawing creation"));
+                }
+                for path in instance_paths {
+                    path.validate()?;
+                }
+                0
+            }
+            AssistantCadEditOperation::UpsertCamPlan {
+                plan_id,
+                name,
+                target_definition_id,
+                target_feature_id,
+                stock_minimum_mm,
+                stock_maximum_mm,
+                tool_number,
+                tool_diameter_mm,
+                flute_length_mm,
+                overall_length_mm,
+                holder_diameter_mm,
+                holder_length_mm,
+                spindle_rpm,
+                feed_mm_per_min,
+                plunge_mm_per_min,
+                origin_mm,
+                x_axis,
+                y_axis,
+                safe_height_mm,
+                maximum_stepdown_mm,
+                stepover_ratio,
+                radial_allowance_mm,
+                axial_allowance_mm,
+                ..
+            } => {
+                let positive = [
+                    *tool_diameter_mm,
+                    *flute_length_mm,
+                    *overall_length_mm,
+                    *holder_diameter_mm,
+                    *holder_length_mm,
+                    *feed_mm_per_min,
+                    *plunge_mm_per_min,
+                    *maximum_stepdown_mm,
+                ];
+                let signed = [
+                    *safe_height_mm,
+                    *stepover_ratio,
+                    *radial_allowance_mm,
+                    *axial_allowance_mm,
+                ];
+                if *plan_id == 0
+                    || *target_definition_id == 0
+                    || *target_feature_id == 0
+                    || *tool_number == 0
+                    || *spindle_rpm == 0
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || !assistant_cad_vector_is_bounded(*stock_minimum_mm)
+                    || !assistant_cad_vector_is_bounded(*stock_maximum_mm)
+                    || !assistant_cad_vector_is_bounded(*origin_mm)
+                    || !assistant_cad_vector_is_bounded(*x_axis)
+                    || !assistant_cad_vector_is_bounded(*y_axis)
+                    || !assistant_cad_vector_is_nonzero(*x_axis)
+                    || !assistant_cad_vector_is_nonzero(*y_axis)
+                    || positive
+                        .iter()
+                        .any(|value| !value.is_finite() || *value <= 0.0)
+                    || signed.iter().any(|value| !value.is_finite())
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAM plan"));
+                }
+                0
+            }
+            _ => 0,
+        })
+    }
+
+    fn validate_metadata_operation(
+        operation: &AssistantCadEditOperation,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::UpsertClassificationDimension {
+                dimension_id,
+                name,
+                categories,
+            } => {
+                let mut category_ids = BTreeSet::new();
+                if *dimension_id == 0
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || categories.is_empty()
+                    || categories.len() > MAX_CAD_EDIT_OPERATIONS
+                    || categories.iter().any(|category| {
+                        category.id == 0
+                            || category.name.trim().is_empty()
+                            || category.name.len() > limits::NAME_BYTES
+                            || category.name.chars().any(char::is_control)
+                            || !category_ids.insert(category.id)
+                    })
+                {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "CAD classification dimension",
+                    ));
+                }
+                0
+            }
+            AssistantCadEditOperation::SetOccurrenceClassification {
+                dimension_id,
+                category_id,
+                ..
+            } => {
+                if *dimension_id == 0 || category_id == &Some(0) {
+                    return Err(AssistantRequestInvalid::invalid(
+                        "CAD classification assignment",
+                    ));
+                }
+                0
+            }
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id,
+                name,
+                value,
+            } => {
+                if *node_id == 0
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                    || !value.is_finite()
+                    || value.abs() > MAX_COORDINATE_MM
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD evaluator input"));
+                }
+                0
+            }
+            AssistantCadEditOperation::CreateTag { tag_id, name, .. } => {
+                if *tag_id == 0
+                    || name.trim().is_empty()
+                    || name.len() > limits::NAME_BYTES
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD tag creation"));
+                }
+                0
+            }
+            AssistantCadEditOperation::SetOccurrenceTag { tag_id, .. } => {
+                if tag_id == &Some(0) {
+                    return Err(AssistantRequestInvalid::invalid("CAD tag assignment"));
+                }
+                0
+            }
+            AssistantCadEditOperation::SetTagVisibility { tag_id, .. } => {
+                if *tag_id == 0 {
+                    return Err(AssistantRequestInvalid::invalid("CAD tag visibility"));
+                }
+                0
+            }
+            _ => 0,
+        })
+    }
+
+    fn validate_transform_operation(
+        &self,
+        operation_index: usize,
+        operation: &AssistantCadEditOperation,
+    ) -> Result<usize, AssistantRequestInvalid> {
+        Ok(match operation {
+            AssistantCadEditOperation::Transform {
+                translation_mm,
+                rotation,
+                ..
+            } => {
+                if !assistant_cad_vector_is_bounded(*translation_mm)
+                    || (!assistant_cad_vector_is_nonzero(*translation_mm) && rotation.is_none())
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD transform"));
+                }
+                if let Some(rotation) = rotation {
+                    rotation.validate()?;
+                }
+                0
+            }
+            AssistantCadEditOperation::Copy { translation_mm, .. } => {
+                if !assistant_cad_vector_is_bounded(*translation_mm)
+                    || !assistant_cad_vector_is_nonzero(*translation_mm)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD copy"));
+                }
+                1
+            }
+            AssistantCadEditOperation::LinearPattern {
+                instances, step_mm, ..
+            } => {
+                if !(2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances)
+                    || !assistant_cad_vector_is_bounded(*step_mm)
+                    || !assistant_cad_vector_is_nonzero(*step_mm)
+                    || step_mm.iter().any(|value| {
+                        (*value * f64::from(instances.saturating_sub(1))).abs() > MAX_COORDINATE_MM
+                    })
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD linear pattern"));
+                }
+                instances.saturating_sub(1) as usize
+            }
+            AssistantCadEditOperation::CircularPattern {
+                instances,
+                axis,
+                angle_step_degrees,
+                ..
+            } => {
+                let valid_count = (2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances);
+                let duplicate_angle = valid_count
+                    && (1..*instances).any(|instance| {
+                        let normalized =
+                            (angle_step_degrees * f64::from(instance)).rem_euclid(360.0);
+                        normalized.min(360.0 - normalized) < 0.01
+                    });
+                if !valid_count
+                    || axis.validate().is_err()
+                    || !angle_step_degrees.is_finite()
+                    || angle_step_degrees.abs() > MAX_COORDINATE_MM
+                    || duplicate_angle
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD circular pattern"));
+                }
+                axis.validate_reference_for_operation(operation_index, &self.operations)?;
+                instances.saturating_sub(1) as usize
+            }
+            AssistantCadEditOperation::Mirror {
+                plane_origin_mm,
+                plane_normal,
+                ..
+            } => {
+                let normal_length_squared =
+                    plane_normal.iter().map(|value| value * value).sum::<f64>();
+                if !assistant_cad_vector_is_bounded(*plane_origin_mm)
+                    || !assistant_cad_vector_is_bounded(*plane_normal)
+                    || !normal_length_squared.is_finite()
+                    || normal_length_squared <= f64::EPSILON
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD mirror"));
+                }
+                1
+            }
+            _ => 0,
+        })
     }
 }
 

@@ -36,7 +36,11 @@ fn table_map_shows_each_leg_standing_under_the_top_on_its_dowel_joint() {
         assert_eq!(relation.parts, ["table/top".to_owned(), leg.clone()]);
         assert_eq!(relation.kind, RelationKind::Contact);
         assert_eq!(relation.faces, Some(["z-".to_owned(), "z+".to_owned()]));
-        assert_eq!(relation.area_mm2, Some(4900.0));
+        let material_area = 4900.0 - 2.0 * std::f64::consts::PI * 4.0_f64.powi(2);
+        assert!(
+            (relation.area_mm2.expect("contact area") - material_area).abs() < 1.0,
+            "{relation:?}"
+        );
         // The leg lies below the top.
         assert_eq!(relation.direction, [0.0, 0.0, -1.0]);
         assert_eq!(

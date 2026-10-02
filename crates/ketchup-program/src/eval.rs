@@ -2001,7 +2001,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         record_source(eval, &state, &[&name]);
         with_part(&state, &name, |part| {
             let frame = part
-                .face_frame(&face)
+                .machining_frame(&face)
                 .map_err(|error| anyhow::anyhow!("hole in {name:?}: {error}"))?;
             let at = match (at, world) {
                 (Some(at), None) => at,
@@ -2054,7 +2054,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         record_source(eval, &state, &[&name]);
         with_part(&state, &name, |part| {
             let frame = part
-                .face_frame(&face)
+                .machining_frame(&face)
                 .map_err(|error| anyhow::anyhow!("pocket in {name:?}: {error}"))?;
             if frame.kind != FaceKind::Planar {
                 anyhow::bail!(
@@ -2351,6 +2351,7 @@ fn prelude(globals: &Globals) -> Result<FrozenModule, ProgramError> {
     let module = Module::new();
     {
         let mut eval = Evaluator::new(&module);
+        crate::execution_budget::install(&mut eval);
         eval.eval_module(ast, globals)
             .map_err(|error| evaluation_error("prelude_invalid", error))?;
     }
@@ -2392,6 +2393,7 @@ pub fn evaluate(
     module.import_public_symbols(&prelude);
     let result = {
         let mut eval = Evaluator::new(&module);
+        crate::execution_budget::install(&mut eval);
         eval.set_print_handler(state.as_ref());
         eval.eval_module(ast, &globals)
             .map(|_| ())
@@ -2432,6 +2434,24 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runaway_program_stops_and_the_next_program_still_evaluates() {
+        let source = "def spin():\n    total = 0\n    for n in range(1000000000):\n        total += n\n    return total\nspin()\n";
+        let error = evaluate("runaway.star", source, &BTreeMap::new()).unwrap_err();
+        assert!(
+            error.message.contains("execution budget exceeded"),
+            "{error}"
+        );
+        let evaluated = evaluate(
+            "next.star",
+            "box(\"part\", (10, 20, 30))\n",
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(evaluated.model.parts.len(), 1);
+        assert_eq!(evaluated.model.parts[0].size_mm, [10.0, 20.0, 30.0]);
+    }
 
     /// The library's comments are the program documentation an AI reads
     /// (topic by topic), so a builtin missing there is a tool the AI

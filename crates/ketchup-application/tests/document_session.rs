@@ -53,6 +53,41 @@ fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
     assert!(report.needs_retry());
 }
 
+#[test]
+fn published_checkpoint_sync_failure_keeps_apply_undo_redo_and_reopen_consistent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("published.ketchup");
+    let mut session = DocumentSession::default();
+    session
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    session.save(&path, SaveOptions::default()).unwrap();
+    let error = persistence::headless_with_parent_sync_failure(|| {
+        session.set_grounded(OccurrenceId(1), true)
+    })
+    .err()
+    .expect("published checkpoint must report the durability error");
+    assert!(error.to_string().contains("published"));
+    assert!(error.to_string().contains("injected parent sync failure"));
+    assert!(session.snapshot().occurrence_is_grounded(OccurrenceId(1)));
+    let undo_steps = session.visible_undo_steps();
+    // Create another dirty revision so Undo also publishes, rather than deleting, recovery.
+    session
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    assert!(persistence::headless_with_parent_sync_failure(|| session.undo()).is_err());
+    assert_eq!(session.snapshot().occurrences().count(), 1);
+    assert_eq!(session.visible_undo_steps(), undo_steps);
+    assert!(persistence::headless_with_parent_sync_failure(|| session.redo()).is_err());
+    assert_eq!(session.snapshot().occurrences().count(), 2);
+    drop(session);
+    let mut reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert_eq!(reopened.snapshot().occurrences().count(), 2);
+    assert!(reopened.snapshot().occurrence_is_grounded(OccurrenceId(1)));
+    reopened.undo().unwrap();
+    assert_eq!(reopened.snapshot().occurrences().count(), 1);
+}
+
 fn part() -> AssistantCadEditOperation {
     AssistantCadEditOperation::CreatePart {
         holes: Vec::new(),
@@ -541,7 +576,7 @@ fn stale_session_save_is_rejected_but_save_as_preserves_both_versions() {
 }
 
 #[test]
-fn save_as_cleanup_preserves_a_newer_checkpoint_from_another_session() {
+fn recovery_conflict_preserves_both_sessions_and_protects_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let shared = directory.path().join("shared-recovery.ketchup");
     let alternate = directory.path().join("first-copy.ketchup");
@@ -555,21 +590,55 @@ fn save_as_cleanup_preserves_a_newer_checkpoint_from_another_session() {
     let mut first = DocumentSession::open(&shared, SessionSettings::default()).unwrap();
     let mut second = DocumentSession::open(&shared, SessionSettings::default()).unwrap();
     first.set_grounded(OccurrenceId(1), true).unwrap();
+    let checkpoint = std::fs::read(&recovery).unwrap();
+    assert!(
+        second
+            .apply_cad_program(&program(), &BTreeSet::new())
+            .is_err()
+    );
+    assert_eq!(second.snapshot().occurrences().count(), 1);
+    assert!(!second.snapshot().occurrence_is_grounded(OccurrenceId(1)));
+    assert!(DocumentSession::open(&shared, SessionSettings::default()).is_err());
+    assert!(
+        second
+            .save(&shared, SaveOptions { overwrite: true })
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&recovery).unwrap(), checkpoint);
+    second.save(&alternate, SaveOptions::default()).unwrap();
     second
         .apply_cad_program(&program(), &BTreeSet::new())
         .unwrap();
-    let second_digest = second.snapshot().canonical_digest();
-    let newer_checkpoint = std::fs::read(&recovery).unwrap();
-
-    first.save(&alternate, SaveOptions::default()).unwrap();
-
-    assert_eq!(std::fs::read(&recovery).unwrap(), newer_checkpoint);
-    let recovered = persistence::load_file_with_source(&shared).unwrap();
-    assert_eq!(recovered.source_path(), recovery);
-    assert_eq!(
-        recovered.outcome().snapshot().canonical_digest(),
-        second_digest
+    assert_eq!(second.snapshot().occurrences().count(), 2);
+    assert_eq!(std::fs::read(&recovery).unwrap(), checkpoint);
+    drop(first);
+    // The initially clean author must not orphan the checkpoint after its owner exits.
+    assert!(
+        author
+            .save(&shared, SaveOptions { overwrite: true })
+            .is_err()
     );
+    assert!(author.set_grounded(OccurrenceId(1), true).is_err());
+    let primary_before = std::fs::read(&shared).unwrap();
+    let second_before = second.snapshot();
+    assert!(
+        second
+            .save(&shared, SaveOptions { overwrite: true })
+            .is_err()
+    );
+    assert_eq!(
+        second.snapshot().occurrences().count(),
+        second_before.occurrences().count()
+    );
+    assert_eq!(second.path(), Some(alternate.as_path()));
+    assert_eq!(std::fs::read(&shared).unwrap(), primary_before);
+    assert_eq!(std::fs::read(&recovery).unwrap(), checkpoint);
+    let recovered = DocumentSession::open(&shared, SessionSettings::default()).unwrap();
+    assert!(recovered.snapshot().occurrence_is_grounded(OccurrenceId(1)));
+    assert_eq!(recovered.snapshot().occurrences().count(), 1);
+    drop(second);
+    let recovered_second = DocumentSession::open(&alternate, SessionSettings::default()).unwrap();
+    assert_eq!(recovered_second.snapshot().occurrences().count(), 2);
 }
 
 #[test]

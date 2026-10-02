@@ -517,12 +517,15 @@ impl KetchupApp {
         self.exact.mutation_readiness = MutationReadiness::Pending;
         let result = self.mutate_document_with_work_recovery(mutate);
         match result {
-            Ok((value, publication)) => {
+            Ok(((value, publication), publication_error)) => {
                 publish(self, publication);
                 let snapshot = self.document.current();
                 self.rebind_exact_results(&snapshot);
                 self.exact.mutation_readiness = MutationReadiness::Ready;
-                Ok(value)
+                match publication_error {
+                    Some(error) => Err(WorkRecoveryMutationError::Recovery(error)),
+                    None => Ok(value),
+                }
             }
             Err(error) => {
                 self.exact.mutation_readiness = MutationReadiness::Ready;

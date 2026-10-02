@@ -562,6 +562,7 @@ fn revision_checkpoint_rolls_back_when_work_recovery_checkpoint_fails() {
     open_history(&mut shell);
     let revision = shell.app().document_revision();
     let before = shell.app().revision_catalog();
+    let checkpoint = std::fs::read(&recovery).unwrap();
     std::fs::remove_file(&recovery).unwrap();
     std::fs::create_dir(&recovery).unwrap();
 
@@ -575,6 +576,7 @@ fn revision_checkpoint_rolls_back_when_work_recovery_checkpoint_fails() {
     assert!(!shell.app().action_digest().contains("Blocked checkpoint"));
 
     std::fs::remove_dir(&recovery).unwrap();
+    std::fs::write(&recovery, checkpoint).unwrap();
     shell.click_button_label(&shell.catalog().text("revision-history-create-checkpoint"));
     assert_eq!(
         shell
@@ -603,6 +605,7 @@ fn revision_rollback_rolls_back_when_work_recovery_checkpoint_fails() {
     let before_digest = shell.app().canonical_digest();
     let before_catalog = shell.app().revision_catalog();
     let before_undo = shell.app().undo_step_count();
+    let checkpoint = std::fs::read(&recovery).unwrap();
     std::fs::remove_file(&recovery).unwrap();
     std::fs::create_dir(&recovery).unwrap();
 
@@ -614,6 +617,7 @@ fn revision_rollback_rolls_back_when_work_recovery_checkpoint_fails() {
     assert_eq!(shell.app().undo_step_count(), before_undo);
 
     std::fs::remove_dir(&recovery).unwrap();
+    std::fs::write(&recovery, checkpoint).unwrap();
     shell.click_button_label(&shell.catalog().text("revision-history-rollback"));
     assert_eq!(shell.app().document_revision(), before_revision + 1);
     assert_ne!(shell.app().canonical_digest(), before_digest);

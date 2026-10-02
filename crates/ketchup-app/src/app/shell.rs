@@ -74,6 +74,7 @@ impl KetchupApp {
                 path: None,
                 identity: None,
                 work_recovery_identity: None,
+                work_recovery_lock: None,
                 pending_work_recovery_cleanup: None,
                 work_recovery_digest: None,
                 saved_digest,

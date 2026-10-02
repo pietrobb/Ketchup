@@ -339,6 +339,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Fix the line named in the reason and send the whole program again.",
     ),
     entry(
+        "program_worker_disconnected",
+        Io,
+        "program",
+        "The program planner stopped before returning a result; nothing was published.",
+        "Send the request again; simplify the program if the planner keeps stopping.",
+    ),
+    entry(
         "proposal_ids_exhausted",
         Planning,
         "proposal_id",

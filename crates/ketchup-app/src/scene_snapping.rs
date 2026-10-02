@@ -119,7 +119,7 @@ impl SceneSnapGeometry {
     ) {
         let positions_f32: Vec<_> = positions.iter().map(|p| p.map(|v| v as f32)).collect();
         let mut boundaries = BTreeMap::<Option<u32>, Vec<[u32; 2]>>::new();
-        // Candidate evidence per face: a drilled panel has thousands of mesh
+        // Candidate evidence per face: a drilled solid has thousands of mesh
         // edges and hundreds of B-rep edges, so testing every pair took ~0.1 s.
         let evidence_faces: Vec<BTreeSet<u32>> = evidence
             .iter()

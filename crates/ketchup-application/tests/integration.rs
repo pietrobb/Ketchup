@@ -15,6 +15,7 @@ mod rule_program_extras;
 mod rule_program_face_shapes;
 mod rule_program_named_topology;
 mod rule_program_operations;
+mod rule_program_review;
 mod rule_program_split_union;
 mod rule_program_threads;
 mod validation_selection;
