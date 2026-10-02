@@ -10,6 +10,7 @@ use ketchup_model::persistence::{self, LoadDisposition, PersistenceError};
 use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::testing::with_document_id;
 use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::tolerance::limits;
 
 fn load_error(bytes: &[u8]) -> PersistenceError {
     match persistence::load(bytes) {
@@ -883,10 +884,19 @@ fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
     );
 }
 
-#[test]
-fn explicit_current_snapshot_save_preserves_work_beyond_history_limit() {
-    let mut store = graph_document();
-    for index in 0..4_096_u64 {
+/// A document whose Undo history holds more bytes than a native file stores.
+fn oversized_history_document() -> DocumentStore {
+    let commands = (1..=256_u64)
+        .map(|id| CanonicalCommand::CreateEvaluatorNode {
+            id: NodeId(id),
+            name: format!("parameter-{id:03}-{}", "x".repeat(1_024)),
+            dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
+            dependencies: vec![],
+        })
+        .collect();
+    let mut store = DocumentStore::new();
+    store.apply_batch(&CommandBatch::new(commands)).unwrap();
+    for index in 0..limits::UNDO_REVISIONS as u64 {
         let value = 10_000 + index;
         store
             .apply_batch(&CommandBatch::new(vec![
@@ -897,10 +907,55 @@ fn explicit_current_snapshot_save_preserves_work_beyond_history_limit() {
             ]))
             .unwrap();
     }
+    store
+}
+
+#[test]
+fn manual_history_keeps_the_shared_undo_limit_and_saves_in_full() {
+    let mut store = graph_document();
+    let extra = 20;
+    for index in 0..(limits::UNDO_REVISIONS + extra) as u64 {
+        let value = 10_000 + index;
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value as f64).unwrap(),
+                },
+            ]))
+            .unwrap();
+    }
+    assert_eq!(store.revision_count(), limits::UNDO_REVISIONS + 1);
+    assert_eq!(store.visible_undo_steps(), limits::UNDO_REVISIONS);
+    let bytes =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let mut reopened = persistence::load(&bytes)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    assert_eq!(
+        reopened.current().canonical_digest(),
+        store.current().canonical_digest()
+    );
+    assert_eq!(reopened.visible_undo_steps(), limits::UNDO_REVISIONS);
+    while reopened.undo().is_some() {
+        store.undo().unwrap();
+        assert_eq!(
+            reopened.current().canonical_digest(),
+            store.current().canonical_digest()
+        );
+    }
+    assert!(store.undo().is_none());
+}
+
+#[test]
+fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
+    let store = oversized_history_document();
     let current = store.current();
     let expected_next_revision_id = store.next_revision_id();
     let original_revision_count = store.revision_count();
-    assert!(original_revision_count > 4_096);
+    assert_eq!(original_revision_count, limits::UNDO_REVISIONS + 1);
     assert_eq!(
         persistence::save_document_store(&store, &persistence::ContainerData::default()),
         Err(PersistenceError::ResourceLimit)
@@ -953,58 +1008,6 @@ fn explicit_current_snapshot_save_preserves_work_beyond_history_limit() {
     )
     .unwrap();
     assert_eq!(std::fs::read(path).unwrap(), first);
-}
-
-#[test]
-fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
-    let mut commands = Vec::new();
-    for id in 1..=128_u64 {
-        commands.push(CanonicalCommand::CreateEvaluatorNode {
-            id: NodeId(id),
-            name: format!("parameter-{id:03}-{}", "x".repeat(128)),
-            dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
-            dependencies: vec![],
-        });
-    }
-    let mut store = DocumentStore::new();
-    store.apply_batch(&CommandBatch::new(commands)).unwrap();
-    for index in 0..2_000_u64 {
-        let value = 10_000 + index;
-        store
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::SetEvaluatorDimension {
-                    id: NodeId(1),
-                    dimension: Dimension::new(value.to_string(), value as f64).unwrap(),
-                },
-            ]))
-            .unwrap();
-    }
-    assert!(store.revision_count() < 4_096);
-    let current = store.current();
-    let expected_next_revision_id = store.next_revision_id();
-    assert_eq!(
-        persistence::save_document_store(&store, &persistence::ContainerData::default()),
-        Err(PersistenceError::ResourceLimit)
-    );
-
-    let bytes = persistence::save_document_store_current_snapshot(
-        &store,
-        &persistence::ContainerData::default(),
-    )
-    .unwrap();
-    let reopened = persistence::load(&bytes)
-        .unwrap()
-        .into_editable()
-        .ok()
-        .unwrap();
-    assert_eq!(reopened.current().revision_id(), current.revision_id());
-    assert_eq!(
-        reopened.current().canonical_digest(),
-        current.canonical_digest()
-    );
-    assert_eq!(reopened.next_revision_id(), expected_next_revision_id);
-    assert_eq!(reopened.visible_undo_steps(), 0);
-    assert_eq!(reopened.visible_redo_steps(), 0);
 }
 
 #[test]

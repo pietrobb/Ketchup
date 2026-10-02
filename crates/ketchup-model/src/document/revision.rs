@@ -86,7 +86,6 @@ pub struct RuleProgramSource {
 }
 
 pub const MAX_RULE_PROGRAM_BYTES: usize = 1024 * 1024;
-pub(super) const RULE_PROGRAM_UNDO_LIMIT: usize = 10;
 
 #[derive(Clone)]
 pub struct Revision {

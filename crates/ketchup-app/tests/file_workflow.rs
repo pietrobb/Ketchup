@@ -1976,18 +1976,29 @@ fn save_as_requires_explicit_consent_before_preserving_current_revision_without_
     let directory = tempfile::tempdir().unwrap();
     let boundary = directory.path().join("history-boundary.ketchup");
     let saved = directory.path().join("current-only.ketchup");
+    // Grow an Undo history of large revisions until one more no longer fits in a
+    // native file; the file keeps the last history that did.
     let mut document = DocumentStore::new();
     document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::CreateEvaluatorNode {
-                id: NodeId(1),
-                name: "history counter".to_owned(),
-                dimension: Dimension::new("0", 0.0).unwrap(),
-                dependencies: Vec::new(),
-            },
-        ]))
+        .apply_batch(&CommandBatch::new(
+            (1..=96_u64)
+                .map(|id| CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(id),
+                    name: format!("history counter {id:02} {}", "x".repeat(32 * 1024)),
+                    dimension: Dimension::new("0", 0.0).unwrap(),
+                    dependencies: Vec::new(),
+                })
+                .collect(),
+        ))
         .unwrap();
-    for value in 1..4_095_u64 {
+    let container = ketchup_model::persistence::ContainerData::default();
+    let mut fitting = None;
+    for value in 10_000..10_000 + ketchup_model::tolerance::limits::UNDO_REVISIONS as u64 {
+        match ketchup_model::persistence::save_document_store(&document, &container) {
+            Ok(bytes) => fitting = Some(bytes),
+            Err(ketchup_model::persistence::PersistenceError::ResourceLimit) => break,
+            Err(error) => panic!("unexpected save error {error:?}"),
+        }
         document
             .apply_batch(&CommandBatch::new(vec![
                 CanonicalCommand::SetEvaluatorDimension {
@@ -1997,13 +2008,11 @@ fn save_as_requires_explicit_consent_before_preserving_current_revision_without_
             ]))
             .unwrap();
     }
-    assert_eq!(document.revision_count(), 4_096);
-    ketchup_model::persistence::save_atomic_document_store_with_container(
-        &boundary,
-        &document,
-        &ketchup_model::persistence::ContainerData::default(),
-    )
-    .unwrap();
+    assert!(
+        ketchup_model::persistence::save_document_store(&document, &container).is_err(),
+        "the history must outgrow a native file within the Undo limit"
+    );
+    std::fs::write(&boundary, fitting.unwrap()).unwrap();
 
     let script = ScriptedFileDialogs::new()
         .queue_open(&boundary)
@@ -2014,7 +2023,10 @@ fn save_as_requires_explicit_consent_before_preserving_current_revision_without_
         .queue_history_truncation_approval(true);
     let mut shell = Shell::with_dialogs(script.clone());
     shell.click_menu_command("menu-file", AppCommand::Open);
-    assert_eq!(shell.app().undo_step_count(), 4_095);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        document.visible_undo_steps() - 1
+    );
     assert!(shell.app_mut().create_box());
     shell.settle();
     let expected_digest = shell.app().canonical_digest();
@@ -2027,7 +2039,7 @@ fn save_as_requires_explicit_consent_before_preserving_current_revision_without_
     assert_eq!(shell.app().canonical_digest(), expected_digest);
     assert_eq!(shell.app().undo_step_count(), expected_undo_steps);
     assert_eq!(script.history_truncation_prompts().len(), 1);
-    assert!(script.history_truncation_prompts()[0].contains("4096"));
+    assert!(script.history_truncation_prompts()[0].contains(&expected_undo_steps.to_string()));
 
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
     assert!(saved.is_file());

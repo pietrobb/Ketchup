@@ -3,7 +3,8 @@ use ketchup_model::document::{
     RuleProgramError,
 };
 use ketchup_model::persistence::{self, ContainerData};
-use ketchup_program::document::{PartChanges, ProgramDocument, ProgramSource, UNDO_LIMIT};
+use ketchup_model::tolerance::limits;
+use ketchup_program::document::{PartChanges, ProgramDocument, ProgramSource};
 use std::collections::BTreeMap;
 
 const SOURCE: &str = r#"
@@ -55,20 +56,22 @@ fn changing_a_parameter_updates_dependents_but_not_the_fixed_part() {
 }
 
 #[test]
-fn only_the_last_ten_changes_can_be_undone_and_redone() {
-    let mut document = ProgramDocument::new(source(100.0)).unwrap();
-    for width in 101..=125 {
-        document.replace(source(f64::from(width))).unwrap();
+fn only_the_shared_undo_limit_of_changes_can_be_undone_and_redone() {
+    let first = 100;
+    let last = first + limits::UNDO_REVISIONS + 15;
+    let mut document = ProgramDocument::new(source(first as f64)).unwrap();
+    for width in first + 1..=last {
+        document.replace(source(width as f64)).unwrap();
     }
-    for expected in (115..125).rev() {
+    let oldest = last - limits::UNDO_REVISIONS;
+    for expected in (oldest..last).rev() {
         assert!(document.undo().unwrap().is_some());
-        assert_eq!(width(&document), f64::from(expected));
+        assert_eq!(width(&document), expected as f64);
     }
-    assert_eq!(UNDO_LIMIT, 10);
     assert!(document.undo().unwrap().is_none());
-    for expected in 116..=125 {
+    for expected in oldest + 1..=last {
         assert!(document.redo().unwrap().is_some());
-        assert_eq!(width(&document), f64::from(expected));
+        assert_eq!(width(&document), expected as f64);
     }
     assert!(document.redo().unwrap().is_none());
 }
@@ -282,6 +285,51 @@ fn source_belongs_to_canonical_revision_through_save_open_and_manual_edit() {
     assert_eq!(only_current.visible_undo_steps(), 0);
     reopened.redo().unwrap();
     assert!(reopened.current_rule_program().is_none());
+}
+
+#[test]
+fn undo_reaches_manual_edits_made_before_eleven_program_applies() {
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(1),
+                name: "width".into(),
+                dimension: Dimension::new("100", 100.0).unwrap(),
+                dependencies: vec![],
+            },
+        ]))
+        .unwrap();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("110", 110.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let manual = store.current().canonical_digest();
+    for step in 1..=11 {
+        let value = 200.0 + f64::from(step);
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value).unwrap(),
+                },
+            ]))
+            .unwrap();
+        store.bind_rule_program(source(value)).unwrap();
+    }
+    assert_eq!(store.visible_undo_steps(), 13);
+    for _ in 0..11 {
+        store.undo().unwrap();
+    }
+    assert!(store.current_rule_program().is_none());
+    assert_eq!(store.current().canonical_digest(), manual);
+    store.undo().unwrap();
+    store.undo().unwrap();
+    assert!(store.undo().is_none());
 }
 
 #[test]

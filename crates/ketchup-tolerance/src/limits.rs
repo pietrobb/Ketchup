@@ -42,6 +42,10 @@ pub const EXPORT_TRIANGLES: usize = 2 * EXPORT_VERTICES;
 /// validation report), in bytes.
 pub const REPORT_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
+/// Most revisions one document keeps to step back to with Undo, for manual and program
+/// edits alike. Committing beyond it drops the oldest revision.
+pub const UNDO_REVISIONS: usize = 200;
+
 /// Most batch jobs one host keeps open at a time.
 pub const BATCH_JOBS: usize = 16;
 

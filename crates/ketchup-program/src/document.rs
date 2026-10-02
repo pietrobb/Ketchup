@@ -2,11 +2,10 @@
 //! Undo and Redo evaluate the saved source and parameter values again.
 
 use crate::{Evaluated, ProgramError, ProgramModel, Report, run};
+use ketchup_tolerance::limits;
 use std::collections::{BTreeMap, VecDeque};
 
 pub use ketchup_model::document::RuleProgramSource as ProgramSource;
-
-pub const UNDO_LIMIT: usize = 10;
 
 /// Part identities that the CAD publisher needs to create, update or remove.
 /// Unlisted parts can retain their existing identities and exact geometry.
@@ -91,7 +90,8 @@ impl ProgramDocument {
         self.cursor + 1 < self.versions.len()
     }
 
-    /// Publishes one source edit, retaining at most ten reversible changes.
+    /// Publishes one source edit, retaining at most [`limits::UNDO_REVISIONS`] reversible
+    /// changes.
     /// Interpreter failure leaves the source, model and Redo branch untouched.
     /// Validation issues remain in the report; they do not prevent editing.
     ///
@@ -105,7 +105,7 @@ impl ProgramDocument {
         let changes = PartChanges::between(&self.evaluated.model, &evaluated.model);
         self.versions.truncate(self.cursor + 1);
         self.versions.push_back(source);
-        if self.versions.len() > UNDO_LIMIT + 1 {
+        if self.versions.len() > limits::UNDO_REVISIONS + 1 {
             self.versions.pop_front();
         }
         self.cursor = self.versions.len() - 1;

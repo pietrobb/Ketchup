@@ -25,7 +25,10 @@ const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
 const HISTORY_SCHEMA: u16 = 3;
 const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
 const WORK_RECOVERY_SCHEMA: u16 = 1;
-const MAX_HISTORY_REVISIONS: u32 = 4_096;
+/// Most revisions a native file's history may hold. Files written before the shared
+/// [`crate::tolerance::limits::UNDO_REVISIONS`] can hold this many; loading keeps only the
+/// revisions within the Undo limit.
+const FILE_HISTORY_REVISIONS: u32 = 4_096;
 pub const CURRENT_SCHEMA: u16 = snapshot_codec::SNAPSHOT_FORMAT;
 
 /// Largest serialized document snapshot: the current document or one revision in its
@@ -493,7 +496,7 @@ fn append_revision_history_record(
 fn encode_revision_history(document: &DocumentStore) -> Result<Vec<u8>, PersistenceError> {
     let count = u32::try_from(document.revision_count())
         .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
-    if count == 0 || count > MAX_HISTORY_REVISIONS {
+    if count == 0 || count > FILE_HISTORY_REVISIONS {
         return Err(PersistenceError::ResourceLimit);
     }
     let cursor = u32::try_from(document.history_cursor())
@@ -1403,7 +1406,7 @@ fn decode_revision_history(
     if schema != 1 && schema != 2 && schema != HISTORY_SCHEMA {
         return Err(PersistenceError::UnsupportedHistorySchema(schema));
     }
-    let count = reader.count_with_limit(MAX_HISTORY_REVISIONS)? as usize;
+    let count = reader.count_with_limit(FILE_HISTORY_REVISIONS)? as usize;
     let cursor = reader.u32()? as usize;
     let next_revision_id = reader.u64()?;
     if count == 0 || cursor >= count {

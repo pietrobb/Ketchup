@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_tolerance::limits;
 
 pub struct DocumentStore {
     pub(super) revisions: Vec<Arc<Revision>>,
@@ -150,8 +151,13 @@ impl DocumentStore {
         Ok(())
     }
 
-    pub(super) fn limit_rule_program_history(&mut self) {
-        let excess = self.cursor.saturating_sub(RULE_PROGRAM_UNDO_LIMIT);
+    /// Makes `revision` current, discarding the Redo branch and keeping at most
+    /// [`limits::UNDO_REVISIONS`] earlier revisions to step back to.
+    fn push_revision(&mut self, revision: Arc<Revision>) {
+        self.revisions.truncate(self.cursor + 1);
+        self.revisions.push(revision);
+        self.cursor += 1;
+        let excess = self.cursor.saturating_sub(limits::UNDO_REVISIONS);
         if excess > 0 {
             self.revisions.drain(..excess);
             self.cursor -= excess;
@@ -169,7 +175,6 @@ impl DocumentStore {
         }
         Self::validate_rule_program_source(&source)?;
         Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(source);
-        self.limit_rule_program_history();
         Ok(())
     }
 
@@ -208,10 +213,7 @@ impl DocumentStore {
             feature_states: current.feature_states.clone(),
             evaluation: current.evaluation.clone(),
         });
-        self.revisions.truncate(self.cursor + 1);
-        self.revisions.push(revision);
-        self.cursor += 1;
-        self.limit_rule_program_history();
+        self.push_revision(revision);
         self.next_revision_id = next_revision_id;
         self.mutation_epoch = Self::fresh_mutation_epoch();
         Ok(())
@@ -222,6 +224,14 @@ impl DocumentStore {
         cursor: usize,
         next_revision_id: u64,
     ) -> Result<Self, CanonicalError> {
+        // A file written before the shared Undo limit can hold more revisions than an
+        // editing session keeps; restore only those within the limit around the cursor.
+        let first = cursor.saturating_sub(limits::UNDO_REVISIONS);
+        let cursor = cursor - first;
+        let revisions = revisions
+            .into_iter()
+            .skip(first)
+            .take(cursor + limits::UNDO_REVISIONS + 1);
         let mut restored = Vec::with_capacity(revisions.len());
         for (snapshot, batch_digest, origin, checkpoint, rule_program) in revisions {
             let validated =
@@ -727,9 +737,7 @@ impl DocumentStore {
             feature_states: target.feature_states.clone(),
             evaluation: None,
         });
-        self.revisions.truncate(self.cursor + 1);
-        self.revisions.push(Arc::clone(&revision));
-        self.cursor += 1;
+        self.push_revision(Arc::clone(&revision));
         self.next_revision_id = following_revision_id;
         self.mutation_epoch = Self::fresh_mutation_epoch();
         self.evaluation_registry.clear();
@@ -2930,9 +2938,7 @@ impl DocumentStore {
         });
 
         self.mutation_epoch = Self::fresh_mutation_epoch();
-        self.revisions.truncate(self.cursor + 1);
-        self.revisions.push(Arc::clone(&revision));
-        self.cursor += 1;
+        self.push_revision(Arc::clone(&revision));
         self.next_revision_id = following_revision_id;
         Ok(revision)
     }
