@@ -46,6 +46,9 @@ pub struct FaceFrame {
     pub max: [f64; 2],
 }
 
+/// How close, in mm, a neighbour's edge must lie to a pulled face to follow it.
+const TOUCH_MM: f64 = 0.01;
+
 fn unit(axis: usize) -> [f64; 3] {
     std::array::from_fn(|index| if index == axis { 1.0 } else { 0.0 })
 }
@@ -205,6 +208,65 @@ impl FaceFrame {
             }
             FaceKind::Cylindrical { radius_mm } => {
                 *radius_mm += distance_mm * dot(self.normal, self.u).signum();
+            }
+        }
+    }
+
+    /// Grows or shrinks this face where it meets `moved`, a flat face moved
+    /// `distance_mm` along its normal, so a neighbour still reaches the moved
+    /// face. Only a face the moved one's normal lies in follows; a slanted
+    /// edge grows the span by the edge's own shift.
+    fn follow(&mut self, moved: &FaceFrame, distance_mm: f64) {
+        let normal = moved.normal;
+        let along = [dot(normal, self.u), dot(normal, self.v)];
+        let axes = match self.kind {
+            FaceKind::Planar if dot(self.normal, normal).abs() <= APPROXIMATION => [true, true],
+            FaceKind::Cylindrical { .. } if along[1].abs() >= 1.0 - APPROXIMATION => [false, true],
+            _ => return,
+        };
+        let corners = [
+            [self.min[0], self.min[1]],
+            [self.max[0], self.min[1]],
+            [self.min[0], self.max[1]],
+            [self.max[0], self.max[1]],
+        ];
+        let height = |at: [f64; 2]| match self.kind {
+            FaceKind::Planar => dot(self.point(at), normal),
+            FaceKind::Cylindrical { .. } => dot(self.origin_mm, normal) + at[1] * along[1],
+        };
+        let reach = corners
+            .map(height)
+            .into_iter()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let plane = dot(moved.origin_mm, normal) - distance_mm;
+        let tolerance = APPROXIMATION * plane.abs().max(1.0);
+        if (reach - plane).abs() > tolerance {
+            return;
+        }
+        // The edge on the plane must overlap the moved face, so the far leg
+        // of a U does not grow when only the near one is pulled.
+        let edge: Vec<[f64; 2]> = corners
+            .into_iter()
+            .filter(|&at| (height(at) - plane).abs() <= tolerance)
+            .map(|at| moved.coordinates(self.point(at)))
+            .collect();
+        let overlaps = (0..2).all(|axis| {
+            let low = edge.iter().map(|at| at[axis]).fold(f64::INFINITY, f64::min);
+            let high = edge
+                .iter()
+                .map(|at| at[axis])
+                .fold(f64::NEG_INFINITY, f64::max);
+            low <= moved.max[axis] + TOUCH_MM && high >= moved.min[axis] - TOUCH_MM
+        });
+        if edge.len() > 1 && !overlaps {
+            return;
+        }
+        for axis in (0..2).filter(|&axis| axes[axis]) {
+            let shift = distance_mm * along[axis];
+            if along[axis] > APPROXIMATION {
+                self.max[axis] += shift;
+            } else if along[axis] < -APPROXIMATION {
+                self.min[axis] += shift;
             }
         }
     }
@@ -454,8 +516,17 @@ impl Part {
         for operation in &self.operations {
             match operation {
                 ProgramOperation::FaceOffset(offset) => {
+                    let mut moved = Vec::new();
                     for face in faces.iter_mut().filter(|face| face.name == offset.face) {
                         face.offset(offset.distance_mm);
+                        if face.kind == FaceKind::Planar {
+                            moved.push(face.clone());
+                        }
+                    }
+                    for face in faces.iter_mut().filter(|face| face.name != offset.face) {
+                        for pulled in &moved {
+                            face.follow(pulled, offset.distance_mm);
+                        }
                     }
                 }
                 ProgramOperation::Mirror(mirror) => {

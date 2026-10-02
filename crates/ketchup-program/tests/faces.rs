@@ -411,6 +411,44 @@ fn a_hole_drilled_after_a_mirror_lands_where_the_face_now_is() {
 }
 
 #[test]
+fn the_neighbours_of_a_pulled_face_grow_with_it() {
+    let top = part(
+        "t = box(\"t\", (600, 400, 20))\n\
+         push_pull(t, face = \"x+\", distance = 30, name = \"longer\")\n",
+        "t",
+    );
+    let span = |name: &str| top.face_frame(name).unwrap();
+    assert_span(&span("z+"), [0.0, 0.0], [630.0, 400.0]);
+    assert_span(&span("z-"), [0.0, 0.0], [630.0, 400.0]);
+    assert_span(&span("y-"), [0.0, 0.0], [630.0, 20.0]);
+    assert_span(&span("y+"), [0.0, 0.0], [630.0, 20.0]);
+    assert_span(&span("x-"), [0.0, 0.0], [400.0, 20.0]);
+    assert_eq!(
+        top.face_frame_at([620.0, 200.0, 20.0], 0.01)
+            .map(|f| f.name),
+        Some("z+".to_owned())
+    );
+
+    // Only the leg of a U that was pulled grows; the other leg reaches the
+    // same plane but does not touch the pulled end.
+    let u = part(
+        "u = extrude(\"u\", distance = 10, profile = [[\"bottom\", [0, 0], [100, 0]], \
+         [\"right\", [100, 0], [100, 80]], [\"right_top\", [100, 80], [80, 80]], \
+         [\"right_in\", [80, 80], [80, 20]], [\"floor\", [80, 20], [20, 20]], \
+         [\"left_in\", [20, 20], [20, 80]], [\"left_top\", [20, 80], [0, 80]], \
+         [\"left\", [0, 80], [0, 0]]])\n\
+         push_pull(u, face = \"right_top\", distance = 15, name = \"taller\")\n",
+        "u",
+    );
+    let face = |name: &str| u.face_frame(name).unwrap();
+    assert_span(&face("right"), [0.0, 0.0], [95.0, 10.0]);
+    assert_span(&face("right_in"), [0.0, 0.0], [75.0, 10.0]);
+    assert_span(&face("left"), [0.0, 0.0], [80.0, 10.0]);
+    assert_span(&face("left_in"), [0.0, 0.0], [60.0, 10.0]);
+    assert_span(&face("end"), [0.0, 0.0], [100.0, 95.0]);
+}
+
+#[test]
 fn contact_finds_a_profile_face_mirrored_in_the_middle_of_the_program() {
     let source = "\
 w = extrude(\"w\", distance = 20, profile = [[\"base\", [0, 0], [100, 0]], \
