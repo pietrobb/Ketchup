@@ -12,6 +12,7 @@ const OPEN_BUDGET: Duration = Duration::from_secs(5);
 const EXACT_REBUILD_BUDGET: Duration = Duration::from_secs(180);
 const UI_FRAMES: usize = 20;
 const UI_FRAME_BUDGET: Duration = Duration::from_secs(5);
+const ONE_EDIT_BUDGET: Duration = Duration::from_millis(50);
 const MEMORY_GROWTH_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MEMORY_PROBE_ALLOCATION_BYTES: u64 = 64 * 1024 * 1024;
 const MEMORY_PROBE_MIN_OBSERVED_BYTES: u64 = MEMORY_PROBE_ALLOCATION_BYTES / 2;
@@ -505,4 +506,110 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
     if let Some(path) = std::env::var_os("KETCHUP_PRODUCTION_PERFORMANCE_PATH") {
         std::fs::write(path, format!("{json}\n")).expect("write requested performance evidence");
     }
+}
+
+/// One move in a model as large as the instance index serves commits within
+/// [`ONE_EDIT_BUDGET`]: the edit validates what it changed, not the whole model.
+#[test]
+fn one_move_among_the_largest_indexed_model_commits_within_budget() {
+    use ketchup_application::model_query::MAX_INSTANCE_INDEX_ITEMS;
+    use ketchup_geometry::sketch::{
+        FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
+        SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+    };
+    use ketchup_model::document::{
+        CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+        FeatureKind, OccurrenceId, Transform,
+    };
+
+    let definitions = 100_u64;
+    let occurrences = MAX_INSTANCE_INDEX_ITEMS as u64;
+    let mut commands = Vec::new();
+    for definition in 1..=definitions {
+        let base = definition * 10;
+        let width = 400.0 + definition as f64;
+        let corners = [[0.0, 0.0], [width, 0.0], [width, 200.0], [0.0, 200.0]];
+        let sketch = SketchSpec {
+            workplane: FeatureId(base),
+            entities: (0..4)
+                .map(|i| SketchEntity::Line {
+                    id: SketchEntityId(i as u64 + 1),
+                    start_mm: corners[i],
+                    end_mm: corners[(i + 1) % 4],
+                })
+                .collect(),
+            constraints: vec![],
+        };
+        let region = sketch.solved_regions().unwrap()[0].id;
+        commands.push(CanonicalCommand::CreateDefinition {
+            id: DefinitionId(definition),
+            name: format!("part {definition}"),
+        });
+        for (id, kind) in [
+            (
+                base,
+                FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            ),
+            (base + 1, FeatureKind::Sketch(sketch)),
+            (
+                base + 2,
+                FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion {
+                        sketch: FeatureId(base + 1),
+                        region,
+                    },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::new("18", 18.0).unwrap()),
+                    operation: PadOperation::NewBody,
+                }),
+            ),
+        ] {
+            commands.push(CanonicalCommand::CreateFeature {
+                id: FeatureId(id),
+                definition_id: DefinitionId(definition),
+                name: format!("feature {id}"),
+                kind,
+            });
+        }
+    }
+    for id in 1..=occurrences {
+        commands.push(CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(id),
+            definition_id: DefinitionId(1 + id % definitions),
+            name: format!("part {id}"),
+            transform: Transform::from_translation(
+                (id % 100) as f64 * 600.0,
+                (id / 100) as f64 * 300.0,
+                0.0,
+            )
+            .unwrap(),
+            parent: None,
+            tag: None,
+            visible: true,
+        });
+    }
+    let mut document = DocumentStore::new();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    assert_eq!(
+        document.current().occurrences().count(),
+        MAX_INSTANCE_INDEX_ITEMS
+    );
+
+    // The fastest of several moves: a busy test machine only ever slows one down.
+    let fastest = (0..5_u32)
+        .map(|step| {
+            let move_one = CommandBatch::new(vec![CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(occurrences / 2 + u64::from(step)),
+                transform: Transform::from_translation(f64::from(step), 2.0, 3.0).unwrap(),
+            }]);
+            let started = Instant::now();
+            document.apply_batch(&move_one).unwrap();
+            started.elapsed()
+        })
+        .min()
+        .unwrap();
+    assert!(
+        fastest < ONE_EDIT_BUDGET,
+        "one move among {MAX_INSTANCE_INDEX_ITEMS} occurrences took {fastest:?}"
+    );
 }

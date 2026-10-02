@@ -29,7 +29,134 @@ pub(super) fn validate_product_with_drawing_sources(
     product: &ProductModel,
     validate_drawing_sources: bool,
 ) -> Result<(), CanonicalError> {
+    validate_product_change(None, product, validate_drawing_sources)
+}
+
+/// Validates `product`, derived from `before`, which passed validation already. A check whose
+/// inputs `product` kept passes again, so only the checks [`ProductChange`] names run; without
+/// `before` every check runs.
+pub(super) fn validate_product_change(
+    before: Option<&ProductModel>,
+    product: &ProductModel,
+    validate_drawing_sources: bool,
+) -> Result<(), CanonicalError> {
+    let change = ProductChange::between(before, product);
     ensure_product_id(product.document_id.0)?;
+    validate_document_entries(product, validate_drawing_sources, change.definitions)?;
+    if change.definitions {
+        validate_definitions(product)?;
+        validate_features(product)?;
+        validate_feature_parameters(product)?;
+    }
+    match change.occurrences_to_check(product) {
+        Some(changed) => validate_occurrences(product, changed.into_iter())?,
+        None => validate_occurrences(product, product.occurrences.values())?,
+    }
+    if change.groups {
+        validate_groups(product)?;
+    }
+    if change.definitions {
+        validate_local_structure(product)?;
+    }
+    Ok(())
+}
+
+/// What a candidate product changed, as far as validation cares, relative to the validated
+/// product it was derived from. Revisions share unchanged entries, so a kept entry is the
+/// same allocation and comparing two products costs one pointer comparison per entry.
+struct ProductChange<'a> {
+    before: Option<&'a ProductModel>,
+    /// Whether any input of the definition checks changed: those checks read only the fields
+    /// compared in [`definition_inputs_unchanged`].
+    definitions: bool,
+    groups: bool,
+}
+
+impl<'a> ProductChange<'a> {
+    fn between(before: Option<&'a ProductModel>, product: &ProductModel) -> Self {
+        Self {
+            before,
+            definitions: before.is_none_or(|before| !definition_inputs_unchanged(before, product)),
+            groups: before.is_none_or(|before| !same_entries(&before.groups, &product.groups)),
+        }
+    }
+
+    /// The occurrences to check when only some of them can fail: an occurrence's checks read
+    /// the occurrence and which definitions, groups and tags exist. `None` means all of them.
+    fn occurrences_to_check<'p>(
+        &self,
+        product: &'p ProductModel,
+    ) -> Option<Vec<&'p Arc<Occurrence>>> {
+        let before = self.before?;
+        (same_keys(&before.definitions, &product.definitions)
+            && same_keys(&before.groups, &product.groups)
+            && same_keys(&before.tags, &product.tags))
+        .then(|| {
+            product
+                .occurrences
+                .iter()
+                .filter(|(id, occurrence)| {
+                    !before
+                        .occurrences
+                        .get(id)
+                        .is_some_and(|kept| Arc::ptr_eq(kept, occurrence))
+                })
+                .map(|(_, occurrence)| occurrence)
+                .collect()
+        })
+    }
+}
+
+/// Every field the checks of definitions, features, their parameters and local structure
+/// read: [`validate_definitions`], [`validate_features`], [`validate_feature_parameters`],
+/// [`validate_local_structure`] and the feature dependency graph.
+fn definition_inputs_unchanged(before: &ProductModel, product: &ProductModel) -> bool {
+    before.document_id == product.document_id
+        && before.tolerance == product.tolerance
+        && before.body_feature_suppression == product.body_feature_suppression
+        && same_entries(&before.definitions, &product.definitions)
+        && same_entries(&before.features, &product.features)
+        && same_entries(&before.local_groups, &product.local_groups)
+        && same_entries(&before.local_occurrences, &product.local_occurrences)
+        && same_entries(&before.evaluator_nodes, &product.evaluator_nodes)
+        && same_entries(
+            &before.feature_parameter_bindings,
+            &product.feature_parameter_bindings,
+        )
+        && same_entries(
+            &before.feature_parameter_provenance,
+            &product.feature_parameter_provenance,
+        )
+        && same_entries(
+            &before.exact_reference_evidence,
+            &product.exact_reference_evidence,
+        )
+        && same_entries(&before.import_receipts, &product.import_receipts)
+        && same_entries(&before.tags, &product.tags)
+}
+
+fn same_entries<K: Ord, V>(before: &BTreeMap<K, Arc<V>>, after: &BTreeMap<K, Arc<V>>) -> bool {
+    before.len() == after.len()
+        && before
+            .iter()
+            .zip(after)
+            .all(|((before_key, before), (after_key, after))| {
+                before_key == after_key && Arc::ptr_eq(before, after)
+            })
+}
+
+fn same_keys<K: Ord, V>(before: &BTreeMap<K, V>, after: &BTreeMap<K, V>) -> bool {
+    before.len() == after.len() && before.keys().eq(after.keys())
+}
+
+/// Checks every entry outside definitions, occurrences and groups, in the order the full
+/// validation reports them; the feature dependency graph sits among them and is checked
+/// only when `definitions_changed`.
+fn validate_document_entries(
+    product: &ProductModel,
+    validate_drawing_sources: bool,
+    definitions_changed: bool,
+) -> Result<(), CanonicalError> {
     let mut assigned_codes = BTreeSet::new();
     for (path, code) in &product.production_codes {
         validate_production_code(code)?;
@@ -109,22 +236,27 @@ pub(super) fn validate_product_with_drawing_sources(
         }
         plan.validate_structure().map_err(CanonicalError::Cam)?;
     }
-    let snapshot = Snapshot {
-        revision_id: 0,
-        product: Arc::new(product.clone()),
+    let snapshot = std::cell::OnceCell::new();
+    let snapshot = || {
+        snapshot.get_or_init(|| Snapshot {
+            revision_id: 0,
+            product: Arc::new(product.clone()),
+        })
     };
     for (id, joint) in &product.pin_joints {
         if *id != joint.id {
             return Err(CanonicalError::PinJoint(PinJointError::InvalidJointId));
         }
-        project_pin_joint_contract(&snapshot, joint).map_err(CanonicalError::PinJoint)?;
+        project_pin_joint_contract(snapshot(), joint).map_err(CanonicalError::PinJoint)?;
     }
     if let Some(recipe) = product.assembly_recipe.as_deref() {
         recipe
-            .audit(&snapshot)
+            .audit(snapshot())
             .map_err(CanonicalError::AssemblyRecipe)?;
     }
-    FeatureDependencyGraph::from_product(product)?;
+    if definitions_changed {
+        FeatureDependencyGraph::from_product(product)?;
+    }
     for (id, joint) in &product.joints {
         if *id != joint.id() || !joint.volume().has_positive_volume() {
             return Err(CanonicalError::Prismatic(PrismaticError::EmptyVolume));
@@ -151,18 +283,12 @@ pub(super) fn validate_product_with_drawing_sources(
             return Err(CanonicalError::Space(SpaceError::MissingSpace));
         }
     }
-    let validation_snapshot = Snapshot {
-        revision_id: 0,
-        product: Arc::new(product.clone()),
-    };
     for (id, clearance) in &product.clearance_volumes {
         if *id != clearance.id() || !clearance.volume().has_positive_volume() {
             return Err(CanonicalError::Space(SpaceError::InvalidVolume));
         }
         let owner_is_valid = match clearance.owner() {
-            ClearanceOwner::Occurrence(path) => {
-                validation_snapshot.resolve_instance_path(path).is_ok()
-            }
+            ClearanceOwner::Occurrence(path) => snapshot().resolve_instance_path(path).is_ok(),
             ClearanceOwner::Space(space_id) => product.spaces.contains_key(space_id),
         };
         if !owner_is_valid {
@@ -201,6 +327,10 @@ pub(super) fn validate_product_with_drawing_sources(
             .validate()
             .map_err(CanonicalError::InvalidImportReceipt)?;
     }
+    Ok(())
+}
+
+fn validate_definitions(product: &ProductModel) -> Result<(), CanonicalError> {
     for definition in product.definitions.values() {
         ensure_product_id(definition.id.0)?;
         ensure_name(&definition.name)?;
@@ -303,6 +433,10 @@ pub(super) fn validate_product_with_drawing_sources(
             }
         }
     }
+    Ok(())
+}
+
+fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
         ensure_name(&feature.name)?;
@@ -1008,6 +1142,10 @@ pub(super) fn validate_product_with_drawing_sources(
             | FeatureKind::ConstructionPlane { .. } => {}
         }
     }
+    Ok(())
+}
+
+fn validate_feature_parameters(product: &ProductModel) -> Result<(), CanonicalError> {
     for (target, binding) in &product.feature_parameter_bindings {
         let feature = product
             .features
@@ -1035,7 +1173,14 @@ pub(super) fn validate_product_with_drawing_sources(
             ));
         }
     }
-    for occurrence in product.occurrences.values() {
+    Ok(())
+}
+
+fn validate_occurrences<'a>(
+    product: &ProductModel,
+    occurrences: impl Iterator<Item = &'a Arc<Occurrence>>,
+) -> Result<(), CanonicalError> {
+    for occurrence in occurrences {
         ensure_product_id(occurrence.id.0)?;
         ensure_name(&occurrence.name)?;
         validate_transform(occurrence.transform)?;
@@ -1053,6 +1198,10 @@ pub(super) fn validate_product_with_drawing_sources(
             return Err(CanonicalError::TagNotFound(tag));
         }
     }
+    Ok(())
+}
+
+fn validate_groups(product: &ProductModel) -> Result<(), CanonicalError> {
     for group in product.groups.values() {
         ensure_product_id(group.id.0)?;
         ensure_name(&group.name)?;
@@ -1071,6 +1220,10 @@ pub(super) fn validate_product_with_drawing_sources(
             cursor = product.groups[&group_id].parent;
         }
     }
+    Ok(())
+}
+
+fn validate_local_structure(product: &ProductModel) -> Result<(), CanonicalError> {
     for (key, group) in &product.local_groups {
         if key != &group.key
             || !product.definitions.contains_key(&key.definition_id)
@@ -1192,4 +1345,236 @@ pub(super) fn validate_definition_ownership_graph(
         visit(definition_id, product, &mut BTreeSet::new(), &mut visited)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod incremental_equivalence_tests {
+    use super::*;
+    use ketchup_geometry::sketch::{
+        FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
+        SketchEntity, SketchEntityId, WorkplaneSpec,
+    };
+
+    type Mutation = (&'static str, fn(&mut ProductModel));
+
+    fn dimension(value: f64) -> Dimension {
+        Dimension::new(value.to_string(), value).unwrap()
+    }
+
+    /// A valid product with two part definitions, tags, nested groups and occurrences.
+    fn product() -> ProductModel {
+        let mut commands = vec![
+            CanonicalCommand::CreateTag {
+                id: TagId(1),
+                name: "shelves".into(),
+                visible: true,
+            },
+            CanonicalCommand::CreateTag {
+                id: TagId(2),
+                name: "doors".into(),
+                visible: true,
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(1),
+                name: "cabinet".into(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(2),
+                name: "drawer".into(),
+                transform: Transform::identity(),
+                parent: Some(GroupId(1)),
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(1),
+                name: "width".into(),
+                dimension: dimension(400.0),
+                dependencies: vec![],
+            },
+        ];
+        for definition in 1..=2_u64 {
+            let base = definition * 10;
+            let width = 300.0 + definition as f64;
+            let points = [[0.0, 0.0], [width, 0.0], [width, 200.0], [0.0, 200.0]];
+            let sketch = SketchSpec {
+                workplane: FeatureId(base),
+                entities: (0..4)
+                    .map(|i| SketchEntity::Line {
+                        id: SketchEntityId(i as u64 + 1),
+                        start_mm: points[i],
+                        end_mm: points[(i + 1) % 4],
+                    })
+                    .collect(),
+                constraints: vec![],
+            };
+            let region = sketch.solved_regions().unwrap()[0].id;
+            commands.push(CanonicalCommand::CreateDefinition {
+                id: DefinitionId(definition),
+                name: format!("part {definition}"),
+            });
+            for (id, kind) in [
+                (
+                    base,
+                    FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                ),
+                (base + 1, FeatureKind::Sketch(sketch)),
+                (
+                    base + 2,
+                    FeatureKind::Pad(PadSpec {
+                        profile: PadProfile::SketchRegion {
+                            sketch: FeatureId(base + 1),
+                            region,
+                        },
+                        direction: FeatureDirection::AlongNormal,
+                        extent: FeatureExtent::Blind(dimension(18.0)),
+                        operation: PadOperation::NewBody,
+                    }),
+                ),
+            ] {
+                commands.push(CanonicalCommand::CreateFeature {
+                    id: FeatureId(id),
+                    definition_id: DefinitionId(definition),
+                    name: format!("feature {id}"),
+                    kind,
+                });
+            }
+        }
+        for id in 1..=4_u64 {
+            commands.push(CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(id),
+                definition_id: DefinitionId(1 + id % 2),
+                name: format!("part {id}"),
+                transform: Transform::from_translation(id as f64 * 500.0, 0.0, 0.0).unwrap(),
+                parent: (id > 1).then_some(GroupId(1 + id % 2)),
+                tag: (id > 2).then_some(TagId(1 + id % 2)),
+                visible: true,
+            });
+        }
+        let mut store = DocumentStore::new();
+        store.apply_batch(&CommandBatch::new(commands)).unwrap();
+        (*store.current().product).clone()
+    }
+
+    /// Edits the entry under `key` if an earlier edit kept it.
+    fn edit<K: Ord, V: Clone>(map: &mut BTreeMap<K, Arc<V>>, key: K, change: impl FnOnce(&mut V)) {
+        if let Some(entry) = map.get_mut(&key) {
+            change(Arc::make_mut(entry));
+        }
+    }
+
+    /// Edits as `apply_batch` makes them: a kept entry stays the same allocation, an edited
+    /// one is copied on write. Each is valid or names one way the product can break.
+    const MUTATIONS: &[Mutation] = &[
+        ("move an occurrence", |p| {
+            edit(&mut p.occurrences, OccurrenceId(2), |o| {
+                o.transform = Transform::from_translation(7.0, 8.0, 9.0).unwrap();
+            });
+        }),
+        ("rename an occurrence", |p| {
+            edit(&mut p.occurrences, OccurrenceId(3), |o| {
+                o.name = "renamed".into()
+            });
+        }),
+        ("empty occurrence name", |p| {
+            edit(&mut p.occurrences, OccurrenceId(3), |o| o.name = " ".into());
+        }),
+        ("singular occurrence transform", |p| {
+            edit(&mut p.occurrences, OccurrenceId(4), |o| {
+                o.transform.matrix = [0.0; 16]
+            });
+        }),
+        ("occurrence uses a missing definition", |p| {
+            edit(&mut p.occurrences, OccurrenceId(1), |o| {
+                o.definition_id = DefinitionId(99)
+            });
+        }),
+        ("occurrence repointed to the other definition", |p| {
+            edit(&mut p.occurrences, OccurrenceId(1), |o| {
+                o.definition_id = DefinitionId(2)
+            });
+        }),
+        ("occurrence in a missing group", |p| {
+            edit(&mut p.occurrences, OccurrenceId(2), |o| {
+                o.parent = Some(GroupId(99))
+            });
+        }),
+        ("occurrence with a missing tag", |p| {
+            edit(&mut p.occurrences, OccurrenceId(2), |o| {
+                o.tag = Some(TagId(99))
+            });
+        }),
+        ("add an occurrence", |p| {
+            let mut added = (*p.occurrences[&OccurrenceId(2)]).clone();
+            added.id = OccurrenceId(5);
+            p.occurrences.insert(added.id, Arc::new(added));
+        }),
+        ("remove an occurrence", |p| {
+            p.occurrences.remove(&OccurrenceId(4));
+        }),
+        ("remove a used definition", |p| {
+            p.definitions.remove(&DefinitionId(2));
+        }),
+        ("remove a used tag", |p| {
+            p.tags.remove(&TagId(1));
+        }),
+        ("remove a used group", |p| {
+            p.groups.remove(&GroupId(2));
+        }),
+        ("group cycle", |p| {
+            edit(&mut p.groups, GroupId(1), |g| g.parent = Some(GroupId(2)));
+        }),
+        ("empty group name", |p| {
+            edit(&mut p.groups, GroupId(2), |g| g.name = String::new());
+        }),
+        ("empty definition name", |p| {
+            edit(&mut p.definitions, DefinitionId(1), |d| {
+                d.name = String::new()
+            });
+        }),
+        ("empty feature name", |p| {
+            edit(&mut p.features, FeatureId(12), |f| f.name = String::new());
+        }),
+        ("feature moved to the other definition", |p| {
+            edit(&mut p.features, FeatureId(12), |f| {
+                f.definition_id = DefinitionId(2)
+            });
+        }),
+        ("tolerance change", |p| {
+            p.tolerance = TolerancePolicy::default()
+        }),
+        ("rename a tag", |p| {
+            edit(&mut p.tags, TagId(2), |t| t.name = "fronts".into());
+        }),
+    ];
+
+    /// Validating only what an edit changed accepts and refuses exactly what validating the
+    /// whole product does, with the same error, for every edit and every pair of edits.
+    #[test]
+    fn changed_entries_validation_matches_full_validation() {
+        let before = product();
+        validate_product(&before).unwrap();
+        let mut refused = 0;
+        for (index, (first, apply_first)) in MUTATIONS.iter().enumerate() {
+            for (second, apply_second) in
+                std::iter::once(&("nothing else", (|_| {}) as fn(&mut ProductModel)))
+                    .chain(&MUTATIONS[index + 1..])
+            {
+                let mut product = before.clone();
+                apply_first(&mut product);
+                apply_second(&mut product);
+                let full = validate_product(&product);
+                refused += usize::from(full.is_err());
+                assert_eq!(
+                    validate_product_change(Some(&before), &product, true),
+                    full,
+                    "{first} + {second}"
+                );
+            }
+        }
+        assert!(
+            refused > MUTATIONS.len(),
+            "the edits must exercise refusals"
+        );
+    }
 }

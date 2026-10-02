@@ -2860,7 +2860,7 @@ impl DocumentStore {
         validate_graph(&product.evaluator_nodes)?;
         refresh_override_health(&mut product);
         validate_overrides(&product)?;
-        validate_product_with_drawing_sources(&product, validate_drawing_sources)?;
+        validate_product_change(Some(&current.product), &product, validate_drawing_sources)?;
         validate_sketch_projections(&product)?;
         validate_assembly_joint_motion_publication(&current, &product, batch)?;
         let revision_id = self.next_revision_id;
