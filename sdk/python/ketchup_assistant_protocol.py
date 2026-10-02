@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 # BEGIN generated from crates/ketchup-assistant/src/protocol.rs; do not edit.
-# Regenerate: set KETCHUP_UPDATE_PYTHON_PROTOCOL=1 and run cargo test -p ketchup-assistant --lib protocol
+# Regenerate: set KETCHUP_UPDATE_GOLDEN=1 and run cargo test -p ketchup-assistant --lib protocol
 PROTOCOL_VERSION = 3
 MAX_LINE_BYTES = 262144
 MAX_MESSAGE_CHARS = 32768

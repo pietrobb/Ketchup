@@ -1,5 +1,5 @@
 //! Real Rust GUI store -> TCP -> Python LiveSession -> registered beta tool.call.
-//! Requires KETCHUP_LIVE_PYTHON pointing at Python 3.11+ with anthropic installed.
+//! Requires KETCHUP_PYTHON pointing at Python 3.11+ with anthropic installed.
 //! These explicit integration tests run through scripts/run_production_tests.py;
 //! an absent or broken configured runtime is a test failure, never a false pass.
 //! This is trusted host attachment integration, NOT production launcher proof.
@@ -93,8 +93,8 @@ fn wait_for_exact_body(shell: &mut Shell) {
 #[test]
 #[ignore = "run via scripts/run_production_tests.py with a required real Python runtime"]
 fn registered_disconnect_releases_consent_and_allows_reattach() {
-    let python = std::env::var_os("KETCHUP_LIVE_PYTHON")
-        .expect("KETCHUP_LIVE_PYTHON must identify the provisioned Python 3.11+ runtime");
+    let python = ketchup_test_env::configured_python()
+        .expect("KETCHUP_PYTHON must identify the provisioned Python 3.11+ runtime");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = tempfile::tempdir().unwrap();
     let mut shell = Shell::new();
@@ -188,8 +188,8 @@ fn registered_disconnect_releases_consent_and_allows_reattach() {
 #[test]
 #[ignore = "run via scripts/run_production_tests.py with a required real Python runtime"]
 fn registered_python_skill_uses_same_gui_store_and_human_history() {
-    let python = std::env::var_os("KETCHUP_LIVE_PYTHON")
-        .expect("KETCHUP_LIVE_PYTHON must identify the provisioned Python 3.11+ runtime");
+    let python = ketchup_test_env::configured_python()
+        .expect("KETCHUP_PYTHON must identify the provisioned Python 3.11+ runtime");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -455,8 +455,8 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
 #[test]
 #[ignore = "run via scripts/run_production_tests.py with a required real Python runtime"]
 fn registered_python_skill_runs_bounded_model_workflow_in_gui_document() {
-    let python = std::env::var_os("KETCHUP_LIVE_PYTHON")
-        .expect("KETCHUP_LIVE_PYTHON must identify the provisioned Python 3.11+ runtime");
+    let python = ketchup_test_env::configured_python()
+        .expect("KETCHUP_PYTHON must identify the provisioned Python 3.11+ runtime");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()

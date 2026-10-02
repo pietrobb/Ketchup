@@ -1601,7 +1601,7 @@ fn baseline_report_measures_preserved_inputs_and_builds_the_17_cabinet_278_panel
     };
     let json = serde_json::to_string_pretty(&report).unwrap();
     eprintln!("KETCHUP_FAST_ASSEMBLY_BASELINE={json}");
-    if let Some(path) = std::env::var_os("KETCHUP_FAST_ASSEMBLY_BASELINE_PATH") {
+    if let Some(path) = ketchup_test_env::report_path("fast_assembly_baseline.json") {
         std::fs::write(path, format!("{json}\n")).unwrap();
     }
 }

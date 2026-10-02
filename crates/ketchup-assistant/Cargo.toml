@@ -25,6 +25,7 @@ syn = { version = "2", features = ["full"] }
 serde_json = "1.0"
 
 [dev-dependencies]
+ketchup-test-env = { path = "../ketchup-test-env" }
 ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 
 [lints]

@@ -38,7 +38,7 @@ fn report_json(program: &Path) -> String {
 fn every_example_program_matches_its_golden_report() {
     let programs = examples();
     assert!(programs.len() >= 3, "the example programs are missing");
-    let update = std::env::var_os("KETCHUP_UPDATE_GOLDEN").is_some();
+    let update = ketchup_test_env::update_golden();
     let mut changed = Vec::new();
     for program in programs {
         let golden = program.with_extension("report.json");

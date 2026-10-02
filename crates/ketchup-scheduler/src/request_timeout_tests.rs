@@ -52,9 +52,7 @@ fn request_timeout_terminates_exact_worker_descendants() {
     let directory = tempfile::tempdir().unwrap();
     let sentinel = directory.path().join("escaped-descendant.txt");
     let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\ntime.sleep(30)";
-    let mut command = Command::new(
-        std::env::var_os("PYTHON").unwrap_or_else(|| std::ffi::OsString::from("python")),
-    );
+    let mut command = Command::new(ketchup_test_env::python());
     command
         .args([
             std::ffi::OsString::from("-c"),
@@ -96,9 +94,7 @@ fn dropping_exact_worker_terminates_descendants() {
     let directory = tempfile::tempdir().unwrap();
     let sentinel = directory.path().join("escaped-after-drop.txt");
     let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\ntime.sleep(30)";
-    let mut command = Command::new(
-        std::env::var_os("PYTHON").unwrap_or_else(|| std::ffi::OsString::from("python")),
-    );
+    let mut command = Command::new(ketchup_test_env::python());
     command
         .args([
             std::ffi::OsString::from("-c"),

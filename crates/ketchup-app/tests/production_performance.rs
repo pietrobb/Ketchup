@@ -503,7 +503,7 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
     };
     let json = serde_json::to_string_pretty(&metrics).unwrap();
     eprintln!("KETCHUP_PRODUCTION_PERFORMANCE={json}");
-    if let Some(path) = std::env::var_os("KETCHUP_PRODUCTION_PERFORMANCE_PATH") {
+    if let Some(path) = ketchup_test_env::report_path("production_performance.json") {
         std::fs::write(path, format!("{json}\n")).expect("write requested performance evidence");
     }
 }

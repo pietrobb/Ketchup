@@ -157,13 +157,7 @@ fn repository_root() -> PathBuf {
 }
 
 fn python() -> OsString {
-    std::env::var_os("KETCHUP_PYTHON").unwrap_or_else(|| {
-        OsString::from(if cfg!(windows) {
-            "python.exe"
-        } else {
-            "python3"
-        })
-    })
+    ketchup_test_env::python()
 }
 
 const DRIVER: &str = r#"import importlib.util

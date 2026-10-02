@@ -70,7 +70,7 @@ protocol_constants! {
     LOCAL_INSPECTION_CATALOG: &str = "_local_inspection_catalog";
 }
 
-pub const PYTHON_BLOCK_BEGIN: &str = "# BEGIN generated from crates/ketchup-assistant/src/protocol.rs; do not edit.\n# Regenerate: set KETCHUP_UPDATE_PYTHON_PROTOCOL=1 and run cargo test -p ketchup-assistant --lib protocol\n";
+pub const PYTHON_BLOCK_BEGIN: &str = "# BEGIN generated from crates/ketchup-assistant/src/protocol.rs; do not edit.\n# Regenerate: set KETCHUP_UPDATE_GOLDEN=1 and run cargo test -p ketchup-assistant --lib protocol\n";
 pub const PYTHON_BLOCK_END: &str = "# END generated\n";
 
 /// The Python block, markers included.
@@ -111,7 +111,7 @@ mod tests {
         if source[start..end] == expected {
             return;
         }
-        if std::env::var_os("KETCHUP_UPDATE_PYTHON_PROTOCOL").is_some() {
+        if ketchup_test_env::update_golden() {
             let mut updated = format!("{}{}{}", &source[..start], expected, &source[end..]);
             if crlf {
                 updated = updated.replace('\n', "\r\n");
@@ -121,7 +121,7 @@ mod tests {
         }
         panic!(
             "{} differs from crates/ketchup-assistant/src/protocol.rs; regenerate it with \
-             KETCHUP_UPDATE_PYTHON_PROTOCOL=1 cargo test -p ketchup-assistant --lib protocol\n\
+             KETCHUP_UPDATE_GOLDEN=1 cargo test -p ketchup-assistant --lib protocol\n\
              expected:\n{expected}",
             path.display()
         );

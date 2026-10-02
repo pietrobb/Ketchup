@@ -54,7 +54,7 @@ fn public_runtime_root() -> PathBuf {
 }
 
 fn absolute_python() -> PathBuf {
-    if let Some(configured) = std::env::var_os("KETCHUP_PYTHON").map(PathBuf::from)
+    if let Some(configured) = ketchup_test_env::configured_python().map(PathBuf::from)
         && configured.is_absolute()
     {
         return configured

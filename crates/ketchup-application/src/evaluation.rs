@@ -715,6 +715,15 @@ fn prepare_requests(
     Ok((requests, coverage))
 }
 
+/// The variable naming the exact worker executable to use instead of the one
+/// installed beside the program.
+pub const EXACT_WORKER_ENV: &str = "KETCHUP_EXACT_WORKER";
+
+/// The exact worker named by [`EXACT_WORKER_ENV`], if it is set.
+pub fn configured_exact_worker() -> Option<PathBuf> {
+    std::env::var_os(EXACT_WORKER_ENV).map(PathBuf::from)
+}
+
 pub fn exact_worker_candidates() -> Vec<PathBuf> {
     let executable_name = if cfg!(windows) {
         "ketchup-exact-worker.exe"

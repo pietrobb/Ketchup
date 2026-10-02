@@ -2609,13 +2609,13 @@ fn exact_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPacka
     .unwrap()
 }
 
-/// Compares an export with its golden file; `KETCHUP_REGENERATE_BTLX=1`
+/// Compares an export with its golden file; `KETCHUP_UPDATE_GOLDEN=1`
 /// rewrites the golden instead (review the diff before committing).
 fn assert_btlx_golden(actual: &[u8], name: &str) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/btlx")
         .join(name);
-    if std::env::var_os("KETCHUP_REGENERATE_BTLX").is_some() {
+    if ketchup_test_env::update_golden() {
         std::fs::write(&path, actual).unwrap();
     }
     assert_eq!(actual, std::fs::read(&path).unwrap().as_slice(), "{name}");

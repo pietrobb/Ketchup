@@ -301,14 +301,9 @@ struct GateMetrics {
 }
 
 fn write_metrics(metrics: &GateMetrics, cancellation_ms: &[f64], reader_ms: &[f64]) {
-    let metrics_path = std::env::var_os("KETCHUP_GATE_B_METRICS_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("artifacts/gate-b/metrics.json")
-        });
-    std::fs::create_dir_all(metrics_path.parent().unwrap()).unwrap();
+    let Some(metrics_path) = ketchup_test_env::report_path("scheduler_reliability.json") else {
+        return;
+    };
     let mut json = String::new();
     writeln!(json, "{{").unwrap();
     writeln!(json, "  \"gate\": \"B\",").unwrap();

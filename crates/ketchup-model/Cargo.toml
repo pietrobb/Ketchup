@@ -24,6 +24,7 @@ sha2 = "0.10.9"
 tempfile = "3.23.0"
 
 [dev-dependencies]
+ketchup-test-env = { path = "../ketchup-test-env" }
 ketchup-model = { path = ".", features = ["testing"] }
 ketchup-exact = { path = "../ketchup-exact" }
 resvg = { version = "0.48.1", default-features = false, features = ["system-fonts", "text"] }

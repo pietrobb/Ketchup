@@ -20,8 +20,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     let source = directory.path().join("nightstand_v9_retention.ketchup");
     std::fs::copy(&fixture, &source).unwrap();
     let (mut app, mut bridge) = setup();
-    if let Some(path) = std::env::var_os("KETCHUP_TEST_EXACT_WORKER") {
-        let path = std::path::PathBuf::from(path);
+    if let Some(path) = ketchup_application::evaluation::configured_exact_worker() {
         assert!(
             path.is_file(),
             "selected exact worker does not exist: {path:?}"

@@ -51,7 +51,7 @@ fn seed() -> DocumentStore {
 }
 
 fn python() -> OsString {
-    std::env::var_os("PYTHON").unwrap_or_else(|| OsString::from("python"))
+    ketchup_test_env::python()
 }
 
 fn example_script() -> PathBuf {

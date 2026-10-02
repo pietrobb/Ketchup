@@ -40,19 +40,8 @@ struct ReferenceObject {
 #[ignore = "requires local Blender reference, Python-authored garden model, and native exact worker"]
 fn garden_studio_source_parity() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let artifact = |variable: &str, default: &str| {
-        std::env::var_os(variable)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| root.join(default))
-    };
-    let model = artifact(
-        "KETCHUP_GARDEN_MODEL",
-        "examples/garden-studio-exact.ketchup",
-    );
-    let reference_path = artifact(
-        "KETCHUP_BLENDER_REFERENCE",
-        "examples/garden-studio-exact.blender-reference.json",
-    );
+    let model = root.join("examples/garden-studio-exact.ketchup");
+    let reference_path = root.join("examples/garden-studio-exact.blender-reference.json");
     let reference: Reference = serde_json::from_slice(
         &std::fs::read(&reference_path)
             .unwrap_or_else(|error| panic!("{}: {error}", reference_path.display())),

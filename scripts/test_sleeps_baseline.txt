@@ -1,5 +1,4 @@
 # Remaining sleep calls in tests; may only shrink.
-crates/ketchup-app/src/live_bridge/consent.rs 2
 crates/ketchup-app/src/live_bridge/idle_retry_tests.rs 1
 crates/ketchup-app/src/live_bridge/image_privacy_tests.rs 4
 crates/ketchup-app/src/live_bridge/mesh_conversion_tests.rs 2

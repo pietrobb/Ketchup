@@ -43,7 +43,11 @@ pub(crate) struct ConsentBroker {
 impl Drop for ConsentBroker {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
+        // The worker blocks in accept(); a connection of our own wakes it to
+        // see the stop. Without one it would never return, so do not wait.
+        if let Some(worker) = self.worker.take()
+            && TcpStream::connect(self.address).is_ok()
+        {
             let _ = worker.join();
         }
         let _ = remove_registry_entry_if_unchanged(&self.registry_path, self.registry_identity);
@@ -372,7 +376,6 @@ fn start(
     available: bool,
 ) -> io::Result<ConsentBroker> {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
-    listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
     let instance_id = random_instance_id()?;
     let (registry_path, registry_identity) =
@@ -391,11 +394,15 @@ fn start(
         .name("ketchup-live-consent".into())
         .spawn(move || {
             let mut handlers = Vec::new();
-            while !stop.load(Ordering::Acquire) {
+            loop {
+                let accepted = listener.accept();
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
                 while let Some(index) = handlers.iter().position(JoinHandle::is_finished) {
                     let _ = handlers.swap_remove(index).join();
                 }
-                match listener.accept() {
+                match accepted {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
                         if handlers.len() >= MAX_CONNECTIONS {
                             continue;
@@ -424,9 +431,7 @@ fn start(
                         }
                     }
                     Ok(_) => {}
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => break,
                 }
             }
@@ -726,14 +731,10 @@ mod tests {
 "#,
             )
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let pending = loop {
-            if let Ok(pending) = broker.requests.try_recv() {
-                break pending;
-            }
-            assert!(Instant::now() < deadline, "attach was not received");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let pending = broker
+            .requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("attach was not received");
 
         let mut list = TcpStream::connect(broker.address).unwrap();
         list.set_read_timeout(Some(Duration::from_millis(500)))
@@ -768,14 +769,10 @@ mod tests {
 "#,
             )
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let pending = loop {
-            if let Ok(pending) = broker.requests.try_recv() {
-                break pending;
-            }
-            assert!(Instant::now() < deadline, "attach was not received");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let pending = broker
+            .requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("attach was not received");
 
         let started = Instant::now();
         drop(broker);

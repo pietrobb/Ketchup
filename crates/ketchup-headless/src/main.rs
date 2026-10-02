@@ -68,17 +68,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let worker = worker
-        .or_else(|| std::env::var_os("KETCHUP_EXACT_WORKER").map(PathBuf::from))
+        .or_else(ketchup_application::evaluation::configured_exact_worker)
         .or_else(|| {
-            std::env::current_exe().ok().and_then(|exe| {
-                exe.parent().map(|p| {
-                    p.join(if cfg!(windows) {
-                        "ketchup-exact-worker.exe"
-                    } else {
-                        "ketchup-exact-worker"
-                    })
-                })
-            })
+            ketchup_application::evaluation::exact_worker_candidates()
+                .into_iter()
+                .next()
         });
     let settings = SessionSettings {
         exact_worker_path: worker,

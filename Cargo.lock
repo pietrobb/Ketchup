@@ -2272,6 +2272,7 @@ dependencies = [
  "ketchup-program",
  "ketchup-rejection",
  "ketchup-scheduler",
+ "ketchup-test-env",
  "pollster",
  "raw-window-handle",
  "rfd",
@@ -2296,6 +2297,7 @@ dependencies = [
  "ketchup-program",
  "ketchup-rejection",
  "ketchup-scheduler",
+ "ketchup-test-env",
  "serde",
  "serde_json",
  "tempfile",
@@ -2308,6 +2310,7 @@ dependencies = [
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-rejection",
+ "ketchup-test-env",
  "ketchup-tolerance",
  "serde",
  "serde_json",
@@ -2363,6 +2366,7 @@ version = "0.1.0"
 dependencies = [
  "ketchup-geometry",
  "ketchup-model",
+ "ketchup-test-env",
  "serde",
  "serde_json",
 ]
@@ -2376,6 +2380,7 @@ dependencies = [
  "ketchup-exact",
  "ketchup-geometry",
  "ketchup-model",
+ "ketchup-test-env",
  "ketchup-tolerance",
  "resvg",
  "serde",
@@ -2403,6 +2408,7 @@ dependencies = [
  "ketchup-assistant",
  "ketchup-geometry",
  "ketchup-model",
+ "ketchup-test-env",
  "ketchup-tolerance",
  "serde",
  "serde_json",
@@ -2430,12 +2436,17 @@ dependencies = [
  "ketchup-interaction",
  "ketchup-manufacturing",
  "ketchup-model",
+ "ketchup-test-env",
  "process-wrap",
  "serde",
  "serde_json",
  "tempfile",
  "wasmi",
 ]
+
+[[package]]
+name = "ketchup-test-env"
+version = "0.1.0"
 
 [[package]]
 name = "ketchup-tolerance"

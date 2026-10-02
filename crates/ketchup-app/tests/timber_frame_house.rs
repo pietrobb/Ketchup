@@ -1442,15 +1442,12 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
 }
 
-/// Copy a produced artifact next to the operator when `KETCHUP_HOUSE_OUT` is set,
+/// Copy a produced artifact into the test report directory when one is set,
 /// so the proof house can be opened and inspected instead of only asserted on.
 fn publish_artifact(name: &str, bytes: &[u8]) {
-    let Some(directory) = std::env::var_os("KETCHUP_HOUSE_OUT") else {
-        return;
-    };
-    let directory = PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(directory.join(name), bytes).unwrap();
+    if let Some(path) = ketchup_test_env::report_path(name) {
+        std::fs::write(path, bytes).unwrap();
+    }
 }
 
 fn exact_worker_path() -> PathBuf {
@@ -1864,7 +1861,7 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
     });
     let json = serde_json::to_string_pretty(&metrics).unwrap();
     eprintln!("KETCHUP_PRODUCTION_ACCEPTANCE={json}");
-    if let Some(path) = std::env::var_os("KETCHUP_PRODUCTION_ACCEPTANCE_PATH") {
+    if let Some(path) = ketchup_test_env::report_path("production_acceptance.json") {
         std::fs::write(path, format!("{json}\n")).unwrap();
     }
 }

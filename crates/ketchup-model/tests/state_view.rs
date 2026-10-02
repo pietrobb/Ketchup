@@ -132,7 +132,7 @@ fn mask_durable_values(value: &str) -> String {
 fn assert_golden(name: &str, actual: &str) {
     let path = fixture_path(name);
     let masked = mask_durable_values(actual);
-    if std::env::var_os("UPDATE_STATE_VIEW_FIXTURES").is_some() {
+    if ketchup_test_env::update_golden() {
         std::fs::write(&path, &masked).unwrap();
     }
     let expected = std::fs::read_to_string(&path).unwrap();

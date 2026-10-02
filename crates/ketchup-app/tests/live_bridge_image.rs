@@ -1,6 +1,6 @@
 //! Real egui_kittest/wgpu isolated CAD pixels, not a rasterizer double.
 //! Run with cargo test -p ketchup-app --test live_bridge_image.
-//! Cross-language proof requires KETCHUP_LIVE_PYTHON with anthropic installed.
+//! Cross-language proof requires KETCHUP_PYTHON with anthropic installed.
 //! No native window, physical input, production launcher or provider-delivery claim.
 
 use eframe::egui::{self, ColorImage, Event, ViewportCommand, ViewportId, accesskit::Role};
@@ -565,8 +565,8 @@ impl Drop for Python {
 }
 #[test]
 fn isolated_frame_reaches_registered_python_image_tool_and_new_png() {
-    let Some(python) = std::env::var_os("KETCHUP_LIVE_PYTHON") else {
-        eprintln!("SKIP: set KETCHUP_LIVE_PYTHON to Python 3.11+ with anthropic installed");
+    let Some(python) = ketchup_test_env::configured_python() else {
+        eprintln!("SKIP: set KETCHUP_PYTHON to Python 3.11+ with anthropic installed");
         return;
     };
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))

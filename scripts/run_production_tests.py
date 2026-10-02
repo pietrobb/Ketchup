@@ -179,7 +179,7 @@ def main() -> int:
 
     os.environ["KETCHUP_HEADLESS"] = str(headless)
     os.environ["KETCHUP_EXACT_WORKER"] = str(worker)
-    os.environ["KETCHUP_LIVE_PYTHON"] = str(Path(sys.executable).resolve())
+    os.environ["KETCHUP_PYTHON"] = str(Path(sys.executable).resolve())
     run([sys.executable, "-c", "import anthropic"])
     print(f"Python: {Path(sys.executable).resolve()}")
     print(f"KETCHUP_HEADLESS={headless} sha256={sha256(headless)}")

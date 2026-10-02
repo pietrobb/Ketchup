@@ -1,0 +1,12 @@
+[package]
+name = "ketchup-test-env"
+description = "The one source of the environment variables that steer Ketchup tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
