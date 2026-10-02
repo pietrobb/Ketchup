@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 124] = [
+    pub(crate) const COMMANDS: [CommandSpec; 125] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -194,6 +194,12 @@ impl CommandRegistry {
             id: AppCommand::Ellipse,
             label_key: "tool-ellipse",
             tool: Some(ActiveTool::Ellipse),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Spline,
+            label_key: "tool-spline",
+            tool: Some(ActiveTool::Spline),
             implemented: true,
         },
         CommandSpec {

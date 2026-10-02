@@ -1,6 +1,9 @@
 use super::*;
 use ketchup_model::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 
+/// How near on screen, in points, the pointer catches a point to draw from.
+const DRAWING_SNAP_PIXELS: f32 = 8.0;
+
 pub(super) fn point_in_frame(point: Vec3, frame: WorkplaneFrame) -> bool {
     let origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);
     let normal = Vec3::new(frame.normal[0], frame.normal[1], frame.normal[2]);
@@ -34,6 +37,7 @@ impl KetchupApp {
                 | ActiveTool::Arc
                 | ActiveTool::Polygon
                 | ActiveTool::Ellipse
+                | ActiveTool::Spline
         )
     }
 
@@ -71,6 +75,16 @@ impl KetchupApp {
         .map(|(point, _)| point)
     }
 
+    /// The first point of the spline being drawn while the pointer is over it
+    /// and the spline has enough points, so a click there closes the spline.
+    fn spline_first_point_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
+        let points = &self.gesture.sketch.chain_points;
+        (self.active_tool == ActiveTool::Spline && points.len() >= SPLINE_MIN_POINTS)
+            .then(|| points.first().copied())
+            .flatten()
+            .filter(|first| self.project(*first, rect).distance(pointer) <= DRAWING_SNAP_PIXELS)
+    }
+
     pub(super) fn drawing_snap_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SnapResult> {
         if self.drawing_origin_snap(pointer, rect).is_some() {
             return None;
@@ -78,7 +92,7 @@ impl KetchupApp {
         self.scene_snap_at_screen(
             pointer,
             rect,
-            8.0,
+            DRAWING_SNAP_PIXELS,
             self.gesture
                 .sketch
                 .start
@@ -88,7 +102,8 @@ impl KetchupApp {
 
     pub(super) fn drawing_input_point(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
         let frame = self.drawing_input_frame(pointer, rect);
-        self.drawing_origin_snap(pointer, rect)
+        self.spline_first_point_at_screen(pointer, rect)
+            .or_else(|| self.drawing_origin_snap(pointer, rect))
             .or_else(|| {
                 self.drawing_snap_at_screen(pointer, rect)
                     .map(|snap| snap.position_mm)

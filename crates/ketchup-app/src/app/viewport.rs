@@ -2267,6 +2267,12 @@ impl KetchupApp {
                         cursor.y - start.y,
                         cursor.z - start.z,
                     ))),
+                    ActiveTool::Spline => self
+                        .gesture
+                        .sketch
+                        .chain_points
+                        .last()
+                        .map_or_else(String::new, |last| format_height(length(cursor - *last))),
                     ActiveTool::Ellipse => self.gesture.sketch.end.map_or_else(
                         || format_height(length(cursor - start)),
                         |end| {

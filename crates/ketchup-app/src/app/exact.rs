@@ -983,6 +983,33 @@ impl KetchupApp {
         self.complete_ellipse(center, length(major), radius_mm, major.y.atan2(major.x))
     }
 
+    /// The typed distance places the next spline point that far from the last
+    /// one, toward the pointer.
+    pub(crate) fn complete_exact_spline(&mut self) -> bool {
+        let (Some(origin), Some(&last)) = (
+            self.gesture.sketch.start,
+            self.gesture.sketch.chain_points.last(),
+        ) else {
+            return false;
+        };
+        let Some(distance_mm) = parse_distance_mm(&self.value_box.input)
+            .filter(|distance| *distance > limits::MIN_LENGTH_MM)
+        else {
+            return false;
+        };
+        let direction = self
+            .gesture
+            .sketch
+            .cursor
+            .map(|cursor| {
+                self.drawing_local_delta(origin, cursor) - self.drawing_local_delta(origin, last)
+            })
+            .filter(|direction| length(*direction) > limits::MIN_LENGTH_MM)
+            .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+        let step = direction * (distance_mm / length(direction));
+        self.add_spline_point(self.drawing_world_delta(last, step))
+    }
+
     pub(crate) fn complete_exact_arc(&mut self) -> bool {
         let (Some(start), Some(end)) = (self.gesture.sketch.start, self.gesture.sketch.end) else {
             return false;

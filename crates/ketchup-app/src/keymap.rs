@@ -102,6 +102,7 @@ pub(crate) const KEYMAP: &[Binding] = &[
     on_canvas(AppCommand::Arc, &[chord(NONE, Key::A)]),
     on_canvas(AppCommand::Polygon, &[chord(NONE, Key::N)]),
     on_canvas(AppCommand::Ellipse, &[chord(NONE, Key::E)]),
+    on_canvas(AppCommand::Spline, &[chord(NONE, Key::S)]),
     on_canvas(AppCommand::PushPull, &[chord(NONE, Key::P)]),
     on_canvas(AppCommand::Move, &[chord(NONE, Key::M)]),
     on_canvas(AppCommand::Rotate, &[chord(NONE, Key::Q)]),

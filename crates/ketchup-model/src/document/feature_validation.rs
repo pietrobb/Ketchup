@@ -2343,7 +2343,7 @@ pub(super) fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool
             // distinct from the one before. Closing on itself, it repeats the first.
             ProfileSegment::Spline { points_mm } => {
                 points_mm.windows(2).all(|pair| distinct(pair[0], pair[1]))
-                    && points_mm.len() >= if distinct(start, end) { 4 } else { 5 }
+                    && points_mm.len() >= SPLINE_MIN_POINTS + usize::from(!distinct(start, end))
             }
             _ => distinct(start, end),
         };

@@ -1104,6 +1104,10 @@ impl KetchupApp {
     }
 
     pub(crate) fn cancel_or_deselect(&mut self) {
+        // Escape closes a spline that has enough points instead of dropping them.
+        if self.active_tool == ActiveTool::Spline && self.complete_spline() {
+            return;
+        }
         if matches!(
             self.active_tool,
             ActiveTool::Move | ActiveTool::Rotate | ActiveTool::Scale

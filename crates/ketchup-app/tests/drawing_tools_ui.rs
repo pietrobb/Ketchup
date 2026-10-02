@@ -228,3 +228,105 @@ fn ellipse_takes_centre_and_both_half_axes_by_drag_click_or_typing_in_one_undo_s
     assert!((ends[0].distance(second_center) - 30.0).abs() < 1.0e-9);
     assert!((ends[1].distance(second_center) - 10.0).abs() < 1.0e-9);
 }
+
+/// The points the newest drawn spline passes through, in world coordinates,
+/// without the repeated closing point.
+#[track_caller]
+fn latest_spline(shell: &Shell) -> Vec<Vec3> {
+    let (transform, segments) = shell.app().latest_profile().unwrap();
+    let [ProfileSegment::Spline { points_mm }] = segments.as_slice() else {
+        panic!("a drawn spline is one spline segment, got {segments:?}");
+    };
+    assert_eq!(
+        points_mm.first(),
+        points_mm.last(),
+        "the spline closes on its first point"
+    );
+    points_mm[..points_mm.len() - 1]
+        .iter()
+        .map(|point| world(&transform, *point))
+        .collect()
+}
+
+#[test]
+fn spline_takes_points_by_drag_click_or_typed_distance_and_closes_in_one_undo_step() {
+    let mut shell = Shell::new();
+    assert!(shell.offers(AppCommand::Spline), "Spline is in the rail");
+    shell.press_key(Key::S);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().format(
+            "digest-tool-active",
+            &BTreeMap::from([("tool", shell.catalog().text("tool-spline"))]),
+        )
+    );
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let at = |shell: &Shell, x: f64, y: f64| {
+        shell.app().viewport_position(Vec3::new(x, y, 0.0)).unwrap()
+    };
+
+    // A drag from the first point places the second, a click the third; the
+    // preview is a closed curve from the first point through them and the
+    // pointer, and nothing is saved yet.
+    shell.drag(at(&shell, 10.0, 10.0), at(&shell, 50.0, 10.0));
+    shell.click_at(at(&shell, 50.0, 40.0));
+    shell.move_pointer(at(&shell, 10.0, 40.0));
+    let preview = shell.app().closed_shape_preview_outline().unwrap();
+    assert_eq!(shell.app().document_revision(), before_revision);
+
+    // A typed distance places the fourth point that far toward the pointer.
+    shell.type_text("25");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().document_revision(), before_revision);
+
+    // Clicking next to the first point closes the spline as one Undo step.
+    shell.click_at(
+        shell.app().viewport_position(preview[0]).unwrap() + eframe::egui::Vec2::new(3.0, 0.0),
+    );
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert!(shell.app().closed_shape_preview_outline().is_none());
+    let points = latest_spline(&shell);
+    assert_eq!(points.len(), 4);
+    for placed in &points[..3] {
+        assert!(
+            preview.iter().any(|point| point.distance(*placed) < 1.0e-6),
+            "the preview passed through {placed:?}"
+        );
+    }
+    assert!(
+        points[0].distance(preview[0]) < 1.0e-9,
+        "closed on the first point"
+    );
+    let typed = points[3].distance(points[2]);
+    assert!((typed - 25.0).abs() < 1.0e-9, "typed distance {typed}");
+    let first_digest = shell.app().canonical_digest();
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_digest);
+
+    // Escape drops a spline with too few points to close.
+    shell.click_command(AppCommand::Spline);
+    shell.click_at(at(&shell, 20.0, 20.0));
+    shell.click_at(at(&shell, 35.0, 20.0));
+    assert!(shell.app().closed_shape_preview_outline().is_some());
+    shell.press_key(Key::Escape);
+    assert!(shell.app().closed_shape_preview_outline().is_none());
+    assert_eq!(shell.app().canonical_digest(), first_digest);
+
+    // With enough points, Escape and Enter both close it.
+    for (finish, revision, y) in [(Key::Escape, 2, 15.0), (Key::Enter, 3, 25.0)] {
+        shell.click_command(AppCommand::Spline);
+        for [x, dy] in [[15.0, 0.0], [30.0, 0.0], [30.0, 10.0], [15.0, 8.0]] {
+            shell.click_at(at(&shell, x, y + dy));
+        }
+        shell.press_key(finish);
+        assert_eq!(
+            shell.app().document_revision(),
+            before_revision + revision,
+            "{finish:?} closes the spline"
+        );
+        assert_eq!(latest_spline(&shell).len(), 4);
+    }
+}

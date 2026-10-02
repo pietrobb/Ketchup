@@ -581,6 +581,9 @@ pub enum ProfileSegment {
     Spline { points_mm: Vec<[f64; 2]> },
 }
 
+/// Fewest distinct points a spline passes through: it is cubic.
+pub const SPLINE_MIN_POINTS: usize = 4;
+
 /// Stands for the end of a spline without points; it equals no point, so the
 /// profile holding it is invalid.
 pub(super) const MISSING_POINT: [f64; 2] = [f64::NAN; 2];

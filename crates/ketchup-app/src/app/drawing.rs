@@ -1054,6 +1054,16 @@ impl KetchupApp {
                 let (radius_x, radius_y, turn) = self.ellipse_axes(center, major_end, cursor)?;
                 ellipse(radius_x, radius_y, turn)
             }
+            (ActiveTool::Spline, _) => {
+                let mut points = self.spline_local_points();
+                let next = self.drawing_local_delta(center, cursor);
+                if points.last().is_some_and(|last| {
+                    (next.x - last[0]).hypot(next.y - last[1]) > limits::MIN_LENGTH_MM
+                }) {
+                    points.push([next.x, next.y]);
+                }
+                closed_spline_preview(&points)
+            }
             _ => return None,
         };
         Some(
@@ -2439,6 +2449,8 @@ impl KetchupApp {
             self.gesture.sketch.cursor = Some(point);
             if self.active_tool == ActiveTool::Line {
                 self.gesture.sketch.chain_origin = Some(point);
+            }
+            if matches!(self.active_tool, ActiveTool::Line | ActiveTool::Spline) {
                 self.gesture.sketch.chain_points.clear();
                 self.gesture.sketch.chain_points.push(point);
                 self.gesture.sketch.chain_items.clear();
@@ -2446,6 +2458,7 @@ impl KetchupApp {
             self.value_box.input.clear();
             self.status_key = match self.active_tool {
                 ActiveTool::Line => "status-line-end",
+                ActiveTool::Spline => "status-spline-next",
                 ActiveTool::Circle => "status-circle-radius",
                 ActiveTool::Polygon => "status-polygon-corner",
                 ActiveTool::Ellipse => "status-ellipse-major",
@@ -2463,6 +2476,9 @@ impl KetchupApp {
             }
             (ActiveTool::Polygon, _) => {
                 self.complete_polygon_sketch(start, point);
+            }
+            (ActiveTool::Spline, _) => {
+                self.add_spline_point(point);
             }
             (ActiveTool::Arc, Some(end)) => {
                 self.complete_arc_sketch(start, end, point);
@@ -2486,6 +2502,83 @@ impl KetchupApp {
                 self.complete_rectangle_sketch(start, point);
             }
         }
+    }
+
+    /// Adds the next point the spline being drawn passes through; its first
+    /// point again closes the spline.
+    pub(crate) fn add_spline_point(&mut self, point: Vec3) -> bool {
+        let points = &self.gesture.sketch.chain_points;
+        if points
+            .first()
+            .is_some_and(|first| length(point - *first) <= limits::MIN_LENGTH_MM)
+        {
+            return self.complete_spline();
+        }
+        if points
+            .last()
+            .is_none_or(|last| length(point - *last) <= limits::MIN_LENGTH_MM)
+        {
+            return false;
+        }
+        self.gesture.sketch.chain_points.push(point);
+        self.gesture.sketch.cursor = Some(point);
+        self.value_box.input.clear();
+        self.status_key = if self.gesture.sketch.chain_points.len() >= SPLINE_MIN_POINTS {
+            "status-spline-close"
+        } else {
+            "status-spline-next"
+        };
+        true
+    }
+
+    /// Placed spline points in the drawing plane of the first one, relative to it.
+    fn spline_local_points(&self) -> Vec<[f64; 2]> {
+        let Some(&origin) = self.gesture.sketch.chain_points.first() else {
+            return Vec::new();
+        };
+        self.gesture
+            .sketch
+            .chain_points
+            .iter()
+            .map(|point| {
+                let local = self.drawing_local_delta(origin, *point);
+                [local.x, local.y]
+            })
+            .collect()
+    }
+
+    /// Closes the spline being drawn through its placed points as one exact
+    /// profile; `false` while it has too few points.
+    pub(crate) fn complete_spline(&mut self) -> bool {
+        let points = self.spline_local_points();
+        let Some(&origin) = self.gesture.sketch.chain_points.first() else {
+            return false;
+        };
+        if points.len() < SPLINE_MIN_POINTS {
+            return false;
+        }
+        let created = self.create_segment_profile_at(
+            self.drawing_transform(origin),
+            vec![ProfileSegment::Spline {
+                points_mm: points.iter().chain(points.first()).copied().collect(),
+            }],
+            true,
+            "model-default-spline",
+            "model-spline-curve",
+        );
+        if created {
+            self.gesture.sketch.armed = self.uses_drawing_plane();
+            self.gesture.sketch.start = None;
+            self.gesture.sketch.cursor = None;
+            self.gesture.sketch.chain_points.clear();
+            self.value_box.input.clear();
+            self.status_key = "status-spline-created";
+            self.digest = self.catalog.format(
+                "digest-exact-spline",
+                &BTreeMap::from([("count", points.len().to_string())]),
+            );
+        }
+        created
     }
 
     /// Half-axes and turn of the ellipse centred on `center` whose first
@@ -2955,6 +3048,8 @@ impl KetchupApp {
             }
         } else if cycle_overlap {
             self.cycle_hover_overlap();
+        } else if confirm && self.active_tool == ActiveTool::Spline {
+            self.complete_spline();
         } else if confirm && (self.has_preview() || self.has_drawn_shape_preview()) {
             self.confirm_preview();
         } else if confirm && self.has_occurrence_operation_preview() {
@@ -2969,7 +3064,7 @@ impl KetchupApp {
     pub(crate) fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
         // Grouped the way the design groups them: pick, draw, modify, measure,
         // navigate. A group boundary draws a hairline.
-        const TOOLS: [(AppCommand, u8); 13] = [
+        const TOOLS: [(AppCommand, u8); 14] = [
             (AppCommand::Select, 0),
             (AppCommand::Line, 1),
             (AppCommand::Rectangle, 1),
@@ -2977,6 +3072,7 @@ impl KetchupApp {
             (AppCommand::Arc, 1),
             (AppCommand::Polygon, 1),
             (AppCommand::Ellipse, 1),
+            (AppCommand::Spline, 1),
             (AppCommand::PushPull, 2),
             (AppCommand::Move, 2),
             (AppCommand::Rotate, 2),
@@ -3257,4 +3353,31 @@ pub(crate) fn exact_circle_geometry(
     }
     let radius = first_vector[0].hypot(first_vector[1]);
     (radius.is_finite() && radius > 0.0).then_some((*first_center, radius))
+}
+
+/// A closed curve through `points` that previews the spline being drawn: a
+/// uniform Catmull-Rom loop, close to the periodic spline the exact kernel
+/// builds through the same points.
+fn closed_spline_preview(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let count = points.len();
+    if count < 2 {
+        return points.to_vec();
+    }
+    let steps = (PREVIEW_CURVE_SEGMENTS / count).max(4);
+    (0..count)
+        .flat_map(|span| {
+            let [p0, p1, p2, p3] =
+                [count - 1, 0, 1, 2].map(|offset| points[(span + offset) % count]);
+            (0..steps).map(move |step| {
+                let t = step as f64 / steps as f64;
+                let (t2, t3) = (t * t, t * t * t);
+                std::array::from_fn(|axis| {
+                    0.5 * (2.0 * p1[axis]
+                        + (p2[axis] - p0[axis]) * t
+                        + (2.0 * p0[axis] - 5.0 * p1[axis] + 4.0 * p2[axis] - p3[axis]) * t2
+                        + (3.0 * p1[axis] - p0[axis] - 3.0 * p2[axis] + p3[axis]) * t3)
+                })
+            })
+        })
+        .collect()
 }
