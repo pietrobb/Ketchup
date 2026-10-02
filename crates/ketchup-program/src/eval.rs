@@ -38,7 +38,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const TOLERANCE_MM: f64 = 0.01;
 /// Upper bound on generated parts, so a runaway loop fails fast.
 pub const MAX_PARTS: usize = 20_000;
-const PRELUDE: &str = include_str!("../library/prelude.star");
+/// The program library: domain helpers and their documentation, split into
+/// topics by `#@topic id: title` lines.
+pub const PRELUDE: &str = include_str!("../library/prelude.star");
 
 /// Why a program could not be evaluated. `message` already contains the file,
 /// line, column and a source excerpt produced by the interpreter.
@@ -2431,8 +2433,8 @@ pub fn evaluate(
 mod tests {
     use super::*;
 
-    /// The library's comments are what `KetchupDiscover section=program` hands
-    /// an AI (topic by topic), so a builtin missing there is a tool the AI
+    /// The library's comments are the program documentation an AI reads
+    /// (topic by topic), so a builtin missing there is a tool the AI
     /// cannot know about.
     #[test]
     fn every_builtin_is_documented_in_the_library_comments() {

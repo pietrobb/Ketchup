@@ -35,6 +35,7 @@ LAYERS = {
     "ketchup-program": 4,
     "ketchup-scheduler": 4,
     "ketchup-application": 5,
+    "ketchup-mcp": 5,
     "ketchup-headless": 6,
     "ketchup-app": 6,
 }

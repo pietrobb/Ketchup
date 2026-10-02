@@ -15,6 +15,18 @@ fn bootstrap_failed(reason: impl std::fmt::Display) -> ! {
 
 fn main() -> eframe::Result {
     let all_arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if all_arguments.first().map(|argument| argument == "--mcp") == Some(true) {
+        if all_arguments.len() > 1 {
+            eprintln!("--mcp accepts no arguments");
+            std::process::exit(2);
+        }
+        // Stdout carries only MCP messages from here on.
+        if let Err(error) = ketchup_mcp::serve_stdio(std::env::current_exe().ok()) {
+            eprintln!("MCP server stopped: {error}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
     // Parsing the explicit flag is the only gateway to stdin. No environment,
     // automatic discovery, token argv, or token output fallback is supported.
     let live = LiveStdinBootstrap::from_arguments(all_arguments.clone())

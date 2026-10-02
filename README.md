@@ -108,6 +108,24 @@ cargo run -p ketchup-app --no-default-features
 
 Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, then choose the matching provider in the Assistant. Cloud AI is optional; ordinary modeling remains available without it.
 
+### Use Ketchup from any AI client (MCP)
+
+`ketchup-app --mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. Any MCP client (Claude Code, Claude Desktop, Codex, Cursor, ...) can then work in the Ketchup window you have open: read and apply the model's program, inspect parts, make verified edits, undo, save and render images. Nothing else is needed besides the executable.
+
+Claude Code:
+
+```powershell
+claude mcp add ketchup -- "C:\path\to\ketchup-app.exe" --mcp
+```
+
+Other clients take the same command in their MCP configuration, for example:
+
+```json
+{ "mcpServers": { "ketchup": { "command": "C:\\path\\to\\ketchup-app.exe", "args": ["--mcp"] } } }
+```
+
+The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one, and the window shows a Disconnect button while a client is connected.
+
 ## Build and run
 
 The supported development platform is **Windows x86-64** with Rust 1.97.0 and OCCT 8.0.1. See the [Windows toolchain guide](docs/toolchain/WINDOWS.md) for the pinned native environment.

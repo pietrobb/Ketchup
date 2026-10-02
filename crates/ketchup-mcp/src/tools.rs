@@ -1,0 +1,569 @@
+//! How each MCP tool call becomes a live bridge request.
+//!
+//! The window validates every request itself and explains rejections
+//! (`reason`, `fix_hint`); this layer only routes, renames a few arguments and
+//! keeps one connection to the attached window.
+use crate::{
+    bridge::{BridgeError, Connection, MAX_REQUEST_BYTES, Reply},
+    discovery::{self, Window},
+    docs,
+};
+use serde_json::{Map, Value, json};
+use std::{
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
+
+const DEFAULT_WAIT: Duration = Duration::from_secs(35);
+/// The window may settle undecided overlaps exactly before it answers (20 s + grace).
+const APPLY_PROGRAM_WAIT: Duration = Duration::from_secs(45);
+/// On top of apply_and_verify's own `timeout_ms`; exceeds the window's 15 s publish margin.
+const APPLY_AND_VERIFY_MARGIN: Duration = Duration::from_secs(20);
+const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
+const IMAGE_PROTOCOL_VERSION: u32 = 4;
+const WINDOW_START_TIMEOUT: Duration = Duration::from_secs(30);
+const WINDOW_START_POLL: Duration = Duration::from_millis(250);
+/// Fields of a model query that the bridge nests under `query`.
+const QUERY_FIELDS: &[&str] = &[
+    "kind",
+    "limit",
+    "search",
+    "definition_id",
+    "tag_id",
+    "classification_dimension_id",
+    "classification_category_id",
+    "world_bounds_mm",
+    "cursor",
+];
+/// Rejections after which this connection is no longer usable.
+const CONNECTION_ENDING_CODES: &[&str] = &[
+    "unauthorized",
+    "invalid_request",
+    "unsupported_version",
+    "queue_unavailable",
+];
+
+#[derive(Debug)]
+pub struct ToolError {
+    pub code: &'static str,
+    pub message: String,
+    pub details: Option<Value>,
+}
+
+impl ToolError {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    fn with_details(mut self, details: Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    fn output(self) -> ToolOutput {
+        let mut value = json!({"error": self.code, "message": self.message});
+        if let Some(details) = self.details {
+            value["details"] = details;
+        }
+        ToolOutput::error(value)
+    }
+}
+
+pub struct ToolOutput {
+    pub content: Vec<Value>,
+    pub is_error: bool,
+}
+
+impl ToolOutput {
+    fn text(value: &Value) -> Self {
+        Self {
+            content: vec![json!({"type": "text", "text": value.to_string()})],
+            is_error: false,
+        }
+    }
+
+    fn error(value: Value) -> Self {
+        Self {
+            is_error: true,
+            ..Self::text(&value)
+        }
+    }
+}
+
+struct Attached {
+    connection: Connection,
+    window: Window,
+}
+
+pub struct Tools {
+    app_executable: Option<PathBuf>,
+    discovery_root: Option<PathBuf>,
+    attached: Option<Attached>,
+}
+
+impl Tools {
+    pub fn new(app_executable: Option<PathBuf>, discovery_root: Option<PathBuf>) -> Self {
+        Self {
+            app_executable,
+            discovery_root,
+            attached: None,
+        }
+    }
+
+    pub fn call(&mut self, name: &str, mut arguments: Map<String, Value>) -> ToolOutput {
+        // Clients send absent optional arguments as null; the window expects them omitted.
+        arguments.retain(|_, value| !value.is_null());
+        self.dispatch(name, arguments)
+            .unwrap_or_else(ToolError::output)
+    }
+
+    fn dispatch(
+        &mut self,
+        name: &str,
+        mut args: Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        match name {
+            "windows" => {
+                no_more(&args)?;
+                Ok(self.windows())
+            }
+            "connect" => {
+                let instance_id = take_text(&mut args, "instance_id")?;
+                no_more(&args)?;
+                self.connect(instance_id.as_deref())
+            }
+            "open_window" => {
+                let document = take_text(&mut args, "document_path")?;
+                no_more(&args)?;
+                self.open_window(document.as_deref())
+            }
+            "program" => self.program(args),
+            "inspect" => self.inspect(args),
+            "model" => self.model(args),
+            "edit" => {
+                let action = take_action(&mut args, &["propose", "commit", "undo", "redo"])?;
+                self.send(&action, args, DEFAULT_WAIT)
+            }
+            "file" => {
+                let action = take_action(&mut args, &["save", "save_as", "open"])?;
+                self.send(&action, args, DEFAULT_WAIT)
+            }
+            "view" => self.view(args),
+            "batch" => self.batch(args),
+            _ => Err(ToolError::new(
+                "unknown_tool",
+                format!("There is no tool {name}; list the tools again."),
+            )),
+        }
+    }
+
+    fn program(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
+        match take_action(&mut args, &["read", "apply", "docs"])?.as_str() {
+            "read" => self.send("program", args, DEFAULT_WAIT),
+            "apply" => {
+                if let Some(path) = take_text(&mut args, "source_path")? {
+                    if args.contains_key("source") {
+                        return Err(ToolError::new(
+                            "invalid_arguments",
+                            "Give either source or source_path, not both.",
+                        ));
+                    }
+                    let source = std::fs::read_to_string(&path).map_err(|error| {
+                        ToolError::new(
+                            "invalid_path",
+                            format!("Cannot read program file {path}: {error}"),
+                        )
+                    })?;
+                    args.insert("source".into(), source.into());
+                }
+                self.send("apply_program", args, APPLY_PROGRAM_WAIT)
+            }
+            _ => {
+                let name = take_text(&mut args, "name")?;
+                no_more(&args)?;
+                Ok(ToolOutput::text(&docs::library(name.as_deref())?))
+            }
+        }
+    }
+
+    fn inspect(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
+        let action = take_action(
+            &mut args,
+            &[
+                "status",
+                "summary",
+                "operations",
+                "query",
+                "detail",
+                "workset_create",
+                "workset_status",
+            ],
+        )?;
+        match action.as_str() {
+            "operations" => rename(&mut args, "operation", "name"),
+            "workset_status" => rename(&mut args, "workset_handle", "handle"),
+            "query" | "workset_create" => {
+                let query: Map<String, Value> = QUERY_FIELDS
+                    .iter()
+                    .filter_map(|field| args.remove_entry(*field))
+                    .collect();
+                args.insert("query".into(), Value::Object(query));
+            }
+            _ => {}
+        }
+        self.send(&action, args, DEFAULT_WAIT)
+    }
+
+    fn model(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
+        let action = take_action(&mut args, &["edit_context", "apply_and_verify"])?;
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(DEFAULT_APPLY_AND_VERIFY_MS);
+        let wait = if action == "apply_and_verify" {
+            Duration::from_millis(timeout_ms) + APPLY_AND_VERIFY_MARGIN
+        } else {
+            DEFAULT_WAIT
+        };
+        self.send(&action, args, wait)
+    }
+
+    fn batch(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
+        let action = take_action(&mut args, &["start", "status", "step", "cancel"])?;
+        if action != "start" {
+            rename(&mut args, "job_handle", "handle");
+        }
+        self.send(&format!("batch_job_{action}"), args, DEFAULT_WAIT)
+    }
+
+    fn view(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
+        let action = take_action(&mut args, &["selection", "view", "image"])?;
+        if action != "image" {
+            return self.send(&action, args, DEFAULT_WAIT);
+        }
+        let framing = args
+            .get("framing")
+            .and_then(Value::as_str)
+            .unwrap_or("viewport")
+            .to_owned();
+        let detail: Map<String, Value> = [
+            ("detail_occurrence_id", "occurrence_id"),
+            ("detail_kind", "kind"),
+            ("detail_entity_id", "entity_id"),
+        ]
+        .into_iter()
+        .filter_map(|(from, to)| args.remove(from).map(|value| (to.to_owned(), value)))
+        .collect();
+        if framing == "detail_selection" || !detail.is_empty() {
+            args.insert("detail_target".into(), Value::Object(detail));
+        }
+        args.insert(
+            "image_protocol_version".into(),
+            IMAGE_PROTOCOL_VERSION.into(),
+        );
+        args.entry("capture_mode").or_insert("offscreen".into());
+        args.entry("max_side_px").or_insert(512.into());
+        args.insert("framing".into(), framing.into());
+        match self.request("image", args, DEFAULT_WAIT)? {
+            Reply::Done { stamp, mut result } => {
+                let data = result
+                    .as_object_mut()
+                    .and_then(|result| result.remove("data"))
+                    .unwrap_or_default();
+                let summary = json!({
+                    "stamp": stamp,
+                    "width": result["width"],
+                    "height": result["height"],
+                    "framing": result["framing"],
+                    "view": result["view"],
+                    "selection": result["selection"],
+                });
+                Ok(ToolOutput {
+                    content: vec![
+                        json!({"type": "image", "data": data, "mimeType": "image/png"}),
+                        json!({"type": "text", "text": summary.to_string()}),
+                    ],
+                    is_error: false,
+                })
+            }
+            rejected => Ok(self.output(rejected)),
+        }
+    }
+
+    fn windows(&self) -> ToolOutput {
+        let connected = self
+            .attached
+            .as_ref()
+            .map(|a| a.window.instance_id.as_str());
+        let windows: Vec<Value> = self
+            .list_windows()
+            .iter()
+            .map(|window| {
+                let ours = connected == Some(window.instance_id.as_str());
+                json!({
+                    "instance_id": window.instance_id,
+                    "document": window.document,
+                    "connected": ours,
+                    "used_by_another_client": window.in_use && !ours,
+                })
+            })
+            .collect();
+        ToolOutput::text(&json!({"windows": windows}))
+    }
+
+    fn connect(&mut self, instance_id: Option<&str>) -> Result<ToolOutput, ToolError> {
+        self.attached = None;
+        let window = match instance_id {
+            Some(id) => self
+                .list_windows()
+                .into_iter()
+                .find(|window| window.instance_id == id)
+                .ok_or_else(|| {
+                    ToolError::new(
+                        "window_not_found",
+                        format!("No open Kečup window has instance_id {id}; call windows."),
+                    )
+                })?,
+            None => self.sole_window()?,
+        };
+        self.attach(window)?;
+        self.send("status", Map::new(), DEFAULT_WAIT)
+    }
+
+    fn open_window(&mut self, document: Option<&str>) -> Result<ToolOutput, ToolError> {
+        let executable = self.app_executable.clone().ok_or_else(|| {
+            ToolError::new(
+                "open_unavailable",
+                "This server cannot start Kečup windows.",
+            )
+        })?;
+        if let Some(path) = document
+            && !(Path::new(path).is_absolute() && Path::new(path).is_file())
+        {
+            return Err(ToolError::new(
+                "invalid_path",
+                format!("document_path must be an absolute path of an existing file: {path}"),
+            ));
+        }
+        let before: Vec<String> = self
+            .list_windows()
+            .into_iter()
+            .map(|window| window.instance_id)
+            .collect();
+        let mut child = spawn_window(&executable, document).map_err(|error| {
+            ToolError::new(
+                "open_failed",
+                format!("Cannot start {}: {error}", executable.display()),
+            )
+        })?;
+        let deadline = Instant::now() + WINDOW_START_TIMEOUT;
+        while Instant::now() < deadline {
+            std::thread::sleep(WINDOW_START_POLL);
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(ToolError::new(
+                    "open_failed",
+                    format!("The new Kečup window exited during start ({status})."),
+                ));
+            }
+            if let Some(window) = self
+                .list_windows()
+                .into_iter()
+                .find(|window| !before.contains(&window.instance_id))
+            {
+                self.attached = None;
+                self.attach(window)?;
+                return self.send("status", Map::new(), DEFAULT_WAIT);
+            }
+        }
+        Err(ToolError::new(
+            "open_failed",
+            "The new Kečup window did not become reachable within 30 s; call windows to check.",
+        ))
+    }
+
+    fn list_windows(&self) -> Vec<Window> {
+        self.discovery_root
+            .as_deref()
+            .map(discovery::list_windows)
+            .unwrap_or_default()
+    }
+
+    fn sole_window(&self) -> Result<Window, ToolError> {
+        let mut windows = self.list_windows();
+        match windows.len() {
+            0 => Err(ToolError::new(
+                "no_window",
+                "No Kečup window is open. Ask the user to open Kečup, or call open_window.",
+            )),
+            1 => Ok(windows.remove(0)),
+            _ => {
+                let listed: Vec<Value> = windows
+                    .iter()
+                    .map(|w| json!({"instance_id": w.instance_id, "document": w.document}))
+                    .collect();
+                Err(ToolError::new(
+                    "choose_window",
+                    "Several Kečup windows are open; call connect with one instance_id.",
+                )
+                .with_details(json!({"windows": listed})))
+            }
+        }
+    }
+
+    fn attach(&mut self, window: Window) -> Result<(), ToolError> {
+        let failed = |error: std::io::Error| {
+            ToolError::new(
+                "attach_failed",
+                format!(
+                    "Cannot attach to the Kečup window ({error}); it may have closed. Call windows."
+                ),
+            )
+        };
+        let grant = discovery::attach(&window).map_err(failed)?;
+        let connection = Connection::open(grant.address, grant.token).map_err(failed)?;
+        self.attached = Some(Attached { connection, window });
+        Ok(())
+    }
+
+    fn send(
+        &mut self,
+        method: &str,
+        args: Map<String, Value>,
+        wait: Duration,
+    ) -> Result<ToolOutput, ToolError> {
+        let reply = self.request(method, args, wait)?;
+        Ok(self.output(reply))
+    }
+
+    fn output(&mut self, reply: Reply) -> ToolOutput {
+        match reply {
+            Reply::Done { stamp, result } => {
+                ToolOutput::text(&json!({"stamp": stamp, "result": result}))
+            }
+            Reply::Rejected { code, result } => {
+                if CONNECTION_ENDING_CODES.contains(&code.as_str()) {
+                    self.attached = None;
+                }
+                let mut value = match result {
+                    Value::Object(fields) => fields,
+                    Value::Null => Map::new(),
+                    other => Map::from_iter([("result".to_owned(), other)]),
+                };
+                value.insert("error".into(), code.into());
+                ToolOutput::error(Value::Object(value))
+            }
+        }
+    }
+
+    fn request(
+        &mut self,
+        method: &str,
+        mut args: Map<String, Value>,
+        wait: Duration,
+    ) -> Result<Reply, ToolError> {
+        if self.attached.is_none() {
+            let window = self.sole_window()?;
+            self.attach(window)?;
+        }
+        let Some(attached) = self.attached.as_mut() else {
+            return Err(ToolError::new(
+                "no_window",
+                "Not connected to a Kečup window.",
+            ));
+        };
+        args.insert("method".into(), method.into());
+        match attached.connection.request(Value::Object(args), wait) {
+            Ok(reply) => Ok(reply),
+            Err(BridgeError::TooLarge { bytes }) => Err(ToolError::new(
+                "request_too_large",
+                format!(
+                    "The request has {bytes} bytes; the window accepts at most {MAX_REQUEST_BYTES}. \
+                     Shorten the program or split the edit."
+                ),
+            )),
+            Err(BridgeError::Transport(error)) => {
+                self.attached = None;
+                Err(ToolError::new(
+                    "connection_lost",
+                    format!(
+                        "The connection to the Kečup window failed ({error}). A change may or may \
+                         not have been applied: read inspect action=status before changing \
+                         anything again. The next call reconnects."
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+/// Starts a new window detached from this server, so it outlives the AI client.
+fn spawn_window(executable: &Path, document: Option<&str>) -> std::io::Result<std::process::Child> {
+    let command = || {
+        let mut command = Command::new(executable);
+        command.args(document);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+        // A client's job object may forbid breaking away; then stay inside it.
+        command()
+            .creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+            .or_else(|_: std::io::Error| command().creation_flags(flags).spawn())
+    }
+    #[cfg(not(windows))]
+    command().spawn()
+}
+
+fn take_action(args: &mut Map<String, Value>, choices: &[&str]) -> Result<String, ToolError> {
+    match args.remove("action") {
+        Some(Value::String(action)) if choices.contains(&action.as_str()) => Ok(action),
+        _ => Err(ToolError::new(
+            "invalid_action",
+            format!("action must be one of: {}", choices.join(", ")),
+        )),
+    }
+}
+
+fn take_text(args: &mut Map<String, Value>, key: &str) -> Result<Option<String>, ToolError> {
+    match args.remove(key) {
+        None => Ok(None),
+        Some(Value::String(text)) if text.is_empty() => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err(ToolError::new(
+            "invalid_arguments",
+            format!("{key} must be a string"),
+        )),
+    }
+}
+
+fn rename(args: &mut Map<String, Value>, from: &str, to: &str) {
+    if let Some(value) = args.remove(from) {
+        args.insert(to.into(), value);
+    }
+}
+
+fn no_more(args: &Map<String, Value>) -> Result<(), ToolError> {
+    if args.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<&str> = args.keys().map(String::as_str).collect();
+    Err(ToolError::new(
+        "invalid_arguments",
+        format!("Unexpected arguments: {}", names.join(", ")),
+    ))
+}

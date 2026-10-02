@@ -24,7 +24,7 @@ pub mod relations;
 pub mod validate;
 
 pub use bom::{Bom, bom};
-pub use eval::{Evaluated, ProgramError, SourceLines, evaluate};
+pub use eval::{Evaluated, PRELUDE, ProgramError, SourceLines, evaluate};
 pub use exact::{ExactPair, ExactShapes, exact_candidates};
 pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,

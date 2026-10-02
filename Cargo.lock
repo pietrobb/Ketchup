@@ -2267,6 +2267,7 @@ dependencies = [
  "ketchup-geometry",
  "ketchup-interaction",
  "ketchup-manufacturing",
+ "ketchup-mcp",
  "ketchup-model",
  "ketchup-pdm",
  "ketchup-program",
@@ -2369,6 +2370,16 @@ dependencies = [
  "ketchup-test-env",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "ketchup-mcp"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "ketchup-program",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

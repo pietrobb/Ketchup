@@ -2,8 +2,8 @@
 #
 # Helpers written only from the generic builtins; adding one never requires a
 # change in Rust. The file is split into topics by "#@topic id: title" lines:
-# KetchupDiscover section=program lists the topics with their helpers, and
-# section=program name=<id> returns one topic (docs and code).
+# the program documentation an AI reads lists the topics with their helpers
+# and returns one topic (docs and code) by its id.
 
 #@topic basics: Parts, frames, faces, parameters, numbers
 #

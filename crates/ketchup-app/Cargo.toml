@@ -25,6 +25,7 @@ ketchup-model = { path = "../ketchup-model" }
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-manufacturing = { path = "../ketchup-manufacturing" }
+ketchup-mcp = { path = "../ketchup-mcp" }
 ketchup-pdm = { path = "../ketchup-pdm" }
 ketchup-program = { path = "../ketchup-program" }
 ketchup-rejection = { path = "../ketchup-rejection" }
