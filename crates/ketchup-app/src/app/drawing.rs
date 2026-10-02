@@ -306,19 +306,14 @@ impl KetchupApp {
             return None;
         }
         let profile = snapshot.feature(item.profile_feature_id)?;
-        let points_mm = profile.kind().polygon_points()?;
-        let [south_west, south_east, north_east, north_west] = points_mm.as_slice() else {
+        let FeatureKind::Profile { segments, closed } = profile.kind() else {
             return None;
         };
-        if !(south_west[1] == south_east[1]
-            && south_east[0] == north_east[0]
-            && north_east[1] == north_west[1]
-            && north_west[0] == south_west[0]
-            && south_east[0] > south_west[0]
-            && north_west[1] > south_west[1])
-        {
-            return None;
-        }
+        ketchup_model::exact_product::exact_planar_offset_profile(
+            segments,
+            *closed,
+            snapshot.tolerance(),
+        )?;
         let world_transform = snapshot
             .resolve_instance_path(&selection.instance_path)
             .ok()?
@@ -335,6 +330,51 @@ impl KetchupApp {
             profile_kind: profile.kind().clone(),
             world_transform,
         })
+    }
+
+    /// How far the pointer is from the selected profile's outline in the
+    /// profile's plane: negative inside, positive outside.
+    pub(crate) fn planar_offset_distance_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+    ) -> Option<f64> {
+        let source = self.planar_offset_source_plan()?;
+        let FeatureKind::Profile { segments, .. } = &source.profile_kind else {
+            return None;
+        };
+        let outline = segments
+            .iter()
+            .map(|segment| profile_segment_polyline(segment, PROFILE_CURVE_STEPS))
+            .collect::<Option<Vec<_>>>()?
+            .concat();
+        let place = |point: Vec3| transform_model_point(source.world_transform, point);
+        let origin = place(Vec3::ZERO);
+        let x_axis = (place(Vec3::new(1.0, 0.0, 0.0)) - origin).normalized()?;
+        let y_axis = (place(Vec3::new(0.0, 1.0, 0.0)) - origin).normalized()?;
+        let frame = WorkplaneFrame {
+            origin_mm: origin.to_array(),
+            x_axis: x_axis.to_array(),
+            y_axis: y_axis.to_array(),
+            normal: x_axis.cross(y_axis).normalized()?.to_array(),
+        };
+        let hit = crate::drawing_plane::local_point(
+            frame,
+            self.screen_to_workplane(pointer, rect, frame)?,
+        );
+        signed_outline_distance(&outline, [hit.x, hit.y])
+    }
+
+    /// The offset the Offset tool applies: the typed distance, else the one the
+    /// pointer asks for, shown as it is written into the document.
+    fn planar_offset_request(&self) -> Option<(String, f64)> {
+        let expression = if self.value_box.input.trim().is_empty() {
+            format_height(self.gesture.planar_offset_mm?)
+        } else {
+            self.value_box.input.clone()
+        };
+        let distance_mm = parse_distance_mm(&expression)?;
+        Some((expression, distance_mm))
     }
 
     pub(crate) fn derive_planar_offset_preview_plan(
@@ -392,14 +432,15 @@ impl KetchupApp {
         let Some(source) = self.planar_offset_source_plan() else {
             return false;
         };
-        let Some(distance_mm) = parse_distance_mm(&self.value_box.input)
-            .filter(|distance| distance.abs() > APPROXIMATION)
+        let Some((expression, distance_mm)) = self
+            .planar_offset_request()
+            .filter(|(_, distance)| distance.abs() > APPROXIMATION)
         else {
             self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
             return false;
         };
         let Some((plan, batch)) =
-            self.derive_planar_offset_preview_plan(&source, &self.value_box.input, distance_mm)
+            self.derive_planar_offset_preview_plan(&source, &expression, distance_mm)
         else {
             self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
             return false;
@@ -431,9 +472,11 @@ impl KetchupApp {
         let Some(preview) = self.tool_preview.get::<PlanarOffsetPreview>() else {
             return false;
         };
-        self.value_box.input == preview.plan.distance_expression
-            && parse_distance_mm(&self.value_box.input).map(f64::to_bits)
-                == Some(preview.plan.distance_mm_bits)
+        self.planar_offset_request()
+            .is_some_and(|(expression, distance_mm)| {
+                expression == preview.plan.distance_expression
+                    && distance_mm.to_bits() == preview.plan.distance_mm_bits
+            })
             && self
                 .derive_planar_offset_preview_plan(
                     &preview.plan.source,
@@ -3064,7 +3107,7 @@ impl KetchupApp {
     pub(crate) fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
         // Grouped the way the design groups them: pick, draw, modify, measure,
         // navigate. A group boundary draws a hairline.
-        const TOOLS: [(AppCommand, u8); 15] = [
+        const TOOLS: [(AppCommand, u8); 16] = [
             (AppCommand::Select, 0),
             (AppCommand::Line, 1),
             (AppCommand::Rectangle, 1),
@@ -3073,6 +3116,7 @@ impl KetchupApp {
             (AppCommand::Polygon, 1),
             (AppCommand::Ellipse, 1),
             (AppCommand::Spline, 1),
+            (AppCommand::PlanarOffset, 1),
             (AppCommand::PushPull, 2),
             (AppCommand::Move, 2),
             (AppCommand::Rotate, 2),

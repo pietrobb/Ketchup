@@ -211,7 +211,6 @@ impl KetchupApp {
             }
             self.value_box.input.clear();
             if tool == ActiveTool::PlanarOffset {
-                self.value_box.input = "5".to_owned();
                 self.refresh_planar_offset_preview();
             } else if tool == ActiveTool::Helix {
                 self.begin_helix_tool();

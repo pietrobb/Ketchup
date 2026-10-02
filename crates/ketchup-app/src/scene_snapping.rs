@@ -1,5 +1,4 @@
 use super::*;
-use ketchup_geometry::linalg::CubicBezier;
 use ketchup_model::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING,
 };
@@ -308,24 +307,8 @@ impl SceneSnapGeometry {
         };
         let circle = exact_circle_geometry(&segments, true);
         for segment in segments.iter().filter(|_| circle.is_none()) {
-            let points = match segment {
-                ProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
-                ProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => profile_arc_polyline(*start_mm, *end_mm, *center_mm, *clockwise, 64),
-                ProfileSegment::CubicBezier {
-                    start_mm: a,
-                    control_1_mm: b,
-                    control_2_mm: c,
-                    end_mm: d,
-                } => (0..=64)
-                    .map(|i| CubicBezier::new([*a, *b, *c, *d]).eval(f64::from(i) / 64.0))
-                    .collect(),
-                // Only the exact kernel knows where a spline runs between its points.
-                ProfileSegment::Spline { .. } => continue,
+            let Some(points) = profile_segment_polyline(segment, PROFILE_CURVE_STEPS) else {
+                continue;
             };
             self.edge(
                 reference,

@@ -436,3 +436,88 @@ fn mirror_copies_the_selection_across_the_clicked_face_or_a_typed_offset_in_one_
     assert!(shell.app().mirror_preview_corners().is_empty());
     assert_eq!(shell.app().canonical_digest(), second_digest);
 }
+
+#[test]
+fn offset_follows_the_pointer_or_a_typed_distance_for_any_closed_profile_in_one_undo_step() {
+    let mut shell = Shell::new();
+    // An L: neither a rectangle nor convex.
+    assert!(shell.app_mut().create_closed_polyline(vec![
+        [120.0, 0.0],
+        [220.0, 0.0],
+        [220.0, 30.0],
+        [150.0, 30.0],
+        [150.0, 60.0],
+        [120.0, 60.0],
+    ]));
+    shell.settle();
+    shell.key(Key::Z, eframe::egui::Modifiers::SHIFT);
+    assert!(
+        shell.offers(AppCommand::PlanarOffset),
+        "Offset is in the rail"
+    );
+    let at = |shell: &Shell, x: f64, y: f64| {
+        shell.app().viewport_position(Vec3::new(x, y, 0.0)).unwrap()
+    };
+    let previewed = |shell: &Shell| {
+        shell
+            .app()
+            .planar_offset_preview_parameters()
+            .map(|(_, distance, _)| distance)
+    };
+
+    shell.press_key(Key::F);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().format(
+            "digest-tool-active",
+            &BTreeMap::from([("tool", shell.catalog().text("feature-planar-offset"))]),
+        )
+    );
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+
+    // Outside the outline the pointer grows it by its distance from the nearest
+    // edge, inside it shrinks it; the pointer lands on pixels, so only nearly.
+    shell.move_pointer(at(&shell, 230.0, 15.0));
+    let grown = previewed(&shell).expect("the pointer outside previews a growth");
+    assert!((grown - 10.0).abs() < 0.5, "outside distance {grown}");
+    shell.move_pointer(at(&shell, 125.0, 10.0));
+    let shrunk = previewed(&shell).expect("the pointer inside previews a shrink");
+    assert!((shrunk + 5.0).abs() < 0.5, "inside distance {shrunk}");
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+
+    // A click commits what the pointer showed, as one Undo step.
+    shell.click_at(at(&shell, 125.0, 10.0));
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    let (_, _, clicked) = shell.app().latest_planar_offset_parameters().unwrap();
+    assert_eq!(clicked, shrunk);
+    let clicked_digest = shell.app().canonical_digest();
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), clicked_digest);
+    shell.key(Key::Z, ctrl());
+
+    // A typed distance wins over the pointer and is exact.
+    shell.press_key(Key::F);
+    shell.move_pointer(at(&shell, 230.0, 15.0));
+    shell.type_text("4.25");
+    shell.move_pointer(at(&shell, 125.0, 10.0));
+    assert_eq!(previewed(&shell), Some(4.25));
+    shell.press_key(Key::Enter);
+    let (_, _, typed) = shell.app().latest_planar_offset_parameters().unwrap();
+    assert_eq!(typed, 4.25);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+
+    // Escape leaves the tool without touching the document.
+    shell.press_key(Key::F);
+    shell.move_pointer(at(&shell, 230.0, 15.0));
+    assert!(previewed(&shell).is_some());
+    shell.press_key(Key::Escape);
+    assert!(previewed(&shell).is_none());
+    shell.move_pointer(at(&shell, 125.0, 10.0));
+    assert!(previewed(&shell).is_none(), "the tool is gone");
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+}

@@ -257,6 +257,45 @@ pub fn cross2(left: [f64; 2], right: [f64; 2]) -> f64 {
     cross([left[0], left[1], 0.0], [right[0], right[1], 0.0])[2]
 }
 
+/// The distance in the plane from `point` to the nearest point of the segment
+/// from `start` to `end`.
+#[must_use]
+pub fn point_segment_distance2(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let direction = [end[0] - start[0], end[1] - start[1]];
+    let from_start = [point[0] - start[0], point[1] - start[1]];
+    let length_squared = dot2(direction, direction);
+    let parameter = if length_squared > 0.0 {
+        (dot2(from_start, direction) / length_squared).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (from_start[0] - parameter * direction[0]).hypot(from_start[1] - parameter * direction[1])
+}
+
+/// The distance from `point` to the closed outline through `outline` (the last
+/// point joins the first): negative inside, positive outside, by the even-odd
+/// rule. `None` for fewer than two points.
+#[must_use]
+pub fn signed_outline_distance(outline: &[[f64; 2]], point: [f64; 2]) -> Option<f64> {
+    if outline.len() < 2 {
+        return None;
+    }
+    let edges = || outline.iter().zip(outline.iter().cycle().skip(1));
+    let distance = edges()
+        .map(|(start, end)| point_segment_distance2(point, *start, *end))
+        .fold(f64::INFINITY, f64::min);
+    let inside = edges()
+        .filter(|(start, end)| {
+            (start[1] > point[1]) != (end[1] > point[1])
+                && point[0]
+                    < start[0] + (point[1] - start[1]) * (end[0] - start[0]) / (end[1] - start[1])
+        })
+        .count()
+        % 2
+        == 1;
+    Some(if inside { -distance } else { distance })
+}
+
 /// A 3×3 matrix stored by rows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mat3 {
@@ -800,5 +839,29 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn signed_outline_distance_is_negative_inside_and_positive_outside_any_polygon() {
+        // An L, so a point in its notch is outside although inside its bounds.
+        let outline = [
+            [0.0, 0.0],
+            [40.0, 0.0],
+            [40.0, 10.0],
+            [10.0, 10.0],
+            [10.0, 30.0],
+            [0.0, 30.0],
+        ];
+        assert_eq!(signed_outline_distance(&outline, [5.0, 5.0]), Some(-5.0));
+        assert_eq!(signed_outline_distance(&outline, [30.0, 4.0]), Some(-4.0));
+        assert_eq!(signed_outline_distance(&outline, [30.0, 20.0]), Some(10.0));
+        assert_eq!(signed_outline_distance(&outline, [-3.0, 15.0]), Some(3.0));
+        assert_eq!(signed_outline_distance(&outline, [43.0, 14.0]), Some(5.0));
+        assert_eq!(signed_outline_distance(&outline, [40.0, 5.0]), Some(0.0));
+        assert_eq!(signed_outline_distance(&outline[..1], [0.0, 0.0]), None);
+        assert_eq!(
+            point_segment_distance2([3.0, 4.0], [0.0, 0.0], [0.0, 0.0]),
+            5.0
+        );
     }
 }

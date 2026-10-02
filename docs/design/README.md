@@ -46,9 +46,9 @@ Menu contents (✓ = checkable toggle, ● = wired in the prototype):
 | File | ● New model (Ctrl+N) · Open… (Ctrl+O) · Save (Ctrl+S) · Save As… (Ctrl+Shift+S) — Import… · Export exact (STEP)… · Export mesh (OBJ)… — ● Document info… · Exit (Alt+F4) |
 | Edit | ● Undo (Ctrl+Z) · ● Redo (Ctrl+Y) — ● Delete (Del) · ● Make unique — ● Select all (Ctrl+A) · ● Deselect (Esc) — Preferences… |
 | View | ● Isometric · ● Top · ● Front · ● Zoom fit (Shift+Z) — ✓● Ground grid · ✓● Axes · ✓● Dimensions · ✓● Snapping — ✓● Dark interface |
-| Draw | ● Line (L) · ● Rectangle (R) |
-| Tools | ● Select (Space) · ● Push / Pull (P) · ● Move (M) · ● Measure (T) — ● Orbit (O) · ● Pan (H) |
-| Model | ● Make unique · ● Purge unused definitions — ● Statistics… · Reference audit… |
+| Draw | ● Line (L) · ● Rectangle (R) · ● Circle (C) · ● Arc (A) · ● Polygon (N) · ● Ellipse (E) · ● Spline (S) |
+| Tools | ● Select (Space) · ● Push / Pull (P) · ● Move (M) · ● Rotate (Q) · ● Mirror (I) · ● Scale · ● Measure (T) — ● Orbit (O) · ● Pan (H) |
+| Model | ● Planar Offset (F) · ● Make unique · ● Purge unused definitions — ● Statistics… · Reference audit… |
 | Window | ✓● Outliner · ✓● Tags · ✓● Assistant |
 | Help | Keyboard shortcuts (F1) · Execution contract… · About Ketchup |
 
@@ -58,17 +58,34 @@ Non-wired items still emit a localized digest describing what they would do (e.g
 Buttons 40×40, radius 9px, transparent border, icon 18px stroke 1.6 `currentColor`, color `--dim`.
 Active state: `background: rgba(240,78,35,.14); color: var(--accent); border-color: rgba(240,78,35,.35)`.
 
-Order (tooltip / shortcut):
+Order (tooltip / shortcut); a 24×1px `--line` divider, margin `6px 0`, separates the groups pick · draw · modify · measure · navigate (source of truth: `TOOLS` in `crates/ketchup-app/src/app/drawing.rs`, keys in `crates/ketchup-app/src/keymap.rs`):
 1. Select — Space (cursor arrow glyph)
 2. Line — L
 3. Rectangle — R
-4. Push / Pull — P
-5. Move — M (Ctrl = copy)
-6. Measure — T
-7. — 24×1px `--line` divider, margin `6px 0` —
-8. Orbit — O (or middle-drag)
-9. Pan — H (or Shift+middle-drag)
-10. Spacer, then **Delete selection** (trash icon) pinned to the bottom.
+4. Circle — C
+5. Arc — A
+6. Polygon — N
+7. Ellipse — E
+8. Spline — S
+9. Offset — F
+10. Push / Pull — P
+11. Move — M (Ctrl = copy)
+12. Rotate — Q
+13. Mirror — I
+14. Measure — T
+15. Orbit — O (or middle-drag)
+16. Pan — H (or Shift+middle-drag)
+17. Spacer, then **Delete selection** (trash icon) pinned to the bottom.
+
+Tool matrix for the shapes and edits that the model, the program and the Assistant already had and the window gained in K9. Every row: a preview that never changes the document, snapping to scene points/edges on the drawing plane, the value box for exact input, Esc leaves without touching the document, and a finished shape or edit is one Undo step. Headless tests: `crates/ketchup-app/tests/drawing_tools_ui.rs`.
+
+| Tool (key) | Click-move-click | Click-drag | Value box | Esc |
+|---|---|---|---|---|
+| Polygon (N) | centre, then a corner | centre → corner | side count first, then radius + Enter | drops the polygon in progress |
+| Ellipse (E) | centre, first half-axis end, second half-axis | centre → first half-axis end, then the second follows the pointer | first half-axis + Enter, then the second + Enter | drops the ellipse in progress |
+| Spline (S) | a click per point; a click on the first point closes it | first point → second point | distance to the next point toward the pointer + Enter; Enter alone closes | closes the spline with ≥ 4 points, else drops it |
+| Mirror (I) | with parts selected, a click on a face mirrors them across its plane | — (one click) | plane offset from the face + Enter | leaves the tool |
+| Offset (F) | with a closed profile selected, the pointer's distance from its outline is the offset (inside shrinks), a click commits it | — (one click) | exact signed distance + Enter; a typed value wins over the pointer | leaves the tool |
 
 ### 4. Viewport (center cell, bg `--bg`, `position: relative`, overflow hidden)
 Full-bleed render surface plus four non-interactive overlays (all `pointer-events: none` except the value box):

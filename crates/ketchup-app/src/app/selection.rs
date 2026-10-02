@@ -1117,7 +1117,10 @@ impl KetchupApp {
         self.face_workflow.set_xray_preview(false);
         if self.feature_history_preview_pending() {
             self.cancel_feature_history_preview();
-        } else if self.active_tool == ActiveTool::Helix {
+        } else if matches!(
+            self.active_tool,
+            ActiveTool::Helix | ActiveTool::PlanarOffset
+        ) {
             self.clear_ephemeral_edit_state();
             self.active_tool = ActiveTool::Select;
             self.status_key = "status-ready";

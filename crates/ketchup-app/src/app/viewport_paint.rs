@@ -594,6 +594,7 @@ const fn command_icon(id: AppCommand) -> Icon {
         AppCommand::Polygon => Icon::Polygon,
         AppCommand::Ellipse => Icon::Ellipse,
         AppCommand::Spline => Icon::Spline,
+        AppCommand::PlanarOffset => Icon::Offset,
         AppCommand::Mirror => Icon::Mirror,
         AppCommand::Revolve => Icon::Orbit,
         AppCommand::Shell => Icon::PushPull,

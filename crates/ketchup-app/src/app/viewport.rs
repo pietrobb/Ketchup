@@ -1936,6 +1936,14 @@ impl KetchupApp {
         } else if self.active_tool == ActiveTool::Mirror {
             self.gesture.mirror = self.mirror_plane_at_screen(pointer, response.rect);
             self.commit_mirror();
+        } else if self.active_tool == ActiveTool::PlanarOffset {
+            if self.value_box.input.trim().is_empty() {
+                self.gesture.planar_offset_mm =
+                    self.planar_offset_distance_at_screen(pointer, response.rect);
+            }
+            if self.refresh_planar_offset_preview() {
+                self.confirm_planar_offset_preview();
+            }
         } else if self.active_tool == ActiveTool::Measure {
             let plane_z = self.measure_anchor().map_or_else(
                 || self.rectangle_plane_z(pointer, response.rect),
@@ -2324,6 +2332,17 @@ impl KetchupApp {
             && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
         {
             self.gesture.mirror = self.mirror_plane_at_screen(pointer, response.rect);
+        }
+        if self.active_tool == ActiveTool::PlanarOffset
+            && self.value_box.input.trim().is_empty()
+            && response.hovered()
+            && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
+        {
+            let distance_mm = self.planar_offset_distance_at_screen(pointer, response.rect);
+            if distance_mm != self.gesture.planar_offset_mm {
+                self.gesture.planar_offset_mm = distance_mm;
+                self.refresh_planar_offset_preview();
+            }
         }
         if let Some(start) = self.measure_anchor()
             && response.hovered()

@@ -3216,6 +3216,39 @@ pub(crate) fn push_pull_distance_from_pointer(
     }
 }
 
+/// How many straight pieces stand in for one curved profile segment where the
+/// window needs its outline as points: snapping to it and measuring from it.
+pub(crate) const PROFILE_CURVE_STEPS: usize = 64;
+
+/// The points one profile segment runs through, `steps` pieces per curve; `None` for a
+/// spline, whose course between its points only the exact kernel knows.
+pub(crate) fn profile_segment_polyline(
+    segment: &ProfileSegment,
+    steps: usize,
+) -> Option<Vec<[f64; 2]>> {
+    Some(match segment {
+        ProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
+        ProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => profile_arc_polyline(*start_mm, *end_mm, *center_mm, *clockwise, steps),
+        ProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => {
+            let curve = CubicBezier::new([*start_mm, *control_1_mm, *control_2_mm, *end_mm]);
+            (0..=steps)
+                .map(|step| curve.eval(step as f64 / steps as f64))
+                .collect()
+        }
+        ProfileSegment::Spline { .. } => return None,
+    })
+}
+
 pub(crate) fn profile_arc_polyline(
     start_mm: [f64; 2],
     end_mm: [f64; 2],

@@ -13,6 +13,9 @@ pub(crate) struct Gesture {
     pub(crate) transform: TransformModifiers,
     /// The face plane under the pointer while the Mirror tool is active.
     pub(crate) mirror: Option<MirrorPlane>,
+    /// While the Offset tool is active: the pointer's distance from the selected
+    /// profile's outline in its plane, negative inside.
+    pub(crate) planar_offset_mm: Option<f64>,
     pub(crate) drag: Option<PointerDrag>,
 }
 

@@ -41,7 +41,7 @@ LAYERS = {
 MAX_MODULE_LINES = 5_000
 
 OVERSIZED = {
-    "crates/ketchup-app/src/tests.rs": 17_872,
+    "crates/ketchup-app/src/tests.rs": 17_723,
 }
 
 MAX_FUNCTION_LINES = 400
@@ -54,7 +54,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 793,
     "crates/ketchup-application/src/collision.rs::collision_report": 808,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
-    "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 2027,
+    "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1988,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 432,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 653,

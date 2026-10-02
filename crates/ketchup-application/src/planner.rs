@@ -1,8 +1,8 @@
 use crate::append_feature::plan_feature_kind;
 use crate::creation::plan_creation;
 use crate::diagnostics::{
-    AssistantPlanningResult, assistant_canonical_rejection, assistant_planning_rejection,
-    assistant_rejection,
+    AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
+    assistant_planning_rejection, assistant_rejection,
 };
 use crate::rule_operations::OperationPlanner;
 use crate::transforms::{
@@ -1748,6 +1748,35 @@ fn plan_assistant_helix_sweep_creation(
         definition_id,
         body_feature_id,
     ))
+}
+
+fn mirror_copy_rejection(
+    error: MirrorCopyError,
+    operation: &str,
+    id: OccurrenceId,
+) -> AssistantRejection {
+    let target = format!("occurrence:{}", id.0);
+    match error {
+        MirrorCopyError::MissingOccurrence => assistant_canonical_rejection(
+            CanonicalError::OccurrenceNotFound(id),
+            operation,
+            &target,
+        ),
+        MirrorCopyError::ParentTransform => assistant_planning_rejection(
+            "planning.cad_parent_transform_unavailable",
+            operation,
+            &target,
+            "The occurrence parent transform could not be resolved.",
+            "Refresh the document context and retry the mirror.",
+        ),
+        MirrorCopyError::Transform => assistant_planning_rejection(
+            "planning.cad_mirror_invalid",
+            operation,
+            &target,
+            "The requested mirror could not be represented in the occurrence parent.",
+            "Use a finite invertible parent transform and mirror plane.",
+        ),
+    }
 }
 
 /// Plans against the current document and explicit host-provided context without mutation.
@@ -3699,25 +3728,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         world_mirror,
                         occurrence_id,
                     )
-                    .map_err(|error| match error {
-                        MirrorCopyError::MissingOccurrence => {
-                            unreachable!("resolved CAD selector targets a staged occurrence")
-                        }
-                        MirrorCopyError::ParentTransform => assistant_planning_rejection(
-                            "planning.cad_parent_transform_unavailable",
-                            operation_name,
-                            &format!("occurrence:{}", id.0),
-                            "The occurrence parent transform could not be resolved.",
-                            "Refresh the document context and retry the mirror.",
-                        ),
-                        MirrorCopyError::Transform => assistant_planning_rejection(
-                            "planning.cad_mirror_invalid",
-                            operation_name,
-                            &format!("occurrence:{}", id.0),
-                            "The requested mirror could not be represented in the occurrence parent.",
-                            "Use a finite invertible parent transform and mirror plane.",
-                        ),
-                    })?;
+                    .map_err(|error| mirror_copy_rejection(error, operation_name, id))?;
                     for command in commands {
                         staged_planning.push(command);
                     }

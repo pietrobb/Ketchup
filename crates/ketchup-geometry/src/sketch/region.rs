@@ -1,5 +1,5 @@
 use super::*;
-use crate::linalg::cross2;
+use crate::linalg::{cross2, point_segment_distance2 as point_segment_distance};
 
 pub(super) fn region_signed_area(edges: &[SolvedSketchRegionEdge]) -> Result<f64, SketchError> {
     edges
@@ -209,24 +209,6 @@ pub(super) fn line_segments_intersect(
         || point_segment_distance(left_end, right_start, right_end) <= near
         || point_segment_distance(right_start, left_start, left_end) <= near
         || point_segment_distance(right_end, left_start, left_end) <= near
-}
-
-pub(super) fn point_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
-    let direction = subtract2(end, start);
-    let length_squared = direction[0] * direction[0] + direction[1] * direction[1];
-    if length_squared <= EPSILON_MM * EPSILON_MM {
-        return distance2(point, start);
-    }
-    let parameter = ((point[0] - start[0]) * direction[0] + (point[1] - start[1]) * direction[1])
-        / length_squared;
-    let parameter = parameter.clamp(0.0, 1.0);
-    distance2(
-        point,
-        [
-            start[0] + parameter * direction[0],
-            start[1] + parameter * direction[1],
-        ],
-    )
 }
 
 pub(super) fn point_on_arc(point: [f64; 2], arc: RegionArc) -> bool {

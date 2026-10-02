@@ -2,7 +2,7 @@ use super::*;
 use ketchup_model::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 
 /// How near on screen, in points, the pointer catches a point to draw from.
-const DRAWING_SNAP_PIXELS: f32 = 8.0;
+pub(crate) const DRAWING_SNAP_PIXELS: f32 = 8.0;
 
 pub(super) fn point_in_frame(point: Vec3, frame: WorkplaneFrame) -> bool {
     let origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);

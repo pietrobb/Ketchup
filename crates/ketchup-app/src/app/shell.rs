@@ -516,6 +516,7 @@ impl KetchupApp {
         self.gesture.drag.close::<SelectionWindowDrag>();
         self.clear_measurement();
         self.gesture.mirror = None;
+        self.gesture.planar_offset_mm = None;
     }
 
     pub(crate) fn value_label_key(&self) -> &'static str {

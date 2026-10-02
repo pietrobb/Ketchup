@@ -39,7 +39,7 @@ use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadLoftContinuity,
 };
-use ketchup_geometry::linalg::{circumcenter, cross, dot, length};
+use ketchup_geometry::linalg::{circumcenter, cross, dot, length, signed_outline_distance};
 use ketchup_geometry::prismatic::JointId;
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
@@ -4738,6 +4738,8 @@ mod drawing_plane_tests;
 mod mesh_snapping_tests;
 #[cfg(test)]
 mod nested_transform_tests;
+#[cfg(test)]
+mod planar_offset_tests;
 #[cfg(test)]
 mod program_source_ui_tests;
 #[cfg(test)]
