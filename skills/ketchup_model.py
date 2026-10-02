@@ -308,6 +308,9 @@ def register_tools() -> list:
                       expected_digest: str = "", expected_mutation_epoch: int = -1) -> str:
         """Open/new a separate owned process and document, or safely close its UUID. Never controls the GUI.
 
+        To work in the user's already open Kečup window, use KetchupLiveSession
+        (list, then attach) and the other KetchupLive* tools instead.
+
         Args:
             action: new, open, or close. New/open never replaces another handle.
             handle: Only for close; UUID returned by new/open.
