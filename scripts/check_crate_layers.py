@@ -41,9 +41,7 @@ LAYERS = {
 
 MAX_MODULE_LINES = 5_000
 
-OVERSIZED = {
-    "crates/ketchup-app/src/tests.rs": 17_723,
-}
+OVERSIZED = {}
 
 MAX_FUNCTION_LINES = 400
 
@@ -73,6 +71,36 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 1018,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 559,
+}
+
+# A test checks one behavior; a longer one is several scenarios in one, and its
+# first failing assert hides whether the rest still work.
+MAX_TEST_LINES = 300
+
+# Tests that were already longer, with their length. They may shrink but not
+# grow; an entry is removed once its test fits the limit.
+LONG_TESTS = {
+    "crates/ketchup-app/src/live_bridge/product_integration_tests.rs::original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geometry": 489,
+    "crates/ketchup-app/src/tests/exact_modeling.rs::contained_circle_subtract_intersect_split_and_containing_union_round_trip_atomically": 335,
+    "crates/ketchup-app/src/tests/exact_modeling.rs::contained_slanted_polygon_solid_tools_round_trip_atomically": 398,
+    "crates/ketchup-app/src/tests/exact_modeling.rs::mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools": 321,
+    "crates/ketchup-app/tests/assistant_workflows.rs::integrated_finishing_chain_rebuilds_exactly_through_headless_assistant": 333,
+    "crates/ketchup-app/tests/capstone_chain.rs::empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence": 305,
+    "crates/ketchup-app/tests/capstone_chain.rs::the_manual_capstone_runs_end_to_end_through_the_designed_shell": 346,
+    "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 446,
+    "crates/ketchup-app/tests/file_workflow.rs::file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen": 471,
+    "crates/ketchup-app/tests/file_workflow.rs::file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen": 421,
+    "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 348,
+    "crates/ketchup-app/tests/timber_frame_house.rs::live_oauth_assistant_builds_a_roofed_house_frame_across_turns": 714,
+    "crates/ketchup-application/tests/cad_program.rs::one_physical_pin_joint_operation_creates_both_hole_rows_atomically": 305,
+    "crates/ketchup-application/tests/cad_program.rs::public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact": 371,
+    "crates/ketchup-application/tests/evaluation_deadline.rs::physical_recipe_save_open_history_recomputes_full_exact_without_cached_evidence": 396,
+    "crates/ketchup-application/tests/workflow_trace.rs::original_shared_side_make_unique_preserves_physical_holes_and_recipe": 332,
+    "crates/ketchup-model/tests/pad_pocket.rs::face_supported_pocket_and_topology_history_make_unique_losslessly": 453,
+    "crates/ketchup-model/tests/workplane_sketch.rs::all_principal_planes_and_one_resolved_planar_face_support_are_canonical": 310,
+    "crates/ketchup-scheduler/tests/exact_brep_graph.rs::through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies": 336,
+    "crates/ketchup-scheduler/tests/exact_brep_graph.rs::worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh": 375,
+    "crates/ketchup-scheduler/tests/exact_brep_graph.rs::worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance": 376,
 }
 
 
@@ -161,33 +189,57 @@ def function_lengths(path):
     return lengths
 
 
+def is_test_module(relative):
+    """A file of tests: under a `tests` directory, `tests.rs` or `*_tests.rs`."""
+    return "tests" in relative.parts[:-1] or relative.stem == "tests" or relative.stem.endswith("_tests")
+
+
 def long_functions(root, limit=MAX_FUNCTION_LINES):
     """{"crates/<crate>/src/...rs::name": lines} for production functions over the limit."""
     return {
         f"{path.relative_to(root).as_posix()}::{name}": length
         for path in sorted((root / "crates").glob("*/src/**/*.rs"))
-        if "tests" not in path.stem
+        if not is_test_module(path.relative_to(root))
         for name, length in function_lengths(path).items()
         if length > limit
     }
 
 
-def oversized_functions(lengths, recorded=LONG_FUNCTIONS, limit=MAX_FUNCTION_LINES):
+def long_tests(root, limit=MAX_TEST_LINES):
+    """{"crates/<crate>/...rs::name": lines} for functions of test files over the limit."""
+    return {
+        f"{path.relative_to(root).as_posix()}::{name}": length
+        for path in sorted((root / "crates").glob("*/**/*.rs"))
+        if "target" not in path.relative_to(root).parts and is_test_module(path.relative_to(root))
+        for name, length in function_lengths(path).items()
+        if length > limit
+    }
+
+
+def oversized_functions(
+    lengths,
+    recorded=LONG_FUNCTIONS,
+    limit=MAX_FUNCTION_LINES,
+    table="LONG_FUNCTIONS",
+    remedy="split it into named steps",
+):
     problems = []
     for function, length in lengths.items():
         allowed = recorded.get(function, limit)
         if length > allowed:
-            problems.append(
-                f"{function}: {length} lines, limit {allowed}; split it into named steps"
-            )
+            problems.append(f"{function}: {length} lines, limit {allowed}; {remedy}")
     for function, length in recorded.items():
         if function not in lengths:
-            problems.append(f"{function}: fits {limit} lines now; remove it from LONG_FUNCTIONS")
+            problems.append(f"{function}: fits {limit} lines now; remove it from {table}")
         elif lengths[function] < length:
-            problems.append(
-                f"{function}: shrank to {lengths[function]} lines; lower LONG_FUNCTIONS to it"
-            )
+            problems.append(f"{function}: shrank to {lengths[function]} lines; lower {table} to it")
     return problems
+
+
+def oversized_tests(lengths, recorded=LONG_TESTS, limit=MAX_TEST_LINES):
+    return oversized_functions(
+        lengths, recorded, limit, "LONG_TESTS", "split it into one test per behavior"
+    )
 
 
 def test_files(root):
@@ -300,6 +352,7 @@ def main():
     problems = violations(workspace_dependencies(root))
     problems += oversized_modules(module_sizes(root))
     problems += oversized_functions(long_functions(root))
+    problems += oversized_tests(long_tests(root))
     problems += milestone_named_tests(test_files(root))
     problems += hand_written_linear_algebra(linear_algebra_counts(root))
     model = (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")

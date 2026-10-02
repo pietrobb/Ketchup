@@ -7,7 +7,9 @@ crates/ketchup-app/src/live_bridge/tests.rs 12
 crates/ketchup-app/src/live_bridge/topology_recovery_tests.rs 2
 crates/ketchup-app/src/live_bridge/transport.rs 2
 crates/ketchup-app/src/planar_push_pull_tests.rs 6
-crates/ketchup-app/src/tests.rs 6
+crates/ketchup-app/src/tests/assistant.rs 1
+crates/ketchup-app/src/tests/exact_modeling.rs 4
+crates/ketchup-app/src/tests/shell.rs 1
 crates/ketchup-app/tests/assistant_workflows.rs 19
 crates/ketchup-app/tests/body_ui.rs 1
 crates/ketchup-app/tests/capstone_chain.rs 1

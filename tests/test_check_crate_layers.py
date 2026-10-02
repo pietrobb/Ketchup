@@ -106,6 +106,32 @@ def test_function_over_the_limit_fails_and_long_ones_only_shrink():
     ]
 
 
+def test_test_modules_are_told_from_production_modules():
+    for path in ["crates/a/tests/x.rs", "crates/a/src/tests.rs", "crates/a/src/tests/x.rs",
+                 "crates/a/src/live_bridge/product_integration_tests.rs"]:
+        assert checker.is_test_module(Path(path))
+    for path in ["crates/a/src/lib.rs", "crates/a/src/testing.rs", "crates/a/src/test_env.rs"]:
+        assert not checker.is_test_module(Path(path))
+
+
+def test_test_over_the_limit_fails_and_long_ones_only_shrink():
+    recorded = {"t.rs::long": 30}
+    assert checker.oversized_tests({"t.rs::long": 30}, recorded, 10) == []
+    assert checker.oversized_tests({"t.rs::new": 11}, recorded, 10)[0] == (
+        "t.rs::new: 11 lines, limit 10; split it into one test per behavior"
+    )
+    assert checker.oversized_tests({"t.rs::long": 20}, recorded, 10) == [
+        "t.rs::long: shrank to 20 lines; lower LONG_TESTS to it"
+    ]
+
+
+def test_workspace_tests_fit_the_limit_or_only_shrink():
+    lengths = checker.long_tests(ROOT)
+    assert checker.oversized_tests(lengths) == []
+    assert not [name for name in lengths if name.startswith("crates/ketchup-app/src/tests.rs")]
+    assert "crates/ketchup-app/src/tests.rs" not in checker.OVERSIZED
+
+
 def test_app_shell_has_no_oversized_module_or_function():
     lengths = checker.long_functions(ROOT)
     assert checker.oversized_functions(lengths) == []
