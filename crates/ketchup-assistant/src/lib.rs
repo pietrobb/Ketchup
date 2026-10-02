@@ -4,5 +4,6 @@
 pub mod catalog;
 pub mod extension;
 pub mod intent;
+pub mod protocol;
 pub mod request_invalid;
 pub mod sidecar;

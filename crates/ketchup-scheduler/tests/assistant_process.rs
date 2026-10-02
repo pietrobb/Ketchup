@@ -1,6 +1,5 @@
-use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
-};
+use ketchup_assistant::protocol::PROTOCOL_VERSION;
+use ketchup_assistant::sidecar::{AssistantCapability, AssistantDistribution, AssistantHandshake};
 use ketchup_scheduler::assistant::{
     AssistantCancellation, AssistantProcessClient, AssistantProcessError, AssistantProcessLaunch,
 };
@@ -16,7 +15,7 @@ use tempfile::TempDir;
 
 fn public_handshake() -> AssistantHandshake {
     AssistantHandshake {
-        protocol_version: ASSISTANT_PROTOCOL_VERSION,
+        protocol_version: PROTOCOL_VERSION,
         distribution: AssistantDistribution::PublicApi,
         provider: "anthropic-api".to_owned(),
         model: "claude-sonnet-4-6".to_owned(),

@@ -5,9 +5,10 @@ use crate::harness;
 use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::private_assistant_launch;
+use ketchup_assistant::protocol::PROTOCOL_VERSION;
 use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantCapability, AssistantDistribution,
-    AssistantHandshake, AssistantModelIntent, AssistantTranslationIntent,
+    AssistantBoxIntent, AssistantCapability, AssistantDistribution, AssistantHandshake,
+    AssistantModelIntent, AssistantTranslationIntent,
 };
 use ketchup_scheduler::assistant::AssistantProcessClient;
 use serde_json::Value;
@@ -27,7 +28,7 @@ fn live_verdict(context: &Value, expected_state: &str) -> Value {
     let launch = private_assistant_launch()
         .expect("a production private OAuth binary must be configured for this opt-in test");
     let handshake = AssistantHandshake {
-        protocol_version: ASSISTANT_PROTOCOL_VERSION,
+        protocol_version: PROTOCOL_VERSION,
         distribution: AssistantDistribution::PrivateOauth,
         provider: "codex-oauth".to_owned(),
         model: "gpt-5.6-sol".to_owned(),

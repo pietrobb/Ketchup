@@ -27,12 +27,16 @@ use ketchup_application::transforms::{
 };
 use ketchup_application::validation::*;
 use ketchup_assistant::intent::{IntentRequest, WorkflowIntent, propose_intent};
+use ketchup_assistant::protocol::{
+    LOCAL_INSPECTION_CATALOG, MAX_PROJECT_MEMORY_CONTEXT_BYTES, MAX_PROJECT_MEMORY_ENTRIES,
+    MAX_PROJECT_MEMORY_STORED_ENTRIES, MAX_PROJECT_MEMORY_TEXT_BYTES, PROJECT_MEMORY_SCHEMA,
+    PROTOCOL_VERSION,
+};
 use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBoxIntent,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCapability, AssistantChatResult, AssistantDistribution, AssistantFeaReviewRequest,
-    AssistantHandshake, AssistantModelIntent, AssistantRejectionDiagnostic,
-    AssistantRejectionPhase,
+    AssistantApiDiagnostics, AssistantBoxIntent, AssistantCadEditOperation,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCapability, AssistantChatResult,
+    AssistantDistribution, AssistantFeaReviewRequest, AssistantHandshake, AssistantModelIntent,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase,
 };
 #[cfg(test)]
 use ketchup_assistant::sidecar::{
@@ -256,17 +260,11 @@ const MAX_ASSISTANT_MODEL_CATALOG_BYTES: u64 = 64 * 1024;
 const ASSISTANT_CHAT_NAMESPACE: &str = "org.ketchup.assistant";
 const ASSISTANT_CHAT_PATH: &str = "conversation-v1.json";
 const ASSISTANT_MEMORY_PATH: &str = "project-memory-v1.json";
-const ASSISTANT_MEMORY_SCHEMA: &str = "ketchup.project-memory.v1";
 const MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES: usize = 24 * 1024;
-const ASSISTANT_LOCAL_INSPECTION_CATALOG: &str = "_local_inspection_catalog";
 const MAX_ASSISTANT_PROVIDER_STATE_VIEW_BYTES: usize = 1024;
 const MAX_ASSISTANT_PROVIDER_CONVERSATION_MESSAGES: usize = 6;
 const MAX_ASSISTANT_PROVIDER_CONVERSATION_TEXT_BYTES: usize = 2 * 1024;
 const MAX_ASSISTANT_STATE_VIEW_BYTES: usize = 12 * 1024;
-const MAX_ASSISTANT_MEMORY_ENTRIES: usize = 128;
-const MAX_ASSISTANT_MEMORY_TEXT_BYTES: usize = 1024;
-const MAX_ASSISTANT_MEMORY_RETRIEVAL_ENTRIES: usize = 4;
-const MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES: usize = 8 * 1024;
 const MAX_ASSISTANT_MEMORY_STORAGE_BYTES: usize = 320 * 1024;
 use ketchup_application::validation::{
     MAX_ASSISTANT_VALIDATION_ISSUES, MAX_ASSISTANT_VALIDATION_OCCURRENCES,
@@ -2320,7 +2318,7 @@ struct AssistantProjectMemory {
 impl AssistantProjectMemory {
     fn empty(document_id: u64) -> Self {
         Self {
-            schema: ASSISTANT_MEMORY_SCHEMA.to_owned(),
+            schema: PROJECT_MEMORY_SCHEMA.to_owned(),
             document_id,
             next_sequence: 1,
             entries: Vec::new(),
@@ -2328,9 +2326,9 @@ impl AssistantProjectMemory {
     }
 
     fn validate(&self, document_id: u64) -> bool {
-        if self.schema != ASSISTANT_MEMORY_SCHEMA
+        if self.schema != PROJECT_MEMORY_SCHEMA
             || self.document_id != document_id
-            || self.entries.len() > MAX_ASSISTANT_MEMORY_ENTRIES
+            || self.entries.len() > MAX_PROJECT_MEMORY_STORED_ENTRIES
             || self.next_sequence == 0
         {
             return false;
@@ -2340,8 +2338,8 @@ impl AssistantProjectMemory {
             if entry.sequence <= previous
                 || entry.user.is_empty()
                 || entry.assistant.is_empty()
-                || entry.user.len() > MAX_ASSISTANT_MEMORY_TEXT_BYTES
-                || entry.assistant.len() > MAX_ASSISTANT_MEMORY_TEXT_BYTES
+                || entry.user.len() > MAX_PROJECT_MEMORY_TEXT_BYTES
+                || entry.assistant.len() > MAX_PROJECT_MEMORY_TEXT_BYTES
             {
                 return false;
             }
@@ -2365,9 +2363,9 @@ impl AssistantProjectMemory {
             assistant,
         });
         self.next_sequence += 1;
-        if self.entries.len() > MAX_ASSISTANT_MEMORY_ENTRIES {
+        if self.entries.len() > MAX_PROJECT_MEMORY_STORED_ENTRIES {
             self.entries
-                .drain(..self.entries.len() - MAX_ASSISTANT_MEMORY_ENTRIES);
+                .drain(..self.entries.len() - MAX_PROJECT_MEMORY_STORED_ENTRIES);
         }
     }
 
@@ -2429,9 +2427,9 @@ impl AssistantProjectMemory {
                 "sha256": assistant_memory_entry_sha256(entry),
             });
             entries.push(value);
-            if entries.len() > MAX_ASSISTANT_MEMORY_RETRIEVAL_ENTRIES
+            if entries.len() > MAX_PROJECT_MEMORY_ENTRIES
                 || serde_json::to_vec(&entries)
-                    .is_ok_and(|bytes| bytes.len() > MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES)
+                    .is_ok_and(|bytes| bytes.len() > MAX_PROJECT_MEMORY_CONTEXT_BYTES)
             {
                 entries.pop();
                 break;
@@ -2439,7 +2437,7 @@ impl AssistantProjectMemory {
         }
         let byte_length = serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len());
         serde_json::json!({
-            "schema": ASSISTANT_MEMORY_SCHEMA,
+            "schema": PROJECT_MEMORY_SCHEMA,
             "document_id": self.document_id,
             "stored_count": self.entries.len(),
             "retrieved_count": entries.len(),
@@ -2452,10 +2450,10 @@ impl AssistantProjectMemory {
 
 fn bounded_assistant_memory_text(text: &str) -> String {
     let text = text.trim();
-    if text.len() <= MAX_ASSISTANT_MEMORY_TEXT_BYTES {
+    if text.len() <= MAX_PROJECT_MEMORY_TEXT_BYTES {
         return text.to_owned();
     }
-    let mut end = MAX_ASSISTANT_MEMORY_TEXT_BYTES;
+    let mut end = MAX_PROJECT_MEMORY_TEXT_BYTES;
     while !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -2626,10 +2624,10 @@ fn summarized_assistant_validation_context(validation: &serde_json::Value) -> se
 fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_json::Value {
     let inspection_catalog = context
         .as_object_mut()
-        .and_then(|object| object.remove(ASSISTANT_LOCAL_INSPECTION_CATALOG));
+        .and_then(|object| object.remove(LOCAL_INSPECTION_CATALOG));
     let mut context = bounded_assistant_public_context(context);
     if let Some(inspection_catalog) = inspection_catalog {
-        context[ASSISTANT_LOCAL_INSPECTION_CATALOG] = inspection_catalog;
+        context[LOCAL_INSPECTION_CATALOG] = inspection_catalog;
     }
     context
 }
@@ -3133,7 +3131,7 @@ impl AssistantRequestSnapshot {
                 .iter()
                 .map(|path| KetchupApp::assistant_instance_path_value(&self.snapshot, path))
                 .collect::<Vec<_>>();
-            context[ASSISTANT_LOCAL_INSPECTION_CATALOG] = serde_json::json!({
+            context[LOCAL_INSPECTION_CATALOG] = serde_json::json!({
                 "document_id": self.snapshot.document_id().0,
                 "revision": self.snapshot.revision_id(),
                 "canonical_digest": self.snapshot.canonical_digest(),

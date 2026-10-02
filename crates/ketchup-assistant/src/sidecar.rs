@@ -15,9 +15,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use crate::protocol::{
+    MAX_CAD_EDIT_OPERATIONS, MAX_CAD_GENERATED_OCCURRENCES, MAX_CAD_SELECTOR_TARGETS,
+    PROTOCOL_VERSION,
+};
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
-pub const ASSISTANT_PROTOCOL_VERSION: u16 = 3;
 const MAX_ASSISTANT_MODEL_BYTES: usize = 128;
 const MAX_ASSISTANT_BOXES: usize = 64;
 const MAX_ASSISTANT_SUBTRACTIONS: usize = 64;
@@ -34,9 +37,6 @@ const MAX_ASSISTANT_ARRAYS: usize = 16;
 const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
 const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
-const MAX_ASSISTANT_CAD_EDIT_OPERATIONS: usize = 64;
-const MAX_ASSISTANT_CAD_SELECTOR_TARGETS: usize = 100;
-const MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES: usize = 512;
 const MAX_ASSISTANT_REJECTION_CODE_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_OPERATION_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_TARGET_BYTES: usize = 256;
@@ -2240,11 +2240,11 @@ impl AssistantAssemblyJointKind {
 impl AssistantCadEntitySelector {
     fn bounded_target_count(&self) -> Result<usize, AssistantRequestInvalid> {
         match self {
-            Self::CurrentSelection {} => Ok(MAX_ASSISTANT_CAD_SELECTOR_TARGETS),
+            Self::CurrentSelection {} => Ok(MAX_CAD_SELECTOR_TARGETS),
             Self::Occurrences { occurrence_ids } => {
                 let unique = occurrence_ids.iter().copied().collect::<BTreeSet<_>>();
                 if occurrence_ids.is_empty()
-                    || occurrence_ids.len() > MAX_ASSISTANT_CAD_SELECTOR_TARGETS
+                    || occurrence_ids.len() > MAX_CAD_SELECTOR_TARGETS
                     || unique.len() != occurrence_ids.len()
                     || occurrence_ids.contains(&0)
                 {
@@ -2260,7 +2260,7 @@ impl AssistantCadEntitySelector {
         target_count: usize,
     ) -> Result<(), AssistantRequestInvalid> {
         self.bounded_target_count()?;
-        if target_count == 0 || target_count > MAX_ASSISTANT_CAD_SELECTOR_TARGETS {
+        if target_count == 0 || target_count > MAX_CAD_SELECTOR_TARGETS {
             return Err(AssistantRequestInvalid::invalid(
                 "CAD resolved selector target count",
             ));
@@ -2866,7 +2866,7 @@ fn validate_assistant_sketch_payload(
 
 impl AssistantCadEditProgram {
     pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
-        if self.operations.is_empty() || self.operations.len() > MAX_ASSISTANT_CAD_EDIT_OPERATIONS {
+        if self.operations.is_empty() || self.operations.len() > MAX_CAD_EDIT_OPERATIONS {
             return Err(AssistantRequestInvalid::invalid(
                 "CAD edit program operation count",
             ));
@@ -3348,7 +3348,7 @@ impl AssistantCadEditProgram {
                         || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || instance_paths.is_empty()
-                        || instance_paths.len() > MAX_ASSISTANT_CAD_SELECTOR_TARGETS
+                        || instance_paths.len() > MAX_CAD_SELECTOR_TARGETS
                         || unique.len() != instance_paths.len()
                     {
                         return Err(AssistantRequestInvalid::invalid("drawing creation"));
@@ -3435,7 +3435,7 @@ impl AssistantCadEditProgram {
                         || name.len() > limits::NAME_BYTES
                         || name.chars().any(char::is_control)
                         || categories.is_empty()
-                        || categories.len() > MAX_ASSISTANT_CAD_EDIT_OPERATIONS
+                        || categories.len() > MAX_CAD_EDIT_OPERATIONS
                         || categories.iter().any(|category| {
                             category.id == 0
                                 || category.name.trim().is_empty()
@@ -3589,10 +3589,10 @@ impl AssistantCadEditProgram {
                 .ok_or(AssistantRequestInvalid::invalid(
                     "CAD generated occurrence count",
                 ))?;
-            if generated_occurrences > MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES {
+            if generated_occurrences > MAX_CAD_GENERATED_OCCURRENCES {
                 return Err(AssistantRequestInvalid::new(
                     "CAD edit program generated occurrence count",
-                    AssistantRequestProblem::ExceedsLimit(MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES),
+                    AssistantRequestProblem::ExceedsLimit(MAX_CAD_GENERATED_OCCURRENCES),
                 ));
             }
         }
@@ -4178,7 +4178,7 @@ impl AssistantHandshake {
     }
 
     pub fn validate(&self) -> Result<(), AssistantHandshakeError> {
-        if self.protocol_version != ASSISTANT_PROTOCOL_VERSION {
+        if self.protocol_version != PROTOCOL_VERSION {
             return Err(AssistantHandshakeError::UnsupportedProtocolVersion(
                 self.protocol_version,
             ));

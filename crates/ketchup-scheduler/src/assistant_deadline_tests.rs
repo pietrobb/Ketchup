@@ -1,9 +1,10 @@
 use super::*;
-use ketchup_assistant::sidecar::{ASSISTANT_PROTOCOL_VERSION, AssistantCapability};
+use ketchup_assistant::protocol::PROTOCOL_VERSION;
+use ketchup_assistant::sidecar::AssistantCapability;
 
 fn ready_client(mode: &str, timeout: Duration) -> AssistantProcessClient {
     let handshake = AssistantHandshake {
-        protocol_version: ASSISTANT_PROTOCOL_VERSION,
+        protocol_version: PROTOCOL_VERSION,
         distribution: AssistantDistribution::PublicApi,
         provider: "anthropic-api".to_owned(),
         model: "claude-sonnet-4-6".to_owned(),

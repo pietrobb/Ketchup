@@ -10,9 +10,8 @@ use ketchup_app::{
     AssistantLaunchError, private_assistant_launch, private_assistant_launch_for_executable,
     public_assistant_launch_for_install_root,
 };
-use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
-};
+use ketchup_assistant::protocol::PROTOCOL_VERSION;
+use ketchup_assistant::sidecar::{AssistantCapability, AssistantDistribution, AssistantHandshake};
 use ketchup_scheduler::assistant::{AssistantProcessClient, AssistantProcessLaunch};
 use std::collections::BTreeSet;
 use std::fs;
@@ -29,7 +28,7 @@ fn handshake(
     model: &str,
 ) -> AssistantHandshake {
     AssistantHandshake {
-        protocol_version: ASSISTANT_PROTOCOL_VERSION,
+        protocol_version: PROTOCOL_VERSION,
         distribution,
         provider: provider.to_owned(),
         model: model.to_owned(),

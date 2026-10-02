@@ -636,7 +636,7 @@ impl KetchupApp {
             capabilities.insert(AssistantCapability::DebugObservability);
         }
         AssistantHandshake {
-            protocol_version: ASSISTANT_PROTOCOL_VERSION,
+            protocol_version: PROTOCOL_VERSION,
             distribution: self.assistant.provider.distribution(),
             provider: self.assistant.provider.protocol_name().to_owned(),
             model: self.assistant.model.clone(),

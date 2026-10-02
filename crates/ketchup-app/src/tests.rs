@@ -3121,7 +3121,7 @@ fn provider_context_remains_bounded_for_extreme_selection_and_history() {
             "content": long_text,
         },
         "project_memory": {
-            "schema": ASSISTANT_MEMORY_SCHEMA,
+            "schema": PROJECT_MEMORY_SCHEMA,
             "document_id": 1,
             "stored_count": 0,
             "retrieved_count": 0,
@@ -3380,13 +3380,13 @@ fn assistant_project_memory_retrieval_is_bounded_relevant_and_read_only() {
     let context = app.assistant_context_for("What is the shelf spacing?");
     let memory = context["project_memory"].as_object().unwrap();
     let entries = memory["entries"].as_array().unwrap();
-    assert_eq!(memory["schema"], ASSISTANT_MEMORY_SCHEMA);
+    assert_eq!(memory["schema"], PROJECT_MEMORY_SCHEMA);
     assert_eq!(
         memory["document_id"],
         app.document.current().document_id().0
     );
-    assert_eq!(memory["stored_count"], MAX_ASSISTANT_MEMORY_ENTRIES);
-    assert!(entries.len() <= MAX_ASSISTANT_MEMORY_RETRIEVAL_ENTRIES);
+    assert_eq!(memory["stored_count"], MAX_PROJECT_MEMORY_STORED_ENTRIES);
+    assert!(entries.len() <= MAX_PROJECT_MEMORY_ENTRIES);
     assert!(entries.iter().any(|entry| {
         entry["assistant"] == "The shelf spacing is 320 mm."
             && entry["sha256"]
@@ -3395,7 +3395,7 @@ fn assistant_project_memory_retrieval_is_bounded_relevant_and_read_only() {
     }));
     let encoded = serde_json::to_vec(entries).unwrap();
     assert_eq!(memory["byte_length"], encoded.len());
-    assert!(encoded.len() <= MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES);
+    assert!(encoded.len() <= MAX_PROJECT_MEMORY_CONTEXT_BYTES);
     assert_eq!(
         (
             app.document.current().revision_id(),

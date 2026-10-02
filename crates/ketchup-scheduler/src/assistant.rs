@@ -1,3 +1,4 @@
+use ketchup_assistant::protocol::MAX_LINE_BYTES;
 use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 use ketchup_assistant::sidecar::{
     AssistantApiDiagnostics, AssistantCadEditProgram, AssistantCapability, AssistantChatResult,
@@ -22,7 +23,6 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 pub const MAX_ASSISTANT_REQUEST_LINE_BYTES: usize = 128 * 1024;
-pub const MAX_ASSISTANT_RESPONSE_LINE_BYTES: usize = 256 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub const MAX_ASSISTANT_EXECUTABLE_BYTES: u64 = 96 * 1024 * 1024;
 
@@ -563,7 +563,7 @@ fn spawn_bounded_reader(
     let _ = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {
-            let line = read_bounded_line(&mut reader, MAX_ASSISTANT_RESPONSE_LINE_BYTES);
+            let line = read_bounded_line(&mut reader, MAX_LINE_BYTES);
             let terminal = !matches!(line, Ok(Some(_)));
             if sender.send(line).is_err() || terminal {
                 break;

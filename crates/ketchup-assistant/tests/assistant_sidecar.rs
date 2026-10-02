@@ -1,12 +1,13 @@
+use ketchup_assistant::protocol::PROTOCOL_VERSION;
 use ketchup_assistant::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantAxisSpec, AssistantCadBodyFeature,
-    AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadFeatureReference, AssistantCadLoftContinuity, AssistantCadLoftSection,
-    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
-    AssistantCadRotation, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
-    AssistantDistribution, AssistantHandshake, AssistantHandshakeError, AssistantHelixHandedness,
+    AssistantAxisSpec, AssistantCadBodyFeature, AssistantCadBooleanOperation,
+    AssistantCadChamferMode, AssistantCadDeletePolicy, AssistantCadEditOperation,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
+    AssistantCadLoftContinuity, AssistantCadLoftSection, AssistantCadPartFeature,
+    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference, AssistantCadRotation,
+    AssistantCadShellDirection, AssistantCadSurfaceBodySource, AssistantDistribution,
+    AssistantHandshake, AssistantHandshakeError, AssistantHelixHandedness,
     AssistantHelixParameters, AssistantLinearArrayIntent, AssistantModelIntent,
     AssistantParameterEditIntent, AssistantPrincipalPlane, AssistantProfileTranslationIntent,
     AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantRotationIntent,
@@ -27,7 +28,7 @@ const PUBLIC_HANDSHAKE: &str = r#"{
 fn public_api_handshake_accepts_only_the_bounded_contract() {
     let handshake = AssistantHandshake::parse_and_validate(PUBLIC_HANDSHAKE).unwrap();
 
-    assert_eq!(handshake.protocol_version, ASSISTANT_PROTOCOL_VERSION);
+    assert_eq!(handshake.protocol_version, PROTOCOL_VERSION);
     assert_eq!(handshake.distribution, AssistantDistribution::PublicApi);
     assert_eq!(handshake.provider, "anthropic-api");
     assert_eq!(handshake.model, "claude-sonnet-4-6");

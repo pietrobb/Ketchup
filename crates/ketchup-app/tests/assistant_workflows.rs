@@ -8,21 +8,21 @@ use ketchup_app::{
     AssistantProvider, AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
 };
 use ketchup_assistant::intent::WorkflowIntent;
+use ketchup_assistant::protocol::PROTOCOL_VERSION;
 use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAssemblyJointAxis,
-    AssistantAssemblyJointKind, AssistantAssemblyJointLimits, AssistantAxisSpec,
-    AssistantBoxIntent, AssistantCadBodyFeature, AssistantCadBooleanOperation,
-    AssistantCadChamferMode, AssistantCadDeletePolicy, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
-    AssistantCadFilletRadiusStation, AssistantCadLoftContinuity, AssistantCadLoftSection,
-    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
-    AssistantCadRotation, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
-    AssistantChatResult, AssistantDistribution, AssistantInstancePath, AssistantInstancePathStep,
-    AssistantLinearArrayIntent, AssistantModelIntent, AssistantParameterEditIntent,
-    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
-    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
-    AssistantSketchPointRef, AssistantSubtractionIntent, AssistantTranslationIntent,
-    AssistantWorkplaneSpec,
+    AssistantApiDiagnostics, AssistantAssemblyJointAxis, AssistantAssemblyJointKind,
+    AssistantAssemblyJointLimits, AssistantAxisSpec, AssistantBoxIntent, AssistantCadBodyFeature,
+    AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadFeatureReference, AssistantCadFilletRadiusStation, AssistantCadLoftContinuity,
+    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
+    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantCadShellDirection,
+    AssistantCadSurfaceBodySource, AssistantChatResult, AssistantDistribution,
+    AssistantInstancePath, AssistantInstancePathStep, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
+    AssistantProfileTranslationIntent, AssistantRotationIntent, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
+    AssistantSubtractionIntent, AssistantTranslationIntent, AssistantWorkplaneSpec,
 };
 use ketchup_geometry::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
@@ -7030,7 +7030,7 @@ fn assistant_provider_selection_builds_an_exact_model_bound_handshake() {
         );
         assert_eq!(shell.app().assistant_model(), "claude-sonnet-5");
         let anthropic = shell.app().assistant_handshake();
-        assert_eq!(anthropic.protocol_version, ASSISTANT_PROTOCOL_VERSION);
+        assert_eq!(anthropic.protocol_version, PROTOCOL_VERSION);
         assert_eq!(anthropic.distribution, AssistantDistribution::PublicApi);
         assert_eq!(anthropic.provider, "anthropic-api");
         assert_eq!(anthropic.model, "claude-sonnet-5");
@@ -7044,7 +7044,7 @@ fn assistant_provider_selection_builds_an_exact_model_bound_handshake() {
         );
         assert_eq!(shell.app().assistant_model(), "gpt-5.6-sol");
         let codex = shell.app().assistant_handshake();
-        assert_eq!(codex.protocol_version, ASSISTANT_PROTOCOL_VERSION);
+        assert_eq!(codex.protocol_version, PROTOCOL_VERSION);
         assert_eq!(codex.distribution, AssistantDistribution::PrivateOauth);
         assert_eq!(codex.provider, "codex-oauth");
         assert_eq!(codex.model, "gpt-5.6-sol");

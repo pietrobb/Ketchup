@@ -1,8 +1,8 @@
 use crate::{AssistantTransport, AssistantTransportResponse, Rejection, failed};
+use ketchup_assistant::protocol::PROTOCOL_VERSION;
 use ketchup_assistant::request_invalid::AssistantRequestInvalid;
 use ketchup_assistant::sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantCapability,
-    AssistantDistribution, AssistantHandshake,
+    AssistantApiDiagnostics, AssistantCapability, AssistantDistribution, AssistantHandshake,
 };
 use ketchup_model::graph::sha256_hex;
 use ketchup_scheduler::assistant::{
@@ -331,7 +331,7 @@ pub fn private_assistant_launch_for_executable(
 
 pub fn verify_public_assistant_runtime() -> Result<(), AssistantLaunchError> {
     let handshake = AssistantHandshake {
-        protocol_version: ASSISTANT_PROTOCOL_VERSION,
+        protocol_version: PROTOCOL_VERSION,
         distribution: AssistantDistribution::PublicApi,
         provider: "anthropic-api".to_owned(),
         model: "claude-sonnet-4-6".to_owned(),
