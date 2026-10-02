@@ -1728,6 +1728,9 @@ impl KetchupApp {
                         ActiveTool::Circle => {
                             self.complete_circle_sketch(start, point);
                         }
+                        ActiveTool::Polygon => {
+                            self.complete_polygon_sketch(start, point);
+                        }
                         ActiveTool::Arc => {
                             if let Some(end) = self.gesture.sketch.end {
                                 self.complete_arc_sketch(start, end, point);
@@ -1755,6 +1758,7 @@ impl KetchupApp {
                     self.status_key = match self.active_tool {
                         ActiveTool::Line => "status-line-end",
                         ActiveTool::Circle => "status-circle-radius",
+                        ActiveTool::Polygon => "status-polygon-corner",
                         ActiveTool::Arc => "status-arc-end",
                         _ => "status-sketch-second-point",
                     };
@@ -2214,6 +2218,24 @@ impl KetchupApp {
         response: &egui::Response,
         primary_release: bool,
     ) {
+        // Dragging from the first point to the second draws the shape the same
+        // way as clicking both points.
+        if response.drag_stopped_by(egui::PointerButton::Primary)
+            && self.gesture.sketch.armed
+            && matches!(
+                self.active_tool,
+                ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Polygon
+            )
+            && let (Some(start), Some(end)) =
+                (self.gesture.sketch.start, self.gesture.sketch.cursor)
+            && length(end - start) > limits::MIN_LENGTH_MM
+        {
+            match self.active_tool {
+                ActiveTool::Circle => self.complete_circle_sketch(start, end),
+                ActiveTool::Polygon => self.complete_polygon_sketch(start, end),
+                _ => self.complete_rectangle_sketch(start, end),
+            };
+        }
         if response.drag_stopped_by(egui::PointerButton::Primary)
             || (response.hovered() && primary_release)
         {
@@ -2289,7 +2311,7 @@ impl KetchupApp {
                         cursor.y - start.y,
                         cursor.z - start.z,
                     ))),
-                    ActiveTool::Circle => format_height(length(Vec3::new(
+                    ActiveTool::Circle | ActiveTool::Polygon => format_height(length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
                         cursor.z - start.z,
@@ -3250,6 +3272,21 @@ impl KetchupApp {
                         Color32::WHITE,
                     );
                 }
+            } else if let Some(outline) = self.closed_shape_preview_outline() {
+                let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
+                let mut points: Vec<Pos2> = outline
+                    .iter()
+                    .map(|point| self.project(*point, response.rect))
+                    .collect();
+                points.extend(points.first().copied());
+                painter.add(egui::Shape::line(points, stroke));
+                painter.text(
+                    self.project(start, response.rect),
+                    egui::Align2::CENTER_CENTER,
+                    format!("R {} mm", format_height(length(cursor - start))),
+                    egui::FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
             } else if self.active_tool == ActiveTool::Circle {
                 let radius = length(cursor - start);
                 let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));

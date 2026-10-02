@@ -591,6 +591,7 @@ const fn command_icon(id: AppCommand) -> Icon {
         AppCommand::Rectangle => Icon::Rectangle,
         AppCommand::Circle => Icon::Circle,
         AppCommand::Arc => Icon::Arc,
+        AppCommand::Polygon => Icon::Polygon,
         AppCommand::Revolve => Icon::Orbit,
         AppCommand::Shell => Icon::PushPull,
         AppCommand::Fillet | AppCommand::Chamfer => Icon::Tape,

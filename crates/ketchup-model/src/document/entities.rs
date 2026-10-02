@@ -678,6 +678,23 @@ pub fn polygon_segments(points_mm: &[[f64; 2]]) -> Vec<ProfileSegment> {
         .collect()
 }
 
+/// The corners of a regular polygon with `sides` corners on a circle of `radius_mm`
+/// around the origin, the first corner `first_corner_radians` from +x, counter-clockwise.
+#[must_use]
+pub fn regular_polygon_points(
+    sides: usize,
+    radius_mm: f64,
+    first_corner_radians: f64,
+) -> Vec<[f64; 2]> {
+    let step = std::f64::consts::TAU / sides as f64;
+    (0..sides)
+        .map(|corner| {
+            let (sin, cos) = (first_corner_radians + step * corner as f64).sin_cos();
+            [radius_mm * cos, radius_mm * sin]
+        })
+        .collect()
+}
+
 /// The corners of a closed chain of straight lines, or `None` when a segment is curved
 /// or the chain is not connected end to start.
 #[must_use]

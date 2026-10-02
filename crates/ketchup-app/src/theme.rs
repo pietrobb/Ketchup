@@ -180,6 +180,7 @@ pub enum Icon {
     Rectangle,
     Circle,
     Arc,
+    Polygon,
     PushPull,
     Move,
     Tape,
@@ -216,6 +217,10 @@ impl Icon {
                 "M12 12 L18 12",
             ],
             Self::Arc => ["M5 17 C7 7 17 7 19 17", "M5 17 L19 17"],
+            Self::Polygon => [
+                "M12 4 L18.9 8 L18.9 16 L12 20 L5.1 16 L5.1 8 Z",
+                "M12 12 L18.9 8",
+            ],
             Self::PushPull => [
                 "M12 10.4 L19.4 14.2 L12 18 L4.6 14.2 Z",
                 "M4.6 14.2 v2.6 L12 20.6 v-2.6 M19.4 14.2 v2.6 L12 20.6",
@@ -671,6 +676,7 @@ mod tests {
             Icon::Rectangle,
             Icon::Circle,
             Icon::Arc,
+            Icon::Polygon,
             Icon::PushPull,
             Icon::Move,
             Icon::Tape,

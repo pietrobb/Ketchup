@@ -26,6 +26,18 @@ pub(crate) struct SketchGesture {
     pub(crate) chain_points: Vec<Vec3>,
     pub(crate) chain_items: Vec<(DefinitionId, OccurrenceId)>,
     pub(crate) axis_lock: Option<Axis>,
+    /// Corners of the next polygon, typed before its centre is placed; kept
+    /// between polygons like the rest of the tool's settings.
+    pub(crate) polygon_sides: Option<usize>,
+}
+
+/// Corners of a polygon until the user types another count.
+const DEFAULT_POLYGON_SIDES: usize = 6;
+
+impl SketchGesture {
+    pub(crate) fn polygon_sides(&self) -> usize {
+        self.polygon_sides.unwrap_or(DEFAULT_POLYGON_SIDES)
+    }
 }
 
 /// Two picked points; measuring never changes the document.

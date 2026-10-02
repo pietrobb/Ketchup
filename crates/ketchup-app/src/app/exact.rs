@@ -939,6 +939,23 @@ impl KetchupApp {
         self.complete_circle(center, radius_mm, direction)
     }
 
+    pub(crate) fn complete_exact_polygon(&mut self) -> bool {
+        let Some(center) = self.gesture.sketch.start else {
+            return false;
+        };
+        let Some(radius_mm) = parse_distance_mm(&self.value_box.input)
+            .filter(|radius| *radius > limits::MIN_LENGTH_MM)
+        else {
+            return false;
+        };
+        let direction = self
+            .gesture
+            .sketch
+            .cursor
+            .map_or(Vec3::new(1.0, 0.0, 0.0), |cursor| cursor - center);
+        self.complete_polygon(center, radius_mm, direction)
+    }
+
     pub(crate) fn complete_exact_arc(&mut self) -> bool {
         let (Some(start), Some(end)) = (self.gesture.sketch.start, self.gesture.sketch.end) else {
             return false;

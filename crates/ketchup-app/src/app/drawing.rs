@@ -1025,6 +1025,49 @@ impl KetchupApp {
             })
     }
 
+    /// Corners of the closed shape being drawn, in world coordinates, while its
+    /// second point follows the pointer; `None` when no such shape is in progress.
+    #[must_use]
+    pub fn closed_shape_preview_outline(&self) -> Option<Vec<Vec3>> {
+        let center = self.gesture.sketch.start?;
+        let cursor = self.gesture.sketch.cursor?;
+        let corners = match self.active_tool {
+            ActiveTool::Polygon => {
+                let direction = cursor - center;
+                self.polygon_corners(center, length(direction), direction)
+            }
+            _ => return None,
+        };
+        Some(
+            corners
+                .into_iter()
+                .map(|[x, y]| self.drawing_world_delta(center, Vec3::new(x, y, 0.0)))
+                .collect(),
+        )
+    }
+
+    /// The newest drawn profile: its segments in the profile's own plane and the
+    /// placement of that plane in the world.
+    #[must_use]
+    pub fn latest_profile(&self) -> Option<(Transform, Vec<ProfileSegment>)> {
+        let snapshot = self.document.current();
+        snapshot
+            .occurrences()
+            .filter_map(|occurrence| {
+                let definition = snapshot.definition(occurrence.definition_id())?;
+                definition.feature_ids().iter().find_map(|feature_id| {
+                    let FeatureKind::Profile { segments, .. } =
+                        snapshot.feature(*feature_id)?.kind()
+                    else {
+                        return None;
+                    };
+                    Some((occurrence.id(), occurrence.transform(), segments.clone()))
+                })
+            })
+            .max_by_key(|(id, _, _)| *id)
+            .map(|(_, transform, segments)| (transform, segments))
+    }
+
     /// Number of canonical closed two-arc Circle profiles in the document.
     #[must_use]
     pub fn circle_profile_count(&self) -> usize {
@@ -2370,6 +2413,87 @@ impl KetchupApp {
         created
     }
 
+    pub(crate) fn complete_polygon_sketch(&mut self, center: Vec3, corner: Vec3) -> bool {
+        let direction = corner - center;
+        self.complete_polygon(center, length(direction), direction)
+    }
+
+    /// Corners of the polygon about `center` in the drawing plane, the first one
+    /// along `direction`.
+    pub(crate) fn polygon_corners(
+        &self,
+        center: Vec3,
+        radius_mm: f64,
+        direction: Vec3,
+    ) -> Vec<[f64; 2]> {
+        let local = self.drawing_local_delta(center, center + direction);
+        let angle = if length(local) > limits::MIN_LENGTH_MM {
+            local.y.atan2(local.x)
+        } else {
+            0.0
+        };
+        regular_polygon_points(self.gesture.sketch.polygon_sides(), radius_mm, angle)
+    }
+
+    pub(crate) fn complete_polygon(
+        &mut self,
+        center: Vec3,
+        radius_mm: f64,
+        direction: Vec3,
+    ) -> bool {
+        if !radius_mm.is_finite() || radius_mm <= limits::MIN_LENGTH_MM {
+            return false;
+        }
+        let sides = self.gesture.sketch.polygon_sides();
+        let corners = self.polygon_corners(center, radius_mm, direction);
+        let created = self.create_segment_profile_at(
+            self.drawing_transform(center),
+            polygon_segments(&corners),
+            true,
+            "model-default-polygon",
+            "model-polygon-profile",
+        );
+        if created {
+            self.gesture.sketch.armed = self.uses_drawing_plane();
+            self.gesture.sketch.start = None;
+            self.gesture.sketch.cursor = None;
+            self.value_box.input = sides.to_string();
+            self.status_key = "status-polygon-created";
+            self.digest = self.catalog.format(
+                "digest-exact-polygon",
+                &BTreeMap::from([
+                    ("sides", sides.to_string()),
+                    ("radius", format_height(radius_mm)),
+                ]),
+            );
+        }
+        created
+    }
+
+    /// Reads the corner count typed before the polygon centre is placed.
+    pub(crate) fn set_polygon_sides_from_value_box(&mut self) -> bool {
+        let Some(sides) = self
+            .value_box
+            .input
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|sides| (3..=limits::PATH_SEGMENTS).contains(sides))
+        else {
+            self.digest = self.catalog.format(
+                "digest-polygon-invalid-sides",
+                &BTreeMap::from([("max", limits::PATH_SEGMENTS.to_string())]),
+            );
+            return false;
+        };
+        self.gesture.sketch.polygon_sides = Some(sides);
+        self.digest = self.catalog.format(
+            "digest-polygon-sides",
+            &BTreeMap::from([("sides", sides.to_string())]),
+        );
+        true
+    }
+
     pub(crate) fn complete_arc_sketch(
         &mut self,
         start: Vec3,
@@ -2616,6 +2740,7 @@ impl KetchupApp {
                 | ActiveTool::Rectangle
                 | ActiveTool::Circle
                 | ActiveTool::Arc
+                | ActiveTool::Polygon
         ) && (!context.wants_keyboard_input()
             || context.memory(|memory| memory.has_focus(egui::Id::new("value-box-input"))))
         {
@@ -2700,12 +2825,13 @@ impl KetchupApp {
     pub(crate) fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
         // Grouped the way the design groups them: pick, draw, modify, measure,
         // navigate. A group boundary draws a hairline.
-        const TOOLS: [(AppCommand, u8); 11] = [
+        const TOOLS: [(AppCommand, u8); 12] = [
             (AppCommand::Select, 0),
             (AppCommand::Line, 1),
             (AppCommand::Rectangle, 1),
             (AppCommand::Circle, 1),
             (AppCommand::Arc, 1),
+            (AppCommand::Polygon, 1),
             (AppCommand::PushPull, 2),
             (AppCommand::Move, 2),
             (AppCommand::Rotate, 2),

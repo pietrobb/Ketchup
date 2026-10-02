@@ -80,7 +80,7 @@ use ketchup_model::document::{
     ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
     SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
     SolidToolPlan, SpatialPathSegment, TagId, TipReplacementParent, TipReplacementProposal,
-    Transform, TrustedConfirmationSurface,
+    Transform, TrustedConfirmationSurface, polygon_segments, regular_polygon_points,
 };
 #[cfg(test)]
 use ketchup_model::document::{
@@ -121,6 +121,7 @@ use ketchup_model::space::ClearanceOwner;
 use ketchup_model::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use ketchup_model::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
 use ketchup_model::tolerance::TolerancePolicy;
+use ketchup_model::tolerance::limits;
 use ketchup_model::tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
     SCREEN_ROUNDING_PX,
@@ -1732,6 +1733,7 @@ enum ActiveTool {
     Rectangle,
     Circle,
     Arc,
+    Polygon,
     SolidSubtract,
     SolidTrim,
     SolidUnion,
@@ -1763,6 +1765,7 @@ impl ActiveTool {
             Self::Rectangle => "tool-rectangle",
             Self::Circle => "tool-circle",
             Self::Arc => "tool-arc",
+            Self::Polygon => "tool-polygon",
             Self::SolidSubtract => "solid-tool-subtract",
             Self::SolidTrim => "solid-tool-trim",
             Self::SolidUnion => "solid-tool-union",
@@ -1794,6 +1797,7 @@ impl ActiveTool {
             Self::Rectangle => "hint-rectangle",
             Self::Circle => "hint-circle",
             Self::Arc => "hint-arc",
+            Self::Polygon => "hint-polygon",
             Self::SolidSubtract => "hint-solid-subtract",
             Self::SolidTrim => "hint-solid-trim",
             Self::SolidUnion => "hint-solid-union",
@@ -1857,6 +1861,7 @@ pub enum AppCommand {
     Rectangle,
     Circle,
     Arc,
+    Polygon,
     SolidSubtract,
     SolidTrim,
     SolidUnion,

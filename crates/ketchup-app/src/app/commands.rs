@@ -232,15 +232,23 @@ impl KetchupApp {
                 self.refresh_general_finish_preview();
             } else if matches!(
                 tool,
-                ActiveTool::Line | ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Arc
+                ActiveTool::Line
+                    | ActiveTool::Rectangle
+                    | ActiveTool::Circle
+                    | ActiveTool::Arc
+                    | ActiveTool::Polygon
             ) {
                 self.gesture.sketch.armed = true;
                 self.status_key = match tool {
                     ActiveTool::Line => "status-line-start",
                     ActiveTool::Circle => "status-circle-center",
                     ActiveTool::Arc => "status-arc-start",
+                    ActiveTool::Polygon => "status-polygon-center",
                     _ => "status-sketch-first-point",
                 };
+                if tool == ActiveTool::Polygon {
+                    self.value_box.input = self.gesture.sketch.polygon_sides().to_string();
+                }
             } else if tool == ActiveTool::Measure {
                 self.status_key = "status-measure-first-point";
             } else if matches!(
@@ -445,6 +453,7 @@ impl KetchupApp {
             | AppCommand::Rectangle
             | AppCommand::Circle
             | AppCommand::Arc
+            | AppCommand::Polygon
             | AppCommand::SolidSubtract
             | AppCommand::SolidTrim
             | AppCommand::SolidUnion
@@ -519,8 +528,12 @@ impl KetchupApp {
                 ActiveTool::Line => self.complete_exact_line(),
                 ActiveTool::Circle => self.complete_exact_circle(),
                 ActiveTool::Arc => self.complete_exact_arc(),
+                ActiveTool::Polygon => self.complete_exact_polygon(),
                 _ => self.complete_exact_rectangle(),
             };
+        }
+        if self.active_tool == ActiveTool::Polygon && self.gesture.sketch.armed {
+            return self.set_polygon_sides_from_value_box();
         }
         if self.active_tool == ActiveTool::Scale {
             let Some(factor) = self

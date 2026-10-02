@@ -10,6 +10,7 @@ mod assistant_workflows;
 mod body_ui;
 mod capstone;
 mod capstone_chain;
+mod drawing_tools_ui;
 mod exact_house_xray;
 mod face_workflow_ui;
 mod feature_history_ui;

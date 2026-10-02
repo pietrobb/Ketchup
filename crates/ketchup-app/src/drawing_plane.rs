@@ -29,7 +29,7 @@ impl KetchupApp {
     pub(super) fn uses_drawing_plane(&self) -> bool {
         matches!(
             self.active_tool,
-            ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Arc
+            ActiveTool::Rectangle | ActiveTool::Circle | ActiveTool::Arc | ActiveTool::Polygon
         )
     }
 
