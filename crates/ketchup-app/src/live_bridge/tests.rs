@@ -35,6 +35,71 @@ mod product_integration;
 #[path = "program_tests.rs"]
 mod program_edit;
 #[test]
+fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
+    let (mut app, mut bridge) = setup();
+    let scene = app.document.current().scene_query();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 700.));
+    for view in [View::Iso, View::Top, View::Front] {
+        app.camera.projection_mode = crate::ProjectionMode::Perspective;
+        bridge
+            .execute(
+                &mut app,
+                Request::View {
+                    expected: None,
+                    view,
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(app.projection_mode(), crate::ProjectionMode::Parallel);
+        let (right, up, forward) = app.camera_basis();
+        let point = app.camera_target();
+        let projected = app.project_to_screen(point, rect);
+        let at_depth = app.project_to_screen(point + forward * 50., rect);
+        assert!(
+            projected.distance(at_depth) < 0.001,
+            "parallel rays do not converge"
+        );
+        let width = app
+            .project_to_screen(point + right * 10., rect)
+            .distance(projected);
+        let far_width = app
+            .project_to_screen(point + forward * 50. + right * 10., rect)
+            .distance(at_depth);
+        assert!((width - far_width).abs() < 0.001);
+        if matches!(view, View::Iso) {
+            assert!(up.z > 0., "positive Z must point up, not down");
+            let bottom = app.project_to_screen(crate::Vec3::new(0., 0., 0.), rect);
+            let top = app.project_to_screen(crate::Vec3::new(0., 0., 100.), rect);
+            assert!(top.y < bottom.y);
+            let lengths = [
+                crate::Vec3::new(100., 0., 0.),
+                crate::Vec3::new(0., 100., 0.),
+                crate::Vec3::new(0., 0., 100.),
+            ]
+            .map(|axis| app.project_to_screen(axis, rect).distance(bottom));
+            assert!(
+                (lengths[0] - lengths[1]).abs() < 0.001 && (lengths[0] - lengths[2]).abs() < 0.001,
+                "isometric axis lengths {lengths:?}"
+            );
+        }
+    }
+    assert_eq!(app.document.current().scene_query(), scene);
+    app.camera.projection_mode = crate::ProjectionMode::Perspective;
+    bridge
+        .execute(
+            &mut app,
+            Request::View {
+                expected: None,
+                view: View::ZoomFit,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(app.projection_mode(), crate::ProjectionMode::Perspective);
+}
+
+#[test]
 fn optional_expected_rejects_replaced_document_without_camera_or_query_effects() {
     let (mut app, mut bridge) = setup();
     let expected = app.live_bridge_stamp();

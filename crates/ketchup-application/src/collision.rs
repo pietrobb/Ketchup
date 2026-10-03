@@ -3,7 +3,8 @@
 mod bounds;
 #[path = "collision_hull.rs"]
 mod hull;
-use crate::validation::{AssistantValidationSelection, assistant_validation_context_base};
+use crate::group_connectivity::validation_context as validation_context_with_groups;
+use crate::validation::AssistantValidationSelection;
 use crate::worker_pool::ExactWorkerUnavailable;
 use ketchup_interaction::spatial::{
     SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
@@ -88,7 +89,7 @@ pub fn assistant_validation_context(
     selection: &AssistantValidationSelection,
 ) -> Value {
     let collision = collision_report(snapshot, selection, None, None, None, None, None);
-    assistant_validation_context_base(snapshot, exact_results, selection, collision, &[])
+    validation_context_with_groups(snapshot, exact_results, selection, collision, &[])
 }
 
 /// Shared desktop/session/repair entry point. `None` discovers the worker beside
@@ -132,7 +133,7 @@ pub fn assistant_validation_context_with_worker_cancellation(
         Some(&mut gravity_contacts),
         None,
     );
-    assistant_validation_context_base(
+    validation_context_with_groups(
         snapshot,
         exact_results,
         selection,
@@ -492,6 +493,38 @@ fn add_contact_area(
     }
 }
 
+fn contact_candidates(
+    snapshot: &Snapshot,
+    selection: &AssistantValidationSelection,
+    bodies: &[Body],
+    scoped: &BTreeSet<usize>,
+) -> BTreeSet<(usize, usize)> {
+    if !selection.requested.contains("group_connectivity") {
+        return BTreeSet::new();
+    }
+    crate::contact_joints::candidates(
+        snapshot,
+        bodies.iter().map(|body| &body.occurrence.instance_path),
+    )
+    .into_iter()
+    .filter(|(a, b)| scoped.contains(a) || scoped.contains(b))
+    .collect()
+}
+
+fn collision_hulls(graphs: &[ExactBRepGraph], bodies: &[Body]) -> Vec<Option<hull::WorldHull>> {
+    let local = graphs.iter().map(hull::local_hull).collect::<Vec<_>>();
+    bodies
+        .iter()
+        .map(|body| {
+            local
+                .get(body.graph?)
+                .copied()
+                .flatten()?
+                .world(*body.occurrence.transform.matrix())
+        })
+        .collect()
+}
+
 /// Exact answers by the full paths of two leaf instances, smaller path first.
 pub type ExactPairFacts = BTreeMap<(InstancePath, InstancePath), ExactPair>;
 
@@ -563,9 +596,15 @@ fn collision_report(
     scope: Option<&CollisionScope>,
     cancellation: Option<Arc<AtomicBool>>,
     mut gravity_contacts: Option<&mut Vec<GravitySupportContact>>,
-    mut pair_facts: Option<&mut ExactPairFacts>,
+    pair_facts: Option<&mut ExactPairFacts>,
 ) -> Value {
     let started = Instant::now();
+    let mut group_facts = ExactPairFacts::new();
+    let mut pair_facts = if selection.requested.contains("group_connectivity") {
+        Some(&mut group_facts)
+    } else {
+        pair_facts
+    };
     let tolerance = snapshot.tolerance();
     let mut report = json!({"document_id": snapshot.document_id().0,
         "revision": snapshot.revision_id(), "canonical_digest": snapshot.canonical_digest(),
@@ -588,7 +627,9 @@ fn collision_report(
         && gravity_contacts.is_some()
         && selection.requested.contains("gravity_support");
     if !selection.is_valid()
-        || (!selection.requested.contains("collision") && !collect_gravity_contacts)
+        || (!selection.requested.contains("collision")
+            && !collect_gravity_contacts
+            && !selection.requested.contains("group_connectivity"))
     {
         return report;
     }
@@ -1055,6 +1096,7 @@ fn collision_report(
         } else {
             overlapping_bounds_pairs(&bounded_coordinates)
         };
+        let contact_pairs = contact_candidates(snapshot, selection, &bodies, &scoped_body_indices);
         let mut spatial_complete = true;
         let mut candidates = match spatial_pairs {
             Ok((candidate_pairs, _)) => candidate_pairs
@@ -1092,6 +1134,7 @@ fn collision_report(
                 "timeout_ms": timeout.as_millis()}]);
             return report;
         }
+        candidates.extend(contact_pairs.iter().copied());
         let unbounded = world_bounds
             .iter()
             .enumerate()
@@ -1140,23 +1183,15 @@ fn collision_report(
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
         // Separated hulls prove no contact; touching hulls prove contact only for
         // uncut boxes. Cuts may remove the entire bearing face, so ask OCCT.
-        let local_hulls = graphs.iter().map(hull::local_hull).collect::<Vec<_>>();
-        let world_hulls = bodies
-            .iter()
-            .map(|body| {
-                local_hulls
-                    .get(body.graph?)
-                    .copied()
-                    .flatten()?
-                    .world(*body.occurrence.transform.matrix())
-            })
-            .collect::<Vec<_>>();
+        let world_hulls = collision_hulls(&graphs, &bodies);
         let mut hull_decided = 0usize;
         for (left, right) in candidates {
             let (Some(l), Some(r)) = (bodies[left].graph, bodies[right].graph) else {
                 continue;
             };
-            if let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right]) {
+            if !contact_pairs.contains(&(left, right))
+                && let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right])
+            {
                 let decided = hull::measure(a, b, [&graphs[l], &graphs[r]], tolerance.linear_mm());
 
                 if let Some((area_mm2, distance_mm)) = decided {
@@ -1344,22 +1379,7 @@ fn collision_report(
     report["issues"] = json!(issues);
     report["not_evaluated"] = json!(failures);
     report["unavailable_occurrences"] = json!(unavailable);
-    if !selection.requested.contains("collision") {
-        report["state"] = json!("skipped");
-        report["complete"] = json!(false);
-        report["checked_occurrence_count"] = json!(0);
-        report["checked_body_count"] = json!(0);
-        report["checked_pair_count"] = json!(0);
-        report["total_pair_count"] = json!(0);
-        report["broad_phase_rejected_pair_count"] = json!(0);
-        report["narrow_phase_pair_count"] = json!(0);
-        report["hull_decided_pair_count"] = json!(0);
-        report["issue_count"] = json!(0);
-        report["issues"] = json!([]);
-        report["not_evaluated"] = json!([]);
-        report["unavailable_occurrences"] = json!([]);
-    }
-    report
+    crate::group_connectivity::finish_collision(report, snapshot, selection, pair_facts.as_deref())
 }
 
 #[cfg(test)]

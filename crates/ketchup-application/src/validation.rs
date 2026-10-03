@@ -25,7 +25,8 @@ const MAX_STRUCTURAL_SCOPE_PARAMETERS: usize = 30_000;
 const MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS: usize = 100;
 const MAX_STRUCTURAL_ROLE_CATEGORIES: usize = 10_000;
 pub const ASSEMBLY_RETENTION_ROLE_DIMENSION_V1: &str = "ketchup.assembly-retention-role.v1";
-pub const ASSISTANT_VALIDATOR_IDS: [&str; 10] = [
+pub const ASSISTANT_VALIDATOR_IDS: [&str; 11] = [
+    "group_connectivity",
     "collision",
     "assembly_retention",
     "gravity_support",
@@ -41,7 +42,11 @@ pub const ASSISTANT_VALIDATOR_IDS: [&str; 10] = [
 /// Assistant cannot honestly offer a validator it cannot describe, so this
 /// catalog travels with every validation context and is what the
 /// `list_validators` sidecar tool reads.
-pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 10] = [
+pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 11] = [
+    (
+        "group_connectivity",
+        "separated group/component members and physical joints beyond their allowed gap, using solid contact independently of grounding and kinematic constraints",
+    ),
     (
         "collision",
         "solid bodies that overlap each other instead of touching",

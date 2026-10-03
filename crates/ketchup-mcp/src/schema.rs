@@ -129,7 +129,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "view",
-            "description": "selection sets the window selection; view sets the camera (iso, top, front, zoom_fit; every view frames the whole model); \
+            "description": "selection sets the window selection; view sets the camera (iso/top/front are orthographic; iso has Z up; zoom_fit preserves projection; every view frames the whole model); \
     image returns a PNG render of the CAD viewport (not a screenshot, not a geometry check).",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["selection", "view", "image"]},

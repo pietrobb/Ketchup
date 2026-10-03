@@ -345,6 +345,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
 
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for part in &model.parts {
+        crate::opposing_holes::issues(part, issues);
         let faces = part.holes().next().map(|_| part.face_frames());
         for (hole, (local_entry, local_inward)) in part.finished_holes() {
             let radius = hole.diameter_mm / 2.0;
@@ -431,7 +432,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
 
 /// The least material a blind hole must leave behind it before the far
 /// side shows or breaks out (a 13 mm hinge cup in a 16 mm door leaves 3 mm).
-const THIN_WALL_MM: f64 = 3.0;
+pub(crate) const THIN_WALL_MM: f64 = 3.0;
 
 fn joints<'a>(
     model: &'a ProgramModel,

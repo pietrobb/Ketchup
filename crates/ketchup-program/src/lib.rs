@@ -22,6 +22,7 @@ pub mod faces;
 pub mod frame;
 pub mod model;
 pub mod motion;
+mod opposing_holes;
 pub mod path;
 pub mod relations;
 pub mod validate;

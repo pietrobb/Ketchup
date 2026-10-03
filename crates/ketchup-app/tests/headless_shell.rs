@@ -309,7 +309,10 @@ fn home_view_is_localized_accessible_framed_and_document_preserving() {
         shell.secondary_click_at(shell.top_face_centre(1));
         assert!(shell.offers(AppCommand::HomeView));
         shell.click_command(AppCommand::HomeView);
-        assert_eq!(shell.app().camera_orientation(), (-2.25, 0.52));
+        assert_eq!(
+            shell.app().camera_orientation(),
+            (-std::f32::consts::FRAC_PI_4, -3.0_f32.recip().sqrt().acos())
+        );
         let home_zoom = shell.app().camera_zoom();
         let rect = shell.viewport_rect();
         for occurrence in [1, 2] {
@@ -324,13 +327,19 @@ fn home_view_is_localized_accessible_framed_and_document_preserving() {
         shell.click_menu_command("menu-view", AppCommand::ViewTop);
         shell.click_menu_command("menu-view", AppCommand::ZoomIn);
         shell.click_menu_command("menu-view", AppCommand::HomeView);
-        assert_eq!(shell.app().camera_orientation(), (-2.25, 0.52));
+        assert_eq!(
+            shell.app().camera_orientation(),
+            (-std::f32::consts::FRAC_PI_4, -3.0_f32.recip().sqrt().acos())
+        );
         assert!((shell.app().camera_zoom() - home_zoom).abs() < 1.0e-5);
 
         shell.click_menu_command("menu-view", AppCommand::ViewFront);
         shell.click_menu_command("menu-view", AppCommand::ZoomIn);
         shell.press_key(Key::Home);
-        assert_eq!(shell.app().camera_orientation(), (-2.25, 0.52));
+        assert_eq!(
+            shell.app().camera_orientation(),
+            (-std::f32::consts::FRAC_PI_4, -3.0_f32.recip().sqrt().acos())
+        );
         assert!((shell.app().camera_zoom() - home_zoom).abs() < 1.0e-5);
         assert_eq!(
             shell.app().action_digest(),

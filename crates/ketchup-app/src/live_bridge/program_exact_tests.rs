@@ -1,6 +1,109 @@
 use super::*;
 
 #[test]
+fn typed_physical_joint_repair_survives_program_detachment_and_undo() {
+    let mut wire = Wire::new();
+    let source = "a=box('a',(10,10,10))\nb=box('b',(10,10,10),at=(210,0,0))\njoint(a,b,kind='fixed',name='physical')";
+    assert!(
+        wire.call_within(apply(source, true), Duration::from_secs(60))
+            .ok
+    );
+    let b = names(&wire.app)["b"];
+    for (distance, state, count) in [(-100., "failed", 1), (-100., "passed", 0)] {
+        let response = wire.call_within(
+            Request::ApplyAndVerify {
+                expected: None,
+                selection: None,
+                program: AssistantCadEditProgram {
+                    operations: vec![AssistantCadEditOperation::Transform {
+                        selector: AssistantCadEntitySelector::Occurrences {
+                            occurrence_ids: vec![b],
+                        },
+                        translation_mm: [distance, 0., 0.],
+                        rotation: None,
+                    }],
+                },
+                validators: vec!["group_connectivity".into()],
+                timeout_ms: 60_000,
+                strict: false,
+                save: None,
+            },
+            Duration::from_secs(60),
+        );
+        assert!(response.ok, "{response:?}");
+        let result = response.result.unwrap();
+        assert_eq!(result["validation"]["state"], state, "{result:#}");
+        assert_eq!(result["validation"]["complete"], true);
+        assert_eq!(result["validation"]["issue_count"], count);
+        if count == 1 {
+            assert_eq!(result["program_detached"], true);
+            assert_eq!(
+                result["validation"]["issues"][0]["kind"],
+                "joint_without_contact"
+            );
+            assert_eq!(result["validation"]["issues"][0]["distance_mm"], 100.);
+        }
+    }
+    let repaired = wire.app.document.current().scene_query();
+    assert!(wire.call(Request::Undo { expected: None }).ok);
+    assert_eq!(wire.app.document.current().contact_joints().len(), 1);
+    assert_ne!(wire.app.document.current().scene_query(), repaired);
+    assert!(wire.call(Request::Redo { expected: None }).ok);
+    assert_eq!(wire.app.document.current().scene_query(), repaired);
+}
+
+#[test]
+fn typed_group_connectivity_survives_detachment_and_root_motion() {
+    let mut wire = Wire::new();
+    let source = "a=box('a',(10,10,10))\nb=box('b',(10,10,10),at=(30,0,0))\ncomponent('g',[a,b],grounded=True)";
+    assert!(
+        wire.call_within(apply(source, true), Duration::from_secs(60))
+            .ok
+    );
+    let b = names(&wire.app)["g"];
+    let initial = wire.app.document.current().scene_query();
+    for (distance, expected) in [(200., "failed"), (-200., "failed")] {
+        let response = wire.call_within(
+            Request::ApplyAndVerify {
+                expected: None,
+                selection: None,
+                program: AssistantCadEditProgram {
+                    operations: vec![AssistantCadEditOperation::Transform {
+                        selector: AssistantCadEntitySelector::Occurrences {
+                            occurrence_ids: vec![b],
+                        },
+                        translation_mm: [distance, 0., 0.],
+                        rotation: None,
+                    }],
+                },
+                validators: vec!["group_connectivity".into()],
+                timeout_ms: 60_000,
+                strict: false,
+                save: None,
+            },
+            Duration::from_secs(60),
+        );
+        assert!(response.ok, "{response:?}");
+        let result = response.result.unwrap();
+        assert_eq!(result["validation"]["issue_count"], 1, "{result:#}");
+        assert_eq!(result["validation"]["complete"], true, "{result:#}");
+        assert_eq!(result["validation"]["state"], expected);
+        if distance > 0. {
+            assert_eq!(result["program_detached"], true);
+            assert_eq!(
+                result["validation"]["issues"][0]["kind"],
+                "disconnected_group"
+            );
+        }
+    }
+    assert_eq!(wire.app.document.current().scene_query(), initial);
+    assert!(wire.call(Request::Undo { expected: None }).ok);
+    assert_ne!(wire.app.document.current().scene_query(), initial);
+    assert!(wire.call(Request::Redo { expected: None }).ok);
+    assert_eq!(wire.app.document.current().scene_query(), initial);
+}
+
+#[test]
 fn program_reports_disconnected_grounded_members_and_override_repairs_contact() {
     let source = "d=param('d',200)\na=box('base',(100,100,10))\nb=box('front',(10,100,100),at=(100+d,0,0))\nk=component('k',[a,b],grounded=True)\ninstance('copy',k,at=(0,300,0))";
     let mut wire = Wire::new();

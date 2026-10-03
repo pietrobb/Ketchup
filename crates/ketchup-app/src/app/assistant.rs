@@ -236,6 +236,7 @@ impl KetchupApp {
             | AuthoritativeDependency::Tolerance
             | AuthoritativeDependency::FloorHeight
             | AuthoritativeDependency::GroundedInstances
+            | AuthoritativeDependency::ContactJoints
             | AuthoritativeDependency::ProductionCodes
             | AuthoritativeDependency::AssemblyRecipe => None,
             AuthoritativeDependency::Definition(id) => Some(("assistant-entity-definition", id.0)),

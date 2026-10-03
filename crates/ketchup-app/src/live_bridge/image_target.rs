@@ -154,7 +154,7 @@ impl IsolatedCapture {
         {
             return Err("unsupported_image_renderer");
         }
-        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let mut renderer = Renderer::new(device, format, None, 1, false);
         if self.scene {
             renderer

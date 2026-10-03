@@ -436,6 +436,7 @@ pub(crate) fn incremental(
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
         comparable.grounded = before.grounded;
+        comparable.color = before.color;
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();

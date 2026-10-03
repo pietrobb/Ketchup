@@ -423,7 +423,7 @@ impl KetchupApp {
             }
             AppCommand::PreviousView => self.previous_view(),
             AppCommand::HomeView => self.home_view(),
-            AppCommand::ViewIso => self.look_from(-2.25, 0.52, "view-iso"),
+            AppCommand::ViewIso => self.look_isometric(),
             AppCommand::ViewTop => self.look_from(0.0, 0.0, "view-top"),
             AppCommand::ViewBottom => self.look_from(0.0, std::f32::consts::PI, "view-bottom"),
             AppCommand::ViewFront => {
@@ -968,7 +968,7 @@ impl KetchupApp {
 
     /// Every validator the operator can run by hand, in canonical order.
     #[must_use]
-    pub const fn validator_ids() -> [&'static str; 10] {
+    pub const fn validator_ids() -> [&'static str; ASSISTANT_VALIDATOR_IDS.len()] {
         ASSISTANT_VALIDATOR_IDS
     }
 

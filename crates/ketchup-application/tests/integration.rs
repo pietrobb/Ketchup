@@ -4,14 +4,17 @@
 mod batch_task;
 mod cad_program;
 mod collision_brep;
+mod contact_joints;
 mod document_session;
 mod evaluation_deadline;
+mod group_connectivity;
 mod mesh_conversion;
 mod model_query;
 mod model_query_catalogs;
 mod operations_support;
 mod rule_exact_assemblies;
 mod rule_exact_collisions;
+mod rule_program_colors;
 mod rule_program_components;
 mod rule_program_continuity;
 mod rule_program_extras;

@@ -859,11 +859,13 @@ impl DocumentStore {
 
         for command in &batch.commands {
             match command {
-                CanonicalCommand::SetFloorHeight { z_mm } => product.floor_z_mm = *z_mm,
-                CanonicalCommand::SetGroundedInstances { paths } => {
-                    support::set_grounded_instances(&mut product, paths)?
+                CanonicalCommand::SetFloorHeight { .. }
+                | CanonicalCommand::SetContactJoints { .. }
+                | CanonicalCommand::SetGroundedInstances { .. }
+                | CanonicalCommand::SetOccurrenceGrounded { .. }
+                | CanonicalCommand::SetTolerance { .. } => {
+                    support::apply_setting(&mut product, command)?
                 }
-                CanonicalCommand::SetTolerance { tolerance } => product.tolerance = *tolerance,
                 CanonicalCommand::SetProductionCode {
                     instance_path,
                     code,
@@ -2382,9 +2384,6 @@ impl DocumentStore {
                             .insert(path.clone(), *transform);
                     }
                 }
-                CanonicalCommand::SetOccurrenceGrounded { id, grounded } => {
-                    support::set_occurrence_grounded(&mut product, *id, *grounded)?;
-                }
                 CanonicalCommand::CreateAssemblyMate(mate) => {
                     ensure_product_id(mate.id().0)?;
                     if product.assembly_mates.contains_key(&mate.id()) {
@@ -2650,15 +2649,12 @@ impl DocumentStore {
                 CanonicalCommand::SetOccurrenceColor { id, color } => {
                     let occurrence = product
                         .occurrences
-                        .get(id)
+                        .get_mut(id)
                         .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
-                    product.occurrences.insert(
-                        *id,
-                        Arc::new(Occurrence {
-                            color: *color,
-                            ..occurrence.as_ref().clone()
-                        }),
-                    );
+                    Arc::make_mut(occurrence).color = *color;
+                }
+                CanonicalCommand::SetLocalOccurrenceColor { key, color } => {
+                    group_conversion::local_occurrence_mut(&mut product, *key)?.color = *color;
                 }
                 CanonicalCommand::SetOccurrenceVisibility { id, visible } => {
                     let existing = product
@@ -2852,6 +2848,7 @@ impl DocumentStore {
             .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
 
         support::prune_grounded_instances(&mut product);
+        contact_joint::prune(&mut product);
         refresh_sketch_projections(&mut product)?;
         validate_graph(&product.evaluator_nodes)?;
         refresh_override_health(&mut product);

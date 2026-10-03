@@ -2343,6 +2343,9 @@ impl LiveBridge {
                 if !app.command_enabled(command) {
                     return Err("view_unavailable");
                 }
+                if !matches!(view, View::ZoomFit) {
+                    app.camera.projection_mode = crate::ProjectionMode::Parallel;
+                }
                 app.dispatch_command(command);
                 // A client cannot see the viewport: a standard view always frames the model.
                 if command != AppCommand::ZoomFit && app.command_enabled(AppCommand::ZoomFit) {

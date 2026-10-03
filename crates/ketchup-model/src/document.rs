@@ -107,6 +107,8 @@ pub struct LocalGroupKey {
 
 mod assembly_validation;
 mod command;
+mod contact_joint;
+pub use contact_joint::ContactJoint;
 pub(crate) mod digest_v3;
 mod entities;
 mod error;
@@ -155,8 +157,8 @@ pub(crate) struct ProductModel {
     pub(crate) units: UnitSystem,
     #[serde(default, skip_serializing_if = "TolerancePolicy::is_default")]
     pub(crate) tolerance: TolerancePolicy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) floor_z_mm: Option<f64>,
+    #[serde(flatten)]
+    pub(crate) support: support::SupportDeclarations,
     pub(crate) evaluator_nodes: BTreeMap<NodeId, Arc<EvaluatorNode>>,
     pub(crate) overrides: BTreeMap<u64, Arc<CanonicalOverride>>,
     pub(crate) feature_parameter_bindings:
@@ -184,8 +186,6 @@ pub(crate) struct ProductModel {
     pub(crate) body_feature_suppression: BTreeMap<(DefinitionId, BodyId), BTreeSet<FeatureId>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
     pub(crate) grounded_occurrences: BTreeSet<OccurrenceId>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub(crate) grounded_instances: BTreeSet<InstancePath>,
     pub(crate) assembly_mates: BTreeMap<AssemblyMateId, Arc<AssemblyMate>>,
     pub(crate) assembly_joints: BTreeMap<AssemblyJointId, Arc<AssemblyJoint>>,
     pub(crate) assembly_motion_couplings:
@@ -236,7 +236,7 @@ impl Default for ProductModel {
             document_id: allocate_document_id(),
             units: UnitSystem::Millimetres,
             tolerance: TolerancePolicy::default(),
-            floor_z_mm: None,
+            support: support::SupportDeclarations::default(),
             evaluator_nodes: BTreeMap::new(),
             overrides: BTreeMap::new(),
             feature_parameter_bindings: BTreeMap::new(),
@@ -259,7 +259,6 @@ impl Default for ProductModel {
             body_feature_suppression: BTreeMap::new(),
             occurrences: BTreeMap::new(),
             grounded_occurrences: BTreeSet::new(),
-            grounded_instances: BTreeSet::new(),
             assembly_mates: BTreeMap::new(),
             assembly_joints: BTreeMap::new(),
             assembly_motion_couplings: BTreeMap::new(),

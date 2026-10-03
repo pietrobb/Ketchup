@@ -11,6 +11,7 @@ mod expect;
 mod face_at;
 mod faces;
 mod motion;
+mod opposing_holes;
 mod profile_arcs;
 mod program;
 mod relations;

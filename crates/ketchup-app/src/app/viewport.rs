@@ -577,8 +577,7 @@ impl KetchupApp {
 
     /// Restore the isometric home orientation and frame every visible occurrence.
     pub fn home_view(&mut self) {
-        self.camera.yaw = -2.25;
-        self.camera.pitch = 0.52;
+        self.look_isometric();
         let bounds = self.active_frame_bounds();
         let count = bounds.len();
         if !self.frame_bounds(&bounds) {
@@ -590,6 +589,14 @@ impl KetchupApp {
         self.digest = self.catalog.format(
             "digest-home-view",
             &BTreeMap::from([("count", count.to_string())]),
+        );
+    }
+
+    pub(crate) fn look_isometric(&mut self) {
+        self.look_from(
+            -std::f32::consts::FRAC_PI_4,
+            -3.0_f32.recip().sqrt().acos(),
+            "view-iso",
         );
     }
 

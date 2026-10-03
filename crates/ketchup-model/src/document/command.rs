@@ -14,6 +14,10 @@ pub enum CanonicalCommand {
     SetGroundedInstances {
         paths: BTreeSet<InstancePath>,
     },
+    /// Replace declarations of physical contact; does not constrain motion.
+    SetContactJoints {
+        joints: Vec<ContactJoint>,
+    },
     /// Assign a document-unique, machine-neutral code to one physical instance.
     SetProductionCode {
         instance_path: InstancePath,
@@ -308,6 +312,10 @@ pub enum CanonicalCommand {
         key: LocalOccurrenceKey,
         transform: Transform,
     },
+    SetLocalOccurrenceColor {
+        key: LocalOccurrenceKey,
+        color: Option<[u8; 3]>,
+    },
     RenameLocalOccurrence {
         key: LocalOccurrenceKey,
         name: String,
@@ -546,6 +554,7 @@ pub enum AuthoritativeDependency {
     Tolerance,
     FloorHeight,
     GroundedInstances,
+    ContactJoints,
     ProductionCodes,
     AssemblyRecipe,
     PersistentDimension(PersistentDimensionId),

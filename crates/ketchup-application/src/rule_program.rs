@@ -369,6 +369,7 @@ fn feature_level_changes(
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
         comparable.grounded = before.grounded;
+        comparable.color = before.color;
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();
@@ -417,6 +418,7 @@ fn part_replacements(
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
         comparable.grounded = before.grounded;
+        comparable.color = before.color;
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.operations = before.operations.clone();

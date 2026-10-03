@@ -454,11 +454,10 @@ pub(super) fn authoritative_writes(
         match command {
             CanonicalCommand::SetFloorHeight { .. }
             | CanonicalCommand::SetTolerance { .. }
+            | CanonicalCommand::SetContactJoints { .. }
+            | CanonicalCommand::SetProductionCode { .. }
             | CanonicalCommand::SetGroundedInstances { .. } => {
                 support::add_setting_dependency(command, &mut writes);
-            }
-            CanonicalCommand::SetProductionCode { .. } => {
-                writes.insert(AuthoritativeDependency::ProductionCodes);
             }
             CanonicalCommand::CreateEvaluatorNode { id, .. }
             | CanonicalCommand::SetEvaluatorDimension { id, .. }
@@ -709,6 +708,7 @@ pub(super) fn authoritative_writes(
                 writes.insert(AuthoritativeDependency::Definition(key.definition_id));
             }
             CanonicalCommand::SetLocalOccurrenceTransform { key, .. }
+            | CanonicalCommand::SetLocalOccurrenceColor { key, .. }
             | CanonicalCommand::RenameLocalOccurrence { key, .. }
             | CanonicalCommand::SetLocalOccurrenceParent { key, .. }
             | CanonicalCommand::RepointLocalOccurrence { key, .. } => {
@@ -780,6 +780,10 @@ fn add_structure_command_dependencies(
     dependencies: &mut BTreeSet<AuthoritativeDependency>,
 ) {
     match command {
+        CanonicalCommand::DeleteOccurrence { id } => {
+            dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+            dependencies.insert(AuthoritativeDependency::OccurrenceCollections(*id));
+        }
         CanonicalCommand::SetOccurrenceTag { id, tag } => {
             dependencies.insert(AuthoritativeDependency::Occurrence(*id));
             if let Some(tag_id) = tag {
@@ -829,6 +833,7 @@ fn add_local_edit_dependencies(
         CanonicalCommand::SetLocalOccurrenceParent { key, parent } => (*key, None, *parent, None),
         CanonicalCommand::DeleteLocalOccurrence { key }
         | CanonicalCommand::RenameLocalOccurrence { key, .. }
+        | CanonicalCommand::SetLocalOccurrenceColor { key, .. }
         | CanonicalCommand::SetLocalOccurrenceTransform { key, .. } => (*key, None, None, None),
         CanonicalCommand::CreateLocalGroup { key, parent, .. }
         | CanonicalCommand::SetLocalGroupParent { key, parent } => {
@@ -931,12 +936,10 @@ pub(super) fn authoritative_dependencies(
         match command {
             CanonicalCommand::SetFloorHeight { .. }
             | CanonicalCommand::SetTolerance { .. }
+            | CanonicalCommand::SetContactJoints { .. }
+            | CanonicalCommand::SetProductionCode { .. }
             | CanonicalCommand::SetGroundedInstances { .. } => {
                 support::add_support_dependencies(snapshot, command, &mut dependencies);
-            }
-            CanonicalCommand::SetProductionCode { instance_path, .. } => {
-                dependencies.insert(AuthoritativeDependency::ProductionCodes);
-                support::add_path_dependencies(snapshot, instance_path, &mut dependencies);
             }
             CanonicalCommand::CreateEvaluatorNode {
                 id,
@@ -1531,10 +1534,6 @@ pub(super) fn authoritative_dependencies(
                 }
                 add_group_ancestry(snapshot, *parent, &mut dependencies);
             }
-            CanonicalCommand::DeleteOccurrence { id } => {
-                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
-                dependencies.insert(AuthoritativeDependency::OccurrenceCollections(*id));
-            }
             CanonicalCommand::SetOccurrenceTransform { id, .. }
             | CanonicalCommand::RenameEntity { id, .. }
             | CanonicalCommand::SetOccurrenceColor { id, .. }
@@ -1546,6 +1545,7 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::RepointLocalOccurrence { .. }
             | CanonicalCommand::SetLocalOccurrenceParent { .. }
             | CanonicalCommand::SetLocalOccurrenceTransform { .. }
+            | CanonicalCommand::SetLocalOccurrenceColor { .. }
             | CanonicalCommand::RenameLocalOccurrence { .. }
             | CanonicalCommand::CreateLocalGroup { .. }
             | CanonicalCommand::DeleteLocalGroup { .. }
@@ -1553,7 +1553,8 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::SetLocalGroupTransform { .. } => {
                 add_local_edit_dependencies(snapshot, command, &mut dependencies);
             }
-            CanonicalCommand::SetOccurrenceTag { .. }
+            CanonicalCommand::DeleteOccurrence { .. }
+            | CanonicalCommand::SetOccurrenceTag { .. }
             | CanonicalCommand::RepointOccurrence { .. }
             | CanonicalCommand::SetOccurrenceParent { .. }
             | CanonicalCommand::CreateGroup { .. }

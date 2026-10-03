@@ -28,6 +28,10 @@
 #     Group names preserve document IDs across apply, including membership edits.
 #     Reports warn about disconnected sets of members, even when grounded. Contact outside the
 #     group and joint declarations cannot hide separation; non-box contacts require exact verification.
+#     After typed edits, request the group_connectivity validator in apply_and_verify; it uses
+#     canonical membership and native contacts even when the program has been detached.
+#     Physical joint declarations also persist through detachment and Save/Open; the validator
+#     reports exact distance and max_gap in mm. Motion-only joints do not require contact.
 #   component(name, members) -> shared assembly, including its first instance.
 #     Finish members' machining/placement first; members are parts, groups or component instances.
 #   instance(name, component, at=(0,0,0), x=(1,0,0), z=(0,0,1)) -> instance.
@@ -534,7 +538,7 @@ def round_thread(radius, name = "thread"):
 # round face along its inward normal, a pocket into any flat face, before or
 # after a mirror or boolean.
 #   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, id=)
-#     on a round face at=(angle in degrees, v): a radial hole, see face()
+#     on a round face at=(angle in degrees, v): a radial hole, see face(); keep 3 mm between opposite bores (report warns below 3 mm, errors when they meet).
 #   pocket(part, face, rect=(u_min, v_min, u_max, v_max), depth=, id=)
 #   pocket_shape(part, face, profile, depth, name=)  -> part: any closed
 #     profile (points or named segments in (u, v)) milled into any face of any

@@ -472,6 +472,79 @@ fn image_requested_during_a_pending_zoom_fit_shows_the_framed_camera() {
 }
 
 #[test]
+fn z6_native_scene_callback_preserves_explicit_srgb_colors() {
+    let _gpu = gpu_test_guard();
+    let mut h = native_harness(1.0);
+    h.state_mut().apply_program_source(ketchup_model::document::RuleProgramSource {
+        file_name: "colors.star".into(),
+        source: "box('blue',(80,80,20),color=(40,128,220))\nbox('orange',(80,80,20),at=(120,0,0),color=(200,90,50))".into(),
+        overrides: Default::default(),
+    }, true).unwrap();
+    h.state_mut().selection.clear();
+    h.state_mut().dispatch_command(AppCommand::ViewTop);
+    h.state_mut().dispatch_command(AppCommand::ZoomFit);
+    h.step();
+    settle_exact(&mut h);
+    for _ in 0..10 {
+        h.step();
+    }
+    let scene = h.state().document.current().scene_query();
+    assert_eq!(scene.len(), 2, "{scene:?}");
+    assert_eq!(
+        scene.iter().map(|part| part.color()).collect::<Vec<_>>(),
+        vec![Some([40, 128, 220]), Some([200, 90, 50])]
+    );
+    let colors = h
+        .state()
+        .render
+        .plan
+        .as_ref()
+        .unwrap()
+        .batches()
+        .iter()
+        .flat_map(|batch| batch.instances.iter().map(|instance| instance.color))
+        .collect::<Vec<_>>();
+    assert_eq!(colors, vec![Some([40, 128, 220]), Some([200, 90, 50])]);
+    let rx = queue(&mut h, 51);
+    h.step();
+    assert_eq!(capture(&h).0.callbacks, 1);
+    render_private_capture(&mut h, "explicit part colors");
+    let pixels = (0..250)
+        .find_map(|_| {
+            let result = capture(&h).1.take().expect("GPU readback");
+            if result.is_none() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result
+        })
+        .expect("private color pixels");
+    let rect = capture(&h).0.rect;
+    for (point, rgb) in [
+        (crate::Vec3::new(30., 40., 20.), [40u8, 128, 220]),
+        (crate::Vec3::new(150., 40., 20.), [200u8, 90, 50]),
+    ] {
+        let screen = h.state().project_to_screen(point, rect);
+        assert!(rect.shrink(4.).contains(screen));
+        let (x, y) = (screen.x.floor() as usize, screen.y.floor() as usize);
+        for dy in y - 2..=y + 2 {
+            for dx in x - 2..=x + 2 {
+                let actual = pixels.image.pixels[dy * pixels.image.size[0] + dx].to_array();
+                assert_eq!(actual[3], 255);
+                assert!(
+                    actual[..3].iter().zip(rgb).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "sRGB {rgb:?} became {actual:?}"
+                );
+            }
+        }
+    }
+    h.state_mut().live.bridge.as_mut().unwrap().image.revoke();
+    assert!(matches!(
+        rx.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
+}
+
+#[test]
 fn native_scene_callback_draws_default_box_pixels() {
     let _gpu = gpu_test_guard();
     native_pixel_proof(1.0);
