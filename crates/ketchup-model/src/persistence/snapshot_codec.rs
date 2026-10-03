@@ -34,10 +34,11 @@ struct DecodedSnapshot {
 pub(super) fn encode(snapshot: &Snapshot) -> Vec<u8> {
     let mut payload = Vec::new();
     ciborium::into_writer(
-        &EncodedSnapshot {
+        &ciborium::Value::serialized(&EncodedSnapshot {
             revision_id: snapshot.revision_id(),
             product: snapshot.product(),
-        },
+        })
+        .expect("the product model serializes into memory"),
         &mut payload,
     )
     .expect("the product model serializes into memory");

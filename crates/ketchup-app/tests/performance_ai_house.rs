@@ -163,9 +163,16 @@ fn exact_load_idle_and_orbit_performance(example: &str, bodies: usize) {
     use ketchup_app::KetchupApp;
 
     const FRAMES: usize = 20;
-    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples")
-        .join(example);
+    let _turn = crate::integration_support::file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join(example);
+    std::fs::copy(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples")
+            .join(example),
+        &fixture,
+    )
+    .unwrap();
     let worker = exact_worker_path();
     eprintln!(
         "{example} path=headless-instanced debug={} private-oauth={} fixture_bytes={} worker={}",

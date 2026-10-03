@@ -19,6 +19,7 @@ pub use work_recovery::headless_with_parent_sync_failure;
 pub use work_recovery::{WorkRecoveryLock, check_work_recovery_identity};
 pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
+mod snapshot_encoding;
 
 pub use legacy::LegacyError;
 
@@ -1584,7 +1585,8 @@ fn decode_revision_history(
         };
         let snapshot = store.current();
         if snapshot.revision_id() != revision_id
-            || (source_schema == CURRENT_SCHEMA && save(&snapshot) != encoded_snapshot)
+            || (source_schema == CURRENT_SCHEMA
+                && !snapshot_encoding::matches(&snapshot, encoded_snapshot)?)
         {
             return Err(PersistenceError::InvalidRevisionHistory);
         }
