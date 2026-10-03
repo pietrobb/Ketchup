@@ -1,5 +1,7 @@
 use super::*;
 use ketchup_model::document::ProfileSegment;
+#[path = "program_exact_tests.rs"]
+mod exact_assemblies;
 use ketchup_model::topology::TopologicalElementKind;
 
 const TABLE: &str = include_str!("../../../../examples/programs/table.star");
@@ -21,6 +23,355 @@ fn names(app: &KetchupApp) -> BTreeMap<String, u64> {
         .occurrences()
         .map(|occurrence| (occurrence.name().to_owned(), occurrence.id().0))
         .collect()
+}
+
+#[test]
+fn program_groups_are_visible_and_editable_through_the_live_bridge() {
+    let (mut app, mut bridge) = setup();
+    let parts =
+        "a=box(\"a\", (10,20,30), at=(100,200,300))\nb=box(\"b\", (20,30,40), at=(400,500,600))\n";
+    let source = format!("{parts}g=group(\"inner\", [a])\ngroup(\"outer\", [g,b])");
+    bridge
+        .execute(&mut app, apply(&source, true), false)
+        .unwrap();
+    let before = names(&app);
+    let read = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    let groups = read["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    let inner = groups
+        .iter()
+        .find(|group| group["name"] == "inner")
+        .unwrap();
+    let outer = groups
+        .iter()
+        .find(|group| group["name"] == "outer")
+        .unwrap();
+    assert_eq!(inner["parent_group_id"], outer["group_id"]);
+    assert_eq!(inner["occurrence_ids"], json!([before["a"]]));
+    let tree = app.outliner_groups();
+    assert_eq!(
+        tree.iter()
+            .map(|group| (group.name.as_str(), group.member_count))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::from([("inner", 1), ("outer", 1)])
+    );
+    let rows = app
+        .outliner_query()
+        .into_iter()
+        .flat_map(|definition| definition.occurrences)
+        .map(|part| (part.name, part.position))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(rows["a"], "100,200");
+    assert_eq!(rows["b"], "400,500");
+    let undo_steps = app.undo_step_count();
+    bridge
+        .execute(
+            &mut app,
+            apply(
+                &source.replace("[a]", "[b]").replace("[g,b]", "[g,a]"),
+                false,
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(names(&app), before);
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    let restored = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(restored["groups"], read["groups"]);
+}
+
+#[test]
+fn program_components_expose_shared_definitions_and_distinct_member_paths() {
+    let (mut app, mut bridge) = setup();
+    let source = "a=box(\"a\", (20,30,40))\nc=component(\"assembly\", [a])\ninstance(\"second\", c, at=(200,0,0))";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    let read = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(read["components"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        read["components"][0]["instances"].as_array().unwrap().len(),
+        2
+    );
+    let parts = read["parts"].as_array().unwrap();
+    let a = parts.iter().find(|part| part["name"] == "a").unwrap();
+    let second = parts
+        .iter()
+        .find(|part| part["name"] == "second/a")
+        .unwrap();
+    assert_eq!(a["definition_id"], second["definition_id"]);
+    assert!(a["definition_id"].is_number());
+    assert!(a["occurrence_id"].is_null());
+    assert_ne!(a["instance_path"], second["instance_path"]);
+    assert!(!a["instance_path"].is_null());
+    let tree = app.outliner_query();
+    assert!(
+        tree.iter()
+            .any(|definition| definition.occurrences.len() == 2)
+    );
+    let undo = app.undo_step_count();
+    bridge
+        .execute(
+            &mut app,
+            apply(&source.replace("(200,0,0)", "(400,0,0)"), false),
+            false,
+        )
+        .unwrap();
+    assert_eq!(app.undo_step_count(), undo + 1);
+    let moved = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(moved["parts"], read["parts"]);
+    assert_ne!(moved["components"], read["components"]);
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    let restored = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(restored["components"], read["components"]);
+    let expanded = format!("{source}\ninstance(\"third\", \"assembly\", at=(600,0,0))");
+    bridge
+        .execute(&mut app, apply(&expanded, false), false)
+        .unwrap();
+    let added = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(
+        added["components"][0]["instances"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        added["components"][0]["definition_id"],
+        read["components"][0]["definition_id"]
+    );
+    for before in parts {
+        let same = added["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["name"] == before["name"])
+            .unwrap();
+        assert_eq!(same, before);
+    }
+    assert!(
+        app.outliner_query()
+            .iter()
+            .any(|definition| definition.occurrences.len() == 3)
+    );
+    let reduced = expanded.replace("instance(\"second\", c, at=(200,0,0))", "");
+    bridge
+        .execute(&mut app, apply(&reduced, false), false)
+        .unwrap();
+    let removed = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(
+        removed["components"][0]["instances"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        removed["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|part| part["name"] != "second/a")
+    );
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    let undone = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(undone["components"], added["components"]);
+    assert_eq!(undone["parts"], added["parts"]);
+}
+
+#[test]
+fn regrouping_component_members_updates_mcp_paths_in_one_undo_step() {
+    let (mut app, mut bridge) = setup();
+    let source = "a=box(\"a\", (20,30,40))\nb=box(\"b\", (20,30,10), at=(0,0,40))\ng=group(\"inner\",[a])\nc=component(\"assembly\",[g,b])\ninstance(\"second\",c,at=(200,0,0))";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    let before = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    let undo = app.undo_step_count();
+    let changed = source.replace("[a]", "[b]").replace("[g,b]", "[g,a]");
+    bridge
+        .execute(&mut app, apply(&changed, false), false)
+        .unwrap();
+    assert_eq!(app.undo_step_count(), undo + 1);
+    let after = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(after["source"], changed);
+    assert_eq!(
+        after["components"][0]["definition_id"],
+        before["components"][0]["definition_id"]
+    );
+    assert_eq!(
+        after["components"][0]["instances"],
+        before["components"][0]["instances"]
+    );
+    let parts = after["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 4);
+    for old in before["parts"].as_array().unwrap() {
+        let part = parts
+            .iter()
+            .find(|part| part["name"] == old["name"])
+            .unwrap();
+        assert_eq!(part["definition_id"], old["definition_id"]);
+        assert_ne!(part["instance_path"], old["instance_path"]);
+        let path: InstancePath = serde_json::from_value(part["instance_path"].clone()).unwrap();
+        let leaf = app.document.current().resolve_instance_path(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(leaf.definition_id).unwrap(),
+            part["definition_id"]
+        );
+    }
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    let undone = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(undone["parts"], before["parts"]);
+    assert_eq!(undone["source"], source);
+    bridge
+        .execute(&mut app, Request::Redo { expected: None }, false)
+        .unwrap();
+    let redone = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(redone["parts"], after["parts"]);
+    assert_eq!(redone["source"], changed);
+}
+
+#[test]
+fn shared_group_hierarchy_changes_update_mcp_paths_without_replacing_parts() {
+    let (mut app, mut bridge) = setup();
+    let source = "a=box(\"a\", (20,30,40))\nb=box(\"b\", (20,30,10), at=(0,0,40))\nc=component(\"assembly\",[a,b])\ninstance(\"second\",c,at=(200,0,0))";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    let read = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    let original_scene = app.document.current().scene_query();
+    let undo = app.undo_step_count();
+    let nested = source.replace(
+        "c=component(\"assembly\",[a,b])",
+        "g=group(\"inner\",[a])\nh=group(\"wrapper\",[g,b])\nc=component(\"assembly\",[h])",
+    );
+    bridge
+        .execute(&mut app, apply(&nested, false), false)
+        .unwrap();
+    assert_eq!(app.undo_step_count(), undo + 1);
+    let after = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(
+        after["components"][0]["instances"],
+        read["components"][0]["instances"]
+    );
+    let snapshot = app.document.current();
+    assert_eq!(snapshot.local_groups().count(), 2);
+    let groups = after["components"][0]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    let inner = groups
+        .iter()
+        .find(|group| group["name"] == "inner")
+        .unwrap();
+    let wrapper = groups
+        .iter()
+        .find(|group| group["name"] == "wrapper")
+        .unwrap();
+    assert_eq!(inner["parent_local_group_id"], wrapper["local_group_id"]);
+    assert!(wrapper["parent_local_group_id"].is_null());
+    let members = after["components"][0]["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(
+        members.iter().find(|part| part["name"] == "a").unwrap()["parent_local_group_id"],
+        inner["local_group_id"]
+    );
+    assert_eq!(
+        members.iter().find(|part| part["name"] == "b").unwrap()["parent_local_group_id"],
+        wrapper["local_group_id"]
+    );
+    for old in read["parts"].as_array().unwrap() {
+        let part = after["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["name"] == old["name"])
+            .unwrap();
+        assert_eq!(part["definition_id"], old["definition_id"]);
+        let path: InstancePath = serde_json::from_value(part["instance_path"].clone()).unwrap();
+        assert_ne!(part["instance_path"], old["instance_path"]);
+        let resolved = snapshot.resolve_instance_path(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(resolved.definition_id).unwrap(),
+            part["definition_id"]
+        );
+    }
+    let second = snapshot
+        .occurrences()
+        .find(|item| item.name() == "second")
+        .unwrap()
+        .id();
+    assert!(app.enter_occurrence_context(InstancePath::root(second)));
+    let rows = app
+        .outliner_query()
+        .into_iter()
+        .flat_map(|definition| definition.occurrences)
+        .map(|part| part.name)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        rows,
+        BTreeSet::from(["a".to_owned(), "b".to_owned(), "second".to_owned()])
+    );
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert_eq!(app.document.current().scene_query(), original_scene);
+    bridge
+        .execute(&mut app, Request::Redo { expected: None }, false)
+        .unwrap();
+    assert_eq!(app.document.current().scene_query(), snapshot.scene_query());
+    bridge
+        .execute(&mut app, apply(source, false), false)
+        .unwrap();
+    let flat = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    assert_eq!(flat["parts"], read["parts"]);
+    assert_eq!(flat["components"][0]["groups"], json!([]));
+    assert!(
+        flat["components"][0]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|member| member["parent_local_group_id"].is_null())
+    );
+    assert_eq!(app.document.current().scene_query(), original_scene);
+    assert_eq!(app.document.current().local_groups().count(), 0);
 }
 
 #[test]
@@ -228,14 +579,17 @@ fn picks(
     kind: TopologicalElementKind,
 ) -> Vec<Value> {
     let snapshot = app.document.current();
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == name)
+    let scene = snapshot.scene_query();
+    let occurrence = scene
+        .iter()
+        .find(|part| {
+            program_pick::part_name(&snapshot, &part.instance_path).as_deref() == Some(name)
+        })
         .unwrap();
     let package = app
         .exact
         .topology_results
-        .get_render(&snapshot, occurrence.definition_id())
+        .get_render(&snapshot, occurrence.definition_id)
         .unwrap();
     let producer_feature_id = package.producer_feature_id();
     let count = package
@@ -247,7 +601,7 @@ fn picks(
         .map(|ordinal| {
             assert!(app.select_topological_locator(
                 ketchup_interaction::exact_projection::TopologicalPickLocator {
-                    instance_path: InstancePath::root(occurrence.id()),
+                    instance_path: occurrence.instance_path.clone(),
                     producer_feature_id,
                     kind,
                     ordinal,
@@ -259,6 +613,62 @@ fn picks(
         .collect()
 }
 
+#[test]
+fn nested_component_picks_use_instance_names_and_world_frames() {
+    let (mut app, mut bridge) = setup();
+    let source = "a=box(\"a\", (20,30,40), at=(10,20,0))\ng=group(\"inner\",[a])\nc=component(\"assembly\",[g])\ninstance(\"second\",c,at=(200,300,0),x=(0,1,0))";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    evaluate_exact(&mut app);
+    let original = picks(&mut app, &mut bridge, "a", TopologicalElementKind::Face);
+    let copied = picks(
+        &mut app,
+        &mut bridge,
+        "second/a",
+        TopologicalElementKind::Face,
+    );
+    assert_eq!(original.len(), 6);
+    assert_eq!(copied.len(), 6);
+    for face in &copied {
+        assert_eq!(face["part"], "second/a");
+        assert!(face["face"].is_string(), "{face}");
+    }
+    let original_x = original.iter().find(|face| face["face"] == "x+").unwrap();
+    assert_eq!(original_x["point_world_mm"][0], 30.0);
+    let copied_x = copied.iter().find(|face| face["face"] == "x+").unwrap();
+    assert_eq!(copied_x["normal_world"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(copied_x["point_world_mm"][1], 330.0);
+    let edges = picks(
+        &mut app,
+        &mut bridge,
+        "second/a",
+        TopologicalElementKind::Edge,
+    );
+    assert_eq!(edges.len(), 12);
+    assert!(edges.iter().all(|edge| {
+        edge["part"] == "second/a"
+            && edge["edge"]
+                .as_array()
+                .is_some_and(|faces| faces.len() == 2)
+    }));
+    let path = app.selected_instance_paths().first().unwrap().clone();
+    assert_eq!(
+        program_pick::part_name(&app.document.current(), &path).as_deref(),
+        Some("second/a")
+    );
+    let read = bridge
+        .execute(&mut app, Request::Program { expected: None }, false)
+        .unwrap();
+    let part = read["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["name"] == "second/a")
+        .unwrap();
+    assert_eq!(part["instance_path"], json!(path));
+    assert_eq!(part["lines"], json!([[1, 1], [4, 4]]));
+}
 #[test]
 fn a_picked_face_or_edge_of_a_rotated_part_reads_in_program_terms() {
     const PARTS: &str = "rail = box(\"rail\", (400, 40, 20), at = (100, 200, 0))\n\

@@ -706,6 +706,554 @@ fn forward_group_references_can_still_be_converted_in_one_batch() {
 }
 
 #[test]
+fn local_groups_move_shared_children_and_reject_invalid_graphs_atomically() {
+    let mut document = seed_product_document();
+    let component = document
+        .convert_group_to_component(GROUP, "Assembly")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(90),
+                definition_id: component.component_definition_id,
+                name: "Copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let before = document.current();
+    let member = before.local_occurrences().next().unwrap().key();
+    let key = LocalGroupKey {
+        definition_id: component.component_definition_id,
+        local_id: LocalGroupId(99),
+    };
+    let create = CanonicalCommand::CreateLocalGroup {
+        key,
+        name: "Inner".into(),
+        transform: Transform::from_translation(0.0, 70.0, 0.0).unwrap(),
+        parent: None,
+    };
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            create.clone(),
+            CanonicalCommand::SetLocalOccurrenceParent {
+                key: member,
+                parent: Some(key.local_id),
+            },
+        ]))
+        .unwrap();
+    let preview = document.preview_verified_proposal(&proposal).unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    document.commit_verified_proposal(&proposal).unwrap();
+    let added = document.current();
+    assert_eq!(added.scene_query(), preview.scene_query());
+    assert!(document.commit_verified_proposal(&proposal).is_err());
+    let positions = |snapshot: &Snapshot| {
+        snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|part| !part.instance_path.is_root())
+            .map(|part| (part.occurrence_id, part.transform.transform_point([0.0; 3])))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    assert_eq!(
+        positions(&added)[&component.component_occurrence_id],
+        [100.0, 70.0, 0.0]
+    );
+    assert_eq!(positions(&added)[&OccurrenceId(90)], [500.0, 70.0, 0.0]);
+    let moved = CanonicalCommand::SetLocalGroupTransform {
+        key,
+        transform: Transform::from_translation(10.0, 20.0, 30.0).unwrap(),
+    };
+    let pending = document
+        .prepare_proposal(CommandBatch::new(vec![moved.clone()]))
+        .unwrap();
+    let second_key = LocalGroupKey {
+        local_id: LocalGroupId(100),
+        ..key
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateLocalGroup {
+                key: second_key,
+                name: "Outer".into(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+        ]))
+        .unwrap();
+    assert!(document.commit_verified_proposal(&pending).is_err());
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            moved.clone(),
+            CanonicalCommand::SetLocalGroupParent {
+                key,
+                parent: Some(second_key.local_id),
+            },
+        ]))
+        .unwrap();
+    let transformed = document.current();
+    assert_eq!(
+        positions(&transformed)[&component.component_occurrence_id],
+        [110.0, 20.0, 30.0]
+    );
+    assert_eq!(
+        positions(&transformed)[&OccurrenceId(90)],
+        [510.0, 20.0, 30.0]
+    );
+    assert_eq!(
+        transformed.features().collect::<Vec<_>>(),
+        before.features().collect::<Vec<_>>()
+    );
+    let missing = LocalGroupKey {
+        local_id: LocalGroupId(999),
+        ..key
+    };
+    for invalid in [
+        create,
+        CanonicalCommand::CreateLocalGroup {
+            key: LocalGroupKey {
+                local_id: LocalGroupId(member.local_id.0),
+                ..key
+            },
+            name: "Collision".into(),
+            transform: Transform::identity(),
+            parent: None,
+        },
+        CanonicalCommand::CreateLocalGroup {
+            key: LocalGroupKey {
+                definition_id: DefinitionId(999),
+                ..missing
+            },
+            name: "No owner".into(),
+            transform: Transform::identity(),
+            parent: None,
+        },
+        CanonicalCommand::SetLocalGroupParent {
+            key,
+            parent: Some(key.local_id),
+        },
+        CanonicalCommand::SetLocalGroupParent {
+            key: second_key,
+            parent: Some(key.local_id),
+        },
+        CanonicalCommand::SetLocalGroupParent {
+            key,
+            parent: Some(missing.local_id),
+        },
+        CanonicalCommand::SetLocalGroupParent {
+            key: missing,
+            parent: None,
+        },
+        CanonicalCommand::SetLocalGroupTransform {
+            key: missing,
+            transform: Transform::identity(),
+        },
+        CanonicalCommand::DeleteLocalGroup { key: missing },
+        CanonicalCommand::DeleteLocalGroup { key },
+        CanonicalCommand::DeleteLocalGroup { key: second_key },
+    ] {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::SetLocalGroupTransform {
+                        key,
+                        transform: Transform::identity()
+                    },
+                    invalid,
+                ]))
+                .is_err()
+        );
+        assert_eq!(document.current().scene_query(), transformed.scene_query());
+        assert_eq!(
+            document.current().definitions().collect::<Vec<_>>(),
+            transformed.definitions().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            document.current().local_groups().collect::<Vec<_>>(),
+            transformed.local_groups().collect::<Vec<_>>()
+        );
+    }
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteLocalGroup { key },
+            CanonicalCommand::DeleteLocalGroup { key: second_key },
+            CanonicalCommand::SetLocalOccurrenceParent {
+                key: member,
+                parent: None,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    assert_eq!(document.current().local_groups().count(), 0);
+    document.undo().unwrap();
+    assert_eq!(document.current().scene_query(), transformed.scene_query());
+    document.redo().unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+}
+
+#[test]
+fn local_member_creation_reparent_repoint_and_removal_update_every_copy() {
+    let mut document = seed_product_document();
+    document.make_unique(SECOND, "Other geometry").unwrap();
+    let target = document
+        .current()
+        .occurrence(SECOND)
+        .unwrap()
+        .definition_id();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateGroup {
+            id: GroupId(40),
+            name: "Inner".into(),
+            transform: Transform::from_translation(0.0, 70.0, 0.0).unwrap(),
+            parent: Some(GROUP),
+        }]))
+        .unwrap();
+    let component = document
+        .convert_group_to_component(GROUP, "Assembly")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(90),
+                definition_id: component.component_definition_id,
+                name: "Copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let before = document.current();
+    let group = before.local_groups().next().unwrap().key().local_id;
+    let key = LocalOccurrenceKey {
+        definition_id: component.component_definition_id,
+        local_id: LocalOccurrenceId(99),
+    };
+    let create = CanonicalCommand::CreateLocalOccurrence {
+        key,
+        definition_id: CABINET,
+        name: "Added".into(),
+        transform: Transform::from_translation(10.0, 20.0, 30.0).unwrap(),
+        parent: Some(group),
+        tag: None,
+        visible: true,
+    };
+    assert!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateLocalOccurrence {
+                    key: LocalOccurrenceKey {
+                        local_id: LocalOccurrenceId(group.0),
+                        ..key
+                    },
+                    definition_id: CABINET,
+                    name: "ID collision".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                }
+            ]))
+            .is_err()
+    );
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![create]))
+        .unwrap();
+    let preview = document.preview_verified_proposal(&proposal).unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    document.commit_verified_proposal(&proposal).unwrap();
+    let added = document.current();
+    assert_eq!(added.scene_query(), preview.scene_query());
+    assert!(document.commit_verified_proposal(&proposal).is_err());
+    assert_eq!(document.current().scene_query(), added.scene_query());
+    let positions = added
+        .scene_query()
+        .into_iter()
+        .filter(|part| part.occurrence_name == "Added")
+        .map(|part| (part.occurrence_id, part.transform.transform_point([0.0; 3])))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        positions[&component.component_occurrence_id],
+        [110.0, 90.0, 30.0]
+    );
+    assert_eq!(positions[&OccurrenceId(90)], [510.0, 90.0, 30.0]);
+    assert_eq!(
+        added.features().collect::<Vec<_>>(),
+        before.features().collect::<Vec<_>>()
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetLocalOccurrenceParent { key, parent: None },
+            CanonicalCommand::RepointLocalOccurrence {
+                key,
+                definition_id: target,
+            },
+        ]))
+        .unwrap();
+    let changed = document.current();
+    let members = changed
+        .scene_query()
+        .into_iter()
+        .filter(|part| part.occurrence_name == "Added")
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 2);
+    for member in &members {
+        assert_eq!(member.definition_id, target);
+        assert_eq!(member.transform.matrix()[7], 20.0);
+    }
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteLocalOccurrence { key },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    assert!(document.current().local_occurrence(key).is_none());
+    document.undo().unwrap();
+    assert_eq!(document.current().scene_query(), changed.scene_query());
+    document.undo().unwrap();
+    assert_eq!(document.current().scene_query(), added.scene_query());
+    document.undo().unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    for expected in [&added, &changed, &before] {
+        document.redo().unwrap();
+        assert_eq!(document.current().scene_query(), expected.scene_query());
+    }
+}
+
+#[test]
+fn invalid_local_member_edits_leave_shared_geometry_and_history_intact() {
+    let mut document = seed_product_document();
+    let component = document
+        .convert_group_to_component(GROUP, "Assembly")
+        .unwrap();
+    let before = document.current();
+    let key = before.local_occurrences().next().unwrap().key();
+    let missing = LocalOccurrenceKey {
+        local_id: LocalOccurrenceId(999),
+        ..key
+    };
+    let create = CanonicalCommand::CreateLocalOccurrence {
+        key,
+        definition_id: CABINET,
+        name: "Duplicate".into(),
+        transform: Transform::identity(),
+        parent: None,
+        tag: None,
+        visible: true,
+    };
+    let invalid = [
+        create,
+        CanonicalCommand::RepointLocalOccurrence {
+            key,
+            definition_id: component.component_definition_id,
+        },
+        CanonicalCommand::RepointLocalOccurrence {
+            key,
+            definition_id: DefinitionId(999),
+        },
+        CanonicalCommand::SetLocalOccurrenceParent {
+            key,
+            parent: Some(LocalGroupId(999)),
+        },
+        CanonicalCommand::DeleteLocalOccurrence { key: missing },
+        CanonicalCommand::SetLocalOccurrenceParent {
+            key: missing,
+            parent: None,
+        },
+        CanonicalCommand::RepointLocalOccurrence {
+            key: missing,
+            definition_id: CABINET,
+        },
+    ];
+    for command in invalid {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::SetLocalOccurrenceTransform {
+                        key,
+                        transform: Transform::from_translation(30.0, 40.0, 50.0).unwrap(),
+                    },
+                    command,
+                ]))
+                .is_err()
+        );
+        assert_eq!(document.current().scene_query(), before.scene_query());
+        assert_eq!(
+            document.current().definitions().collect::<Vec<_>>(),
+            before.definitions().collect::<Vec<_>>()
+        );
+    }
+    document.undo().unwrap();
+    assert!(document.current().group(GROUP).is_some());
+    document.redo().unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+}
+
+#[test]
+fn local_member_transform_is_shared_atomic_and_undoable() {
+    let mut document = seed_product_document();
+    let component = document
+        .convert_group_to_component(GROUP, "Assembly")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(90),
+                definition_id: component.component_definition_id,
+                name: "Copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let before = document.current();
+    let key = before.local_occurrences().next().unwrap().key();
+    let change = CanonicalCommand::SetLocalOccurrenceTransform {
+        key,
+        transform: Transform::from_translation(20.0, 30.0, 40.0).unwrap(),
+    };
+    let missing = LocalOccurrenceKey {
+        local_id: LocalOccurrenceId(999),
+        ..key
+    };
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                change.clone(),
+                CanonicalCommand::SetLocalOccurrenceTransform {
+                    key: missing,
+                    transform: Transform::identity(),
+                }
+            ]))
+            .err(),
+        Some(CanonicalError::LocalOccurrenceNotFound(missing))
+    );
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![change]))
+        .unwrap();
+    let preview = document.preview_verified_proposal(&proposal).unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    document.commit_verified_proposal(&proposal).unwrap();
+    let after = document.current();
+    assert_eq!(after.scene_query(), preview.scene_query());
+    assert!(matches!(
+        document.validate_proposal(&proposal),
+        ketchup_model::document::ProposalValidity::Stale { .. }
+    ));
+    let translations = after
+        .scene_query()
+        .iter()
+        .map(|part| {
+            let m = part.transform.matrix();
+            (part.occurrence_id, [m[3], m[7], m[11]])
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        translations[&component.component_occurrence_id],
+        [120.0, 30.0, 40.0]
+    );
+    assert_eq!(translations[&OccurrenceId(90)], [520.0, 30.0, 40.0]);
+    assert_eq!(translations[&SECOND], [700.0, 0.0, 0.0]);
+    assert_eq!(
+        after.features().collect::<Vec<_>>(),
+        before.features().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        after.definitions().collect::<Vec<_>>(),
+        before.definitions().collect::<Vec<_>>()
+    );
+    document.undo().unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    document.redo().unwrap();
+    assert_eq!(document.current().scene_query(), after.scene_query());
+}
+
+#[test]
+fn renaming_a_local_member_is_atomic_and_updates_all_copies() {
+    let mut document = seed_product_document();
+    let component = document
+        .convert_group_to_component(GROUP, "Shared")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(90),
+                definition_id: component.component_definition_id,
+                name: "Copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let before = document.current();
+    let member = before.local_occurrences().next().unwrap();
+    let key = member.key();
+    let rename = CanonicalCommand::RenameLocalOccurrence {
+        key,
+        name: "Renamed".into(),
+    };
+    for bad in [
+        CanonicalCommand::RenameLocalOccurrence {
+            key,
+            name: "".into(),
+        },
+        CanonicalCommand::RenameLocalOccurrence {
+            key: LocalOccurrenceKey {
+                local_id: LocalOccurrenceId(999),
+                ..key
+            },
+            name: "Missing".into(),
+        },
+    ] {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![rename.clone(), bad]))
+                .is_err()
+        );
+        assert_eq!(document.current().scene_query(), before.scene_query());
+    }
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![rename]))
+        .unwrap();
+    let preview = document.preview_verified_proposal(&proposal).unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    document.commit_verified_proposal(&proposal).unwrap();
+    let after = document.current();
+    assert_eq!(after.scene_query(), preview.scene_query());
+    assert_eq!(after.local_occurrence(key).unwrap().name(), "Renamed");
+    let scene = after.scene_query();
+    let renamed = scene
+        .iter()
+        .filter(|p| p.occurrence_name == "Renamed")
+        .collect::<Vec<_>>();
+    assert_eq!(renamed.len(), 2);
+    for leaf in renamed {
+        let old = before.resolve_instance_path(&leaf.instance_path).unwrap();
+        assert_eq!(leaf.transform, old.world_transform);
+        assert_eq!(leaf.definition_id, old.definition_id);
+    }
+    assert!(matches!(
+        document.validate_proposal(&proposal),
+        ketchup_model::document::ProposalValidity::Stale { .. }
+    ));
+    document.undo().unwrap();
+    assert_eq!(document.current().scene_query(), before.scene_query());
+    document.redo().unwrap();
+    assert_eq!(document.current().scene_query(), scene);
+}
+
+#[test]
 fn bound_nested_scene_query_blocks_stale_hidden_and_out_of_context_entities() {
     let mut document = seed_product_document();
     let inner = document

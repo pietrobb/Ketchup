@@ -791,6 +791,7 @@ impl Part {
             at_mm: self.to_world(corner),
             rotation: frame::multiply(&self.rotation, &axes),
             material: None,
+            grounded: false,
             color: None,
             attributes: BTreeMap::new(),
             body,

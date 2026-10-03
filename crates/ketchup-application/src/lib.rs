@@ -14,9 +14,16 @@ mod part_role;
 pub mod pdm_workflow;
 mod planner;
 pub mod rejections;
+mod rule_assembly_members;
+mod rule_components;
+mod rule_continuity;
 mod rule_exact_collisions;
+mod rule_groups;
+mod rule_instances;
+mod rule_motion;
 mod rule_operations;
 mod rule_program;
+mod rule_support;
 mod sketch;
 pub mod topology;
 pub mod transforms;
@@ -31,6 +38,8 @@ pub use planner::{
     plan_assistant_cad_edit_program_with_outputs, plan_part_batch, plan_rule_part_batch,
 };
 pub use rule_exact_collisions::{apply_exact_pairs, verify_rule_program_exact};
+pub use rule_groups::plan_rule_model_batch;
+pub use rule_instances::rule_program_part_name;
 pub use rule_program::{
     RuleProgramApplyError, RuleProgramApplyResult, RuleProgramChange, RuleProgramPlan,
     plan_rule_program, rewrite_rule_program_push_pull, rule_program_part_sources,

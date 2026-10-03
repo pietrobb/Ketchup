@@ -452,8 +452,10 @@ pub(super) fn authoritative_writes(
     let mut writes = BTreeSet::new();
     for command in &batch.commands {
         match command {
-            CanonicalCommand::SetTolerance { .. } => {
-                writes.insert(AuthoritativeDependency::Tolerance);
+            CanonicalCommand::SetFloorHeight { .. }
+            | CanonicalCommand::SetTolerance { .. }
+            | CanonicalCommand::SetGroundedInstances { .. } => {
+                support::add_setting_dependency(command, &mut writes);
             }
             CanonicalCommand::SetProductionCode { .. } => {
                 writes.insert(AuthoritativeDependency::ProductionCodes);
@@ -701,6 +703,26 @@ pub(super) fn authoritative_writes(
             | CanonicalCommand::SetOccurrenceParent { id, .. } => {
                 writes.insert(AuthoritativeDependency::Occurrence(*id));
             }
+            CanonicalCommand::CreateLocalOccurrence { key, .. }
+            | CanonicalCommand::DeleteLocalOccurrence { key } => {
+                writes.insert(AuthoritativeDependency::LocalOccurrence(*key));
+                writes.insert(AuthoritativeDependency::Definition(key.definition_id));
+            }
+            CanonicalCommand::SetLocalOccurrenceTransform { key, .. }
+            | CanonicalCommand::RenameLocalOccurrence { key, .. }
+            | CanonicalCommand::SetLocalOccurrenceParent { key, .. }
+            | CanonicalCommand::RepointLocalOccurrence { key, .. } => {
+                writes.insert(AuthoritativeDependency::LocalOccurrence(*key));
+            }
+            CanonicalCommand::CreateLocalGroup { key, .. }
+            | CanonicalCommand::DeleteLocalGroup { key } => {
+                writes.insert(AuthoritativeDependency::LocalGroup(*key));
+                writes.insert(AuthoritativeDependency::Definition(key.definition_id));
+            }
+            CanonicalCommand::SetLocalGroupParent { key, .. }
+            | CanonicalCommand::SetLocalGroupTransform { key, .. } => {
+                writes.insert(AuthoritativeDependency::LocalGroup(*key));
+            }
             CanonicalCommand::CreateGroup { id, .. }
             | CanonicalCommand::DeleteGroup { id }
             | CanonicalCommand::SetGroupTransform { id, .. }
@@ -752,6 +774,154 @@ pub(super) fn authoritative_writes(
     writes
 }
 
+fn add_structure_command_dependencies(
+    snapshot: &Snapshot,
+    command: &CanonicalCommand,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    match command {
+        CanonicalCommand::SetOccurrenceTag { id, tag } => {
+            dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+            if let Some(tag_id) = tag {
+                dependencies.insert(AuthoritativeDependency::Tag(*tag_id));
+            }
+        }
+        CanonicalCommand::RepointOccurrence { id, definition_id } => {
+            dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+            dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
+        }
+        CanonicalCommand::SetOccurrenceParent { id, parent } => {
+            dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+            add_group_ancestry(snapshot, *parent, dependencies);
+        }
+        CanonicalCommand::CreateGroup { id, parent, .. }
+        | CanonicalCommand::SetGroupParent { id, parent } => {
+            dependencies.insert(AuthoritativeDependency::Group(*id));
+            add_group_ancestry(snapshot, *parent, dependencies);
+        }
+        CanonicalCommand::DeleteGroup { id } => {
+            dependencies.insert(AuthoritativeDependency::Group(*id));
+            dependencies.insert(AuthoritativeDependency::GroupChildren(*id));
+        }
+        CanonicalCommand::SetGroupTransform { id, .. } => {
+            dependencies.insert(AuthoritativeDependency::Group(*id));
+        }
+        _ => {}
+    }
+}
+
+fn add_local_edit_dependencies(
+    snapshot: &Snapshot,
+    command: &CanonicalCommand,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    let (key, target, parent, tag) = match command {
+        CanonicalCommand::CreateLocalOccurrence {
+            key,
+            definition_id,
+            parent,
+            tag,
+            ..
+        } => (*key, Some(*definition_id), *parent, *tag),
+        CanonicalCommand::RepointLocalOccurrence { key, definition_id } => {
+            (*key, Some(*definition_id), None, None)
+        }
+        CanonicalCommand::SetLocalOccurrenceParent { key, parent } => (*key, None, *parent, None),
+        CanonicalCommand::DeleteLocalOccurrence { key }
+        | CanonicalCommand::RenameLocalOccurrence { key, .. }
+        | CanonicalCommand::SetLocalOccurrenceTransform { key, .. } => (*key, None, None, None),
+        CanonicalCommand::CreateLocalGroup { key, parent, .. }
+        | CanonicalCommand::SetLocalGroupParent { key, parent } => {
+            dependencies.insert(AuthoritativeDependency::LocalGroup(*key));
+            if let Some(local_id) = parent {
+                dependencies.insert(AuthoritativeDependency::LocalGroup(LocalGroupKey {
+                    definition_id: key.definition_id,
+                    local_id: *local_id,
+                }));
+            }
+            add_local_definition_dependencies(snapshot, key.definition_id, None, dependencies);
+            return;
+        }
+        CanonicalCommand::DeleteLocalGroup { key }
+        | CanonicalCommand::SetLocalGroupTransform { key, .. } => {
+            dependencies.insert(AuthoritativeDependency::LocalGroup(*key));
+            add_local_definition_dependencies(snapshot, key.definition_id, None, dependencies);
+            return;
+        }
+        _ => return,
+    };
+    dependencies.insert(AuthoritativeDependency::LocalOccurrence(key));
+    if let Some(tag) = tag {
+        dependencies.insert(AuthoritativeDependency::Tag(tag));
+    }
+    if let Some(local_id) = parent {
+        dependencies.insert(AuthoritativeDependency::LocalGroup(LocalGroupKey {
+            definition_id: key.definition_id,
+            local_id,
+        }));
+    }
+    add_local_definition_dependencies(snapshot, key.definition_id, target, dependencies);
+}
+
+fn add_local_definition_dependencies(
+    snapshot: &Snapshot,
+    owner: DefinitionId,
+    target: Option<DefinitionId>,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    // Membership and target subtrees govern parent resolution and ownership cycles.
+    let mut pending = vec![owner];
+    pending.extend(target);
+    let mut visited = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        dependencies.insert(AuthoritativeDependency::Definition(id));
+        if let Some(definition) = snapshot.definition(id) {
+            for local_id in definition.local_group_ids() {
+                dependencies.insert(AuthoritativeDependency::LocalGroup(LocalGroupKey {
+                    definition_id: id,
+                    local_id: *local_id,
+                }));
+            }
+            for local_id in definition.local_occurrence_ids() {
+                let key = LocalOccurrenceKey {
+                    definition_id: id,
+                    local_id: *local_id,
+                };
+                dependencies.insert(AuthoritativeDependency::LocalOccurrence(key));
+                if let Some(member) = snapshot.local_occurrence(key) {
+                    pending.push(member.definition_id());
+                }
+            }
+        }
+    }
+}
+
+fn add_direct_member_dependencies(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    if let Some(definition) = snapshot.definition(definition_id) {
+        for local_id in definition.local_group_ids() {
+            dependencies.insert(AuthoritativeDependency::LocalGroup(LocalGroupKey {
+                definition_id,
+                local_id: *local_id,
+            }));
+        }
+        for local_id in definition.local_occurrence_ids() {
+            dependencies.insert(AuthoritativeDependency::LocalOccurrence(
+                LocalOccurrenceKey {
+                    definition_id,
+                    local_id: *local_id,
+                },
+            ));
+        }
+    }
+}
+
 pub(super) fn authoritative_dependencies(
     snapshot: &Snapshot,
     batch: &CommandBatch,
@@ -759,18 +929,14 @@ pub(super) fn authoritative_dependencies(
     let mut dependencies = BTreeSet::new();
     for command in &batch.commands {
         match command {
-            CanonicalCommand::SetTolerance { .. } => {
-                dependencies.insert(AuthoritativeDependency::Tolerance);
+            CanonicalCommand::SetFloorHeight { .. }
+            | CanonicalCommand::SetTolerance { .. }
+            | CanonicalCommand::SetGroundedInstances { .. } => {
+                support::add_support_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::SetProductionCode { instance_path, .. } => {
                 dependencies.insert(AuthoritativeDependency::ProductionCodes);
-                dependencies.insert(AuthoritativeDependency::Occurrence(
-                    instance_path.root_occurrence(),
-                ));
-                if let Some(owners) = production_code_identity(&snapshot.product, instance_path) {
-                    dependencies
-                        .extend(owners.into_iter().map(AuthoritativeDependency::Definition));
-                }
+                support::add_path_dependencies(snapshot, instance_path, &mut dependencies);
             }
             CanonicalCommand::CreateEvaluatorNode {
                 id,
@@ -1074,8 +1240,7 @@ pub(super) fn authoritative_dependencies(
                 }));
             }
             CanonicalCommand::SetOccurrenceGrounded { id, .. } => {
-                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
-                dependencies.insert(AuthoritativeDependency::GroundedOccurrence(*id));
+                support::add_grounding_dependencies(*id, &mut dependencies);
             }
             CanonicalCommand::CreateAssemblyMate(mate)
             | CanonicalCommand::RebindAssemblyMate(mate) => {
@@ -1376,34 +1541,26 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::SetOccurrenceVisibility { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
             }
-            CanonicalCommand::SetOccurrenceTag { id, tag } => {
-                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
-                if let Some(tag_id) = tag {
-                    dependencies.insert(AuthoritativeDependency::Tag(*tag_id));
-                }
+            CanonicalCommand::CreateLocalOccurrence { .. }
+            | CanonicalCommand::DeleteLocalOccurrence { .. }
+            | CanonicalCommand::RepointLocalOccurrence { .. }
+            | CanonicalCommand::SetLocalOccurrenceParent { .. }
+            | CanonicalCommand::SetLocalOccurrenceTransform { .. }
+            | CanonicalCommand::RenameLocalOccurrence { .. }
+            | CanonicalCommand::CreateLocalGroup { .. }
+            | CanonicalCommand::DeleteLocalGroup { .. }
+            | CanonicalCommand::SetLocalGroupParent { .. }
+            | CanonicalCommand::SetLocalGroupTransform { .. } => {
+                add_local_edit_dependencies(snapshot, command, &mut dependencies);
             }
-            CanonicalCommand::RepointOccurrence { id, definition_id } => {
-                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
-                dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
-            }
-            CanonicalCommand::SetOccurrenceParent { id, parent } => {
-                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
-                add_group_ancestry(snapshot, *parent, &mut dependencies);
-            }
-            CanonicalCommand::CreateGroup { id, parent, .. } => {
-                dependencies.insert(AuthoritativeDependency::Group(*id));
-                add_group_ancestry(snapshot, *parent, &mut dependencies);
-            }
-            CanonicalCommand::DeleteGroup { id } => {
-                dependencies.insert(AuthoritativeDependency::Group(*id));
-                dependencies.insert(AuthoritativeDependency::GroupChildren(*id));
-            }
-            CanonicalCommand::SetGroupTransform { id, .. } => {
-                dependencies.insert(AuthoritativeDependency::Group(*id));
-            }
-            CanonicalCommand::SetGroupParent { id, parent } => {
-                dependencies.insert(AuthoritativeDependency::Group(*id));
-                add_group_ancestry(snapshot, *parent, &mut dependencies);
+            CanonicalCommand::SetOccurrenceTag { .. }
+            | CanonicalCommand::RepointOccurrence { .. }
+            | CanonicalCommand::SetOccurrenceParent { .. }
+            | CanonicalCommand::CreateGroup { .. }
+            | CanonicalCommand::DeleteGroup { .. }
+            | CanonicalCommand::SetGroupTransform { .. }
+            | CanonicalCommand::SetGroupParent { .. } => {
+                add_structure_command_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
                 dependencies.insert(AuthoritativeDependency::OccurrenceCollections(
@@ -1429,22 +1586,11 @@ pub(super) fn authoritative_dependencies(
                     ));
                     dependencies.insert(AuthoritativeDependency::Feature(*new_id));
                 }
-                if let Some(definition) = snapshot.definition(plan.source_definition_id) {
-                    for local_id in definition.local_group_ids() {
-                        dependencies.insert(AuthoritativeDependency::LocalGroup(LocalGroupKey {
-                            definition_id: plan.source_definition_id,
-                            local_id: *local_id,
-                        }));
-                    }
-                    for local_id in definition.local_occurrence_ids() {
-                        dependencies.insert(AuthoritativeDependency::LocalOccurrence(
-                            LocalOccurrenceKey {
-                                definition_id: plan.source_definition_id,
-                                local_id: *local_id,
-                            },
-                        ));
-                    }
-                }
+                add_direct_member_dependencies(
+                    snapshot,
+                    plan.source_definition_id,
+                    &mut dependencies,
+                );
             }
             CanonicalCommand::ConvertGroupToComponent(plan) => {
                 dependencies.insert(AuthoritativeDependency::GroupSubtree(plan.group_id));
@@ -1471,15 +1617,8 @@ pub(super) fn authoritative_dependencies(
                         .map(AuthoritativeDependency::Feature),
                 );
             }
-            CanonicalCommand::CreateExpressionNode { id, expression, .. } => {
-                dependencies.insert(AuthoritativeDependency::EvaluatorNode(*id));
-                if let Ok(expression) = ExpressionAst::parse(expression) {
-                    for dependency in expression.dependencies() {
-                        add_evaluator_dependency_closure(snapshot, dependency, &mut dependencies);
-                    }
-                }
-            }
-            CanonicalCommand::CreateRuleNode { id, expression, .. } => {
+            CanonicalCommand::CreateExpressionNode { id, expression, .. }
+            | CanonicalCommand::CreateRuleNode { id, expression, .. } => {
                 dependencies.insert(AuthoritativeDependency::EvaluatorNode(*id));
                 if let Ok(expression) = ExpressionAst::parse(expression) {
                     for dependency in expression.dependencies() {

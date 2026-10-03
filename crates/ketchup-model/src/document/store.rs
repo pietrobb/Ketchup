@@ -859,9 +859,11 @@ impl DocumentStore {
 
         for command in &batch.commands {
             match command {
-                CanonicalCommand::SetTolerance { tolerance } => {
-                    product.tolerance = *tolerance;
+                CanonicalCommand::SetFloorHeight { z_mm } => product.floor_z_mm = *z_mm,
+                CanonicalCommand::SetGroundedInstances { paths } => {
+                    support::set_grounded_instances(&mut product, paths)?
                 }
+                CanonicalCommand::SetTolerance { tolerance } => product.tolerance = *tolerance,
                 CanonicalCommand::SetProductionCode {
                     instance_path,
                     code,
@@ -2252,20 +2254,9 @@ impl DocumentStore {
                     tag,
                     visible,
                 } => {
-                    ensure_product_id(id.0)?;
-                    ensure_name(name)?;
-                    validate_transform(*transform)?;
-                    if product.occurrences.contains_key(id) {
-                        return Err(CanonicalError::OccurrenceAlreadyExists(*id));
-                    }
-                    if let Some(tag_id) = tag
-                        && !product.tags.contains_key(tag_id)
-                    {
-                        return Err(CanonicalError::TagNotFound(*tag_id));
-                    }
-                    product.occurrences.insert(
-                        *id,
-                        Arc::new(Occurrence {
+                    group_conversion::create_occurrence(
+                        &mut product,
+                        Occurrence {
                             id: *id,
                             definition_id: *definition_id,
                             name: name.clone(),
@@ -2274,73 +2265,63 @@ impl DocumentStore {
                             tag: *tag,
                             visible: *visible,
                             color: None,
-                        }),
-                    );
+                        },
+                    )?;
                 }
                 CanonicalCommand::DeleteOccurrence { id } => {
-                    if product
-                        .collections
-                        .values()
-                        .any(|collection| collection.occurrence_ids.contains(id))
-                    {
-                        return Err(CanonicalError::OccurrenceInCollection(*id));
-                    }
-                    if product.assembly_mates.values().any(|mate| {
-                        mate.endpoint_a().occurrence_id() == *id
-                            || mate.endpoint_b().occurrence_id() == *id
-                    }) {
-                        return Err(CanonicalError::OccurrenceInAssemblyMate(*id));
-                    }
-                    if product.assembly_joints.values().any(|joint| {
-                        joint.parent_occurrence_id() == *id || joint.child_occurrence_id() == *id
-                    }) {
-                        return Err(CanonicalError::OccurrenceInAssemblyJoint(*id));
-                    }
-                    if product.pin_joints.values().any(|joint| {
-                        joint.first.instance_path.root_occurrence() == *id
-                            || joint.second.instance_path.root_occurrence() == *id
-                    }) {
-                        return Err(CanonicalError::OccurrenceInPinJoint(*id));
-                    }
-                    product
-                        .occurrences
-                        .remove(id)
-                        .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
-                    product.grounded_occurrences.remove(id);
-                    product
-                        .instance_transform_overrides
-                        .retain(|path, _| path.root_occurrence() != *id);
-                    product
-                        .classification_assignments
-                        .retain(|(occurrence_id, _), _| occurrence_id != id);
+                    group_conversion::delete_occurrence(&mut product, *id)?;
                 }
                 CanonicalCommand::SetOccurrenceTransform { id, transform } => {
                     validate_transform(*transform)?;
                     let existing = product
                         .occurrences
-                        .get(id)
+                        .get_mut(id)
                         .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
-                    product.occurrences.insert(
-                        *id,
-                        Arc::new(Occurrence {
+                    Arc::make_mut(existing).transform = *transform;
+                }
+                CanonicalCommand::CreateLocalOccurrence {
+                    key,
+                    definition_id,
+                    name,
+                    transform,
+                    parent,
+                    tag,
+                    visible,
+                } => {
+                    group_conversion::create_local_occurrence(
+                        &mut product,
+                        LocalOccurrence {
+                            key: *key,
+                            definition_id: *definition_id,
+                            name: name.clone(),
                             transform: *transform,
-                            ..existing.as_ref().clone()
-                        }),
-                    );
+                            parent: *parent,
+                            tag: *tag,
+                            visible: *visible,
+                            color: None,
+                        },
+                    )?;
+                }
+                CanonicalCommand::DeleteLocalOccurrence { key } => {
+                    group_conversion::delete_local_occurrence(&mut product, *key)?;
+                }
+                CanonicalCommand::RepointLocalOccurrence { key, definition_id } => {
+                    group_conversion::local_occurrence_mut(&mut product, *key)?.definition_id =
+                        *definition_id;
+                }
+                CanonicalCommand::SetLocalOccurrenceParent { key, parent } => {
+                    group_conversion::local_occurrence_mut(&mut product, *key)?.parent = *parent;
+                }
+                CanonicalCommand::SetLocalOccurrenceTransform { key, transform } => {
+                    validate_transform(*transform)?;
+                    group_conversion::local_occurrence_mut(&mut product, *key)?.transform =
+                        *transform;
+                }
+                CanonicalCommand::RenameLocalOccurrence { key, name } => {
+                    group_conversion::rename_local_occurrence(&mut product, *key, name)?;
                 }
                 CanonicalCommand::RenameEntity { id, name } => {
-                    ensure_name(name)?;
-                    let existing = product
-                        .occurrences
-                        .get(id)
-                        .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
-                    product.occurrences.insert(
-                        *id,
-                        Arc::new(Occurrence {
-                            name: name.clone(),
-                            ..existing.as_ref().clone()
-                        }),
-                    );
+                    group_conversion::rename_occurrence(&mut product, *id, name)?;
                 }
                 CanonicalCommand::GuardAssemblyRecompute {
                     source_revision,
@@ -2402,14 +2383,7 @@ impl DocumentStore {
                     }
                 }
                 CanonicalCommand::SetOccurrenceGrounded { id, grounded } => {
-                    if !product.occurrences.contains_key(id) {
-                        return Err(CanonicalError::OccurrenceNotFound(*id));
-                    }
-                    if *grounded {
-                        product.grounded_occurrences.insert(*id);
-                    } else {
-                        product.grounded_occurrences.remove(id);
-                    }
+                    support::set_occurrence_grounded(&mut product, *id, *grounded)?;
                 }
                 CanonicalCommand::CreateAssemblyMate(mate) => {
                     ensure_product_id(mate.id().0)?;
@@ -2766,35 +2740,41 @@ impl DocumentStore {
                     );
                 }
                 CanonicalCommand::DeleteGroup { id } => {
-                    if product
-                        .occurrences
-                        .values()
-                        .any(|occurrence| occurrence.parent == Some(*id))
-                        || product
-                            .groups
-                            .values()
-                            .any(|group| group.parent == Some(*id))
-                    {
-                        return Err(CanonicalError::GroupNotEmpty(*id));
-                    }
-                    product
-                        .groups
-                        .remove(id)
-                        .ok_or(CanonicalError::GroupNotFound(*id))?;
+                    group_conversion::delete_group(&mut product, *id)?;
+                }
+                CanonicalCommand::CreateLocalGroup {
+                    key,
+                    name,
+                    transform,
+                    parent,
+                } => {
+                    group_conversion::create_local_group(
+                        &mut product,
+                        LocalGroup {
+                            key: *key,
+                            name: name.clone(),
+                            transform: *transform,
+                            parent: *parent,
+                        },
+                    )?;
+                }
+                CanonicalCommand::DeleteLocalGroup { key } => {
+                    group_conversion::delete_local_group(&mut product, *key)?;
+                }
+                CanonicalCommand::SetLocalGroupTransform { key, transform } => {
+                    validate_transform(*transform)?;
+                    group_conversion::local_group_mut(&mut product, *key)?.transform = *transform;
+                }
+                CanonicalCommand::SetLocalGroupParent { key, parent } => {
+                    group_conversion::local_group_mut(&mut product, *key)?.parent = *parent;
                 }
                 CanonicalCommand::SetGroupTransform { id, transform } => {
                     validate_transform(*transform)?;
                     let existing = product
                         .groups
-                        .get(id)
+                        .get_mut(id)
                         .ok_or(CanonicalError::GroupNotFound(*id))?;
-                    product.groups.insert(
-                        *id,
-                        Arc::new(Group {
-                            transform: *transform,
-                            ..existing.as_ref().clone()
-                        }),
-                    );
+                    Arc::make_mut(existing).transform = *transform;
                 }
                 CanonicalCommand::SetGroupParent { id, parent } => {
                     let existing = product
@@ -2871,6 +2851,7 @@ impl DocumentStore {
             .exact_reference_evidence
             .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
 
+        support::prune_grounded_instances(&mut product);
         refresh_sketch_projections(&mut product)?;
         validate_graph(&product.evaluator_nodes)?;
         refresh_override_health(&mut product);

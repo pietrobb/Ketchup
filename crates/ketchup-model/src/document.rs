@@ -125,6 +125,7 @@ mod snapshot;
 mod solid_tool;
 mod stable_digest;
 mod store;
+mod support;
 pub(crate) use ketchup_geometry::derived::{derived, identity_form};
 pub(crate) use stable_digest::digest_product;
 
@@ -154,6 +155,8 @@ pub(crate) struct ProductModel {
     pub(crate) units: UnitSystem,
     #[serde(default, skip_serializing_if = "TolerancePolicy::is_default")]
     pub(crate) tolerance: TolerancePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) floor_z_mm: Option<f64>,
     pub(crate) evaluator_nodes: BTreeMap<NodeId, Arc<EvaluatorNode>>,
     pub(crate) overrides: BTreeMap<u64, Arc<CanonicalOverride>>,
     pub(crate) feature_parameter_bindings:
@@ -181,6 +184,8 @@ pub(crate) struct ProductModel {
     pub(crate) body_feature_suppression: BTreeMap<(DefinitionId, BodyId), BTreeSet<FeatureId>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
     pub(crate) grounded_occurrences: BTreeSet<OccurrenceId>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) grounded_instances: BTreeSet<InstancePath>,
     pub(crate) assembly_mates: BTreeMap<AssemblyMateId, Arc<AssemblyMate>>,
     pub(crate) assembly_joints: BTreeMap<AssemblyJointId, Arc<AssemblyJoint>>,
     pub(crate) assembly_motion_couplings:
@@ -201,12 +206,7 @@ pub(crate) struct ProductModel {
 }
 
 /// Exact B-Rep graphs compiled from one immutable product model.
-///
-/// Checking whether an exact result is still current recompiles the producer's
-/// whole feature chain, and interactive tools ask that many times per frame, so
-/// the cost grew with every feature added to a body. The model never changes
-/// after publication; the revision is part of the key because the graph embeds
-/// it. A clone starts empty for the same reason as [`DigestCache`].
+/// Cached per immutable revision; clones start empty, as with [`DigestCache`].
 #[derive(Default)]
 pub(crate) struct ExactGraphCache(std::sync::Mutex<ExactGraphsByProducer>);
 type ExactGraphsByProducer = BTreeMap<(u64, DefinitionId, FeatureId), Option<Arc<ExactBRepGraph>>>;
@@ -219,11 +219,8 @@ impl Clone for ExactGraphCache {
 
 /// The canonical digest of one immutable product model, computed at most once.
 ///
-/// Hashing the whole document is O(document), and interactive paths ask for the
-/// digest many times per frame to check whether a derived result is still
-/// current. A product model never changes after it is published in a snapshot,
-/// so the digest can be memoized. Cloning a model means a new revision is being
-/// built from it, so the clone starts with an empty cache.
+/// Immutable snapshots memoize the O(document) hash; clones for new revisions
+/// start with an empty cache.
 #[derive(Default)]
 pub(crate) struct DigestCache(OnceLock<String>);
 
@@ -239,6 +236,7 @@ impl Default for ProductModel {
             document_id: allocate_document_id(),
             units: UnitSystem::Millimetres,
             tolerance: TolerancePolicy::default(),
+            floor_z_mm: None,
             evaluator_nodes: BTreeMap::new(),
             overrides: BTreeMap::new(),
             feature_parameter_bindings: BTreeMap::new(),
@@ -261,6 +259,7 @@ impl Default for ProductModel {
             body_feature_suppression: BTreeMap::new(),
             occurrences: BTreeMap::new(),
             grounded_occurrences: BTreeSet::new(),
+            grounded_instances: BTreeSet::new(),
             assembly_mates: BTreeMap::new(),
             assembly_joints: BTreeMap::new(),
             assembly_motion_couplings: BTreeMap::new(),

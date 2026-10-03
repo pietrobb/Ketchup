@@ -137,6 +137,14 @@ pub enum AssemblyJointKind {
 }
 
 impl AssemblyJointKind {
+    /// Rigid motion in the joint's parent frame, measured from the zero-position pose.
+    /// Compose this with the original placement, not the previously moved placement.
+    /// Returns `None` for invalid axes, non-finite values or a position outside the limits.
+    #[must_use]
+    pub fn transform_from_zero(self) -> Option<Transform> {
+        self.is_valid().then(|| joint_motion_transform(self))
+    }
+
     #[must_use]
     pub fn is_valid(self) -> bool {
         match self {

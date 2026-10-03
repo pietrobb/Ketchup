@@ -683,6 +683,7 @@ pub struct Part {
     /// Stable identity: the path given in the program, e.g. `korpus/bok_lavy`.
     pub name: String,
     pub size_mm: [f64; 3],
+    pub grounded: bool,
     /// World position of the local origin.
     pub at_mm: [f64; 3],
     /// Row-major rotation of the local frame; columns are the local axes in world.
@@ -1520,14 +1521,53 @@ pub struct Joint {
     pub max_gap_mm: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramGroup {
+    pub name: String,
+    pub grounded: bool,
+    /// Direct members: parts or previously declared groups, each with one parent.
+    pub members: Vec<String>,
+}
+
+/// One shared assembly definition; its original group is also its first instance.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramComponent {
+    pub name: String,
+    pub parts: Vec<Part>,
+    pub groups: Vec<ProgramGroup>,
+    pub joints: Vec<Joint>,
+    pub motions: Vec<crate::motion::ProgramMotion>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramInstance {
+    pub name: String,
+    pub component: String,
+    pub at_mm: [f64; 3],
+    pub rotation: Mat3,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ProgramModel {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor_z_mm: Option<f64>,
     pub params: Vec<Param>,
     pub parts: Vec<Part>,
+    /// Explicit new-name to previous-name identity claims, independent of geometry.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub continuations: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<ProgramGroup>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<ProgramComponent>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<ProgramInstance>,
     /// Helper bodies used only as boolean tools: never built, listed or validated.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Part>,
     pub joints: Vec<Joint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub motions: Vec<crate::motion::ProgramMotion>,
     /// Conditions the program states about its geometry (`expect()`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub expectations: Vec<crate::expect::Expectation>,

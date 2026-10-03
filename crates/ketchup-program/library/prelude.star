@@ -11,9 +11,53 @@
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=
-#   (0-255 channels) and attributes= (a dict of strings, kept on the part).
+#   (0-255 channels), attributes= (a dict of strings) and grounded=False.
 #   grain= of board() and member() is the attribute "grain": "x", "y" or "z".
 #   member(name, start, end, section, across=)  -> a bar from point to point
+#   floor(z) -> set one horizontal support plane at world z millimetres in program and document reports.
+#     Defaults to z=0; does not move parts. An explicit floor reports unsupported bodies even with no contact seed.
+#   grounded=True anchors a part without moving it; touching bodies may receive its support.
+#     group/component(..., grounded=True) anchors every descendant, not unrelated siblings.
+#     instance(..., grounded=) inherits the source root by default; False releases only that root,
+#     not explicit internal anchors. Copies inherit their source part's anchor.
+#     Change grounding via a boolean expression of param(); anchors persist through Save/Open
+#     and typed edits that detach the program. This is support, not a lock on explicit placement.
+#   group(name, members, grounded=False) -> group in the document tree, without moving parts.
+#     Members are existing parts/groups (or their names), each with one parent.
+#     Declare children before parents; names are unique across parts and groups.
+#     Group names preserve document IDs across apply, including membership edits.
+#     Reports warn about disconnected sets of members, even when grounded. Contact outside the
+#     group and joint declarations cannot hide separation; non-box contacts require exact verification.
+#   component(name, members) -> shared assembly, including its first instance.
+#     Finish members' machining/placement first; members are parts, groups or component instances.
+#   instance(name, component, at=(0,0,0), x=(1,0,0), z=(0,0,1)) -> instance.
+#     at/x/z transform the entire assembly about the PROGRAM ORIGIN, not its centre.
+#     Read copied parts as "instance-name/original-part-name"; edit shared members
+#     before component(), or copy() a part for independent machining. Internal
+#     joints/fasteners are copied; external joints and expect() conditions are not.
+#     Members may include components and instances; nested copies compose their transforms.
+#     Shared dimension edits, instance placement/add/remove and regrouping preserve surviving IDs.
+#     Nested edits update shared geometry once, including rebuilds, local copies and local groups.
+#     Incremental apply keeps the component definitions and member owners; move members only
+#     between groups of the same component. Changing owners or the component set needs a new build.
+#   continue_part(part, was="previous-name") -> part; explicitly retain a previous part's ID.
+#     Use on one surviving piece after a rename/split. Other pieces are new parts.
+#     Keep the declaration on later edits; a fresh build uses the new names normally.
+#     Works on root/grouped parts and shared source members, including nested components.
+#     Shared members retain their local key in the same component; all instance paths follow.
+#     Declare on the source member, not a copied leaf. Definition/feature IDs may change on rebuild.
+#   joint(a, b, kind="motion", motion=slide((0,1,0), 0, 500), position=param("open", 0))
+#     Moves the whole b (part/group/component, including nested members) relative to fixed a.
+#     Position is an absolute offset from the FINISHED PROGRAM placement, not the previous pose.
+#     slide(axis, min, max) uses mm; rotate_motion(axis, min, max, pivot=(0,0,0)) uses degrees.
+#     Axes/pivots are in PROGRAM WORLD coordinates; rotation is right-handed.
+#     Motion is applied after program evaluation: machining, part_info and prints use reference frames;
+#     report/expect/collisions and the document use the posed geometry. Change position via param overrides.
+#     Travel limits report issues without clamping. Motion is not a physical contact/fastener declaration.
+#     Declare internal shared motions with both endpoints BEFORE component(); every instance inherits them.
+#     Instance placement carries axes/pivots too. A parent pose carries both sides of internal joints;
+#     inner motion runs first. Copied leaves cannot be driven separately; move the instance instead.
+#     Independent driven-anchor chains and overlapping drivers are rejected, not silently solved.
 #   rotate(part, axis=(x, y, z), angle=degrees, pivot=(x, y, z))  -> part
 #   place(part, origin=(x, y, z), z=(x, y, z), x=(x, y, z))  -> part
 #   part_info(part)  -> struct(name, size, at, min, max, local_min, local_max,
@@ -21,7 +65,7 @@
 #   math.sqrt/sin/cos/tan/asin/acos/atan/atan2/hypot/radians/degrees, math.pi
 #   sum(values), round_to(value, step), spread(start, end, count),
 #   divide(span, count, round_to=), vec_add/vec_sub/vec_scale/vec_length
-#   print(...) lines come back in the report's log.
+#   fmt_mm(value, decimals=1) -> text, 0-9 places, no trailing zeros or unit; print(...) returns in the report's log.
 #
 # Every part has its own frame: `at` is its local origin in world, and
 # rotate()/place() turn that frame. Sizes, faces, holes and pockets are always
@@ -264,7 +308,7 @@ def distribute(parts, a, b, face = None):
     gap = (high - low - thickness) / (len(parts) + 1.0)
     if gap < 0:
         fail("distribute(): the parts are %s mm thick together but only %s mm lie between %s and %s" %
-             (_mm(thickness), _mm(high - low), part_info(a).name, part_info(b).name))
+             (fmt_mm(thickness), fmt_mm(high - low), part_info(a).name, part_info(b).name))
     position = low + gap
     for part in parts:
         size = reach(part, n) + reach(part, back)
@@ -591,7 +635,7 @@ def countersunk_hole(part, face, at, diameter, depth, head, angle = 90, name = N
         fail("countersunk_hole(%s): angle must lie between 0 and 180 degrees, got %s" % (info.name, angle))
     sink = (big - r) / math.tan(math.radians(angle / 2.0))
     if sink >= depth:
-        fail("countersunk_hole(%s): the %s mm cone is deeper than the %s mm hole" % (info.name, _mm(sink), depth))
+        fail("countersunk_hole(%s): the %s mm cone is deeper than the %s mm hole" % (info.name, fmt_mm(sink), depth))
     if name == None:
         # Tool names become face-name prefixes: no "." "(" or ",".
         name = "countersink %s %s" % (face, " ".join([("%s" % round_to(v, 0.001)).replace(".", "_") for v in at]))
@@ -772,10 +816,18 @@ DOWELS = {
     "10x50": (10, 50),
 }
 
-def _mm(value):
-    """`value` to 0.1 mm, without ".0" when whole."""
-    value = round_to(value, 0.1)
-    return int(value) if value == int(value) else value
+def fmt_mm(value, decimals = 1):
+    """Millimetres as text, with 0-9 decimal places, trailing zeros omitted.
+    Rounds ties away from zero; includes no unit suffix or negative zero.
+    """
+    if type(decimals) != "int" or decimals < 0 or decimals > 9:
+        fail("fmt_mm(): decimals must be an integer from 0 to 9, got %r" % decimals)
+    scale = int("1" + "0" * decimals)
+    rounded = int(abs(value) * scale + 0.5)
+    digits = str(rounded)
+    digits = "0" * max(0, decimals + 1 - len(digits)) + digits
+    text = digits if decimals == 0 else (digits[:-decimals] + "." + digits[-decimals:]).rstrip("0").rstrip(".")
+    return ("-" if value < 0 and rounded != 0 else "") + text
 
 def _drill_room(part, face, rest):
     """(thickness behind `face`, deepest hole leaving `rest` of it) of a part:
@@ -803,8 +855,8 @@ def _dowel_depths(a, b, face_a, face_b, dowel, length, clearance, rest):
               "but %s (%s mm thick there) takes a hole of at most %s mm and %s (%s mm) at most %s mm " +
               "(each leaves max(rest=%s, a third of the thickness) undrilled); use a shorter dowel " +
               "or thicker parts") %
-             (names[0], names[1], dowel, length, clearance, names[0], _mm(rooms[0][0]), _mm(rooms[0][1]),
-              names[1], _mm(rooms[1][0]), _mm(rooms[1][1]), rest))
+             (names[0], names[1], dowel, length, clearance, names[0], fmt_mm(rooms[0][0]), fmt_mm(rooms[0][1]),
+              names[1], fmt_mm(rooms[1][0]), fmt_mm(rooms[1][1]), rest))
     return (ends[0] + clearance, ends[1] + clearance)
 
 def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clearance = 1.5, rest = 6):
@@ -938,11 +990,11 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
         margin = min(100, height / 4.0)
     if count > 1 and (height - 2 * margin) / (count - 1) < cup + 10:
         fail("hinge(%s, %s): %d hinges with cups of %s mm do not fit on a %s mm door (margin %s mm)" %
-             (di.name, si.name, count, cup, _mm(height), _mm(margin)))
+             (di.name, si.name, count, cup, fmt_mm(height), fmt_mm(margin)))
     gap = distance(door, side).distance
     if gap > max_gap:
         fail("hinge(%s, %s): the door is %s mm from the side, more than max_gap = %s mm a hinge bridges" %
-             (di.name, si.name, _mm(gap), max_gap))
+             (di.name, si.name, fmt_mm(gap), max_gap))
     door_face = "xyz"[t] + ("+" if t_sign > 0 else "-")
     side_axis, side_sign = _own_axis(si, across)
     side_face = "xyz"[side_axis] + ("-" if side_sign > 0 else "+")

@@ -493,14 +493,13 @@ impl DocumentSession {
         let proposal = self.plan_cad_program(program, selection)?;
         self.apply_proposal(&proposal)
     }
-    pub(crate) fn replace_with_rule_parts(
+    pub(crate) fn replace_with_rule_model(
         &mut self,
-        parts: &[ketchup_program::model::Part],
+        model: &ketchup_program::ProgramModel,
         source: ketchup_model::document::RuleProgramSource,
-    ) -> Result<Snapshot, SessionError> {
+    ) -> Result<Snapshot, crate::RuleProgramApplyError> {
         let mut replacement = Self::new(self.settings.clone());
-        let batch = crate::planner::plan_rule_part_batch(&replacement.document, parts)
-            .map_err(SessionError::Planning)?;
+        let batch = crate::rule_groups::plan_rule_model_batch(&replacement.document, model)?;
         let snapshot = replacement.apply_rule_commands_with_source(batch, source)?;
         *self = replacement;
         Ok(snapshot)

@@ -179,6 +179,8 @@ fn validate_document_entries(
     {
         return Err(CanonicalError::InvalidInstancePath);
     }
+    support::validate_floor(product.floor_z_mm)?;
+    support::validate_grounded_instances(product, &product.grounded_instances)?;
     if let Some(id) = product
         .grounded_occurrences
         .iter()

@@ -6,6 +6,14 @@ pub enum CanonicalCommand {
     SetTolerance {
         tolerance: TolerancePolicy,
     },
+    /// Set the world-Z support plane without changing any geometry.
+    SetFloorHeight {
+        z_mm: Option<f64>,
+    },
+    /// Replace explicit support anchors without grounding sibling instances.
+    SetGroundedInstances {
+        paths: BTreeSet<InstancePath>,
+    },
     /// Assign a document-unique, machine-neutral code to one physical instance.
     SetProductionCode {
         instance_path: InstancePath,
@@ -276,6 +284,34 @@ pub enum CanonicalCommand {
         id: OccurrenceId,
         transform: Transform,
     },
+    CreateLocalOccurrence {
+        key: LocalOccurrenceKey,
+        definition_id: DefinitionId,
+        name: String,
+        transform: Transform,
+        parent: Option<LocalGroupId>,
+        tag: Option<TagId>,
+        visible: bool,
+    },
+    DeleteLocalOccurrence {
+        key: LocalOccurrenceKey,
+    },
+    RepointLocalOccurrence {
+        key: LocalOccurrenceKey,
+        definition_id: DefinitionId,
+    },
+    SetLocalOccurrenceParent {
+        key: LocalOccurrenceKey,
+        parent: Option<LocalGroupId>,
+    },
+    SetLocalOccurrenceTransform {
+        key: LocalOccurrenceKey,
+        transform: Transform,
+    },
+    RenameLocalOccurrence {
+        key: LocalOccurrenceKey,
+        name: String,
+    },
     RenameEntity {
         id: OccurrenceId,
         name: String,
@@ -369,6 +405,23 @@ pub enum CanonicalCommand {
         name: String,
         transform: Transform,
         parent: Option<GroupId>,
+    },
+    CreateLocalGroup {
+        key: LocalGroupKey,
+        name: String,
+        transform: Transform,
+        parent: Option<LocalGroupId>,
+    },
+    DeleteLocalGroup {
+        key: LocalGroupKey,
+    },
+    SetLocalGroupTransform {
+        key: LocalGroupKey,
+        transform: Transform,
+    },
+    SetLocalGroupParent {
+        key: LocalGroupKey,
+        parent: Option<LocalGroupId>,
     },
     DeleteGroup {
         id: GroupId,
@@ -491,6 +544,8 @@ pub enum AuthoritativeDependency {
     CamPlan(CamPlanId),
     PinJoint(PinJointId),
     Tolerance,
+    FloorHeight,
+    GroundedInstances,
     ProductionCodes,
     AssemblyRecipe,
     PersistentDimension(PersistentDimensionId),

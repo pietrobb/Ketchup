@@ -10,6 +10,7 @@
 
 pub mod bom;
 pub mod cad;
+mod connectivity;
 pub mod contact;
 pub mod document;
 pub mod eval;
@@ -20,6 +21,7 @@ mod face_at;
 pub mod faces;
 pub mod frame;
 pub mod model;
+pub mod motion;
 pub mod path;
 pub mod relations;
 pub mod validate;

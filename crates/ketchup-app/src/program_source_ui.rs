@@ -41,12 +41,10 @@ impl KetchupApp {
         let Some(program) = self.document.current_rule_program() else {
             return;
         };
-        let part = self.selected_occurrence_ids().first().and_then(|id| {
-            self.document
-                .current()
-                .occurrence(*id)
-                .map(|occurrence| occurrence.name().to_owned())
-        });
+        let part = self
+            .selected_instance_paths()
+            .first()
+            .and_then(|path| live_bridge::program_pick::part_name(&self.document.current(), path));
         egui::CollapsingHeader::new(self.catalog.text("program-source-title"))
             .id_salt("program-source")
             .default_open(true)

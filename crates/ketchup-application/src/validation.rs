@@ -2798,19 +2798,46 @@ pub fn assistant_passage_clearance_report(
 const DERIVED_GRAVITY_SUPPORT_GROUP: &str = "document";
 /// Standard gravity, used when the document declares no gravity vector.
 const CANONICAL_GRAVITY_M_S2: [f64; 3] = [0.0, 0.0, -9.81];
-const DERIVED_GRAVITY_ROLE_ASSUMPTION: &str = "gravity roles were read from the document: every visible solid is a body; occurrences the document grounds, and bodies whose lowest point lies on or below the world XY plane (z = 0) under -Z gravity, seed support";
-/// A body whose lowest point is within this distance above z = 0 stands on the floor.
+const DERIVED_GRAVITY_ROLE_ASSUMPTION: &str = "gravity roles were read from the document: every visible solid is a body; grounded occurrences and bodies contacting the document floor under -Z gravity seed support";
+/// A body whose lowest point is within this distance of the plane stands on the floor.
 const FLOOR_CONTACT_TOLERANCE_MM: f64 = 0.01;
 const DERIVED_GRAVITY_VECTOR_ASSUMPTION: &str =
     "no gravity vector is declared, so standard gravity 9.81 m/s² along -Z was assumed";
 
-/// Gravity participants read straight from what the document already states.
-///
-/// Support is seeded by occurrences the document explicitly grounds and, when
-/// gravity points along -Z, by the world XY plane: a body whose lowest point
-/// is on (or below) z = 0 stands on the floor. Everything else still has to
-/// earn support through real contact or verified joinery. Without any seed
-/// nothing is derived and the validator stays honestly unevaluated.
+/// Assembly containers are not solids; their physical leaves are checked separately.
+fn assistant_physical_occurrences(
+    snapshot: &Snapshot,
+) -> (
+    Vec<ketchup_model::document::SceneOccurrence>,
+    Option<ketchup_model::document::SceneQueryBudgetExceeded>,
+) {
+    let assemblies = snapshot
+        .local_occurrences()
+        .map(|item| item.key().definition_id)
+        .collect::<BTreeSet<_>>();
+    match snapshot.scene_query_bounded(
+        MAX_ASSISTANT_VALIDATION_OCCURRENCES,
+        limits::INSTANCE_PATH_STEPS,
+        limits::REPORT_TEXT_BYTES,
+    ) {
+        Ok(occurrences) => (
+            occurrences
+                .into_iter()
+                .filter(|item| {
+                    item.visible
+                        && !(assemblies.contains(&item.definition_id)
+                            && snapshot
+                                .definition(item.definition_id)
+                                .is_some_and(|definition| definition.feature_ids().is_empty()))
+                })
+                .collect(),
+            None,
+        ),
+        Err(error) => (Vec::new(), Some(error)),
+    }
+}
+
+/// Seed support from explicit anchors and floor contact; propagate only over proven contact.
 pub fn assistant_derived_gravity_participants(
     snapshot: &Snapshot,
     participants: &[GeneralBodyParticipant],
@@ -2819,19 +2846,21 @@ pub fn assistant_derived_gravity_participants(
     let derived = participants
         .iter()
         .map(|body| {
-            let occurrence_id = body.instance_path().root_occurrence();
-            let on_floor =
-                floor_is_world_xy && body.bounds().min()[2] <= FLOOR_CONTACT_TOLERANCE_MM;
+            let grounded = snapshot.instance_is_grounded(body.instance_path());
+            let on_floor = floor_is_world_xy
+                && (body.bounds().min()[2] - snapshot.floor_z_mm().unwrap_or(0.0)).abs()
+                    <= FLOOR_CONTACT_TOLERANCE_MM;
             GravitySupportParticipant::new(
                 body.clone(),
                 DERIVED_GRAVITY_SUPPORT_GROUP,
-                on_floor || snapshot.occurrence_is_grounded(occurrence_id),
+                on_floor || grounded,
             )
         })
         .collect::<Vec<_>>();
-    if derived
-        .iter()
-        .any(|participant| participant.explicitly_grounded)
+    if snapshot.floor_z_mm().is_some()
+        || derived
+            .iter()
+            .any(|participant| participant.explicitly_grounded)
     {
         derived
     } else {
@@ -3381,20 +3410,7 @@ pub(crate) fn assistant_validation_context_base(
     let tolerance = snapshot.tolerance();
     let needs_participant_projection = selection.requested.iter().any(|id| *id != "collision");
     let (visible_occurrences, scene_query_error) = if needs_participant_projection {
-        match snapshot.scene_query_bounded(
-            MAX_ASSISTANT_VALIDATION_OCCURRENCES,
-            limits::INSTANCE_PATH_STEPS,
-            limits::REPORT_TEXT_BYTES,
-        ) {
-            Ok(occurrences) => (
-                occurrences
-                    .into_iter()
-                    .filter(|occurrence| occurrence.visible)
-                    .collect::<Vec<_>>(),
-                None,
-            ),
-            Err(error) => (Vec::new(), Some(error)),
-        }
+        assistant_physical_occurrences(snapshot)
     } else {
         (Vec::new(), None)
     };
@@ -3469,7 +3485,7 @@ pub(crate) fn assistant_validation_context_base(
                 "state": "skipped",
                 "complete": false,
                 "gravity_axis": "-Z",
-                "floor_z_mm": 0.0,
+                "floor_z_mm": snapshot.floor_z_mm().unwrap_or(0.0),
                 "checked_occurrence_count": 0,
                 "unsupported_count": 0,
                 "issues_complete": true,
@@ -3587,7 +3603,7 @@ pub(crate) fn assistant_validation_context_base(
                             body.clone(),
                             role.group,
                             role.function == RoleFunction::GravityGround
-                                || snapshot.occurrence_is_grounded(occurrence_id),
+                                || snapshot.instance_is_grounded(body.instance_path()),
                         )
                     })
                 })
@@ -3760,7 +3776,8 @@ pub(crate) fn assistant_validation_context_base(
                         EvidenceClass::Tolerant(_) => "tolerant",
                     },
                     "occurrence_id": occurrence_id.0,
-                    "name": names.get(&occurrence_id),
+                    "name": visible_occurrences.iter().find(|item| &item.instance_path == participant.body.instance_path()).map(|item| &item.occurrence_name),
+                    "instance_path": participant.body.instance_path(),
                     "evidence": diagnostic.evidence.as_str(),
                 })
             })
@@ -4000,7 +4017,7 @@ pub(crate) fn assistant_validation_context_base(
                 && gravity_unproven_count == 0
                 && gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
             "gravity_axis": "-Z",
-            "floor_z_mm": 0.0,
+            "floor_z_mm": snapshot.floor_z_mm().unwrap_or(0.0),
             "checked_occurrence_count": if selection.requested.contains("gravity_support") {
                 gravity_participants.len()
             } else {

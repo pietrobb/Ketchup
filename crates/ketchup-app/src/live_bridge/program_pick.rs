@@ -14,6 +14,9 @@ segment name) for hole/push_pull/cut/contact; on_face is what on(part, target, f
 (an axis of the part's own frame, else a world direction); an edge's two faces go to \
 fillet/chamfer edges=[[a, b]]";
 
+pub(crate) fn part_name(snapshot: &Snapshot, path: &InstancePath) -> Option<String> {
+    ketchup_application::rule_program_part_name(snapshot, path)
+}
 fn round(values: [f64; 3]) -> [f64; 3] {
     values.map(|value| (value * 1000.0).round() / 1000.0 + 0.0)
 }
@@ -104,17 +107,15 @@ pub(super) fn describe(
     reference: &TopologicalElementRef,
 ) -> Option<Value> {
     let program = app.document.current_rule_program()?;
-    if !instance_path.is_root() {
-        return None;
-    }
-    let occurrence = snapshot.occurrence(instance_path.root_occurrence())?;
+    let name = part_name(snapshot, instance_path)?;
+    let occurrence = snapshot.resolve_instance_path(instance_path).ok()?;
     let (evaluated, _) =
         ketchup_program::run(&program.file_name, &program.source, &program.overrides).ok()?;
-    let part = evaluated.model.part(occurrence.name())?;
+    let part = evaluated.model.part(&name)?;
     let package = app
         .exact
         .topology_results
-        .get_render(snapshot, occurrence.definition_id())?;
+        .get_render(snapshot, occurrence.definition_id)?;
     let ordinal = |kind| {
         package
             .topological_references()

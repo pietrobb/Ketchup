@@ -492,10 +492,10 @@ fn add_contact_area(
     }
 }
 
-/// Exact answers by the root occurrences of two bodies, smaller id first.
-pub type ExactPairFacts = BTreeMap<(OccurrenceId, OccurrenceId), ExactPair>;
+/// Exact answers by the full paths of two leaf instances, smaller path first.
+pub type ExactPairFacts = BTreeMap<(InstancePath, InstancePath), ExactPair>;
 
-/// Merges one body pair's answer into its root occurrences' answer.
+/// Merges body pairs only within the same two leaf instances.
 fn add_pair_fact(
     facts: Option<&mut ExactPairFacts>,
     bodies: &[Body],
@@ -507,15 +507,15 @@ fn add_pair_fact(
         return;
     };
     let (left, right) = (
-        bodies[left].occurrence.instance_path.root_occurrence(),
-        bodies[right].occurrence.instance_path.root_occurrence(),
+        &bodies[left].occurrence.instance_path,
+        &bodies[right].occurrence.instance_path,
     );
     if left == right {
         return;
     }
     let tolerance = tolerance.linear_mm();
     facts
-        .entry((left.min(right), left.max(right)))
+        .entry((left.min(right).clone(), left.max(right).clone()))
         .and_modify(|known| {
             known.common_volume_mm3 += fact.common_volume_mm3;
             known.contact_area_mm2 += fact.contact_area_mm2;

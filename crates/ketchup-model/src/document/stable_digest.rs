@@ -76,6 +76,8 @@ impl StableDigest {
             D::CamPlan(id) => self.value(&product.cam_plans.get(id)),
             D::PinJoint(id) => self.value(&product.pin_joints.get(id)),
             D::Tolerance => self.value(&product.tolerance),
+            D::FloorHeight => self.value(&product.floor_z_mm),
+            D::GroundedInstances => self.value(&product.grounded_instances),
             D::ProductionCodes => self.value(&product.production_codes),
             D::AssemblyRecipe => self.value(&product.assembly_recipe),
             D::PersistentDimension(id) => self.value(&product.persistent_dimensions.get(id)),

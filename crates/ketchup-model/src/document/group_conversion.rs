@@ -1,5 +1,218 @@
 use super::*;
 
+pub(super) fn rename_local_occurrence(
+    product: &mut ProductModel,
+    key: LocalOccurrenceKey,
+    name: &str,
+) -> Result<(), CanonicalError> {
+    ensure_name(name)?;
+    local_occurrence_mut(product, key)?.name = name.to_owned();
+    Ok(())
+}
+
+pub(super) fn rename_occurrence(
+    product: &mut ProductModel,
+    id: OccurrenceId,
+    name: &str,
+) -> Result<(), CanonicalError> {
+    ensure_name(name)?;
+    let occurrence = product
+        .occurrences
+        .get_mut(&id)
+        .ok_or(CanonicalError::OccurrenceNotFound(id))?;
+    Arc::make_mut(occurrence).name = name.to_owned();
+    Ok(())
+}
+
+pub(super) fn local_occurrence_mut(
+    product: &mut ProductModel,
+    key: LocalOccurrenceKey,
+) -> Result<&mut LocalOccurrence, CanonicalError> {
+    product
+        .local_occurrences
+        .get_mut(&key)
+        .map(Arc::make_mut)
+        .ok_or(CanonicalError::LocalOccurrenceNotFound(key))
+}
+
+pub(super) fn create_local_occurrence(
+    product: &mut ProductModel,
+    occurrence: LocalOccurrence,
+) -> Result<(), CanonicalError> {
+    let key = occurrence.key;
+    ensure_name(&occurrence.name)?;
+    validate_transform(occurrence.transform)?;
+    let owner = product
+        .definitions
+        .get_mut(&key.definition_id)
+        .ok_or(CanonicalError::DefinitionNotFound(key.definition_id))?;
+    if owner.local_occurrence_ids.contains(&key.local_id)
+        || owner
+            .local_group_ids
+            .iter()
+            .any(|id| id.0 == key.local_id.0)
+    {
+        return Err(CanonicalError::LocalOccurrenceAlreadyExists(key));
+    }
+    Arc::make_mut(owner).local_occurrence_ids.push(key.local_id);
+    product.local_occurrences.insert(key, Arc::new(occurrence));
+    Ok(())
+}
+
+pub(super) fn delete_local_occurrence(
+    product: &mut ProductModel,
+    key: LocalOccurrenceKey,
+) -> Result<(), CanonicalError> {
+    product
+        .local_occurrences
+        .remove(&key)
+        .ok_or(CanonicalError::LocalOccurrenceNotFound(key))?;
+    let owner = product
+        .definitions
+        .get_mut(&key.definition_id)
+        .ok_or(CanonicalError::DefinitionNotFound(key.definition_id))?;
+    Arc::make_mut(owner)
+        .local_occurrence_ids
+        .retain(|id| *id != key.local_id);
+    Ok(())
+}
+
+pub(super) fn local_group_mut(
+    product: &mut ProductModel,
+    key: LocalGroupKey,
+) -> Result<&mut LocalGroup, CanonicalError> {
+    product
+        .local_groups
+        .get_mut(&key)
+        .map(Arc::make_mut)
+        .ok_or(CanonicalError::LocalGroupNotFound(key))
+}
+
+pub(super) fn create_local_group(
+    product: &mut ProductModel,
+    group: LocalGroup,
+) -> Result<(), CanonicalError> {
+    let key = group.key;
+    ensure_name(&group.name)?;
+    validate_transform(group.transform)?;
+    let owner = product
+        .definitions
+        .get_mut(&key.definition_id)
+        .ok_or(CanonicalError::DefinitionNotFound(key.definition_id))?;
+    if owner.local_group_ids.contains(&key.local_id)
+        || owner
+            .local_occurrence_ids
+            .iter()
+            .any(|id| id.0 == key.local_id.0)
+    {
+        return Err(CanonicalError::LocalGroupAlreadyExists(key));
+    }
+    Arc::make_mut(owner).local_group_ids.push(key.local_id);
+    product.local_groups.insert(key, Arc::new(group));
+    Ok(())
+}
+
+pub(super) fn delete_local_group(
+    product: &mut ProductModel,
+    key: LocalGroupKey,
+) -> Result<(), CanonicalError> {
+    product
+        .local_groups
+        .remove(&key)
+        .ok_or(CanonicalError::LocalGroupNotFound(key))?;
+    let owner = product
+        .definitions
+        .get_mut(&key.definition_id)
+        .ok_or(CanonicalError::DefinitionNotFound(key.definition_id))?;
+    Arc::make_mut(owner)
+        .local_group_ids
+        .retain(|id| *id != key.local_id);
+    Ok(())
+}
+
+pub(super) fn delete_group(product: &mut ProductModel, id: GroupId) -> Result<(), CanonicalError> {
+    if product
+        .occurrences
+        .values()
+        .any(|occurrence| occurrence.parent == Some(id))
+        || product
+            .groups
+            .values()
+            .any(|group| group.parent == Some(id))
+    {
+        return Err(CanonicalError::GroupNotEmpty(id));
+    }
+    product
+        .groups
+        .remove(&id)
+        .ok_or(CanonicalError::GroupNotFound(id))?;
+    Ok(())
+}
+
+pub(super) fn create_occurrence(
+    product: &mut ProductModel,
+    occurrence: Occurrence,
+) -> Result<(), CanonicalError> {
+    ensure_product_id(occurrence.id.0)?;
+    ensure_name(&occurrence.name)?;
+    validate_transform(occurrence.transform)?;
+    if product.occurrences.contains_key(&occurrence.id) {
+        return Err(CanonicalError::OccurrenceAlreadyExists(occurrence.id));
+    }
+    if let Some(tag) = occurrence.tag
+        && !product.tags.contains_key(&tag)
+    {
+        return Err(CanonicalError::TagNotFound(tag));
+    }
+    product
+        .occurrences
+        .insert(occurrence.id, Arc::new(occurrence));
+    Ok(())
+}
+
+pub(super) fn delete_occurrence(
+    product: &mut ProductModel,
+    id: OccurrenceId,
+) -> Result<(), CanonicalError> {
+    if product
+        .collections
+        .values()
+        .any(|collection| collection.occurrence_ids.contains(&id))
+    {
+        return Err(CanonicalError::OccurrenceInCollection(id));
+    }
+    if product.assembly_mates.values().any(|mate| {
+        mate.endpoint_a().occurrence_id() == id || mate.endpoint_b().occurrence_id() == id
+    }) {
+        return Err(CanonicalError::OccurrenceInAssemblyMate(id));
+    }
+    if product
+        .assembly_joints
+        .values()
+        .any(|joint| joint.parent_occurrence_id() == id || joint.child_occurrence_id() == id)
+    {
+        return Err(CanonicalError::OccurrenceInAssemblyJoint(id));
+    }
+    if product.pin_joints.values().any(|joint| {
+        joint.first.instance_path.root_occurrence() == id
+            || joint.second.instance_path.root_occurrence() == id
+    }) {
+        return Err(CanonicalError::OccurrenceInPinJoint(id));
+    }
+    product
+        .occurrences
+        .remove(&id)
+        .ok_or(CanonicalError::OccurrenceNotFound(id))?;
+    product.grounded_occurrences.remove(&id);
+    product
+        .instance_transform_overrides
+        .retain(|path, _| path.root_occurrence() != id);
+    product
+        .classification_assignments
+        .retain(|(occurrence_id, _), _| *occurrence_id != id);
+    Ok(())
+}
+
 pub(super) fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, CanonicalError> {
     ids.max()
         .unwrap_or(0)

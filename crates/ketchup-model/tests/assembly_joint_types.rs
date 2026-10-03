@@ -30,6 +30,48 @@ fn driver(joint: u64, position: f64) -> AssemblyMotionDriver {
 }
 
 #[test]
+fn motion_from_zero_moves_the_original_pose_without_accumulating_positions() {
+    use ketchup_model::document::Transform;
+    let original = Transform::from_translation(110.0, 20.0, 30.0).unwrap();
+    let slide = AssemblyJointKind::Prismatic {
+        axis: AssemblyJointAxis::new([0.0, 2.0, 0.0], [0.0; 3]),
+        limits: Some(AssemblyJointLimits::new(-100.0, 100.0)),
+        position_mm: 40.0,
+    };
+    let pose = |kind: AssemblyJointKind| kind.transform_from_zero().unwrap().compose(original);
+    let origin = |t: Transform| [t.matrix()[3], t.matrix()[7], t.matrix()[11]];
+    assert_eq!(origin(pose(slide)), [110.0, 60.0, 30.0]);
+    assert_eq!(
+        origin(pose(slide.with_position(10.0).unwrap())),
+        [110.0, 30.0, 30.0]
+    );
+    assert_eq!(pose(slide.with_position(0.0).unwrap()), original);
+    let rotate = AssemblyJointKind::Revolute {
+        axis: AssemblyJointAxis::new([0.0, 0.0, 3.0], [100.0, 20.0, 0.0]),
+        limits: Some(AssemblyJointLimits::new(-180.0, 180.0)),
+        position_degrees: 90.0,
+    };
+    let rotated = pose(rotate);
+    for (got, want) in origin(rotated).into_iter().zip([100.0, 30.0, 30.0]) {
+        assert!((got - want).abs() < 1e-9, "{got} != {want}");
+    }
+    let m = rotated.matrix();
+    assert!(m[0].abs() < 1e-9 && (m[4] - 1.0).abs() < 1e-9);
+    assert_eq!(pose(rotate.with_position(0.0).unwrap()), original);
+    for invalid in [
+        slide.with_position(101.0).unwrap(),
+        rotate.with_position(f64::NAN).unwrap(),
+        AssemblyJointKind::Prismatic {
+            axis: AssemblyJointAxis::new([0.0; 3], [0.0; 3]),
+            limits: None,
+            position_mm: 10.0,
+        },
+    ] {
+        assert!(invalid.transform_from_zero().is_none());
+    }
+}
+
+#[test]
 fn fixed_joint_is_valid_and_has_no_axis_limits_or_position() {
     let kind = AssemblyJointKind::Fixed;
     assert!(kind.is_valid());

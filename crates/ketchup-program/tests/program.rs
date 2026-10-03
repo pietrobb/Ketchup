@@ -11,6 +11,34 @@ fn eval(source: &str) -> ProgramModel {
         .model
 }
 
+#[test]
+fn groups_preserve_part_frames_and_reject_ambiguous_membership() {
+    let base = "a = box(\"a\", (10,20,30), at=(100,200,300))\n";
+    let model = eval(&format!(
+        "{base}g = group(\"inner\", [a])\ngroup(\"outer\", [g])\n"
+    ));
+    assert_eq!(model.part("a").unwrap().at_mm, [100.0, 200.0, 300.0]);
+    assert_eq!(model.groups[0].members, ["a"]);
+    assert_eq!(model.groups[1].members, ["inner"]);
+    for (suffix, message) in [
+        ("group(\"g\", [a,a])", "twice"),
+        (
+            "group(\"g\", [\"missing\"])",
+            "declare the part or group first",
+        ),
+        (
+            "group(\"g\", [a])\ngroup(\"other\", [a])",
+            "only one parent",
+        ),
+        ("group(\"a\", [])", "unique part or group name"),
+        ("group(\"g\", [])\nbox(\"g\", (1,1,1))", "must be unique"),
+        ("group(\"g\", [\"g\"])", "declare the part or group first"),
+    ] {
+        let error = run("groups.star", &format!("{base}{suffix}"), &BTreeMap::new()).unwrap_err();
+        assert!(error.message.contains(message), "{error}");
+    }
+}
+
 fn kinds(source: &str) -> Vec<&'static str> {
     validate(&eval(source))
         .into_iter()
@@ -462,6 +490,56 @@ fn a_value_that_is_not_a_list_names_the_expected_shape_and_the_starlark_reason()
         "{}",
         error.message
     );
+}
+
+#[test]
+fn fmt_mm_prints_clean_dimensions_at_the_requested_precision() {
+    let source = r#"
+print(fmt_mm(1601.8000000000002))
+print(fmt_mm(-1601.8000000000002))
+print(fmt_mm(18))
+print(fmt_mm(-0.04))
+print(fmt_mm(1.25), fmt_mm(-1.25))
+print(fmt_mm(9.99), fmt_mm(-9.99))
+print(fmt_mm(12.5, decimals = 0), fmt_mm(-12.5, decimals = 0))
+print(fmt_mm(0.005, decimals = 2), fmt_mm(-0.005, decimals = 2))
+print(fmt_mm(12.34001, decimals = 3))
+print(fmt_mm(0.000000001, decimals = 9))
+print(type(fmt_mm(18)))
+"#;
+    let (evaluated, report) = run("format.star", source, &BTreeMap::new()).unwrap();
+    assert!(report.ok, "{report:?}");
+    assert_eq!(
+        evaluated.log,
+        [
+            "1601.8",
+            "-1601.8",
+            "18",
+            "0",
+            "1.3 -1.3",
+            "10 -10",
+            "13 -13",
+            "0.01 -0.01",
+            "12.34",
+            "0.000000001",
+            "string"
+        ]
+    );
+}
+
+#[test]
+fn fmt_mm_rejects_invalid_precision_with_a_fix() {
+    for precision in ["-1", "10", "1.5", "True", "\"two\""] {
+        let source = format!("print(fmt_mm(18, decimals = {precision}))\n");
+        let error = run("format.star", &source, &BTreeMap::new()).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("decimals must be an integer from 0 to 9"),
+            "{}",
+            error.message
+        );
+    }
 }
 
 #[test]

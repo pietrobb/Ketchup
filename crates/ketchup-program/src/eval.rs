@@ -118,12 +118,21 @@ impl starlark::PrintHandler for State {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Evaluated {
     pub model: ProgramModel,
+    /// Unposed geometry for canonical compilation; absent when no motion is declared.
+    #[serde(skip)]
+    pub reference_model: Option<ProgramModel>,
     /// Lines printed by the program with `print()`.
     pub log: Vec<String>,
     /// Overrides that did not match any `param()`.
     pub unused_overrides: Vec<String>,
     /// Program lines that created or changed each part, keyed by part name.
     pub part_sources: BTreeMap<String, Vec<SourceLines>>,
+}
+
+impl Evaluated {
+    pub fn reference_model(&self) -> &ProgramModel {
+        self.reference_model.as_ref().unwrap_or(&self.model)
+    }
 }
 
 thread_local! {
@@ -658,7 +667,13 @@ impl Relation {
     }
 }
 
-/// Applies a world rigid motion `p -> pivot + rotation·(p - pivot)` to a part.
+/// Applies a world rotation followed by translation, including the part's boolean tools.
+pub(crate) fn pose_part(part: &mut Part, rotation: &Mat3, shift: [f64; 3]) {
+    move_part(part, rotation, [0.0; 3]);
+    translate_part(part, shift);
+    part.refresh_feature_tree();
+}
+
 fn rotate_part(part: &mut Part, rotation: &Mat3, pivot: [f64; 3]) {
     move_part(part, rotation, pivot);
     part.refresh_feature_tree();
@@ -740,7 +755,10 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
     part.refresh_feature_tree();
     let mut model = state.model.borrow_mut();
     let name = &part.name;
-    if model.part(name).is_some() || model.tool(name).is_some() {
+    if model.part(name).is_some()
+        || model.tool(name).is_some()
+        || model.groups.iter().any(|group| &group.name == name)
+    {
         anyhow::bail!("part {name:?} already exists; part names are identities and must be unique");
     }
     if model.parts.len() + model.tools.len() >= MAX_PARTS {
@@ -757,6 +775,7 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
 /// What every body may carry besides its shape: `material=`, `color=` (0-255
 /// channels) and `attributes=`, a dict of free string attributes.
 struct Look {
+    grounded: bool,
     material: Option<String>,
     color: Option<[u8; 3]>,
     attributes: BTreeMap<String, String>,
@@ -767,6 +786,7 @@ impl Look {
         material: Option<Value<'v>>,
         color: Option<Value<'v>>,
         attributes: Option<Value<'v>>,
+        grounded: bool,
         heap: &'v Heap,
     ) -> anyhow::Result<Self> {
         let color = given(color)
@@ -802,6 +822,7 @@ impl Look {
             .transpose()?
             .unwrap_or_default();
         Ok(Self {
+            grounded,
             material: text(material, "material")?,
             color,
             attributes,
@@ -810,6 +831,7 @@ impl Look {
 
     fn dress(self, part: Part) -> Part {
         Part {
+            grounded: self.grounded,
             material: self.material,
             color: self.color,
             attributes: self.attributes,
@@ -824,6 +846,7 @@ fn new_part(name: &str, size_mm: [f64; 3], at_mm: [f64; 3], body: ProgramPartBod
         size_mm,
         at_mm,
         rotation: frame::IDENTITY,
+        grounded: false,
         material: None,
         color: None,
         attributes: BTreeMap::new(),
@@ -1213,6 +1236,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
+        #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
@@ -1226,7 +1250,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
             .map(|up| sweep_up(&path, numbers::<3>(up, heap, "up")?))
             .transpose()?;
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, heap)?;
+        let look = Look::read(material, color, attributes, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_profile_part(
             &state,
@@ -1240,6 +1264,11 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
         Ok(part_value(&part, heap))
     }
 }
+
+mod assemblies;
+mod continuity;
+mod joints;
+mod support;
 
 #[starlark_module]
 fn builtins(builder: &mut GlobalsBuilder) {
@@ -1293,6 +1322,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
+        #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
@@ -1305,7 +1335,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             );
         }
         let at = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, heap)?;
+        let look = Look::read(material, color, attributes, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_part(
             &state,
@@ -1326,6 +1356,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
+        #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
@@ -1335,7 +1366,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             anyhow::bail!("distance must be positive");
         }
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, heap)?;
+        let look = Look::read(material, color, attributes, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_profile_part(
             &state,
@@ -1360,6 +1391,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
+        #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
@@ -1378,7 +1410,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             anyhow::bail!("angle must be within (0, 360] degrees");
         }
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, heap)?;
+        let look = Look::read(material, color, attributes, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_profile_part(
             &state,
@@ -1407,12 +1439,13 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
+        #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         let sections = loft_sections(sections, heap)?;
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, heap)?;
+        let look = Look::read(material, color, attributes, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_profile_part(
             &state,
@@ -1889,42 +1922,6 @@ fn builtins(builder: &mut GlobalsBuilder) {
         apply_boolean(part, tool, name, ProgramBooleanKind::Intersect, eval)
     }
 
-    /// A new part `name` identical to `part` as it is now: same body, frame,
-    /// holes and operations. Joints and contacts are not copied.
-    fn copy<'v>(
-        #[starlark(require = pos)] part: Value<'v>,
-        #[starlark(require = pos)] name: &str,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        let heap = eval.heap();
-        let source = part_name(part, heap)?;
-        check_part_name(name)?;
-        let state = state(eval)?;
-        let (copy, tool) = {
-            let model = state.model.borrow();
-            match (model.part(&source), model.tool(&source)) {
-                (Some(part), _) => (part.clone(), false),
-                (None, Some(part)) => (part.clone(), true),
-                (None, None) => anyhow::bail!("copy(): unknown part {source:?}"),
-            }
-        };
-        let copy = insert_part(
-            &state,
-            Part {
-                name: name.to_owned(),
-                ..copy
-            },
-            tool,
-        )?;
-        {
-            let mut sources = state.part_sources.borrow_mut();
-            let lines = sources.get(&source).cloned().unwrap_or_default();
-            sources.entry(name.to_owned()).or_default().extend(lines);
-        }
-        record_source(eval, &state, &[name]);
-        Ok(part_value(&copy, heap))
-    }
-
     /// Joins `other` (touching or overlapping `part`) into `part` as one
     /// solid; `other` stops being a separate part.
     fn union<'v>(
@@ -2129,71 +2126,6 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Declares a connection between two parts. `fasteners` are world points
-    /// (dowel or screw centres); `volume=(min, max)` is where overlap is
-    /// expected; `max_gap` allows a clearance between the parts.
-    fn joint<'v>(
-        #[starlark(require = pos)] a: Value<'v>,
-        #[starlark(require = pos)] b: Value<'v>,
-        #[starlark(require = named)] kind: &str,
-        #[starlark(require = named)] fasteners: Option<Value<'v>>,
-        #[starlark(require = named)] fastener: Option<Value<'v>>,
-        #[starlark(require = named)] volume: Option<Value<'v>>,
-        #[starlark(require = named)] name: Option<Value<'v>>,
-        #[starlark(require = named)] max_gap: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let heap = eval.heap();
-        let (a, b) = (part_name(a, heap)?, part_name(b, heap)?);
-        let max_gap = given(max_gap).map_or(Ok(0.0), |gap| number(gap, "max_gap"))?;
-        if max_gap < 0.0 {
-            anyhow::bail!("max_gap must not be negative");
-        }
-        let fasteners = match given(fasteners) {
-            None => Vec::new(),
-            Some(list) => iterate(
-                list,
-                heap,
-                format_args!("fasteners must be a list of (x, y, z) points"),
-            )?
-            .enumerate()
-            .map(|(index, point)| numbers::<3>(point, heap, &format!("fasteners[{index}]")))
-            .collect::<anyhow::Result<Vec<_>>>()?,
-        };
-        let volume = given(volume)
-            .map(|volume| {
-                let corners = iterate(volume, heap, format_args!("volume must be (min, max)"))?
-                    .collect::<Vec<_>>();
-                let [min, max] = corners.as_slice() else {
-                    anyhow::bail!("volume must be (min, max)");
-                };
-                Ok((
-                    numbers::<3>(*min, heap, "volume min")?,
-                    numbers::<3>(*max, heap, "volume max")?,
-                ))
-            })
-            .transpose()?;
-        let state = state(eval)?;
-        record_source(eval, &state, &[&a, &b]);
-        let mut model = state.model.borrow_mut();
-        for part in [&a, &b] {
-            if model.part(part).is_none() {
-                anyhow::bail!("joint refers to unknown part {part:?}");
-            }
-        }
-        let name = text(name, "name")?.unwrap_or_else(|| format!("{kind}:{a}+{b}"));
-        model.joints.push(Joint {
-            name,
-            kind: kind.to_owned(),
-            parts: [a, b],
-            volume_mm: volume,
-            fasteners_mm: fasteners,
-            fastener: text(fastener, "fastener")?,
-            max_gap_mm: max_gap,
-        });
-        Ok(NoneType)
-    }
-
     /// States a condition on the final model: `Σ coefficient · measure`
     /// compared by `op` ("==", "<=", ">=", ">") with `value` within
     /// `tolerance`. `terms` is a list of `(coefficient, measure)`; a measure
@@ -2333,6 +2265,10 @@ fn globals() -> Globals {
         LibraryExtension::Partial,
     ])
     .with(builtins)
+    .with(assemblies::builtins)
+    .with(continuity::builtins)
+    .with(joints::builtins)
+    .with(support::builtins)
     .with(path_builtins)
     .with_namespace("math", math_functions)
     .build()
@@ -2412,6 +2348,8 @@ pub fn evaluate(
         )
     })?;
     let model = state.model.into_inner();
+    assemblies::validate(&model).map_err(|error| evaluation_error("evaluation_error", error))?;
+    continuity::validate(&model).map_err(|error| evaluation_error("evaluation_error", error))?;
     let unused_overrides = overrides
         .keys()
         .filter(|name| !model.params.iter().any(|param| &param.name == *name))
@@ -2423,8 +2361,16 @@ pub fn evaluate(
         .into_iter()
         .map(|(part, lines)| (part, lines.into_iter().collect()))
         .collect();
+    let (model, reference_model) = if model.motions.is_empty() {
+        (model, None)
+    } else {
+        let posed = crate::motion::pose(&model)
+            .map_err(|error| evaluation_error("evaluation_error", error))?;
+        (posed, Some(model))
+    };
     Ok(Evaluated {
         model,
+        reference_model,
         log: state.log.into_inner(),
         unused_overrides,
         part_sources,
@@ -2470,6 +2416,10 @@ mod tests {
         let mut missing = Vec::new();
         for name in GlobalsBuilder::new()
             .with(builtins)
+            .with(assemblies::builtins)
+            .with(continuity::builtins)
+            .with(joints::builtins)
+            .with(support::builtins)
             .with(path_builtins)
             .build()
             .names()

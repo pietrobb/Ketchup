@@ -119,6 +119,61 @@ fn program_is_always_shown_and_selection_highlights_its_lines() {
 }
 
 #[test]
+fn nested_component_selection_highlights_shared_and_instance_lines() {
+    let source = "a=box(\"a\", (20,30,40))\ng=group(\"inner\",[a])\nc=component(\"assembly\",[g])\ninstance(\"second\",c,at=(200,0,0))";
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            file_name: "components.star".into(),
+            source: source.into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    let snapshot = app.document.current();
+    let root = snapshot
+        .occurrences()
+        .find(|item| item.name() == "second")
+        .unwrap();
+    let path = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|part| part.occurrence_id == root.id() && part.occurrence_name == "a")
+        .unwrap()
+        .instance_path;
+    let mut harness = harness(app);
+    assert!(
+        harness
+            .state_mut()
+            .enter_occurrence_context(InstancePath::root(root.id()))
+    );
+    harness
+        .state_mut()
+        .select_from_outliner(path.clone(), false);
+    assert_eq!(
+        harness.state().selected_instance_paths(),
+        BTreeSet::from([path])
+    );
+    harness.run_steps(3);
+    let catalog = harness.state().catalog.clone();
+    assert!(
+        harness
+            .query_by_label(&catalog.format(
+                "program-source-lines",
+                &BTreeMap::from([
+                    ("part", "second/a".to_owned()),
+                    ("lines", "1, 4".to_owned())
+                ])
+            ))
+            .is_some()
+    );
+    for line in [1, 4] {
+        let label = program_source_line_label(line, source.lines().nth(line - 1).unwrap(), true);
+        assert!(harness.query_by_label(&label).is_some(), "{label}");
+    }
+}
+#[test]
 fn manual_model_does_not_grow_the_dock_with_a_starlark_section() {
     let mut app = KetchupApp::new();
     app.document = through_cut_document();

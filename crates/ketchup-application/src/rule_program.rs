@@ -207,8 +207,34 @@ pub fn plan_rule_program(
         Some(current) if current == source => RuleProgramChange::Unchanged,
         Some(current) => {
             let (old, _) = evaluate(current)?;
-            let batch = incremental_batch(document, &old.model, &evaluated.model)?
-                .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
+            let reference = evaluated.reference_model();
+            let mut baseline = document.fork_for_planning();
+            let mut commands =
+                crate::rule_motion::commands(&baseline.current(), old.reference_model(), false)?;
+            if !commands.is_empty() {
+                baseline
+                    .apply_batch(&CommandBatch::new(commands.clone()))
+                    .map_err(SessionError::Canonical)?;
+            }
+            let prepared = crate::rule_continuity::prepare(
+                &baseline,
+                old.reference_model().clone(),
+                reference,
+            )?;
+            let document = &prepared.document;
+            let old = &prepared.model;
+            let batch = if old.components.is_empty() && reference.components.is_empty() {
+                let batch = incremental_batch(document, old, reference)?
+                    .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
+                crate::rule_groups::reconcile(&document.current(), old, reference, batch)?
+            } else {
+                crate::rule_components::incremental(document, old, reference)?
+            };
+            let batch = crate::rule_support::append(document, reference, batch)?;
+            let batch = crate::rule_motion::append_pose(document, reference, batch)?;
+            commands.extend(prepared.commands);
+            commands.extend(batch.commands().iter().cloned());
+            let batch = CommandBatch::new(commands);
             if batch.commands().is_empty() {
                 RuleProgramChange::SourceOnly
             } else {
@@ -252,7 +278,7 @@ impl DocumentSession {
                         RuleProgramApplyError::ReplacementConfirmationRequired
                     });
                 }
-                let snapshot = self.replace_with_rule_parts(&evaluated.model.parts, source)?;
+                let snapshot = self.replace_with_rule_model(evaluated.reference_model(), source)?;
                 return Ok(RuleProgramApplyResult {
                     snapshot,
                     model: evaluated.model,
@@ -300,6 +326,15 @@ fn incremental_batch(
     {
         return Ok(None);
     }
+    incremental_parts(document, old, new)
+}
+
+pub(crate) fn incremental_parts(
+    document: &DocumentStore,
+    old: &ProgramModel,
+    new: &ProgramModel,
+) -> Result<Option<CommandBatch>, RuleProgramApplyError> {
+    let snapshot = document.current();
     let mut removals = Vec::new();
     append_removed_parts(&snapshot, old, new, &mut removals)?;
     let added = added_parts(old, new);
@@ -333,6 +368,7 @@ fn feature_level_changes(
         };
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
+        comparable.grounded = before.grounded;
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();
@@ -380,6 +416,7 @@ fn part_replacements(
         };
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
+        comparable.grounded = before.grounded;
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.operations = before.operations.clone();
@@ -508,7 +545,7 @@ fn added_parts(before: &ProgramModel, after: &ProgramModel) -> Vec<ketchup_progr
         .collect()
 }
 
-fn program_feature_references_match(
+pub(crate) fn program_feature_references_match(
     before: &ketchup_program::model::Part,
     after: &ketchup_program::model::Part,
 ) -> bool {
@@ -604,7 +641,7 @@ fn program_feature_references_match(
             .all(|(left, right)| same_operation(left, right))
 }
 
-fn program_feature_commands(
+pub(crate) fn program_feature_commands(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
     before: &ketchup_program::model::Part,

@@ -10,8 +10,12 @@ mod drawing;
 mod exact;
 mod export;
 mod import;
+mod local_outliner;
 mod mirror;
 mod patterns;
+#[cfg(test)]
+#[path = "program_outliner_tests.rs"]
+mod program_outliner_tests;
 mod selection;
 mod shell;
 mod structure;

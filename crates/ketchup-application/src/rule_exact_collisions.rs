@@ -8,7 +8,7 @@
 //! those answers.
 
 use crate::collision::{CollisionScope, ExactPairFacts, scoped_exact_pairs_with_worker};
-use ketchup_model::document::{OccurrenceId, Snapshot};
+use ketchup_model::document::{InstancePath, Snapshot};
 use ketchup_model::persistence::ContainerData;
 use ketchup_program::{
     COLLISION_UNVERIFIED, ExactPair, ExactShapes, ProgramModel, Report, exact_candidates,
@@ -32,8 +32,8 @@ fn count(report: &Report, kind: &str) -> usize {
 /// bounds found apart.
 fn named_shapes(
     facts: &ExactPairFacts,
-    names: &BTreeMap<OccurrenceId, String>,
-    checked: &BTreeSet<OccurrenceId>,
+    names: &BTreeMap<InstancePath, String>,
+    checked: &BTreeSet<InstancePath>,
     complete: bool,
 ) -> ExactShapes {
     let mut shapes = ExactShapes::default();
@@ -53,14 +53,14 @@ fn named_shapes(
 }
 
 /// Re-derives `report` for `model` from the exact answers of one native
-/// pass over `checked` occurrences and returns what the pass settled. Pairs
+/// pass over `checked` leaf instances and returns what the pass settled. Pairs
 /// the pass did not measure keep their box answer; their unverified
 /// overlaps carry the reason.
 pub fn apply_exact_pairs(
     report: &mut Report,
     model: &ProgramModel,
-    names: &BTreeMap<OccurrenceId, String>,
-    checked: &BTreeSet<OccurrenceId>,
+    names: &BTreeMap<InstancePath, String>,
+    checked: &BTreeSet<InstancePath>,
     exact: &Value,
     facts: &ExactPairFacts,
 ) -> Value {
@@ -85,12 +85,14 @@ pub fn apply_exact_pairs(
     }
     report.set_issues(issues);
     let unresolved = count(report, COLLISION_UNVERIFIED);
+    let unverified_groups = count(report, "group_contact_unverified");
     let collisions = count(report, "collision").saturating_sub(collisions_before);
     json!({
-        "state": if complete && unresolved == 0 { "verified" } else { "incomplete" },
+        "state": if complete && unresolved == 0 && unverified_groups == 0 { "verified" } else { "incomplete" },
         "collisions": collisions,
         "cleared": unverified_before.saturating_sub(unresolved + collisions),
         "unresolved": unresolved,
+        "unverified_groups": unverified_groups,
         "exact_pair_count": facts.len(),
         "checked_pair_count": exact["checked_pair_count"],
         "not_evaluated": exact["not_evaluated"],
@@ -114,17 +116,24 @@ pub fn verify_rule_program_exact(
     if candidates.is_empty() {
         return None;
     }
-    let names: BTreeMap<OccurrenceId, String> = snapshot
-        .occurrences()
-        .filter(|occurrence| occurrence.parent().is_none())
-        .map(|occurrence| (occurrence.id(), occurrence.name().to_owned()))
+    let names: BTreeMap<InstancePath, String> = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|part| part.visible)
+        .filter_map(|part| {
+            let name = crate::rule_program_part_name(snapshot, &part.instance_path)?;
+            model.part(&name)?;
+            Some((part.instance_path, name))
+        })
         .collect();
-    let checked: BTreeSet<OccurrenceId> = names
+    let checked: BTreeSet<InstancePath> = names
         .iter()
         .filter(|(_, name)| candidates.contains(*name))
-        .map(|(id, _)| *id)
+        .map(|(path, _)| path.clone())
         .collect();
-    let scope = CollisionScope::bind(snapshot, checked.iter().copied());
+    // The worker scope includes all leaves of each selected root; facts retain
+    // their full paths so siblings never collapse into the same pair.
+    let scope = CollisionScope::bind(snapshot, checked.iter().map(InstancePath::root_occurrence));
     let (exact, facts) = scoped_exact_pairs_with_worker(
         snapshot,
         container,

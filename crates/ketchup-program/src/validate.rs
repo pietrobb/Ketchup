@@ -472,7 +472,10 @@ fn joints<'a>(
                     )),
                     joint.max_gap_mm
                 ),
-                where_mm: None,
+                where_mm: Some((
+                    std::array::from_fn(|i| a.world_bounds().0[i].min(b.world_bounds().0[i])),
+                    std::array::from_fn(|i| a.world_bounds().1[i].max(b.world_bounds().1[i])),
+                )),
                 hint: "Move the parts face to face or remove the joint.".to_owned(),
             });
         }
@@ -515,21 +518,26 @@ fn support<'a>(
     faces: &mut ContactFaces<'a>,
 ) {
     let count = model.parts.len();
+    let floor = model.floor_z_mm.unwrap_or(0.0);
+    let grounded = model.grounded_parts();
     let mut supported: Vec<bool> = model
         .parts
         .iter()
         .map(|part| {
-            // Booleans (a trim at the floor) can end a part exactly at z = 0
+            if grounded.contains(&part.name) {
+                return true;
+            }
+            // Booleans (a trim at the floor) can end a part exactly at the floor
             // although its uncut box reaches below.
             let (min, max) = part.world_bounds();
             if part.booleans().next().is_none() {
-                min[2].abs() <= TOLERANCE_MM
+                (min[2] - floor).abs() <= TOLERANCE_MM
             } else {
-                min[2] <= TOLERANCE_MM && max[2] > TOLERANCE_MM
+                min[2] <= floor + TOLERANCE_MM && max[2] > floor + TOLERANCE_MM
             }
         })
         .collect();
-    if !supported.iter().any(|value| *value) {
+    if model.floor_z_mm.is_none() && !supported.iter().any(|value| *value) {
         return;
     }
     let mut changed = true;
@@ -552,7 +560,13 @@ fn support<'a>(
                 };
                 touching
                     || model.joints.iter().any(|joint| {
-                        joint.parts.contains(&part.name) && joint.parts.contains(&other.name)
+                        joint.parts.contains(&part.name)
+                            && joint.parts.contains(&other.name)
+                            && gap(part, other) <= joint.max_gap_mm + TOLERANCE_MM
+                            && exact.decides(part, other).is_none_or(|pair| {
+                                pair.gap_mm()
+                                    .is_some_and(|gap| gap <= joint.max_gap_mm + TOLERANCE_MM)
+                            })
                     })
             };
             if (0..count).any(|right| supported[right] && joined(&model.parts[right])) {
@@ -568,7 +582,7 @@ fn support<'a>(
                 kind: "floating_part",
                 parts: vec![part.name.clone()],
                 message: format!(
-                    "{} touches nothing that rests on the floor (z = 0)",
+                    "{} touches nothing anchored or resting on the floor (z = {floor})",
                     part.name
                 ),
                 where_mm: {
@@ -593,10 +607,12 @@ pub fn validate(model: &ProgramModel) -> Vec<Issue> {
 pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
     let mut issues = Vec::new();
     params(model, &mut issues);
+    crate::motion::issues(model, &mut issues);
     collisions(model, exact, &mut issues);
     holes(model, &mut issues);
     let mut faces = ContactFaces::default();
     joints(model, exact, &mut issues, &mut faces);
+    crate::connectivity::issues(model, exact, &mut issues);
     support(model, exact, &mut issues, &mut faces);
     crate::expect::check(model, exact, &mut issues);
     issues.sort_by_key(|issue| issue.severity);

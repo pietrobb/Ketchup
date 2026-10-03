@@ -128,13 +128,10 @@ impl KetchupApp {
                     }
                     self.new_document();
                 }
-                let batch = ketchup_application::plan_rule_part_batch(
+                let batch = ketchup_application::plan_rule_model_batch(
                     &self.document,
-                    &plan.evaluated.model.parts,
-                )
-                .map_err(|diagnostic| {
-                    RuleProgramApplyError::Session(SessionError::Planning(diagnostic))
-                })?;
+                    plan.evaluated.reference_model(),
+                )?;
                 (ProgramEdit::Created, batch)
             }
         };
@@ -237,15 +234,23 @@ impl KetchupApp {
             Ok(parts) => (parts, None),
             Err(error) => (Default::default(), Some(error)),
         };
+        let scene = snapshot.scene_query();
+        let named = scene
+            .iter()
+            .filter_map(|part| {
+                let name =
+                    ketchup_application::rule_program_part_name(&snapshot, &part.instance_path)?;
+                Some((name, part))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let parts = parts
             .iter()
             .map(|(name, lines)| {
                 serde_json::json!({
                     "name": name,
-                    "occurrence_id": snapshot
-                        .occurrences()
-                        .find(|occurrence| occurrence.name() == name)
-                        .map(|occurrence| occurrence.id().0),
+                    "occurrence_id": named.get(name).filter(|part| part.instance_path.is_root()).map(|part| part.occurrence_id.0),
+                    "instance_path": named.get(name).map(|part| &part.instance_path),
+                    "definition_id": named.get(name).map(|part| part.definition_id.0),
                     "lines": lines
                         .iter()
                         .map(|lines| [lines.first, lines.last])
@@ -258,6 +263,17 @@ impl KetchupApp {
             "source": program.source,
             "overrides": program.overrides,
             "parts": parts,
+            "groups": snapshot.groups().map(|group| serde_json::json!({
+                "name": group.name(), "group_id": group.id().0,
+                "parent_group_id": group.parent().map(|id| id.0),
+                "occurrence_ids": snapshot.occurrences().filter(|part| part.parent() == Some(group.id())).map(|part| part.id().0).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "components": snapshot.definitions().filter(|definition| !definition.local_occurrence_ids().is_empty() || !definition.local_group_ids().is_empty()).map(|definition| serde_json::json!({
+                "name": definition.name(), "definition_id": definition.id().0, "groups": Self::program_local_groups(&snapshot, definition.id()), "members": Self::program_local_members(&snapshot, definition.id()),
+                "instances": scene.iter().filter(|part| part.definition_id == definition.id()).map(|part| serde_json::json!({
+                    "name": ketchup_application::rule_program_part_name(&snapshot, &part.instance_path), "occurrence_id": part.instance_path.is_root().then_some(part.occurrence_id.0), "instance_path": part.instance_path, "transform": part.transform,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
             "evaluation_error": error,
         }))
     }

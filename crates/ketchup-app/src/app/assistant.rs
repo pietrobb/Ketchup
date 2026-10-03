@@ -234,6 +234,8 @@ impl KetchupApp {
             AuthoritativeDependency::Collection(id) => Some(("assistant-entity-collection", id.0)),
             AuthoritativeDependency::Import(_)
             | AuthoritativeDependency::Tolerance
+            | AuthoritativeDependency::FloorHeight
+            | AuthoritativeDependency::GroundedInstances
             | AuthoritativeDependency::ProductionCodes
             | AuthoritativeDependency::AssemblyRecipe => None,
             AuthoritativeDependency::Definition(id) => Some(("assistant-entity-definition", id.0)),
@@ -2999,6 +3001,9 @@ impl KetchupApp {
                 .id_salt("outliner-scroll")
                 .max_height(280.0)
                 .show(ui, |ui| {
+                    if self.show_local_component_outliner(ui) {
+                        return;
+                    }
                     for group in groups {
                         let label = self.catalog.format(
                             "outliner-group",

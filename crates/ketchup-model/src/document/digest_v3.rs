@@ -202,6 +202,17 @@ fn document_digest(product: &ProductModel, old: &OldRecords) -> String {
     for occurrence in product.occurrences.values() {
         digest.occurrence(occurrence);
     }
+    if let Some(z) = product.floor_z_mm {
+        digest.bytes(b"canonical-floor-height.v1");
+        digest.u64(z.to_bits());
+    }
+    if !product.grounded_instances.is_empty() {
+        digest.bytes(b"canonical-grounded-instances.v1");
+        digest.u64(product.grounded_instances.len() as u64);
+        for path in &product.grounded_instances {
+            digest.instance_path(path);
+        }
+    }
     digest.u64(product.grounded_occurrences.len() as u64);
     for occurrence_id in &product.grounded_occurrences {
         digest.u64(occurrence_id.0);
