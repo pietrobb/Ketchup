@@ -10,6 +10,7 @@ mod example_programs;
 mod expect;
 mod face_at;
 mod faces;
+mod joint_links;
 mod motion;
 mod opposing_holes;
 mod profile_arcs;

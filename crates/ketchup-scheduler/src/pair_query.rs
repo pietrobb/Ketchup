@@ -53,6 +53,48 @@ impl ExactWorkerSupervisor {
         contact_tolerance_mm: f64,
         cancelled: &AtomicBool,
     ) -> Result<Vec<ExactPairQueryResult>, WorkerError> {
+        self.query_pairs(
+            graphs,
+            candidates,
+            imported_source_blobs,
+            contact_tolerance_mm,
+            cancelled,
+            None,
+        )
+    }
+
+    /// One bounded selected-face query using the same isolated graph loading and timeout path.
+    pub fn query_exact_brep_faces_with_cancellation(
+        &mut self,
+        graphs: &[ExactBRepGraph],
+        candidate: &ExactPairCandidate,
+        faces: [u32; 2],
+        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        cancelled: &AtomicBool,
+    ) -> Result<f64, WorkerError> {
+        let results = self.query_pairs(
+            graphs,
+            std::slice::from_ref(candidate),
+            imported_source_blobs,
+            0.0,
+            cancelled,
+            Some(faces),
+        )?;
+        results
+            .first()
+            .map(|result| result.distance_mm)
+            .ok_or_else(|| WorkerError::Protocol("missing exact face distance".to_owned()))
+    }
+
+    fn query_pairs(
+        &mut self,
+        graphs: &[ExactBRepGraph],
+        candidates: &[ExactPairCandidate],
+        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+        contact_tolerance_mm: f64,
+        cancelled: &AtomicBool,
+        faces: Option<[u32; 2]>,
+    ) -> Result<Vec<ExactPairQueryResult>, WorkerError> {
         let invalid = || WorkerError::Protocol("invalid or oversized exact pair batch".to_owned());
         check_pair_cancelled(cancelled)?;
         if candidates.len() > MAX_EXACT_PAIR_CANDIDATES
@@ -151,6 +193,7 @@ impl ExactWorkerSupervisor {
                     left: indices[&candidate.left_graph],
                     right: indices[&candidate.right_graph],
                     tolerance_mm: contact_tolerance_mm,
+                    faces,
                     left_transform: candidate.left_transform,
                     right_transform: candidate.right_transform,
                 };

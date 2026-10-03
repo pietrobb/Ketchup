@@ -537,7 +537,7 @@ fn plan_part(
         })
         .expect("CreatePart always creates a body");
     staged.extend(base_commands);
-    if !holes.is_empty() || !pockets.is_empty() {
+    let body_bounds = if !holes.is_empty() || !pockets.is_empty() {
         staged.refresh("create_part", document_target)?;
         let bounds_rejection = |message: String| {
             assistant_planning_rejection(
@@ -571,7 +571,10 @@ fn plan_part(
                     "Start each hole and pocket on a bounding face of the part body and keep it inside the body.",
                 )
             })?;
-    }
+        Some(bounds)
+    } else {
+        None
+    };
 
     // Each cut is a sketch on its face and a pocket of the previous solid.
     // The sketches only need the part's definition, so they are previewed
@@ -591,8 +594,21 @@ fn plan_part(
                 }],
                 constraints: Vec::new(),
             },
-            hole.depth_mm,
+            // Never deepen an invalid shallow request just because it says through.
+            if hole.through
+                && body_bounds
+                    .zip(hole.axis())
+                    .is_some_and(|([min, max], axis)| hole.depth_mm >= max[axis] - min[axis])
+            {
+                None
+            } else {
+                Some(hole.depth_mm)
+            },
             format!("{name} hole {} pocket", hole.id),
+            hole.through
+                && body_bounds
+                    .zip(hole.axis())
+                    .is_some_and(|([min, max], axis)| hole.depth_mm < max[axis] - min[axis]),
         ));
     }
     for pocket in pockets {
@@ -615,12 +631,13 @@ fn plan_part(
                 ],
                 constraints: Vec::new(),
             },
-            depth_mm,
+            Some(depth_mm),
             format!("{name} pocket {} cut", pocket.id),
+            false,
         ));
     }
     let mut planned = Vec::with_capacity(cuts.len());
-    for (sketch, depth_mm, pocket_name) in cuts {
+    for (sketch, depth_mm, pocket_name, unresolved_through) in cuts {
         let sketch_commands = plan_creation(
             staged.staged_snapshot(),
             &sketch,
@@ -648,7 +665,14 @@ fn plan_part(
             )
         })?;
         *next_feature = pocket_id.0.checked_add(1);
-        planned.push((sketch_commands, sketch_id, pocket_id, depth_mm, pocket_name));
+        planned.push((
+            sketch_commands,
+            sketch_id,
+            pocket_id,
+            depth_mm,
+            pocket_name,
+            unresolved_through,
+        ));
     }
     if !planned.is_empty() {
         let sketched = staged
@@ -663,15 +687,45 @@ fn plan_part(
                 assistant_canonical_rejection(error, "create_part", document_target)
             })?;
         let topology = ExactResultRegistry::default();
-        for (sketch_commands, sketch_id, pocket_id, depth_mm, pocket_name) in planned {
-            let feature = AssistantCadBodyFeature::Pocket {
-                target_feature_id: target_feature_id.0.into(),
-                profile_feature_id: sketch_id.0.into(),
-                depth_mm,
-            };
-            let kind =
-                plan_feature_kind(&sketched, &topology, definition_id, &feature, "create_part")?;
+        for (sketch_commands, sketch_id, pocket_id, depth_mm, pocket_name, unresolved_through) in
+            planned
+        {
             staged.extend(sketch_commands);
+            let kind = if unresolved_through {
+                // Keep the requested solid, but do not certify a shallow through request as blind drilling.
+                let tool = next_feature.map(FeatureId).ok_or_else(|| {
+                    assistant_canonical_rejection(
+                        CanonicalError::IdExhausted,
+                        "create_part",
+                        document_target,
+                    )
+                })?;
+                *next_feature = tool.0.checked_add(1);
+                let depth = depth_mm.expect("unresolved through cut retains numeric depth");
+                let dimension = Dimension::new(depth.to_string(), depth).map_err(|error| {
+                    assistant_canonical_rejection(error.into(), "create_part", document_target)
+                })?;
+                staged.push(CanonicalCommand::CreateFeature {
+                    id: tool,
+                    definition_id,
+                    name: format!("{pocket_name} tool"),
+                    kind: FeatureKind::extrusion(sketch_id, dimension),
+                });
+                FeatureKind::Boolean {
+                    operation: ketchup_model::document::BooleanOperation::Cut,
+                    target: target_feature_id,
+                    tool,
+                }
+            } else if let Some(depth_mm) = depth_mm {
+                let feature = AssistantCadBodyFeature::Pocket {
+                    target_feature_id: target_feature_id.0.into(),
+                    profile_feature_id: sketch_id.0.into(),
+                    depth_mm,
+                };
+                plan_feature_kind(&sketched, &topology, definition_id, &feature, "create_part")?
+            } else {
+                FeatureKind::through_cut(target_feature_id, sketch_id)
+            };
             staged.push(CanonicalCommand::CreateFeature {
                 id: pocket_id,
                 definition_id,

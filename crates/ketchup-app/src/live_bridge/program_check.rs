@@ -1,6 +1,9 @@
 //! Program planning and exact checks run off the UI thread. Publication remains
 //! one UI-thread transaction, guarded by the original document and request authority.
 #[cfg(test)]
+#[path = "program_check_failure_tests.rs"]
+mod failure_tests;
+#[cfg(test)]
 #[path = "program_plan_tests.rs"]
 mod tests;
 use super::*;
@@ -20,19 +23,22 @@ pub(super) struct AppliedProgram {
     after: Snapshot,
     stamp: Stamp,
     undo_steps: usize,
+    source_diff: Value,
 }
 
 impl AppliedProgram {
     pub(super) fn result(&self, exact: Option<Value>) -> Value {
-        program_edit_result(
+        let mut result = program_edit_result(
             self.edit,
-            &self.report,
+            (&self.report, &self.model),
             &self.before,
             &self.after,
             &self.stamp,
             self.undo_steps,
             exact,
-        )
+        );
+        result["source_diff"] = self.source_diff.clone();
+        result
     }
 
     fn needs_exact_check(&self) -> bool {
@@ -43,6 +49,8 @@ impl AppliedProgram {
 pub(super) enum ProgramCheckJob {
     Planning(ProgramPlanJob),
     Checking(Box<ExactCheckJob>),
+    Validating(super::program_validate::ProgramValidationJob),
+    Measuring(super::measurement::MeasurementJob),
 }
 
 pub(super) struct ProgramPlanJob {
@@ -76,6 +84,7 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<(RuleProgramSource, bool), &'static str> {
+        let request = Self::expand_program_patch(app, request)?;
         let Request::ApplyProgram {
             expected,
             source,
@@ -134,6 +143,12 @@ impl LiveBridge {
         Self::guard(app, &Some(before_stamp.clone()))?;
         Self::require_request_authority(cancelled)?;
         let before = app.document.current();
+        let source_diff = super::program_access::source_diff(
+            app.document
+                .current_rule_program()
+                .map_or("", |program| program.source.as_str()),
+            &source.source,
+        );
         let (edit, report, model) = app
             .publish_program_plan(source, replace, Vec::new(), plan)
             .map_err(program_failure)?;
@@ -145,6 +160,7 @@ impl LiveBridge {
             self.query.invalidate();
         }
         self.observed = Some(stamp.clone());
+        self.program_report = Some((stamp.clone(), report.clone(), "apply_report"));
         Ok(AppliedProgram {
             edit,
             report,
@@ -153,6 +169,7 @@ impl LiveBridge {
             after: app.document.current(),
             stamp,
             undo_steps: app.undo_step_count(),
+            source_diff,
         })
     }
 
@@ -340,6 +357,14 @@ impl LiveBridge {
                 return;
             }
             ProgramCheckJob::Checking(job) => job,
+            ProgramCheckJob::Measuring(job) => {
+                self.poll_measurement(app, context, job);
+                return;
+            }
+            ProgramCheckJob::Validating(job) => {
+                self.poll_program_validation(app, context, job);
+                return;
+            }
         };
         let exact = if job.cancelled.load(Ordering::Acquire) {
             job.worker_cancelled.store(true, Ordering::Release);
@@ -351,7 +376,7 @@ impl LiveBridge {
             match job.receiver.try_recv() {
                 Ok((report, exact)) => {
                     job.applied.report = report;
-                    Some(exact.unwrap_or_else(|| json!({"state": "verified"})))
+                    Some(exact.unwrap_or_else(|| unfinished("exact_result_missing")))
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     Some(unfinished("exact_collision_worker_disconnected"))
@@ -360,6 +385,11 @@ impl LiveBridge {
             }
         };
         if let Some(exact) = exact {
+            self.program_report = Some((
+                job.applied.stamp.clone(),
+                job.applied.report.clone(),
+                "apply_report",
+            ));
             Self::reply(app, job.id, &job.reply, Ok(job.applied.result(Some(exact))));
             context.request_repaint();
         } else {

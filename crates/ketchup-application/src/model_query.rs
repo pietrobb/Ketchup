@@ -371,6 +371,11 @@ impl ModelQuery {
                         continue;
                     }
                     exact_faces_available = true;
+                    // Editing needs named attachment candidates, not every measurable face.
+                    // Full exact face enumeration remains available through topology_page.
+                    if evidence.semantic_role.is_empty() || evidence.source_element_id.is_empty() {
+                        continue;
+                    }
                     total_faces = total_faces
                         .checked_add(1)
                         .ok_or(QueryError::OutputTooLarge)?;
@@ -388,7 +393,7 @@ impl ModelQuery {
                 "definition": {"id": definition.id().0, "name": bounded_text(definition.name()),
                     "shared_occurrence_count": occurrence.shared_occurrence_count},
                 "features": features,
-                "stable_faces": {"items": faces, "complete": exact_faces_available,
+                "stable_faces": {"scope": "named_faces", "items": faces, "complete": exact_faces_available,
                     "status": if exact_faces_available { "supported" } else { "unsupported" },
                     "reason": if exact_faces_available { Value::Null } else { json!("exact_not_available") }},
                 "joinery": edit_joinery_value(snapshot, &path),
@@ -1733,7 +1738,7 @@ fn instance_item_size(item: &Value) -> Result<usize, QueryError> {
         .ok_or(QueryError::OutputTooLarge)
 }
 
-fn canonical_instance_path(
+pub(crate) fn canonical_instance_path(
     snapshot: &Snapshot,
     requested: &AssistantInstancePath,
 ) -> Result<InstancePath, QueryError> {

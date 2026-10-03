@@ -188,6 +188,56 @@ impl ExactBackend {
         })
     }
 
+    /// True minimum between the two trimmed native faces, not supporting planes or solids.
+    /// Ordinals refer to the untransformed evaluated bodies. Placements must be rigid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_face_pair(
+        &self,
+        left: &ExactBody,
+        left_face: u32,
+        left_matrix: &[f64; 16],
+        right: &ExactBody,
+        right_face: u32,
+        right_matrix: &[f64; 16],
+    ) -> Result<f64, GeometryError> {
+        let input = format!(
+            "faces:{}:{left_face}:{left_matrix:?}:{}:{right_face}:{right_matrix:?}",
+            left.result_fingerprint, right.result_fingerprint
+        );
+        let error = |code, diagnostic| parameter_error(code, "query_face_pair", &input, diagnostic);
+        let (Some(left), Some(right)) = (left.native.as_ref(), right.native.as_ref()) else {
+            return Err(error(
+                GeometryErrorCode::NullResult,
+                "Native face body unavailable".to_owned(),
+            ));
+        };
+        let result = ffi::query_face_pair_native(
+            left,
+            left_face,
+            left_matrix,
+            right,
+            right_face,
+            right_matrix,
+        );
+        if result.status != 0 {
+            return Err(error(
+                if result.status == 6 {
+                    GeometryErrorCode::BackendException
+                } else {
+                    GeometryErrorCode::InvalidShape
+                },
+                result.diagnostic,
+            ));
+        }
+        if !result.distance_mm.is_finite() || result.distance_mm < 0.0 {
+            return Err(error(
+                GeometryErrorCode::InvalidShape,
+                "Invalid native face distance".to_owned(),
+            ));
+        }
+        Ok(result.distance_mm)
+    }
+
     pub fn boolean_bodies(
         &self,
         target: &ExactBody,

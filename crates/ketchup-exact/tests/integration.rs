@@ -2,6 +2,7 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod backend;
+mod face_measurement;
 mod naming;
 mod pair_query;
 

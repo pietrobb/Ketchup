@@ -4,6 +4,8 @@ use ketchup_model::document::ProfileSegment;
 mod exact_assemblies;
 #[path = "program_hole_tests.rs"]
 mod opposing_holes;
+#[path = "program_provenance_tests.rs"]
+mod provenance;
 use ketchup_model::topology::TopologicalElementKind;
 
 const TABLE: &str = include_str!("../../../../examples/programs/table.star");
@@ -832,10 +834,17 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
     const TRIANGLE: &str =
         "t = extrude(\"t\", profile = [(0, 0), (100, 0), (0, 100)], distance = 20)\n";
     let mut wire = Wire::new();
-    // Plain boards only: boxes decide everything, no exact check runs.
+    // Machined parts require native verification even without boolean cuts.
     let boards = wire.call(apply(TABLE, true)).result.unwrap();
-    assert_eq!(boards["geometry_evaluated"], false, "{boards}");
-    assert!(boards["exact_collisions"].is_null());
+    assert_eq!(boards["geometry_evaluated"], true, "{boards}");
+    assert_eq!(
+        (
+            boards["exact_collisions"]["state"].as_str(),
+            boards["exact_collisions"]["collisions"].as_u64()
+        ),
+        (Some("verified"), Some(0)),
+        "{boards}"
+    );
 
     // The cube sits in the corner the triangle leaves empty.
     let corner = format!("{TRIANGLE}c = box(\"c\", (20, 20, 20), at = (70, 70, 0))\n");

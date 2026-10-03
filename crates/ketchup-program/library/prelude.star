@@ -537,8 +537,13 @@ def round_thread(radius, name = "thread"):
 # a face name or a face() value of any part: a hole goes into any flat or
 # round face along its inward normal, a pocket into any flat face, before or
 # after a mirror or boolean.
-#   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, id=)
-#     on a round face at=(angle in degrees, v): a radial hole, see face(); keep 3 mm between opposite bores (report warns below 3 mm, errors when they meet).
+#   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, through=False, id=)
+#     Returns struct(part=part_name, id=operation_id), usable in joint_link(); callers may ignore it.
+#     depth is always explicit; through=True declares an intentional through bore, not a blind bore accidentally breaking out.
+#     Set depth to at least the part span along the drilling direction; a shorter through bore reports an error.
+#     Intent is retained in source, machining reports and canonical through cuts. Shallow through requests keep numeric geometry and report an error, not a silently deeper cut.
+#     Neutral manufacturing output preserves through intent; machine-specific BTLx/HOMAG through export is unsupported and rejected. Later/non-cuboid bores remain boolean cuts, not inferred machine drilling.
+#     On a round face at=(angle in degrees, v): a radial hole, see face(); keep 3 mm between opposite bores (report warns below 3 mm, errors when they meet).
 #   pocket(part, face, rect=(u_min, v_min, u_max, v_max), depth=, id=)
 #   pocket_shape(part, face, profile, depth, name=)  -> part: any closed
 #     profile (points or named segments in (u, v)) milled into any face of any
@@ -787,13 +792,23 @@ def boss(part, face, profile, height, name = "boss"):
 
 #@topic joinery: Joints, dowels and hardware
 #
-#   joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=0, name=)
+#   joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=0, name=, links=[])
+#     links=[joint_link([hole_result, ...], hardware=[physical_part, ...])]
+#     explicitly owns operations by (part, id); no ownership is inferred from position.
+#     For named pockets/booleans use struct(part=part, id=operation_name).
+#     Hardware omitted means metadata only; linked solids must already exist.
 #     records that a and b are joined (the part is carried, not floating);
+#     Fastener world centres follow the first endpoint a when it is placed/moved/rotated after declaration; moving b does not double-transform them or repair a separated joint.
 #     fastener names are counted in the report's hardware list. The parts
 #     must touch, or stay within max_gap mm (a door on hinges across its
 #     reveal: joint(door, side, kind="hinge", max_gap=3)).
-#   dowels(a, b, dowel="8x35", count=, margin=50, spacing=250, clearance=1.5, rest=6)
+#   dowels(a, b, dowel="8x35", count=, margin=50, spacing=250, clearance=1.5, rest=6, offset=0)
 #     drills matching holes into two touching parts and records the joint.
+#     offset is signed mm along the selected row (positive towards increasing contact u/v).
+#     It shifts both mating patterns from the margin-based centres, without changing count or depth.
+#     Returns world centres and logs nonzero offsets; no automatic staggering or safety claim.
+#     Use e.g. offset=11 for 8 mm opposing bores to leave 3 mm laterally; inspect validation.
+#     An offset outside the actual contact retains requested centres and reports a validation issue, never clamps.
 #     Depths follow the parts: into the face of an 18 mm board at most 12 mm
 #     (never nearer the far side than rest or a third of the thickness), the
 #     rest of the dowel into the other part's edge, every hole clearance mm
@@ -855,15 +870,26 @@ def _dowel_depths(a, b, face_a, face_b, dowel, length, clearance, rest):
     names = (part_info(a).name, part_info(b).name)
     rooms = (room_a, room_b)
     if grip[thin] < length / 4.0 or ends[1 - thin] > grip[1 - thin]:
-        fail(("dowels(%s, %s): a %s dowel needs %s mm of holes plus %s mm clearance at each end, " +
+        check(False, ("dowels(%s, %s): a %s dowel needs %s mm of holes plus %s mm clearance at each end, " +
               "but %s (%s mm thick there) takes a hole of at most %s mm and %s (%s mm) at most %s mm " +
               "(each leaves max(rest=%s, a third of the thickness) undrilled); use a shorter dowel " +
               "or thicker parts") %
              (names[0], names[1], dowel, length, clearance, names[0], fmt_mm(rooms[0][0]), fmt_mm(rooms[0][1]),
-              names[1], fmt_mm(rooms[1][0]), fmt_mm(rooms[1][1]), rest))
+              names[1], fmt_mm(rooms[1][0]), fmt_mm(rooms[1][1]), rest),
+              parts = [a, b], hint = "Use a shorter dowel or thicker parts. No joint or holes were generated.")
+        return None
     return (ends[0] + clearance, ends[1] + clearance)
 
-def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clearance = 1.5, rest = 6):
+def joint_link(operations, hardware = []):
+    """Explicitly associates operation references (hole() results or struct(part=, id=))
+    with one joint. hardware contains existing solid parts, never catalog labels.
+    Empty hardware means metadata only. Each operation belongs to one link only.
+    Include linked hardware in a component's members when instancing its joints.
+    Removing a declaration does not erase machining: edit the producing source helper.
+    """
+    return struct(operations = operations, hardware = hardware)
+
+def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clearance = 1.5, rest = 6, offset = 0):
     """Dowels a and b along the face where they touch.
 
     Holes are drilled into both parts from the shared face, so moving a part
@@ -872,26 +898,45 @@ def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clear
     thickness there, so an 18 mm board takes 12 mm. When one part cannot take
     half the dowel (drilled into its face), it gets what it can take and the
     other part (drilled into its edge) the rest; each hole is `clearance` mm
-    deeper than the dowel end in it. Fails with the numbers when the parts
-    cannot hold the dowel.
+    deeper than the dowel end in it. Reports an issue with the numbers and
+    returns [] without machining when no joint fits. `offset` translates the selected row along itself,
+    consuming end margin; it never changes its count, direction or depths.
+    Returned world centres and the printed offset announce the placement.
+    Opposing-hole validation still reports unsafe placements; this does not
+    certify assembly feasibility or load capacity.
     """
     if dowel not in DOWELS:
         fail("dowels(): unknown dowel %r; use one of %s" % (dowel, sorted(DOWELS.keys())))
     diameter, length = DOWELS[dowel]
     c = contact(a, b)
-    if c == None:
-        fail("dowels(%s, %s): the parts do not touch; place them face to face first" % (part_info(a).name, part_info(b).name))
-    depth_a, depth_b = _dowel_depths(a, b, c.face_a, c.face_b, dowel, length, clearance, rest)
-    points = _contact_row(c, count, margin, spacing, diameter)
-    if points == None:
-        fail("dowels(%s, %s): no row fits inside the contact with margin %s mm and diameter %s mm; reduce count/margin or use a larger contact" % (part_info(a).name, part_info(b).name, margin, diameter))
+    if not check(c != None, "dowels(%s, %s): the parts do not touch" % (part_info(a).name, part_info(b).name),
+                 parts = [a, b], hint = "Place the parts face to face. No joint or holes were generated."):
+        return []
+    depths = _dowel_depths(a, b, c.face_a, c.face_b, dowel, length, clearance, rest)
+    if depths == None:
+        return []
+    depth_a, depth_b = depths
+    points = _contact_row(c, count, margin, spacing, diameter, offset)
+    if points == None and offset != 0:
+        points = _contact_row(c, count, margin, spacing, diameter, offset, check_shift = False)
+        if points != None:
+            check(False, "dowels(%s, %s): no row fits with offset %s mm" % (part_info(a).name, part_info(b).name, offset),
+                  parts = [a, b],
+                  hint = "Reduce the explicit offset or enlarge the contact. Requested centres are retained, not clamped.")
+    if not check(points != None, "dowels(%s, %s): no row fits inside the contact with margin %s mm, diameter %s mm and offset %s mm" % (part_info(a).name, part_info(b).name, margin, diameter, offset),
+                 parts = [a, b], hint = "Reduce count/margin/offset or use a larger contact. No joint or holes were generated."):
+        return []
+    links = []
     for i, point in enumerate(points):
-        hole(a, c.face_a, world = point, diameter = diameter, depth = depth_a, id = "dowel:%s:%d" % (part_info(b).name, i + 1))
-        hole(b, c.face_b, world = point, diameter = diameter, depth = depth_b, id = "dowel:%s:%d" % (part_info(a).name, i + 1))
-    joint(a, b, kind = "dowel", fasteners = points, fastener = "dowel " + dowel)
+        first = hole(a, c.face_a, world = point, diameter = diameter, depth = depth_a, id = "dowel:%s:%d" % (part_info(b).name, i + 1))
+        second = hole(b, c.face_b, world = point, diameter = diameter, depth = depth_b, id = "dowel:%s:%d" % (part_info(a).name, i + 1))
+        links.append(joint_link([first, second]))
+    joint(a, b, kind = "dowel", fasteners = points, fastener = "dowel " + dowel, links = links)
+    if offset != 0:
+        print("dowels(%s, %s): explicit row offset %s mm; world centres %s; check validation issues for bore clearance" % (part_info(a).name, part_info(b).name, offset, points))
     return points
 
-def _contact_row(c, count, margin, spacing, diameter):
+def _contact_row(c, count, margin, spacing, diameter, offset = 0, check_shift = True):
     """A row inside actual material. Margin is end-to-centre; the entire
     bore must clear every real boundary, including holes and concave notches.
     Doubled connectors in contact.points carry no boundary clearance."""
@@ -932,12 +977,27 @@ def _contact_row(c, count, margin, spacing, diameter):
                     for x, y in edges:
                         d = vec_sub(y, x)
                         t = max(0, min(1, _dot(vec_sub(p, x), d) / _dot(d, d)))
-                        offset = vec_sub(p, vec_add(x, vec_scale(d, t)))
-                        if _dot(offset, offset) < (diameter / 2.0 - 0.000001) * (diameter / 2.0 - 0.000001):
+                        radial = vec_sub(p, vec_add(x, vec_scale(d, t)))
+                        if _dot(radial, radial) < (diameter / 2.0 - 0.000001) * (diameter / 2.0 - 0.000001):
                             safe = False
                 if safe:
                     best, best_length = candidate, high - low
-    return best
+                    best_row, best_low, best_high = row, hits[i], hits[i + 1]
+    if best == None or offset == 0:
+        return best
+    shifted = [vec_add(p, vec_scale(best_row, offset)) for p in best]
+    if not check_shift:
+        return shifted
+    for p in shifted:
+        along = _dot(vec_sub(p, c.origin), best_row)
+        if along < best_low + diameter / 2.0 or along > best_high - diameter / 2.0:
+            return None
+        for x, y in edges:
+            d = vec_sub(y, x)
+            t = max(0, min(1, _dot(vec_sub(p, x), d) / _dot(d, d)))
+            if vec_length(vec_sub(p, vec_add(x, vec_scale(d, t)))) < diameter / 2.0 - 0.000001:
+                return None
+    return shifted
 
 def _dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -970,7 +1030,7 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
     cup_edge mm from that edge; each hinge's mounting plate takes two holes in
     the side's face towards the door, setback mm behind the door's inner face
     and pitch mm apart. The hinge joint carries the door across a reveal of up
-    to max_gap mm. Returns the cup centres (world)."""
+    to max_gap mm. Each cup and its two plate holes are explicitly linked to their hinge. Returns the cup centres (world)."""
     di, si = part_info(door), part_info(side)
     to_side = vec_sub(vec_add(si.min, si.max), vec_add(di.min, di.max))
     across = getattr(si, "xyz"[_thinnest(si)])
@@ -1005,7 +1065,7 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
     plane = -reach(side, vec_scale(across, -1))
     along = getattr(di, "xyz"[l])
     label = name or "hinge:%s" % di.name
-    cups = []
+    cups, links = [], []
     for i, height_at in enumerate(spread(margin, height - margin, count)):
         local = [0, 0, 0]
         local[t] = di.size[t] if t_sign > 0 else 0
@@ -1013,18 +1073,22 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
         local[l] = height_at
         centre = _world(di, local)
         cups.append(centre)
-        hole(door, door_face, world = centre, diameter = cup, depth = cup_depth, id = "%s:cup:%d" % (label, i + 1))
+        operations = [hole(door, door_face, world = centre, diameter = cup, depth = cup_depth, id = "%s:cup:%d" % (label, i + 1))]
         plate = vec_add(centre, vec_scale(inward, setback))
         plate = vec_add(plate, vec_scale(across, plane - _dot(plate, across)))
         for j, offset in enumerate([-pitch / 2.0, pitch / 2.0]):
-            hole(side, side_face, world = vec_add(plate, vec_scale(along, offset)), diameter = plate_hole,
-                 depth = plate_depth, id = "%s:plate:%d.%d" % (label, i + 1, j + 1))
-    joint(door, side, kind = "hinge", fasteners = cups, fastener = "hinge %s mm with plate" % cup,
-          max_gap = max(gap, 0) + 0.5, name = label)
+            operations.append(hole(side, side_face, world = vec_add(plate, vec_scale(along, offset)), diameter = plate_hole,
+                 depth = plate_depth, id = "%s:plate:%d.%d" % (label, i + 1, j + 1)))
+        links.append(joint_link(operations))
+    joint(door, side, kind = "hinge", fasteners = cups, fastener = "hinge %s mm with plate" % cup, links = links, max_gap = max(gap, 0) + 0.5, name = label)
     return cups
 
 #@topic intent: Stating intent that the check measures (expect_*)
 #
+#   check(condition, message, parts=[...], hint=) returns the boolean condition.
+#     A false condition records a program_condition_failed error without aborting.
+#     It evaluates now (for library design rules); use expect_* for final geometry.
+#     Parts remain editable. No missing geometry or hardware is silently generated.
 # Stating intent. Each helper records a condition that is measured on the
 # final model (after every move), so write them anywhere; one that does not
 # hold is an `expectation_failed` error naming the measured and required mm.

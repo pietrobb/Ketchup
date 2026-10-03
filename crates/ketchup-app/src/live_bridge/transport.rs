@@ -115,6 +115,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         next_proposal: 1,
         apply_and_verify_job: None,
         program_check_job: None,
+        program_report: None,
         #[cfg(test)]
         apply_and_verify_fault: None,
         batch_jobs: VecDeque::new(),
@@ -147,6 +148,10 @@ fn response_wait(request: &Request) -> Duration {
         Request::ApplyAndVerify { timeout_ms, .. } => (Duration::from_millis(*timeout_ms)
             + APPLY_AND_VERIFY_RESPONSE_MARGIN)
             .max(DEFAULT_RESPONSE_WAIT),
+        Request::ApplyProgram { .. }
+        | Request::PatchProgram { .. }
+        | Request::ValidateProgram { .. }
+        | Request::MeasureFaces { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         _ => DEFAULT_RESPONSE_WAIT,
     }
 }
@@ -498,6 +503,19 @@ mod tests {
             .expect("the well-formed request reaches the UI queue");
         assert_eq!(queued.id, 8);
         assert!(matches!(queued.request, Request::Status { .. }));
+    }
+
+    #[test]
+    fn program_response_wait_includes_planning_and_exact_check() {
+        let apply: Request = serde_json::from_value(
+            json!({"method":"apply_program", "source":"a=box('a',(1,1,1))"}),
+        )
+        .unwrap();
+        let validate = Request::ValidateProgram { expected: None };
+        for request in [apply, validate] {
+            assert_eq!(response_wait(&request), ketchup_mcp::PROGRAM_RESPONSE_WAIT);
+            assert!(response_wait(&request) > DEFAULT_RESPONSE_WAIT);
+        }
     }
 
     #[test]

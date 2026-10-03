@@ -227,7 +227,9 @@ pub(crate) fn is_box(part: &Part) -> bool {
 /// `booleans_leave_overlap` already answered. Profile bodies, and two or more
 /// tools reaching into the shared volume, need the exact solids.
 fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
-    if !is_box(a) || !is_box(b) {
+    if [a, b].iter().any(|part| {
+        !is_box(part) || part.holes().next().is_some() || part.pockets().next().is_some()
+    }) {
         return true;
     }
     let shared = [a.obb(), b.obb()];
@@ -390,7 +392,23 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                     hint: "Move the hole inside the face or enlarge the part.".to_owned(),
                 });
             }
-            if hole.depth_mm >= thickness - TOLERANCE_MM {
+            if hole.through && hole.depth_mm < thickness - TOLERANCE_MM {
+                issues.push(Issue {
+                    severity: Severity::Error,
+                    kind: "through_hole_too_shallow",
+                    parts: vec![part.name.clone()],
+                    message: format!(
+                        "through hole {} is {} mm deep but {} spans {} mm along the drilling direction",
+                        hole.id,
+                        round(hole.depth_mm),
+                        part.name,
+                        round(thickness),
+                    ),
+                    where_mm: Some((entry.map(round), entry.map(round))),
+                    hint: "Increase depth to cross the part, or use through=False for a blind hole."
+                        .to_owned(),
+                });
+            } else if !hole.through && hole.depth_mm >= thickness - TOLERANCE_MM {
                 issues.push(Issue {
                     severity: Severity::Error,
                     kind: "hole_breaks_through",
@@ -404,10 +422,10 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                     ),
                     where_mm: Some((entry.map(round), entry.map(round))),
                     hint:
-                        "Use a shorter dowel/screw or a thicker part, or drill from the other side."
+                        "Reduce depth or increase thickness; use through=True only for an intentional through hole."
                             .to_owned(),
                 });
-            } else if thickness - hole.depth_mm < THIN_WALL_MM - TOLERANCE_MM {
+            } else if !hole.through && thickness - hole.depth_mm < THIN_WALL_MM - TOLERANCE_MM {
                 issues.push(Issue {
                     severity: Severity::Warning,
                     kind: "hole_wall_too_thin",
@@ -606,7 +624,7 @@ pub fn validate(model: &ProgramModel) -> Vec<Issue> {
 /// misstate its solids.
 #[must_use]
 pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
-    let mut issues = Vec::new();
+    let mut issues = model.declared_issues.clone();
     params(model, &mut issues);
     crate::motion::issues(model, &mut issues);
     collisions(model, exact, &mut issues);

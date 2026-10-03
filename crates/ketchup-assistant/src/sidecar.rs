@@ -595,6 +595,9 @@ pub struct AssistantPartHole {
     pub inward_unit_local: [f64; 3],
     pub diameter_mm: f64,
     pub depth_mm: f64,
+    /// Explicit through intent; a shallow request still keeps its numeric depth.
+    #[serde(default)]
+    pub through: bool,
 }
 
 impl AssistantPartHole {
@@ -608,7 +611,7 @@ impl AssistantPartHole {
         AssistantRequestInvalid::new(
             "part hole",
             AssistantRequestProblem::Violates(
-                "it must enter the face opposite to inward_unit_local along a unit axis, keep its whole circle on that face and stay within the part",
+                "it must enter the face opposite to inward_unit_local along a unit axis and keep its whole circle on that face",
             ),
         )
         .item(&self.id)
@@ -632,7 +635,8 @@ impl AssistantPartHole {
     ///
     /// # Errors
     /// The hole does not start on the bounding face `inward_unit_local` points
-    /// away from, leaves that face or is deeper than the body.
+    /// away from or leaves that face. Numeric depth is retained even when it
+    /// crosses the body; program validation reports unintentional breakthrough.
     pub fn validate_within(&self, bounds_mm: [[f64; 3]; 2]) -> Result<(), AssistantRequestInvalid> {
         let Some(axis) = self.axis() else {
             return Err(self.invalid());
@@ -644,8 +648,7 @@ impl AssistantPartHole {
         } else {
             max[axis]
         };
-        if self.depth_mm > max[axis] - min[axis]
-            || (self.entry_local_mm[axis] - entry).abs() > ROUNDING
+        if (self.entry_local_mm[axis] - entry).abs() > ROUNDING
             || (0..3).any(|index| {
                 index != axis
                     && (self.entry_local_mm[index] < min[index] + radius

@@ -1507,6 +1507,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
         diameter_mm,
         start_mm,
         end_mm,
+        through,
     } = &drill.machining
     else {
         panic!("expected circular drilling geometry")
@@ -1518,6 +1519,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     assert_eq!(frame.y_axis, [0.0, -1.0, 0.0]);
     assert_eq!(*center_mm, [50.0, -25.0]);
     assert_eq!(*diameter_mm, 10.0);
+    assert!(!through);
     assert_eq!((*start_mm, *end_mm), (-1000.0, -950.0));
 
     let export = String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
@@ -1625,6 +1627,187 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     *diameter_mm += 1.0e-10;
     assert_eq!(
         sub_text_precision_tamper.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+}
+
+#[test]
+fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_machine_depth() {
+    let mut document = circular_drill_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: GRAPH_BOOLEAN },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BOOLEAN,
+                definition_id: GRAPH_DEFINITION,
+                name: "Through bore".into(),
+                kind: FeatureKind::through_cut(GRAPH_BASE_BODY, GRAPH_TOOL_PROFILE),
+            },
+        ]))
+        .unwrap();
+    let saved = persistence::save(&document.current());
+    let reopened = persistence::load(&saved)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    for document in [document, reopened] {
+        let (snapshot, projection) = exact_graph_document_fabrication_projection(
+            document,
+            "through-drill-result",
+            GRAPH_BOOLEAN,
+        );
+        let drill = &projection.manufacturing.operations[1].machining;
+        let GeneralMachiningGeometry::CircularDrill {
+            through,
+            start_mm,
+            end_mm,
+            ..
+        } = drill
+        else {
+            panic!("expected circular drilling")
+        };
+        assert!(*through);
+        assert!(
+            *start_mm < 0.0 && *end_mm > 1000.0,
+            "Boolean cutter is padded"
+        );
+        assert_eq!(serde_json::to_value(drill).unwrap()["through"], true);
+        let neutral =
+            String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
+        assert!(neutral.contains("through(true)"));
+        let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+        assert!(drawing.contains("through-all (Boolean cutter interval, not machine depth)"));
+        assert_eq!(
+            projection.btlx_2_3_1_export(&snapshot),
+            Err(GeneralFabricationError::ExportBlocked)
+        );
+        assert_eq!(
+            projection.woodwop_mpr_4_0_drill_export(&snapshot),
+            Err(GeneralFabricationError::ExportBlocked)
+        );
+        assert!(matches!(
+            projection.woodwop_mpr_4_0_production_package(&snapshot, Default::default()),
+            Err(GeneralFabricationError::ExportBlocked)
+        ));
+        let mut tampered = projection;
+        let GeneralMachiningGeometry::CircularDrill { through, .. } =
+            &mut tampered.manufacturing.operations[1].machining
+        else {
+            panic!("expected circular drilling")
+        };
+        *through = false;
+        assert_eq!(
+            tampered.btlx_2_3_1_export(&snapshot),
+            Err(GeneralFabricationError::ExportBlocked)
+        );
+    }
+}
+
+#[test]
+fn blind_drilling_at_or_beyond_stock_depth_cannot_export_after_reopen() {
+    use ketchup_geometry::sketch::{
+        CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
+    };
+    for depth in ["50", "1000", "1022"] {
+        let mut document = circular_drill_document();
+        if depth != "50" {
+            document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::DeleteFeature { id: GRAPH_BOOLEAN },
+                    CanonicalCommand::CreateFeature {
+                        id: GRAPH_BOOLEAN,
+                        definition_id: GRAPH_DEFINITION,
+                        name: "Numeric blind drilling".into(),
+                        kind: FeatureKind::Pad(PadSpec {
+                            profile: PadProfile::Feature(GRAPH_TOOL_PROFILE),
+                            direction: FeatureDirection::AlongNormal,
+                            extent: FeatureExtent::Blind(Dimension::from_decimal(depth).unwrap()),
+                            operation: PadOperation::Cut {
+                                target: GRAPH_BASE_BODY,
+                                start: CutStart::ProfilePlane,
+                            },
+                        }),
+                    },
+                ]))
+                .unwrap();
+        }
+        let reopened = persistence::load(&persistence::save(&document.current()))
+            .unwrap()
+            .into_editable()
+            .ok()
+            .unwrap();
+        for document in [document, reopened] {
+            let (snapshot, projection) = exact_graph_document_fabrication_projection(
+                document,
+                "blind-depth-result",
+                GRAPH_BOOLEAN,
+            );
+            let GeneralMachiningGeometry::CircularDrill {
+                through,
+                start_mm,
+                end_mm,
+                ..
+            } = &projection.manufacturing.operations[1].machining
+            else {
+                panic!("expected preserved blind drilling")
+            };
+            assert!(!through);
+            assert_eq!(end_mm - start_mm, depth.parse::<f64>().unwrap());
+            let export = projection.btlx_2_3_1_export(&snapshot);
+            if depth == "50" {
+                assert_btlx_golden(&export.unwrap(), "circular-drilling-2.3.1.btlx");
+            } else {
+                assert_eq!(export, Err(GeneralFabricationError::ExportBlocked));
+            }
+        }
+    }
+}
+
+#[test]
+fn circular_boolean_tools_are_not_promoted_to_manufacturing_drilling() {
+    let mut document = circular_drill_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: GRAPH_BOOLEAN },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_TOOL_BODY,
+                definition_id: GRAPH_DEFINITION,
+                name: "Circular Boolean tool".into(),
+                kind: FeatureKind::extrusion(
+                    GRAPH_TOOL_PROFILE,
+                    Dimension::from_decimal("1000").unwrap(),
+                ),
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BOOLEAN,
+                definition_id: GRAPH_DEFINITION,
+                name: "Boolean removal".into(),
+                kind: FeatureKind::Boolean {
+                    operation: BooleanOperation::Cut,
+                    target: GRAPH_BASE_BODY,
+                    tool: GRAPH_TOOL_BODY,
+                },
+            },
+        ]))
+        .unwrap();
+    let (snapshot, projection) = exact_graph_document_fabrication_projection(
+        document,
+        "boolean-drill-result",
+        GRAPH_BOOLEAN,
+    );
+    assert!(projection.manufacturing.operations.is_empty());
+    assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
+    assert_eq!(
+        projection.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+    assert_eq!(
+        projection.btlx_2_3_1_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+    assert_eq!(
+        projection.woodwop_mpr_4_0_drill_export(&snapshot),
         Err(GeneralFabricationError::ExportBlocked)
     );
 }

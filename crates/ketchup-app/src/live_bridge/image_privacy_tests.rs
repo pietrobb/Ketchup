@@ -70,10 +70,13 @@ fn queue(h: &mut Harness<'_, KetchupApp>, session: u64) -> mpsc::Receiver<Respon
 fn response(h: &mut Harness<'_, KetchupApp>, rx: &mpsc::Receiver<Response>) -> Response {
     for _ in 0..250 {
         h.step();
-        if let Ok(response) = rx.try_recv() {
-            return response;
+        match rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(response) => return response,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("image response channel disconnected")
+            }
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
     panic!("no bounded image response");
 }

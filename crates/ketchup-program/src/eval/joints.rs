@@ -1,5 +1,125 @@
 //! Physical connections and independent rigid assembly motion declarations.
 use super::*;
+use crate::model::{JointLink, JointOperationRef};
+
+fn link_field<'v>(value: Value<'v>, name: &str, heap: &'v Heap) -> anyhow::Result<Value<'v>> {
+    value
+        .get_attr(name, heap)
+        .map_err(|error| anyhow::anyhow!("joint link field {name}: {error}"))?
+        .ok_or_else(|| anyhow::anyhow!("joint link is missing {name}; use joint_link() and operation references from hole() or struct(part=..., id=...)"))
+}
+
+fn parse_links<'v>(value: Option<Value<'v>>, heap: &'v Heap) -> anyhow::Result<Vec<JointLink>> {
+    let Some(value) = given(value) else {
+        return Ok(Vec::new());
+    };
+    iterate(
+        value,
+        heap,
+        format_args!("links must be a list of joint_link() values"),
+    )?
+    .map(|link| {
+        let operations = iterate(
+            link_field(link, "operations", heap)?,
+            heap,
+            format_args!("operations must be a list of operation references"),
+        )?
+        .map(|operation| {
+            let part = part_name(link_field(operation, "part", heap)?, heap)?;
+            let id = link_field(operation, "id", heap)?
+                .unpack_str()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("operation id must be text; use the result of hole()")
+                })?
+                .to_owned();
+            Ok(JointOperationRef { part, id })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+        let hardware_parts = iterate(
+            link_field(link, "hardware", heap)?,
+            heap,
+            format_args!("hardware must be a list of existing physical parts"),
+        )?
+        .map(|part| part_name(part, heap))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(JointLink {
+            operations,
+            hardware_parts,
+        })
+    })
+    .collect()
+}
+
+/// Referential integrity only: ownership is explicit, never reconstructed by proximity.
+pub(super) fn validate(model: &ProgramModel) -> anyhow::Result<()> {
+    let mut owned = BTreeSet::new();
+    let mut hardware = BTreeSet::new();
+    for joint in &model.joints {
+        for part in &joint.parts {
+            if model.part(part).is_none() {
+                anyhow::bail!(
+                    "joint {:?} refers to missing part {part:?}; keep the part or remove its joint",
+                    joint.name
+                );
+            }
+        }
+        for link in &joint.links {
+            for operation in &link.operations {
+                let part = model.part(&operation.part).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "joint {:?} operation refers to unknown part {:?}; declare the part first",
+                        joint.name,
+                        operation.part
+                    )
+                })?;
+                if !joint.parts.contains(&operation.part)
+                    && !link.hardware_parts.contains(&operation.part)
+                {
+                    anyhow::bail!(
+                        "joint {:?}: operation part {:?} is neither an endpoint nor linked hardware; correct the operation reference",
+                        joint.name,
+                        operation.part
+                    );
+                }
+                if !part
+                    .operations
+                    .iter()
+                    .any(|item| item.name() == operation.id)
+                {
+                    anyhow::bail!(
+                        "joint {:?}: unknown operation {:?} on {:?}; declare the operation first and use its exact id",
+                        joint.name,
+                        operation.id,
+                        operation.part
+                    );
+                }
+                if !owned.insert(operation) {
+                    anyhow::bail!(
+                        "joint {:?}: operation {:?} on {:?} is already owned; associate each operation with only one joint link",
+                        joint.name,
+                        operation.id,
+                        operation.part
+                    );
+                }
+            }
+            for part in &link.hardware_parts {
+                if model.part(part).is_none() {
+                    anyhow::bail!(
+                        "joint {:?}: unknown hardware part {part:?}; declare a physical part first or leave hardware empty for metadata only",
+                        joint.name
+                    );
+                }
+                if joint.parts.contains(part) || !hardware.insert(part) {
+                    anyhow::bail!(
+                        "joint {:?}: hardware part {part:?} is an endpoint or already linked; use a separate physical part for each link",
+                        joint.name
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
 use ketchup_model::assembly_joint::{AssemblyJointAxis, AssemblyJointKind, AssemblyJointLimits};
 
 fn motion_value<'v>(
@@ -100,6 +220,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] b: Value<'v>,
         #[starlark(require = named)] kind: &str,
         #[starlark(require = named)] fasteners: Option<Value<'v>>,
+        #[starlark(require = named)] links: Option<Value<'v>>,
         #[starlark(require = named)] fastener: Option<Value<'v>>,
         #[starlark(require = named)] volume: Option<Value<'v>>,
         #[starlark(require = named)] name: Option<Value<'v>>,
@@ -115,12 +236,12 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         record_source(eval, &state, &[&a, &b]);
         let mut model = state.model.borrow_mut();
         if let Some(motion) = given(motion) {
-            if [fasteners, fastener, volume, max_gap]
+            if [fasteners, fastener, volume, max_gap, links]
                 .into_iter()
                 .any(|v| given(v).is_some())
             {
                 anyhow::bail!(
-                    "joint {name:?}: motion cannot also specify physical fasteners, volume or max_gap; declare physical joints separately"
+                    "joint {name:?}: motion cannot also specify physical fasteners, links, volume or max_gap; declare physical joints separately"
                 );
             }
             let position = given(position).map_or(Ok(0.0), |v| number(v, "position"))?;
@@ -177,6 +298,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             name,
             kind: kind.to_owned(),
             parts: [a, b],
+            links: parse_links(links, heap)?,
             volume_mm: volume,
             fasteners_mm: fasteners,
             fastener: text(fastener, "fastener")?,

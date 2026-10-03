@@ -18,3 +18,7 @@ mod tests;
 mod tools;
 
 pub use server::serve_stdio;
+
+/// Host response budget includes program planning, publication and the bounded exact check.
+/// The MCP client adds a delivery margin rather than timing out before the host.
+pub const PROGRAM_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(45);

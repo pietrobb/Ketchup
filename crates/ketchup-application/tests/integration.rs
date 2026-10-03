@@ -14,6 +14,9 @@ mod model_query_catalogs;
 mod operations_support;
 mod rule_exact_assemblies;
 mod rule_exact_collisions;
+mod rule_exact_measurements;
+mod rule_program_cabinet;
+mod rule_program_cabinet_height;
 mod rule_program_colors;
 mod rule_program_components;
 mod rule_program_continuity;
@@ -31,6 +34,7 @@ mod rule_program_review;
 mod rule_program_split_union;
 mod rule_program_support;
 mod rule_program_threads;
+mod rule_program_through;
 mod validation_selection;
 mod workflow_trace;
 

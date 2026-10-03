@@ -649,6 +649,16 @@ pub(crate) fn program_feature_commands(
     before: &ketchup_program::model::Part,
     after: &ketchup_program::model::Part,
 ) -> Option<Vec<CanonicalCommand>> {
+    // ThroughAll has no numeric depth parameter. Rebuild changed parts with
+    // explicit through intent, including intent-only and stock thickness edits.
+    if before
+        .operations
+        .iter()
+        .chain(&after.operations)
+        .any(|operation| matches!(operation, ProgramOperation::Hole(hole) if hole.through))
+    {
+        return None;
+    }
     let definition = snapshot.definition(definition_id)?;
     let before_features = before
         .features

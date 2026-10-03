@@ -58,6 +58,7 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
                 inward_unit_local: hole.inward,
                 diameter_mm: hole.diameter_mm,
                 depth_mm: hole.depth_mm,
+                through: hole.through,
             }),
             _ => None,
         })

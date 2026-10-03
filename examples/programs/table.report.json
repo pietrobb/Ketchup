@@ -175,7 +175,8 @@
               80.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           },
           {
             "id": "dowel:table/leg-front-left:2",
@@ -186,7 +187,8 @@
               80.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           },
           {
             "id": "dowel:table/leg-front-right:1",
@@ -197,7 +199,8 @@
               80.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           },
           {
             "id": "dowel:table/leg-front-right:2",
@@ -208,7 +211,8 @@
               80.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           },
           {
             "id": "dowel:table/leg-back-left:1",
@@ -219,7 +223,8 @@
               620.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           },
           {
             "id": "dowel:table/leg-back-left:2",
@@ -230,7 +235,8 @@
               620.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           },
           {
             "id": "dowel:table/leg-back-right:1",
@@ -241,7 +247,8 @@
               620.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           },
           {
             "id": "dowel:table/leg-back-right:2",
@@ -252,7 +259,8 @@
               620.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 16.5
+            "depth_mm": 16.5,
+            "through": false
           }
         ]
       },
@@ -273,7 +281,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           },
           {
             "id": "dowel:table/top:2",
@@ -284,7 +293,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           }
         ]
       },
@@ -305,7 +315,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           },
           {
             "id": "dowel:table/top:2",
@@ -316,7 +327,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           }
         ]
       },
@@ -337,7 +349,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           },
           {
             "id": "dowel:table/top:2",
@@ -348,7 +361,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           }
         ]
       },
@@ -369,7 +383,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           },
           {
             "id": "dowel:table/top:2",
@@ -380,7 +395,8 @@
               35.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 26.5
+            "depth_mm": 26.5,
+            "through": false
           }
         ]
       }

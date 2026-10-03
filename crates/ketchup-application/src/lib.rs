@@ -10,6 +10,7 @@ pub mod diagnostics;
 pub mod evaluation;
 pub mod fea_workflow;
 mod group_connectivity;
+pub mod measurement;
 pub mod mesh_conversion;
 pub mod model_query;
 mod part_role;
@@ -40,7 +41,9 @@ pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
     plan_assistant_cad_edit_program_with_outputs, plan_part_batch, plan_rule_part_batch,
 };
-pub use rule_exact_collisions::{apply_exact_pairs, verify_rule_program_exact};
+pub use rule_exact_collisions::{
+    apply_exact_pairs, verify_rule_program_all, verify_rule_program_exact,
+};
 pub use rule_groups::plan_rule_model_batch;
 pub use rule_instances::rule_program_part_name;
 pub use rule_program::{

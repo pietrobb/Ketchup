@@ -439,13 +439,20 @@ fn exact_brep_graph_face_evidence(output: &ExactOpOutput) -> Vec<WorkerExactBRep
             .or_default()
             .insert(face_ordinal);
     }
-    mappings
+    let mut named = mappings
         .into_iter()
-        .filter_map(|((semantic_role, source_element_id), ordinals)| {
-            if ordinals.len() != 1 {
-                return None;
-            }
-            let face_ordinal = *ordinals.first()?;
+        .filter_map(|((role, source), ordinals)| {
+            (ordinals.len() == 1).then(|| (role, source, *ordinals.first().expect("one face")))
+        })
+        .collect::<Vec<_>>();
+    for face in &output.body.topology.faces {
+        if !named.iter().any(|(_, _, ordinal)| *ordinal == face.ordinal) {
+            named.push((String::new(), String::new(), face.ordinal));
+        }
+    }
+    named
+        .into_iter()
+        .filter_map(|(semantic_role, source_element_id, face_ordinal)| {
             let face = output
                 .body
                 .topology

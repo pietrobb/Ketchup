@@ -128,6 +128,8 @@ pub struct PairQuery {
     pub left: usize,
     pub right: usize,
     pub tolerance_mm: f64,
+    /// Zero-based face ordinals on evaluated local bodies; None retains solid-pair semantics.
+    pub faces: Option<[u32; 2]>,
     pub left_transform: [f64; 16],
     pub right_transform: [f64; 16],
 }

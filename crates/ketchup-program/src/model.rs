@@ -77,6 +77,8 @@ pub struct Hole {
     pub inward: [f64; 3],
     pub diameter_mm: f64,
     pub depth_mm: f64,
+    /// Explicit drilling intent; depth alone never turns a blind bore into a through bore.
+    pub through: bool,
 }
 
 /// A rectangular pocket milled into a flat face (grooves, rabbets, notches):
@@ -1503,6 +1505,21 @@ impl Part {
     }
 }
 
+/// An explicit operation identity, local to a part (never a geometric match).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct JointOperationRef {
+    pub part: String,
+    pub id: String,
+}
+
+/// One declared machining/hardware association, such as a pair of mating bores.
+/// Empty hardware means metadata only; no physical body is inferred or created.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct JointLink {
+    pub operations: Vec<JointOperationRef>,
+    pub hardware_parts: Vec<String>,
+}
+
 /// A declared connection between two parts. Overlap inside `volume` is
 /// expected; a joint whose parts do not touch is an error.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1510,6 +1527,8 @@ pub struct Joint {
     pub name: String,
     pub kind: String,
     pub parts: [String; 2],
+    /// Sole authority for operation ownership and physical hardware association.
+    pub links: Vec<JointLink>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume_mm: Option<([f64; 3], [f64; 3])>,
     /// World positions of fasteners (dowel centres, screws, ...).
@@ -1571,6 +1590,8 @@ pub struct ProgramModel {
     /// Conditions the program states about its geometry (`expect()`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub expectations: Vec<crate::expect::Expectation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub declared_issues: Vec<crate::validate::Issue>,
 }
 
 impl ProgramModel {

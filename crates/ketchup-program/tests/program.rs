@@ -202,17 +202,29 @@ fn a_dowel_goes_shallow_into_a_board_face_and_deep_into_the_other_edge() {
 }
 
 #[test]
-fn a_dowel_too_long_for_two_board_faces_fails_with_the_numbers() {
+fn a_dowel_too_long_for_two_board_faces_reports_numbers_without_aborting() {
     let source = "\
 a = board(\"a\", (400, 300, 18))
 b = board(\"b\", (400, 300, 18))
 on(b, a)
 dowels(a, b, dowel = \"8x35\")
 ";
-    let Err(error) = run("test.star", source, &BTreeMap::new()) else {
-        panic!("two 18 mm faces cannot hold a 35 mm dowel");
-    };
-    let error = error.to_string();
+    let (evaluated, report) = run("test.star", source, &BTreeMap::new()).unwrap();
+    assert!(!report.ok);
+    assert!(evaluated.model.joints.is_empty());
+    assert!(
+        evaluated
+            .model
+            .parts
+            .iter()
+            .all(|part| part.holes().count() == 0)
+    );
+    let error = report
+        .issues
+        .iter()
+        .map(|issue| issue.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     for needed in [
         "8x35",
         "35 mm",
@@ -398,7 +410,7 @@ back = board(\"back\", (4, 4, 600), at = (10, 280, 0))
 ";
     assert_eq!(kinds(source), Vec::<&str>::new());
     let unseated = source.replace("offset = 280", "offset = 200");
-    assert_eq!(kinds(&unseated), vec!["collision"]);
+    assert_eq!(kinds(&unseated), vec!["collision_unverified"]);
 }
 
 #[test]
@@ -471,11 +483,11 @@ fn errors_name_the_line_and_the_cause() {
 
     let error = run(
         "dowel.star",
-        "a = box(\"a\", (10, 10, 10))\nb = box(\"b\", (10, 10, 10), at = (50, 0, 0))\ndowels(a, b)\n",
+        "a = box(\"a\", (10, 10, 10))\nb = box(\"b\", (10, 10, 10), at = (50, 0, 0))\ndowels(a, b, dowel=\"unknown\")\n",
         &BTreeMap::new(),
     )
     .unwrap_err();
-    assert!(error.message.contains("do not touch"), "{}", error.message);
+    assert!(error.message.contains("unknown dowel"), "{}", error.message);
 }
 
 #[test]

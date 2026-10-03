@@ -502,6 +502,42 @@ fn missing_worker_and_partial_analytic_coverage_never_pass() {
     assert_eq!(legacy["issue_count"], 1);
 }
 #[test]
+fn parallel_worker_failure_cancels_remaining_work_without_masking_the_cause() {
+    let _turn = crate::integration_support::file_turn();
+    let mut document = DocumentStore::new();
+    for id in 1..=20 {
+        add(&mut document, id, rectangle(), id as f64 * 100.0);
+    }
+    let before = document.current();
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let report = assistant_validation_context_with_worker_cancellation(
+        &before,
+        &ExactResultRegistry::default(),
+        &selection(),
+        &ContainerData::default(),
+        Some("C:/no-such-worker.exe".into()),
+        Duration::from_secs(10),
+        cancelled.clone(),
+    );
+    assert_eq!(report["complete"], false, "{report}");
+    assert!(
+        !cancelled.load(std::sync::atomic::Ordering::Acquire),
+        "a failed geometry check must not cancel the enclosing request"
+    );
+    assert_eq!(
+        report["collision"]["not_evaluated"][0]["reason"], "exact_worker_unavailable",
+        "{report}"
+    );
+    assert!(
+        report["collision"]["not_evaluated"][0]["cause"]
+            .as_str()
+            .is_some_and(|cause| !cause.is_empty()),
+        "{report}"
+    );
+    assert_eq!(document.current().scene_query(), before.scene_query());
+}
+
+#[test]
 fn full_140_house_has_no_silent_collision_cap() {
     let _turn = crate::integration_support::file_turn();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

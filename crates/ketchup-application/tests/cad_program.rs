@@ -2532,6 +2532,65 @@ fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
 }
 
 #[test]
+fn create_part_preserves_through_intent_and_old_hole_json_defaults_to_blind() {
+    let legacy: AssistantPartHole = serde_json::from_value(serde_json::json!({
+        "id": "bore", "entry_local_mm": [20,20,0],
+        "inward_unit_local": [0,0,1], "diameter_mm": 8, "depth_mm": 18
+    }))
+    .unwrap();
+    assert!(!legacy.through);
+    for (through, depth, expected_through) in [
+        (false, 18.0, false),
+        (true, 18.0, true),
+        (true, 22.0, true),
+        (true, 12.0, false),
+        (false, 22.0, false),
+    ] {
+        let mut document = DocumentStore::new();
+        let part = cuboid_part(
+            "stock".into(),
+            [100.0, 50.0, 18.0],
+            vec![AssistantPartHole {
+                through,
+                depth_mm: depth,
+                ..legacy.clone()
+            }],
+            Vec::new(),
+            [0.0; 3],
+            None,
+        );
+        let batch = plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &program(vec![part]),
+        )
+        .unwrap();
+        document.apply_batch(&batch).unwrap();
+        let snapshot = document.current();
+        let graph =
+            ExactBRepGraph::from_snapshot(&snapshot, DefinitionId(1), FeatureId(6)).unwrap();
+        if through && depth < 18.0 {
+            assert!(matches!(
+                graph.nodes.last().unwrap().operation,
+                ketchup_model::exact_brep_graph::ExactBRepOperation::Boolean { .. }
+            ));
+        } else {
+            let ketchup_model::exact_brep_graph::ExactBRepOperation::ProfileCut {
+                depth_bits, ..
+            } = &graph.nodes.last().unwrap().operation
+            else {
+                panic!("expected profile cut")
+            };
+            assert_eq!(
+                depth_bits.map(f64::from_bits),
+                (!expected_through).then_some(depth)
+            );
+        }
+    }
+}
+
+#[test]
 fn one_part_operation_creates_named_physical_holes_and_one_local_edit_moves_one_hole() {
     let mut document = DocumentStore::new();
     let panel = cuboid_part(
@@ -2543,6 +2602,7 @@ fn one_part_operation_creates_named_physical_holes_and_one_local_edit_moves_one_
             inward_unit_local: [0.0, 0.0, 1.0],
             diameter_mm: 8.0,
             depth_mm: 16.0,
+            through: false,
         }],
         Vec::new(),
         [0.0, 0.0, 0.0],
@@ -2626,6 +2686,7 @@ fn create_part_drills_into_the_bounding_faces_of_any_extruded_profile() {
         inward_unit_local,
         diameter_mm: 6.0,
         depth_mm: 10.0,
+        through: false,
     };
     let mut document = DocumentStore::new();
     let baseline = document.current();
@@ -2633,10 +2694,6 @@ fn create_part_drills_into_the_bounding_faces_of_any_extruded_profile() {
     for outside in [
         hole([45.0, 0.0, 20.0], [0.0, 0.0, -1.0]),
         hole([-10.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
-        AssistantPartHole {
-            depth_mm: 25.0,
-            ..hole([-10.0, 0.0, 20.0], [0.0, 0.0, -1.0])
-        },
     ] {
         let error = plan(
             &document,
@@ -3274,6 +3331,7 @@ fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
         inward_unit_local: [0.0, 0.0, -1.0],
         diameter_mm: 10.0,
         depth_mm: 10.0,
+        through: false,
     };
     let obstructed = seed(vec![hardware], 18.0);
     assert_rejected_without_mutation(
@@ -3473,6 +3531,7 @@ fn physical_pin_joint_supports_both_rotated_sides_and_preserves_existing_work() 
         inward_unit_local: [0.0, 0.0, -1.0],
         diameter_mm: 6.0,
         depth_mm: 10.0,
+        through: false,
     };
     let panels = plan(
         &document,
@@ -3697,6 +3756,7 @@ fn named_program_outputs_create_parts_physical_holes_and_joint_in_one_atomic_bat
                 inward_unit_local,
                 diameter_mm: 8.0,
                 depth_mm: 16.0,
+                through: false,
             }],
             Vec::new(),
             translation_mm,
@@ -3966,6 +4026,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
                 inward_unit_local,
                 diameter_mm: 8.0,
                 depth_mm: 16.0,
+                through: false,
             })
             .collect()
     };

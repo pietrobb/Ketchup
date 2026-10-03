@@ -209,6 +209,69 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
   });
 }
 
+// Resolve on the evaluated local body before placement; never re-index a transformed body.
+NativePairQuery query_face_pair_native(
+    const NativeOperationResult& left, std::uint32_t left_face,
+    rust::Slice<const double> left_matrix,
+    const NativeOperationResult& right, std::uint32_t right_face,
+    rust::Slice<const double> right_matrix) noexcept {
+  NativePairQuery result{};
+  result.status = STATUS_INVALID_SHAPE;
+  try {
+    const auto placed_face = [](const NativeOperationResult& body, std::uint32_t ordinal,
+                                rust::Slice<const double> matrix) -> TopoDS_Shape {
+      if (!body.valid() || body.impl().shape.IsNull() || matrix.size() != 16
+          || ordinal >= body.impl().faces.size()) {
+        return {};
+      }
+      for (double value : matrix) {
+        if (!std::isfinite(value)) return {};
+      }
+      if (matrix[12] != 0 || matrix[13] != 0 || matrix[14] != 0 || matrix[15] != 1) return {};
+      // Deliberately bounded to rigid placements. No scale/shear approximation.
+      for (std::size_t a = 0; a < 3; ++a) {
+        for (std::size_t b = 0; b < 3; ++b) {
+          const double dot = matrix[a]*matrix[b] + matrix[4+a]*matrix[4+b]
+              + matrix[8+a]*matrix[8+b];
+          if (std::abs(dot - (a == b ? 1.0 : 0.0)) > tolerances().rounding) return {};
+        }
+      }
+      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      if (face.IsNull()) return {};
+      gp_Trsf transform;
+      transform.SetValues(matrix[0], matrix[1], matrix[2], matrix[3],
+                          matrix[4], matrix[5], matrix[6], matrix[7],
+                          matrix[8], matrix[9], matrix[10], matrix[11]);
+      return face.Moved(TopLoc_Location(transform));
+    };
+    const TopoDS_Shape a = placed_face(left, left_face, left_matrix);
+    const TopoDS_Shape b = placed_face(right, right_face, right_matrix);
+    if (a.IsNull() || b.IsNull()) {
+      result.diagnostic = "Face query requires valid face ordinals and rigid placements";
+      return result;
+    }
+    BRepExtrema_DistShapeShape distance(a, b);
+    distance.Perform();
+    if (!distance.IsDone() || distance.NbSolution() < 1
+        || !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
+      result.diagnostic = "OCCT trimmed-face minimum distance did not complete";
+      return result;
+    }
+    result.distance_mm = distance.Value();
+    result.status = STATUS_OK;
+  } catch (const Standard_Failure& error) {
+    result.status = STATUS_BACKEND_EXCEPTION;
+    result.diagnostic = standard_failure_message(error);
+  } catch (const std::exception& error) {
+    result.status = STATUS_BACKEND_EXCEPTION;
+    result.diagnostic = error.what();
+  } catch (...) {
+    result.status = STATUS_BACKEND_EXCEPTION;
+    result.diagnostic = "Unknown native face-distance exception";
+  }
+  return result;
+}
+
 NativePairQuery query_body_pair_native(
     const NativeOperationResult& left, const NativeOperationResult& right) noexcept {
   NativePairQuery result{};

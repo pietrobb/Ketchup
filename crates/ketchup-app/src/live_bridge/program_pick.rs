@@ -7,7 +7,11 @@ use ketchup_model::document::InstancePath;
 use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole};
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
 use ketchup_model::topology::{TopologicalElementKind, TopologicalElementRef};
-use ketchup_program::{frame, model::Part};
+use ketchup_program::{
+    frame,
+    model::{Part, ProgramModel},
+};
+mod provenance;
 
 const HINT: &str = "face is the program's name for it (box: x-..z+; profile part: start, end or a \
 segment name) for hole/push_pull/cut/contact; on_face is what on(part, target, face=...) takes \
@@ -54,7 +58,12 @@ fn role(reference: &TopologicalElementRef) -> Option<&str> {
     }
 }
 
-fn describe_face(part: &Part, package: &ExactBodyPackage, ordinal: u32) -> Option<Value> {
+fn describe_face(
+    model: &ProgramModel,
+    part: &Part,
+    package: &ExactBodyPackage,
+    ordinal: u32,
+) -> Option<Value> {
     let reference = package.topological_reference(TopologicalElementKind::Face, ordinal)?;
     let (point, normal) = face_sample(package, ordinal)?;
     let normal_world = frame::apply(&part.rotation, normal);
@@ -70,14 +79,16 @@ fn describe_face(part: &Part, package: &ExactBodyPackage, ordinal: u32) -> Optio
                 ))
             },
         );
-    Some(json!({
-        "face": part.face_at(point, normal, role(reference)),
-        "on_face": on_face,
-        "point_local_mm": round(point),
-        "normal_local": round(normal),
-        "point_world_mm": round(part.to_world(point)),
-        "normal_world": round(normal_world),
-    }))
+    let holes = provenance::describe(model, part, package, ordinal);
+    Some(
+        json!({"face": part.face_at(point, normal, role(reference)), "holes": holes, "machining_provenance": {"state": if holes.is_empty() { "not_identified" } else { "surface_matches" }, "scope": "finished_hole_operations", "reason": if holes.is_empty() { json!("This face is not matched to a supported drilling operation; it may be an exterior, pocket or boolean surface. No ownership is inferred.") } else { Value::Null }},
+            "on_face": on_face,
+            "point_local_mm": round(point),
+            "normal_local": round(normal),
+            "point_world_mm": round(part.to_world(point)),
+            "normal_world": round(normal_world),
+        }),
+    )
 }
 
 /// The program part and the two program face names of a picked edge, or
@@ -125,9 +136,12 @@ pub(super) fn describe(
             .and_then(|ordinal| u32::try_from(ordinal).ok())
     };
     let mut described = match reference.kind {
-        TopologicalElementKind::Face => {
-            describe_face(part, package, ordinal(TopologicalElementKind::Face)?)?
-        }
+        TopologicalElementKind::Face => describe_face(
+            &evaluated.model,
+            part,
+            package,
+            ordinal(TopologicalElementKind::Face)?,
+        )?,
         TopologicalElementKind::Edge => {
             let edge = ordinal(TopologicalElementKind::Edge)?;
             let faces = package
@@ -136,7 +150,7 @@ pub(super) fn describe(
                 .find(|evidence| evidence.edge_ordinal == edge)?
                 .adjacent_face_ordinals
                 .iter()
-                .map(|face| describe_face(part, package, *face))
+                .map(|face| describe_face(&evaluated.model, part, package, *face))
                 .collect::<Option<Vec<_>>>()?;
             let names = faces
                 .iter()
@@ -150,6 +164,7 @@ pub(super) fn describe(
         TopologicalElementKind::Vertex => return None,
     };
     described["part"] = json!(part.name);
+    described["representation"] = json!("solid_part");
     described["hint"] = json!(HINT);
     Some(described)
 }

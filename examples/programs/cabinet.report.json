@@ -338,7 +338,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/bottom:2",
@@ -349,7 +350,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/top:1",
@@ -360,7 +362,8 @@
               711.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/top:2",
@@ -371,7 +374,8 @@
               711.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "h5",
@@ -382,7 +386,8 @@
               114.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h6",
@@ -393,7 +398,8 @@
               146.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h7",
@@ -404,7 +410,8 @@
               178.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h8",
@@ -415,7 +422,8 @@
               210.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h9",
@@ -426,7 +434,8 @@
               242.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h10",
@@ -437,7 +446,8 @@
               274.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h11",
@@ -448,7 +458,8 @@
               306.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h12",
@@ -459,7 +470,8 @@
               338.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h13",
@@ -470,7 +482,8 @@
               370.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h14",
@@ -481,7 +494,8 @@
               402.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h15",
@@ -492,7 +506,8 @@
               434.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h16",
@@ -503,7 +518,8 @@
               466.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h17",
@@ -514,7 +530,8 @@
               498.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h18",
@@ -525,7 +542,8 @@
               530.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h19",
@@ -536,7 +554,8 @@
               562.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h20",
@@ -547,7 +566,8 @@
               594.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h21",
@@ -558,7 +578,8 @@
               114.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h22",
@@ -569,7 +590,8 @@
               146.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h23",
@@ -580,7 +602,8 @@
               178.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h24",
@@ -591,7 +614,8 @@
               210.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h25",
@@ -602,7 +626,8 @@
               242.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h26",
@@ -613,7 +638,8 @@
               274.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h27",
@@ -624,7 +650,8 @@
               306.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h28",
@@ -635,7 +662,8 @@
               338.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h29",
@@ -646,7 +674,8 @@
               370.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h30",
@@ -657,7 +686,8 @@
               402.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h31",
@@ -668,7 +698,8 @@
               434.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h32",
@@ -679,7 +710,8 @@
               466.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h33",
@@ -690,7 +722,8 @@
               498.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h34",
@@ -701,7 +734,8 @@
               530.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h35",
@@ -712,7 +746,8 @@
               562.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h36",
@@ -723,7 +758,8 @@
               594.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "p1",
@@ -756,7 +792,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/bottom:2",
@@ -767,7 +804,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/top:1",
@@ -778,7 +816,8 @@
               711.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/top:2",
@@ -789,7 +828,8 @@
               711.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 12.0
+            "depth_mm": 12.0,
+            "through": false
           },
           {
             "id": "h5",
@@ -800,7 +840,8 @@
               114.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h6",
@@ -811,7 +852,8 @@
               146.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h7",
@@ -822,7 +864,8 @@
               178.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h8",
@@ -833,7 +876,8 @@
               210.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h9",
@@ -844,7 +888,8 @@
               242.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h10",
@@ -855,7 +900,8 @@
               274.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h11",
@@ -866,7 +912,8 @@
               306.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h12",
@@ -877,7 +924,8 @@
               338.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h13",
@@ -888,7 +936,8 @@
               370.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h14",
@@ -899,7 +948,8 @@
               402.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h15",
@@ -910,7 +960,8 @@
               434.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h16",
@@ -921,7 +972,8 @@
               466.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h17",
@@ -932,7 +984,8 @@
               498.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h18",
@@ -943,7 +996,8 @@
               530.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h19",
@@ -954,7 +1008,8 @@
               562.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h20",
@@ -965,7 +1020,8 @@
               594.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h21",
@@ -976,7 +1032,8 @@
               114.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h22",
@@ -987,7 +1044,8 @@
               146.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h23",
@@ -998,7 +1056,8 @@
               178.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h24",
@@ -1009,7 +1068,8 @@
               210.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h25",
@@ -1020,7 +1080,8 @@
               242.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h26",
@@ -1031,7 +1092,8 @@
               274.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h27",
@@ -1042,7 +1104,8 @@
               306.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h28",
@@ -1053,7 +1116,8 @@
               338.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h29",
@@ -1064,7 +1128,8 @@
               370.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h30",
@@ -1075,7 +1140,8 @@
               402.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h31",
@@ -1086,7 +1152,8 @@
               434.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h32",
@@ -1097,7 +1164,8 @@
               466.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h33",
@@ -1108,7 +1176,8 @@
               498.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h34",
@@ -1119,7 +1188,8 @@
               530.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h35",
@@ -1130,7 +1200,8 @@
               562.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "h36",
@@ -1141,7 +1212,8 @@
               594.0
             ],
             "diameter_mm": 5.0,
-            "depth_mm": 10.0
+            "depth_mm": 10.0,
+            "through": false
           },
           {
             "id": "p1",
@@ -1174,7 +1246,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/left:2",
@@ -1185,7 +1258,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/right:1",
@@ -1196,7 +1270,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/right:2",
@@ -1207,7 +1282,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "p1",
@@ -1240,7 +1316,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/left:2",
@@ -1251,7 +1328,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/right:1",
@@ -1262,7 +1340,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "dowel:carcass/right:2",
@@ -1273,7 +1352,8 @@
               9.0
             ],
             "diameter_mm": 8.0,
-            "depth_mm": 21.0
+            "depth_mm": 21.0,
+            "through": false
           },
           {
             "id": "p1",

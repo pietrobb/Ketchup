@@ -148,7 +148,18 @@ fn row_avoids_concavity_and_hole_and_rejects_impossible_margin() {
         }
     }
     let source = "a=box('a',(20,20,30))\nb=box('b',(20,20,30),at=(0,0,30))\ndowels(a,b,dowel='6x30',count=2,margin=20)\n";
-    assert!(evaluate("impossible.star", source, &BTreeMap::new()).is_err());
+    let (evaluated, report) = run("impossible.star", source, &BTreeMap::new()).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.kind == "program_condition_failed" && i.message.contains("no row fits"))
+    );
+    assert_eq!(evaluated.model.parts.len(), 2);
+    assert!(evaluated.model.parts.iter().all(|p| p.holes().count() == 0));
+    assert!(evaluated.model.joints.is_empty());
+    assert!(report.bom.hardware.is_empty());
 }
 #[test]
 fn repeated_bores_preserve_contact_material_area() {

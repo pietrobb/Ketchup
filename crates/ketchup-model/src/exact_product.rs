@@ -503,6 +503,10 @@ impl ExactBRepGraphPackage {
             {
                 return Err(ExactProductError::InvalidWorkerEvidence);
             }
+            // Unnamed native faces are measurable in this snapshot, not durable attachments.
+            if face.semantic_role.is_empty() || face.source_element_id.is_empty() {
+                continue;
+            }
             let expected_type = match face.surface_kind.as_str() {
                 "plane" => "planar_face",
                 "cylinder" if face.axis_origin_mm.is_some() => "cylindrical_face",

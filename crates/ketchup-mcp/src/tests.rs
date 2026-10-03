@@ -1,5 +1,7 @@
 //! The server against a stand-in window: a real attach endpoint and live
 //! bridge on loopback that answer like Kečup and record what they received.
+#[path = "measurement_tests.rs"]
+mod measurement;
 use crate::{server::handle, tools::Tools};
 use serde_json::{Value, json};
 use std::{
@@ -8,6 +10,84 @@ use std::{
     path::Path,
     sync::mpsc,
 };
+
+#[test]
+fn compact_program_schema_docs_and_routes_agree() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let schemas = crate::schema::tools();
+    let schema = schemas
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "program")
+        .unwrap();
+    let properties = &schema["inputSchema"]["properties"];
+    for action in ["read", "apply", "patch", "report", "docs", "validate"] {
+        assert!(
+            properties["action"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == action)
+        );
+    }
+    for mode in properties["mode"]["enum"].as_array().unwrap() {
+        let result = call(&mut tools, "program", json!({"action":"read", "mode":mode}));
+        assert_eq!(result["isError"], false);
+        let request = received.recv().unwrap();
+        if mode == "full" {
+            assert_eq!(request["method"], "program");
+        } else {
+            assert_eq!(request["method"], "program_context");
+            assert_eq!(request["selection_context"], mode == "selection");
+        }
+    }
+    let stamp = json!({"document_id":1,"revision":7,"canonical_digest":"d","mutation_epoch":0});
+    let edits = json!([{"old":"width=600","new":"width=650"}]);
+    call(
+        &mut tools,
+        "program",
+        json!({"action":"patch","expected":stamp,"edits":edits}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"patch_program","expected":stamp,"edits":edits})
+    );
+    for section in properties["section"]["enum"].as_array().unwrap() {
+        call(
+            &mut tools,
+            "program",
+            json!({"action":"report","expected":stamp,"section":section}),
+        );
+        assert_eq!(
+            received.recv().unwrap(),
+            json!({"method":"program_report","expected":stamp,"section":section,"limit":50})
+        );
+    }
+    let concise = text(&call(
+        &mut tools,
+        "program",
+        json!({"action":"docs","name":"basics"}),
+    ));
+    let full = text(&call(
+        &mut tools,
+        "program",
+        json!({"action":"docs","name":"basics","detail":"implementation"}),
+    ));
+    assert_eq!(concise["detail"], "concise");
+    assert!(concise["text"].as_str().unwrap().len() < full["text"].as_str().unwrap().len());
+    let (_, report) = ketchup_program::run(
+        "docs.star",
+        concise["example"].as_str().unwrap(),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(report.bom.total_parts, 2);
+    assert!(!report.bom.hardware.is_empty());
+    assert_eq!(report.errors, 0);
+}
 
 #[test]
 fn bounded_program_read_rejects_oversize_utf8_errors_and_special_files() {

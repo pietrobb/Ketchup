@@ -120,6 +120,24 @@ impl PairQuerySession {
         else {
             return Err(WorkerFailure::invalid_request());
         };
+        if let Some([left_face, right_face]) = query.faces {
+            let distance_mm = backend
+                .query_face_pair(
+                    &self.bodies[query.left].1.body,
+                    left_face,
+                    &query.left_transform,
+                    &self.bodies[query.right].1.body,
+                    right_face,
+                    &query.right_transform,
+                )
+                .map_err(|error| geometry_failure(&error))?;
+            self.queries += 1;
+            return Ok(WorkerReply::Pair(PairMeasure {
+                common_volume_mm3: 0.0,
+                common_contact_area_mm2: 0.0,
+                distance_mm,
+            }));
+        }
         let cache_key = (
             left_digest.clone(),
             right_digest.clone(),
@@ -209,6 +227,7 @@ mod tests {
             left: 0,
             right: 1,
             tolerance_mm: 0.0,
+            faces: None,
             left_transform: EXACT_PAIR_IDENTITY,
             right_transform: EXACT_PAIR_IDENTITY,
         };

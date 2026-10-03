@@ -3,6 +3,8 @@
 mod bounds;
 #[path = "collision_hull.rs"]
 mod hull;
+#[path = "collision_measurements.rs"]
+mod measurements;
 use crate::group_connectivity::validation_context as validation_context_with_groups;
 use crate::validation::AssistantValidationSelection;
 use crate::worker_pool::ExactWorkerUnavailable;
@@ -32,6 +34,7 @@ use ketchup_model::validation::{
 use ketchup_program::ExactPair;
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 use ketchup_scheduler::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation, WorkerError};
+use measurements::required_pairs;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -59,6 +62,7 @@ pub struct CollisionScope {
     revision: u64,
     canonical_digest: String,
     occurrence_ids: BTreeSet<OccurrenceId>,
+    measured_pairs: BTreeSet<(InstancePath, InstancePath)>,
 }
 
 impl CollisionScope {
@@ -71,6 +75,7 @@ impl CollisionScope {
             revision: snapshot.revision_id(),
             canonical_digest: snapshot.canonical_digest(),
             occurrence_ids: occurrence_ids.into_iter().collect(),
+            measured_pairs: BTreeSet::new(),
         }
     }
 
@@ -359,6 +364,16 @@ enum ExactPairFailure {
 }
 
 impl ExactPairFailure {
+    fn cancel_remaining(&self, cancelled: &AtomicBool) -> Value {
+        let evidence = if cancelled.load(Ordering::Acquire) {
+            json!({"reason": "exact_collision_cancelled"})
+        } else {
+            self.evidence()
+        };
+        cancelled.store(true, Ordering::Release);
+        evidence
+    }
+
     fn evidence(&self) -> Value {
         match self {
             Self::WorkerUnavailable(ExactWorkerUnavailable::NotFound) => {
@@ -377,9 +392,118 @@ impl ExactPairFailure {
     }
 }
 
+fn start_pair_batches(
+    path: Option<PathBuf>,
+    pairs: Vec<(usize, usize, ExactPairCandidate)>,
+    graphs: Vec<ExactBRepGraph>,
+    sources: BTreeMap<String, Vec<u8>>,
+    contact_tolerance_mm: f64,
+    cancelled: Arc<AtomicBool>,
+) -> mpsc::Receiver<ExactPairBatch> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        send_exact_pair_batches(
+            path.as_deref(),
+            &pairs,
+            &graphs,
+            &sources,
+            contact_tolerance_mm,
+            &cancelled,
+            &tx,
+        );
+    });
+    rx
+}
+
+fn receive_pair_batch(
+    receiver: &mpsc::Receiver<ExactPairBatch>,
+    request_cancelled: Option<&AtomicBool>,
+    worker_cancelled: &AtomicBool,
+    timeout: Duration,
+) -> Result<ExactPairBatch, mpsc::RecvTimeoutError> {
+    let started = Instant::now();
+    loop {
+        if request_cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            worker_cancelled.store(true, Ordering::Release);
+            return Ok(Err(ExactPairFailure::Batch {
+                cause: WorkerError::Cancelled,
+            }));
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(10))) {
+            Err(mpsc::RecvTimeoutError::Timeout) if started.elapsed() < timeout => continue,
+            result => return result,
+        }
+    }
+}
+
+/// Independent graph ranges use two isolated workers; small checks keep one.
+/// Results are forwarded in range order, regardless of worker completion order.
+fn send_exact_pair_batches(
+    path: Option<&Path>,
+    pairs: &[(usize, usize, ExactPairCandidate)],
+    graphs: &[ExactBRepGraph],
+    sources: &BTreeMap<String, Vec<u8>>,
+    contact_tolerance_mm: f64,
+    cancelled: &AtomicBool,
+    tx: &mpsc::Sender<ExactPairBatch>,
+) {
+    let left_graphs: BTreeSet<_> = pairs.iter().map(|pair| pair.2.left_graph).collect();
+    // Amortize a second process only when graph construction dominates startup.
+    if left_graphs.len() < 16 {
+        send_serial_pair_batches(
+            path,
+            pairs,
+            graphs,
+            sources,
+            contact_tolerance_mm,
+            cancelled,
+            tx,
+        );
+        return;
+    }
+    let pivot = *left_graphs
+        .iter()
+        .nth(left_graphs.len() / 2)
+        .expect("nonempty graph ranges");
+    let (first, second): (Vec<_>, Vec<_>) = pairs
+        .iter()
+        .cloned()
+        .partition(|pair| pair.2.left_graph < pivot);
+    std::thread::scope(|scope| {
+        let (second_tx, second_rx) = mpsc::channel();
+        scope.spawn(move || {
+            send_serial_pair_batches(
+                path,
+                &second,
+                graphs,
+                sources,
+                contact_tolerance_mm,
+                cancelled,
+                &second_tx,
+            )
+        });
+        send_serial_pair_batches(
+            path,
+            &first,
+            graphs,
+            sources,
+            contact_tolerance_mm,
+            cancelled,
+            tx,
+        );
+        for result in second_rx {
+            if tx.send(result).is_err() {
+                cancelled.store(true, Ordering::Release);
+                break;
+            }
+        }
+    });
+}
+
 /// Asks one exact worker about `pairs` in batches the worker accepts and sends
 /// each answered batch, or the failure that stopped the check, to `tx`.
-fn send_exact_pair_batches(
+fn send_serial_pair_batches(
     path: Option<&Path>,
     pairs: &[(usize, usize, ExactPairCandidate)],
     graphs: &[ExactBRepGraph],
@@ -391,7 +515,12 @@ fn send_exact_pair_batches(
     let mut supervisor = match crate::worker_pool::checkout(path, cancelled) {
         Ok(supervisor) => supervisor,
         Err(unavailable) => {
-            let _ = tx.send(Err(ExactPairFailure::WorkerUnavailable(unavailable)));
+            if tx
+                .send(Err(ExactPairFailure::WorkerUnavailable(unavailable)))
+                .is_err()
+            {
+                cancelled.store(true, Ordering::Release);
+            }
             return;
         }
     };
@@ -428,18 +557,26 @@ fn send_exact_pair_batches(
                     .map(|((l, r, _), result)| (*l, *r, result))
                     .collect::<Vec<_>>();
                 if tx.send(Ok(entries)).is_err() {
+                    cancelled.store(true, Ordering::Release);
                     return;
                 }
             }
             Ok(results) => {
-                let _ = tx.send(Err(ExactPairFailure::Incomplete {
-                    expected: candidates.len(),
-                    received: results.len(),
-                }));
+                if tx
+                    .send(Err(ExactPairFailure::Incomplete {
+                        expected: candidates.len(),
+                        received: results.len(),
+                    }))
+                    .is_err()
+                {
+                    cancelled.store(true, Ordering::Release);
+                }
                 return;
             }
             Err(cause) => {
-                let _ = tx.send(Err(ExactPairFailure::Batch { cause }));
+                if tx.send(Err(ExactPairFailure::Batch { cause })).is_err() {
+                    cancelled.store(true, Ordering::Release);
+                }
                 return;
             }
         }
@@ -933,7 +1070,7 @@ fn collision_report(
             bodies.push(body);
         }
     }
-    let scoped_body_indices = scope
+    let scoped_indices = scope
         .map(|scope| {
             bodies
                 .iter()
@@ -948,7 +1085,7 @@ fn collision_report(
         })
         .unwrap_or_else(|| (0..bodies.len()).collect());
     if let Some(scope) = scope {
-        let resolved = scoped_body_indices
+        let resolved = scoped_indices
             .iter()
             .map(|index| bodies[*index].occurrence.instance_path.root_occurrence())
             .collect::<BTreeSet<_>>();
@@ -959,9 +1096,9 @@ fn collision_report(
             }));
         }
         report["scope"]["resolved_occurrence_count"] = json!(resolved.len());
-        report["scope"]["scoped_body_count"] = json!(scoped_body_indices.len());
+        report["scope"]["scoped_body_count"] = json!(scoped_indices.len());
     }
-    let scoped_body_count = scoped_body_indices.len();
+    let scoped_body_count = scoped_indices.len();
     let total_pairs = if scope.is_some() {
         scoped_body_count * bodies.len().saturating_sub(scoped_body_count)
             + scoped_body_count * scoped_body_count.saturating_sub(1) / 2
@@ -1045,7 +1182,7 @@ fn collision_report(
         // Every visible solid must pass native validation, even with no neighbors.
         // These self-queries never contribute issues or checked pair counts.
         for (index, body) in bodies.iter().enumerate() {
-            if !scoped_body_indices.contains(&index) {
+            if !scoped_indices.contains(&index) {
                 continue;
             }
             if let Some(graph) = body.graph {
@@ -1068,7 +1205,7 @@ fn collision_report(
             .collect::<Vec<_>>();
         let bounded_scoped_count = bounded
             .iter()
-            .filter(|(index, _)| scoped_body_indices.contains(index))
+            .filter(|(index, _)| scoped_indices.contains(index))
             .count();
         let bounded_relevant_pairs = bounded_scoped_count
             * bounded.len().saturating_sub(bounded_scoped_count)
@@ -1084,7 +1221,7 @@ fn collision_report(
                 .iter()
                 .enumerate()
                 .filter_map(|(position, (body_index, _))| {
-                    scoped_body_indices.contains(body_index).then_some(position)
+                    scoped_indices.contains(body_index).then_some(position)
                 })
                 .collect::<Vec<_>>();
             overlapping_bounds_for_sources_with_cancellation(
@@ -1096,7 +1233,7 @@ fn collision_report(
         } else {
             overlapping_bounds_pairs(&bounded_coordinates)
         };
-        let contact_pairs = contact_candidates(snapshot, selection, &bodies, &scoped_body_indices);
+        let contact_pairs = required_pairs(snapshot, selection, &bodies, &scoped_indices, scope);
         let mut spatial_complete = true;
         let mut candidates = match spatial_pairs {
             Ok((candidate_pairs, _)) => candidate_pairs
@@ -1157,10 +1294,10 @@ fn collision_report(
             // An uncertifiable bound (e.g. a revolved solid) can reject nothing:
             // pair it with every body it is relevant to, like full-model mode.
             for &unbounded in &unbounded {
-                let partners: Vec<usize> = if scoped_body_indices.contains(&unbounded) {
+                let partners: Vec<usize> = if scoped_indices.contains(&unbounded) {
                     (0..bodies.len()).collect()
                 } else {
-                    scoped_body_indices.iter().copied().collect()
+                    scoped_indices.iter().copied().collect()
                 };
                 candidates.extend(partners.into_iter().filter_map(|other| {
                     (other != unbounded).then_some((unbounded.min(other), unbounded.max(other)))
@@ -1169,7 +1306,7 @@ fn collision_report(
             let boundary_occurrences = candidates
                 .iter()
                 .flat_map(|(left, right)| [*left, *right])
-                .filter(|index| !scoped_body_indices.contains(index))
+                .filter(|index| !scoped_indices.contains(index))
                 .map(|index| bodies[index].occurrence.instance_path.clone())
                 .collect::<BTreeSet<_>>();
             report["scope"]["boundary_occurrence_count"] = json!(boundary_occurrences.len());
@@ -1235,25 +1372,24 @@ fn collision_report(
             (Err(error), _) => failures.push(json!({"reason": error.code()})),
             (Ok(_), _) if pairs.is_empty() => {}
             (Ok(sources), path) => {
-                let cancelled = cancellation
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-                let cancel_worker = cancelled.clone();
-                let (tx, rx) = mpsc::channel();
-                let contact_tolerance_mm = tolerance.linear_mm();
-                std::thread::spawn(move || {
-                    send_exact_pair_batches(
-                        path.as_deref(),
-                        &pairs,
-                        &graphs,
-                        &sources,
-                        contact_tolerance_mm,
-                        &cancel_worker,
-                        &tx,
-                    );
-                });
+                // A failed check stops its workers, not the enclosing edit or chat request.
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let request_cancelled = cancellation.as_deref();
+                let rx = start_pair_batches(
+                    path,
+                    pairs,
+                    graphs,
+                    sources,
+                    tolerance.linear_mm(),
+                    cancelled.clone(),
+                );
                 loop {
-                    match rx.recv_timeout(timeout.saturating_sub(started.elapsed())) {
+                    match receive_pair_batch(
+                        &rx,
+                        request_cancelled,
+                        &cancelled,
+                        timeout.saturating_sub(started.elapsed()),
+                    ) {
                         Ok(Ok(entries)) => {
                             for (left, right, result) in entries {
                                 if left == right {
@@ -1288,11 +1424,7 @@ fn collision_report(
                             }
                         }
                         Ok(Err(failure)) => {
-                            failures.push(if cancelled.load(Ordering::Acquire) {
-                                json!({"reason": "exact_collision_cancelled"})
-                            } else {
-                                failure.evidence()
-                            });
+                            failures.push(failure.cancel_remaining(&cancelled));
                             break;
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1383,8 +1515,86 @@ fn collision_report(
 }
 
 #[cfg(test)]
+#[path = "../../ketchup-model/tests/support/integration_support.rs"]
+mod integration_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lost_parallel_receiver_cancels_workers_and_joins() {
+        let _turn = super::integration_support::file_turn();
+        let path = crate::evaluation::exact_worker_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+            .expect("native exact worker required");
+        let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
+        let applied = session.apply_rule_program(
+            ketchup_model::document::RuleProgramSource {
+                file_name: "cancel.star".into(),
+                source: "for i in range(20):\n    p=box('part '+str(i),(100,100,18),at=(i*200,0,0))\n    for j in range(32):\n        hole(p,'z+',at=(10+(j%8)*10,10+(j//8)*20),diameter=4,depth=8)\n".into(),
+                overrides: BTreeMap::new(),
+            }, false).unwrap();
+        let mut graphs: Vec<_> = applied
+            .snapshot
+            .occurrences()
+            .map(|occurrence| {
+                let definition = applied
+                    .snapshot
+                    .definition(occurrence.definition_id())
+                    .unwrap();
+                ExactBRepGraph::from_snapshot(
+                    &applied.snapshot,
+                    definition.id(),
+                    *definition.feature_ids().last().unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(graphs.len(), 20);
+        // Fail the first range before native loading; the other has real drilled bodies to build.
+        graphs[0].graph_digest = "invalid graph identity".into();
+        let pairs: Vec<_> = (0..graphs.len())
+            .map(|index| {
+                (
+                    index,
+                    index,
+                    ExactPairCandidate {
+                        left_graph: index,
+                        right_graph: index,
+                        left_transform: *ketchup_model::document::Transform::identity().matrix(),
+                        right_transform: *ketchup_model::document::Transform::identity().matrix(),
+                    },
+                )
+            })
+            .collect();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let (finished, done) = mpsc::channel();
+        let coordinator = std::thread::spawn(move || {
+            send_exact_pair_batches(
+                Some(&path),
+                &pairs,
+                &graphs,
+                &BTreeMap::new(),
+                0.01,
+                &worker_cancelled,
+                &tx,
+            );
+            finished.send(()).unwrap();
+        });
+        done.recv_timeout(Duration::from_secs(15))
+            .expect("cancelled workers must terminate and join");
+        coordinator.join().unwrap();
+        assert!(cancelled.load(Ordering::Acquire));
+        assert_eq!(
+            session.snapshot().scene_query(),
+            applied.snapshot.scene_query()
+        );
+    }
 
     #[test]
     fn pair_failures_report_their_kind_and_keep_the_worker_cause() {

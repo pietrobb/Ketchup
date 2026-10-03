@@ -79,6 +79,20 @@ fn descendants(model: &ProgramModel, name: &str) -> BTreeSet<String> {
 
 fn capture(model: &ProgramModel, name: &str) -> anyhow::Result<ProgramComponent> {
     let names = descendants(model, name);
+    for joint in &model.joints {
+        if joint.parts.iter().all(|part| names.contains(part))
+            && joint
+                .links
+                .iter()
+                .flat_map(|link| &link.hardware_parts)
+                .any(|part| !names.contains(part))
+        {
+            anyhow::bail!(
+                "component {name:?}: joint {:?} links hardware outside its members; include the physical hardware in the component",
+                joint.name
+            );
+        }
+    }
     Ok(ProgramComponent {
         name: name.to_owned(),
         parts: model
@@ -143,6 +157,14 @@ fn instance_joint(joint: &Joint, instance: &ProgramInstance) -> Joint {
     joint.parts = joint
         .parts
         .map(|name| format!("{}/{}", instance.name, name));
+    for link in &mut joint.links {
+        for operation in &mut link.operations {
+            operation.part = format!("{}/{}", instance.name, operation.part);
+        }
+        for part in &mut link.hardware_parts {
+            *part = format!("{}/{}", instance.name, part);
+        }
+    }
     let point = |p| {
         let rotated = frame::apply(&instance.rotation, p);
         std::array::from_fn(|axis| rotated[axis] + instance.at_mm[axis])

@@ -17,8 +17,9 @@ use std::{
 };
 
 const DEFAULT_WAIT: Duration = Duration::from_secs(35);
-/// The window may settle undecided overlaps exactly before it answers (20 s + grace).
-const APPLY_PROGRAM_WAIT: Duration = Duration::from_secs(45);
+/// The host owns the job budget; allow delivery after its response deadline.
+const APPLY_PROGRAM_WAIT: Duration =
+    crate::PROGRAM_RESPONSE_WAIT.saturating_add(Duration::from_secs(5));
 /// On top of apply_and_verify's own `timeout_ms`; exceeds the window's 15 s publish margin.
 const APPLY_AND_VERIFY_MARGIN: Duration = Duration::from_secs(20);
 const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
@@ -164,8 +165,32 @@ impl Tools {
     }
 
     fn program(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
-        match take_action(&mut args, &["read", "apply", "docs"])?.as_str() {
-            "read" => self.send("program", args, DEFAULT_WAIT),
+        match take_action(
+            &mut args,
+            &["read", "apply", "patch", "report", "docs", "validate"],
+        )?
+        .as_str()
+        {
+            "read" => {
+                let mode = take_text(&mut args, "mode")?.unwrap_or_else(|| "source".into());
+                match mode.as_str() {
+                    "full" => self.send("program", args, DEFAULT_WAIT),
+                    "source" | "selection" => {
+                        args.insert("selection_context".into(), json!(mode == "selection"));
+                        self.send("program_context", args, DEFAULT_WAIT)
+                    }
+                    _ => Err(ToolError::new(
+                        "invalid_arguments",
+                        "Read mode must be source, selection or full.",
+                    )),
+                }
+            }
+            "patch" => self.send("patch_program", args, APPLY_PROGRAM_WAIT),
+            "report" => {
+                args.entry("limit").or_insert(json!(50));
+                self.send("program_report", args, DEFAULT_WAIT)
+            }
+            "validate" => self.send("validate_program", args, APPLY_PROGRAM_WAIT),
             "apply" => {
                 if let Some(path) = take_text(&mut args, "source_path")? {
                     if args.contains_key("source") {
@@ -181,8 +206,12 @@ impl Tools {
             }
             _ => {
                 let name = take_text(&mut args, "name")?;
+                let detail = take_text(&mut args, "detail")?.unwrap_or_else(|| "concise".into());
                 no_more(&args)?;
-                Ok(ToolOutput::text(&docs::library(name.as_deref())?))
+                Ok(ToolOutput::text(&docs::library_detail(
+                    name.as_deref(),
+                    &detail,
+                )?))
             }
         }
     }
@@ -198,9 +227,11 @@ impl Tools {
                 "detail",
                 "workset_create",
                 "workset_status",
+                "measure",
             ],
         )?;
         match action.as_str() {
+            "measure" => return self.send("measure_faces", args, APPLY_PROGRAM_WAIT),
             "operations" => rename(&mut args, "operation", "name"),
             "workset_status" => rename(&mut args, "workset_handle", "handle"),
             "query" | "workset_create" => {

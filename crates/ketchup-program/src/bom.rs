@@ -30,6 +30,9 @@ pub struct Operation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diameter_mm: Option<f64>,
     pub depth_mm: f64,
+    /// Drilling intent; omitted for pockets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub through: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -99,6 +102,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
                     position_mm: hole.at_mm.to_vec(),
                     diameter_mm: Some(hole.diameter_mm),
                     depth_mm: hole.depth_mm,
+                    through: Some(hole.through),
                 })
                 .chain(part.pockets().map(|pocket| Operation {
                     id: pocket.id.clone(),
@@ -107,6 +111,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
                     position_mm: pocket.rect_mm.to_vec(),
                     diameter_mm: None,
                     depth_mm: pocket.depth_mm,
+                    through: None,
                 }))
                 .collect(),
         })

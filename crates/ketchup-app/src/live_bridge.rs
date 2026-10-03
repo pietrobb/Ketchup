@@ -59,10 +59,16 @@ use std::{
 };
 
 pub mod bootstrap;
+mod busy;
 pub mod consent;
 mod image;
+mod program_access;
 mod program_check;
+pub use program_access::{ReportSection, SourceEdit};
+mod measurement;
 pub(crate) mod program_pick;
+mod program_validate;
+mod program_validation_summary;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -205,6 +211,23 @@ pub enum Request {
         #[serde(default)]
         expected: Option<Stamp>,
     },
+    ProgramContext {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        selection_context: bool,
+    },
+    PatchProgram {
+        expected: Stamp,
+        edits: Vec<SourceEdit>,
+    },
+    ProgramReport {
+        expected: Stamp,
+        section: ReportSection,
+        #[serde(default)]
+        offset: usize,
+        limit: usize,
+    },
     /// Evaluates a whole Starlark program and publishes only what changed as one Undo step.
     ApplyProgram {
         #[serde(default)]
@@ -217,6 +240,17 @@ pub enum Request {
         /// Replace a saved document that no program owns.
         #[serde(default)]
         replace_document: bool,
+    },
+    MeasureFaces {
+        expected: Stamp,
+        faces: [ketchup_application::measurement::FaceTarget; 2],
+        mode: measurement::MeasurementMode,
+        #[serde(default)]
+        direction: Option<[f64; 3]>,
+    },
+    ValidateProgram {
+        #[serde(default)]
+        expected: Option<Stamp>,
     },
     Undo {
         #[serde(default)]
@@ -402,8 +436,7 @@ program action=apply.";
 /// The user is holding the mouse in the window or typing into a focused field.
 /// A text field left focused in a window the user switched away from does not count.
 fn ui_busy(context: &egui::Context) -> bool {
-    context.is_using_pointer()
-        || (context.wants_keyboard_input() && context.input(|input| input.focused))
+    busy::sample_input(context).is_busy()
 }
 
 fn program_owned(app: &KetchupApp) -> bool {
@@ -471,7 +504,7 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
 /// `exact` is the exact collision check of the applied solids, when it ran.
 fn program_edit_result(
     edit: crate::program_edit::ProgramEdit,
-    report: &ketchup_program::Report,
+    (report, model): (&ketchup_program::Report, &ketchup_program::ProgramModel),
     before: &ketchup_model::document::Snapshot,
     after: &ketchup_model::document::Snapshot,
     stamp: &Stamp,
@@ -527,12 +560,16 @@ fn program_edit_result(
             "issues_total": report.issues.len(),
             "relations": &report.relations[..report.relations.len().min(MAX_REPORTED_RELATIONS)],
             "relations_total": report.relations.len(),
+            "bom": {"total_parts": report.bom.total_parts, "cut_list_groups": report.bom.cut_list.len(),
+                "hardware_items": report.bom.hardware.len(),
+                "machining_operations": report.bom.machining.iter().map(|part| part.operations.len()).sum::<usize>()},
+            "details": "program action=report with expected=after, section=cut_list/hardware/machining/relations/issues; follow next_offset until null",
             "params": report.params,
             "unused_overrides": report.unused_overrides,
             "log": log,
         },
         "geometry_evaluated": exact.as_ref().is_some_and(|exact| exact["state"] == "verified"),
-        "exact_collisions": exact,
+        "validation": program_validation_summary::summary(report, model, exact.as_ref()), "exact_collisions": exact,
     })
 }
 
@@ -543,7 +580,7 @@ pub(crate) fn take_error_details() -> Option<Value> {
 }
 
 const MAX_REPORTED_ISSUES: usize = 12;
-const MAX_REPORTED_RELATIONS: usize = 40;
+const MAX_REPORTED_RELATIONS: usize = 8;
 const MAX_REPORTED_PARTS: usize = 100;
 const MAX_ISSUE_BYTES: usize = 1024;
 
@@ -776,6 +813,7 @@ pub(crate) struct LiveBridge {
     next_proposal: u64,
     apply_and_verify_job: Option<ApplyAndVerifyJob>,
     program_check_job: Option<program_check::ProgramCheckJob>,
+    program_report: Option<(Stamp, ketchup_program::Report, &'static str)>,
     #[cfg(test)]
     apply_and_verify_fault: Option<ApplyAndVerifyFault>,
     batch_jobs: VecDeque<BatchJob>,
@@ -857,11 +895,7 @@ impl KetchupApp {
                     || bridge.apply_and_verify_job.is_some()
                     || bridge.program_check_job.is_some())
             {
-                failure(
-                    "busy",
-                    "A request of an earlier connection (another client, or this client before it reconnected) is still running in the window.",
-                    json!({}),
-                );
+                let _ = busy::reject_if_busy(&bridge.busy_jobs());
                 let _ = queued.reply.try_send(Response::error(queued.id, "busy"));
                 continue;
             }
@@ -916,7 +950,24 @@ impl KetchupApp {
                     );
                     continue;
                 }
-                request @ Request::ApplyProgram { .. } => {
+                Request::MeasureFaces {
+                    expected,
+                    faces,
+                    mode,
+                    direction,
+                } => {
+                    bridge.start_measurement(
+                        self, context, id, reply, cancelled, expected, faces, mode, direction,
+                    );
+                    continue;
+                }
+                Request::ValidateProgram { expected } => {
+                    bridge.start_queued_validate_program(
+                        self, context, id, reply, cancelled, expected,
+                    );
+                    continue;
+                }
+                request @ (Request::ApplyProgram { .. } | Request::PatchProgram { .. }) => {
                     bridge.start_queued_apply_program(
                         self, context, id, reply, cancelled, request, ui_busy,
                     );
@@ -1013,78 +1064,11 @@ impl LiveBridge {
         format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
     }
 
-    // Deliberately inspect raw state: validity-filtered preview helpers can hide stale human work.
-    fn busy(app: &KetchupApp) -> bool {
-        Self::busy_reason(app).is_some()
-    }
-    /// What in the window blocks a change right now, in words for the client.
-    fn busy_reason(app: &KetchupApp) -> Option<&'static str> {
-        let tool = app.tool_preview.is_some()
-            || app.push_pull.smart_proposal.is_some()
-            || app.push_pull.smart_planning.is_some()
-            || app.solid_tools.target.is_some()
-            || app.solid_tools.revolve.is_some()
-            || app.active_tool == ActiveTool::Helix
-            || app.solid_tools.loft_input_sections.is_some()
-            || app.solid_tools.pocket_editor_feature.is_some()
-            || app.parameter.editor_node.is_some()
-            || app.parameter.provenance.is_some();
-        let assistant = app.assistant.proposal.is_some()
-            || app.assistant.pending_execution.is_some()
-            || app.assistant.chat_task.is_some();
-        let gesture = app.gesture.drag.is_some()
-            || app.transform_gesture_active()
-            || app.camera.drag_active
-            || app.camera.wheel_active
-            || app.gesture.sketch.armed
-            || app.gesture.sketch.start.is_some()
-            || app.gesture.sketch.end.is_some()
-            || app.gesture.sketch.cursor.is_some()
-            || app.gesture.sketch.chain_origin.is_some()
-            || !app.gesture.sketch.chain_points.is_empty()
-            || !app.gesture.sketch.chain_items.is_empty()
-            || app.value_box.focus
-            || app.gesture.measure.start.is_some()
-            || app.gesture.measure.cursor.is_some()
-            || app.gesture.measure.end.is_some();
-        let preview = app.mesh_conversion_active()
-            || app.file.migration_review_plan.is_some()
-            || app.assembly_preview_pending()
-            || app.body_preview_pending()
-            || app.feature_history_preview_pending()
-            || app.face_workflow.xray_preview();
-        if tool {
-            Some(
-                "A tool or parameter editor is open in the window; the user must finish or cancel it (Escape).",
-            )
-        } else if assistant {
-            Some("The built-in Assistant in the window has a pending proposal or request.")
-        } else if gesture {
-            Some("The user is drawing, measuring, dragging or typing a value in the window.")
-        } else if app.modal.is_some() {
-            Some("A dialog is open in the window; the user must close it.")
-        } else if preview || Self::fixture_busy(app) {
-            Some("The window is computing a preview or conversion.")
-        } else {
-            None
-        }
-    }
-    fn fixture_busy(_app: &KetchupApp) -> bool {
-        false
-    }
     fn available(app: &KetchupApp, ui_busy: bool) -> Result<(), &'static str> {
         if app.file.review_candidate.is_some() {
             return Err("read_only_document");
         }
-        let reason = if ui_busy {
-            Some("The user is typing or holding the mouse button in the window.")
-        } else {
-            Self::busy_reason(app)
-        };
-        match reason {
-            Some(reason) => Err(failure("busy", reason, json!({}))),
-            None => Ok(()),
-        }
+        busy::reject_if_busy(&busy::blockers(app, ui_busy))
     }
     /// Every document mutation (including Undo/Redo and Open) draws a fresh
     /// process-unique epoch, so the epoch alone detects any intervening change.
@@ -1296,10 +1280,20 @@ impl LiveBridge {
                 return Err("unsupported_selection_scope");
             }
         }
+        Self::visible_root_ids(app, ids)
+    }
+
+    fn visible_root_ids(app: &KetchupApp, ids: &[u64]) -> Result<(), &'static str> {
+        let snapshot = app.document.current();
+        for id in ids {
+            snapshot
+                .occurrence(OccurrenceId(*id))
+                .ok_or("entity_not_found")?;
+        }
         let selectable: BTreeSet<_> = app
             .active_scene_query()
             .into_iter()
-            .filter(|o| o.visible && o.parent.is_none() && o.instance_path.is_root())
+            .filter(|o| o.visible && o.instance_path.is_root())
             .map(|o| o.instance_path.root_occurrence().0)
             .collect();
         if ids.iter().any(|id| !selectable.contains(id)) {
@@ -2012,13 +2006,13 @@ impl LiveBridge {
             Request::Status {} => Ok(
                 json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
                 "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata","variable_size","selection_framing","detail_selection_framing"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen","framing_modes":["viewport","selection","detail_selection"],"default_framing":"viewport","min_side_px":MIN_IMAGE_SIDE_PX,"max_side_px":MAX_IMAGE_SIDE_PX,"default_side_px":512},
-                "busy":ui_busy || Self::busy(app),"read_only":app.file.review_candidate.is_some(),
+                "busy":!self.busy_diagnostics(app, ui_busy).is_empty(),"busy_reasons":self.busy_diagnostics(app, ui_busy),"read_only":app.file.review_candidate.is_some(),
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "selected_context":Self::selected_context(app),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","apply_program","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
+                "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::Operations { name } => {
@@ -2227,13 +2221,12 @@ impl LiveBridge {
                 self.apply_and_verify_fault,
             )
             .map_err(PlanRejection::into_code),
-            Request::Program { expected } => {
-                Self::guard(app, &expected)?;
-                Ok(app.program_source_view().unwrap_or_else(|| {
-                    json!({"source": null, "hint": "No Starlark program owns this document. A typed edit (apply_and_verify, commit) detaches the program: undo it to get the program back. apply_program creates a program in an empty document; replace_document=true replaces a saved one."})
-                }))
-            }
-            request @ Request::ApplyProgram { .. } => self
+            request @ (Request::Program { .. }
+            | Request::MeasureFaces { .. }
+            | Request::ValidateProgram { .. }
+            | Request::ProgramContext { .. }
+            | Request::ProgramReport { .. }) => self.read_program_request(app, request, cancelled),
+            request @ (Request::ApplyProgram { .. } | Request::PatchProgram { .. }) => self
                 .apply_program(app, request, ui_busy, cancelled)
                 .map(|applied| applied.result(None)),
             Request::Undo { expected } => {
@@ -2313,9 +2306,11 @@ impl LiveBridge {
             } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                Self::selection(app)?;
+                if !app.selection.edit_context.is_empty() {
+                    return Err("unsupported_selection_scope");
+                }
                 let ids = Self::validate_ids(&occurrence_ids)?;
-                Self::root_ids(app, &ids)?;
+                Self::visible_root_ids(app, &ids)?;
                 let snapshot = app.document.current();
                 if ids
                     .iter()

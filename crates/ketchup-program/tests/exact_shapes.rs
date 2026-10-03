@@ -32,7 +32,7 @@ fn boxes_alone_take_a_leg_under_the_corner_of_a_round_seat_as_support() {
         exact_candidates(&evaluated.model)
             .into_iter()
             .collect::<Vec<_>>(),
-        ["seat"]
+        ["leg", "seat"]
     );
 }
 
@@ -143,4 +143,42 @@ fn a_part_grown_by_push_pull_into_a_neighbour_goes_to_the_exact_check() {
         "{:#?}",
         report.issues
     );
+}
+
+#[test]
+fn machined_boxes_use_the_measured_gap_instead_of_the_uncut_box() {
+    for machining in [
+        "hole(p, 'z+', at=(50,50), diameter=20, depth=12)",
+        "pocket(p, 'z+', rect=(40,40,60,60), depth=12)",
+    ] {
+        let (evaluated, mut report) = checked(&format!(
+            "p=box('p',(100,100,18))\n{machining}\n\
+             q=box('q',(4,4,4),at=(48,48,10))\nexpect_gap(p,q,4)\n"
+        ));
+        assert_eq!(
+            exact_candidates(&evaluated.model)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["p", "q"],
+            "{machining}"
+        );
+        let mut exact = ExactShapes::default();
+        exact.insert(
+            "p",
+            "q",
+            ExactPair {
+                distance_mm: Some(4.0),
+                ..ExactPair::default()
+            },
+        );
+        report.refine(&evaluated.model, &exact);
+        assert!(
+            !kinds(&report).iter().any(|kind| matches!(
+                *kind,
+                "expectation_failed" | "collision" | COLLISION_UNVERIFIED
+            )),
+            "{machining}: {:#?}",
+            report.issues
+        );
+    }
 }

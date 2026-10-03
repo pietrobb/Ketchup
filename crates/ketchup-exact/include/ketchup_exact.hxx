@@ -25,6 +25,12 @@ NativePairQuery query_body_pair_native(
     const class NativeOperationResult& left,
     const class NativeOperationResult& right) noexcept;
 
+NativePairQuery query_face_pair_native(
+    const class NativeOperationResult& left, std::uint32_t left_face,
+    rust::Slice<const double> left_matrix,
+    const class NativeOperationResult& right, std::uint32_t right_face,
+    rust::Slice<const double> right_matrix) noexcept;
+
 class NativeOperationResult final {
 public:
   struct Impl;

@@ -8,6 +8,7 @@
 //! of the boxes.
 
 use crate::eval::TOLERANCE_MM;
+use crate::expect::Measure;
 use crate::model::{Part, ProgramModel};
 use crate::validate;
 use serde::Serialize;
@@ -95,18 +96,38 @@ impl ExactShapes {
 /// Whether the part's solid is exactly its box.
 #[must_use]
 pub fn box_is_solid(part: &Part) -> bool {
-    validate::is_box(part) && part.booleans().next().is_none()
+    validate::is_box(part) && part.operations.is_empty()
 }
 
-/// Parts whose solid is not its box and whose box touches or overlaps
-/// another part's box: every pair the exact solids must settle has one.
+/// Explicit distance expectations need native measurements regardless of machining,
+/// even when bounds prove that the parts are separated.
+#[must_use]
+pub fn measured_pairs(model: &ProgramModel) -> BTreeSet<(String, String)> {
+    model
+        .expectations
+        .iter()
+        .flat_map(|expectation| &expectation.terms)
+        .filter_map(|(_, term)| {
+            let Measure::Distance { a, b } = term else {
+                return None;
+            };
+            model.part(a).zip(model.part(b))?;
+            Some(key(a, b))
+        })
+        .collect()
+}
+
+/// Parts requiring native collision or explicitly requested distance checks.
 #[must_use]
 pub fn exact_candidates(model: &ProgramModel) -> BTreeSet<String> {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..parts.len()).collect();
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
-    let mut names = BTreeSet::new();
+    let mut names: BTreeSet<String> = measured_pairs(model)
+        .into_iter()
+        .flat_map(|(a, b)| [a, b])
+        .collect();
     for (position, &left) in order.iter().enumerate() {
         for &right in &order[position + 1..] {
             if bounds[right].0[0] > bounds[left].1[0] + TOLERANCE_MM {

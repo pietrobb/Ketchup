@@ -271,7 +271,11 @@ fn relate<'a>(
         relation.cut_in = cut_in;
     }
     match exact.decides(a, b) {
-        Some(pair) if !pair.penetrating() && !intended_overlap(&relation) => {
+        Some(pair)
+            if !pair.penetrating()
+                && (!intended_overlap(&relation)
+                    || pair.gap_mm().is_some_and(|gap| gap > TOLERANCE_MM)) =>
+        {
             Some(exact_relation(a, b, relation, pair))
         }
         _ => Some(relation),

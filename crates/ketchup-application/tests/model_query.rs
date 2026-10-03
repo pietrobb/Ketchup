@@ -1375,6 +1375,7 @@ fn edit_context_resolves_exact_nested_instance_paths_without_mutating_snapshot()
 
 #[test]
 fn edit_context_identifies_the_v9_rear_panel_in_one_bounded_call() {
+    let _turn = crate::integration_support::file_turn();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/fast_assembly/nightstand_v9_retention.ketchup");
     let mut session = DocumentSession::open(path, SessionSettings::default()).unwrap();
@@ -1430,7 +1431,51 @@ fn edit_context_identifies_the_v9_rear_panel_in_one_bounded_call() {
     );
     let joinery = targets[0]["joinery"]["items"].as_array().unwrap();
     assert!(joinery.iter().any(|item| item["type"] == "pin_joint"));
+    let topology_query = ModelQuery::default();
+    let mut unnamed_faces = 0;
     for target in targets {
+        assert_eq!(target["stable_faces"]["scope"], "named_faces");
+        let mut page_request = request(EntityKind::Faces);
+        page_request.definition_id = target["definition"]["id"].as_u64();
+        page_request.limit = 5;
+        let mut paged_faces = Vec::new();
+        loop {
+            let page = topology_query
+                .page_with_topology(&snapshot, session.topology_results(), &page_request)
+                .unwrap();
+            bounded(&page);
+            let items = page["items"].as_array().unwrap();
+            assert!(!items.is_empty());
+            paged_faces.extend(items.iter().cloned());
+            if page["complete"] == true {
+                assert_eq!(
+                    paged_faces.len() as u64,
+                    page["total_matches"].as_u64().unwrap()
+                );
+                assert!(page["next_cursor"].is_null());
+                break;
+            }
+            page_request.cursor = Some(page["next_cursor"].as_str().unwrap().to_owned());
+        }
+        let named_references = paged_faces
+            .iter()
+            .filter(|face| !face["semantic_role"].as_str().unwrap().is_empty())
+            .map(|face| face["reference_id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        unnamed_faces += paged_faces
+            .iter()
+            .filter(|face| face["semantic_role"] == "")
+            .count();
+        let context_references = target["stable_faces"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|face| {
+                assert!(!face["semantic_role"].as_str().unwrap().is_empty());
+                face["reference_id"].as_str().unwrap()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(context_references, named_references);
         assert_eq!(target["stable_faces"]["status"], "supported");
         assert_eq!(target["stable_faces"]["complete"], true);
         assert!(
@@ -1440,6 +1485,7 @@ fn edit_context_identifies_the_v9_rear_panel_in_one_bounded_call() {
                     && faces.iter().all(|face| face["reference_id"].is_string()))
         );
     }
+    assert!(unnamed_faces > 0, "unnamed exact faces remain queryable");
     assert!(
         targets[1]["stable_faces"]["items"]
             .as_array()

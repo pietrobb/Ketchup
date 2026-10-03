@@ -728,7 +728,23 @@ fn with_part<R>(
         .chain(model.tools.iter_mut())
         .find(|part| part.name == name)
         .ok_or_else(|| anyhow::anyhow!("unknown part {name:?}; create it with box() first"))?;
-    f(part)
+    let (old_at, old_rotation) = (part.at_mm, part.rotation);
+    let result = f(part)?;
+    let (new_at, new_rotation) = (part.at_mm, part.rotation);
+    if (old_at, old_rotation) != (new_at, new_rotation) {
+        let rotation = frame::multiply(&new_rotation, &frame::transposed(&old_rotation));
+        for joint in &mut model.joints {
+            // Anchor once, not once per endpoint when both parts are moved.
+            if joint.parts[0] == name {
+                for point in &mut joint.fasteners_mm {
+                    let local = std::array::from_fn(|axis| point[axis] - old_at[axis]);
+                    let moved = frame::apply(&rotation, local);
+                    *point = std::array::from_fn(|axis| new_at[axis] + moved[axis]);
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn check_part_name(name: &str) -> anyhow::Result<()> {
@@ -1266,8 +1282,10 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
 }
 
 mod assemblies;
+mod conditions;
 mod continuity;
 mod joints;
+mod machining;
 mod support;
 
 #[starlark_module]
@@ -1976,52 +1994,11 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] world: Option<Value<'v>>,
         #[starlark(require = named)] diameter: Value<'v>,
         #[starlark(require = named)] depth: Value<'v>,
+        #[starlark(require = named, default = false)] through: bool,
         #[starlark(require = named)] id: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let heap = eval.heap();
-        let name = part_name(part, heap)?;
-        let face = face_name(face, heap, Some(&name))?;
-        let diameter = number(diameter, "diameter")?;
-        let depth = number(depth, "depth")?;
-        if diameter <= 0.0 || depth <= 0.0 {
-            anyhow::bail!("hole in {name:?}: diameter and depth must be positive");
-        }
-        let at = given(at)
-            .map(|at| numbers::<2>(at, heap, "at"))
-            .transpose()?;
-        let world = given(world)
-            .map(|world| numbers::<3>(world, heap, "world"))
-            .transpose()?;
-        let id = text(id, "id")?;
-        let state = state(eval)?;
-        record_source(eval, &state, &[&name]);
-        with_part(&state, &name, |part| {
-            let frame = part
-                .machining_frame(&face)
-                .map_err(|error| anyhow::anyhow!("hole in {name:?}: {error}"))?;
-            let at = match (at, world) {
-                (Some(at), None) => at,
-                (None, Some(world)) => frame.coordinates(part.to_local(world)),
-                _ => anyhow::bail!(
-                    "hole in {name:?}: give exactly one of at=(u, v) or world=(x, y, z)"
-                ),
-            };
-            let id = id.unwrap_or_else(|| format!("h{}", part.holes().count() + 1));
-            add_operation(
-                part,
-                ProgramOperation::Hole(Hole {
-                    id,
-                    face,
-                    at_mm: at,
-                    entry_mm: frame.point(at),
-                    inward: frame.normal_at(at).map(|value| -value),
-                    diameter_mm: diameter,
-                    depth_mm: depth,
-                }),
-            )?;
-            Ok(NoneType)
-        })
+    ) -> anyhow::Result<Value<'v>> {
+        machining::drill(part, face, at, world, diameter, depth, through, id, eval)
     }
 
     /// Mills a rectangular pocket into the flat `face` (a name or a face()
@@ -2266,6 +2243,7 @@ fn globals() -> Globals {
     ])
     .with(builtins)
     .with(assemblies::builtins)
+    .with(conditions::builtins)
     .with(continuity::builtins)
     .with(joints::builtins)
     .with(support::builtins)
@@ -2349,6 +2327,7 @@ pub fn evaluate(
     })?;
     let model = state.model.into_inner();
     assemblies::validate(&model).map_err(|error| evaluation_error("evaluation_error", error))?;
+    joints::validate(&model).map_err(|error| evaluation_error("evaluation_error", error))?;
     continuity::validate(&model).map_err(|error| evaluation_error("evaluation_error", error))?;
     let unused_overrides = overrides
         .keys()

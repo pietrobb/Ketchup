@@ -475,6 +475,8 @@ pub enum GeneralMachiningGeometry {
         frame: GeneralMachiningFrame,
         center_mm: [f64; 2],
         diameter_mm: f64,
+        /// ThroughAll intervals describe Boolean cutters, not machine overtravel.
+        through: bool,
         start_mm: f64,
         end_mm: f64,
     },
@@ -1211,7 +1213,9 @@ impl GeneralFabricationProjection {
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let processings = machining
                 .iter()
-                .map(|operation| btlx_processings(operation, options))
+                .map(|operation| {
+                    btlx_processings(operation, options, [width_mm, height_mm, length_mm])
+                })
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .flatten()
@@ -1426,11 +1430,14 @@ struct BtlxFreeContour {
 fn btlx_processings(
     operation: &GeneralManufacturingOperation,
     options: BtlxExportOptions,
+    stock_dimensions_mm: [f64; 3],
 ) -> Result<Vec<BtlxProcessing>, GeneralFabricationError> {
     match operation.kind {
-        GeneralManufacturingKind::CircularDrill => btlx_drilling(&operation.machining)
-            .map(|drilling| vec![BtlxProcessing::Drilling(drilling)])
-            .ok_or(GeneralFabricationError::ExportBlocked),
+        GeneralManufacturingKind::CircularDrill => {
+            btlx_drilling(&operation.machining, stock_dimensions_mm)
+                .map(|drilling| vec![BtlxProcessing::Drilling(drilling)])
+                .ok_or(GeneralFabricationError::ExportBlocked)
+        }
         GeneralManufacturingKind::ThroughCut
         | GeneralManufacturingKind::ProfileCut
         | GeneralManufacturingKind::BooleanCut => {
@@ -1533,11 +1540,17 @@ fn btlx_edge_saw_contours(
     Some(result)
 }
 
-fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
+fn btlx_drilling(
+    geometry: &GeneralMachiningGeometry,
+    stock_dimensions_mm: [f64; 3],
+) -> Option<BtlxDrilling> {
+    // Only depth-limited drilling is verified here. ThroughAll's padded Boolean
+    // cutter interval must never become an authorized machine drilling depth.
     let GeneralMachiningGeometry::CircularDrill {
         frame,
         center_mm,
         diameter_mm,
+        through: false,
         start_mm,
         end_mm,
     } = geometry
@@ -1553,6 +1566,30 @@ fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
         return None;
     }
     let depth_mm = end_mm - start_mm;
+    // Check the directed distance to the stock exit, not its smallest dimension
+    // or the occurrence's world bounds. This also covers offset/angled frames.
+    let tolerance = stock_dimensions_mm.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
+    for (axis, extent) in stock_dimensions_mm.into_iter().enumerate() {
+        let entry = frame.origin_mm[axis]
+            + frame.x_axis[axis] * center_mm[0]
+            + frame.y_axis[axis] * center_mm[1]
+            + frame.normal[axis] * start_mm;
+        let end = entry + frame.normal[axis] * depth_mm;
+        let tip_radius = diameter_mm / 2.0 * frame.x_axis[axis].hypot(frame.y_axis[axis]);
+        if !extent.is_finite()
+            || extent <= 0.0
+            || !entry.is_finite()
+            || !end.is_finite()
+            || entry < -tolerance
+            || entry > extent + tolerance
+            || end < -tolerance
+            || end > extent + tolerance
+            || (frame.normal[axis] > 0.0 && end + tip_radius >= extent - tolerance)
+            || (frame.normal[axis] < 0.0 && end - tip_radius <= tolerance)
+        {
+            return None;
+        }
+    }
     let reference_point_mm = btlx_part_coordinate(std::array::from_fn(|axis| {
         frame.origin_mm[axis] + frame.normal[axis] * start_mm
     }));
@@ -1941,6 +1978,7 @@ fn woodwop_pin_macro(hole: &PinHole, stock_frame: WoodwopStockFrame) -> Option<S
             },
             center_mm: [0.0, 0.0],
             diameter_mm: hole.diameter_mm,
+            through: false,
             start_mm: 0.0,
             end_mm: hole.depth_mm,
         },
@@ -2029,6 +2067,7 @@ fn woodwop_drilling_macro(
         frame,
         center_mm,
         diameter_mm,
+        through: false,
         start_mm,
         end_mm,
     } = geometry
@@ -2962,7 +3001,7 @@ fn graph_manufacturing_operations(
             return None;
         }
         let profile = graph.profiles.get(profile.0 as usize)?;
-        let mut machining = profile_cut_geometry(profile, interval)?;
+        let mut machining = profile_cut_geometry(profile, interval, depth_bits.is_none())?;
         if depth_bits.is_some() && blind_cut_enters_at_end(graph, stock, profile, interval)? {
             machining = entering_from_end(machining);
         }
@@ -3021,6 +3060,11 @@ fn graph_manufacturing_operations(
     if boolean_target != target.id || boolean_tool != tool.id || target.id == tool.id {
         return None;
     }
+    // A circular Boolean tool does not carry drilling intent (including holes
+    // after other operations or on non-cuboid bodies). Do not infer a machine bore.
+    if circular_profile(&graph.profiles.get(tool_profile.0 as usize)?.geometry).is_some() {
+        return None;
+    }
     operations.push(GeneralManufacturingOperation {
         stable_operation_id: format!(
             "definition-{}/feature-{}/{}",
@@ -3040,6 +3084,7 @@ fn graph_manufacturing_operations(
         machining: profile_cut_geometry(
             graph.profiles.get(tool_profile.0 as usize)?,
             tool_interval,
+            false,
         )?,
         source: source.clone(),
     });
@@ -3123,6 +3168,7 @@ fn timber_stock_geometry(
 fn profile_cut_geometry(
     profile: &ExactBRepProfile,
     interval: ExactBRepLinearInterval,
+    through: bool,
 ) -> Option<GeneralMachiningGeometry> {
     let frame = machining_frame(profile, interval.direction())?;
     if let Some((center_mm, radius_mm)) = circular_profile(&profile.geometry) {
@@ -3130,6 +3176,7 @@ fn profile_cut_geometry(
             frame,
             center_mm,
             diameter_mm: radius_mm * 2.0,
+            through,
             start_mm: interval.start_mm(),
             end_mm: interval.end_mm(),
         });
@@ -3219,12 +3266,14 @@ fn entering_from_end(machining: GeneralMachiningGeometry) -> GeneralMachiningGeo
             frame,
             center_mm,
             diameter_mm,
+            through,
             start_mm,
             end_mm,
         } => GeneralMachiningGeometry::CircularDrill {
             frame: flip_frame(frame),
             center_mm: flip(center_mm),
             diameter_mm,
+            through,
             start_mm: -end_mm,
             end_mm: -start_mm,
         },
@@ -3543,11 +3592,12 @@ fn append_machining_detail(
             diameter_mm,
             start_mm,
             end_mm,
+            through,
             ..
         } => {
             let center = point(*center_mm);
             svg.push_str(&format!(
-                "<circle id=\"{}/geometry\" cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">circular-drill: center=({}, {}) mm, diameter={} mm, depth={} mm</text>\n",
+                "<circle id=\"{}/geometry\" cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">circular-drill: center=({}, {}) mm, diameter={} mm, {}</text>\n",
                 operation.stable_operation_id,
                 format_number(center[0]),
                 format_number(center[1]),
@@ -3557,7 +3607,11 @@ fn append_machining_detail(
                 format_number(center_mm[0]),
                 format_number(center_mm[1]),
                 format_number(*diameter_mm),
-                format_number((end_mm - start_mm).abs())
+                if *through {
+                    "through-all (Boolean cutter interval, not machine depth)".to_owned()
+                } else {
+                    format!("depth={} mm", format_number((end_mm - start_mm).abs()))
+                }
             ));
         }
         // Stock is the blank the operations cut, not a machining: it has no detail.
@@ -3613,8 +3667,9 @@ fn machining_token(geometry: &GeneralMachiningGeometry) -> String {
             diameter_mm,
             start_mm,
             end_mm,
+            through,
         } => format!(
-            "circular-drill:frame({}):center({},{}):diameter({}):interval({},{})",
+            "circular-drill:frame({}):center({},{}):diameter({}):interval({},{}):through({through})",
             frame_token(frame),
             format_number(center_mm[0]),
             format_number(center_mm[1]),
@@ -3708,8 +3763,10 @@ fn push_machining_geometry(bytes: &mut Vec<u8>, geometry: &GeneralMachiningGeome
             diameter_mm,
             start_mm,
             end_mm,
+            through,
         } => {
             bytes.push(2);
+            bytes.push(u8::from(*through));
             push_machining_frame(bytes, frame);
             push_f64_array(bytes, center_mm);
             bytes.extend_from_slice(&diameter_mm.to_bits().to_le_bytes());
@@ -4391,6 +4448,7 @@ mod tests {
             frame: identity_machining_frame(),
             center_mm: [50.0, 25.0],
             diameter_mm: 10.0,
+            through: false,
             start_mm: 0.0,
             end_mm: 50.0,
         };
@@ -4416,6 +4474,7 @@ mod tests {
             },
             center_mm: [25.0, 50.0],
             diameter_mm: 5.0,
+            through: false,
             start_mm: 0.0,
             end_mm: 12.0,
         };
@@ -4440,6 +4499,7 @@ mod tests {
             },
             center_mm: [25.0, 25.0],
             diameter_mm: 5.0,
+            through: false,
             start_mm: 0.0,
             end_mm: 12.0,
         };
@@ -4449,6 +4509,7 @@ mod tests {
             frame: identity_machining_frame(),
             center_mm: [50.0, 25.0],
             diameter_mm: 5.0,
+            through: false,
             start_mm: 0.0,
             end_mm: 12.0,
         };
@@ -4560,10 +4621,11 @@ mod tests {
             frame: identity_machining_frame(),
             center_mm: [50.0, 25.0],
             diameter_mm: 10.0,
+            through: false,
             start_mm: 10.0,
             end_mm: 60.0,
         };
-        let drilling = btlx_drilling(&valid).unwrap();
+        let drilling = btlx_drilling(&valid, [100.0, 50.0, 1000.0]).unwrap();
         assert_eq!(drilling.reference_point_mm, [10.0, 0.0, 0.0]);
         assert_eq!(drilling.x_vector, [0.0, 1.0, 0.0]);
         assert_eq!(drilling.y_vector, [0.0, 0.0, 1.0]);
@@ -4585,7 +4647,7 @@ mod tests {
             unreachable!()
         };
         *end_mm = *start_mm;
-        assert_eq!(btlx_drilling(&zero_depth), None);
+        assert_eq!(btlx_drilling(&zero_depth, [100.0, 50.0, 1000.0]), None);
 
         let mut invalid_diameter = valid.clone();
         let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } = &mut invalid_diameter
@@ -4593,21 +4655,82 @@ mod tests {
             unreachable!()
         };
         *diameter_mm = 50_000.000_000_001;
-        assert_eq!(btlx_drilling(&invalid_diameter), None);
+        assert_eq!(
+            btlx_drilling(&invalid_diameter, [100.0, 50.0, 1000.0]),
+            None
+        );
 
         let mut invalid_center = valid.clone();
         let GeneralMachiningGeometry::CircularDrill { center_mm, .. } = &mut invalid_center else {
             unreachable!()
         };
         *center_mm = [100_000.000_000_001, 25.0];
-        assert_eq!(btlx_drilling(&invalid_center), None);
+        assert_eq!(btlx_drilling(&invalid_center, [100.0, 50.0, 1000.0]), None);
 
         let mut invalid_frame = valid;
         let GeneralMachiningGeometry::CircularDrill { frame, .. } = &mut invalid_frame else {
             unreachable!()
         };
         frame.x_axis = [2.0, 0.0, 0.0];
-        assert_eq!(btlx_drilling(&invalid_frame), None);
+        assert_eq!(btlx_drilling(&invalid_frame, [100.0, 50.0, 1000.0]), None);
+    }
+
+    #[test]
+    fn btlx_blind_depth_uses_entry_and_direction_in_stock_coordinates() {
+        // X-directed drilling must use the 100 mm stock extent, not its 18 mm
+        // thickness. A shifted entry has only the remaining stock available.
+        let mut drill = GeneralMachiningGeometry::CircularDrill {
+            frame: GeneralMachiningFrame {
+                origin_mm: [0.0, 50.0, 9.0],
+                x_axis: [0.0, 1.0, 0.0],
+                y_axis: [0.0, 0.0, 1.0],
+                normal: [1.0, 0.0, 0.0],
+            },
+            center_mm: [0.0, 0.0],
+            diameter_mm: 8.0,
+            through: false,
+            start_mm: 0.0,
+            end_mm: 50.0,
+        };
+        let dimensions = [100.0, 100.0, 18.0];
+        assert_eq!(btlx_drilling(&drill, dimensions).unwrap().depth, "50");
+        for depth in [100.0, 122.0] {
+            let GeneralMachiningGeometry::CircularDrill { end_mm, .. } = &mut drill else {
+                panic!("expected drill")
+            };
+            *end_mm = depth;
+            assert!(btlx_drilling(&drill, dimensions).is_none());
+        }
+        let GeneralMachiningGeometry::CircularDrill {
+            start_mm, end_mm, ..
+        } = &mut drill
+        else {
+            panic!("expected drill")
+        };
+        *start_mm = 75.0;
+        *end_mm = 110.0;
+        assert!(btlx_drilling(&drill, dimensions).is_none());
+        // An angled ray exits the top before traversing the full X extent.
+        let GeneralMachiningGeometry::CircularDrill {
+            frame,
+            start_mm,
+            end_mm,
+            ..
+        } = &mut drill
+        else {
+            panic!("expected drill")
+        };
+        let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+        frame.y_axis = [-diagonal, 0.0, diagonal];
+        frame.normal = [diagonal, 0.0, diagonal];
+        *start_mm = 0.0;
+        *end_mm = 6.0;
+        assert_eq!(btlx_drilling(&drill, dimensions).unwrap().depth, "6");
+        let GeneralMachiningGeometry::CircularDrill { end_mm, .. } = &mut drill else {
+            panic!("expected drill")
+        };
+        *end_mm = 10.0;
+        assert!(btlx_drilling(&drill, dimensions).is_none());
     }
 
     #[test]

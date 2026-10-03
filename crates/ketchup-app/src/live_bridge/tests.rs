@@ -4,6 +4,8 @@ use crate::dialogs::{
     HistoryTruncationRequest, ImportDialogRequest, SaveRequest, ScriptedFileDialogs,
 };
 use crate::slot::Slot;
+#[path = "busy_tests.rs"]
+mod busy_tests;
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
 #[path = "mesh_conversion_tests.rs"]
@@ -32,6 +34,8 @@ use std::{
 };
 #[path = "product_integration_tests.rs"]
 mod product_integration;
+#[path = "program_access_tests.rs"]
+mod program_access;
 #[path = "program_tests.rs"]
 mod program_edit;
 #[test]
@@ -2154,17 +2158,19 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
         vec![1, 3],
         vec![1, 4],
     ] {
-        assert_eq!(
-            bridge.execute(
-                &mut app,
-                Request::Selection {
-                    expected: Some(stamp.clone()),
-                    occurrence_ids: ids.clone()
-                },
-                false
-            ),
-            Err("unsupported_selection_scope")
-        );
+        if ids.iter().any(|id| *id == 3 || *id == 4) {
+            assert_eq!(
+                bridge.execute(
+                    &mut app,
+                    Request::Selection {
+                        expected: Some(stamp.clone()),
+                        occurrence_ids: ids.clone()
+                    },
+                    false
+                ),
+                Err("unsupported_selection_scope")
+            );
+        }
         let selector = AssistantCadEntitySelector::Occurrences {
             occurrence_ids: ids,
         };

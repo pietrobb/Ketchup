@@ -424,6 +424,14 @@ mod ffi {
             keep_y: f64,
             keep_z: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn query_face_pair_native(
+            left: &NativeOperationResult,
+            left_face: u32,
+            left_matrix: &[f64],
+            right: &NativeOperationResult,
+            right_face: u32,
+            right_matrix: &[f64],
+        ) -> NativePairQuery;
         fn query_body_pair_native(
             left: &NativeOperationResult,
             right: &NativeOperationResult,
