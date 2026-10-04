@@ -154,6 +154,7 @@ impl KetchupApp {
                 about_open: false,
                 command_search: String::new(),
             },
+            takeoff: app_state::TakeoffState::default(),
             saved_view_name: String::new(),
             section: None,
             digest,
@@ -811,6 +812,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ExportBlenderGlb);
                 self.menu_command(ui, AppCommand::ExportGeneralFabrication);
                 self.menu_command(ui, AppCommand::ExportWeldmentCutList);
+                self.menu_command(ui, AppCommand::ExportProjectDrawings);
                 self.menu_command(ui, AppCommand::ExportSheetMetalManufacturing);
                 self.menu_command(ui, AppCommand::ExportHomagMpr);
                 self.menu_command(ui, AppCommand::ReviewCamExport);
@@ -989,6 +991,8 @@ impl KetchupApp {
                     &mut self.panels.manual_cad_panels_visible,
                     self.catalog.text("dock-manual-cad"),
                 );
+                ui.separator();
+                self.menu_command(ui, AppCommand::MaterialTakeoff);
             });
             ui.menu_button(self.catalog.text("menu-help"), |ui| {
                 self.menu_command(ui, AppCommand::Shortcuts);
@@ -1189,10 +1193,10 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     dock_scroll_area().show(ui, |ui| {
-                        let layers_first = self.layers_panel_first();
+                        let layers_first = self.layers_lead_dock();
                         self.show_face_workflow_ui(ui);
                         if layers_first {
-                            self.show_layers_panel(ui, true);
+                            self.show_layers_section(ui, true);
                         }
                         self.show_program_source(ui);
                         self.show_manual_cad_panels(ui);
@@ -1206,7 +1210,7 @@ impl KetchupApp {
                         // Below the docked assistant so its input stays in view.
                         self.show_outliner_without_assistant(ui);
                         if !layers_first {
-                            self.show_layers_panel(ui, false);
+                            self.show_layers_section(ui, false);
                         }
                     });
                 });
@@ -1227,15 +1231,15 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     dock_scroll_area().show(ui, |ui| {
-                        let layers_first = self.layers_panel_first();
+                        let layers_first = self.layers_lead_dock();
                         self.show_face_workflow_ui(ui);
                         if layers_first {
-                            self.show_layers_panel(ui, true);
+                            self.show_layers_section(ui, true);
                         }
                         self.show_program_source(ui);
                         self.show_outliner_without_assistant(ui);
                         if !layers_first {
-                            self.show_layers_panel(ui, false);
+                            self.show_layers_section(ui, false);
                         }
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
@@ -1291,6 +1295,7 @@ impl KetchupApp {
         self.show_mesh_conversion_window(context);
         self.show_shortcuts_window(context);
         self.show_about_window(context);
+        self.show_material_takeoff_window(context);
         self.show_live_consent(context);
         self.poll_assistant_chat(context);
         self.finish_live_image_frame(context);

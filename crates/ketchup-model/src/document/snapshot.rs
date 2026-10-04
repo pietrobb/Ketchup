@@ -330,15 +330,26 @@ impl Snapshot {
         producer_feature_id: FeatureId,
     ) -> Option<Arc<ExactBRepGraph>> {
         let key = (self.revision_id, definition_id, producer_feature_id);
-        if let Some(graph) = self.product.exact_graphs.0.lock().ok()?.get(&key) {
+        if let Some(graph) = self.product.exact_graphs.graphs.lock().ok()?.get(&key) {
             return graph.clone();
         }
-        let graph = ExactBRepGraph::from_snapshot(self, definition_id, producer_feature_id)
-            .ok()
-            .map(Arc::new);
+        let inherited = self
+            .product
+            .exact_graphs
+            .inherited
+            .lock()
+            .ok()?
+            .get(&(definition_id, producer_feature_id))
+            .cloned();
+        let graph = match inherited {
+            Some(graph) => Some(Arc::new(graph.rebased_to(self))),
+            None => ExactBRepGraph::from_snapshot(self, definition_id, producer_feature_id)
+                .ok()
+                .map(Arc::new),
+        };
         self.product
             .exact_graphs
-            .0
+            .graphs
             .lock()
             .ok()?
             .insert(key, graph.clone());
@@ -369,8 +380,13 @@ impl Snapshot {
         self.product.document_id
     }
 
-    pub fn feature_dependency_graph(&self) -> Result<FeatureDependencyGraph, CanonicalError> {
-        FeatureDependencyGraph::from_product(&self.product)
+    /// The feature dependency graph, built at most once per snapshot.
+    pub fn feature_dependency_graph(&self) -> Result<Arc<FeatureDependencyGraph>, CanonicalError> {
+        self.product
+            .exact_graphs
+            .dependencies
+            .get_or_init(|| FeatureDependencyGraph::from_product(&self.product).map(Arc::new))
+            .clone()
     }
 
     pub fn solid_tool_feature_clone_count(

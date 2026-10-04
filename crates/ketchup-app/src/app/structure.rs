@@ -2949,8 +2949,8 @@ impl KetchupApp {
                     .iter()
                     .rev()
                     .find_map(|feature_id| {
-                        ExactBRepGraph::from_snapshot(snapshot, definition_id, *feature_id)
-                            .ok()?
+                        snapshot
+                            .exact_brep_graph(definition_id, *feature_id)?
                             .producer_bounds_mm()
                             .ok()?
                     })

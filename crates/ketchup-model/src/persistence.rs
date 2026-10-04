@@ -419,6 +419,24 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     snapshot_codec::encode(snapshot)
 }
 
+/// The encoding of `snapshot`, made once per immutable revision: every work-recovery
+/// write re-encodes the whole undo history, and a toggle must not cost all of it.
+fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot> {
+    let cache = &snapshot.product().exact_graphs.encoded;
+    if let Some((revision_id, encoded)) = cache.get()
+        && *revision_id == snapshot.revision_id()
+    {
+        return Arc::clone(encoded);
+    }
+    let bytes = save(snapshot);
+    let encoded = Arc::new(crate::document::EncodedSnapshot {
+        sha256: crate::graph::sha256_bytes(&bytes),
+        bytes,
+    });
+    let _ = cache.set((snapshot.revision_id(), Arc::clone(&encoded)));
+    encoded
+}
+
 fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
     snapshot
         .features()
@@ -471,7 +489,7 @@ fn append_revision_history_record(
     bytes: &mut Vec<u8>,
     revision: &Revision,
 ) -> Result<(), PersistenceError> {
-    let snapshot = save(revision.snapshot());
+    let snapshot = encoded_snapshot(revision.snapshot());
     push_u64(bytes, revision.id());
     push_string(bytes, revision.batch_digest());
     write_revision_origin(bytes, revision.origin());
@@ -494,9 +512,9 @@ fn append_revision_history_record(
     } else {
         push_u8(bytes, 0);
     }
-    push_u64(bytes, snapshot.len() as u64);
-    bytes.extend_from_slice(&crate::graph::sha256_bytes(&snapshot));
-    bytes.extend_from_slice(&snapshot);
+    push_u64(bytes, snapshot.bytes.len() as u64);
+    bytes.extend_from_slice(&snapshot.sha256);
+    bytes.extend_from_slice(&snapshot.bytes);
     if bytes.len() > MAX_SIDECAR_BYTES {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -587,7 +605,10 @@ fn save_container_entries(
     revision_history: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, PersistenceError> {
     let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
-    entries.insert("document.bin".to_owned(), (true, save(snapshot)));
+    entries.insert(
+        "document.bin".to_owned(),
+        (true, encoded_snapshot(snapshot).bytes.clone()),
+    );
     if let Some(revision_history) = revision_history {
         entries.insert("history.bin".to_owned(), (true, revision_history));
     }

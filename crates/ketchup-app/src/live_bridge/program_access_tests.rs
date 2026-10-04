@@ -350,3 +350,63 @@ fn report_pages_reconstruct_complete_model_bom_and_relations() {
     assert_eq!(app.document.current().scene_query(), before);
     assert_eq!(app.undo_step_count(), undo);
 }
+
+#[test]
+fn material_takeoff_report_counts_only_visible_layers_and_pages_completely() {
+    let (mut app, mut bridge) = setup();
+    let source = "for i in range(5):\n    box(\"stena/stĺpik %d\" % i, (60, 140, 2500), at = (i * 600, 0, 0), material = \"drevo\", tags = [\"konštrukcia\"])\n\
+        box(\"stena/doska\", (2500, 15, 2500), at = (0, 200, 0), material = \"OSB\", tags = [\"konštrukcia\"])\n\
+        box(\"koncept/stena\", (3000, 160, 2500), at = (0, 400, 0), material = \"drevostavba\", tags = [\"koncept\"])\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let rows = all_rows(&mut app, &mut bridge, ReportSection::MaterialTakeoff);
+    let studs = rows
+        .iter()
+        .find(|row| row["kind"] == "row" && row["material"] == "drevo")
+        .unwrap();
+    assert_eq!(studs["category"], "stena");
+    assert_eq!(studs["count"], 5);
+    assert_eq!(studs["section_mm"], json!([140.0, 60.0]));
+    assert_eq!(studs["length_m"], 12.5);
+    assert_eq!(studs["volume_m3"], 0.105);
+    assert!(
+        rows.iter()
+            .any(|row| row["kind"] == "material_total" && row["material"] == "drevostavba")
+    );
+
+    let concept = app
+        .document
+        .current()
+        .tags()
+        .find(|tag| tag.name() == "koncept")
+        .unwrap()
+        .id();
+    let undo = app.undo_step_count();
+    assert!(app.set_tag_visibility(concept, false));
+    let rows = all_rows(&mut app, &mut bridge, ReportSection::MaterialTakeoff);
+    assert!(
+        rows.iter().all(|row| row["material"] != "drevostavba"),
+        "{rows:?}"
+    );
+    let expected = app.live_bridge_stamp();
+    let page = bridge
+        .execute(
+            &mut app,
+            Request::ProgramReport {
+                expected,
+                section: ReportSection::MaterialTakeoff,
+                offset: 0,
+                limit: 50,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(page["counted_parts"], 6);
+    assert_eq!(page["excluded_parts"], 1);
+    assert_eq!(
+        app.undo_step_count(),
+        undo + 1,
+        "reading the takeoff changes nothing"
+    );
+}

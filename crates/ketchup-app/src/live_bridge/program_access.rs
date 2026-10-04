@@ -16,6 +16,7 @@ pub enum ReportSection {
     Machining,
     Relations,
     Issues,
+    MaterialTakeoff,
 }
 
 pub(super) fn invalid(target: &str, reason: impl Into<String>, hint: &str) -> &'static str {
@@ -231,6 +232,25 @@ impl LiveBridge {
         limit: usize,
     ) -> Result<Value, &'static str> {
         Self::guard(app, &Some(expected.clone()))?;
+        if let ReportSection::MaterialTakeoff = section {
+            check_page_limit(limit)?;
+            let takeoff = app.material_takeoff().map_err(|reason| {
+                invalid(
+                    "source",
+                    app.takeoff_error_text(&reason),
+                    "Apply a program; the takeoff counts the parts of a program-owned document.",
+                )
+            })?;
+            return page(
+                section,
+                &takeoff_rows(&takeoff),
+                offset,
+                limit,
+                json!({"basis": "visible_program_parts", "counted_parts": takeoff.counted_parts,
+                    "excluded_parts": takeoff.excluded_parts, "exact_volume_parts": takeoff.exact_volume_parts,
+                    "hint": "Only visible parts count: parts on hidden layers (tags) are excluded. Sizes are blanks; volume_basis says whether volume is the exact solid's or the blank's."}),
+            );
+        }
         if self.program_check_job.is_some() {
             return Err(failure(
                 "busy",
@@ -238,13 +258,7 @@ impl LiveBridge {
                 json!({}),
             ));
         }
-        if !(1..=100).contains(&limit) {
-            return Err(invalid(
-                "limit",
-                "Page limit must be 1 to 100.",
-                "Use limit=50 and follow next_offset until null.",
-            ));
-        }
+        check_page_limit(limit)?;
         if self
             .program_report
             .as_ref()
@@ -302,7 +316,39 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
             .collect(),
         ReportSection::Relations => report.relations.iter().map(|row| json!(row)).collect(),
         ReportSection::Issues => report.issues.iter().map(|row| json!(row)).collect(),
+        ReportSection::MaterialTakeoff => Vec::new(),
     }
+}
+
+fn check_page_limit(limit: usize) -> Result<(), &'static str> {
+    if (1..=100).contains(&limit) {
+        Ok(())
+    } else {
+        Err(invalid(
+            "limit",
+            "Page limit must be 1 to 100.",
+            "Use limit=50 and follow next_offset until null.",
+        ))
+    }
+}
+
+/// Category/material/cross-section rows first, then one total per material.
+fn takeoff_rows(takeoff: &ketchup_program::takeoff::Takeoff) -> Vec<Value> {
+    takeoff
+        .rows
+        .iter()
+        .map(|row| {
+            json!({"kind": "row", "category": row.category, "material": row.material,
+            "section_mm": row.section_mm, "count": row.count, "length_m": row.length_m,
+            "area_m2": row.area_m2, "volume_m3": row.volume_m3, "volume_basis": row.volume_basis,
+            "parts": row.parts.len()})
+        })
+        .chain(takeoff.materials.iter().map(|total| {
+            let mut value = json!(total);
+            value["kind"] = json!("material_total");
+            value
+        }))
+        .collect()
 }
 
 fn report_page(
@@ -312,7 +358,23 @@ fn report_page(
     limit: usize,
     basis: &str,
 ) -> Result<Value, &'static str> {
-    let rows = report_rows(report, section);
+    page(
+        section,
+        &report_rows(report, section),
+        offset,
+        limit,
+        json!({"basis": basis, "total_parts": report.bom.total_parts,
+            "hint": "program_evaluation is not a new native geometry check; unverified is not wrong or passed."}),
+    )
+}
+
+fn page(
+    section: ReportSection,
+    rows: &[Value],
+    offset: usize,
+    limit: usize,
+    mut extra: Value,
+) -> Result<Value, &'static str> {
     if offset > rows.len() {
         return Err(invalid(
             "offset",
@@ -338,10 +400,10 @@ fn report_page(
         bytes += size;
     }
     let next = offset + page.len();
-    Ok(
-        json!({"section": section, "rows": page, "total": rows.len(), "offset": offset,
-        "next_offset": (next < rows.len()).then_some(next), "basis": basis,
-        "total_parts": report.bom.total_parts,
-        "hint": "program_evaluation is not a new native geometry check; unverified is not wrong or passed."}),
-    )
+    extra["section"] = json!(section);
+    extra["rows"] = json!(page);
+    extra["total"] = json!(rows.len());
+    extra["offset"] = json!(offset);
+    extra["next_offset"] = json!((next < rows.len()).then_some(next));
+    Ok(extra)
 }

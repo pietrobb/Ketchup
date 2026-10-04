@@ -631,7 +631,7 @@ fn program_edit_result(
             "bom": {"total_parts": report.bom.total_parts, "cut_list_groups": report.bom.cut_list.len(),
                 "hardware_items": report.bom.hardware.len(),
                 "machining_operations": report.bom.machining.iter().map(|part| part.operations.len()).sum::<usize>()},
-            "details": "program action=report with expected=after, section=cut_list/hardware/machining/relations/issues; follow next_offset until null",
+            "details": "program action=report with expected=after, section=cut_list/hardware/machining/relations/issues/material_takeoff; follow next_offset until null",
             "params": report.params,
             "unused_overrides": report.unused_overrides,
             "log": log,
@@ -1832,11 +1832,6 @@ impl LiveBridge {
             .iter()
             .map(|entry| format!("{:?}", entry.target))
             .collect::<Vec<_>>();
-        let exact_references = candidate_exact
-            .values()
-            .flat_map(|package| package.references())
-            .cloned()
-            .collect::<Vec<_>>();
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Publication) {
             return Err("commit_rejected");
@@ -1851,11 +1846,13 @@ impl LiveBridge {
                             .map_err(|error| {
                                 failure("commit_rejected", format!("{error:?}"), json!({}))
                             })?;
-                    for reference in exact_references {
-                        document
-                            .register_exact_reference_evidence(reference)
-                            .map_err(|error| failed_because("exact_reference_rejected", error))?;
-                    }
+                    document
+                        .register_exact_references(
+                            candidate_exact
+                                .values()
+                                .flat_map(|package| package.references()),
+                        )
+                        .map_err(|(_, error)| failed_because("exact_reference_rejected", error))?;
                     document
                         .register_exact_reference_evidence(&candidate_exact)
                         .map_err(|error| failed_because("exact_reference_rejected", error))?;

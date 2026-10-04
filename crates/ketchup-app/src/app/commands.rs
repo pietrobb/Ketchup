@@ -313,6 +313,7 @@ impl KetchupApp {
             | AppCommand::ExportBlenderGlb
             | AppCommand::ExportGeneralFabrication
             | AppCommand::ExportWeldmentCutList
+            | AppCommand::ExportProjectDrawings
             | AppCommand::ExportSheetMetalManufacturing
             | AppCommand::ExportHomagMpr
             | AppCommand::ReviewCamExport
@@ -454,6 +455,7 @@ impl KetchupApp {
             AppCommand::ZoomOut => self.zoom_by(CAMERA_ZOOM_STEP.recip(), "digest-zoom-out"),
             AppCommand::Shortcuts => self.panels.shortcuts_open = true,
             AppCommand::About => self.panels.about_open = true,
+            AppCommand::MaterialTakeoff => self.takeoff.open = true,
             AppCommand::Select
             | AppCommand::Line
             | AppCommand::Rectangle

@@ -27,6 +27,34 @@ fn create_evaluator_input(
     Ok(())
 }
 
+/// Drops exact face evidence no feature is anchored to. Tag visibility and saved
+/// views leave every exact input as it was, so their evidence stays current.
+fn retain_anchored_evidence(
+    product: &mut ProductModel,
+    anchored: &BTreeSet<String>,
+    view_only: bool,
+) {
+    if !view_only {
+        product
+            .exact_reference_evidence
+            .retain(|lineage, _| anchored.contains(lineage));
+    }
+}
+
+/// Stores the feature graph a revision was checked with; after a view-only change the
+/// exact graphs of `previous` carry over instead of being compiled again.
+fn keep_exact_caches(
+    product: &mut ProductModel,
+    previous: &ProductModel,
+    feature_graph: Arc<FeatureDependencyGraph>,
+    view_only: bool,
+) {
+    let _ = product.exact_graphs.dependencies.set(Ok(feature_graph));
+    if view_only {
+        product.exact_graphs.inherit_graphs(&previous.exact_graphs);
+    }
+}
+
 pub struct DocumentStore {
     pub(super) revisions: Vec<Arc<Revision>>,
     pub(super) cursor: usize,
@@ -372,6 +400,133 @@ impl DocumentStore {
         Ok(())
     }
 
+    /// Registers many exact references as one change of the current revision, with
+    /// the same checks as registering each alone.
+    ///
+    /// Registering them one by one cloned the whole product per reference, which
+    /// dropped its cached digest and exact graphs; a 395-part model took ~6 s.
+    pub fn register_exact_references<'r>(
+        &mut self,
+        references: impl IntoIterator<Item = &'r BodySubshapeRef>,
+    ) -> Result<(), (&'r BodySubshapeRef, ReferenceEvidenceError)> {
+        let current = Arc::clone(&self.revisions[self.cursor]);
+        let snapshot = &current.snapshot;
+        let context = ExactProducerEvidenceContext::from_snapshot(snapshot);
+        let is_current = |reference: &BodySubshapeRef| {
+            ExactProducerCompilation::from_snapshot(
+                snapshot,
+                &context,
+                reference.definition_id,
+                reference.producer_feature_id,
+            )
+            .is_ok_and(|producer| producer.matches_reference(reference))
+        };
+        let mut product: Option<ProductModel> = None;
+        for reference in references {
+            if !reference.has_valid_lineage() {
+                return Err((reference, ReferenceEvidenceError::InvalidLineage));
+            }
+            if reference.document_id != snapshot.document_id() {
+                return Err((reference, ReferenceEvidenceError::WrongDocument));
+            }
+            let producer = snapshot
+                .feature(reference.producer_feature_id)
+                .ok_or((reference, ReferenceEvidenceError::ProducerNotFound))?;
+            if producer.definition_id() != reference.definition_id {
+                return Err((
+                    reference,
+                    ReferenceEvidenceError::ProducerDefinitionMismatch,
+                ));
+            }
+            if !is_current(reference) {
+                return Err((reference, ReferenceEvidenceError::InvalidLineage));
+            }
+            // Evidence already held, with no feature anchored to it, would change nothing:
+            // a carried-forward result must not copy the product and drop its caches.
+            let held = product.as_ref().unwrap_or(snapshot.product.as_ref());
+            if held
+                .exact_reference_evidence
+                .get(&reference.lineage_digest)
+                .is_some_and(|evidence| evidence.as_ref() == reference)
+                && !held.features.values().any(|feature| match &feature.kind {
+                    FeatureKind::Workplane(WorkplaneSpec {
+                        support:
+                            WorkplaneSupport::PlanarFace {
+                                reference: support, ..
+                            },
+                        ..
+                    }) => support.lineage_digest == reference.lineage_digest,
+                    FeatureKind::Pad(spec) => spec
+                        .operation
+                        .support()
+                        .is_some_and(|support| support.lineage_digest == reference.lineage_digest),
+                    _ => false,
+                })
+            {
+                continue;
+            }
+            let product = product.get_or_insert_with(|| snapshot.product.as_ref().clone());
+            let conflicts_with_anchor = product.features.values().any(|feature| {
+                matches!(
+                    &feature.kind,
+                    FeatureKind::Workplane(WorkplaneSpec {
+                        support: WorkplaneSupport::PlanarFace {
+                            reference: support,
+                            ..
+                        },
+                        ..
+                    }) if support.lineage_digest == reference.lineage_digest
+                        && (support.definition_id != reference.definition_id
+                            || support.profile_feature_id != reference.profile_feature_id
+                            || support.producer_feature_id != reference.producer_feature_id
+                            || support.semantic_role != reference.semantic_role
+                            || support.source_element_id != reference.source_element_id
+                            || support.expected_type != reference.expected_type
+                            || (is_current(support) && support.as_ref() != reference))
+                )
+            });
+            if conflicts_with_anchor {
+                return Err((reference, ReferenceEvidenceError::WrongDocument));
+            }
+            product.exact_reference_evidence.insert(
+                reference.lineage_digest.clone(),
+                Arc::new(reference.clone()),
+            );
+            if rebind_planar_face_reference(product, reference).is_err() {
+                return Err((reference, ReferenceEvidenceError::WrongDocument));
+            }
+        }
+        if let Some(mut product) = product {
+            // Evidence feeds neither the exact graphs nor the dependency graph; while
+            // no anchored feature was rebound they stay valid for the new product.
+            let features_kept = product.features.len() == snapshot.product.features.len()
+                && product.features.iter().zip(&snapshot.product.features).all(
+                    |((id, after), (before_id, before))| {
+                        id == before_id && Arc::ptr_eq(after, before)
+                    },
+                );
+            if features_kept {
+                product.exact_graphs = snapshot.product.exact_graphs.carried_over();
+            }
+            self.revisions[self.cursor] = Arc::new(Revision {
+                id: current.id,
+                snapshot: Snapshot {
+                    revision_id: current.snapshot.revision_id,
+                    product: Arc::new(product),
+                },
+                batch_digest: current.batch_digest.clone(),
+                origin: current.origin,
+                checkpoint: current.checkpoint.clone(),
+                rule_program: current.rule_program.clone(),
+                recomputed_nodes: current.recomputed_nodes.clone(),
+                dirty_features: current.dirty_features.clone(),
+                feature_states: current.feature_states.clone(),
+                evaluation: current.evaluation.clone(),
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn register_derived_result(&mut self, event: DerivedResultEvent) -> bool {
         let current = &self.revisions[self.cursor];
         if event.document_id != current.snapshot.document_id()
@@ -390,6 +545,10 @@ impl DocumentStore {
                 if reference.document_id != event.document_id =>
             {
                 return false;
+            }
+            // Nothing to rebind leaves the revision, and its cached derivations, as is.
+            DerivedResultPayload::ExactReferenceRebinds(rebinds) if rebinds.is_empty() => {
+                return true;
             }
             _ => {}
         }
@@ -869,6 +1028,7 @@ impl DocumentStore {
         }
 
         let current = self.current();
+        let view_only = batch.commands.iter().all(CanonicalCommand::is_view_only);
         let mut product = current.product.as_ref().clone();
         let anchored_reference_lineages = product
             .features
@@ -881,9 +1041,7 @@ impl DocumentStore {
                 _ => None,
             })
             .collect::<BTreeSet<_>>();
-        product
-            .exact_reference_evidence
-            .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
+        retain_anchored_evidence(&mut product, &anchored_reference_lineages, view_only);
         let mut explicit_dirty_features = BTreeSet::new();
         let mut evaluation_identity = EvaluationIdentity::default();
         let mut previous_evaluation = self.revisions[self.cursor].evaluation.clone();
@@ -2867,9 +3025,7 @@ impl DocumentStore {
             set_planar_face_reference_health(&mut product, lineage, WorkplaneSupportHealth::Stale);
             product.exact_reference_evidence.remove(lineage);
         }
-        product
-            .exact_reference_evidence
-            .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
+        retain_anchored_evidence(&mut product, &anchored_reference_lineages, view_only);
 
         support::prune_grounded_instances(&mut product);
         contact_joint::prune(&mut product);
@@ -2928,7 +3084,7 @@ impl DocumentStore {
             .into_iter()
             .filter(|id| current.product.features.get(id) != product.features.get(id))
             .collect::<BTreeSet<_>>();
-        let feature_graph = FeatureDependencyGraph::from_product(&product)?;
+        let feature_graph = Arc::new(FeatureDependencyGraph::from_product(&product)?);
         let dirty_features = feature_graph.dependent_closure(
             changed_features
                 .iter()
@@ -2938,6 +3094,7 @@ impl DocumentStore {
         );
         let feature_states = feature_graph.evaluation_states(&dirty_features, &BTreeSet::new());
         let rule_program = self.rule_program_kept_by(batch);
+        keep_exact_caches(&mut product, &current.product, feature_graph, view_only);
         let snapshot = Snapshot {
             revision_id,
             product: Arc::new(product),

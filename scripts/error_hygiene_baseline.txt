@@ -16,7 +16,6 @@ crates/ketchup-geometry/src/sketch/solver.rs unreachable 4
 crates/ketchup-headless/src/protocol.rs unreachable 2
 crates/ketchup-model/src/import/dxf.rs unreachable 3
 crates/ketchup-model/src/persistence.rs formatted_variant 2
-crates/ketchup-program/src/faces.rs unreachable 1
 crates/ketchup-program/src/model.rs unreachable 2
 crates/ketchup-scheduler/src/pair_query.rs formatted_variant 1
 crates/ketchup-scheduler/src/protocol.rs formatted_variant 1

@@ -168,7 +168,7 @@ pub struct ImportedExactPackage {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactBRepGraphPackage {
     pub identity: BodyResultIdentity,
-    pub graph: Box<ExactBRepGraph>,
+    pub graph: Arc<ExactBRepGraph>,
     pub volume_mm3: f64,
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
@@ -586,7 +586,7 @@ impl ExactBRepGraphPackage {
             .collect::<BTreeMap<_, _>>();
         Ok(Self {
             identity,
-            graph: Box::new(graph.clone()),
+            graph: Arc::new(graph.clone()),
             volume_mm3: evidence.volume_mm3,
             area_mm2: evidence.area_mm2,
             topology_counts: evidence.topology_counts,
@@ -625,7 +625,7 @@ impl ExactBRepGraphPackage {
             && self.identity.producer_feature_id == FeatureId(graph.producer_feature_id)
             && self.identity.canonical_input_digest == graph.canonical_input_digest
             && self.identity.evaluator == EXACT_BREP_GRAPH_EVALUATOR_V1
-            && self.graph.as_ref() == graph
+            && (std::ptr::eq(self.graph.as_ref(), graph) || self.graph.as_ref() == graph)
     }
 
     #[must_use]
@@ -642,12 +642,10 @@ impl ExactBRepGraphPackage {
 
     #[must_use]
     pub fn rebound_to(&self, snapshot: &Snapshot) -> Option<Self> {
-        let graph = ExactBRepGraph::from_snapshot(
-            snapshot,
+        let graph = snapshot.exact_brep_graph(
             self.identity.definition_id,
             self.identity.producer_feature_id,
-        )
-        .ok()?;
+        )?;
         if graph.graph_digest != self.graph.graph_digest {
             return None;
         }
@@ -689,7 +687,7 @@ impl ExactBRepGraphPackage {
                 )
             })
             .collect::<Option<Vec<_>>>()?;
-        rebound.graph = Box::new(graph);
+        rebound.graph = graph;
         Some(rebound)
     }
 }
@@ -1444,7 +1442,7 @@ fn next_contents_stamp() -> u64 {
 
 pub struct ExactSnapshotPreparation<'a> {
     snapshot: &'a Snapshot,
-    dependencies: FeatureDependencyGraph,
+    dependencies: Arc<FeatureDependencyGraph>,
 }
 
 impl<'a> ExactSnapshotPreparation<'a> {
@@ -1644,13 +1642,16 @@ impl ExactResultRegistry {
     pub fn carried_forward(snapshot: &Snapshot, previous: &Self) -> Self {
         let mut registry = Self::default();
         for package in previous.packages.values() {
-            let Some(rebound) = package.rebound_to(snapshot) else {
-                continue;
+            // Already bound to `snapshot`: rebinding would only copy its mesh.
+            let rebound = if package.is_current(snapshot) {
+                Arc::clone(package)
+            } else {
+                let Some(rebound) = package.rebound_to(snapshot) else {
+                    continue;
+                };
+                Arc::new(rebound)
             };
-            if registry
-                .insert_current(snapshot, Arc::new(rebound))
-                .is_err()
-            {
+            if registry.insert_current(snapshot, rebound).is_err() {
                 continue;
             }
         }
@@ -3714,8 +3715,9 @@ impl<'a> ExactProducerCompilation<'a> {
 
     #[must_use]
     pub fn matches_reference(&self, reference: &BodySubshapeRef) -> bool {
-        ExactBRepGraph::from_snapshot(self.snapshot, self.definition_id, self.feature_id)
-            .is_ok_and(|graph| graph.names_evaluated_reference(reference))
+        self.snapshot
+            .exact_brep_graph(self.definition_id, self.feature_id)
+            .is_some_and(|graph| graph.names_evaluated_reference(reference))
     }
 }
 

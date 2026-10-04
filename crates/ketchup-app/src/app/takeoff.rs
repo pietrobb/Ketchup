@@ -1,0 +1,224 @@
+//! Material takeoff of the visible program parts: a window with the totals
+//! and a CSV export. Parts on hidden layers are not counted, so turning off
+//! the concept layer counts only the construction.
+
+use crate::app_state::{TakeoffCache, TakeoffError};
+use crate::*;
+use ketchup_program::takeoff::{Takeoff, material_takeoff, takeoff_csv};
+
+impl KetchupApp {
+    /// The visible program parts by program name, each with its published
+    /// exact solid volume when there is one.
+    fn visible_takeoff_parts(&self, snapshot: &Snapshot) -> BTreeMap<String, Option<f64>> {
+        let exact = self.exact.results.render_by_definition(snapshot);
+        snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|part| part.visible)
+            .filter_map(|part| {
+                let name =
+                    ketchup_application::rule_program_part_name(snapshot, &part.instance_path)?;
+                let volume = exact
+                    .get(&part.definition_id)
+                    .map(|package| match package.as_ref() {
+                        ExactBodyPackage::Graph(graph) => graph.volume_mm3,
+                        ExactBodyPackage::Imported(imported) => imported.volume_mm3,
+                    });
+                Some((name, volume))
+            })
+            .collect()
+    }
+
+    /// The material takeoff of the current program's visible parts, or why
+    /// there is none.
+    pub(crate) fn material_takeoff(&self) -> Result<Arc<Takeoff>, TakeoffError> {
+        let Some(program) = self.document.current_rule_program() else {
+            return Err(TakeoffError::NoProgram);
+        };
+        let snapshot = self.document.current();
+        let key = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            self.exact.results.contents_stamp(),
+        );
+        let mut cache = self.takeoff.cache.borrow_mut();
+        let same_program = cache.as_ref().is_some_and(|cached| {
+            cached.program.0 == program.file_name
+                && cached.program.1 == program.source
+                && cached.program.2 == program.overrides
+        });
+        if !same_program {
+            let model =
+                ketchup_program::evaluate(&program.file_name, &program.source, &program.overrides)
+                    .map(|evaluated| Arc::new(evaluated.model));
+            *cache = Some(TakeoffCache {
+                program: (
+                    program.file_name.clone(),
+                    program.source.clone(),
+                    program.overrides.clone(),
+                ),
+                model,
+                key,
+                takeoff: Err(TakeoffError::NoProgram),
+            });
+        }
+        let cached = cache.as_mut().expect("the cache was just filled");
+        if !same_program || cached.key != key {
+            cached.key = key;
+            cached.takeoff = cached
+                .model
+                .as_ref()
+                .map_err(|error| TakeoffError::Program(error.clone()))
+                .map(|model| {
+                    Arc::new(material_takeoff(
+                        model,
+                        &self.visible_takeoff_parts(&snapshot),
+                    ))
+                });
+        }
+        cached.takeoff.clone()
+    }
+
+    /// Writes the takeoff of the visible parts as semicolon-separated CSV.
+    pub fn export_material_takeoff_to(&mut self, path: &Path) -> bool {
+        let result = self.material_takeoff().and_then(|takeoff| {
+            std::fs::write(path, takeoff_csv(&takeoff))
+                .map_err(|error| TakeoffError::Write(Arc::new(error)))
+        });
+        let (key, mut arguments) = match &result {
+            Ok(()) => ("digest-exported-material-takeoff", BTreeMap::new()),
+            Err(reason) => (
+                "error-export-material-takeoff",
+                BTreeMap::from([("reason", self.takeoff_error_text(reason))]),
+            ),
+        };
+        arguments.insert("path", path.display().to_string());
+        self.digest = self.catalog.format(key, &arguments);
+        result.is_ok()
+    }
+
+    pub(crate) fn show_material_takeoff_window(&mut self, context: &egui::Context) {
+        if !self.takeoff.open {
+            return;
+        }
+        let takeoff = self.material_takeoff();
+        let mut open = true;
+        let mut export = false;
+        egui::Window::new(self.catalog.text("window-material-takeoff"))
+            .open(&mut open)
+            .default_size([720.0, 480.0])
+            .show(context, |ui| match &takeoff {
+                Err(reason) => {
+                    ui.label(self.takeoff_error_text(reason));
+                }
+                Ok(takeoff) => {
+                    ui.label(self.catalog.format(
+                        "takeoff-summary",
+                        &BTreeMap::from([
+                            ("counted", takeoff.counted_parts.to_string()),
+                            ("excluded", takeoff.excluded_parts.to_string()),
+                            ("exact", takeoff.exact_volume_parts.to_string()),
+                        ]),
+                    ));
+                    if ui.button(self.catalog.text("takeoff-export-csv")).clicked() {
+                        export = true;
+                    }
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.takeoff_material_grid(ui, takeoff);
+                        ui.separator();
+                        self.takeoff_row_grid(ui, takeoff);
+                    });
+                }
+            });
+        if !open {
+            self.takeoff.open = false;
+        }
+        if export && let Some(path) = self.choose_export_path("csv") {
+            self.export_material_takeoff_to(&path);
+        }
+    }
+
+    pub(crate) fn takeoff_error_text(&self, error: &TakeoffError) -> String {
+        match error {
+            TakeoffError::NoProgram => self.catalog.text("takeoff-no-program"),
+            TakeoffError::Program(error) => error.to_string(),
+            TakeoffError::Write(error) => error.to_string(),
+        }
+    }
+
+    fn takeoff_header(&self, ui: &mut egui::Ui, keys: &[&str]) {
+        for key in keys {
+            ui.strong(self.catalog.text(key));
+        }
+        ui.end_row();
+    }
+
+    fn takeoff_material_grid(&self, ui: &mut egui::Ui, takeoff: &Takeoff) {
+        ui.heading(self.catalog.text("takeoff-materials"));
+        egui::Grid::new("takeoff-materials")
+            .striped(true)
+            .show(ui, |ui| {
+                self.takeoff_header(
+                    ui,
+                    &[
+                        "takeoff-material",
+                        "takeoff-count",
+                        "takeoff-length",
+                        "takeoff-area",
+                        "takeoff-volume",
+                    ],
+                );
+                for total in &takeoff.materials {
+                    ui.label(&total.material);
+                    ui.label(total.count.to_string());
+                    ui.label(format!("{:.2}", total.length_m));
+                    ui.label(format!("{:.2}", total.area_m2));
+                    ui.label(self.takeoff_volume(total.volume_m3, total.volume_basis));
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn takeoff_row_grid(&self, ui: &mut egui::Ui, takeoff: &Takeoff) {
+        ui.heading(self.catalog.text("takeoff-rows"));
+        egui::Grid::new("takeoff-rows")
+            .striped(true)
+            .show(ui, |ui| {
+                self.takeoff_header(
+                    ui,
+                    &[
+                        "takeoff-category",
+                        "takeoff-material",
+                        "takeoff-section",
+                        "takeoff-count",
+                        "takeoff-length",
+                        "takeoff-area",
+                        "takeoff-volume",
+                    ],
+                );
+                for row in &takeoff.rows {
+                    ui.label(&row.category);
+                    ui.label(&row.material);
+                    ui.label(format!("{} × {}", row.section_mm[0], row.section_mm[1]));
+                    ui.label(row.count.to_string());
+                    ui.label(format!("{:.2}", row.length_m));
+                    ui.label(format!("{:.2}", row.area_m2));
+                    ui.label(self.takeoff_volume(row.volume_m3, row.volume_basis));
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn takeoff_volume(
+        &self,
+        volume_m3: f64,
+        basis: ketchup_program::takeoff::VolumeBasis,
+    ) -> String {
+        format!(
+            "{volume_m3:.3} ({})",
+            self.catalog
+                .text(&format!("takeoff-basis-{}", basis.as_str()))
+        )
+    }
+}

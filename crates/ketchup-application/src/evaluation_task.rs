@@ -261,28 +261,24 @@ pub fn publish_exact_products(
     let snapshot = document.current();
     let (results, topology_results, report) =
         materialize_exact_products(&snapshot, render, topology, task, products)?;
-    let references = results
-        .values()
-        .flat_map(|package| package.references())
-        .cloned()
-        .collect::<Vec<_>>();
     document.try_canonical_transaction(
         |document| {
-            for reference in references {
-                let identity = format!(
-                    "role={}, source={}, profile={}, producer={}",
-                    reference.semantic_role,
-                    reference.source_element_id,
-                    reference.profile_feature_id.0,
-                    reference.producer_feature_id.0
-                );
-                document
-                    .register_exact_reference_evidence(reference)
-                    .map_err(|error| ExactEvaluationError::ReferenceEvidence {
-                        reference: Some(identity),
+            document
+                .register_exact_references(
+                    results.values().flat_map(|package| package.references()),
+                )
+                .map_err(
+                    |(reference, error)| ExactEvaluationError::ReferenceEvidence {
+                        reference: Some(format!(
+                            "role={}, source={}, profile={}, producer={}",
+                            reference.semantic_role,
+                            reference.source_element_id,
+                            reference.profile_feature_id.0,
+                            reference.producer_feature_id.0
+                        )),
                         error,
-                    })?;
-            }
+                    },
+                )?;
             document
                 .register_exact_reference_evidence(&results)
                 .map_err(|error| ExactEvaluationError::ReferenceEvidence {
@@ -441,5 +437,83 @@ mod tests {
         );
         assert!(render.is_empty());
         assert!(topology.is_empty());
+    }
+
+    /// Showing or hiding a tag leaves every exact input as it was: evidence stays,
+    /// graphs carry over, products are reused and republishing them changes nothing.
+    #[test]
+    fn tag_visibility_keeps_exact_state_without_republication() {
+        use ketchup_model::document::TagId;
+        use ketchup_model::exact_brep_graph::ExactBRepGraph;
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: PROFILE,
+                    definition_id: DEFINITION,
+                    name: "Profile".into(),
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [20.0, 0.0],
+                        [20.0, 10.0],
+                        [0.0, 10.0],
+                    ]),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: EXTRUSION,
+                    definition_id: DEFINITION,
+                    name: "Extrusion".into(),
+                    kind: FeatureKind::extrusion(PROFILE, Dimension::from_decimal("5").unwrap()),
+                },
+                CanonicalCommand::CreateTag {
+                    id: TagId(1),
+                    name: "koncept".into(),
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let before = document.current();
+        let package = Arc::new(package(&before, "box", &[ExactFaceRole::Top]));
+        document
+            .register_exact_references(package.references())
+            .unwrap();
+        let render = ExactResultRegistry::accept(&document.current(), [package]).unwrap();
+        let evidence = document.current().exact_reference_evidence().count();
+        assert_eq!(evidence, 1);
+
+        let revision = document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetTagVisibility {
+                    id: TagId(1),
+                    visible: false,
+                },
+            ]))
+            .unwrap();
+        let toggled = document.current();
+        assert_eq!(toggled.exact_reference_evidence().count(), evidence);
+        assert_eq!(
+            *toggled.exact_brep_graph(DEFINITION, EXTRUSION).unwrap(),
+            ExactBRepGraph::from_snapshot(&toggled, DEFINITION, EXTRUSION).unwrap()
+        );
+        let carried = ExactResultRegistry::carried_forward(&toggled, &render);
+        let package = carried.values().next().unwrap();
+        assert!(package.is_current(&toggled));
+        let again = ExactResultRegistry::carried_forward(&toggled, &carried);
+        assert!(Arc::ptr_eq(package, again.values().next().unwrap()));
+
+        document
+            .register_exact_references(package.references())
+            .unwrap();
+        document
+            .register_exact_reference_evidence(&carried)
+            .unwrap();
+        assert!(std::ptr::eq(
+            revision.as_ref(),
+            document.revision_history().last().unwrap()
+        ));
     }
 }

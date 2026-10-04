@@ -957,6 +957,16 @@ impl ExactBRepGraph {
         Ok(graph)
     }
 
+    /// This graph for `snapshot`, whose exact inputs equal those it was compiled
+    /// from; neither digest covers the source revision.
+    pub(crate) fn rebased_to(&self, snapshot: &Snapshot) -> Self {
+        Self {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            ..self.clone()
+        }
+    }
+
     #[must_use]
     pub fn terminal_body_kind(&self) -> BodyKind {
         match self.nodes.last().map(|node| &node.operation) {

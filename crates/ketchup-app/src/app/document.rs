@@ -979,6 +979,11 @@ impl KetchupApp {
                     self.export_current_weldment_cut_list_to(&path);
                 }
             }
+            AppCommand::ExportProjectDrawings => {
+                if let Some(path) = self.choose_export_path("svg") {
+                    self.export_project_drawings_to(&path);
+                }
+            }
             AppCommand::ExportSheetMetalManufacturing => {
                 match self.sole_exportable_sheet_metal_feature_id() {
                     Ok(feature_id) => {
@@ -1215,6 +1220,7 @@ impl KetchupApp {
         let saved_conversation_digest = self.assistant.saved_conversation_digest.clone();
         let container_data = &self.file.container_data;
         let work_recovery_identity = self.file.work_recovery_identity;
+        let work_recovery_digest = self.file.work_recovery_digest.clone();
         let mut next_work_recovery_identity = work_recovery_identity;
         let mut publication_error = None;
         let result = self.document.try_canonical_transaction(
@@ -1237,6 +1243,15 @@ impl KetchupApp {
                 let (Some(path), Some(identity)) = (document_path.as_deref(), file_identity) else {
                     return Ok(());
                 };
+                // A mutation that left the history as the checkpoint already holds it
+                // (a carried-forward exact publication) has nothing new to recover.
+                if work_recovery_identity.is_some()
+                    && work_recovery_digest.as_deref().is_some_and(|digest| {
+                        digest == format!("{}:{conversation_digest}", document.history_digest())
+                    })
+                {
+                    return Ok(());
+                }
                 match ketchup_model::persistence::save_work_recovery_document_store_with_container_if_unchanged(
                     path, document, container_data, identity, work_recovery_identity,
                 ) {

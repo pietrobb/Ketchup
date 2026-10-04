@@ -210,15 +210,69 @@ pub(crate) struct ProductModel {
     pub(crate) exact_graphs: ExactGraphCache,
 }
 
-/// Exact B-Rep graphs compiled from one immutable product model.
-/// Cached per immutable revision; clones start empty, as with [`DigestCache`].
+/// Exact B-Rep graphs, the feature dependency graph and the persisted encoding of
+/// one immutable product model. Cached per immutable revision; clones start empty,
+/// as with [`DigestCache`].
 #[derive(Default)]
-pub(crate) struct ExactGraphCache(std::sync::Mutex<ExactGraphsByProducer>);
+pub(crate) struct ExactGraphCache {
+    pub(crate) graphs: std::sync::Mutex<ExactGraphsByProducer>,
+    pub(crate) dependencies: OnceLock<Result<Arc<FeatureDependencyGraph>, CanonicalError>>,
+    /// Snapshot encoding with its SHA-256, for the revision id it was encoded under.
+    pub(crate) encoded: OnceLock<(u64, Arc<EncodedSnapshot>)>,
+    /// Graphs of the revision before a view-only change, rebased to this revision
+    /// on first use instead of compiled again.
+    pub(crate) inherited:
+        std::sync::Mutex<BTreeMap<(DefinitionId, FeatureId), Arc<ExactBRepGraph>>>,
+}
+
+pub(crate) struct EncodedSnapshot {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) sha256: [u8; 32],
+}
 type ExactGraphsByProducer = BTreeMap<(u64, DefinitionId, FeatureId), Option<Arc<ExactBRepGraph>>>;
 
 impl Clone for ExactGraphCache {
     fn clone(&self) -> Self {
         Self::default()
+    }
+}
+
+impl ExactGraphCache {
+    /// The graphs for a product whose features are the same `Arc`s as this one's.
+    /// The encoding is not carried: it covers the whole product.
+    pub(crate) fn carried_over(&self) -> Self {
+        Self {
+            graphs: std::sync::Mutex::new(
+                self.graphs
+                    .lock()
+                    .map(|graphs| graphs.clone())
+                    .unwrap_or_default(),
+            ),
+            dependencies: self.dependencies.clone(),
+            encoded: OnceLock::new(),
+            inherited: std::sync::Mutex::new(
+                self.inherited
+                    .lock()
+                    .map(|inherited| inherited.clone())
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+
+    /// Offers the graphs `previous` compiled, and those it inherited itself, for a
+    /// product whose exact inputs are unchanged.
+    pub(crate) fn inherit_graphs(&mut self, previous: &Self) {
+        let inherited = self.inherited.get_mut().expect("unshared cache");
+        if let Ok(earlier) = previous.inherited.lock() {
+            inherited.extend(earlier.iter().map(|(key, graph)| (*key, Arc::clone(graph))));
+        }
+        if let Ok(graphs) = previous.graphs.lock() {
+            inherited.extend(graphs.iter().filter_map(
+                |((_, definition_id, feature_id), graph)| {
+                    Some(((*definition_id, *feature_id), Arc::clone(graph.as_ref()?)))
+                },
+            ));
+        }
     }
 }
 

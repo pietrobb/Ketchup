@@ -362,12 +362,23 @@ impl KetchupApp {
                     {
                         return None;
                     }
-                    let [minimum, maximum] = self.definition_local_bounds(
-                        snapshot,
-                        occurrence.body.definition_id,
-                        occurrence.local_box,
-                        use_exact_bounds,
-                    )?;
+                    // The packages were matched once above; asking per occurrence
+                    // rescans every package, quadratic in the part count.
+                    let [minimum, maximum] = match exact_packages
+                        .as_ref()
+                        .and_then(|packages| packages.get(&occurrence.body.definition_id))
+                    {
+                        Some(package) => {
+                            let [minimum, maximum] = package.bounds_mm();
+                            [Vec3::from(minimum), Vec3::from(maximum)]
+                        }
+                        None => self.definition_local_bounds(
+                            snapshot,
+                            occurrence.body.definition_id,
+                            occurrence.local_box,
+                            false,
+                        )?,
+                    };
                     let size = maximum - minimum;
                     let [world_minimum, world_maximum] = bounds_of(
                         box_corners(size.x, size.y, size.z)

@@ -4,7 +4,7 @@ use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_model::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot, Transform,
 };
-use ketchup_model::exact_product::ExactResultRegistry;
+use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
@@ -141,6 +141,14 @@ impl InstancedRenderPlan {
                 (occurrence.instance_path, color)
             })
             .collect::<BTreeMap<_, _>>();
+        // Matched once: each match re-derives every package's body ownership.
+        let mut exact_by_definition = BTreeMap::<DefinitionId, Vec<&Arc<ExactBodyPackage>>>::new();
+        for package in exact_results.render_values(snapshot) {
+            exact_by_definition
+                .entry(package.definition_id())
+                .or_default()
+                .push(package);
+        }
         let mut batches = BTreeMap::<(DefinitionId, String), RenderBatch>::new();
         let mut definition_geometries =
             BTreeMap::<DefinitionId, Vec<(String, Arc<RenderGeometry>)>>::new();
@@ -153,7 +161,13 @@ impl InstancedRenderPlan {
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 definition_geometries.entry(definition_id)
             {
-                let sources = geometry_sources(snapshot, exact_results, definition_id);
+                let sources = geometry_sources(
+                    snapshot,
+                    exact_by_definition
+                        .get(&definition_id)
+                        .map_or(&[][..], Vec::as_slice),
+                    definition_id,
+                );
                 if sources.is_empty() {
                     continue;
                 }
@@ -278,12 +292,11 @@ pub(crate) type PlanarProfileMesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);
 
 fn geometry_sources(
     snapshot: &Snapshot,
-    exact_results: &ExactResultRegistry,
+    exact_packages: &[&Arc<ExactBodyPackage>],
     definition_id: DefinitionId,
 ) -> Vec<GeometrySource> {
-    let exact = exact_results
-        .render_values(snapshot)
-        .filter(|package| package.definition_id() == definition_id)
+    let exact = exact_packages
+        .iter()
         .map(|package| {
             let positions = package
                 .vertices()

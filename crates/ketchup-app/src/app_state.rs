@@ -198,6 +198,30 @@ pub(crate) struct ExactState {
     pub(crate) topology_by_definition: std::cell::RefCell<Option<TopologyByDefinition>>,
 }
 
+/// The material takeoff window and the takeoff it shows.
+#[derive(Default)]
+pub(crate) struct TakeoffState {
+    pub(crate) open: bool,
+    /// The takeoff for (document, revision, exact contents); the program model
+    /// it counts is kept while the program text is unchanged.
+    pub(crate) cache: std::cell::RefCell<Option<TakeoffCache>>,
+}
+
+pub(crate) struct TakeoffCache {
+    pub(crate) program: (String, String, BTreeMap<String, f64>),
+    pub(crate) model: Result<Arc<ketchup_program::ProgramModel>, ketchup_program::ProgramError>,
+    pub(crate) key: ExactCacheKey,
+    pub(crate) takeoff: Result<Arc<ketchup_program::takeoff::Takeoff>, TakeoffError>,
+}
+
+/// Why there is no material takeoff, or why it could not be written.
+#[derive(Clone, Debug)]
+pub(crate) enum TakeoffError {
+    NoProgram,
+    Program(ketchup_program::ProgramError),
+    Write(Arc<std::io::Error>),
+}
+
 /// Document, revision and exact registry contents stamp that derived exact
 /// data was computed for.
 pub(crate) type ExactCacheKey = (DocumentId, u64, u64);

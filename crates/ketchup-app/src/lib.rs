@@ -1864,6 +1864,7 @@ pub enum AppCommand {
     ExportBlenderGlb,
     ExportGeneralFabrication,
     ExportWeldmentCutList,
+    ExportProjectDrawings,
     ExportSheetMetalManufacturing,
     ExportHomagMpr,
     ReviewCamExport,
@@ -1950,6 +1951,7 @@ pub enum AppCommand {
     ZoomOut,
     Shortcuts,
     About,
+    MaterialTakeoff,
 }
 
 /// How the viewport maps the model onto the screen.
@@ -4298,6 +4300,7 @@ pub struct KetchupApp {
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,
+    takeoff: app_state::TakeoffState,
     digest: String,
     assistant: app_state::AssistantState,
     classification: app_state::ClassificationInputs,

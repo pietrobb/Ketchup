@@ -55,8 +55,9 @@ impl KetchupApp {
             "nc" => ("file-filter-cam-gcode", "nc"),
             "mpr" => ("file-filter-homag-mpr", "mpr"),
             "btlx" => ("file-filter-btlx", "btlx"),
+            "svg" => ("file-filter-svg", "svg"),
             _ => unreachable!(
-                "the File menu exposes only DXF, STEP, IGES, STL, 3MF, GLB, CSV, NC, MPR, and BTLx export"
+                "the File menu exposes only DXF, STEP, IGES, STL, 3MF, GLB, CSV, NC, MPR, BTLx and SVG export"
             ),
         };
         let filter_label = self.catalog.text(filter_key);

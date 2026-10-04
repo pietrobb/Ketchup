@@ -464,7 +464,7 @@ impl KetchupApp {
             .collect()
     }
 
-    /// `scene` is [`Self::active_scene_query`], passed in so the layers panel
+    /// `scene` is [`Self::active_scene_query`], passed in so the layers section
     /// queries the scene once per frame rather than once per tag row.
     pub(crate) fn tag_occurrence_paths(
         &self,

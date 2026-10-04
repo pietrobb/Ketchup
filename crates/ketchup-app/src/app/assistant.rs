@@ -3118,15 +3118,15 @@ impl KetchupApp {
         }
     }
 
-    /// Whether the layers panel leads the dock: once the document has layers,
-    /// switching what is visible must not need scrolling past other panels.
-    pub(crate) fn layers_panel_first(&self) -> bool {
+    /// Whether the layers lead the dock: once the document has layers,
+    /// switching what is visible must not need scrolling past other sections.
+    pub(crate) fn layers_lead_dock(&self) -> bool {
         self.document.current().tags().next().is_some()
     }
 
-    /// Layers, saved views and the section plane, separated from the panels
+    /// Layers, saved views and the section plane, separated from the sections
     /// below (`first`) or above it.
-    pub(crate) fn show_layers_panel(&mut self, ui: &mut egui::Ui, first: bool) {
+    pub(crate) fn show_layers_section(&mut self, ui: &mut egui::Ui, first: bool) {
         if self.panels.tags_visible {
             if !first {
                 ui.separator();

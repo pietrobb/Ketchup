@@ -25,6 +25,7 @@ pub mod motion;
 mod opposing_holes;
 pub mod path;
 pub mod relations;
+pub mod takeoff;
 pub mod validate;
 
 pub use bom::{Bom, bom};

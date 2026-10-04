@@ -16,12 +16,23 @@ mod patterns;
 #[cfg(test)]
 #[path = "program_outliner_tests.rs"]
 mod program_outliner_tests;
+mod project_drawings;
+#[cfg(test)]
+#[path = "app/project_drawings_tests.rs"]
+mod project_drawings_tests;
 mod saved_views;
 mod section;
 mod selection;
 mod shell;
 mod structure;
+#[cfg(test)]
+#[path = "app/tag_toggle_tests.rs"]
+mod tag_toggle_tests;
 mod tags;
+mod takeoff;
+#[cfg(test)]
+#[path = "app/takeoff_tests.rs"]
+mod takeoff_tests;
 mod transform;
 mod viewport;
 mod viewport_paint;

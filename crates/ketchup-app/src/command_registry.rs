@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 126] = [
+    pub(crate) const COMMANDS: [CommandSpec; 128] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -115,6 +115,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportWeldmentCutList,
             label_key: "file-export-weldment-cut-list",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportProjectDrawings,
+            label_key: "file-export-project-drawings",
             tool: None,
             implemented: true,
         },
@@ -757,6 +763,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::About,
             label_key: "help-about",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::MaterialTakeoff,
+            label_key: "window-material-takeoff",
             tool: None,
             implemented: true,
         },
