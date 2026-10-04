@@ -353,9 +353,24 @@ impl KetchupApp {
     pub(super) fn exact_hit_element(&self, hit: &ExactSurfaceHit) -> Option<ElementId> {
         if let Some(target) = hit.topological_target.as_ref() {
             let snapshot = self.document.current();
-            let package = self
-                .topology_results_for_snapshot(&snapshot)?
-                .get_render(&snapshot, hit.definition_id)?;
+            let topology = self.topology_results_for_snapshot(&snapshot)?;
+            let key = (
+                snapshot.document_id(),
+                snapshot.revision_id(),
+                topology.contents_stamp(),
+            );
+            let mut memo = self.exact.topology_by_definition.borrow_mut();
+            if memo.as_ref().is_none_or(|memo| memo.key != key) {
+                *memo = Some(app_state::TopologyByDefinition {
+                    key,
+                    packages: topology
+                        .render_by_definition(&snapshot)
+                        .into_iter()
+                        .map(|(definition_id, package)| (definition_id, Arc::clone(package)))
+                        .collect(),
+                });
+            }
+            let package = memo.as_ref()?.packages.get(&hit.definition_id)?;
             return face_ordinal(package, &target.target().reference)
                 .map(ElementId::TopologicalFace);
         }

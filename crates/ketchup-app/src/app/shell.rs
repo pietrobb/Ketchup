@@ -224,6 +224,8 @@ impl KetchupApp {
                 topology_result_history: BTreeMap::new(),
                 source: None,
                 retry_at: None,
+                status_counts: std::cell::Cell::new(None),
+                topology_by_definition: std::cell::RefCell::new(None),
             },
             render: app_state::RenderState {
                 cache: DerivedRenderCache::default(),
@@ -1099,12 +1101,10 @@ impl KetchupApp {
             chips.push(if self.exact.results.is_empty() {
                 self.catalog.text("status-exact-unavailable")
             } else {
+                let (bodies, refs) = self.exact_status_counts();
                 self.catalog.format(
                     "status-exact-current",
-                    &BTreeMap::from([
-                        ("bodies", self.exact_render_body_count().to_string()),
-                        ("refs", self.exact_stable_reference_count().to_string()),
-                    ]),
+                    &BTreeMap::from([("bodies", bodies.to_string()), ("refs", refs.to_string())]),
                 )
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1189,7 +1189,11 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     dock_scroll_area().show(ui, |ui| {
+                        let layers_first = self.layers_panel_first();
                         self.show_face_workflow_ui(ui);
+                        if layers_first {
+                            self.show_layers_panel(ui, true);
+                        }
                         self.show_program_source(ui);
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
@@ -1201,6 +1205,9 @@ impl KetchupApp {
                         self.show_validator_panel(ui);
                         // Below the docked assistant so its input stays in view.
                         self.show_outliner_without_assistant(ui);
+                        if !layers_first {
+                            self.show_layers_panel(ui, false);
+                        }
                     });
                 });
             egui::CentralPanel::default()
@@ -1220,9 +1227,16 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     dock_scroll_area().show(ui, |ui| {
+                        let layers_first = self.layers_panel_first();
                         self.show_face_workflow_ui(ui);
+                        if layers_first {
+                            self.show_layers_panel(ui, true);
+                        }
                         self.show_program_source(ui);
                         self.show_outliner_without_assistant(ui);
+                        if !layers_first {
+                            self.show_layers_panel(ui, false);
+                        }
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
                         self.show_helix_tool(ui);

@@ -3116,8 +3116,21 @@ impl KetchupApp {
                     }
                 });
         }
+    }
+
+    /// Whether the layers panel leads the dock: once the document has layers,
+    /// switching what is visible must not need scrolling past other panels.
+    pub(crate) fn layers_panel_first(&self) -> bool {
+        self.document.current().tags().next().is_some()
+    }
+
+    /// Layers, saved views and the section plane, separated from the panels
+    /// below (`first`) or above it.
+    pub(crate) fn show_layers_panel(&mut self, ui: &mut egui::Ui, first: bool) {
         if self.panels.tags_visible {
-            ui.separator();
+            if !first {
+                ui.separator();
+            }
             section_header(ui, self.palette(), &self.catalog.text("dock-tags"));
             ui.horizontal_wrapped(|ui| {
                 let create_enabled = self.can_begin_tag_creation(None);
@@ -3252,13 +3265,16 @@ impl KetchupApp {
                     self.dispatch_command(AppCommand::MakeUnique);
                 }
             });
+            let scene = self.document.current().scene_query();
+            let hidden = scene.iter().filter(|item| !item.visible).count();
             ui.label(self.catalog.format(
                 "tags-visibility",
                 &BTreeMap::from([
-                    ("hidden", self.hidden_occurrence_count().to_string()),
-                    ("total", self.active_box_count().to_string()),
+                    ("hidden", hidden.to_string()),
+                    ("total", scene.len().to_string()),
                 ]),
             ));
+            let active_scene = self.active_scene_query();
             for (id, name, mut visible, count) in self.tag_rows() {
                 let label = self.catalog.format(
                     "tags-row",
@@ -3280,7 +3296,7 @@ impl KetchupApp {
                     let select_label = self
                         .catalog
                         .format("tags-select", &BTreeMap::from([("name", name.clone())]));
-                    let select_enabled = self.can_select_tag_occurrences(id);
+                    let select_enabled = self.can_select_tag_occurrences(id, &active_scene);
                     let select = ui.add_enabled(select_enabled, egui::Button::new("▣"));
                     name_widget(&select, select_enabled, &select_label);
                     if select.clicked() {
@@ -3340,6 +3356,9 @@ impl KetchupApp {
             });
             self.saved_views_ui(ui);
             self.section_ui(ui);
+            if first {
+                ui.separator();
+            }
         }
     }
 }

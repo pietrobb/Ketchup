@@ -553,24 +553,34 @@ impl KetchupApp {
         } else {
             snapshot.scene_query()
         };
+        // One pass each instead of a scan per definition: a program model has
+        // hundreds of single-use definitions and this runs every frame.
+        let mut sizes = BTreeMap::new();
+        for occurrence in projection.occurrences() {
+            sizes
+                .entry(occurrence.body.definition_id)
+                .or_insert_with(|| occurrence.local_box.map(|local_box| local_box.size_mm));
+        }
+        let mut by_definition = BTreeMap::<_, Vec<_>>::new();
+        for item in &scene {
+            by_definition
+                .entry(item.definition_id)
+                .or_default()
+                .push(item);
+        }
         snapshot
             .definitions()
-            .filter(|definition| {
-                !scoped
-                    || scene
-                        .iter()
-                        .any(|occurrence| occurrence.definition_id == definition.id())
-            })
+            .filter(|definition| !scoped || by_definition.contains_key(&definition.id()))
             .map(|definition| {
-                let size = projection
-                    .occurrences()
-                    .iter()
-                    .find(|occurrence| occurrence.body.definition_id == definition.id())
-                    .and_then(|occurrence| occurrence.local_box.map(|local_box| local_box.size_mm))
+                let size = sizes
+                    .get(&definition.id())
+                    .copied()
+                    .flatten()
                     .unwrap_or(Vec3::ZERO);
-                let occurrences = scene
-                    .iter()
-                    .filter(|item| item.definition_id == definition.id())
+                let occurrences = by_definition
+                    .get(&definition.id())
+                    .into_iter()
+                    .flatten()
                     .map(|item| {
                         #[cfg(test)]
                         let matrix = item.transform.matrix();

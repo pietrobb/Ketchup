@@ -464,28 +464,30 @@ impl KetchupApp {
             .collect()
     }
 
+    /// `scene` is [`Self::active_scene_query`], passed in so the layers panel
+    /// queries the scene once per frame rather than once per tag row.
     pub(crate) fn tag_occurrence_paths(
         &self,
         id: TagId,
+        scene: &[SceneOccurrence],
     ) -> Option<(String, BTreeSet<InstancePath>)> {
         let snapshot = self.document.current();
         let name = snapshot.tag(id)?.name().to_owned();
-        let paths = self
-            .active_scene_query()
-            .into_iter()
+        let paths = scene
+            .iter()
             .filter(|item| {
                 item.instance_path.is_root()
                     && snapshot
                         .occurrence(item.instance_path.root_occurrence())
                         .is_some_and(|occurrence| occurrence.tags().contains(&id))
             })
-            .map(|item| item.instance_path)
+            .map(|item| item.instance_path.clone())
             .collect();
         Some((name, paths))
     }
 
-    pub(crate) fn can_select_tag_occurrences(&self, id: TagId) -> bool {
-        let Some((_, paths)) = self.tag_occurrence_paths(id) else {
+    pub(crate) fn can_select_tag_occurrences(&self, id: TagId, scene: &[SceneOccurrence]) -> bool {
+        let Some((_, paths)) = self.tag_occurrence_paths(id, scene) else {
             return false;
         };
         !paths.is_empty()
@@ -495,7 +497,7 @@ impl KetchupApp {
     }
 
     pub fn select_tag_occurrences(&mut self, id: TagId) -> bool {
-        let Some((name, paths)) = self.tag_occurrence_paths(id) else {
+        let Some((name, paths)) = self.tag_occurrence_paths(id, &self.active_scene_query()) else {
             return false;
         };
         if paths.is_empty()

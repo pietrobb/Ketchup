@@ -480,6 +480,30 @@ impl KetchupApp {
             .sum()
     }
 
+    /// Visible exact bodies and their stable references, as the status bar
+    /// shows them; recounted only when the document or exact results change.
+    pub(crate) fn exact_status_counts(&self) -> (usize, usize) {
+        let snapshot = self.document.current();
+        let key = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            self.exact.results.contents_stamp(),
+        );
+        if let Some((cached, bodies, refs)) = self.exact.status_counts.get()
+            && cached == key
+        {
+            return (bodies, refs);
+        }
+        let packages = self.visible_exact_packages(&snapshot);
+        let bodies = packages.len();
+        let refs = packages
+            .iter()
+            .map(|package| package.references().len())
+            .sum();
+        self.exact.status_counts.set(Some((key, bodies, refs)));
+        (bodies, refs)
+    }
+
     #[must_use]
     pub fn exact_stable_reference_count(&self) -> usize {
         let snapshot = self.document.current();

@@ -102,6 +102,9 @@ pub struct RenderBatch {
 
 #[derive(Clone, Debug)]
 pub struct InstancedRenderPlan {
+    /// Unique per built plan, so the GPU side can keep its uploads for as long
+    /// as the same plan is painted (every camera-only frame).
+    id: u64,
     document_id: DocumentId,
     source_revision: u64,
     source_digest: String,
@@ -196,7 +199,9 @@ impl InstancedRenderPlan {
                 .iter()
                 .any(|batch| batch.geometry.fingerprint() == fingerprint)
         });
+        static NEXT_PLAN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            id: NEXT_PLAN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
@@ -632,8 +637,7 @@ struct GpuGeometry {
 
 struct PreparedBatch {
     fingerprint: String,
-    instance_buffer: wgpu::Buffer,
-    instance_count: u32,
+    instances: std::ops::Range<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -660,6 +664,9 @@ pub struct GpuInstancedRenderer {
     target_format: wgpu::TextureFormat,
     geometries: BTreeMap<String, GpuGeometry>,
     prepared: Vec<PreparedBatch>,
+    /// All instances of the prepared plan, one range per batch.
+    instance_buffer: Option<wgpu::Buffer>,
+    prepared_plan: Option<u64>,
     stats: GpuRenderStats,
 }
 
@@ -834,6 +841,8 @@ impl GpuInstancedRenderer {
             target_format,
             geometries: BTreeMap::new(),
             prepared: Vec::new(),
+            instance_buffer: None,
+            prepared_plan: None,
             stats: GpuRenderStats::default(),
         }
     }
@@ -869,50 +878,9 @@ impl GpuInstancedRenderer {
         camera_uniform.extend(f32_bytes(&frame.section));
         camera_uniform.extend(u32_bytes(&[framebuffer_size[0], framebuffer_size[1], 0, 0]));
         queue.write_buffer(&self.camera_buffer, 0, &camera_uniform);
-        self.prepared.clear();
-        for batch in plan.batches() {
-            let fingerprint = batch.geometry.fingerprint().to_owned();
-            if self.geometries.contains_key(&fingerprint) {
-                self.stats.geometry_cache_hits += 1;
-            } else {
-                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Ketchup derived geometry vertices"),
-                    contents: &vertex_bytes(&batch.geometry.vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Ketchup derived geometry indices"),
-                    contents: &u32_bytes(&batch.geometry.indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-                self.geometries.insert(
-                    fingerprint.clone(),
-                    GpuGeometry {
-                        vertex_buffer,
-                        index_buffer,
-                        index_count: batch.geometry.indices.len() as u32,
-                    },
-                );
-                self.stats.geometry_uploads += 1;
-            }
-            let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Ketchup derived instance transforms"),
-                contents: &instance_bytes(&batch.instances),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            self.prepared.push(PreparedBatch {
-                fingerprint,
-                instance_buffer,
-                instance_count: batch.instances.len() as u32,
-            });
-            self.stats.instance_uploads += 1;
+        if self.prepared_plan != Some(plan.id) {
+            self.upload_plan(device, plan);
         }
-        self.geometries.retain(|fingerprint, _| {
-            self.prepared
-                .iter()
-                .any(|batch| batch.fingerprint == *fingerprint)
-        });
-        self.stats.gpu_geometry_entries = self.geometries.len();
         let viewport = frame.viewport;
         if viewport[2] > 0 && viewport[3] > 0 {
             let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -940,29 +908,88 @@ impl GpuInstancedRenderer {
             depth_pass.set_scissor_rect(viewport[0], viewport[1], viewport[2], viewport[3]);
             depth_pass.set_bind_group(0, &self.scene_bind_group, &[]);
             depth_pass.set_pipeline(&self.depth_pipeline);
-            for prepared in &self.prepared {
-                let geometry = &self.geometries[&prepared.fingerprint];
-                depth_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
-                depth_pass.set_vertex_buffer(1, prepared.instance_buffer.slice(..));
-                depth_pass
-                    .set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                depth_pass.draw_indexed(0..geometry.index_count, 0, 0..prepared.instance_count);
+            self.draw_batches(&mut depth_pass);
+        }
+    }
+
+    /// Upload what a newly built plan needs: geometry not yet on the GPU and
+    /// one buffer with every instance. Camera-only frames reuse both.
+    fn upload_plan(&mut self, device: &wgpu::Device, plan: &InstancedRenderPlan) {
+        self.prepared.clear();
+        let mut instances = Vec::new();
+        for batch in plan.batches() {
+            let fingerprint = batch.geometry.fingerprint().to_owned();
+            if self.geometries.contains_key(&fingerprint) {
+                self.stats.geometry_cache_hits += 1;
+            } else {
+                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Ketchup derived geometry vertices"),
+                    contents: &vertex_bytes(&batch.geometry.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Ketchup derived geometry indices"),
+                    contents: &u32_bytes(&batch.geometry.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                self.geometries.insert(
+                    fingerprint.clone(),
+                    GpuGeometry {
+                        vertex_buffer,
+                        index_buffer,
+                        index_count: batch.geometry.indices.len() as u32,
+                    },
+                );
+                self.stats.geometry_uploads += 1;
             }
+            let first = instances.len() as u32;
+            instances.extend_from_slice(&batch.instances);
+            self.prepared.push(PreparedBatch {
+                fingerprint,
+                instances: first..instances.len() as u32,
+            });
+            self.stats.instance_uploads += 1;
+        }
+        let used = self
+            .prepared
+            .iter()
+            .map(|batch| batch.fingerprint.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        self.geometries
+            .retain(|fingerprint, _| used.contains(fingerprint.as_str()));
+        self.stats.gpu_geometry_entries = self.geometries.len();
+        self.instance_buffer = (!instances.is_empty()).then(|| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Ketchup derived instance transforms"),
+                contents: &instance_bytes(&instances),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
+        self.prepared_plan = Some(plan.id);
+    }
+
+    fn draw_batches(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let Some(instance_buffer) = &self.instance_buffer else {
+            return;
+        };
+        pass.set_vertex_buffer(1, instance_buffer.slice(..));
+        for prepared in &self.prepared {
+            let geometry = &self.geometries[&prepared.fingerprint];
+            pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
+            pass.set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..geometry.index_count, 0, prepared.instances.clone());
         }
     }
 
     pub fn paint(&mut self, render_pass: &mut wgpu::RenderPass<'_>) {
         render_pass.set_bind_group(0, &self.scene_bind_group, &[]);
         render_pass.set_pipeline(&self.color_pipeline);
-        for prepared in &self.prepared {
-            let geometry = &self.geometries[&prepared.fingerprint];
-            render_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, prepared.instance_buffer.slice(..));
-            render_pass
-                .set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..geometry.index_count, 0, 0..prepared.instance_count);
-            self.stats.draw_calls += 1;
-            self.stats.instances_drawn += u64::from(prepared.instance_count);
+        self.draw_batches(render_pass);
+        if self.instance_buffer.is_some() {
+            for prepared in &self.prepared {
+                self.stats.draw_calls += 1;
+                self.stats.instances_drawn += u64::from(prepared.instances.len() as u32);
+            }
         }
     }
 
@@ -1054,14 +1081,7 @@ impl CallbackTrait for ScenePaintCallback {
         if let Some(renderer) = callback_resources.get::<GpuInstancedRenderer>() {
             render_pass.set_bind_group(0, &renderer.scene_bind_group, &[]);
             render_pass.set_pipeline(&renderer.color_pipeline);
-            for prepared in &renderer.prepared {
-                let geometry = &renderer.geometries[&prepared.fingerprint];
-                render_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, prepared.instance_buffer.slice(..));
-                render_pass
-                    .set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..geometry.index_count, 0, 0..prepared.instance_count);
-            }
+            renderer.draw_batches(render_pass);
         }
     }
 }

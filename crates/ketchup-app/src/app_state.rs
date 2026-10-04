@@ -189,6 +189,22 @@ pub(crate) struct ExactState {
     pub(crate) topology_result_history: BTreeMap<ExactSource, ExactResultRegistry>,
     pub(crate) source: Option<ExactSource>,
     pub(crate) retry_at: Option<Instant>,
+    /// Status-bar body and reference counts for (document, revision, exact
+    /// contents): counting checks every package's freshness, too slow per frame.
+    pub(crate) status_counts: std::cell::Cell<Option<(ExactCacheKey, usize, usize)>>,
+    /// The unique current topology package per definition for (document,
+    /// revision, topology contents): hover resolves the face of every body
+    /// under the pointer, and each lookup checked every package's freshness.
+    pub(crate) topology_by_definition: std::cell::RefCell<Option<TopologyByDefinition>>,
+}
+
+/// Document, revision and exact registry contents stamp that derived exact
+/// data was computed for.
+pub(crate) type ExactCacheKey = (DocumentId, u64, u64);
+
+pub(crate) struct TopologyByDefinition {
+    pub(crate) key: ExactCacheKey,
+    pub(crate) packages: BTreeMap<DefinitionId, Arc<ExactBodyPackage>>,
 }
 
 /// Derived render data and the GPU handles it draws with.

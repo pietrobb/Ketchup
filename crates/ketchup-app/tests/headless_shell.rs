@@ -284,6 +284,47 @@ fn window_menu_toggles_outliner_and_tags_without_mutating_the_document() {
     }
 }
 
+/// A document with layers must show them at the top of the dock, above the
+/// assistant and the outliner, so toggling a layer needs no scrolling.
+#[test]
+fn layers_lead_the_dock_once_the_document_has_a_layer() {
+    let mut shell = Shell::new();
+    let layers = shell.catalog().text("dock-tags");
+    let outliner = shell.catalog().text("dock-outliner");
+    let top_of = |shell: &Shell, label: &str| {
+        shell
+            .visible_accesskit_rects()
+            .into_iter()
+            .find(|(node, _)| {
+                node.contains(&format!("label={label:?}"))
+                    || node.contains(&format!("value={label:?}"))
+            })
+            .map(|(_, rect)| rect.top())
+    };
+    // Without layers the panel stays at the bottom, where it does not push the
+    // assistant out of view.
+    assert!(top_of(&shell, &layers).is_none_or(|layers_top| {
+        top_of(&shell, &outliner).is_some_and(|outliner_top| layers_top > outliner_top)
+    }));
+
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                target: TagId(700),
+                name: "Konštrukcia".to_owned(),
+                visible: true,
+            })
+    );
+    shell.settle();
+    let confirm = shell.catalog().text("assistant-confirm");
+    shell.click_row(&confirm);
+    assert!(shell.app().document_snapshot().tag(TagId(700)).is_some());
+    let layers_top = top_of(&shell, &layers).expect("layers header is in view");
+    assert!(top_of(&shell, &outliner).is_none_or(|outliner_top| layers_top < outliner_top));
+    assert!(layers_top < shell.viewport_rect().center().y);
+}
+
 #[test]
 fn home_view_is_localized_accessible_framed_and_document_preserving() {
     for catalog in [
