@@ -72,6 +72,7 @@ mod program_validation_summary;
 #[cfg(test)]
 mod tests;
 mod transport;
+mod validator_catalog;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024;
 pub const MAX_IMAGE_FRAME_BYTES: usize = 12 * 1024 * 1024;
 pub const MIN_IMAGE_SIDE_PX: u32 = 512;
@@ -122,6 +123,7 @@ pub enum ApplyAndVerifySave {
 pub enum Request {
     Status {},
     Summary {},
+    ListValidators {},
     /// CAD program operation catalog; one operation with its types when named.
     Operations {
         #[serde(default)]
@@ -288,6 +290,32 @@ pub enum Request {
         expected: Option<Stamp>,
         view: View,
     },
+    /// Saved views stored in the document.
+    SavedViews {
+        #[serde(default)]
+        expected: Option<Stamp>,
+    },
+    /// Save the current camera, display switches and hidden tags under `name`.
+    SaveView {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        name: String,
+    },
+    /// Show a saved view by name.
+    ShowView {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        name: String,
+    },
+    /// Open or move the section plane (`normal` and `offset_mm`), or close it (neither).
+    Section {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        normal: Option<[f64; 3]>,
+        #[serde(default)]
+        offset_mm: Option<f64>,
+    },
     Image(ImageRequest),
     Disconnect {},
 }
@@ -447,12 +475,41 @@ fn program_owned(app: &KetchupApp) -> bool {
     app.document.current_rule_program().is_some()
 }
 
+/// Saved views with the names of the tags each one hides and its display switches.
+fn saved_views_json(app: &KetchupApp) -> Value {
+    let snapshot = app.document.current();
+    let views = snapshot
+        .saved_views()
+        .map(|view| {
+            let hidden = view
+                .hidden_tags
+                .iter()
+                .filter_map(|id| snapshot.tag(*id).map(|tag| tag.name().to_owned()))
+                .collect::<Vec<_>>();
+            json!({"id":view.id().0,"name":view.name(),"hidden_tags":hidden,
+                "style":view.style,"parallel":view.camera.parallel,
+                "section":crate::app::section_json(view.section)})
+        })
+        .collect::<Vec<_>>();
+    json!({"saved_views":views,"program_owned":program_owned(app)})
+}
+
 /// Rejects a typed edit of a program-owned document when the caller asked for strict.
 fn reject_program_detach(app: &KetchupApp, strict: bool) -> Result<(), &'static str> {
     if strict && program_owned(app) {
         return Err("program_owned_document");
     }
     Ok(())
+}
+
+/// Showing or hiding tags changes only the view, so the program keeps owning the model.
+fn view_only(program: &AssistantCadEditProgram) -> bool {
+    program.operations.iter().all(|operation| {
+        matches!(
+            operation,
+            AssistantCadEditOperation::SetTagVisibility { .. }
+        )
+    })
 }
 
 /// The result fields that tell the client a typed edit detached the program.
@@ -1583,7 +1640,7 @@ impl LiveBridge {
             .validate()
             .map_err(|error| failure("invalid_program", error.to_string(), json!({})))?;
         Self::program_scope(app, &program)?;
-        reject_program_detach(app, strict)?;
+        reject_program_detach(app, strict && !view_only(&program))?;
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Planning) {
             return Err(PlanRejection::Code("planning_rejected"));
@@ -1992,6 +2049,63 @@ impl LiveBridge {
         self.execute_authorized(app, request, ui_busy, &Arc::new(AtomicBool::new(false)))
     }
 
+    /// List, save or show saved views; none of them detaches the document's program.
+    fn saved_view_request(
+        &mut self,
+        app: &mut KetchupApp,
+        request: Request,
+        ui_busy: bool,
+        cancelled: &Arc<AtomicBool>,
+    ) -> Result<Value, &'static str> {
+        match request {
+            Request::SavedViews { expected } => {
+                Self::guard(app, &expected)?;
+                Ok(saved_views_json(app))
+            }
+            Request::SaveView { expected, name } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                Self::require_request_authority(cancelled)?;
+                if app.save_view(&name).is_none() {
+                    return Err("saved_view_rejected");
+                }
+                self.query.invalidate();
+                Ok(saved_views_json(app))
+            }
+            Request::ShowView { expected, name } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                let id = app.saved_view_id(&name).ok_or("entity_not_found")?;
+                Self::require_request_authority(cancelled)?;
+                if !app.activate_saved_view(id) {
+                    return Err("saved_view_rejected");
+                }
+                self.query.invalidate();
+                Ok(json!({"shown":name,"program_owned":program_owned(app),"image":"not_requested"}))
+            }
+            Request::Section {
+                expected,
+                normal,
+                offset_mm,
+            } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                let section = match (normal, offset_mm) {
+                    (None, None) => None,
+                    (Some(normal), Some(offset_mm)) => {
+                        Some(crate::app::plane_at(normal, offset_mm).ok_or("invalid_section")?)
+                    }
+                    _ => return Err("invalid_section"),
+                };
+                Self::require_request_authority(cancelled)?;
+                app.set_section(section);
+                Ok(json!({"section":crate::app::section_json(app.section()),
+                    "canonical_mutation":false,"image":"not_requested"}))
+            }
+            _ => Err("invalid_request"),
+        }
+    }
+
     fn execute_authorized(
         &mut self,
         app: &mut KetchupApp,
@@ -2020,9 +2134,10 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","selection","view","saved_views","save_view","show_view","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
+            Request::ListValidators {} => Ok(validator_catalog::catalog()),
             Request::Operations { name } => {
                 ketchup_assistant::catalog::cad_operation_catalog(name.as_deref())
             }
@@ -2161,7 +2276,7 @@ impl LiveBridge {
                 let value = json!({"proposal_id":id,
                     "command_digest":proposal.command_digest(),"result_digest":proposal.intended_result_digest(),
                     "write_count":proposal.authoritative_writes().len(),
-                    "detaches_program":program_owned(app)});
+                    "detaches_program":program_owned(app) && !view_only(&program)});
                 self.pending = Some(Pending {
                     id,
                     epoch: app.document.mutation_epoch(),
@@ -2356,6 +2471,10 @@ impl LiveBridge {
                 }
                 Ok(json!({"view":view,"canonical_mutation":false,"image":"not_requested"}))
             }
+            request @ (Request::SavedViews { .. }
+            | Request::SaveView { .. }
+            | Request::ShowView { .. }
+            | Request::Section { .. }) => self.saved_view_request(app, request, ui_busy, cancelled),
             Request::Image(ImageRequest {
                 expected,
                 image_protocol_version,

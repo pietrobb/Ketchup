@@ -85,6 +85,44 @@ def mcp(tmp_path):
             server.stdout.close()
 
 
+def test_validator_catalog_discovery_and_execution(mcp):
+    before = mcp("inspect", action="status")
+    catalog = mcp("list_validators")["result"]
+    assert catalog["catalog_only"] is True
+    assert mcp("inspect", action="status") == before
+    rows = {row["id"]: row for row in catalog["validators"]}
+    assert len(rows) == len(catalog["validators"]) == 15
+    assert {row["id"] for row in rows.values() if row["kind"] == "document"} == set(catalog["document_edit_route"]["supported_ids"])
+    docs = catalog["documentation"]
+    assert mcp(docs["tool"], **docs["arguments"])["text"]
+    mcp("program", action="apply", file_name="catalog.star", source="a=box('base',(2,2,2),at=(-100,0,0))\nb=box('moving',(2,2,2))\njoint(a,b,kind='motion',name='travel',motion=slide((0,1,0),0,100))\nassembly_step('travel',start=100,end=0)\nt=box('holder',(4,4,8),at=(200,0,10),tool=True)\ntool_access('approach',envelope=t,motion=slide((0,0,1),0,20),start=20)")
+    before = mcp("inspect", action="status")
+    assert mcp("list_validators")["result"] == catalog
+    for row in rows.values():
+        run = row["run"]
+        reply = mcp(run["tool"], **run["arguments"])
+        detail = reply
+        for key in row["result_path"].split("."):
+            detail = detail[key]
+        assert detail["state"] in {"passed", "failed", "not_evaluated", "incomplete"}, (row, detail)
+        assert reply["result"]["canonical_mutation"] is False
+        if row["id"] in {"program_geometry", "collision", "motion", "assembly_path", "tool_access"}:
+            assert detail["state"] == "passed", (row, detail)
+        assert mcp("inspect", action="status") == before
+    # Use a discovered validator to distinguish missing evidence, success and a real failure.
+    row = rows["beam_deflection"]
+    assert row["required_roles"] == ["physics.beam.{xy|xz|yz}"]
+    for material, state in [("unknown", "not_evaluated"), ("steel", "passed"), ("engineered_wood", "failed")]:
+        mcp("program", action="apply", file_name="catalog.star", source=f"box('plate',(1000,300,20),material='{material}',attributes={{'classification:ketchup.validator-role.v1':'physics.beam.xy'}})")
+        before = mcp("inspect", action="status")
+        reply = mcp(row["run"]["tool"], **row["run"]["arguments"])
+        detail = reply["result"]["validation"]["document_checks"]["beam_deflection"]
+        assert detail["state"] == state, detail
+        if state == "not_evaluated":
+            assert detail["complete"] is False
+        assert mcp("inspect", action="status") == before
+
+
 def test_tool_access_through_public_mcp(mcp, tmp_path):
     geometry = "box('work',(20,20,2),at=(-10,-10,-4))\nt=box('holder',(4,4,8),at=(-2,-2,0),tool=True)\n"
     declaration = "tool_access('approach',envelope=t,motion=slide((0,0,1),0,20),start=20)\n"

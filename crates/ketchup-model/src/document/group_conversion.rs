@@ -159,10 +159,12 @@ pub(super) fn create_occurrence(
     if product.occurrences.contains_key(&occurrence.id) {
         return Err(CanonicalError::OccurrenceAlreadyExists(occurrence.id));
     }
-    if let Some(tag) = occurrence.tag
-        && !product.tags.contains_key(&tag)
+    if let Some(tag) = occurrence
+        .tags
+        .iter()
+        .find(|tag| !product.tags.contains_key(tag))
     {
-        return Err(CanonicalError::TagNotFound(tag));
+        return Err(CanonicalError::TagNotFound(*tag));
     }
     product
         .occurrences
@@ -493,7 +495,7 @@ pub(super) fn convert_group_to_component_model(
                     .parent
                     .filter(|parent| *parent != plan.group_id)
                     .map(|parent| LocalGroupId(parent.0)),
-                tag: occurrence.tag,
+                tags: occurrence.tags.clone(),
                 visible: occurrence.visible,
                 color: occurrence.color,
             }),
@@ -522,7 +524,7 @@ pub(super) fn convert_group_to_component_model(
             name: plan.component_name.clone(),
             transform: root.transform,
             parent: root.parent,
-            tag: None,
+            tags: BTreeSet::new(),
             visible: true,
             color: None,
         }),

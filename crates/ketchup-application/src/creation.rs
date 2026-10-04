@@ -532,7 +532,7 @@ pub(crate) fn plan_creation(
                     name: name.clone(),
                     transform,
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]);

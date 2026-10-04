@@ -601,7 +601,7 @@ pub fn plan_sketchup_scene_import(
             name: instance.name.clone(),
             transform: instance.transform,
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: instance.visible,
         });
     }

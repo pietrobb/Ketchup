@@ -145,7 +145,7 @@ mod tests {
                         name: "Translated".into(),
                         transform: Transform::from_translation(100.0, 50.0, 3.0).unwrap(),
                         parent: None,
-                        tag: None,
+                        tags: Default::default(),
                         visible: true,
                     },
                 ]))

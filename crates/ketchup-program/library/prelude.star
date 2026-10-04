@@ -11,7 +11,15 @@
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=
-#   (0-255 channels), attributes= (a dict of strings) and grounded=False.
+#   (0-255 channels), attributes= (a dict of strings), tags= and grounded=False.
+#   tags= names document tags (layers), one name or a list, e.g. tags=["concept", "roof"].
+#     tag(items, tags) adds tags to a part, a group (all its parts) or a list of them.
+#     A part is hidden while any of its tags is hidden. Apply creates missing tags, keeps
+#     tags the user added by hand and the user's tag visibility, and deletes a tag the
+#     program stopped naming once no part uses it. Hiding a tag never detaches the program.
+#   alternatives(["concept", "construction"]) declares tags that represent the same thing
+#     in different detail: parts carrying different ones of them may overlap without a
+#     collision. Show one at a time with saved views; see buildup() in topic buildup.
 #   grain= of board() and member() is the attribute "grain": "x", "y" or "z".
 #   member(name, start, end, section, across=)  -> a bar from point to point
 #   floor(z) -> set one horizontal support plane at world z millimetres in program and document reports.
@@ -1175,8 +1183,241 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
                op = "<=", tolerance = tolerance,
                hint = "The part sticks out of that face of the container by this much.")
 
+#@topic buildup: Layered build-ups: framed walls, floors and roofs
+#
+#   buildup(name, origin, along, up, length, layers, height=None, top=None,
+#           openings=[], tags=[])  -> group of every piece
+#     A flat panel built of layers: a timber-frame wall, floor, ceiling or roof. Its
+#     plane is spanned from world point `origin` by `along` (u, the length) and `up`
+#     (v, the height); layers stack from the inside face outward along along x up.
+#     The outline is u from 0 to `length` and v from 0 to `height`, or up to `top`:
+#     points [(u, v), ...] from u = 0 to u = length, e.g. a gable
+#     [(0, 2600), (2000, 4280), (4000, 2600)]. `top` may also be a function of a
+#     layer's inner offset (mm from the inside face) returning such points, for a panel
+#     whose end another plane cuts (roof halves meeting in the ridge).
+#     A layer is a dict {"name", "thickness", "material", "color", "tags"}. A sheet layer
+#     is cut into pieces around the openings. A framed layer adds "spacing" (stud
+#     centres in mm), "stud" (stud width, default 60) and optionally "infill" (material
+#     between the studs; "infill_color", "infill_tags"): a bottom plate, a top plate
+#     following the outline, studs at `spacing`, a stud on each side of every opening
+#     with a header above and a sill under it, and infill in every bay.
+#     openings: [(u, v, width, height), ...] in panel coordinates, apart along u.
+#     Pieces are "<name>/<layer>", "<name>/<layer>/stud 3", ... with `tags` plus their
+#     layer's tags. Only extrusions, no booleans: every piece is rebuilt from the numbers.
+#     Pair it with a concept body through alternatives() and tags, e.g. a wall facing -y:
+#     buildup("wall S", (0, 200, 0), (1, 0, 0), (0, 0, 1), 4000, height = 2600,
+#             layers = [{"name": "gypsum", "thickness": 12.5, "material": "gypsum board"},
+#                       {"name": "frame", "thickness": 160, "material": "C24",
+#                        "spacing": 625, "infill": "mineral wool"},
+#                       {"name": "osb", "thickness": 15, "material": "OSB"}],
+#             openings = [(800, 0, 900, 2100)], tags = ["construction"])
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+def _outline(name, length, height, top, offset):
+    """The top line of a build-up layer as [(u, v), ...] from u = 0 to u = length."""
+    if type(top) == "function":
+        points = top(offset)
+    elif top != None:
+        points = top
+    elif height != None:
+        points = [(0, height), (length, height)]
+    else:
+        fail("buildup(%s): give height= or top=" % name)
+    points = [(float(p[0]), float(p[1])) for p in points]
+    if len(points) < 2 or abs(points[0][0]) > 0.001 or abs(points[-1][0] - length) > 0.001:
+        fail("buildup(%s): top must run from u = 0 to u = %s, got %s" % (name, fmt_mm(length), points))
+    for i in range(len(points) - 1):
+        if points[i + 1][0] <= points[i][0]:
+            fail("buildup(%s): top points must go along u, got %s" % (name, points))
+        if points[i][1] <= 0 or points[i + 1][1] <= 0:
+            fail("buildup(%s): top must lie above v = 0, got %s" % (name, points))
+    return points
+
+def _under(points, drops, a, b, bottom):
+    """The outline between u = a and u = b from v = bottom up to the top lowered by
+    drops (one per top segment), counter-clockwise; None if it has no room."""
+    upper = []
+    for i in range(len(points) - 1):
+        u0, v0 = points[i]
+        u1, v1 = points[i + 1]
+        lo, hi = max(a, u0), min(b, u1)
+        if hi - lo < 0.001:
+            continue
+        for u in (lo, hi):
+            point = (u, v0 + (v1 - v0) * (u - u0) / (u1 - u0) - drops[i])
+            if not upper or abs(upper[-1][0] - point[0]) > 0.001 or abs(upper[-1][1] - point[1]) > 0.001:
+                upper.append(point)
+    if not upper or min([p[1] for p in upper]) - bottom < 1:
+        return None
+    return [(a, bottom), (b, bottom)] + [upper[i] for i in range(len(upper) - 1, -1, -1)]
+
+def _rect(u0, v0, u1, v1):
+    return [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+
+def _column(points, drops, a, b, bottom, blocks):
+    """Pieces of the column u = a..b from v = bottom to the top, around the blocked
+    v ranges [(low, high), ...] (high None: up to the top)."""
+    pieces = []
+    for low, high in sorted(blocks):
+        if low - bottom >= 1:
+            pieces.append(_rect(a, bottom, b, low))
+        if high == None:
+            return pieces
+        bottom = max(bottom, high)
+    rest = _under(points, drops, a, b, bottom)
+    return pieces + ([rest] if rest != None else [])
+
+def _spans(length, cuts):
+    """The parts of 0..length left between the (start, end) ranges in cuts."""
+    spans, cursor = [], 0.0
+    for start, end in sorted(cuts):
+        if start - cursor >= 1:
+            spans.append((cursor, start))
+        cursor = max(cursor, end)
+    if length - cursor >= 1:
+        spans.append((cursor, length))
+    return spans
+
+def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = []):
+    """A panel built of layers: sheets, and framed layers with plates, studs and infill.
+    See the topic text above for the arguments."""
+    along = vec_scale(along, 1.0 / vec_length(along))
+    up = vec_sub(up, vec_scale(along, _dot(up, along)))
+    if vec_length(up) < 0.001:
+        fail("buildup(%s): up must not run along `along`" % name)
+    up = vec_scale(up, 1.0 / vec_length(up))
+    out = _cross(along, up)
+    if length <= 0:
+        fail("buildup(%s): length must be positive, got %s" % (name, length))
+    holes = [tuple([float(x) for x in o]) for o in openings]
+    for i in range(len(holes)):
+        ou, ov, ow, oh = holes[i]
+        if ow <= 0 or oh <= 0 or ou < 0 or ov < 0 or ou + ow > length + 0.001:
+            fail("buildup(%s): opening %s must lie inside u = 0..%s" % (name, holes[i], fmt_mm(length)))
+        for other in holes[:i]:
+            if ou < other[0] + other[2] and other[0] < ou + ow and ov < other[1] + other[3] and other[1] < ov + oh:
+                fail("buildup(%s): openings %s and %s overlap" % (name, other, holes[i]))
+    base_tags = _names(tags)
+    pieces = []
+
+    def piece(label, poly, at, thickness, material, color, piece_tags):
+        part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in poly], distance = thickness,
+                       material = material, color = color, tags = piece_tags)
+        pieces.append(place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along))
+
+    def covering(a, b):
+        return [o for o in holes if o[0] <= a + 0.001 and b <= o[0] + o[2] + 0.001]
+
+    offset = 0.0
+    for layer in layers:
+        label = layer["name"]
+        thickness = layer["thickness"]
+        if thickness <= 0:
+            fail("buildup(%s): layer %s needs a positive thickness" % (name, label))
+        material = layer.get("material", label)
+        color = layer.get("color")
+        layer_tags = base_tags + _names(layer.get("tags"))
+        points = _outline(name, length, height, top, offset)
+        flat = [0.0 for _ in points]
+        # Openings that leave no room above them run out through the top edge.
+        through = [_under(points, flat, o[0], o[0] + o[2], o[1] + o[3]) == None for o in holes]
+        if "spacing" not in layer:
+            edges = sorted({e: 0 for e in [0.0, length] + [o[0] for o in holes] + [o[0] + o[2] for o in holes]}.keys())
+            parts = []
+            for k in range(len(edges) - 1):
+                a, b = edges[k], edges[k + 1]
+                if b - a < 1:
+                    continue
+                blocks = [(o[1], None if through[holes.index(o)] else o[1] + o[3]) for o in covering(a, b)]
+                parts += _column(points, flat, a, b, 0.0, blocks)
+            for k in range(len(parts)):
+                piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags)
+            offset += thickness
+            continue
+        stud = float(layer.get("stud", 60))
+        spacing = float(layer["spacing"])
+        if spacing < stud:
+            fail("buildup(%s): layer %s spacing %s is narrower than its studs" % (name, label, fmt_mm(spacing)))
+        slopes = [(points[i + 1][1] - points[i][1]) / (points[i + 1][0] - points[i][0]) for i in range(len(points) - 1)]
+        drops = [stud * math.sqrt(1 + slope * slope) for slope in slopes]
+        # A stud, joist or rafter is blocked over an opening and its sill and header.
+        zones = []
+        for i in range(len(holes)):
+            ou, ov, ow, oh = holes[i]
+            if through[i] or _under(points, drops, ou, ou + ow, ov + oh + stud) == None:
+                if not through[i]:
+                    fail("buildup(%s): opening %s leaves no room for a header under the top plate" % (name, holes[i]))
+                high = None
+            else:
+                high = ov + oh + stud
+            zones.append((ou, ou + ow, ov - stud if ov >= 2 * stud else 0.0, high))
+        for i in range(len(zones)):
+            for j in range(i):
+                a, b = zones[i], zones[j]
+                if a[0] < b[1] and b[0] < a[1] and a[2] < (b[3] if b[3] != None else 1e12) and b[2] < (a[3] if a[3] != None else 1e12):
+                    fail("buildup(%s): openings %s and %s leave no room for a sill and a header between them" % (name, holes[j], holes[i]))
+        bottom = _spans(length, [(o[0], o[0] + o[2]) for o in holes if o[1] < 0.001])
+        for k in range(len(bottom)):
+            a, b = bottom[k]
+            piece("%s/bottom plate%s" % (label, "" if len(bottom) == 1 else " %d" % (k + 1)), _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags)
+        plates = []
+        for a, b in _spans(length, [(holes[i][0], holes[i][0] + holes[i][2]) for i in range(len(holes)) if through[i]]):
+            for i in range(len(points) - 1):
+                u0, v0 = points[i]
+                u1, v1 = points[i + 1]
+                lo, hi = max(a, u0), min(b, u1)
+                if hi - lo < 1:
+                    continue
+                top_lo = v0 + slopes[i] * (lo - u0)
+                top_hi = v0 + slopes[i] * (hi - u0)
+                plates.append([(lo, top_lo - drops[i]), (hi, top_hi - drops[i]), (hi, top_hi), (lo, top_lo)])
+        for k in range(len(plates)):
+            piece("%s/top plate%s" % (label, "" if len(plates) == 1 else " %d" % (k + 1)), plates[k], offset, thickness, material, color, layer_tags)
+        kings = []
+        for ou, ov, ow, oh in holes:
+            for side in (ou - stud, ou + ow):
+                if side >= -0.001 and side + stud <= length + 0.001:
+                    kings.append(side)
+                elif side > 0.001 and side + stud < length - 0.001:
+                    fail("buildup(%s): opening at u = %s needs room for a stud beside it" % (name, fmt_mm(ou)))
+        regular = [k * spacing for k in range(int((length - stud) / spacing) + 1) if length - stud - k * spacing >= stud]
+        regular.append(length - stud)
+        studs = kings + [u for u in regular if not [s for s in kings if abs(s - u) < stud]
+                         and not [o for o in holes if (u < o[0] and o[0] < u + stud) or (u < o[0] + o[2] and o[0] + o[2] < u + stud)]]
+        studs = sorted({u: 0 for u in studs}.keys())
+        count = 0
+        for u in studs:
+            blocks = [(z[2], z[3]) for z in zones if z[0] <= u + 0.001 and u + stud <= z[1] + 0.001]
+            for poly in _column(points, drops, u, u + stud, stud, blocks):
+                count += 1
+                piece("%s/stud %d" % (label, count), poly, offset, thickness, material, color, layer_tags)
+        for k in range(len(holes)):
+            ou, ov, ow, oh = holes[k]
+            if zones[k][3] != None:
+                piece("%s/header %d" % (label, k + 1), _rect(ou, ov + oh, ou + ow, ov + oh + stud), offset, thickness, material, color, layer_tags)
+            if ov >= 2 * stud:
+                piece("%s/sill %d" % (label, k + 1), _rect(ou, ov - stud, ou + ow, ov), offset, thickness, material, color, layer_tags)
+        if layer.get("infill") != None:
+            fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
+            bays = []
+            for k in range(len(studs) - 1):
+                a, b = studs[k] + stud, studs[k + 1]
+                if b - a < 1:
+                    continue
+                blocks = [(z[2], z[3]) for z in zones if z[0] <= a + 0.001 and b <= z[1] + 0.001]
+                bays += _column(points, drops, a, b, stud, blocks)
+            for k in range(len(bays)):
+                piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags)
+        offset += thickness
+    return group(name, pieces)
+
 #@topic validation: Inputs for document validators
 #
+# MCP list_validators() discovers all host checks, inputs/roles, run examples and result paths.
+# It does not run checks or claim the current model is valid. program validate is read-only;
+# incomplete/not_evaluated/skipped are never passes. Only document IDs belong in model validators.
 # material= also assigns ketchup.material.v1 on root/grouped parts. Unknown material
 # properties are not guessed. Known elastic moduli: engineered_wood, aluminium, steel.
 # attributes={"classification:<dimension>": "<category>"} assigns a canonical category;

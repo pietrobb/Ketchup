@@ -2,6 +2,28 @@
 
 use crate::*;
 
+/// Commands that add (`member`) or remove `tag` on each occurrence whose membership
+/// differs, keeping its other tags.
+fn tag_membership_commands(
+    snapshot: &Snapshot,
+    occurrence_ids: impl IntoIterator<Item = OccurrenceId>,
+    tag: TagId,
+    member: bool,
+) -> Vec<CanonicalCommand> {
+    occurrence_ids
+        .into_iter()
+        .filter_map(|id| {
+            let mut tags = snapshot.occurrence(id)?.tags().clone();
+            let changed = if member {
+                tags.insert(tag)
+            } else {
+                tags.remove(&tag)
+            };
+            changed.then_some(CanonicalCommand::SetOccurrenceTags { id, tags })
+        })
+        .collect()
+}
+
 impl KetchupApp {
     pub(crate) fn next_tag_id(&self) -> Option<TagId> {
         self.document
@@ -66,12 +88,12 @@ impl KetchupApp {
             visible: true,
         }];
         if let Some(occurrence_ids) = &source.occurrence_ids {
-            commands.extend(occurrence_ids.iter().copied().map(|occurrence_id| {
-                CanonicalCommand::SetOccurrenceTag {
-                    id: occurrence_id,
-                    tag: Some(source.id),
-                }
-            }));
+            commands.extend(tag_membership_commands(
+                &self.document.current(),
+                occurrence_ids.iter().copied(),
+                source.id,
+                true,
+            ));
         }
         Some(TagCreationPlan {
             source: source.clone(),
@@ -149,7 +171,7 @@ impl KetchupApp {
         let tag = snapshot.tag(id)?;
         if snapshot
             .local_occurrences()
-            .any(|occurrence| occurrence.tag() == Some(id))
+            .any(|occurrence| occurrence.tags().contains(&id))
         {
             return None;
         }
@@ -175,12 +197,12 @@ impl KetchupApp {
         source: &TagDeletionSourcePlan,
     ) -> Option<TagDeletionPlan> {
         (self.tag_deletion_source_plan(source.id).as_ref() == Some(source)).then_some(())?;
-        let mut commands = source
-            .occurrence_ids
-            .iter()
-            .copied()
-            .map(|id| CanonicalCommand::SetOccurrenceTag { id, tag: None })
-            .collect::<Vec<_>>();
+        let mut commands = tag_membership_commands(
+            &self.document.current(),
+            source.occurrence_ids.iter().copied(),
+            source.id,
+            false,
+        );
         commands.push(CanonicalCommand::DeleteTag { id: source.id });
         Some(TagDeletionPlan {
             source: source.clone(),
@@ -264,12 +286,12 @@ impl KetchupApp {
     pub(crate) fn tag_clear_plan(&self, source: &TagClearSourcePlan) -> Option<TagClearPlan> {
         (self.tag_clear_source_plan(source.id).as_ref() == Some(source)).then(|| TagClearPlan {
             source: source.clone(),
-            commands: source
-                .occurrence_ids
-                .iter()
-                .copied()
-                .map(|id| CanonicalCommand::SetOccurrenceTag { id, tag: None })
-                .collect(),
+            commands: tag_membership_commands(
+                &self.document.current(),
+                source.occurrence_ids.iter().copied(),
+                source.id,
+                false,
+            ),
         })
     }
 
@@ -455,7 +477,7 @@ impl KetchupApp {
                 item.instance_path.is_root()
                     && snapshot
                         .occurrence(item.instance_path.root_occurrence())
-                        .is_some_and(|occurrence| occurrence.tag() == Some(id))
+                        .is_some_and(|occurrence| occurrence.tags().contains(&id))
             })
             .map(|item| item.instance_path)
             .collect();
@@ -502,7 +524,7 @@ impl KetchupApp {
                 item.instance_path.is_root()
                     && snapshot
                         .occurrence(item.instance_path.root_occurrence())
-                        .is_some_and(|occurrence| occurrence.tag().is_some())
+                        .is_some_and(|occurrence| !occurrence.tags().is_empty())
             })
             .map(|item| item.instance_path)
             .collect::<BTreeSet<_>>();
@@ -540,7 +562,7 @@ impl KetchupApp {
                 item.instance_path.is_root()
                     && snapshot
                         .occurrence(item.instance_path.root_occurrence())
-                        .is_some_and(|occurrence| occurrence.tag().is_none())
+                        .is_some_and(|occurrence| occurrence.tags().is_empty())
             })
             .map(|item| item.instance_path)
             .collect::<BTreeSet<_>>();
@@ -572,19 +594,7 @@ impl KetchupApp {
     pub(crate) fn tag_assignment_plan(&self, id: TagId) -> Option<(String, Vec<CanonicalCommand>)> {
         let snapshot = self.document.current();
         let name = snapshot.tag(id)?.name().to_owned();
-        let commands = self
-            .selected_occurrence_ids()
-            .into_iter()
-            .filter(|occurrence_id| {
-                snapshot
-                    .occurrence(*occurrence_id)
-                    .is_some_and(|occurrence| occurrence.tag() != Some(id))
-            })
-            .map(|occurrence_id| CanonicalCommand::SetOccurrenceTag {
-                id: occurrence_id,
-                tag: Some(id),
-            })
-            .collect::<Vec<_>>();
+        let commands = tag_membership_commands(&snapshot, self.selected_occurrence_ids(), id, true);
         (!commands.is_empty()).then_some((name, commands))
     }
 
@@ -595,19 +605,8 @@ impl KetchupApp {
     pub(crate) fn tag_removal_plan(&self, id: TagId) -> Option<(String, Vec<CanonicalCommand>)> {
         let snapshot = self.document.current();
         let name = snapshot.tag(id)?.name().to_owned();
-        let commands = self
-            .selected_occurrence_ids()
-            .into_iter()
-            .filter(|occurrence_id| {
-                snapshot
-                    .occurrence(*occurrence_id)
-                    .is_some_and(|occurrence| occurrence.tag() == Some(id))
-            })
-            .map(|occurrence_id| CanonicalCommand::SetOccurrenceTag {
-                id: occurrence_id,
-                tag: None,
-            })
-            .collect::<Vec<_>>();
+        let commands =
+            tag_membership_commands(&snapshot, self.selected_occurrence_ids(), id, false);
         (!commands.is_empty()).then_some((name, commands))
     }
 
@@ -1014,11 +1013,8 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.selected_occurrence_ids()
             .into_iter()
-            .filter_map(|id| {
-                snapshot
-                    .occurrence(id)
-                    .and_then(|occurrence| occurrence.tag())
-            })
+            .filter_map(|id| snapshot.occurrence(id))
+            .flat_map(|occurrence| occurrence.tags().iter().copied())
             .collect()
     }
 
@@ -1143,8 +1139,7 @@ impl KetchupApp {
                 item.instance_path.is_root()
                     && snapshot
                         .occurrence(item.instance_path.root_occurrence())
-                        .and_then(|occurrence| occurrence.tag())
-                        .is_some_and(|tag| selected_tags.contains(&tag))
+                        .is_some_and(|occurrence| !occurrence.tags().is_disjoint(&selected_tags))
             })
             .map(|item| item.instance_path)
             .collect();
@@ -1230,16 +1225,15 @@ impl KetchupApp {
         let source_tags = occurrence_ids
             .iter()
             .copied()
-            .map(|id| Some((id, snapshot.occurrence(id)?.tag())))
+            .map(|id| Some((id, snapshot.occurrence(id)?.tags().clone())))
             .collect::<Option<BTreeMap<_, _>>>()?;
         let available_tags = self.tag_options().into_iter().collect::<BTreeMap<_, _>>();
         (!available_tags.is_empty()).then_some(())?;
-        let initial_tag = source_tags
-            .values()
-            .next()
-            .copied()
-            .filter(|first| source_tags.values().all(|candidate| candidate == first))
-            .flatten();
+        // The dialog starts from the tags every selected part already has.
+        let initial_tags = source_tags.values().skip(1).fold(
+            source_tags.values().next().cloned().unwrap_or_default(),
+            |common, tags| common.intersection(tags).copied().collect(),
+        );
         Some(TagAssignmentSourcePlan {
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
@@ -1250,7 +1244,7 @@ impl KetchupApp {
             edit_context: self.selection.edit_context.clone(),
             source_tags,
             available_tags,
-            initial_tag,
+            initial_tags,
         })
     }
 
@@ -1261,26 +1255,32 @@ impl KetchupApp {
         let source = self.tag_assignment_source_plan()?;
         (source == pending.source && source.occurrence_count == source.occurrence_paths.len())
             .then_some(())?;
-        let target_tag_name = match pending.target_tag {
-            Some(id) => source.available_tags.get(&id)?.clone(),
-            None => self.catalog.text("dialog-assign-tag-untagged"),
+        let target_tag_name = if pending.target_tags.is_empty() {
+            self.catalog.text("dialog-assign-tag-untagged")
+        } else {
+            pending
+                .target_tags
+                .iter()
+                .map(|id| source.available_tags.get(id).cloned())
+                .collect::<Option<Vec<_>>>()?
+                .join(", ")
         };
         let changed_occurrence_ids = source
             .source_tags
             .iter()
-            .filter_map(|(id, tag)| (*tag != pending.target_tag).then_some(*id))
+            .filter_map(|(id, tags)| (*tags != pending.target_tags).then_some(*id))
             .collect::<BTreeSet<_>>();
         let commands = changed_occurrence_ids
             .iter()
             .copied()
-            .map(|id| CanonicalCommand::SetOccurrenceTag {
+            .map(|id| CanonicalCommand::SetOccurrenceTags {
                 id,
-                tag: pending.target_tag,
+                tags: pending.target_tags.clone(),
             })
             .collect::<Vec<_>>();
         (!commands.is_empty()).then_some(TagAssignmentPlan {
             source,
-            target_tag: pending.target_tag,
+            target_tags: pending.target_tags.clone(),
             target_tag_name,
             changed_occurrence_ids,
             commands,
@@ -1291,8 +1291,11 @@ impl KetchupApp {
         let Some(source) = self.tag_assignment_source_plan() else {
             return;
         };
-        let target_tag = source.initial_tag;
-        self.modal.open(PendingTagAssignment { source, target_tag });
+        let target_tags = source.initial_tags.clone();
+        self.modal.open(PendingTagAssignment {
+            source,
+            target_tags,
+        });
     }
 
     #[must_use]
@@ -1301,24 +1304,25 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub fn tag_assignment_input(&self) -> Option<Option<TagId>> {
+    pub fn tag_assignment_input(&self) -> Option<BTreeSet<TagId>> {
         self.modal
             .get::<PendingTagAssignment>()
-            .map(|pending| pending.target_tag)
+            .map(|pending| pending.target_tags.clone())
     }
 
     #[must_use]
-    pub fn occurrence_tag(&self, occurrence_id: OccurrenceId) -> Option<TagId> {
+    pub fn occurrence_tags(&self, occurrence_id: OccurrenceId) -> BTreeSet<TagId> {
         self.document
             .current()
             .occurrence(occurrence_id)
-            .and_then(|occurrence| occurrence.tag())
+            .map(|occurrence| occurrence.tags().clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn apply_tag_assignment_plan(&mut self, plan: TagAssignmentPlan) -> bool {
         let pending = PendingTagAssignment {
             source: plan.source.clone(),
-            target_tag: plan.target_tag,
+            target_tags: plan.target_tags.clone(),
         };
         if plan.changed_occurrence_ids.len() != plan.commands.len()
             || self.dialog_tag_assignment_plan(&pending).as_ref() != Some(&plan)
@@ -1711,7 +1715,7 @@ impl KetchupApp {
             .iter()
             .map(|(id, name)| (*id, name.clone()))
             .collect::<Vec<_>>();
-        let mut tag = pending.target_tag;
+        let mut tags = pending.target_tags.clone();
         let mut open = true;
         let mut assign = false;
         let mut cancel = false;
@@ -1722,18 +1726,29 @@ impl KetchupApp {
             .resizable(false)
             .show(context, |ui| {
                 ui.label(self.catalog.text("dialog-assign-tag-tag"));
-                ui.selectable_value(
-                    &mut tag,
-                    None,
-                    self.catalog.text("dialog-assign-tag-untagged"),
-                );
+                if ui
+                    .selectable_label(
+                        tags.is_empty(),
+                        self.catalog.text("dialog-assign-tag-untagged"),
+                    )
+                    .clicked()
+                {
+                    tags.clear();
+                }
                 for (candidate, name) in &options {
-                    ui.selectable_value(&mut tag, Some(*candidate), name);
+                    let mut member = tags.contains(candidate);
+                    if ui.checkbox(&mut member, name).changed() {
+                        if member {
+                            tags.insert(*candidate);
+                        } else {
+                            tags.remove(candidate);
+                        }
+                    }
                 }
                 let has_changes = self
                     .dialog_tag_assignment_plan(&PendingTagAssignment {
                         source: pending.source.clone(),
-                        target_tag: tag,
+                        target_tags: tags.clone(),
                     })
                     .is_some();
                 ui.separator();
@@ -1750,7 +1765,7 @@ impl KetchupApp {
                 });
             });
         if let Some(pending) = self.modal.get_mut::<PendingTagAssignment>() {
-            pending.target_tag = tag;
+            pending.target_tags = tags;
         }
         if cancel || !open {
             self.modal.close::<PendingTagAssignment>();

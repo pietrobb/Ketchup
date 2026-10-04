@@ -640,6 +640,9 @@ struct PreparedBatch {
 pub struct GpuFrameDescriptor {
     pub world_to_clip: [f32; 16],
     pub view_depth: [f32; 4],
+    /// Section plane as unit normal and offset; fragments with `normal·p > offset` are
+    /// cut away. All zero shows everything.
+    pub section: [f32; 4],
     pub framebuffer_size: [u32; 2],
     pub viewport: [u32; 4],
 }
@@ -723,7 +726,7 @@ impl GpuInstancedRenderer {
         });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Ketchup camera uniform"),
-            size: 96,
+            size: 112,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -798,10 +801,8 @@ impl GpuInstancedRenderer {
                         write_mask,
                     })],
                 }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
+                // Back faces are culled in the shader unless a section plane shows them.
+                primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
@@ -865,6 +866,7 @@ impl GpuInstancedRenderer {
         encoder.clear_buffer(&self.depth_buffer, 0, None);
         let mut camera_uniform = f32_bytes(&frame.world_to_clip);
         camera_uniform.extend(f32_bytes(&frame.view_depth));
+        camera_uniform.extend(f32_bytes(&frame.section));
         camera_uniform.extend(u32_bytes(&[framebuffer_size[0], framebuffer_size[1], 0, 0]));
         queue.write_buffer(&self.camera_buffer, 0, &camera_uniform);
         self.prepared.clear();
@@ -976,6 +978,7 @@ pub struct ScenePaintCallback {
     viewport: eframe::egui::Rect,
     world_to_clip: [f32; 16],
     view_depth: [f32; 4],
+    section: [f32; 4],
 }
 
 impl ScenePaintCallback {
@@ -991,7 +994,15 @@ impl ScenePaintCallback {
             viewport,
             world_to_clip,
             view_depth,
+            section: [0.0; 4],
         }
+    }
+
+    /// Cut the scene open along a section plane (see [`GpuFrameDescriptor::section`]).
+    #[must_use]
+    pub fn with_section(mut self, section: [f32; 4]) -> Self {
+        self.section = section;
+        self
     }
 }
 
@@ -1020,6 +1031,7 @@ impl CallbackTrait for ScenePaintCallback {
                 GpuFrameDescriptor {
                     world_to_clip: self.world_to_clip,
                     view_depth: self.view_depth,
+                    section: self.section,
                     framebuffer_size: screen_descriptor.size_in_pixels,
                     viewport: [
                         u32::try_from(viewport.left_px).unwrap_or(0),
@@ -1120,6 +1132,7 @@ const INSTANCED_SHADER: &str = r#"
 struct Camera {
     world_to_clip: mat4x4<f32>,
     view_depth: vec4<f32>,
+    section: vec4<f32>,
     framebuffer_size: vec2<u32>,
     padding: vec2<u32>,
 };
@@ -1149,6 +1162,7 @@ struct VertexOutput {
     @location(2) @interpolate(flat) edge_mask: vec3<f32>,
     @location(3) view_depth: f32,
     @location(4) @interpolate(flat) color: vec4<f32>,
+    @location(5) world_position: vec3<f32>,
 };
 
 @vertex
@@ -1162,7 +1176,20 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.edge_mask = input.edge_mask;
     output.color = input.color;
     output.view_depth = dot(camera.view_depth, world_position);
+    output.world_position = world_position.xyz;
     return output;
+}
+
+fn section_open() -> bool {
+    return dot(camera.section.xyz, camera.section.xyz) > 0.5;
+}
+
+// Cut away by the section plane, or a back face that only an open cut shows.
+fn hidden(input: VertexOutput, front_facing: bool) -> bool {
+    if !section_open() {
+        return !front_facing;
+    }
+    return dot(camera.section.xyz, input.world_position) > camera.section.w;
 }
 
 fn pixel_depth_index(input: VertexOutput) -> u32 {
@@ -1181,16 +1208,26 @@ fn depth_priority(view_depth: f32) -> u32 {
 }
 
 @fragment
-fn fs_depth(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_depth(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
+    if hidden(input, front_facing) {
+        discard;
+    }
     atomicMax(&pixel_depths[pixel_depth_index(input)], depth_priority(input.view_depth));
     return vec4<f32>(0.0);
 }
 
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
+    if hidden(input, front_facing) {
+        discard;
+    }
     let depth = atomicLoad(&pixel_depths[pixel_depth_index(input)]);
     if depth_priority(input.view_depth) != depth {
         discard;
+    }
+    if !front_facing {
+        // The inside of a solid seen through the cut marks the section.
+        return vec4<f32>(0.84, 0.29, 0.25, 1.0);
     }
     let light_direction = normalize(vec3<f32>(-0.35, -0.45, 0.82));
     let diffuse = 0.62 + 0.38 * max(dot(normalize(input.world_normal), light_direction), 0.0);

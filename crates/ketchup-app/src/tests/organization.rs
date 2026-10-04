@@ -1222,9 +1222,9 @@ fn edit_context_blocks_selection_leakage_and_exits_one_level_at_a_time() {
                     name: "Local guard".to_owned(),
                     visible: true,
                 },
-                CanonicalCommand::SetOccurrenceTag {
+                CanonicalCommand::SetOccurrenceTags {
                     id: OccurrenceId(1),
-                    tag: Some(tag),
+                    tags: [tag].into(),
                 },
             ]))
             .is_ok()
@@ -1273,9 +1273,9 @@ fn used_local_tag_deletion_fails_closed_without_mutation() {
                     name: "Local delete guard".to_owned(),
                     visible: true,
                 },
-                CanonicalCommand::SetOccurrenceTag {
+                CanonicalCommand::SetOccurrenceTags {
                     id: OccurrenceId(1),
-                    tag: Some(tag),
+                    tags: [tag].into(),
                 },
             ]))
             .is_ok()
@@ -1306,7 +1306,7 @@ fn used_local_tag_deletion_fails_closed_without_mutation() {
         app.document
             .current()
             .local_occurrences()
-            .any(|occurrence| occurrence.tag() == Some(tag))
+            .any(|occurrence| occurrence.tags().first().copied() == Some(tag))
     );
 }
 
@@ -2263,9 +2263,9 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
                 name: "Hardware".to_owned(),
                 visible: true,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(created_tag),
+                tags: [created_tag].into(),
             },
         ]
     );
@@ -2313,7 +2313,12 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
     assert_eq!(created.tag(created_tag).unwrap().name(), "Hardware");
     assert!(created.tag(created_tag).unwrap().visible());
     assert_eq!(
-        created.occurrence(OccurrenceId(1)).unwrap().tag(),
+        created
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
         Some(created_tag)
     );
     assert_eq!(created.tag(existing_tag).unwrap().name(), "Other");
@@ -2336,7 +2341,9 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
         app.document_snapshot()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         None
     );
     assert!(app.redo());
@@ -2344,7 +2351,9 @@ fn tag_creation_plan_is_exact_and_rejects_tampering_namespace_selection_drift_an
         app.document_snapshot()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         Some(created_tag)
     );
 }
@@ -2366,9 +2375,9 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
                 name: "Other".to_owned(),
                 visible: false,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(tag),
+                tags: [tag].into(),
             },
         ]))
         .unwrap();
@@ -2394,9 +2403,9 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     let plan = app.tag_clear_plan(&source).unwrap();
     assert_eq!(
         plan.commands,
-        vec![CanonicalCommand::SetOccurrenceTag {
+        vec![CanonicalCommand::SetOccurrenceTags {
             id: OccurrenceId(1),
-            tag: None,
+            tags: Default::default(),
         }]
     );
 
@@ -2405,9 +2414,9 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     let undo_steps = app.undo_step_count();
     let action_digest = app.action_digest().to_owned();
     let mut tampered = plan.clone();
-    tampered.commands = vec![CanonicalCommand::SetOccurrenceTag {
+    tampered.commands = vec![CanonicalCommand::SetOccurrenceTags {
         id: OccurrenceId(1),
-        tag: Some(other_tag),
+        tags: [other_tag].into(),
     }];
     assert!(!app.apply_tag_clear_plan(tampered));
     assert_eq!(app.document_revision(), revision);
@@ -2439,7 +2448,15 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
     let cleared = app.document_snapshot();
     assert_eq!(cleared.tag(tag).unwrap().name(), "Hardware");
     assert!(cleared.tag(tag).unwrap().visible());
-    assert_eq!(cleared.occurrence(OccurrenceId(1)).unwrap().tag(), None);
+    assert_eq!(
+        cleared
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
+        None
+    );
     assert_eq!(cleared.tag(other_tag).unwrap().name(), "Other");
     assert_eq!(app.selected_instance_paths(), selection);
     assert_eq!(app.clipboard.occurrences, clipboard);
@@ -2461,7 +2478,9 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
         app.document_snapshot()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         Some(tag)
     );
     assert!(app.redo());
@@ -2469,7 +2488,9 @@ fn tag_clear_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness()
         app.document_snapshot()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         None
     );
 }
@@ -2491,9 +2512,9 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
                 name: "Other".to_owned(),
                 visible: false,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(tag),
+                tags: [tag].into(),
             },
         ]))
         .unwrap();
@@ -2520,9 +2541,9 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
     assert_eq!(
         plan.commands,
         vec![
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: None,
+                tags: Default::default(),
             },
             CanonicalCommand::DeleteTag { id: tag },
         ]
@@ -2563,7 +2584,15 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
     assert_eq!(app.undo_step_count(), undo_steps + 1);
     let deleted = app.document_snapshot();
     assert!(deleted.tag(tag).is_none());
-    assert_eq!(deleted.occurrence(OccurrenceId(1)).unwrap().tag(), None);
+    assert_eq!(
+        deleted
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
+        None
+    );
     assert_eq!(deleted.tag(other_tag).unwrap().name(), "Other");
     assert_eq!(app.selected_instance_paths(), selection);
     assert_eq!(app.clipboard.occurrences, clipboard);
@@ -2586,7 +2615,9 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
         app.document_snapshot()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         Some(tag)
     );
     assert!(app.redo());
@@ -2595,7 +2626,9 @@ fn tag_deletion_plan_is_exact_and_rejects_tampering_namespace_drift_and_stalenes
         app.document_snapshot()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         None
     );
 }
@@ -2617,9 +2650,9 @@ fn tag_rename_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness(
                 name: "Other".to_owned(),
                 visible: true,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(tag),
+                tags: [tag].into(),
             },
         ]))
         .unwrap();
@@ -2693,7 +2726,12 @@ fn tag_rename_plan_is_exact_and_rejects_tampering_namespace_drift_and_staleness(
     assert_eq!(renamed.tag(tag).unwrap().name(), "Mechanical");
     assert!(renamed.tag(tag).unwrap().visible());
     assert_eq!(
-        renamed.occurrence(OccurrenceId(1)).unwrap().tag(),
+        renamed
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
         Some(tag)
     );
     assert_eq!(renamed.tag(other_tag).unwrap().name(), "Other");
@@ -2739,9 +2777,9 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
                 name: "Target".to_owned(),
                 visible: true,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(source_tag),
+                tags: [source_tag].into(),
             },
         ]))
         .unwrap();
@@ -2765,16 +2803,21 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     assert!(source.edit_context.is_empty());
     assert_eq!(
         source.source_tags,
-        BTreeMap::from([(OccurrenceId(1), Some(source_tag)), (OccurrenceId(2), None),])
+        BTreeMap::from([
+            (OccurrenceId(1), BTreeSet::from([source_tag])),
+            (OccurrenceId(2), BTreeSet::new()),
+        ])
     );
     assert_eq!(
         source.available_tags.get(&target_tag).map(String::as_str),
         Some("Target")
     );
-    assert_eq!(source.initial_tag, None);
+    assert!(source.initial_tags.is_empty());
+    // Both parts end up in both tags; the first keeps the tag it already had.
+    let both = BTreeSet::from([source_tag, target_tag]);
     let pending = PendingTagAssignment {
         source,
-        target_tag: Some(target_tag),
+        target_tags: both.clone(),
     };
     let plan = app.dialog_tag_assignment_plan(&pending).unwrap();
     assert_eq!(
@@ -2784,13 +2827,13 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     assert_eq!(
         plan.commands,
         vec![
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(target_tag),
+                tags: both.clone(),
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(2),
-                tag: Some(target_tag),
+                tags: both.clone(),
             },
         ]
     );
@@ -2822,8 +2865,8 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     assert!(app.apply_tag_assignment_plan(plan.clone()));
     assert_eq!(app.document_revision(), revision + 1);
     assert_eq!(app.undo_step_count(), undo_steps + 1);
-    assert_eq!(app.occurrence_tag(OccurrenceId(1)), Some(target_tag));
-    assert_eq!(app.occurrence_tag(OccurrenceId(2)), Some(target_tag));
+    assert_eq!(app.occurrence_tags(OccurrenceId(1)), both);
+    assert_eq!(app.occurrence_tags(OccurrenceId(2)), both);
     assert_eq!(app.clipboard.occurrences, clipboard);
     let applied_revision = app.document_revision();
     let applied_digest = app.canonical_digest();
@@ -2837,11 +2880,14 @@ fn tag_assignment_plan_is_exact_and_rejects_tampering_context_drift_and_stalenes
     assert_eq!(app.clipboard.occurrences, clipboard);
 
     assert!(app.undo());
-    assert_eq!(app.occurrence_tag(OccurrenceId(1)), Some(source_tag));
-    assert_eq!(app.occurrence_tag(OccurrenceId(2)), None);
+    assert_eq!(
+        app.occurrence_tags(OccurrenceId(1)).first().copied(),
+        Some(source_tag)
+    );
+    assert_eq!(app.occurrence_tags(OccurrenceId(2)).first().copied(), None);
     assert!(app.redo());
-    assert_eq!(app.occurrence_tag(OccurrenceId(1)), Some(target_tag));
-    assert_eq!(app.occurrence_tag(OccurrenceId(2)), Some(target_tag));
+    assert_eq!(app.occurrence_tags(OccurrenceId(1)), both);
+    assert_eq!(app.occurrence_tags(OccurrenceId(2)), both);
 }
 
 #[test]

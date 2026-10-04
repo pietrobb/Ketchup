@@ -128,7 +128,7 @@ fn fixture() -> (tempfile::TempDir, Shell) {
                 name: "Moving".into(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(20)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -137,7 +137,7 @@ fn fixture() -> (tempfile::TempDir, Shell) {
                 name: "Reference".into(),
                 transform: Transform::from_translation(180.0, 90.0, 50.0).unwrap(),
                 parent: Some(GroupId(20)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

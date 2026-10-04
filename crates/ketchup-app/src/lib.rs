@@ -82,10 +82,10 @@ use ketchup_model::document::{
     MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
     OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalCommitError,
     ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
-    SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt,
-    SlotPath, Snapshot, SolidToolPlan, SpatialPathSegment, TagId, TipReplacementParent,
-    TipReplacementProposal, Transform, TrustedConfirmationSurface, ellipse_segments,
-    polygon_segments, regular_polygon_points,
+    SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SectionPlane,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
+    TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
+    ellipse_segments, polygon_segments, regular_polygon_points,
 };
 #[cfg(test)]
 use ketchup_model::document::{
@@ -1166,7 +1166,7 @@ struct SolidToolSourcePlan {
     target_name: String,
     target_transform: Transform,
     target_parent: Option<GroupId>,
-    target_tag: Option<TagId>,
+    target_tags: BTreeSet<TagId>,
     target_visible: bool,
     target_box: RenderBox,
     target_feature_id: FeatureId,
@@ -1174,7 +1174,7 @@ struct SolidToolSourcePlan {
     tool_name: String,
     tool_transform: Transform,
     tool_parent: Option<GroupId>,
-    tool_tag: Option<TagId>,
+    tool_tags: BTreeSet<TagId>,
     tool_visible: bool,
     tool_box: RenderBox,
     tool_feature_id: FeatureId,
@@ -1197,14 +1197,14 @@ impl SolidToolSourcePlan {
             && self.target_name == other.target_name
             && self.target_transform == other.target_transform
             && self.target_parent == other.target_parent
-            && self.target_tag == other.target_tag
+            && self.target_tags == other.target_tags
             && self.target_visible == other.target_visible
             && self.target_feature_id == other.target_feature_id
             && self.tool_selection == other.tool_selection
             && self.tool_name == other.tool_name
             && self.tool_transform == other.tool_transform
             && self.tool_parent == other.tool_parent
-            && self.tool_tag == other.tool_tag
+            && self.tool_tags == other.tool_tags
             && self.tool_visible == other.tool_visible
             && self.tool_feature_id == other.tool_feature_id
             && self.result_definition_id == other.result_definition_id
@@ -1407,6 +1407,8 @@ struct GeneralFinishPreview {
 enum ProjectedPolygon {
     Triangle([Pos2; 3]),
     Quad([Pos2; 4]),
+    /// What a section plane leaves of a face.
+    Polygon(Vec<Pos2>),
 }
 
 impl ProjectedPolygon {
@@ -1414,6 +1416,7 @@ impl ProjectedPolygon {
         match self {
             Self::Triangle(points) => points,
             Self::Quad(points) => points,
+            Self::Polygon(points) => points,
         }
     }
 }
@@ -3470,7 +3473,7 @@ struct CutClipboardOccurrence {
     definition_id: DefinitionId,
     transform: Transform,
     parent: Option<GroupId>,
-    tag: Option<TagId>,
+    tags: BTreeSet<TagId>,
     visible: bool,
 }
 
@@ -3850,15 +3853,15 @@ struct TagAssignmentSourcePlan {
     source_primary: Option<SelectionId>,
     source_selected_group: Option<GroupId>,
     edit_context: Vec<EditContext>,
-    source_tags: BTreeMap<OccurrenceId, Option<TagId>>,
+    source_tags: BTreeMap<OccurrenceId, BTreeSet<TagId>>,
     available_tags: BTreeMap<TagId, String>,
-    initial_tag: Option<TagId>,
+    initial_tags: BTreeSet<TagId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct TagAssignmentPlan {
     source: TagAssignmentSourcePlan,
-    target_tag: Option<TagId>,
+    target_tags: BTreeSet<TagId>,
     target_tag_name: String,
     changed_occurrence_ids: BTreeSet<OccurrenceId>,
     commands: Vec<CanonicalCommand>,
@@ -3867,7 +3870,7 @@ struct TagAssignmentPlan {
 #[derive(Clone, Debug)]
 struct PendingTagAssignment {
     source: TagAssignmentSourcePlan,
-    target_tag: Option<TagId>,
+    target_tags: BTreeSet<TagId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3884,7 +3887,7 @@ struct OccurrenceAlignmentSourcePlan {
     moving_name: String,
     moving_transform: Transform,
     moving_parent: Option<GroupId>,
-    moving_tag: Option<TagId>,
+    moving_tags: BTreeSet<TagId>,
     moving_visible: bool,
     moving_box: RenderBox,
     reference_id: OccurrenceId,
@@ -3892,7 +3895,7 @@ struct OccurrenceAlignmentSourcePlan {
     reference_name: String,
     reference_transform: Transform,
     reference_parent: Option<GroupId>,
-    reference_tag: Option<TagId>,
+    reference_tags: BTreeSet<TagId>,
     reference_visible: bool,
     reference_box: RenderBox,
 }
@@ -3923,7 +3926,7 @@ struct OccurrenceDistributionSourceItem {
     name: String,
     transform: Transform,
     parent: Option<GroupId>,
-    tag: Option<TagId>,
+    tags: BTreeSet<TagId>,
     visible: bool,
     render_box: RenderBox,
 }
@@ -3975,7 +3978,7 @@ struct LinearPatternSourcePlan {
     definition_name: String,
     source_transform: Transform,
     source_parent: Option<GroupId>,
-    source_tag: Option<TagId>,
+    source_tags: BTreeSet<TagId>,
     source_visible: bool,
     source_color: Option<[u8; 3]>,
     next_occurrence_id: OccurrenceId,
@@ -4014,7 +4017,7 @@ struct RectangularPatternSourcePlan {
     definition_name: String,
     source_transform: Transform,
     source_parent: Option<GroupId>,
-    source_tag: Option<TagId>,
+    source_tags: BTreeSet<TagId>,
     source_visible: bool,
     source_color: Option<[u8; 3]>,
     next_occurrence_id: OccurrenceId,
@@ -4059,7 +4062,7 @@ struct CircularPatternSourcePlan {
     definition_name: String,
     source_transform: Transform,
     source_parent: Option<GroupId>,
-    source_tag: Option<TagId>,
+    source_tags: BTreeSet<TagId>,
     source_visible: bool,
     source_color: Option<[u8; 3]>,
     next_occurrence_id: OccurrenceId,
@@ -4287,6 +4290,10 @@ pub struct KetchupApp {
     theme: ThemeKind,
     camera: app_state::CameraState,
     view: ViewSettings,
+    /// The name typed for saving or renaming a saved view.
+    saved_view_name: String,
+    /// The section plane cutting the viewport open; display only, never the model.
+    section: Option<SectionPlane>,
     selection: SelectionState,
     hover: app_state::HoverState,
     active_tool: ActiveTool,

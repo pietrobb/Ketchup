@@ -92,7 +92,7 @@ impl KetchupApp {
                     name: occurrence_name,
                     transform,
                     parent,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 });
                 (definition_id, frame)

@@ -145,7 +145,7 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
     if reply["status"] != "allowed" {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "the window refused the attach request",
+            "the window rejected this server's credential; the MCP server and the window are probably different Kečup builds, restart the MCP server from the same build as the window",
         ));
     }
     let address = reply["live_bridge_address"]

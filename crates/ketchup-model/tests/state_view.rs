@@ -78,7 +78,7 @@ fn fixture_document(reverse_nodes: bool) -> DocumentStore {
             name: "Cabinet #1".to_owned(),
             transform: Transform::identity(),
             parent: Some(GroupId(20)),
-            tag: Some(TagId(7)),
+            tags: [TagId(7)].into(),
             visible: true,
         },
         CanonicalCommand::CreateOccurrence {
@@ -87,7 +87,7 @@ fn fixture_document(reverse_nodes: bool) -> DocumentStore {
             name: "Cabinet #2".to_owned(),
             transform: Transform::from_translation(700.0, 0.0, 0.0).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: false,
         },
         CanonicalCommand::CreateCollection {

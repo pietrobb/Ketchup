@@ -25,6 +25,8 @@ pub(crate) fn append(
         || crate::rule_appearance::needed(&snapshot, model)
         || crate::rule_metadata::needed(model)
         || old.is_some_and(crate::rule_metadata::needed)
+        || crate::rule_tags::needed(model)
+        || old.is_some_and(crate::rule_tags::needed)
     {
         let mut staged = document.fork_for_planning();
         if !batch.commands().is_empty() {
@@ -50,6 +52,7 @@ pub(crate) fn append(
             &by_name,
             &mut commands,
         )?;
+        crate::rule_tags::append(&snapshot, old, model, &by_name, &mut commands)?;
         let paths = names
             .iter()
             .map(|name| {

@@ -714,7 +714,7 @@ fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
                 name: "Box-1 #2".to_owned(),
                 transform: Transform::from_translation(250.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

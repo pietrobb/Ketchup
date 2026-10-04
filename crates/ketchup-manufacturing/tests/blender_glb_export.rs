@@ -47,7 +47,7 @@ fn seeded_document(first_color: Option<[u8; 3]>, second_color: Option<[u8; 3]>) 
             name: "Beam A".into(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
         CanonicalCommand::CreateOccurrence {
@@ -56,7 +56,7 @@ fn seeded_document(first_color: Option<[u8; 3]>, second_color: Option<[u8; 3]>) 
             name: "Beam B".into(),
             transform: Transform::from_translation(20.0, 30.0, 40.0).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
     ];

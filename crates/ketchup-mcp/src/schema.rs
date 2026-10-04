@@ -10,6 +10,8 @@ Fastest local edit: program action=read mode=source (or selection for the user p
 program action=patch with expected=stamp and edits=[{old,new}]. Reuse loaded context until \
 the revision or task changes; read missing context only. apply sends a whole program for a new model. \
 Read docs once for needed topics; signatures/rules are default, implementation is opt-in.
+Use list_validators to discover available checks, required inputs, invocation examples and result interpretation. \
+The catalog does not run checks or certify the current model.
 Single edits of existing geometry: inspect action=status/summary/query, model \
 action=apply_and_verify with typed operations (catalog: inspect action=operations). A typed edit \
 of a document that a program owns detaches the program (parameters stop driving the model); \
@@ -36,6 +38,12 @@ pub fn tools() -> Value {
             "name": "windows",
             "description": "List the open Kečup windows (instance_id, document) and which one this server is connected to.",
             "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": true},
+        },
+        {
+            "name": "list_validators",
+            "description": "List all validation capabilities of the connected Kečup window: checks, required inputs/roles, run examples, result paths and limits. Includes document validators, native program checks, motion, assembly paths and tool access. Read-only discovery, not a validation run or a claim that inputs are present. Connects like other window tools; works on empty and non-program documents.",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             "annotations": {"readOnlyHint": true},
         },
         {
@@ -149,9 +157,17 @@ pub fn tools() -> Value {
         {
             "name": "view",
             "description": "selection sets the window selection; view sets the camera (iso/top/front are orthographic; iso has Z up; zoom_fit preserves projection; every view frames the whole model); \
-    image returns a PNG render of the CAD viewport (not a screenshot, not a geometry check).",
+    image returns a PNG render of the CAD viewport (not a screenshot, not a geometry check). \
+    Saved views (stored in the document, never detach a program): saved_views lists them with hidden tag names; \
+    save_view stores the current camera, display style and hidden tags under name (same name replaces; one Undo step); \
+    show_view name restores one (tag visibility is one Undo step). Hide or show tags first with model apply_and_verify set_tag_visibility; summary lists tags. \
+    section cuts the viewport open: everything on the side normal points to is hidden, cut solids show their inside in red; \
+    it changes no geometry and no Undo history, and save_view stores it with the view. close_section removes it.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
-                "action": {"type": "string", "enum": ["selection", "view", "image"]},
+                "action": {"type": "string", "enum": ["selection", "view", "image", "saved_views", "save_view", "show_view", "section", "close_section"]},
+                "name": {"type": "string", "description": "For save_view and show_view: the saved view name."},
+                "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "For section: direction of the hidden side, e.g. [0,0,1] hides everything above."},
+                "offset_mm": {"type": "number", "description": "For section: plane distance from the origin along normal, e.g. 1200 cuts at z=1200 for [0,0,1]."},
                 "occurrence_ids": {"type": "array", "items": {"type": "integer"}, "description": "For selection; [] clears it."},
                 "view": {"type": "string", "enum": ["iso", "top", "front", "zoom_fit"]},
                 "max_side_px": {"type": "integer", "minimum": 512, "maximum": 1600},

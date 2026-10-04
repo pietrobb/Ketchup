@@ -134,7 +134,7 @@ fn seed() -> DocumentStore {
                 name: "Existing target".into(),
                 transform: Transform::from_translation(30.0, 2.0, 3.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -143,7 +143,7 @@ fn seed() -> DocumentStore {
                 name: "Unchanged sibling".into(),
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -152,7 +152,7 @@ fn seed() -> DocumentStore {
                 name: "Selected source".into(),
                 transform: Transform::from_translation(1.0, 2.0, 3.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -596,7 +596,10 @@ fn confirm_cancel_undo_redo_save_open_and_manual_ai_paths_share_one_atomic_contr
     assert_eq!(selected_after.name(), selected_before.name());
     assert_eq!(selected_after.transform(), selected_before.transform());
     assert_eq!(selected_after.parent(), selected_before.parent());
-    assert_eq!(selected_after.tag(), selected_before.tag());
+    assert_eq!(
+        selected_after.tags().first().copied(),
+        selected_before.tags().first().copied()
+    );
     assert_eq!(selected_after.visible(), selected_before.visible());
 
     let scene = committed.scene_query();

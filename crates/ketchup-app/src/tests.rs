@@ -198,7 +198,7 @@ pub(super) fn through_cut_document() -> DocumentStore {
                 name: "Cut body occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

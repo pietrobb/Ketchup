@@ -472,7 +472,7 @@ pub fn plan_dxf_import(
             name,
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
         outputs.extend([

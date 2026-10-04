@@ -444,7 +444,7 @@ pub fn plan_glb_import(
                 },
                 transform: Transform::identity(),
                 parent: Some(parent),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             });
             if let Some(color) = primitive.color {

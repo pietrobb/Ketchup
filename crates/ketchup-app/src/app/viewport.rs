@@ -2390,6 +2390,16 @@ impl KetchupApp {
     }
 
     /// Project the scene for this frame: instanced plan, CPU faces and edges.
+    /// Projected faces and edges of one CPU-painted frame, for tests of what is shown.
+    #[cfg(test)]
+    pub(crate) fn projected_faces_and_edges(
+        &mut self,
+        rect: Rect,
+    ) -> (Vec<ProjectedFace>, Vec<ProjectedEdge>) {
+        let scene = self.project_viewport_scene(rect, false);
+        (scene.faces, scene.edges)
+    }
+
     fn project_viewport_scene(
         &mut self,
         rect: Rect,
@@ -2460,15 +2470,18 @@ impl KetchupApp {
         let mut edges = self
             .open_profile_line_segments()
             .into_iter()
-            .map(|(selection, points_mm)| ProjectedEdge {
-                selection,
-                points: points_mm.map(|point| self.project(point, rect)),
-                depth: points_mm
-                    .into_iter()
-                    .map(|point| point_depth(point, forward))
-                    .sum::<f64>()
-                    / 2.0,
-                dominant_axis: dominant_edge_axis(points_mm),
+            .filter_map(|(selection, points_mm)| {
+                let points_mm = self.section_edge(points_mm)?;
+                Some(ProjectedEdge {
+                    selection,
+                    points: points_mm.map(|point| self.project(point, rect)),
+                    depth: points_mm
+                        .into_iter()
+                        .map(|point| point_depth(point, forward))
+                        .sum::<f64>()
+                        / 2.0,
+                    dominant_axis: dominant_edge_axis(points_mm),
+                })
             })
             .collect::<Vec<_>>();
         let viewport_boxes = self.viewport_boxes(&snapshot, exact_projection);
@@ -2605,7 +2618,11 @@ impl KetchupApp {
                     },
                 };
                 for (edge, uses) in boundary_edges {
-                    let points_mm = edge.map(|index| positions_mm[index as usize]);
+                    let Some(points_mm) =
+                        self.section_edge(edge.map(|index| positions_mm[index as usize]))
+                    else {
+                        continue;
+                    };
                     let elements = uses
                         .iter()
                         .map(|index| {
@@ -2638,15 +2655,16 @@ impl KetchupApp {
                             element: face_element_from_normal(normal),
                             ..selection.clone()
                         };
-                        if point_depth(normal, forward) >= -ROUNDING
+                        let front = point_depth(normal, forward) < -ROUNDING;
+                        if !front
                             && self.hover.target.as_ref() != Some(&selection)
+                            && !self.paints_back_faces()
                         {
                             continue;
                         }
-                        let projected = points_mm.map(|point| self.project(point, rect));
-                        if !projected_polygon_has_area(&projected) {
+                        let Some(polygon) = self.section_polygon(&points_mm, rect) else {
                             continue;
-                        }
+                        };
                         (if needs_cpu_fill {
                             &mut *faces
                         } else {
@@ -2654,9 +2672,11 @@ impl KetchupApp {
                         })
                         .push(ProjectedFace {
                             selection: selection.clone(),
-                            polygon: ProjectedPolygon::Triangle(projected),
-                            color: occurrence_color
-                                .unwrap_or_else(|| face_color_from_normal(normal)),
+                            polygon,
+                            color: self.section_face_color(
+                                front,
+                                occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
+                            ),
                             depth: points_mm
                                 .into_iter()
                                 .map(|point| point_depth(point, forward))
@@ -2672,34 +2692,41 @@ impl KetchupApp {
             let corners = box_corners(item.size_mm.x, item.size_mm.y, item.size_mm.z)
                 .map(|point| point + item.origin_mm);
             let projected = corners.map(|point| self.project(point, rect));
-            for face in box_faces().into_iter().filter(|face| {
-                (face_is_visible(&face.element, forward)
+            for face in box_faces() {
+                let front = face_is_visible(&face.element, forward);
+                let outlined = front
                     || self.hover.target.as_ref().is_some_and(|hovered| {
                         hovered.definition_id == item.definition_id
                             && hovered.instance_path == item.instance_path
                             && hovered.element == face.element
-                    }))
-                    && projected_face_has_area(face.corners, &projected)
-            }) {
+                    });
+                if !(outlined || self.paints_back_faces())
+                    || !projected_face_has_area(face.corners, &projected)
+                {
+                    continue;
+                }
+                let face_mm = face.corners.map(|index| corners[index]);
+                let Some(polygon) = self.section_polygon(&face_mm, rect) else {
+                    continue;
+                };
                 let selection = SelectionId {
                     definition_id: item.definition_id,
                     instance_path: item.instance_path.clone(),
                     element: face.element.clone(),
                 };
-                let points = face.corners.map(|index| projected[index]);
-                for edge in 0..points.len() {
-                    let edge_corners = [
-                        corners[face.corners[edge]],
-                        corners[face.corners[(edge + 1) % face.corners.len()]],
-                    ];
+                for edge in (0..face_mm.len()).filter(|_| outlined) {
+                    let Some(edge_corners) =
+                        self.section_edge([face_mm[edge], face_mm[(edge + 1) % face_mm.len()]])
+                    else {
+                        continue;
+                    };
                     edges.push(ProjectedEdge {
                         selection: selection.clone(),
-                        points: [points[edge], points[(edge + 1) % points.len()]],
-                        depth: (point_depth(corners[face.corners[edge]], forward)
-                            + point_depth(
-                                corners[face.corners[(edge + 1) % face.corners.len()]],
-                                forward,
-                            ))
+                        points: edge_corners.map(|point| self.project(point, rect)),
+                        depth: edge_corners
+                            .into_iter()
+                            .map(|point| point_depth(point, forward))
+                            .sum::<f64>()
                             / 2.0,
                         dominant_axis: dominant_edge_axis(edge_corners),
                     });
@@ -2718,8 +2745,9 @@ impl KetchupApp {
                     })
                     .push(ProjectedFace {
                         selection,
-                        polygon: ProjectedPolygon::Quad(points),
-                        color: occurrence_color.unwrap_or(face.color),
+                        polygon,
+                        color: self
+                            .section_face_color(front, occurrence_color.unwrap_or(face.color)),
                         depth,
                         previewed: (self.has_preview()
                             && self.push_pull_preview_definition() == Some(item.definition_id)
@@ -2849,13 +2877,15 @@ impl KetchupApp {
                 },
             );
             for (edge, uses) in overlay_edges.iter() {
-                let points_mm = edge.map(|index| {
+                let Some(points_mm) = self.section_edge(edge.map(|index| {
                     let position = package.vertices()[index as usize].position_mm;
                     transform_model_point(
                         transform,
                         Vec3::new(position[0], position[1], position[2]),
                     )
-                });
+                })) else {
+                    continue;
+                };
                 let points = points_mm.map(|point| self.project(point, rect));
                 let mut elements = Vec::new();
                 for triangle in uses
@@ -2918,13 +2948,13 @@ impl KetchupApp {
                             && hovered.instance_path == occurrence.instance_path
                             && hovered.element == element
                     });
-                if point_depth(normal, forward) >= -ROUNDING && !hovered {
+                let front = point_depth(normal, forward) < -ROUNDING;
+                if !front && !hovered && !self.paints_back_faces() {
                     continue;
                 }
-                let projected = points_mm.map(|point| self.project(point, rect));
-                if !projected_polygon_has_area(&projected) {
+                let Some(polygon) = self.section_polygon(&points_mm, rect) else {
                     continue;
-                }
+                };
                 if needs_cpu_fill || needs_cpu_overlay {
                     (if needs_cpu_fill {
                         &mut *faces
@@ -2937,8 +2967,11 @@ impl KetchupApp {
                             instance_path: occurrence.instance_path.clone(),
                             element,
                         },
-                        polygon: ProjectedPolygon::Triangle(projected),
-                        color: occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
+                        polygon,
+                        color: self.section_face_color(
+                            front,
+                            occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
+                        ),
                         depth: points_mm
                             .into_iter()
                             .map(|point| point_depth(point, forward))
@@ -3044,7 +3077,11 @@ impl KetchupApp {
                 },
             );
             for (edge, uses) in overlay_edges.iter() {
-                let edge_points_mm = edge.map(|index| points_mm[index as usize]);
+                let Some(edge_points_mm) =
+                    self.section_edge(edge.map(|index| points_mm[index as usize]))
+                else {
+                    continue;
+                };
                 let projected = edge_points_mm.map(|point| self.project(point, rect));
                 let element = uses.first().map(|index| {
                     face_element_from_normal(triangle_normal(
@@ -3074,13 +3111,13 @@ impl KetchupApp {
             for triangle in &mesh.triangles {
                 let corners = triangle.map(|index| points_mm[index as usize]);
                 let normal = triangle_normal(corners);
-                if point_depth(normal, forward) >= -ROUNDING {
+                let front = point_depth(normal, forward) < -ROUNDING;
+                if !front && !self.paints_back_faces() {
                     continue;
                 }
-                let projected = corners.map(|point| self.project(point, rect));
-                if !projected_polygon_has_area(&projected) {
+                let Some(polygon) = self.section_polygon(&corners, rect) else {
                     continue;
-                }
+                };
                 (if needs_cpu_fill {
                     &mut *faces
                 } else {
@@ -3092,8 +3129,11 @@ impl KetchupApp {
                         instance_path: occurrence.instance_path.clone(),
                         element: face_element_from_normal(normal),
                     },
-                    polygon: ProjectedPolygon::Triangle(projected),
-                    color: occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
+                    polygon,
+                    color: self.section_face_color(
+                        front,
+                        occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
+                    ),
                     depth: corners
                         .into_iter()
                         .map(|point| point_depth(point, forward))

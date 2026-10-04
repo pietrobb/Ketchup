@@ -1348,7 +1348,7 @@ impl KetchupApp {
                 ),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]);
@@ -1452,7 +1452,7 @@ impl KetchupApp {
                 ),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]);
@@ -1542,7 +1542,7 @@ impl KetchupApp {
             ),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
         if self
@@ -1633,7 +1633,7 @@ impl KetchupApp {
                 transform,
 
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]);
@@ -1704,7 +1704,7 @@ impl KetchupApp {
                 transform: Transform::from_translation(origin_mm.x, origin_mm.y, origin_mm.z)
                     .expect("validated profile origin is canonical"),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]);
@@ -1835,7 +1835,7 @@ impl KetchupApp {
                     definition_id: occurrence.definition_id(),
                     transform: occurrence.transform(),
                     parent: occurrence.parent(),
-                    tag: occurrence.tag(),
+                    tags: occurrence.tags().clone(),
                     visible: occurrence.visible(),
                 })
             })
@@ -2395,7 +2395,7 @@ impl KetchupApp {
                 transform,
 
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]);
@@ -3292,7 +3292,7 @@ pub(crate) fn create_box_batch(
             transform: Transform::from_translation(origin_mm.x, origin_mm.y, origin_mm.z)
                 .expect("validated box origin is canonical"),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
     ])

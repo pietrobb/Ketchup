@@ -442,7 +442,8 @@ impl KetchupApp {
                     rect,
                     self.world_to_clip(rect),
                     [forward.x as f32, forward.y as f32, forward.z as f32, 0.0],
-                ),
+                )
+                .with_section(self.section_clip_plane()),
             ));
         }
     }

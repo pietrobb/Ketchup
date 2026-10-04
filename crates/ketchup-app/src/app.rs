@@ -16,6 +16,8 @@ mod patterns;
 #[cfg(test)]
 #[path = "program_outliner_tests.rs"]
 mod program_outliner_tests;
+mod saved_views;
+mod section;
 mod selection;
 mod shell;
 mod structure;
@@ -27,6 +29,9 @@ mod viewport_paint;
 pub(crate) use assistant::*;
 pub(crate) use commands::*;
 pub(crate) use drawing::*;
+#[cfg(test)]
+pub(crate) use section::SECTION_COLOR;
+pub(crate) use section::{plane_at, section_json};
 pub(crate) use shell::*;
 pub(crate) use structure::*;
 pub(crate) use transform::*;

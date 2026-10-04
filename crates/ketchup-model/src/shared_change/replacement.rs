@@ -1289,7 +1289,7 @@ fn candidate_keeps_selected(
                 && candidate_selected.name() == selected.name()
                 && candidate_selected.transform() == selected.transform()
                 && candidate_selected.parent() == selected.parent()
-                && candidate_selected.tag() == selected.tag()
+                && candidate_selected.tags() == selected.tags()
                 && candidate_selected.visible() == selected.visible()
         })
         && candidate.occurrence_is_grounded(occurrence_id)

@@ -4883,7 +4883,7 @@ mod tests {
                     name: "Boundary instance".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))

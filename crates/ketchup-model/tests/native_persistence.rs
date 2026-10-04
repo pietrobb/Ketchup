@@ -258,7 +258,7 @@ fn a_named_classification_dimension_is_found_once_or_refused_as_missing_or_ambig
                 name: "Part occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             dimension(1, "side"),
@@ -332,7 +332,7 @@ fn classification_dimensions_and_independent_assignments_round_trip_losslessly()
                 name: "Wall panel occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {
@@ -399,7 +399,7 @@ fn classification_replacement_is_dimension_local_atomic_and_undoable() {
                 name: "Wall occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {
@@ -1602,7 +1602,7 @@ fn schema_52_occurrences_migrate_with_no_color() {
                 name: name.into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

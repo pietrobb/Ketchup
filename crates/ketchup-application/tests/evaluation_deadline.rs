@@ -163,7 +163,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                 name: name.into(),
                 transform: Transform::from_translation(0.0, 0.0, z).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceClassification {
@@ -708,7 +708,7 @@ fn incremental_unsupported_producer_is_incomplete_and_cannot_establish_baseline(
                 name: "Unsupported mesh".into(),
                 transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

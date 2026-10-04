@@ -548,7 +548,7 @@ pub(super) fn clone_definition_and_repoint(
                 name: local.name.clone(),
                 transform: local.transform,
                 parent: local.parent,
-                tag: local.tag,
+                tags: local.tags.clone(),
                 visible: local.visible,
                 color: local.color,
             }),

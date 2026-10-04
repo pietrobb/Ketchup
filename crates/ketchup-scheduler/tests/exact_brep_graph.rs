@@ -353,7 +353,7 @@ fn simple_extrusion_document() -> (DocumentStore, DefinitionId, FeatureId, Occur
                 name: "Safety occurrence".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1785,7 +1785,7 @@ fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
                 name: "Generated Boolean occurrence".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

@@ -58,7 +58,7 @@ fn panel_commands(
             name: format!("{name} occurrence"),
             transform: Transform::identity(),
             parent: None,
-            tag,
+            tags: tag.into_iter().collect(),
             visible: true,
         },
     ]
@@ -215,7 +215,7 @@ fn rectangular_sketch_pad_dimensions_preserve_anchors_and_entity_identity() {
                             name: "Panel".into(),
                             transform: Transform::identity(),
                             parent: None,
-                            tag: None,
+                            tags: Default::default(),
                             visible: true,
                         },
                     ]))
@@ -518,7 +518,12 @@ fn recipe_round_trip_preserves_keys_geometry_appearance_joinery_and_history() {
     assert_eq!(snapshot.assembly_recipe(), Some(&recipe));
     assert_eq!(snapshot.canonical_digest(), expected_digest);
     assert_eq!(
-        snapshot.occurrence(OccurrenceId(1)).unwrap().tag(),
+        snapshot
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
         Some(TagId(1))
     );
     assert_eq!(
@@ -727,7 +732,7 @@ fn shared_definition_requires_explicit_shared_scope_for_owned_features() {
         name: "Shared second".to_owned(),
         transform: Transform::from_translation(700.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     });
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -2020,7 +2025,7 @@ fn shared_definition_anchor_moves_every_instance_without_changing_identity() {
         name: "Shared second".to_owned(),
         transform: Transform::from_translation(100.0, 0.0, 30.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     });
     document.apply_batch(&CommandBatch::new(commands)).unwrap();

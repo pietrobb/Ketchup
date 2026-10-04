@@ -27,7 +27,7 @@ const MAX_STRUCTURAL_SCOPE_PARAMETERS: usize = 30_000;
 const MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS: usize = 100;
 const MAX_STRUCTURAL_ROLE_CATEGORIES: usize = 10_000;
 pub const ASSEMBLY_RETENTION_ROLE_DIMENSION_V1: &str = "ketchup.assembly-retention-role.v1";
-const DEFLECTION_CHECK: &str = "beam_deflection";
+pub const DEFLECTION_CHECK: &str = "beam_deflection";
 pub const ASSISTANT_VALIDATOR_IDS: [&str; 11] = [
     "group_connectivity",
     "collision",

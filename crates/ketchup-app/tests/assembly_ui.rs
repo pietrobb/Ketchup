@@ -117,7 +117,7 @@ fn write_kinematic_failure_fixture(path: &Path, fixture: KinematicFailureFixture
                 name: "Root".into(),
                 transform: Transform::from_translation(0.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: Some(selected_tag),
+                tags: [selected_tag].into(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -126,7 +126,7 @@ fn write_kinematic_failure_fixture(path: &Path, fixture: KinematicFailureFixture
                 name: "Input".into(),
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: Some(selected_tag),
+                tags: [selected_tag].into(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -135,7 +135,7 @@ fn write_kinematic_failure_fixture(path: &Path, fixture: KinematicFailureFixture
                 name: "Output".into(),
                 transform: Transform::from_translation(40.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
@@ -193,7 +193,7 @@ fn write_coupling_authoring_fixture(path: &Path) {
             name: "Root".into(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
     ];
@@ -206,7 +206,7 @@ fn write_coupling_authoring_fixture(path: &Path) {
             name: format!("Driven {offset}"),
             transform: Transform::from_translation(offset as f64 * 20.0, 0.0, 0.0).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
         let kind = if matches!(joint_id.0, 108 | 110) {
@@ -273,7 +273,7 @@ fn write_drag_fixture(path: &Path, mover_transform: Transform, joint_kind: Assem
                 name: "Obstacle".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -282,7 +282,7 @@ fn write_drag_fixture(path: &Path, mover_transform: Transform, joint_kind: Assem
                 name: "Mover".into(),
                 transform: mover_transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(

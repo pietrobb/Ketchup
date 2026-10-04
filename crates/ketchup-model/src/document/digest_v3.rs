@@ -2251,7 +2251,7 @@ impl DigestV3 {
         self.bytes(occurrence.name.as_bytes());
         self.transform(occurrence.transform);
         self.optional_id(occurrence.parent.map(|id| id.0));
-        self.optional_id(occurrence.tag.map(|id| id.0));
+        self.optional_id(occurrence.tags.first().map(|id| id.0));
         self.byte(u8::from(occurrence.visible));
         self.byte(u8::from(occurrence.color.is_some()));
         if let Some(color) = occurrence.color {
@@ -2283,7 +2283,7 @@ impl DigestV3 {
         self.bytes(occurrence.name.as_bytes());
         self.transform(occurrence.transform);
         self.optional_id(occurrence.parent.map(|id| id.0));
-        self.optional_id(occurrence.tag.map(|id| id.0));
+        self.optional_id(occurrence.tags.first().map(|id| id.0));
         self.byte(u8::from(occurrence.visible));
         self.byte(u8::from(occurrence.color.is_some()));
         if let Some(color) = occurrence.color {

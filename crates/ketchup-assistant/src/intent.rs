@@ -519,9 +519,9 @@ fn propose_atomic_occurrence_edit(
             id: target,
             transform: Transform::from_matrix(matrix)?,
         },
-        CanonicalCommand::SetOccurrenceTag {
+        CanonicalCommand::SetOccurrenceTags {
             id: target,
-            tag: Some(tag),
+            tags: [tag].into(),
         },
         CanonicalCommand::RenameEntity { id: target, name },
     ]);
@@ -1044,14 +1044,14 @@ pub fn propose_intent(
                 },
             )
         }
-        WorkflowIntent::SetOccurrenceTag { target, tag } => {
-            let authority = AuthoritativeDependency::Occurrence(target);
-            (
-                ProposalGoal::SetOccurrenceTag(target),
-                authority,
-                CanonicalCommand::SetOccurrenceTag { id: target, tag },
-            )
-        }
+        WorkflowIntent::SetOccurrenceTag { target, tag } => (
+            ProposalGoal::SetOccurrenceTags(target),
+            AuthoritativeDependency::Occurrence(target),
+            CanonicalCommand::SetOccurrenceTags {
+                id: target,
+                tags: tag.into_iter().collect(),
+            },
+        ),
         WorkflowIntent::SetTagVisibility { target, visible } => {
             let authority = AuthoritativeDependency::Tag(target);
             (
@@ -1215,7 +1215,7 @@ pub fn propose_intent(
                 name,
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ),

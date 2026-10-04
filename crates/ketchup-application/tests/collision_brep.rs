@@ -42,7 +42,7 @@ fn add(document: &mut DocumentStore, id: u64, points: Vec<[f64; 2]>, x: f64) {
                 name: format!("Part {id}"),
                 transform: Transform::from_translation(x, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -257,7 +257,7 @@ fn scoped_collision_rejects_all_distant_pairs_across_ten_thousand_occurrences() 
         name: format!("Part {id}"),
         transform: Transform::from_translation(id as f64 * 20.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     }));
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -306,7 +306,7 @@ fn scoped_collision_caps_unique_graph_preparation() {
                     name: format!("Part {id}"),
                     transform: Transform::from_translation(id as f64 * 20.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]
@@ -382,7 +382,7 @@ fn full_validation_context_fails_closed_at_its_scene_projection_budget() {
                     name: format!("Part {id}"),
                     transform: Transform::from_translation(id as f64 * 20.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 })
                 .collect(),

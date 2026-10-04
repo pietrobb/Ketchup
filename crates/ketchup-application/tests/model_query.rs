@@ -36,7 +36,7 @@ fn fixture(count: u64, long_names: bool) -> DocumentStore {
         },
         transform: Transform::identity(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     }));
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -75,7 +75,7 @@ fn nested_fixture() -> DocumentStore {
                 name: "Nested leaf".into(),
                 transform: Transform::from_translation(5.0, 0.0, 0.0).unwrap(),
                 parent: Some(GroupId(1)),
-                tag: Some(TagId(7)),
+                tags: [TagId(7)].into(),
                 visible: true,
             },
         ]))
@@ -92,7 +92,7 @@ fn nested_fixture() -> DocumentStore {
                 name: "Repeated assembly copy".into(),
                 transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceClassification {
@@ -140,7 +140,7 @@ fn spatial_fixture() -> DocumentStore {
                 name: "Near bounded".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -149,7 +149,7 @@ fn spatial_fixture() -> DocumentStore {
                 name: "Far bounded".into(),
                 transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -158,7 +158,7 @@ fn spatial_fixture() -> DocumentStore {
                 name: "Unknown bounds".into(),
                 transform: Transform::from_translation(5.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -293,9 +293,11 @@ fn ten_thousand_repeated_occurrences_are_bounded_without_gaps_or_duplicates() {
     bounded(&summary);
     assert_eq!(
         summary["counts"],
-        json!({"root_occurrences":10000,"instances":10000,"definitions":1,"features":1,
+        json!({"root_occurrences":10000,"tags":0,"instances":10000,"definitions":1,"features":1,
             "relations":10000})
     );
+    assert_eq!(summary["tags"], json!([]));
+    assert_eq!(summary["tags_complete"], true);
     assert_eq!(summary["coverage"]["nested_hierarchy"], false);
     assert_eq!(
         collect(&query, &snapshot, request(EntityKind::Occurrences)),
@@ -532,7 +534,7 @@ fn bounded_scene_query_caps_root_group_ancestry() {
                 name: "Nested root".into(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(2)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -943,9 +945,9 @@ fn spatial_bounds_use_revision_bound_bvh_and_report_incomplete_proxy_coverage() 
                 name: "Bounded candidates".into(),
                 visible: true,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(TagId(7)),
+                tags: [TagId(7)].into(),
             },
         ]))
         .unwrap();
@@ -1081,7 +1083,7 @@ fn relation_queries_stream_canonical_hierarchy_definition_and_assembly_edges() {
                 name: "First shared use".into(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(2)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1090,7 +1092,7 @@ fn relation_queries_stream_canonical_hierarchy_definition_and_assembly_edges() {
                 name: "Second shared use".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

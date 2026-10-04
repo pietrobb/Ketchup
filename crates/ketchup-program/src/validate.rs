@@ -258,6 +258,9 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
             if bounds[right].0[0] >= bounds[left].1[0] - TOLERANCE_MM {
                 break;
             }
+            if model.are_alternatives(a, b) {
+                continue;
+            }
             let Some(region) = overlap(a, b) else {
                 continue;
             };

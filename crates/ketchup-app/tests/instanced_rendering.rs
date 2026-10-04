@@ -55,7 +55,7 @@ fn product_document() -> DocumentStore {
             name: format!("Occurrence {}", index + 1),
             transform: grid_transform(index),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }),
     );
@@ -373,6 +373,7 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
     let frame = GpuFrameDescriptor {
         world_to_clip,
         view_depth: [0.0, 0.0, 1.0, 0.0],
+        section: [0.0; 4],
         framebuffer_size: [64, 64],
         viewport: [0, 0, 64, 64],
     };
@@ -543,6 +544,7 @@ fn garden_studio_hardware_gpu_camera_frames() {
         let x = right.map(|v| v / (radius * 1.15 * WIDTH as f32 / HEIGHT as f32));
         let y = up.map(|v| v / (radius * 1.15));
         let z = forward.map(|v| v / (radius * 4.0));
+        let depth = radius * 2.0 - dot(forward, center);
         GpuFrameDescriptor {
             // Column-major for WGSL, unlike the row-major instance transforms.
             world_to_clip: [
@@ -563,12 +565,8 @@ fn garden_studio_hardware_gpu_camera_frames() {
                 0.5 - dot(z, center),
                 1.0,
             ],
-            view_depth: [
-                forward[0],
-                forward[1],
-                forward[2],
-                radius * 2.0 - dot(forward, center),
-            ],
+            view_depth: [forward[0], forward[1], forward[2], depth],
+            section: [0.0; 4],
             framebuffer_size: [WIDTH, HEIGHT],
             viewport: [0, 0, WIDTH, HEIGHT],
         }

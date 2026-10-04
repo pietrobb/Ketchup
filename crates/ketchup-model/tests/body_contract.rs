@@ -57,7 +57,7 @@ fn seed() -> DocumentStore {
                 name: "Part occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

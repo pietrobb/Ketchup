@@ -10,7 +10,7 @@ use crate::frame::{self, Mat3, Obb};
 use ketchup_geometry::linalg::{CubicBezier, dot};
 use ketchup_model::tolerance::ROUNDING;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Param {
@@ -699,6 +699,9 @@ pub struct Part {
     /// library's direction of a material's texture.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, String>,
+    /// Names of the document tags (layers) the part belongs to.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub tags: BTreeSet<String>,
     pub body: ProgramPartBody,
     /// Cuts, finishes, moved faces, booleans, holes and pockets in program order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1596,12 +1599,32 @@ pub struct ProgramModel {
     pub expectations: Vec<crate::expect::Expectation>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
+    /// Sets of tags that are alternative representations (`alternatives()`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub alternative_tags: Vec<BTreeSet<String>>,
 }
 
 impl ProgramModel {
     #[must_use]
     pub fn part(&self, name: &str) -> Option<&Part> {
         self.parts.iter().find(|part| part.name == name)
+    }
+
+    /// Whether two parts belong to different alternative representations, so they
+    /// may occupy the same space: each carries a tag of one declared set and they
+    /// share none of that set's tags.
+    #[must_use]
+    pub fn are_alternatives(&self, a: &Part, b: &Part) -> bool {
+        self.alternative_tags.iter().any(|set| {
+            let of = |part: &Part| {
+                part.tags
+                    .intersection(set)
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            };
+            let (left, right) = (of(a), of(b));
+            !left.is_empty() && !right.is_empty() && left.is_disjoint(&right)
+        })
     }
 
     #[must_use]

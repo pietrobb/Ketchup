@@ -56,7 +56,7 @@ fn mesh_app(
                 name: "Mesh".into(),
                 transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

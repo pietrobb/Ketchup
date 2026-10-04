@@ -1698,7 +1698,7 @@ fn plan_assistant_construction_creation(
                 name: name.to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ],
@@ -1772,7 +1772,7 @@ fn plan_assistant_helix_sweep_creation(
                 name: name.to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ],
@@ -3490,9 +3490,9 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             }),
             AssistantCadEditOperation::SetOccurrenceTag { tag_id, .. } => {
                 for id in targets {
-                    staged_planning.push(CanonicalCommand::SetOccurrenceTag {
+                    staged_planning.push(CanonicalCommand::SetOccurrenceTags {
                         id,
-                        tag: tag_id.map(TagId),
+                        tags: tag_id.map(TagId).into_iter().collect(),
                     });
                 }
             }
@@ -3576,7 +3576,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         name: source.name().to_owned(),
                         transform,
                         parent: source.parent(),
-                        tag: source.tag(),
+                        tags: source.tags().clone(),
                         visible: source.visible(),
                     });
                     if source.color().is_some() {
@@ -3624,7 +3624,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             name: source.name().to_owned(),
                             transform,
                             parent: source.parent(),
-                            tag: source.tag(),
+                            tags: source.tags().clone(),
                             visible: source.visible(),
                         });
                         if source.color().is_some() {
@@ -3713,7 +3713,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                             name: source.name().to_owned(),
                             transform,
                             parent: source.parent(),
-                            tag: source.tag(),
+                            tags: source.tags().clone(),
                             visible: source.visible(),
                         });
                         if source.color().is_some() {

@@ -42,7 +42,7 @@ fn session_with_occurrences(count: u64) -> DocumentSession {
             name: format!("part-{id:05}"),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         })
         .collect::<Vec<_>>();

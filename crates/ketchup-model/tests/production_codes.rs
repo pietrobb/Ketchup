@@ -9,7 +9,7 @@ fn occurrence(id: u64) -> CanonicalCommand {
         name: format!("Part {id}"),
         transform: Transform::identity(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     }
 }
@@ -111,7 +111,7 @@ fn nested_copies_have_independent_persistent_codes() {
             name: "Copy".into(),
             transform: Transform::from_translation(100., 0., 0.).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
     ]))

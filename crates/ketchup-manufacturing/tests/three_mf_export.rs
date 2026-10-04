@@ -50,7 +50,7 @@ fn seeded_document_with_definition_name(definition_name: &str) -> DocumentStore 
                 name: "Beam A".into(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(20)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -59,7 +59,7 @@ fn seeded_document_with_definition_name(definition_name: &str) -> DocumentStore 
                 name: "Beam B".into(),
                 transform: Transform::from_translation(20.0, 30.0, 40.0).unwrap(),
                 parent: Some(GroupId(20)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceColor {

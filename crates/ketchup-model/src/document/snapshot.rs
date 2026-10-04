@@ -409,12 +409,27 @@ impl Snapshot {
         self.product.tags.values().map(Arc::as_ref)
     }
 
+    #[must_use]
+    pub fn saved_view(&self, id: SavedViewId) -> Option<&SavedView> {
+        self.product.saved_views.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn saved_views(&self) -> impl Iterator<Item = &SavedView> {
+        self.product.saved_views.values().map(Arc::as_ref)
+    }
+
     pub fn occurrences_with_tag(&self, id: TagId) -> impl Iterator<Item = &Occurrence> {
         self.product
             .occurrences
             .values()
-            .filter(move |occurrence| occurrence.tag == Some(id))
+            .filter(move |occurrence| occurrence.tags.contains(&id))
             .map(Arc::as_ref)
+    }
+
+    /// Whether a part with `tags` is shown: hiding any one of its tags hides it.
+    #[must_use]
+    pub fn tags_visible(&self, tags: &BTreeSet<TagId>) -> bool {
+        all_tags_visible(&self.product.tags, tags)
     }
 
     #[must_use]
@@ -547,13 +562,7 @@ impl Snapshot {
     #[must_use]
     pub fn occurrence_effectively_visible(&self, id: OccurrenceId) -> Option<bool> {
         let occurrence = self.occurrence(id)?;
-        Some(
-            occurrence.visible
-                && occurrence
-                    .tag
-                    .and_then(|tag_id| self.tag(tag_id))
-                    .is_none_or(Tag::visible),
-        )
+        Some(occurrence.visible && self.tags_visible(&occurrence.tags))
     }
 
     #[must_use]
@@ -1123,11 +1132,8 @@ pub(super) fn project_local_occurrences_bounded(
                 .copied()
                 .unwrap_or(local.transform),
         );
-        let tag_visible = local
-            .tag
-            .and_then(|tag_id| product.tags.get(&tag_id))
-            .is_none_or(|tag| tag.visible);
-        let visible = owner_visible && local.visible && tag_visible;
+        let visible =
+            owner_visible && local.visible && all_tags_visible(&product.tags, &local.tags);
         let color = owner_color.or(local.color);
         if output.len() >= max_occurrences {
             return Err(SceneQueryBudgetExceeded {
@@ -1165,4 +1171,10 @@ pub(super) fn project_local_occurrences_bounded(
         )?;
     }
     Ok(())
+}
+
+/// A part is shown only while every tag it belongs to is visible.
+pub(crate) fn all_tags_visible(tags: &BTreeMap<TagId, Arc<Tag>>, ids: &BTreeSet<TagId>) -> bool {
+    ids.iter()
+        .all(|id| tags.get(id).is_none_or(|tag| tag.visible))
 }

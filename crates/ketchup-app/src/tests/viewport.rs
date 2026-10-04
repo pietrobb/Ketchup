@@ -272,7 +272,7 @@ fn camera_clearance_keeps_every_mesh_bound_in_front_during_orbit() {
                 name: "Large mesh occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -454,7 +454,7 @@ fn repeated_large_scene_picks_reuse_revision_bound_spatial_indices() {
             )
             .unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         })
         .collect();
@@ -646,7 +646,7 @@ fn crossing_selection_uses_projected_geometry_instead_of_its_empty_bounds() {
                 name: "Triangular mesh occurrence".to_owned(),
                 transform: Transform::from_translation(300.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -824,6 +824,40 @@ fn fog_is_painted_over_the_gpu_scene_as_a_depth_gradient() {
     assert_eq!(haze.vertices.len(), 4);
     assert_eq!(haze.vertices[0].color.a(), 112);
     assert_eq!(haze.vertices[3].color.a(), 8);
+}
+
+#[test]
+fn a_section_plane_cuts_the_painted_model_open_without_touching_the_document() {
+    let mut app = KetchupApp::new();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+    let revision = app.document.current().revision_id();
+    let (whole, _) = app.projected_faces_and_edges(rect);
+    assert!(!whole.is_empty());
+    assert!(
+        whole
+            .iter()
+            .all(|face| face.color != crate::app::SECTION_COLOR)
+    );
+
+    app.open_section();
+    let (cut, _) = app.projected_faces_and_edges(rect);
+    assert!(
+        cut.iter()
+            .any(|face| face.color == crate::app::SECTION_COLOR),
+        "the inside of the cut box is painted in the section colour"
+    );
+
+    app.set_section(crate::app::plane_at([0.0, 0.0, 1.0], -1.0e6));
+    let (faces, edges) = app.projected_faces_and_edges(rect);
+    assert!(
+        faces.is_empty() && edges.is_empty(),
+        "everything lies above the cut"
+    );
+
+    app.set_section(None);
+    let (restored, _) = app.projected_faces_and_edges(rect);
+    assert_eq!(restored.len(), whole.len());
+    assert_eq!(app.document.current().revision_id(), revision);
 }
 
 #[test]

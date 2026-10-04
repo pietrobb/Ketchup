@@ -123,7 +123,7 @@ fn seed() -> DocumentStore {
                 name: "Box occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -790,7 +790,7 @@ fn occurrence_tag_is_observational_and_commits_one_verified_batch() {
     )
     .unwrap();
 
-    assert_eq!(proposal.goal(), ProposalGoal::SetOccurrenceTag(OCCURRENCE));
+    assert_eq!(proposal.goal(), ProposalGoal::SetOccurrenceTags(OCCURRENCE));
     assert_eq!(
         proposal.assumptions(),
         &[
@@ -813,11 +813,11 @@ fn occurrence_tag_is_observational_and_commits_one_verified_batch() {
     );
     assert_eq!(
         proposal.authoritative_diff()[0].before,
-        ProposalValue::Tag(None)
+        ProposalValue::Tags(Default::default())
     );
     assert_eq!(
         proposal.authoritative_diff()[0].after,
-        ProposalValue::Tag(Some(TAG))
+        ProposalValue::Tags([TAG].into())
     );
     assert_eq!(store.current().revision_id(), revision_before);
     assert_eq!(store.current().canonical_digest(), digest_before);
@@ -825,12 +825,27 @@ fn occurrence_tag_is_observational_and_commits_one_verified_batch() {
 
     store.commit_verified_proposal(&proposal).unwrap();
     assert_eq!(
-        store.current().occurrence(OCCURRENCE).unwrap().tag(),
+        store
+            .current()
+            .occurrence(OCCURRENCE)
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
         Some(TAG)
     );
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     store.undo().unwrap();
-    assert_eq!(store.current().occurrence(OCCURRENCE).unwrap().tag(), None);
+    assert_eq!(
+        store
+            .current()
+            .occurrence(OCCURRENCE)
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
+        None
+    );
 }
 
 #[test]
@@ -1170,7 +1185,16 @@ fn occurrence_tag_rejects_denied_missing_and_stale_targets() {
         Err(ProposalCommitError::Stale(_))
     ));
     assert_eq!(store.current().canonical_digest(), changed_digest);
-    assert_eq!(store.current().occurrence(OCCURRENCE).unwrap().tag(), None);
+    assert_eq!(
+        store
+            .current()
+            .occurrence(OCCURRENCE)
+            .unwrap()
+            .tags()
+            .first()
+            .copied(),
+        None
+    );
 }
 
 #[test]
@@ -2734,9 +2758,9 @@ fn delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
     ));
     store
         .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OCCURRENCE,
-                tag: Some(TAG),
+                tags: [TAG].into(),
             },
         ]))
         .unwrap();
@@ -2781,9 +2805,9 @@ fn delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
     .unwrap();
     concurrent_store
         .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OCCURRENCE,
-                tag: Some(TAG),
+                tags: [TAG].into(),
             },
         ]))
         .unwrap();
@@ -2804,7 +2828,9 @@ fn delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
             .current()
             .occurrence(OCCURRENCE)
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         Some(TAG)
     );
 }
@@ -3471,7 +3497,7 @@ fn create_occurrence_is_typed_observational_and_undoable() {
             name: "Reviewed occurrence".to_owned(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }
     );
@@ -3486,7 +3512,7 @@ fn create_occurrence_is_typed_observational_and_undoable() {
     assert_eq!(created.name(), "Reviewed occurrence");
     assert_eq!(created.transform(), Transform::identity());
     assert_eq!(created.parent(), None);
-    assert_eq!(created.tag(), None);
+    assert_eq!(created.tags().first().copied(), None);
     assert!(created.visible());
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     store.undo().unwrap();
@@ -3564,7 +3590,7 @@ fn create_occurrence_rejects_denied_invalid_existing_dependency_and_stale_id() {
                 name: "Concurrent occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -3837,7 +3863,7 @@ fn delete_occurrence_is_typed_observational_and_undoable() {
             name: "Box occurrence".to_owned(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }
     );
@@ -3859,7 +3885,7 @@ fn delete_occurrence_is_typed_observational_and_undoable() {
     assert_eq!(restored.name(), "Box occurrence");
     assert_eq!(restored.transform(), Transform::identity());
     assert_eq!(restored.parent(), None);
-    assert_eq!(restored.tag(), None);
+    assert_eq!(restored.tags().first().copied(), None);
     assert!(restored.visible());
 }
 
@@ -5659,7 +5685,7 @@ fn delete_definition_rejects_denied_missing_nonempty_used_and_stale_users() {
                 name: "Housing occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -5692,7 +5718,7 @@ fn delete_definition_rejects_denied_missing_nonempty_used_and_stale_users() {
                 name: "Concurrent housing occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -5733,7 +5759,7 @@ fn clone_profile_definition_is_typed_observational_and_undoable() {
                 name: "Source occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -5821,7 +5847,7 @@ fn clone_profile_definition_is_typed_observational_and_undoable() {
             name: "Source occurrence".to_owned(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }
     );
@@ -5832,7 +5858,7 @@ fn clone_profile_definition_is_typed_observational_and_undoable() {
             name: "Source occurrence".to_owned(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }
     );
@@ -5893,7 +5919,7 @@ fn clone_profile_definition_rejects_denied_unsupported_stale_and_claimed() {
                     name: "Source occurrence".to_owned(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))
@@ -6099,7 +6125,7 @@ fn convert_empty_group_is_typed_observational_and_undoable() {
             name: "Assembly component".to_owned(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }
     );

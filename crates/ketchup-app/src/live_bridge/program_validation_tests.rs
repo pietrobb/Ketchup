@@ -2,6 +2,52 @@ use super::super::measurement::tests::integration_support;
 use super::super::tests::setup;
 use super::*;
 
+#[test]
+fn validator_catalog_uses_existing_document_checks_without_running_or_editing() {
+    let (mut app, mut bridge) = setup();
+    app.new_document();
+    for has_program in [false, true] {
+        if has_program {
+            app.apply_program_source(source(false), false).unwrap();
+        }
+        let before = app.document.current().scene_query();
+        let history = (app.undo_step_count(), app.redo_step_count());
+        let selection = LiveBridge::selection(&app);
+        let owner = app.document.current_rule_program().cloned();
+        let request = serde_json::from_value(json!({"method":"list_validators"})).unwrap();
+        let result = bridge.execute(&mut app, request, true).unwrap();
+        assert_eq!(result["catalog_only"], true);
+        let rows = result["validators"].as_array().unwrap();
+        let ids = rows
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), rows.len());
+        for existing in ketchup_application::validation::assistant_validator_catalog() {
+            let row = rows.iter().find(|row| row["id"] == existing["id"]).unwrap();
+            assert_eq!(row["checks"], existing["checks"]);
+            assert_eq!(row["required_roles"], existing["required_roles"]);
+            assert_eq!(
+                row["run"]["arguments"]["validators"],
+                json!([existing["id"]])
+            );
+        }
+        for id in ["program_geometry", "motion", "assembly_path", "tool_access"] {
+            assert!(ids.contains(id));
+        }
+        for row in rows {
+            assert!(!row["required_inputs"].as_array().unwrap().is_empty());
+            assert!(!row["limitations"].as_array().unwrap().is_empty());
+            assert_eq!(row["run"]["tool"], "program");
+            assert_eq!(row["run"]["arguments"]["action"], "validate");
+        }
+        assert_eq!(app.document.current().scene_query(), before);
+        assert_eq!((app.undo_step_count(), app.redo_step_count()), history);
+        assert_eq!(LiveBridge::selection(&app), selection);
+        assert_eq!(app.document.current_rule_program(), owner.as_ref());
+    }
+}
+
 fn source(drilled: bool) -> RuleProgramSource {
     RuleProgramSource {
         file_name: "validation.star".into(),

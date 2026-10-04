@@ -160,7 +160,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Visible reuse".into(),
         transform: Transform::identity(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     };
     let second = CanonicalCommand::CreateOccurrence {
@@ -169,7 +169,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Hidden reuse".into(),
         transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: false,
     };
     let occurrences = if reverse_occurrences {
@@ -206,7 +206,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Unrelated occurrence".into(),
         transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     });
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -981,7 +981,7 @@ fn cross_body_boolean_tool_edit_recomputes_terminal_exact_body_and_drawing_atomi
                     name: "First reuse".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateOccurrence {
@@ -990,7 +990,7 @@ fn cross_body_boolean_tool_edit_recomputes_terminal_exact_body_and_drawing_atomi
                     name: "Second reuse".into(),
                     transform: Transform::from_translation(30.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateDrawingSheet(

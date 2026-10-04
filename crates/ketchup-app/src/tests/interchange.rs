@@ -232,7 +232,7 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
                     name: "Second leaf".to_owned(),
                     transform: Transform::from_translation(120.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateGroup {
@@ -264,7 +264,7 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
                     name: "Purchased subassembly copy".to_owned(),
                     transform: Transform::from_translation(300.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::UpsertClassificationDimension {

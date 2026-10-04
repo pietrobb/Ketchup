@@ -443,7 +443,7 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
                 name: "Assistant sheet metal".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -723,7 +723,7 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
                 name: "Cylinder instance".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -835,7 +835,7 @@ fn local_pdm_root_child_and_verified_open_run_through_offscreen_accesskit() {
                 name: "Bracket instance".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -970,7 +970,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
                 name: "Assistant weldment".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {

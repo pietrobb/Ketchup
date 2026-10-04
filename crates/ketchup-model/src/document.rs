@@ -83,6 +83,7 @@ typed_id!(BodyId);
 typed_id!(OccurrenceId);
 typed_id!(GroupId);
 typed_id!(TagId);
+typed_id!(SavedViewId);
 typed_id!(ClassificationDimensionId);
 typed_id!(ClassificationCategoryId);
 typed_id!(CollectionId);
@@ -122,6 +123,7 @@ mod product_validation;
 mod proposal;
 mod proposal_analysis;
 mod revision;
+mod saved_view_commands;
 mod scene_query;
 mod snapshot;
 mod solid_tool;
@@ -145,6 +147,7 @@ use product_validation::*;
 pub use proposal::*;
 pub(crate) use proposal_analysis::*;
 pub use revision::*;
+use saved_view_commands::*;
 pub use scene_query::*;
 pub use snapshot::*;
 use solid_tool::*;
@@ -175,6 +178,8 @@ pub(crate) struct ProductModel {
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) saved_views: BTreeMap<SavedViewId, Arc<SavedView>>,
     pub(crate) classification_dimensions:
         BTreeMap<ClassificationDimensionId, Arc<ClassificationDimension>>,
     pub(crate) classification_assignments:
@@ -250,6 +255,7 @@ impl Default for ProductModel {
             exact_reference_evidence: BTreeMap::new(),
             persistent_dimensions: BTreeMap::new(),
             tags: BTreeMap::new(),
+            saved_views: BTreeMap::new(),
             classification_dimensions: BTreeMap::new(),
             classification_assignments: BTreeMap::new(),
             collections: BTreeMap::new(),

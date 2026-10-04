@@ -158,7 +158,7 @@ pub(crate) fn reconcile(
                 name: after.name.clone(),
                 transform: placement,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             });
         }

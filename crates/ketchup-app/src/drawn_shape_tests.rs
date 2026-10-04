@@ -99,7 +99,7 @@ fn blocks(app: &mut KetchupApp, placements: &[Transform]) -> Vec<OccurrenceId> {
             name: format!("block {}", index + 1),
             transform: *transform,
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
         ids.push(id);

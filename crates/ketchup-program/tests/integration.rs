@@ -1,6 +1,7 @@
 //! Single integration test binary for this crate: every `tests/*.rs` file is a
 //! module here, so the crate links one test executable instead of one per file.
 
+mod buildup;
 mod components;
 mod connectivity;
 mod contact_review;

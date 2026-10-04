@@ -584,7 +584,7 @@ fn one_move_among_the_largest_indexed_model_commits_within_budget() {
             )
             .unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
     }

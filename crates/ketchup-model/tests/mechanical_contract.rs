@@ -81,7 +81,7 @@ fn append_box(
             transform: Transform::from_translation(position_mm[0], position_mm[1], position_mm[2])
                 .unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
     ]);

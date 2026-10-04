@@ -151,7 +151,7 @@ fn write_large_assistant_fixture(path: &std::path::Path) {
         name: format!("Part {id}"),
         transform: Transform::identity(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     }));
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -206,7 +206,7 @@ fn write_assistant_movable_pocket_fixture(path: &std::path::Path) {
                 name: "Furniture panel".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -268,7 +268,7 @@ fn write_assistant_boolean_fixture(path: &std::path::Path) {
                 name: "Boolean inputs".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -302,7 +302,7 @@ fn write_assistant_planar_offset_fixture(path: &std::path::Path) {
                 name: "Planar offset input".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -379,7 +379,7 @@ fn write_assistant_sweep_fixture(path: &std::path::Path) {
                 name: "Sweep inputs".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -435,7 +435,7 @@ fn write_assistant_loft_fixture(path: &std::path::Path) {
                 name: "Loft inputs".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -512,7 +512,7 @@ fn write_assistant_parameter_fixture(path: &std::path::Path) {
                 name: "Editable circle".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -563,7 +563,7 @@ fn write_assistant_rotation_fixture(path: &std::path::Path) {
                 name: "Grouped arbitrary body".to_owned(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(1)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -572,7 +572,7 @@ fn write_assistant_rotation_fixture(path: &std::path::Path) {
                 name: "Root arbitrary body".to_owned(),
                 transform: Transform::from_translation(60.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1605,7 +1605,7 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
                 name: "Rail".into(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(60)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1614,7 +1614,7 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
                 name: "Slider".into(),
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
                 parent: Some(GroupId(60)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1630,7 +1630,7 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
                 name: "Reusable mechanism copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -6274,7 +6274,7 @@ fn canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step() {
         (
             occurrence.name().to_owned(),
             occurrence.transform(),
-            occurrence.tag(),
+            occurrence.tags().first().copied(),
         )
     };
     let expected_transform = Transform::from_translation(25.0, -10.0, 5.0).unwrap();
@@ -6298,7 +6298,7 @@ fn canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step() {
     let occurrence = rejected.occurrence(target).unwrap();
     assert_eq!(occurrence.name(), baseline_name);
     assert_eq!(occurrence.transform(), baseline_transform);
-    assert_eq!(occurrence.tag(), baseline_tag);
+    assert_eq!(occurrence.tags().first().copied(), baseline_tag);
 
     assert!(
         shell
@@ -6325,8 +6325,8 @@ fn canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step() {
     ));
     assert!(matches!(
         &proposal.batch().commands()[1],
-        CanonicalCommand::SetOccurrenceTag { id, tag: Some(actual) }
-            if *id == target && *actual == tag
+        CanonicalCommand::SetOccurrenceTags { id, tags }
+            if *id == target && tags.iter().eq([&tag])
     ));
     assert!(matches!(
         &proposal.batch().commands()[2],
@@ -6347,7 +6347,7 @@ fn canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step() {
     let occurrence = committed.occurrence(target).unwrap();
     assert_eq!(occurrence.name(), "Moved tagged box");
     assert_eq!(occurrence.transform(), expected_transform);
-    assert_eq!(occurrence.tag(), Some(tag));
+    assert_eq!(occurrence.tags().first().copied(), Some(tag));
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
@@ -6356,7 +6356,7 @@ fn canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step() {
     let occurrence = undone.occurrence(target).unwrap();
     assert_eq!(occurrence.name(), baseline_name);
     assert_eq!(occurrence.transform(), baseline_transform);
-    assert_eq!(occurrence.tag(), baseline_tag);
+    assert_eq!(occurrence.tags().first().copied(), baseline_tag);
 
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), committed_digest);
@@ -6365,7 +6365,7 @@ fn canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step() {
     let occurrence = redone.occurrence(target).unwrap();
     assert_eq!(occurrence.name(), "Moved tagged box");
     assert_eq!(occurrence.transform(), expected_transform);
-    assert_eq!(occurrence.tag(), Some(tag));
+    assert_eq!(occurrence.tags().first().copied(), Some(tag));
 }
 
 #[test]

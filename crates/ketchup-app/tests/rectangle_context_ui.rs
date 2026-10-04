@@ -220,7 +220,7 @@ fn fixture(path: &std::path::Path) -> Transform {
             name: format!("Shared {id}"),
             transform: t,
             parent: Some(GroupId(20)),
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
     }

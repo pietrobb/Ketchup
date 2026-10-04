@@ -694,7 +694,7 @@ impl KetchupApp {
                     ),
                     transform,
                     parent: source.parent(),
-                    tag: source.tag(),
+                    tags: source.tags().clone(),
                     visible: source.visible(),
                 });
                 if let Some(color) = source.color() {
@@ -955,13 +955,13 @@ impl KetchupApp {
             } else {
                 None
             };
-            let (definition_id, source_transform, parent, tag, visible, color) =
+            let (definition_id, source_transform, parent, tags, visible, color) =
                 if let Some(source) = cut_source {
                     (
                         source.definition_id,
                         source.transform,
                         source.parent,
-                        source.tag,
+                        source.tags.clone(),
                         source.visible,
                         source.color,
                     )
@@ -971,7 +971,7 @@ impl KetchupApp {
                         source.definition_id(),
                         source.transform(),
                         source.parent(),
-                        source.tag(),
+                        source.tags().clone(),
                         source.visible(),
                         source.color(),
                     )
@@ -1000,7 +1000,7 @@ impl KetchupApp {
                 ),
                 transform,
                 parent,
-                tag,
+                tags,
                 visible,
             });
             if let Some(color) = color {

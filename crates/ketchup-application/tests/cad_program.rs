@@ -272,7 +272,7 @@ fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
                 name: "Nested rail".into(),
                 transform: Transform::identity(),
                 parent: Some(INNER_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -281,7 +281,7 @@ fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
                 name: "Nested slider".into(),
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
                 parent: Some(INNER_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -297,7 +297,7 @@ fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
                 name: "Reusable mechanism copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -3435,7 +3435,7 @@ fn physical_pin_joint_refuses_shared_root_and_nested_definitions_without_mutatio
                 name: "Untouched hidden sibling".into(),
                 transform: Transform::from_translation(200.0, 0.0, 0.0).unwrap(),
                 parent: nested.then_some(GroupId(1)),
-                tag: None,
+                tags: Default::default(),
                 visible: false,
             });
             document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -4746,7 +4746,7 @@ fn missing_topology_evidence_cannot_authorize_a_finish() {
                 name: "Instance".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

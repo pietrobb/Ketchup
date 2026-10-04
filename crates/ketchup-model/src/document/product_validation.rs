@@ -308,6 +308,21 @@ fn validate_document_entries(
         ensure_product_id(tag.id.0)?;
         ensure_name(&tag.name)?;
     }
+    let mut view_names = BTreeSet::new();
+    for (id, view) in &product.saved_views {
+        if *id != view.id
+            || ensure_product_id(id.0).is_err()
+            || ensure_name(&view.name).is_err()
+            || !view_names.insert(view.name.as_str())
+            || !view.is_well_formed()
+            || !view
+                .hidden_tags
+                .iter()
+                .all(|tag| product.tags.contains_key(tag))
+        {
+            return Err(CanonicalError::InvalidSavedView(*id));
+        }
+    }
     for (id, collection) in &product.collections {
         if *id != collection.id {
             return Err(CanonicalError::CollectionNotFound(*id));
@@ -1195,10 +1210,12 @@ fn validate_occurrences<'a>(
         {
             return Err(CanonicalError::GroupNotFound(parent));
         }
-        if let Some(tag) = occurrence.tag
-            && !product.tags.contains_key(&tag)
+        if let Some(tag) = occurrence
+            .tags
+            .iter()
+            .find(|tag| !product.tags.contains_key(tag))
         {
-            return Err(CanonicalError::TagNotFound(tag));
+            return Err(CanonicalError::TagNotFound(*tag));
         }
     }
     Ok(())
@@ -1277,10 +1294,12 @@ fn validate_local_structure(product: &ProductModel) -> Result<(), CanonicalError
                 return Err(CanonicalError::InvalidLocalGraph);
             }
         }
-        if let Some(tag) = occurrence.tag
-            && !product.tags.contains_key(&tag)
+        if let Some(tag) = occurrence
+            .tags
+            .iter()
+            .find(|tag| !product.tags.contains_key(tag))
         {
-            return Err(CanonicalError::TagNotFound(tag));
+            return Err(CanonicalError::TagNotFound(*tag));
         }
     }
     let feature_graph = FeatureDependencyGraph::from_product(product)?;
@@ -1450,7 +1469,7 @@ mod incremental_equivalence_tests {
                 name: format!("part {id}"),
                 transform: Transform::from_translation(id as f64 * 500.0, 0.0, 0.0).unwrap(),
                 parent: (id > 1).then_some(GroupId(1 + id % 2)),
-                tag: (id > 2).then_some(TagId(1 + id % 2)),
+                tags: (id > 2).then_some(TagId(1 + id % 2)).into_iter().collect(),
                 visible: true,
             });
         }
@@ -1504,7 +1523,7 @@ mod incremental_equivalence_tests {
         }),
         ("occurrence with a missing tag", |p| {
             edit(&mut p.occurrences, OccurrenceId(2), |o| {
-                o.tag = Some(TagId(99))
+                o.tags = [TagId(1), TagId(99)].into()
             });
         }),
         ("add an occurrence", |p| {

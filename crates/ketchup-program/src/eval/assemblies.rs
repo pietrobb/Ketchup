@@ -262,6 +262,67 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         Ok(heap.alloc(AllocStruct([("name", heap.alloc(name))])))
     }
 
+    /// Adds document tags (layers) to parts: `items` is a part, a group (every
+    /// part in it) or a list of them; `tags` one name or a list. Tag shared
+    /// parts before component(), so every instance carries the same tags.
+    fn tag<'v>(
+        #[starlark(require = pos)] items: Value<'v>,
+        #[starlark(require = pos)] tags: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let single =
+            items.unpack_str().is_some() || items.get_attr("name", heap).ok().flatten().is_some();
+        let items = if single {
+            vec![part_name(items, heap)?]
+        } else {
+            members(items, heap)?
+        };
+        let tags = tag_names(tags, heap)?;
+        let state = state(eval)?;
+        let mut model = state.model.borrow_mut();
+        let mut names = BTreeSet::new();
+        for item in &items {
+            if model.part(item).is_none() && !model.groups.iter().any(|group| &group.name == item) {
+                anyhow::bail!("tag(): unknown part or group {item:?}; declare it first");
+            }
+            names.extend(descendants(&model, item));
+        }
+        for part in model
+            .parts
+            .iter_mut()
+            .filter(|part| names.contains(&part.name))
+        {
+            part.tags.extend(tags.iter().cloned());
+        }
+        Ok(NoneType)
+    }
+
+    /// Declares tags that are alternative representations of the same thing (a concept
+    /// and a construction): parts carrying different ones of them are never reported
+    /// as colliding with each other. Parts carrying none or the same one are checked.
+    fn alternatives<'v>(
+        #[starlark(require = pos)] tags: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let tags = tag_names(tags, eval.heap())?;
+        if tags.len() < 2 {
+            anyhow::bail!("alternatives(): name at least two tags, got {tags:?}");
+        }
+        let state = state(eval)?;
+        let mut model = state.model.borrow_mut();
+        if let Some(taken) = tags
+            .iter()
+            .find(|tag| model.alternative_tags.iter().any(|set| set.contains(*tag)))
+        {
+            anyhow::bail!(
+                "alternatives(): tag {taken:?} is already in another set of alternatives"
+            );
+        }
+        model.alternative_tags.push(tags.into_iter().collect());
+        Ok(NoneType)
+    }
+
     /// Declares a shared assembly, retaining its first instance at the current position.
     fn component<'v>(
         #[starlark(require = pos)] name: &str,

@@ -27,14 +27,14 @@ crates/ketchup-app/src/live_bridge/consent.rs:panel 1
 crates/ketchup-app/src/theme.rs:panel 11
 crates/ketchup-app/src/validator_ui.rs:panel 27
 crates/ketchup-application/src/append_feature.rs:weldment 14
-crates/ketchup-application/src/collision.rs:panel 2
+crates/ketchup-application/src/collision.rs:panel 1
 crates/ketchup-application/src/collision_hull.rs:panel 2
 crates/ketchup-application/src/part_role.rs:beam 5
 crates/ketchup-application/src/part_role.rs:panel 5
 crates/ketchup-application/src/planner.rs:weldment 3
 crates/ketchup-application/src/rule_operations.rs:panel 3
 crates/ketchup-application/src/rule_program.rs:panel 7
-crates/ketchup-application/src/validation.rs:beam 25
+crates/ketchup-application/src/validation.rs:beam 24
 crates/ketchup-application/src/validation.rs:board 5
 crates/ketchup-application/src/validation.rs:cup_bore 2
 crates/ketchup-application/src/validation.rs:panel 40
@@ -59,7 +59,7 @@ crates/ketchup-model/src/exact_brep_graph/validation.rs:weldment 2
 crates/ketchup-model/src/validation.rs:beam 4
 crates/ketchup-program/src/cad.rs:panel 2
 crates/ketchup-program/src/eval.rs:board 2
-crates/ketchup-program/src/eval.rs:dowel 2
+crates/ketchup-program/src/eval.rs:dowel 1
 crates/ketchup-program/src/lib.rs:board 1
 crates/ketchup-program/src/lib.rs:dowel 1
 crates/ketchup-program/src/lib.rs:panel 1
@@ -67,7 +67,7 @@ crates/ketchup-program/src/model.rs:dowel 1
 crates/ketchup-program/src/model.rs:panel 4
 crates/ketchup-program/src/model.rs:shelf 1
 crates/ketchup-program/src/validate.rs:board 1
-crates/ketchup-program/src/validate.rs:dowel 3
+crates/ketchup-program/src/validate.rs:dowel 2
 crates/ketchup-program/src/validate.rs:hinge 1
 crates/ketchup-scheduler/src/exact_worker.rs:weldment 10
 sdk/python/ketchup_assistant_protocol.py:beam 2

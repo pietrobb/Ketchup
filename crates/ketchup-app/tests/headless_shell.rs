@@ -122,7 +122,7 @@ fn write_parametric_fixture(path: &Path) {
                 name: "Parametric box #1".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateEvaluatorNode {
@@ -3531,7 +3531,7 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
         let cancel_undo_steps = shell.app().undo_step_count();
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
         assert!(shell.app().tag_assignment_visible());
-        assert_eq!(shell.app().tag_assignment_input(), Some(None));
+        assert_eq!(shell.app().tag_assignment_input(), Some(BTreeSet::new()));
         shell.click_role_and_label(
             Role::Button,
             &shell.catalog().text("dialog-assign-tag-cancel"),
@@ -3561,7 +3561,7 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
         shell.secondary_click_at(shell.top_face_centre(1));
         shell.click_command(AppCommand::AssignTag);
         assert!(shell.app().tag_assignment_visible());
-        shell.click_row("Hardware");
+        shell.click_role_and_label(Role::CheckBox, "Hardware");
         shell.click_role_and_label(
             Role::Button,
             &shell.catalog().text("dialog-assign-tag-confirm"),
@@ -3570,8 +3570,8 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
         assert!(!shell.app().tag_assignment_visible());
         assert_eq!(shell.app().document_revision(), revision + 1);
         assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(tag));
         let after = shell.app().document_snapshot();
         for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
             let occurrence = after.occurrence(id).unwrap();
@@ -3613,11 +3613,11 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
             Role::Button,
             &shell.catalog().text("dialog-assign-tag-confirm"),
         );
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), None);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), None);
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), None);
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), None);
         shell.click_menu_command("menu-edit", AppCommand::Undo);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(tag));
 
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
         shell.click_row(&shell.catalog().text("dialog-assign-tag-untagged"));
@@ -3632,15 +3632,15 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
         assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
         assert_eq!(shell.app().action_digest(), drift_action_digest);
         assert_eq!(shell.app().selected_occurrence_count(), 0);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(tag));
         shell.settle();
         assert!(!shell.app().tag_assignment_visible());
         shell.click_menu_command("menu-edit", AppCommand::SelectAll);
         assert_eq!(shell.app().selected_occurrence_count(), 2);
 
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
-        shell.click_row("Temporary");
+        shell.click_role_and_label(Role::CheckBox, "Temporary");
         assert!(
             shell
                 .app_mut()
@@ -3659,8 +3659,8 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
         assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
         assert_eq!(shell.app().action_digest(), missing_action_digest);
         assert_eq!(shell.app().selected_occurrence_count(), 2);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(tag));
         shell.settle();
         assert!(!shell.app().tag_assignment_visible());
 
@@ -3680,8 +3680,8 @@ fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
         shell.settle();
         assert!(!shell.app().tag_assignment_visible());
         assert_eq!(shell.app().document_revision(), intervening_revision);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(tag));
     }
 }
 
@@ -3710,7 +3710,7 @@ fn tags_panel_create_is_localized_canonical_stale_safe_and_undoable() {
             occurrence.definition_id(),
             occurrence.transform(),
             occurrence.parent(),
-            occurrence.tag(),
+            occurrence.tags().first().copied(),
             occurrence.visible(),
         );
         let initial_revision = shell.app().document_revision();
@@ -3758,7 +3758,7 @@ fn tags_panel_create_is_localized_canonical_stale_safe_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             ),
             preserved
@@ -3839,7 +3839,7 @@ fn tags_panel_create_is_localized_canonical_stale_safe_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             ),
             preserved
@@ -3904,7 +3904,7 @@ fn tags_panel_create_from_selection_is_localized_atomic_stale_safe_and_undoable(
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -3928,7 +3928,13 @@ fn tags_panel_create_from_selection_is_localized_atomic_stale_safe_and_undoable(
             .enumerate()
         {
             let occurrence = assigned.occurrence(id).unwrap();
-            assert_eq!(occurrence.tag(), Some(created_tag));
+            // The new tag is added; a part keeps the tags it already had.
+            let expected_tags = preserved[index]
+                .4
+                .into_iter()
+                .chain([created_tag])
+                .collect::<BTreeSet<_>>();
+            assert_eq!(occurrence.tags(), &expected_tags);
             assert_eq!(
                 (
                     occurrence.name().to_owned(),
@@ -3961,7 +3967,10 @@ fn tags_panel_create_from_selection_is_localized_atomic_stale_safe_and_undoable(
             .into_iter()
             .enumerate()
         {
-            assert_eq!(restored.occurrence(id).unwrap().tag(), preserved[index].4);
+            assert_eq!(
+                restored.occurrence(id).unwrap().tags().first().copied(),
+                preserved[index].4
+            );
         }
 
         shell.click_role_and_label(Role::Button, &create_label);
@@ -4050,7 +4059,7 @@ fn tags_panel_delete_unused_is_localized_context_bound_and_undoable() {
         shell.settle();
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
-        shell.click_row("Used");
+        shell.click_role_and_label(Role::CheckBox, "Used");
         shell.click_role_and_label(
             Role::Button,
             &shell.catalog().text("dialog-assign-tag-confirm"),
@@ -4078,7 +4087,7 @@ fn tags_panel_delete_unused_is_localized_context_bound_and_undoable() {
             occurrence.definition_id(),
             occurrence.transform(),
             occurrence.parent(),
-            occurrence.tag(),
+            occurrence.tags().first().copied(),
             occurrence.visible(),
         );
         let baseline_revision = shell.app().document_revision();
@@ -4133,7 +4142,7 @@ fn tags_panel_delete_unused_is_localized_context_bound_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             ),
             preserved_occurrence
@@ -4158,7 +4167,7 @@ fn tags_panel_delete_unused_is_localized_context_bound_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             ),
             preserved_occurrence
@@ -4251,7 +4260,7 @@ fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable
         assert!(deleted.tag(tag).is_none());
         for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
             let occurrence = deleted.occurrence(id).unwrap();
-            assert_eq!(occurrence.tag(), None);
+            assert_eq!(occurrence.tags().first().copied(), None);
             assert_eq!(
                 (
                     occurrence.name().to_owned(),
@@ -4275,7 +4284,10 @@ fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable
         let restored = shell.app().document_snapshot();
         assert_eq!(restored.tag(tag).unwrap().name(), "Hardware");
         for id in [OccurrenceId(1), OccurrenceId(2)] {
-            assert_eq!(restored.occurrence(id).unwrap().tag(), Some(tag));
+            assert_eq!(
+                restored.occurrence(id).unwrap().tags().first().copied(),
+                Some(tag)
+            );
         }
         assert_eq!(shell.app().selected_occurrence_count(), 2);
 
@@ -4283,7 +4295,7 @@ fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable
         let redone = shell.app().document_snapshot();
         assert!(redone.tag(tag).is_none());
         for id in [OccurrenceId(1), OccurrenceId(2)] {
-            assert_eq!(redone.occurrence(id).unwrap().tag(), None);
+            assert_eq!(redone.occurrence(id).unwrap().tags().first().copied(), None);
         }
         shell.click_menu_command("menu-edit", AppCommand::Undo);
         assert!(shell.app().document_snapshot().tag(tag).is_some());
@@ -4303,7 +4315,10 @@ fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable
         let stale = shell.app().document_snapshot();
         assert!(stale.tag(tag).is_some());
         for id in [OccurrenceId(1), OccurrenceId(2)] {
-            assert_eq!(stale.occurrence(id).unwrap().tag(), Some(tag));
+            assert_eq!(
+                stale.occurrence(id).unwrap().tags().first().copied(),
+                Some(tag)
+            );
         }
     }
 }
@@ -4566,7 +4581,7 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         assert!(cleared.tag(unused_tag).is_some());
         for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
             let occurrence = cleared.occurrence(id).unwrap();
-            assert_eq!(occurrence.tag(), None);
+            assert_eq!(occurrence.tags().first().copied(), None);
             assert_eq!(
                 (
                     occurrence.name().to_owned(),
@@ -4589,8 +4604,8 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
         assert!(shell.has_role_and_label(Role::Button, &clear_used));
 
         shell.click_menu_command("menu-edit", AppCommand::Undo);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(used_tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(used_tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(used_tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(used_tag));
         assert_eq!(
             shell
                 .app()
@@ -4601,11 +4616,11 @@ fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
             "Hardware"
         );
         shell.click_menu_command("menu-edit", AppCommand::Redo);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), None);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), None);
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), None);
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), None);
         shell.click_menu_command("menu-edit", AppCommand::Undo);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(used_tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(used_tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(used_tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(used_tag));
 
         let missing_tag = TagId(852);
         assert!(
@@ -4690,7 +4705,7 @@ fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
         shell.settle();
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
-        shell.click_row("Hardware");
+        shell.click_role_and_label(Role::CheckBox, "Hardware");
         shell.click_role_and_label(
             Role::Button,
             &shell.catalog().text("dialog-assign-tag-confirm"),
@@ -4716,7 +4731,7 @@ fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
             occurrence.definition_id(),
             occurrence.transform(),
             occurrence.parent(),
-            occurrence.tag(),
+            occurrence.tags().first().copied(),
             occurrence.visible(),
         );
         let baseline_revision = shell.app().document_revision();
@@ -4765,7 +4780,7 @@ fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             ),
             preserved_occurrence
@@ -4786,14 +4801,27 @@ fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
         assert_eq!(restored.tag(tag).unwrap().name(), "Hardware");
         assert!(restored.tag(tag).unwrap().visible());
         assert_eq!(
-            restored.occurrence(OccurrenceId(1)).unwrap().tag(),
+            restored
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .tags()
+                .first()
+                .copied(),
             Some(tag)
         );
         shell.click_menu_command("menu-edit", AppCommand::Redo);
         let redone = shell.app().document_snapshot();
         assert_eq!(redone.tag(tag).unwrap().name(), "Mechanical");
         assert!(redone.tag(tag).unwrap().visible());
-        assert_eq!(redone.occurrence(OccurrenceId(1)).unwrap().tag(), Some(tag));
+        assert_eq!(
+            redone
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .tags()
+                .first()
+                .copied(),
+            Some(tag)
+        );
         shell.click_menu_command("menu-edit", AppCommand::Undo);
         assert_eq!(
             shell.app().document_snapshot().tag(tag).unwrap().name(),
@@ -4882,7 +4910,7 @@ fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
 
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-model", AppCommand::AssignTag);
-        shell.click_row("Hardware");
+        shell.click_role_and_label(Role::CheckBox, "Hardware");
         shell.click_role_and_label(
             Role::Button,
             &shell.catalog().text("dialog-assign-tag-confirm"),
@@ -4904,7 +4932,7 @@ fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
             occurrence.definition_id(),
             occurrence.transform(),
             occurrence.parent(),
-            occurrence.tag(),
+            occurrence.tags().first().copied(),
             occurrence.visible(),
         );
         let revision = shell.app().document_revision();
@@ -4922,7 +4950,7 @@ fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
                 hidden_occurrence.definition_id(),
                 hidden_occurrence.transform(),
                 hidden_occurrence.parent(),
-                hidden_occurrence.tag(),
+                hidden_occurrence.tags().first().copied(),
                 hidden_occurrence.visible(),
             ),
             preserved
@@ -4947,7 +4975,9 @@ fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
                 .document_snapshot()
                 .occurrence(OccurrenceId(1))
                 .unwrap()
-                .tag(),
+                .tags()
+                .first()
+                .copied(),
             Some(tag)
         );
 
@@ -4960,6 +4990,185 @@ fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
         assert_eq!(shell.app().canonical_digest(), unchanged_digest);
         assert_eq!(shell.app().undo_step_count(), unchanged_undo_steps);
     }
+}
+
+#[test]
+fn a_part_in_two_tags_is_hidden_while_either_tag_is_hidden() {
+    let mut shell = Shell::with_catalog(LocaleCatalog::english());
+    let (roof, concept) = (TagId(711), TagId(712));
+    for (target, name) in [(roof, "Roof"), (concept, "Concept")] {
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target,
+                    name: name.to_owned(),
+                    visible: true,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+    }
+    shell.settle();
+
+    let part_on_screen = shell.top_face_centre(1);
+    shell.click_at(part_on_screen);
+    let undo_steps = shell.app().undo_step_count();
+    shell.click_menu_command("menu-model", AppCommand::AssignTag);
+    shell.click_role_and_label(Role::CheckBox, "Roof");
+    shell.click_role_and_label(Role::CheckBox, "Concept");
+    shell.click_role_and_label(
+        Role::Button,
+        &shell.catalog().text("dialog-assign-tag-confirm"),
+    );
+    assert_eq!(
+        shell.app().occurrence_tags(OccurrenceId(1)),
+        BTreeSet::from([roof, concept])
+    );
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    shell
+        .app_mut()
+        .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+    shell.settle();
+    let row = |name: &str| {
+        shell.catalog().format(
+            "tags-row",
+            &BTreeMap::from([("name", name.to_owned()), ("count", "1".to_owned())]),
+        )
+    };
+    let (roof_row, concept_row) = (row("Roof"), row("Concept"));
+    let shown = |shell: &Shell| {
+        shell
+            .app()
+            .document_snapshot()
+            .occurrence_effectively_visible(OccurrenceId(1))
+    };
+    assert_eq!(shown(&shell), Some(true));
+
+    for hidden_row in [&roof_row, &concept_row] {
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_role_and_label(Role::CheckBox, hidden_row);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shown(&shell), Some(false));
+        // A hidden part cannot be picked in the viewport.
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(part_on_screen);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        shell.click_role_and_label(Role::CheckBox, hidden_row);
+        assert_eq!(shown(&shell), Some(true));
+    }
+
+    shell.click_role_and_label(Role::CheckBox, &roof_row);
+    shell.click_role_and_label(Role::CheckBox, &concept_row);
+    assert_eq!(shown(&shell), Some(false));
+    shell.click_role_and_label(Role::CheckBox, &concept_row);
+    assert_eq!(shown(&shell), Some(false), "Roof alone still hides it");
+    for _ in 0..3 {
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+    }
+    assert_eq!(shown(&shell), Some(true));
+}
+
+#[test]
+fn saved_views_panel_saves_shows_renames_and_deletes_a_view() {
+    use ketchup_app::ViewFlag;
+    let mut shell = Shell::with_catalog(LocaleCatalog::english());
+    let roof = TagId(721);
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                target: roof,
+                name: "Roof".to_owned(),
+                visible: true,
+            })
+    );
+    assert!(shell.app_mut().confirm_assistant_proposal());
+    shell
+        .app_mut()
+        .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+    shell.settle();
+    let catalog = shell.catalog().clone();
+    let name_label = catalog.text("saved-views-name");
+    let save_label = catalog.text("saved-views-save");
+    let named =
+        |key: &str, name: &str| catalog.format(key, &BTreeMap::from([("name", name.to_owned())]));
+
+    shell.focus_text_input(&name_label);
+    shell.type_text("Concept");
+    shell.click_role_and_label(Role::Button, &save_label);
+    assert!(shell.app_mut().set_tag_visibility(roof, false));
+    shell.click_menu_command("menu-view", AppCommand::View(ViewFlag::Xray));
+    shell.focus_text_input(&name_label);
+    shell.type_text("No roof");
+    let undo_steps = shell.app().undo_step_count();
+    shell.click_role_and_label(Role::Button, &save_label);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    let views = |shell: &Shell| {
+        shell
+            .app()
+            .saved_views()
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(views(&shell), ["Concept", "No roof"]);
+
+    shell.click_role_and_label(Role::Button, &named("saved-views-activate", "Concept"));
+    assert_eq!(shell.app().tag_visibility(roof), Some(true));
+    assert!(!shell.app().view_visible(ViewFlag::Xray));
+    shell.click_role_and_label(Role::Button, &named("saved-views-activate", "No roof"));
+    assert_eq!(shell.app().tag_visibility(roof), Some(false));
+    assert!(shell.app().view_visible(ViewFlag::Xray));
+
+    shell.focus_text_input(&name_label);
+    shell.type_text("Without roof");
+    shell.click_role_and_label(Role::Button, &named("saved-views-rename", "No roof"));
+    assert_eq!(views(&shell), ["Concept", "Without roof"]);
+    shell.click_role_and_label(Role::Button, &named("saved-views-delete", "Concept"));
+    assert_eq!(views(&shell), ["Without roof"]);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(views(&shell), ["Concept", "Without roof"]);
+}
+
+#[test]
+fn section_controls_cut_turn_and_flip_and_a_saved_view_keeps_the_cut() {
+    let mut shell = Shell::with_catalog(LocaleCatalog::english());
+    shell
+        .app_mut()
+        .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+    shell.settle();
+    let catalog = shell.catalog().clone();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.click_role_and_label(Role::CheckBox, &catalog.text("section-open"));
+    let horizontal = shell.app().section().expect("the checkbox opens a cut");
+    assert_eq!(horizontal.normal, [0.0, 0.0, 1.0]);
+
+    let across_x = catalog.format("section-axis", &BTreeMap::from([("axis", "X".to_owned())]));
+    shell.click_role_and_label(Role::Button, &across_x);
+    assert_eq!(shell.app().section().unwrap().normal, [1.0, 0.0, 0.0]);
+    shell.click_role_and_label(Role::Button, &catalog.text("section-flip"));
+    assert_eq!(shell.app().section().unwrap().normal, [-1.0, 0.0, 0.0]);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo_steps,
+        "a cut changes only the viewport"
+    );
+
+    shell.focus_text_input(&catalog.text("saved-views-name"));
+    shell.type_text("Cut");
+    shell.click_role_and_label(Role::Button, &catalog.text("saved-views-save"));
+    let cut = shell.app().section();
+    shell.click_role_and_label(Role::CheckBox, &catalog.text("section-open"));
+    assert_eq!(shell.app().section(), None);
+    shell.click_role_and_label(
+        Role::Button,
+        &catalog.format(
+            "saved-views-activate",
+            &BTreeMap::from([("name", "Cut".to_owned())]),
+        ),
+    );
+    assert_eq!(shell.app().section(), cut);
 }
 
 #[test]
@@ -5042,7 +5251,7 @@ fn tags_panel_bulk_visibility_is_localized_atomic_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -5068,7 +5277,7 @@ fn tags_panel_bulk_visibility_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5141,7 +5350,7 @@ fn tags_panel_bulk_visibility_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5226,7 +5435,7 @@ fn tags_panel_invert_visibility_is_localized_atomic_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -5252,7 +5461,7 @@ fn tags_panel_invert_visibility_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5280,7 +5489,7 @@ fn tags_panel_invert_visibility_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5353,7 +5562,7 @@ fn tags_panel_isolate_is_localized_atomic_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -5381,7 +5590,7 @@ fn tags_panel_isolate_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5426,7 +5635,7 @@ fn tags_panel_isolate_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5498,7 +5707,7 @@ fn tags_panel_isolate_selection_is_localized_atomic_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -5527,7 +5736,7 @@ fn tags_panel_isolate_selection_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5570,7 +5779,7 @@ fn tags_panel_isolate_selection_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5667,7 +5876,7 @@ fn tags_panel_hide_selection_is_localized_atomic_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -5696,7 +5905,7 @@ fn tags_panel_hide_selection_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5824,7 +6033,7 @@ fn tags_panel_show_selection_is_localized_atomic_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -5853,7 +6062,7 @@ fn tags_panel_show_selection_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -5976,7 +6185,7 @@ fn tags_panel_invert_selection_is_localized_atomic_and_undoable() {
                 occurrence.definition_id(),
                 occurrence.transform(),
                 occurrence.parent(),
-                occurrence.tag(),
+                occurrence.tags().first().copied(),
                 occurrence.visible(),
             )
         });
@@ -6005,7 +6214,7 @@ fn tags_panel_invert_selection_is_localized_atomic_and_undoable() {
                     occurrence.definition_id(),
                     occurrence.transform(),
                     occurrence.parent(),
-                    occurrence.tag(),
+                    occurrence.tags().first().copied(),
                     occurrence.visible(),
                 ),
                 preserved[index]
@@ -6601,7 +6810,7 @@ fn tags_panel_assign_selection_is_localized_canonical_context_bound_and_undoable
             .enumerate()
         {
             let occurrence = assigned.occurrence(id).unwrap();
-            assert_eq!(occurrence.tag(), Some(tag));
+            assert_eq!(occurrence.tags().first().copied(), Some(tag));
             assert_eq!(
                 (
                     occurrence.definition_id(),
@@ -6622,9 +6831,9 @@ fn tags_panel_assign_selection_is_localized_canonical_context_bound_and_undoable
         assert!(shell.has_role_and_label(Role::Button, &assign_label));
 
         shell.click_menu_command("menu-edit", AppCommand::Undo);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), None);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(3)), None);
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), None);
+        assert_eq!(first_tag(&shell, OccurrenceId(3)), None);
         shell.click_role_and_label(Role::Button, &assign_label);
         let unchanged_revision = shell.app().document_revision();
         let unchanged_digest = shell.app().canonical_digest();
@@ -6726,10 +6935,31 @@ fn tags_panel_remove_selection_is_localized_canonical_context_bound_and_undoable
         assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
         assert_eq!(shell.app().selected_occurrence_count(), 3);
         let removed = shell.app().document_snapshot();
-        assert_eq!(removed.occurrence(OccurrenceId(1)).unwrap().tag(), None);
-        assert_eq!(removed.occurrence(OccurrenceId(2)).unwrap().tag(), None);
         assert_eq!(
-            removed.occurrence(OccurrenceId(3)).unwrap().tag(),
+            removed
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .tags()
+                .first()
+                .copied(),
+            None
+        );
+        assert_eq!(
+            removed
+                .occurrence(OccurrenceId(2))
+                .unwrap()
+                .tags()
+                .first()
+                .copied(),
+            None
+        );
+        assert_eq!(
+            removed
+                .occurrence(OccurrenceId(3))
+                .unwrap()
+                .tags()
+                .first()
+                .copied(),
             Some(other_tag)
         );
         for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
@@ -6757,9 +6987,9 @@ fn tags_panel_remove_selection_is_localized_canonical_context_bound_and_undoable
         assert!(shell.has_role_and_label(Role::Button, &remove_label));
 
         shell.click_menu_command("menu-edit", AppCommand::Undo);
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
-        assert_eq!(shell.app().occurrence_tag(OccurrenceId(3)), Some(other_tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(1)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(2)), Some(tag));
+        assert_eq!(first_tag(&shell, OccurrenceId(3)), Some(other_tag));
         shell.click_role_and_label(Role::Button, &remove_label);
         assert!(shell.has_role_and_label(Role::Button, &remove_label));
         let unchanged_revision = shell.app().document_revision();
@@ -14534,4 +14764,8 @@ fn make_unique_is_localized_exact_selection_bound_and_one_undo_step() {
         assert_eq!(context_shell.app().edit_context_depth(), 0);
         assert!(context_shell.app().command_is_enabled(AppCommand::Paste));
     }
+}
+
+fn first_tag(shell: &Shell, id: OccurrenceId) -> Option<TagId> {
+    shell.app().occurrence_tags(id).first().copied()
 }

@@ -1369,7 +1369,7 @@ fn deterministic_large_panel_fixture() -> DocumentStore {
                     )
                     .unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]);

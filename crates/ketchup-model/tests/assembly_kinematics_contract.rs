@@ -57,7 +57,7 @@ fn occurrence(id: OccurrenceId, name: &str, x_mm: f64) -> CanonicalCommand {
         name: name.into(),
         transform: Transform::from_translation(x_mm, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     }
 }
@@ -1668,7 +1668,7 @@ fn small_but_invertible_parent_scale_remains_solvable() {
                 ])
                 .unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1677,7 +1677,7 @@ fn small_but_invertible_parent_scale_remains_solvable() {
                 name: "Child".into(),
                 transform: Transform::from_translation(1.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
@@ -1725,7 +1725,7 @@ fn nested_group_child_is_returned_in_group_local_coordinates() {
                 name: "Driver".into(),
                 transform: Transform::from_translation(10.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1734,7 +1734,7 @@ fn nested_group_child_is_returned_in_group_local_coordinates() {
                 name: "Nested child".into(),
                 transform: Transform::from_translation(5.0, 0.0, 0.0).unwrap(),
                 parent: Some(INNER),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
@@ -1798,7 +1798,7 @@ fn repeated_component_joint_targets_only_one_full_instance_path_and_persists() {
                 name: "Nested parent".into(),
                 transform: Transform::identity(),
                 parent: Some(COMPONENT_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1807,7 +1807,7 @@ fn repeated_component_joint_targets_only_one_full_instance_path_and_persists() {
                 name: "Nested child".into(),
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
                 parent: Some(COMPONENT_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1823,7 +1823,7 @@ fn repeated_component_joint_targets_only_one_full_instance_path_and_persists() {
                 name: "Reusable subassembly copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -2048,7 +2048,7 @@ fn nested_limit_chain_is_topological_and_repeatable() {
                 name: "Root".into(),
                 transform: Transform::from_translation(10.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2057,7 +2057,7 @@ fn nested_limit_chain_is_topological_and_repeatable() {
                 name: "Nested parent".into(),
                 transform: Transform::from_translation(5.0, 0.0, 0.0).unwrap(),
                 parent: Some(INNER),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2066,7 +2066,7 @@ fn nested_limit_chain_is_topological_and_repeatable() {
                 name: "Nested child".into(),
                 transform: Transform::from_translation(15.0, 0.0, 0.0).unwrap(),
                 parent: Some(INNER),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             // The deeper edge sorts first, forcing the solver to defer it.
@@ -2587,7 +2587,7 @@ fn rotated_nested_motion_study_reaches_a_tolerant_no_op_fixed_point() {
                 name: "Root".into(),
                 transform: Transform::from_translation(10.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2596,7 +2596,7 @@ fn rotated_nested_motion_study_reaches_a_tolerant_no_op_fixed_point() {
                 name: "Nested child".into(),
                 transform: Transform::from_translation(5.0, 3.0, 0.0).unwrap(),
                 parent: Some(ROTATED_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
@@ -2729,7 +2729,7 @@ fn generic_telescopic_mechanism_proves_nested_limited_motion_and_swept_collision
                 name: "Base".into(),
                 transform: Transform::from_translation(-20.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2738,7 +2738,7 @@ fn generic_telescopic_mechanism_proves_nested_limited_motion_and_swept_collision
                 name: "Guide".into(),
                 transform: Transform::from_translation(-10.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2747,7 +2747,7 @@ fn generic_telescopic_mechanism_proves_nested_limited_motion_and_swept_collision
                 name: "Stage one".into(),
                 transform: Transform::from_translation(-130.0, 0.0, 0.0).unwrap(),
                 parent: Some(INNER_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2756,7 +2756,7 @@ fn generic_telescopic_mechanism_proves_nested_limited_motion_and_swept_collision
                 name: "Stage two".into(),
                 transform: Transform::from_translation(-130.0, 0.0, 0.0).unwrap(),
                 parent: Some(INNER_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2765,7 +2765,7 @@ fn generic_telescopic_mechanism_proves_nested_limited_motion_and_swept_collision
                 name: "Nested tip".into(),
                 transform: Transform::from_translation(-128.0, 0.0, 0.0).unwrap(),
                 parent: Some(INNER_GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2774,7 +2774,7 @@ fn generic_telescopic_mechanism_proves_nested_limited_motion_and_swept_collision
                 name: "Obstacle".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
@@ -2967,7 +2967,7 @@ fn helical_joint_solves_samples_publishes_and_persists_losslessly() {
                 name: "Screw follower".into(),
                 transform: Transform::from_translation(6.0, -2.0, 3.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(

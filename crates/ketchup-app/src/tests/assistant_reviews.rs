@@ -189,9 +189,9 @@ fn assistant_occurrence_tag_review_is_typed_observational_and_undoable() {
                 name: "Fixtures".to_owned(),
                 visible: true,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(tag),
+                tags: [tag].into(),
             },
         ]))
         .unwrap();
@@ -210,15 +210,15 @@ fn assistant_occurrence_tag_review_is_typed_observational_and_undoable() {
     let proposal = app.assistant_proposal().unwrap();
     assert_eq!(
         proposal.goal(),
-        ProposalGoal::SetOccurrenceTag(OccurrenceId(1))
+        ProposalGoal::SetOccurrenceTags(OccurrenceId(1))
     );
     assert_eq!(
         proposal.authoritative_diff()[0].before,
-        ProposalValue::Tag(Some(tag))
+        ProposalValue::Tags([tag].into())
     );
     assert_eq!(
         proposal.authoritative_diff()[0].after,
-        ProposalValue::Tag(None)
+        ProposalValue::Tags(Default::default())
     );
     assert_eq!(app.document_revision(), revision_before);
     assert_eq!(app.canonical_digest(), digest_before);
@@ -230,7 +230,9 @@ fn assistant_occurrence_tag_review_is_typed_observational_and_undoable() {
             .current()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         None
     );
     assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
@@ -240,7 +242,9 @@ fn assistant_occurrence_tag_review_is_typed_observational_and_undoable() {
             .current()
             .occurrence(OccurrenceId(1))
             .unwrap()
-            .tag(),
+            .tags()
+            .first()
+            .copied(),
         Some(tag)
     );
 }
@@ -850,7 +854,7 @@ fn assistant_delete_occurrence_review_is_typed_observational_and_undoable() {
     let expected_name = existing.name().to_owned();
     let expected_transform = existing.transform();
     let expected_parent = existing.parent();
-    let expected_tag = existing.tag();
+    let expected_tag = existing.tags().first().copied();
     let expected_visible = existing.visible();
     let revision_before = app.document_revision();
     let digest_before = app.canonical_digest();
@@ -869,7 +873,7 @@ fn assistant_delete_occurrence_review_is_typed_observational_and_undoable() {
             name: expected_name.clone(),
             transform: expected_transform,
             parent: expected_parent,
-            tag: expected_tag,
+            tags: expected_tag.into_iter().collect(),
             visible: expected_visible,
         }
     );
@@ -891,7 +895,7 @@ fn assistant_delete_occurrence_review_is_typed_observational_and_undoable() {
     assert_eq!(restored.name(), expected_name);
     assert_eq!(restored.transform(), expected_transform);
     assert_eq!(restored.parent(), expected_parent);
-    assert_eq!(restored.tag(), expected_tag);
+    assert_eq!(restored.tags().first().copied(), expected_tag);
     assert_eq!(restored.visible(), expected_visible);
 }
 
@@ -1013,7 +1017,7 @@ fn assistant_create_occurrence_review_is_typed_observational_and_undoable() {
             name: "Reviewed occurrence".to_owned(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }
     );
@@ -1028,7 +1032,7 @@ fn assistant_create_occurrence_review_is_typed_observational_and_undoable() {
     assert_eq!(created.name(), "Reviewed occurrence");
     assert_eq!(created.transform(), Transform::identity());
     assert_eq!(created.parent(), None);
-    assert_eq!(created.tag(), None);
+    assert_eq!(created.tags().first().copied(), None);
     assert!(created.visible());
     assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
     assert!(app.undo());
@@ -1796,7 +1800,7 @@ fn assistant_clone_profile_definition_is_typed_observational_and_undoable() {
                 name: "Clone occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

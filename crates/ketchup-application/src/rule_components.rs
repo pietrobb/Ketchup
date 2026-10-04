@@ -125,7 +125,7 @@ pub(crate) fn build(
                 name: instance.name.clone(),
                 transform: transform(instance.at_mm, instance.rotation)?,
                 parent,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             });
         }
@@ -230,10 +230,10 @@ fn reconcile_members(
                 name,
                 definition_id,
                 transform,
-                tag,
+                tags,
                 visible,
                 ..
-            } => Some((name.as_str(), (*definition_id, *transform, *tag, *visible))),
+            } => Some((name.as_str(), (*definition_id, *transform, tags, *visible))),
             _ => None,
         })
         .collect::<BTreeMap<_, _>>();
@@ -300,7 +300,8 @@ fn reconcile_members(
             if let Some(member) = member {
                 if rebuilt.contains(&part.name) {
                     let (definition_id, _, _, _) =
-                        *placements.get(part.name.as_str()).ok_or_else(unsupported)?;
+                        placements.get(part.name.as_str()).ok_or_else(unsupported)?;
+                    let definition_id = *definition_id;
                     commands.push(CanonicalCommand::RepointLocalOccurrence {
                         key: member.key(),
                         definition_id,
@@ -316,8 +317,10 @@ fn reconcile_members(
                     });
                 }
             } else {
-                let (definition_id, transform, tag, visible) =
-                    *placements.get(part.name.as_str()).ok_or_else(unsupported)?;
+                let (definition_id, transform, tags, visible) =
+                    placements.get(part.name.as_str()).ok_or_else(unsupported)?;
+                let (definition_id, transform, tags, visible) =
+                    (*definition_id, *transform, (*tags).clone(), *visible);
                 next_id = next_id.checked_add(1).ok_or_else(unsupported)?;
                 commands.push(CanonicalCommand::CreateLocalOccurrence {
                     key: ketchup_model::document::LocalOccurrenceKey {
@@ -328,7 +331,7 @@ fn reconcile_members(
                     name: part.name.clone(),
                     transform,
                     parent,
-                    tag,
+                    tags,
                     visible,
                 });
             }
@@ -439,6 +442,7 @@ pub(crate) fn incremental(
         comparable.color = before.color;
         comparable.material = before.material.clone();
         comparable.attributes = before.attributes.clone();
+        comparable.tags = before.tags.clone();
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();

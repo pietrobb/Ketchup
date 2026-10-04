@@ -788,13 +788,42 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
     Ok(part)
 }
 
+/// Document tag (layer) names: one name or a list of names.
+fn tag_names<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<BTreeSet<String>> {
+    let names = match value.unpack_str() {
+        Some(name) => vec![name.to_owned()],
+        None => iterate(
+            value,
+            heap,
+            format_args!("tags must be a name or a list of names"),
+        )?
+        .map(|name| {
+            name.unpack_str().map(ToOwned::to_owned).ok_or_else(|| {
+                anyhow::anyhow!("tag names must be strings, got {}", name.get_type())
+            })
+        })
+        .collect::<anyhow::Result<_>>()?,
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            if name.trim().is_empty() || name.chars().any(char::is_control) {
+                anyhow::bail!("tag name {name:?} must be non-empty printable text");
+            }
+            Ok(name)
+        })
+        .collect()
+}
+
 /// What every body may carry besides its shape: `material=`, `color=` (0-255
-/// channels) and `attributes=`, a dict of free string attributes.
+/// channels), `attributes=`, a dict of free string attributes, and `tags=`,
+/// the document tags (layers) it belongs to.
 struct Look {
     grounded: bool,
     material: Option<String>,
     color: Option<[u8; 3]>,
     attributes: BTreeMap<String, String>,
+    tags: BTreeSet<String>,
 }
 
 impl Look {
@@ -802,6 +831,7 @@ impl Look {
         material: Option<Value<'v>>,
         color: Option<Value<'v>>,
         attributes: Option<Value<'v>>,
+        tags: Option<Value<'v>>,
         grounded: bool,
         heap: &'v Heap,
     ) -> anyhow::Result<Self> {
@@ -842,6 +872,10 @@ impl Look {
             material: text(material, "material")?,
             color,
             attributes,
+            tags: given(tags)
+                .map(|tags| tag_names(tags, heap))
+                .transpose()?
+                .unwrap_or_default(),
         })
     }
 
@@ -851,6 +885,7 @@ impl Look {
             material: self.material,
             color: self.color,
             attributes: self.attributes,
+            tags: self.tags,
             ..part
         }
     }
@@ -866,6 +901,7 @@ fn new_part(name: &str, size_mm: [f64; 3], at_mm: [f64; 3], body: ProgramPartBod
         material: None,
         color: None,
         attributes: BTreeMap::new(),
+        tags: BTreeSet::new(),
         body,
         operations: Vec::new(),
         features: Vec::new(),
@@ -1251,6 +1287,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] material: Option<Value<'v>>,
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
+        #[starlark(require = named)] tags: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
         #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -1266,13 +1303,44 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
             .map(|up| sweep_up(&path, numbers::<3>(up, heap, "up")?))
             .transpose()?;
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, grounded, heap)?;
+        let look = Look::read(material, color, attributes, tags, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_profile_part(
             &state,
             name,
             at_mm,
             ProgramPartBody::Sweep { segments, path, up },
+            look,
+            tool,
+        )?;
+        record_source(eval, &state, &[name]);
+        Ok(part_value(&part, heap))
+    }
+
+    /// A solid through closed profiles `sections=[(profile, z), ...]`, each
+    /// in the part's XY plane at height z (strictly increasing).
+    fn loft<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] sections: Value<'v>,
+        #[starlark(require = named)] at: Option<Value<'v>>,
+        #[starlark(require = named)] material: Option<Value<'v>>,
+        #[starlark(require = named)] color: Option<Value<'v>>,
+        #[starlark(require = named)] attributes: Option<Value<'v>>,
+        #[starlark(require = named)] tags: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] tool: bool,
+        #[starlark(require = named, default = false)] grounded: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let sections = loft_sections(sections, heap)?;
+        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
+        let look = Look::read(material, color, attributes, tags, grounded, heap)?;
+        let state = state(eval)?;
+        let part = insert_profile_part(
+            &state,
+            name,
+            at_mm,
+            ProgramPartBody::Loft { sections },
             look,
             tool,
         )?;
@@ -1331,7 +1399,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
     /// A cuboid part occupying `0..size` in its own frame, with its origin at
     /// `at`. `tool=True` makes a helper body for subtract()/intersect() that is
     /// never built, listed or validated. Every body takes `material=`,
-    /// `color=` and `attributes=`.
+    /// `color=`, `attributes=` and `tags=` (document tag names).
     fn r#box<'v>(
         #[starlark(require = pos)] name: &str,
         #[starlark(require = pos)] size: Value<'v>,
@@ -1339,6 +1407,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] material: Option<Value<'v>>,
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
+        #[starlark(require = named)] tags: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
         #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -1353,7 +1422,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             );
         }
         let at = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, grounded, heap)?;
+        let look = Look::read(material, color, attributes, tags, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_part(
             &state,
@@ -1373,6 +1442,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] material: Option<Value<'v>>,
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
+        #[starlark(require = named)] tags: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
         #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -1384,7 +1454,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             anyhow::bail!("distance must be positive");
         }
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, grounded, heap)?;
+        let look = Look::read(material, color, attributes, tags, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_profile_part(
             &state,
@@ -1408,6 +1478,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] material: Option<Value<'v>>,
         #[starlark(require = named)] color: Option<Value<'v>>,
         #[starlark(require = named)] attributes: Option<Value<'v>>,
+        #[starlark(require = named)] tags: Option<Value<'v>>,
         #[starlark(require = named, default = false)] tool: bool,
         #[starlark(require = named, default = false)] grounded: bool,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -1428,7 +1499,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             anyhow::bail!("angle must be within (0, 360] degrees");
         }
         let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, grounded, heap)?;
+        let look = Look::read(material, color, attributes, tags, grounded, heap)?;
         let state = state(eval)?;
         let part = insert_profile_part(
             &state,
@@ -1440,36 +1511,6 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 axis_end_mm: *axis_end_mm,
                 angle_degrees: angle,
             },
-            look,
-            tool,
-        )?;
-        record_source(eval, &state, &[name]);
-        Ok(part_value(&part, heap))
-    }
-
-    /// A solid through closed profiles `sections=[(profile, z), ...]`, each
-    /// in the part's XY plane at height z (strictly increasing).
-    fn loft<'v>(
-        #[starlark(require = pos)] name: &str,
-        #[starlark(require = named)] sections: Value<'v>,
-        #[starlark(require = named)] at: Option<Value<'v>>,
-        #[starlark(require = named)] material: Option<Value<'v>>,
-        #[starlark(require = named)] color: Option<Value<'v>>,
-        #[starlark(require = named)] attributes: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] tool: bool,
-        #[starlark(require = named, default = false)] grounded: bool,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        let heap = eval.heap();
-        let sections = loft_sections(sections, heap)?;
-        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
-        let look = Look::read(material, color, attributes, grounded, heap)?;
-        let state = state(eval)?;
-        let part = insert_profile_part(
-            &state,
-            name,
-            at_mm,
-            ProgramPartBody::Loft { sections },
             look,
             tool,
         )?;

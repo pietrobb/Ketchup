@@ -64,12 +64,12 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/document/product_validation.rs::validate_features": 708,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 932,
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 477,
-    "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2108,
+    "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2105,
     "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 615,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 558,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
-    "crates/ketchup-program/src/eval.rs::builtins": 880,
+    "crates/ketchup-program/src/eval.rs::builtins": 853,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 559,
 }
 
@@ -90,7 +90,7 @@ LONG_TESTS = {
     "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 446,
     "crates/ketchup-app/tests/file_workflow.rs::file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen": 471,
     "crates/ketchup-app/tests/file_workflow.rs::file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen": 421,
-    "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 348,
+    "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 345,
     "crates/ketchup-app/tests/timber_frame_house.rs::live_oauth_assistant_builds_a_roofed_house_frame_across_turns": 714,
     "crates/ketchup-application/tests/cad_program.rs::one_physical_pin_joint_operation_creates_both_hole_rows_atomically": 305,
     "crates/ketchup-application/tests/cad_program.rs::public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact": 371,

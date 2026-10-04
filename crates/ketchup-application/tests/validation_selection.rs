@@ -56,7 +56,7 @@ fn structural_document(occurrence_count: u64) -> DocumentStore {
             name: format!("Structural occurrence {id}"),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }),
     );
@@ -169,7 +169,7 @@ fn contact_recipe_document(signed_gap_mm: f64) -> DocumentStore {
                 name: "Rear panel".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateDefinition {
@@ -184,7 +184,7 @@ fn contact_recipe_document(signed_gap_mm: f64) -> DocumentStore {
                 name: "Top panel".into(),
                 transform: Transform::from_translation(0.0, 0.0, 10.0 + signed_gap_mm).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -415,7 +415,7 @@ fn assembly_retention_finds_an_unjoined_back_panel_and_passes_after_a_fixed_conn
                 name: name.into(),
                 transform: Transform::from_translation(x, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceClassification {
@@ -532,7 +532,7 @@ fn entire_connected_subassembly_still_fails_when_detached_from_the_base() {
                 name: format!("Part {id}"),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceClassification {
@@ -599,7 +599,7 @@ fn all_ungrounded_parts_apart_from_the_base_are_reported_individually() {
                 name: format!("Separated part {id}"),
                 transform: Transform::from_translation(x, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceClassification {
@@ -967,7 +967,7 @@ fn declared_prismatic_drawer_is_connected_and_allowed_to_move() {
                 name: "Cabinet base".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -976,7 +976,7 @@ fn declared_prismatic_drawer_is_connected_and_allowed_to_move() {
                 name: "Movable drawer".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {
@@ -1483,7 +1483,7 @@ fn structural_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
                 ])
                 .unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateDefinition {
@@ -1517,7 +1517,7 @@ fn structural_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
                 ])
                 .unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {
@@ -1756,7 +1756,7 @@ fn gravity_support_does_not_propagate_through_an_unproven_envelope_contact() {
                 name: "Ground support".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateDefinition {
@@ -1781,7 +1781,7 @@ fn gravity_support_does_not_propagate_through_an_unproven_envelope_contact() {
                 name: "Load over opening".into(),
                 transform: Transform::from_translation(40.0, 40.0, 10.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1790,7 +1790,7 @@ fn gravity_support_does_not_propagate_through_an_unproven_envelope_contact() {
                 name: "Transitive load".into(),
                 transform: Transform::from_translation(40.0, 40.0, 20.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {

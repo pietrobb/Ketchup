@@ -116,6 +116,11 @@ pub enum CanonicalCommand {
         id: TagId,
         name: String,
     },
+    /// Create or replace a saved view; it changes nothing that is shown until activated.
+    UpsertSavedView(SavedView),
+    DeleteSavedView {
+        id: SavedViewId,
+    },
     UpsertClassificationDimension {
         id: ClassificationDimensionId,
         name: String,
@@ -281,7 +286,7 @@ pub enum CanonicalCommand {
         name: String,
         transform: Transform,
         parent: Option<GroupId>,
-        tag: Option<TagId>,
+        tags: BTreeSet<TagId>,
         visible: bool,
     },
     DeleteOccurrence {
@@ -297,7 +302,7 @@ pub enum CanonicalCommand {
         name: String,
         transform: Transform,
         parent: Option<LocalGroupId>,
-        tag: Option<TagId>,
+        tags: BTreeSet<TagId>,
         visible: bool,
     },
     DeleteLocalOccurrence {
@@ -399,9 +404,9 @@ pub enum CanonicalCommand {
         id: OccurrenceId,
         visible: bool,
     },
-    SetOccurrenceTag {
+    SetOccurrenceTags {
         id: OccurrenceId,
-        tag: Option<TagId>,
+        tags: BTreeSet<TagId>,
     },
     RepointOccurrence {
         id: OccurrenceId,
@@ -531,6 +536,18 @@ pub enum ToolBodyPolicy {
     Consume,
 }
 
+impl CanonicalCommand {
+    /// Whether the command changes only how the model is viewed: tag visibility and saved
+    /// views. A batch of such commands keeps the document's program.
+    #[must_use]
+    pub const fn is_view_only(&self) -> bool {
+        matches!(
+            self,
+            Self::SetTagVisibility { .. } | Self::UpsertSavedView(_) | Self::DeleteSavedView { .. }
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultiBodyBooleanPlan {
     pub definition_id: DefinitionId,
@@ -562,6 +579,7 @@ pub enum AuthoritativeDependency {
     AssemblyRecipe,
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
+    SavedView(SavedViewId),
     ClassificationDimension(ClassificationDimensionId),
     OccurrenceClassification(OccurrenceId, ClassificationDimensionId),
     Collection(CollectionId),
@@ -769,7 +787,7 @@ pub enum ProposalGoal {
     SetOccurrenceVisibility(OccurrenceId),
     SetOccurrenceTranslation(OccurrenceId),
     AtomicMultiCommandEdit(OccurrenceId),
-    SetOccurrenceTag(OccurrenceId),
+    SetOccurrenceTags(OccurrenceId),
     SetTagVisibility(TagId),
     RepointOccurrence(OccurrenceId),
     SetOccurrenceParent(OccurrenceId),
@@ -864,7 +882,7 @@ pub enum ProposalValue {
     RuleOutputs(Vec<RuleOutput>),
     ProfilePoints(Vec<[f64; 2]>),
     Transform(Transform),
-    Tag(Option<TagId>),
+    Tags(BTreeSet<TagId>),
     TagState {
         name: String,
         visible: bool,
@@ -897,7 +915,7 @@ pub enum ProposalValue {
         name: String,
         transform: Transform,
         parent: Option<GroupId>,
-        tag: Option<TagId>,
+        tags: BTreeSet<TagId>,
         visible: bool,
     },
     Occurrences(Vec<OccurrenceId>),

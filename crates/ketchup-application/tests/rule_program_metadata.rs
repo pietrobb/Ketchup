@@ -455,3 +455,132 @@ fn nested_metadata_never_classifies_the_assembly_root() {
         "not_evaluated"
     );
 }
+
+fn tagged(snapshot: &Snapshot) -> BTreeMap<String, Vec<String>> {
+    snapshot
+        .occurrences()
+        .map(|part| {
+            (
+                part.name().to_owned(),
+                part.tags()
+                    .iter()
+                    .map(|id| snapshot.tag(*id).unwrap().name().to_owned())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn tag_names(snapshot: &Snapshot) -> Vec<String> {
+    let mut names = snapshot
+        .tags()
+        .map(|tag| tag.name().to_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+#[test]
+fn program_tags_create_layers_keep_hand_tags_and_clean_up_unused_ones() {
+    let house = "\
+roof = box('roof', (100, 100, 10), at = (0, 0, 100), tags = ['concept', 'roof'])
+a = box('wall_a', (100, 10, 100))
+b = box('wall_b', (100, 10, 100), at = (0, 90, 0))
+tag(group('walls', [a, b]), ['concept', 'walls'])
+";
+    let mut session = DocumentSession::default();
+    apply(&mut session, house);
+    let snapshot = session.snapshot();
+    let strings = |items: &[&str]| items.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    assert_eq!(tag_names(&snapshot), strings(&["concept", "roof", "walls"]));
+    assert!(snapshot.tags().all(|tag| tag.visible()));
+    let by_part = tagged(&snapshot);
+    assert_eq!(by_part["roof"], strings(&["concept", "roof"]));
+    assert_eq!(by_part["wall_a"], strings(&["concept", "walls"]));
+    assert_eq!(by_part["wall_b"], strings(&["concept", "walls"]));
+    let ids = snapshot
+        .occurrences()
+        .map(|part| (part.id(), part.definition_id()))
+        .collect::<Vec<_>>();
+
+    // Hiding the roof layer hides only the roof; the program is still the source.
+    let roof_tag = snapshot
+        .tags()
+        .find(|tag| tag.name() == "roof")
+        .unwrap()
+        .id();
+    let roof = snapshot
+        .occurrences()
+        .find(|part| part.name() == "roof")
+        .unwrap()
+        .id();
+    let hand = ketchup_model::document::TagId(50);
+    session
+        .apply_rule_commands_with_source(
+            CommandBatch::new(vec![
+                CanonicalCommand::SetTagVisibility {
+                    id: roof_tag,
+                    visible: false,
+                },
+                CanonicalCommand::CreateTag {
+                    id: hand,
+                    name: "mine".into(),
+                    visible: true,
+                },
+                CanonicalCommand::SetOccurrenceTags {
+                    id: roof,
+                    tags: [roof_tag, hand].into(),
+                },
+            ]),
+            session.rule_program().unwrap().clone(),
+        )
+        .unwrap();
+    let hidden = session.snapshot();
+    assert_eq!(hidden.occurrence_effectively_visible(roof), Some(false));
+    assert!(
+        hidden
+            .occurrences()
+            .filter(|part| part.id() != roof)
+            .all(|part| hidden.occurrence_effectively_visible(part.id()) == Some(true))
+    );
+
+    // The source drops the roof layer and renames concept: program-owned tags follow,
+    // the hand tag and the visibility of surviving layers stay, unused layers go.
+    apply(
+        &mut session,
+        &house
+            .replace("tags = ['concept', 'roof']", "tags = ['draft']")
+            .replace("['concept', 'walls']", "['draft', 'walls']"),
+    );
+    let changed = session.snapshot();
+    assert_eq!(tag_names(&changed), strings(&["draft", "mine", "walls"]));
+    let by_part = tagged(&changed);
+    assert_eq!(by_part["roof"], strings(&["mine", "draft"]));
+    assert_eq!(by_part["wall_a"], strings(&["walls", "draft"]));
+    assert_eq!(
+        changed
+            .occurrences()
+            .map(|part| (part.id(), part.definition_id()))
+            .collect::<Vec<_>>(),
+        ids,
+        "tags alone never rebuild parts"
+    );
+
+    session.undo().unwrap();
+    assert_eq!(
+        tagged(&session.snapshot())["roof"],
+        strings(&["roof", "mine"])
+    );
+    session.redo().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tags.ketchup");
+    session
+        .save(&path, SaveOptions { overwrite: false })
+        .unwrap();
+    drop(session);
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert_eq!(
+        tagged(&reopened.snapshot())["roof"],
+        strings(&["mine", "draft"])
+    );
+}

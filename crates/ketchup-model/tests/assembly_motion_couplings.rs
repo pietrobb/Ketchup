@@ -47,7 +47,7 @@ fn occurrence(id: u64) -> CanonicalCommand {
         name: format!("part-{id}"),
         transform: Transform::from_translation(id as f64 * 10.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     }
 }

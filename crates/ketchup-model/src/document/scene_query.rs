@@ -127,11 +127,7 @@ impl SceneOccurrence {
                 }) else {
                     return false;
                 };
-                visible &= local.visible
-                    && local
-                        .tag
-                        .and_then(|id| snapshot.tag(id))
-                        .is_none_or(|tag| tag.visible);
+                visible &= local.visible && snapshot.tags_visible(&local.tags);
                 color = color.or(local.color);
                 definition_id = local.definition_id;
                 name = &local.name;

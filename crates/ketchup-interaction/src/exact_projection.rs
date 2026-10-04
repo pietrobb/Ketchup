@@ -674,7 +674,7 @@ mod tests {
                     name: "Cut box occurrence".to_owned(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))

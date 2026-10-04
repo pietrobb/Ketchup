@@ -513,9 +513,9 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
                 name: "Control probes".into(),
                 visible: false,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: OccurrenceId(1),
-                tag: Some(TagId(1)),
+                tags: [TagId(1)].into(),
             },
             CanonicalCommand::SetOccurrenceGrounded {
                 id: OccurrenceId(1),
@@ -527,7 +527,7 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
                 name: "Hidden control instance".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: Some(TagId(2)),
+                tags: [TagId(2)].into(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -626,11 +626,21 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
         assert_eq!(snapshot.tag(TagId(2)).unwrap().name(), "Control probes");
         assert!(!snapshot.tag(TagId(2)).unwrap().visible());
         assert_eq!(
-            snapshot.occurrence(OccurrenceId(1)).unwrap().tag(),
+            snapshot
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .tags()
+                .first()
+                .copied(),
             Some(TagId(1))
         );
         assert_eq!(
-            snapshot.occurrence(OccurrenceId(2)).unwrap().tag(),
+            snapshot
+                .occurrence(OccurrenceId(2))
+                .unwrap()
+                .tags()
+                .first()
+                .copied(),
             Some(TagId(2))
         );
         assert!(app.exact.results.is_bound_to(&snapshot));

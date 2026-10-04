@@ -1239,7 +1239,7 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
                 name: "Independent recipe-safe instance".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -2116,7 +2116,7 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
                 name: "child".into(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(1)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2125,7 +2125,7 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
                 name: "hidden".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: false,
             },
             CanonicalCommand::CreateTag {
@@ -2139,7 +2139,7 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
                 name: "tag hidden".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: Some(TagId(1)),
+                tags: [TagId(1)].into(),
                 visible: true,
             },
         ]))

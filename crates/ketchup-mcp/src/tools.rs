@@ -144,6 +144,10 @@ impl Tools {
                 no_more(&args)?;
                 self.open_window(document.as_deref())
             }
+            "list_validators" => {
+                no_more(&args)?;
+                self.send("list_validators", args, DEFAULT_WAIT)
+            }
             "program" => self.program(args),
             "inspect" => self.inspect(args),
             "model" => self.model(args),
@@ -269,7 +273,36 @@ impl Tools {
     }
 
     fn view(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
-        let action = take_action(&mut args, &["selection", "view", "image"])?;
+        let action = take_action(
+            &mut args,
+            &[
+                "selection",
+                "view",
+                "image",
+                "saved_views",
+                "save_view",
+                "show_view",
+                "section",
+                "close_section",
+            ],
+        )?;
+        if matches!(action.as_str(), "section" | "close_section") {
+            // A cut changes only the viewport; closing it ignores any defaulted plane fields.
+            args.retain(|key, value| {
+                (key == "expected"
+                    || (action == "section" && (key == "normal" || key == "offset_mm")))
+                    && is_set(value)
+            });
+            return self.send("section", args, DEFAULT_WAIT);
+        }
+        if matches!(action.as_str(), "saved_views" | "save_view" | "show_view") {
+            // Clients often fill every schema field with its default; a saved-view
+            // action reads only the view name and the stamp guard.
+            args.retain(|key, value| {
+                (key == "expected" || (key == "name" && action != "saved_views")) && is_set(value)
+            });
+            return self.send(&action, args, DEFAULT_WAIT);
+        }
         if action != "image" {
             return self.send(&action, args, DEFAULT_WAIT);
         }
@@ -438,11 +471,14 @@ impl Tools {
 
     fn attach(&mut self, window: Window) -> Result<(), ToolError> {
         let failed = |error: std::io::Error| {
+            let hint = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ""
+            } else {
+                "; it may have closed. Call windows."
+            };
             ToolError::new(
                 "attach_failed",
-                format!(
-                    "Cannot attach to the Kečup window ({error}); it may have closed. Call windows."
-                ),
+                format!("Cannot attach to the Kečup window ({error}){hint}"),
             )
         };
         let grant = discovery::attach(&window).map_err(failed)?;

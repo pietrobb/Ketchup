@@ -124,11 +124,14 @@ fn format_99_validator_roles_load_under_their_function_names() {
             .collect::<Vec<_>>()
     };
 
-    // The format-100 writer stores the same payload a format-99 writer did; only the
-    // format number differs, and it sits outside the checksummed payload.
+    // Format 102 stores what a format-99 writer did except that an occurrence's `tag`
+    // became the set `tags`, which the loader reads either way; the format number sits
+    // outside the checksummed payload.
     let mut bytes = persistence::save(&written);
     assert!(bytes.starts_with(b"KETCHUPDOC"));
     assert_eq!(bytes[10..12], persistence::CURRENT_SCHEMA.to_le_bytes());
+    let mut as_101 = bytes.clone();
+    as_101[10..12].copy_from_slice(&101_u16.to_le_bytes());
     bytes[10..12].copy_from_slice(&99_u16.to_le_bytes());
 
     let loaded = persistence::load(&bytes).unwrap();
@@ -147,11 +150,17 @@ fn format_99_validator_roles_load_under_their_function_names() {
         roles.role(EXACT_RIGHT).unwrap().as_str(),
         "manufacturing.cup-bore.z:door"
     );
-    // The digest its writer computed, so releases that recorded it still verify.
+    // The digest its writer computed, so releases that recorded it still verify: the
+    // pre-102 form with one optional `tag`, which formats 99 to 101 share.
+    let writer_digest = &loaded.audit().source_canonical_digest;
     assert_eq!(
-        loaded.audit().source_canonical_digest,
-        written.canonical_digest()
+        writer_digest,
+        &persistence::load(&as_101)
+            .unwrap()
+            .audit()
+            .source_canonical_digest
     );
+    assert_ne!(writer_digest, &written.canonical_digest());
     assert_ne!(migrated.canonical_digest(), written.canonical_digest());
 
     // Only older formats are renamed: the current format keeps names as written.
@@ -998,7 +1007,7 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
                 name: "Purchased subassembly copy".to_owned(),
                 transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {
@@ -2772,7 +2781,7 @@ fn occurrence(id: OccurrenceId, definition_id: DefinitionId, x_mm: f64) -> Canon
         name: format!("Occurrence {}", id.0),
         transform: Transform::from_translation(x_mm, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     }
 }

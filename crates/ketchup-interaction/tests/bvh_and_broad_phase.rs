@@ -50,7 +50,7 @@ fn box_document() -> DocumentStore {
             name: format!("Occurrence {}", index + 1),
             transform: grid_transform(index),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }),
     );
@@ -123,7 +123,7 @@ fn mesh_document() -> DocumentStore {
             name: format!("Mesh occurrence {}", index + 1),
             transform: grid_transform(index),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }),
     );

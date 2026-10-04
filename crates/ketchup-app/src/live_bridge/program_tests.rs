@@ -1,4 +1,5 @@
 use super::*;
+use crate::ViewFlag;
 use ketchup_model::document::ProfileSegment;
 #[path = "program_exact_tests.rs"]
 mod exact_assemblies;
@@ -466,6 +467,307 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
         .unwrap();
     assert_eq!(names(&app), table);
     assert_eq!(app.document.current_rule_program().unwrap().source, TABLE);
+}
+
+#[test]
+fn hiding_a_program_tag_through_mcp_keeps_the_program_and_hides_the_roof() {
+    let (mut app, mut bridge) = setup();
+    let source = "wall = box(\"wall\", (3000, 150, 2500), tags = [\"koncept\", \"steny\"])\n\
+        roof = box(\"roof\", (3200, 3200, 200), at = (-100, -100, 2500))\n\
+        tag(group(\"top\", [roof]), [\"koncept\", \"strecha\"])\n";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    let summary = bridge
+        .execute(&mut app, Request::Summary {}, false)
+        .unwrap();
+    let tags = summary["tags"].as_array().unwrap();
+    assert_eq!(summary["counts"]["tags"], 3, "{summary}");
+    assert!(tags.iter().all(|tag| tag["visible"] == true));
+    let roof_tag = tags
+        .iter()
+        .find(|tag| tag["name"]["text"] == "strecha")
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let parts = names(&app);
+    let roof = OccurrenceId(parts["roof"]);
+    let wall = OccurrenceId(parts["wall"]);
+    assert_eq!(
+        app.document
+            .current()
+            .occurrence(roof)
+            .unwrap()
+            .tags()
+            .len(),
+        2
+    );
+
+    let hide = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::SetTagVisibility {
+            tag_id: roof_tag,
+            visible: false,
+        }],
+    };
+    let proposed = bridge
+        .execute(
+            &mut app,
+            Request::Propose {
+                expected: None,
+                selection: None,
+                program: hide.clone(),
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(proposed["detaches_program"], false);
+    let hidden = bridge
+        .execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                expected: None,
+                selection: None,
+                program: hide,
+                validators: Vec::new(),
+                timeout_ms: 60_000,
+                save: None,
+                strict: true,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(hidden["program_detached"], false, "{hidden}");
+    let snapshot = app.document.current();
+    assert_eq!(snapshot.occurrence_effectively_visible(roof), Some(false));
+    assert_eq!(snapshot.occurrence_effectively_visible(wall), Some(true));
+    assert_eq!(app.document.current_rule_program().unwrap().source, source);
+
+    // Re-applying the program leaves the user's hidden layer hidden.
+    let edited = source.replace("2500))", "2600))");
+    bridge
+        .execute(&mut app, apply(&edited, false), false)
+        .unwrap();
+    let snapshot = app.document.current();
+    assert!(!snapshot.tag(TagId(roof_tag)).unwrap().visible());
+    assert_eq!(snapshot.occurrence_effectively_visible(roof), Some(false));
+}
+
+#[test]
+fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
+    let (mut app, mut bridge) = setup();
+    let source = "wall = box(\"wall\", (3000, 150, 2500), tags = [\"koncept\"])\n\
+        roof = box(\"roof\", (3200, 3200, 200), at = (-100, -100, 2500), tags = [\"koncept\", \"strecha\"])\n";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    let save = |name: &str| Request::SaveView {
+        expected: None,
+        name: name.into(),
+    };
+    let show = |name: &str| Request::ShowView {
+        expected: None,
+        name: name.into(),
+    };
+    bridge.execute(&mut app, save("Koncept"), false).unwrap();
+    let roof_tag = app
+        .document
+        .current()
+        .tags()
+        .find(|tag| tag.name() == "strecha")
+        .unwrap()
+        .id();
+    assert!(app.set_tag_visibility(roof_tag, false));
+    app.view.set(ViewFlag::Xray, true);
+    let listed = bridge
+        .execute(&mut app, save("Bez strechy"), false)
+        .unwrap();
+    assert_eq!(listed["saved_views"][1]["hidden_tags"], json!(["strecha"]));
+    assert_eq!(
+        listed["saved_views"][1]["style"],
+        json!(["edges", "grid-axes", "xray"])
+    );
+
+    let roof = OccurrenceId(names(&app)["roof"]);
+    let shown = bridge.execute(&mut app, show("Koncept"), false).unwrap();
+    assert_eq!(shown["program_owned"], true, "{shown}");
+    assert_eq!(
+        app.document.current().occurrence_effectively_visible(roof),
+        Some(true)
+    );
+    assert!(!app.view.contains(ViewFlag::Xray));
+    assert_eq!(app.document.current_rule_program().unwrap().source, source);
+    assert_eq!(
+        bridge.execute(&mut app, show("missing"), false),
+        Err("entity_not_found")
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("views.ketchup");
+    assert!(app.save_document_to_while(&path, || true));
+    let (mut reopened, mut bridge) = setup();
+    assert!(reopened.open_document_path(&path));
+    let listed = bridge
+        .execute(&mut reopened, Request::SavedViews { expected: None }, false)
+        .unwrap();
+    let names_of = listed["saved_views"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|view| view["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names_of, ["Koncept", "Bez strechy"]);
+    bridge
+        .execute(&mut reopened, show("Bez strechy"), false)
+        .unwrap();
+    let roof = OccurrenceId(names(&reopened)["roof"]);
+    assert_eq!(
+        reopened
+            .document
+            .current()
+            .occurrence_effectively_visible(roof),
+        Some(false)
+    );
+    assert!(reopened.view.contains(ViewFlag::Xray));
+    assert!(reopened.document.current_rule_program().is_some());
+}
+
+#[test]
+fn the_house_switches_concept_and_construction_by_views_after_a_new_length() {
+    let (mut app, mut bridge) = setup();
+    let house = include_str!("../../../../examples/programs/tiny-house.star");
+    bridge.execute(&mut app, apply(house, true), false).unwrap();
+    let tag = |app: &KetchupApp, name: &str| {
+        app.document
+            .current()
+            .tags()
+            .find(|tag| tag.name() == name)
+            .unwrap()
+            .id()
+    };
+    let (concept, construction) = (tag(&app, "koncept"), tag(&app, "konštrukcia"));
+    let view = |name: &str, hidden| {
+        let name = name.to_owned();
+        move |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+            app.set_tag_visibility(concept, hidden != concept);
+            app.set_tag_visibility(construction, hidden != construction);
+            bridge
+                .execute(
+                    app,
+                    Request::SaveView {
+                        expected: None,
+                        name,
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+    };
+    view("Koncept", construction)(&mut app, &mut bridge);
+    view("Konštrukcia", concept)(&mut app, &mut bridge);
+
+    let mut longer = apply(house, false);
+    if let Request::ApplyProgram { overrides, .. } = &mut longer {
+        overrides.insert("length".to_owned(), 7400.0);
+    }
+    bridge.execute(&mut app, longer, false).unwrap();
+    for (shown, visible_prefix) in [("Koncept", "steny/"), ("Konštrukcia", "konštrukcia/")] {
+        let result = bridge
+            .execute(
+                &mut app,
+                Request::ShowView {
+                    expected: None,
+                    name: shown.into(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(result["program_owned"], true, "{result}");
+        let snapshot = app.document.current();
+        for (name, id) in names(&app) {
+            let visible = snapshot.occurrence_effectively_visible(OccurrenceId(id));
+            if name.starts_with("steny/") || name.starts_with("konštrukcia/") {
+                assert_eq!(
+                    visible,
+                    Some(name.starts_with(visible_prefix)),
+                    "{shown}: {name}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        app.document.current_rule_program().unwrap().overrides["length"],
+        7400.0
+    );
+}
+
+#[test]
+fn a_section_through_mcp_cuts_only_the_viewport_and_is_kept_by_a_saved_view() {
+    let (mut app, mut bridge) = setup();
+    let source = "wall = box(\"wall\", (3000, 150, 2500), tags = [\"koncept\"])\n";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    let section = |normal: Option<[f64; 3]>, offset_mm: Option<f64>| Request::Section {
+        expected: None,
+        normal,
+        offset_mm,
+    };
+    let before = app.live_bridge_stamp();
+    let cut = bridge
+        .execute(
+            &mut app,
+            section(Some([0.0, 0.0, 2.0]), Some(1200.0)),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        cut["section"],
+        json!({"normal":[0.0, 0.0, 1.0],"offset_mm":1200.0})
+    );
+    assert_eq!(cut["canonical_mutation"], false);
+    assert_eq!(
+        app.live_bridge_stamp(),
+        before,
+        "a cut must not touch the document"
+    );
+    assert_eq!(app.document.current_rule_program().unwrap().source, source);
+
+    let saved = bridge
+        .execute(
+            &mut app,
+            Request::SaveView {
+                expected: None,
+                name: "Rez".into(),
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(saved["saved_views"][0]["section"]["offset_mm"], 1200.0);
+
+    let closed = bridge
+        .execute(&mut app, section(None, None), false)
+        .unwrap();
+    assert_eq!(closed["section"], Value::Null);
+    assert_eq!(app.section(), None);
+    for invalid in [section(Some([0.0; 3]), Some(5.0)), section(None, Some(5.0))] {
+        assert_eq!(
+            bridge.execute(&mut app, invalid, false),
+            Err("invalid_section")
+        );
+    }
+
+    bridge
+        .execute(
+            &mut app,
+            Request::ShowView {
+                expected: None,
+                name: "Rez".into(),
+            },
+            false,
+        )
+        .unwrap();
+    let restored = app.section().expect("the saved view restores its cut");
+    assert!((restored.signed_distance([0.0, 0.0, 1200.0])).abs() < 1e-9);
 }
 
 #[test]

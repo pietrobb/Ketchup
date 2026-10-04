@@ -1242,7 +1242,7 @@ mod incremental_scope_tests {
                     name: "Shared A".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateOccurrence {
@@ -1251,7 +1251,7 @@ mod incremental_scope_tests {
                     name: "Shared B".into(),
                     transform: Transform::from_translation(30.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateOccurrence {
@@ -1260,7 +1260,7 @@ mod incremental_scope_tests {
                     name: "Independent".into(),
                     transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))
@@ -1366,7 +1366,7 @@ mod incremental_scope_tests {
                     name: "Nested leaf".into(),
                     transform: Transform::identity(),
                     parent: Some(GroupId(1)),
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))
@@ -1384,7 +1384,7 @@ mod incremental_scope_tests {
                     name: "Shared component B".into(),
                     transform: Transform::from_translation(30.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))

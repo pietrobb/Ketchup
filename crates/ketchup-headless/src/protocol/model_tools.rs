@@ -521,7 +521,7 @@ mod tests {
                     name: "Panel".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateOccurrence {
@@ -530,7 +530,7 @@ mod tests {
                     name: "Panel".into(),
                     transform: Transform::from_translation(50.0, 0.0, 0.0).unwrap(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))
@@ -651,7 +651,7 @@ mod tests {
                     name: "one".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateOccurrence {
@@ -660,7 +660,7 @@ mod tests {
                     name: "two".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))

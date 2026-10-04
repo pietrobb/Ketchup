@@ -281,7 +281,9 @@ impl KetchupApp {
             AuthoritativeDependency::MechanicalCondition(id) => {
                 Some(("assistant-entity-mechanical-condition", id.0))
             }
-            AuthoritativeDependency::DrawingSheet(_) => None,
+            AuthoritativeDependency::DrawingSheet(_) | AuthoritativeDependency::SavedView(_) => {
+                None
+            }
             AuthoritativeDependency::OccurrenceCollections(id) => {
                 Some(("assistant-entity-occurrence-collections", id.0))
             }
@@ -1388,7 +1390,7 @@ impl KetchupApp {
                         name: source.name().to_owned(),
                         transform,
                         parent: source.parent(),
-                        tag: source.tag(),
+                        tags: source.tags().clone(),
                         visible: source.visible(),
                     });
                     if let Some(color) = source.color() {
@@ -1448,7 +1450,7 @@ impl KetchupApp {
                 name: item.name.clone(),
                 transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             });
             next_definition = definition.0.checked_add(1);
@@ -3336,6 +3338,8 @@ impl KetchupApp {
                 self.command_button(ui, AppCommand::Hide);
                 self.command_button(ui, AppCommand::Unhide);
             });
+            self.saved_views_ui(ui);
+            self.section_ui(ui);
         }
     }
 }

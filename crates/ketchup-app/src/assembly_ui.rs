@@ -781,7 +781,7 @@ impl KetchupApp {
                     name: name.clone(),
                     transform: *transform,
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 }])
             }

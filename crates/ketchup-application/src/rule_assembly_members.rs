@@ -181,7 +181,7 @@ pub(crate) fn reconcile(
                 name: name.to_owned(),
                 transform: placement,
                 parent,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             });
         }

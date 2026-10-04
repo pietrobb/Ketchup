@@ -1937,6 +1937,115 @@ impl Tag {
     }
 }
 
+/// A named way to look at the model: where the camera is, which display switches are
+/// on and which tags are hidden. Activating it changes only what is shown.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SavedView {
+    pub id: SavedViewId,
+    pub name: String,
+    pub camera: SavedCamera,
+    /// Display switches that are on, by their stable names (e.g. "xray", "wireframe").
+    pub style: BTreeSet<String>,
+    /// Tags hidden by this view; every other tag is shown.
+    pub hidden_tags: BTreeSet<TagId>,
+    /// The section plane cutting the view open, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<SectionPlane>,
+}
+
+impl SavedView {
+    #[must_use]
+    pub const fn id(&self) -> SavedViewId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Finite camera and section and non-blank display switch names.
+    pub(crate) fn is_well_formed(&self) -> bool {
+        self.camera.is_finite()
+            && self.section.is_none_or(|section| section.is_valid())
+            && self.style.iter().all(|flag| !flag.trim().is_empty())
+    }
+}
+
+/// A plane that hides, in the viewport only, everything on the side its normal points to.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SectionPlane {
+    /// A point on the plane, in millimetres.
+    pub point_mm: [f64; 3],
+    /// Unit normal pointing at the hidden side.
+    pub normal: [f64; 3],
+}
+
+impl SectionPlane {
+    /// A plane through `point_mm`; `None` for a zero or non-finite normal or point.
+    #[must_use]
+    pub fn new(point_mm: [f64; 3], normal: [f64; 3]) -> Option<Self> {
+        let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
+        let section = Self {
+            point_mm,
+            normal: normal.map(|value| value / length),
+        };
+        (length > 1e-9 && section.is_valid()).then_some(section)
+    }
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let length = self
+            .normal
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        self.point_mm
+            .iter()
+            .chain(&self.normal)
+            .all(|value| value.is_finite())
+            && (length - 1.0).abs() < 1e-6
+    }
+
+    /// Positive on the hidden side, in millimetres.
+    #[must_use]
+    pub fn signed_distance(&self, point_mm: [f64; 3]) -> f64 {
+        (0..3)
+            .map(|axis| (point_mm[axis] - self.point_mm[axis]) * self.normal[axis])
+            .sum()
+    }
+}
+
+/// The camera of a saved view, as the viewport orbits it.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SavedCamera {
+    /// Parallel (true) or perspective projection.
+    pub parallel: bool,
+    pub yaw_rad: f64,
+    pub pitch_rad: f64,
+    pub target_z_mm: f64,
+    pub zoom: f64,
+    /// Screen-space pan in points.
+    pub pan: [f64; 2],
+}
+
+impl SavedCamera {
+    pub(crate) fn is_finite(&self) -> bool {
+        [
+            self.yaw_rad,
+            self.pitch_rad,
+            self.target_z_mm,
+            self.zoom,
+            self.pan[0],
+            self.pan[1],
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+            && self.zoom > 0.0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClassificationCategory {
     pub(crate) id: ClassificationCategoryId,
@@ -2013,7 +2122,8 @@ pub struct Occurrence {
     pub(crate) name: String,
     pub(crate) transform: Transform,
     pub(crate) parent: Option<GroupId>,
-    pub(crate) tag: Option<TagId>,
+    /// Every tag the occurrence belongs to; it is shown only while all of them are visible.
+    pub(crate) tags: BTreeSet<TagId>,
     pub(crate) visible: bool,
     pub(crate) color: Option<[u8; 3]>,
 }
@@ -2051,8 +2161,8 @@ impl Occurrence {
     }
 
     #[must_use]
-    pub const fn tag(&self) -> Option<TagId> {
-        self.tag
+    pub const fn tags(&self) -> &BTreeSet<TagId> {
+        &self.tags
     }
 
     #[must_use]
@@ -2098,7 +2208,7 @@ pub struct LocalOccurrence {
     pub(crate) name: String,
     pub(crate) transform: Transform,
     pub(crate) parent: Option<LocalGroupId>,
-    pub(crate) tag: Option<TagId>,
+    pub(crate) tags: BTreeSet<TagId>,
     pub(crate) visible: bool,
     pub(crate) color: Option<[u8; 3]>,
 }
@@ -2136,8 +2246,8 @@ impl LocalOccurrence {
     }
 
     #[must_use]
-    pub const fn tag(&self) -> Option<TagId> {
-        self.tag
+    pub const fn tags(&self) -> &BTreeSet<TagId> {
+        &self.tags
     }
 
     #[must_use]

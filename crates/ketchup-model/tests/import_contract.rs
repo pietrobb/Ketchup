@@ -47,7 +47,7 @@ fn import_batch(id: u64, definition_id: u64, occurrence_id: u64, source: &[u8]) 
             name: "Imported part".to_owned(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
         CanonicalCommand::RecordImport(receipt(id, definition_id, occurrence_id, source)),

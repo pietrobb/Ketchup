@@ -14,8 +14,9 @@ use ketchup_model::document::{
     LocalOccurrenceId, LocalOccurrenceKey, LoftContinuity, LoftSection, MappingResolution, NodeId,
     OccurrenceId, ParameterPath, ParameterPathError, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput,
-    SceneQueryContext, SceneQueryError, SlotPath, SlotSegment, Snapshot, SolidToolPlan,
-    SpatialPathSegment, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
+    RuleProgramSource, SavedCamera, SavedView, SavedViewId, SceneQueryContext, SceneQueryError,
+    SectionPlane, SlotPath, SlotSegment, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
+    Transform, UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
@@ -169,7 +170,7 @@ fn seed_product_document() -> DocumentStore {
                 name: "Base Cabinet #1".to_owned(),
                 transform: Transform::identity(),
                 parent: Some(GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -178,7 +179,7 @@ fn seed_product_document() -> DocumentStore {
                 name: "Base Cabinet #2".to_owned(),
                 transform: Transform::from_translation(700.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -460,7 +461,7 @@ fn general_revolve_is_canonical_atomic_cloneable_and_losslessly_persistent() {
                 name: "Revolved body".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -719,7 +720,7 @@ fn local_groups_move_shared_children_and_reject_invalid_graphs_atomically() {
                 name: "Copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -923,7 +924,7 @@ fn local_member_creation_reparent_repoint_and_removal_update_every_copy() {
                 name: "Copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -940,7 +941,7 @@ fn local_member_creation_reparent_repoint_and_removal_update_every_copy() {
         name: "Added".into(),
         transform: Transform::from_translation(10.0, 20.0, 30.0).unwrap(),
         parent: Some(group),
-        tag: None,
+        tags: Default::default(),
         visible: true,
     };
     assert!(
@@ -955,7 +956,7 @@ fn local_member_creation_reparent_repoint_and_removal_update_every_copy() {
                     name: "ID collision".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 }
             ]))
@@ -1044,7 +1045,7 @@ fn invalid_local_member_edits_leave_shared_geometry_and_history_intact() {
         name: "Duplicate".into(),
         transform: Transform::identity(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     };
     let invalid = [
@@ -1109,7 +1110,7 @@ fn local_member_transform_is_shared_atomic_and_undoable() {
                 name: "Copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1191,7 +1192,7 @@ fn renaming_a_local_member_is_atomic_and_updates_all_copies() {
                 name: "Copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1286,7 +1287,7 @@ fn bound_nested_scene_query_blocks_stale_hidden_and_out_of_context_entities() {
                 name: "Visible sibling".to_owned(),
                 transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1295,7 +1296,7 @@ fn bound_nested_scene_query_blocks_stale_hidden_and_out_of_context_entities() {
                 name: "Hidden sibling".to_owned(),
                 transform: Transform::from_translation(1000.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: false,
             },
         ]))
@@ -1379,7 +1380,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
                 name: "Tagged nested cabinet".to_owned(),
                 transform: Transform::from_translation(5.0, 0.0, 0.0).unwrap(),
                 parent: Some(GroupId(31)),
-                tag: Some(TagId(7)),
+                tags: [TagId(7)].into(),
                 visible: false,
             },
         ]))
@@ -1439,7 +1440,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
                 name: "Converted copy".to_owned(),
                 transform: Transform::from_translation(1000.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1482,7 +1483,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
         })
         .unwrap()
         .clone();
-    assert_eq!(unique_local.tag(), Some(TagId(7)));
+    assert!(unique_local.tags().iter().eq([&TagId(7)]));
     assert!(!unique_local.visible());
     assert_eq!(unique_local.transform().matrix()[3], 5.0);
     assert_eq!(document.undo().unwrap().canonical_digest(), before_unique);
@@ -1500,7 +1501,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
             local_id: LocalOccurrenceId(22),
         })
         .unwrap();
-    assert_eq!(reopened_local.tag(), Some(TagId(7)));
+    assert!(reopened_local.tags().iter().eq([&TagId(7)]));
     assert!(!reopened_local.visible());
     assert_eq!(reopened_local.transform().matrix()[3], 5.0);
 }
@@ -1522,7 +1523,7 @@ fn conversion_collision_and_local_ownership_cycle_fail_atomically() {
                 name: "Colliding local ID".to_owned(),
                 transform: Transform::identity(),
                 parent: Some(GroupId(31)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -2505,8 +2506,147 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
 }
 
 #[test]
+fn saved_views_persist_follow_tag_deletion_and_keep_the_program() {
+    const ROOF: TagId = TagId(80);
+    const WALLS: TagId = TagId(81);
+    const VIEW: SavedViewId = SavedViewId(90);
+    let mut document = seed_product_document();
+    let before = document.current().canonical_digest();
+    let saved = persistence::save(&document.current());
+    assert_eq!(
+        persistence::load(&saved)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        before,
+        "a document without views keeps its digest"
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: ROOF,
+                name: "roof".to_owned(),
+                visible: true,
+            },
+            CanonicalCommand::CreateTag {
+                id: WALLS,
+                name: "walls".to_owned(),
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceTags {
+                id: FIRST,
+                tags: [ROOF].into(),
+            },
+        ]))
+        .unwrap();
+    document
+        .bind_rule_program(RuleProgramSource {
+            file_name: "house.star".to_owned(),
+            source: "box('roof', (1, 1, 1))".to_owned(),
+            overrides: Default::default(),
+        })
+        .unwrap();
+    let view = SavedView {
+        id: VIEW,
+        name: "Without roof".to_owned(),
+        camera: SavedCamera {
+            parallel: false,
+            yaw_rad: 0.6,
+            pitch_rad: 0.4,
+            target_z_mm: 1200.0,
+            zoom: 1.5,
+            pan: [10.0, -5.0],
+        },
+        style: ["xray".to_owned()].into(),
+        hidden_tags: [ROOF, WALLS].into(),
+        section: SectionPlane::new([0.0, 0.0, 1500.0], [0.0, 0.0, 2.0]),
+    };
+    assert_eq!(view.section.unwrap().normal, [0.0, 0.0, 1.0]);
+    assert_eq!(SectionPlane::new([0.0; 3], [0.0; 3]), None);
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertSavedView(
+            view.clone(),
+        )]))
+        .unwrap();
+    assert_eq!(document.current().saved_view(VIEW), Some(&view));
+    assert!(
+        document.current_rule_program().is_some(),
+        "keeping a view does not detach the program"
+    );
+    assert_eq!(
+        document.current().occurrence_effectively_visible(FIRST),
+        Some(true),
+        "a saved view changes nothing until it is activated"
+    );
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.snapshot().saved_view(VIEW), Some(&view));
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        document.current().canonical_digest()
+    );
+
+    // Another view may not take the same name, hide a tag that does not exist or cut
+    // along a plane without a direction.
+    for invalid in [
+        SavedView {
+            id: SavedViewId(91),
+            name: "Flat cut".to_owned(),
+            section: Some(SectionPlane {
+                point_mm: [0.0; 3],
+                normal: [0.0; 3],
+            }),
+            ..view.clone()
+        },
+        SavedView {
+            id: SavedViewId(91),
+            ..view.clone()
+        },
+        SavedView {
+            id: SavedViewId(91),
+            name: "Ghost".to_owned(),
+            hidden_tags: [TagId(999)].into(),
+            ..view.clone()
+        },
+    ] {
+        assert!(matches!(
+            document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertSavedView(
+                invalid
+            )])),
+            Err(CanonicalError::InvalidSavedView(SavedViewId(91)))
+        ));
+    }
+
+    // Deleting a tag removes it from the views that hide it.
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::DeleteTag {
+            id: WALLS,
+        }]))
+        .unwrap();
+    assert!(document.current_rule_program().is_none());
+    assert!(
+        document
+            .current()
+            .saved_view(VIEW)
+            .unwrap()
+            .hidden_tags
+            .iter()
+            .eq([&ROOF])
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteSavedView { id: VIEW },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().saved_views().count(), 0);
+    document.undo().unwrap();
+    assert!(document.current().saved_view(VIEW).is_some());
+}
+
+#[test]
 fn canonical_tags_drive_visibility_persist_and_roll_back_atomically() {
     const HIDDEN: TagId = TagId(70);
+    const SHOWN: TagId = TagId(71);
     let mut document = seed_product_document();
     let before = document.current().canonical_digest();
 
@@ -2517,15 +2657,32 @@ fn canonical_tags_drive_visibility_persist_and_roll_back_atomically() {
                 name: "Hidden hardware".to_owned(),
                 visible: false,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::CreateTag {
+                id: SHOWN,
+                name: "Concept".to_owned(),
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceTags {
                 id: FIRST,
-                tag: Some(HIDDEN),
+                tags: [HIDDEN, SHOWN].into(),
+            },
+            CanonicalCommand::SetOccurrenceTags {
+                id: SECOND,
+                tags: [SHOWN].into(),
             },
         ]))
         .unwrap();
     let tagged = document.current().canonical_digest();
     assert_ne!(tagged, before);
-    assert_eq!(document.current().tags().count(), 1);
+    assert_eq!(document.current().tags().count(), 2);
+    assert_eq!(
+        document
+            .current()
+            .occurrences_with_tag(SHOWN)
+            .map(|occurrence| occurrence.id())
+            .collect::<Vec<_>>(),
+        vec![FIRST, SECOND]
+    );
     assert_eq!(
         document
             .current()
@@ -2565,8 +2722,50 @@ fn canonical_tags_drive_visibility_persist_and_roll_back_atomically() {
         Some(false)
     );
 
+    assert!(
+        reopened
+            .snapshot()
+            .occurrence(FIRST)
+            .unwrap()
+            .tags()
+            .iter()
+            .eq([&HIDDEN, &SHOWN])
+    );
+
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
     assert_eq!(document.redo().unwrap().canonical_digest(), tagged);
+
+    // Showing one tag of a part is not enough: hiding any of its tags hides it.
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetTagVisibility {
+                id: HIDDEN,
+                visible: true,
+            },
+            CanonicalCommand::SetTagVisibility {
+                id: SHOWN,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let swapped = document.current();
+    assert_eq!(swapped.occurrence_effectively_visible(FIRST), Some(false));
+    assert_eq!(swapped.occurrence_effectively_visible(SECOND), Some(false));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetTagVisibility {
+                id: SHOWN,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        document.current().occurrence_effectively_visible(FIRST),
+        Some(true)
+    );
+    document.undo().unwrap();
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), tagged);
 
     let steps = document.visible_undo_steps();
     let error = document
@@ -2575,9 +2774,9 @@ fn canonical_tags_drive_visibility_persist_and_roll_back_atomically() {
                 id: HIDDEN,
                 visible: true,
             },
-            CanonicalCommand::SetOccurrenceTag {
+            CanonicalCommand::SetOccurrenceTags {
                 id: SECOND,
-                tag: Some(TagId(999)),
+                tags: [SHOWN, TagId(999)].into(),
             },
         ]))
         .err()
@@ -2743,7 +2942,7 @@ fn seed_separate_solid_tool_document(
                 name: "Target occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -2752,7 +2951,7 @@ fn seed_separate_solid_tool_document(
                 name: "Tool occurrence".to_owned(),
                 transform: Transform::from_translation(tool_x_mm, tool_y_mm, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -3257,7 +3456,7 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
                 name: "Offset occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -3919,7 +4118,7 @@ fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persiste
                 name: "Sweep occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -4167,7 +4366,7 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                 name: "Loft occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -4355,7 +4554,7 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
                 name: "Circle occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

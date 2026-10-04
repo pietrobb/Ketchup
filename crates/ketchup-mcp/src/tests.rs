@@ -12,6 +12,47 @@ use std::{
 };
 
 #[test]
+fn list_validators_is_discoverable_read_only_and_routes_to_the_host() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let listed = handle(
+        &mut tools,
+        json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"}),
+    )
+    .unwrap();
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "list_validators")
+        .unwrap();
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert!(crate::schema::INSTRUCTIONS.contains("list_validators"));
+    assert_eq!(
+        call(&mut tools, "list_validators", json!({}))["isError"],
+        false
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"list_validators"})
+    );
+    assert_eq!(
+        call(
+            &mut tools,
+            "list_validators",
+            json!({"validators":["collision"]})
+        )["isError"],
+        true
+    );
+    assert!(
+        received.try_recv().is_err(),
+        "invalid catalog arguments never reach the host"
+    );
+}
+
+#[test]
 fn compact_program_schema_docs_and_routes_agree() {
     let root = tempfile::tempdir().unwrap();
     let received = stand_in_window(root.path());
@@ -323,6 +364,7 @@ fn a_client_initializes_and_lists_every_tool() {
         names,
         [
             "windows",
+            "list_validators",
             "connect",
             "open_window",
             "program",

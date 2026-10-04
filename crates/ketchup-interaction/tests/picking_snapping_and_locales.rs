@@ -58,7 +58,7 @@ fn projected_scene(
             name: format!("Occurrence {}", id.0),
             transform: Transform::from_translation(origin_mm.x, origin_mm.y, origin_mm.z).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }
     }));

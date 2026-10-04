@@ -267,7 +267,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             name: "Selected replacement source".to_owned(),
             transform: Transform::from_translation(5.0, 6.0, 7.0).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: !matches!(variant, ReplacementFixture::Hidden),
         },
         CanonicalCommand::CreateOccurrence {
@@ -276,7 +276,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             name: "Unchanged source sibling".to_owned(),
             transform: Transform::from_translation(30.0, 6.0, 7.0).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
         CanonicalCommand::CreateOccurrence {
@@ -285,7 +285,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             name: "Unchanged target occurrence".to_owned(),
             transform: target_transform,
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
     ];
@@ -481,7 +481,7 @@ fn write_shared_fixture(
                 name: "First reuse".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -490,7 +490,7 @@ fn write_shared_fixture(
                 name: "Second reuse".to_owned(),
                 transform: Transform::from_translation(30.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -695,7 +695,7 @@ fn write_multibody_fixture(path: &Path, cross_body_union: bool) {
         name: "Verifier occurrence".to_owned(),
         transform: Transform::identity(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     });
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -817,7 +817,10 @@ fn component_replacement_serial_accesskit_replay_is_atomic_local_exportable_and_
     assert_eq!(selected_after.id(), selected_before.id());
     assert_eq!(selected_after.transform(), selected_before.transform());
     assert_eq!(selected_after.parent(), selected_before.parent());
-    assert_eq!(selected_after.tag(), selected_before.tag());
+    assert_eq!(
+        selected_after.tags().first().copied(),
+        selected_before.tags().first().copied()
+    );
     assert_eq!(selected_after.visible(), selected_before.visible());
     let mates_after = [REPLACEMENT_PLANAR_MATE, REPLACEMENT_SECOND_PLANAR_MATE]
         .map(|id| replaced.assembly_mate(id).unwrap().clone());

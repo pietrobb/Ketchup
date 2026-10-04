@@ -3740,7 +3740,7 @@ fn read_product(
             name: reader.string()?,
             transform: reader.transform()?,
             parent: reader.optional_id()?.map(GroupId),
-            tag: reader.optional_id()?.map(TagId),
+            tags: reader.optional_id()?.map(TagId).into_iter().collect(),
             visible: reader.boolean()?,
             color: if capabilities.occurrence_colors && reader.boolean()? {
                 Some([reader.u8()?, reader.u8()?, reader.u8()?])
@@ -3799,7 +3799,7 @@ fn read_product(
                 name: reader.string()?,
                 transform: reader.transform()?,
                 parent: reader.optional_id()?.map(LocalGroupId),
-                tag: reader.optional_id()?.map(TagId),
+                tags: reader.optional_id()?.map(TagId).into_iter().collect(),
                 visible: reader.boolean()?,
                 color: if capabilities.occurrence_colors && reader.boolean()? {
                     Some([reader.u8()?, reader.u8()?, reader.u8()?])

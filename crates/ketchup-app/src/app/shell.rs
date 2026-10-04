@@ -154,6 +154,8 @@ impl KetchupApp {
                 about_open: false,
                 command_search: String::new(),
             },
+            saved_view_name: String::new(),
+            section: None,
             digest,
             assistant: app_state::AssistantState {
                 provider: AssistantProvider::initial(),

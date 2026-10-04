@@ -68,7 +68,7 @@ fn source_document() -> DocumentStore {
                 name: "Cabinet #1".to_owned(),
                 transform: Transform::identity(),
                 parent: Some(GROUP),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -77,7 +77,7 @@ fn source_document() -> DocumentStore {
                 name: "Cabinet #2".to_owned(),
                 transform: Transform::from_translation(700.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: false,
             },
         ]))
@@ -212,7 +212,7 @@ fn profile_only_definition_projects_as_a_flat_selectable_plane() {
                 name: "Profile occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -273,7 +273,7 @@ fn open_segment_profile_projects_and_picks_with_a_bounded_flat_proxy() {
                 name: "Open profile occurrence".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

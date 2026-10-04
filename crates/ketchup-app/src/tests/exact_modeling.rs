@@ -392,7 +392,7 @@ fn production_exact_refresh_uses_graph_for_a_general_boolean_chain() {
                 name: "General boolean occurrence".into(),
                 transform: Transform::default(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -598,7 +598,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
                     name: "Polygon tool occurrence".to_owned(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))
@@ -1003,7 +1003,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
                     name: "Circle tool occurrence".to_owned(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))

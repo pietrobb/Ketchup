@@ -1272,7 +1272,7 @@ where
         || candidate_selected.name() != selected.name()
         || candidate_selected.transform() != selected.transform()
         || candidate_selected.parent() != selected.parent()
-        || candidate_selected.tag() != selected.tag()
+        || candidate_selected.tags() != selected.tags()
         || candidate_selected.visible() != selected.visible()
         || candidate
             .world_transform_for_occurrence(impact.selected_occurrence_id)

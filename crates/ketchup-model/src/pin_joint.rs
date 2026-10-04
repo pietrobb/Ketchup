@@ -911,7 +911,7 @@ mod tests {
                     name: "First".to_owned(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
                 CanonicalCommand::CreateOccurrence {
@@ -920,7 +920,7 @@ mod tests {
                     name: "Second".to_owned(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))

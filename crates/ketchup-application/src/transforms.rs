@@ -108,7 +108,7 @@ pub fn mirrored_copy_commands(
         name: source.name().to_owned(),
         transform,
         parent: source.parent(),
-        tag: source.tag(),
+        tags: source.tags().clone(),
         visible: source.visible(),
     }];
     if source.color().is_some() {

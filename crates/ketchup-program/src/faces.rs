@@ -794,6 +794,7 @@ impl Part {
             grounded: false,
             color: None,
             attributes: BTreeMap::new(),
+            tags: std::collections::BTreeSet::new(),
             body,
             operations: Vec::new(),
             features: Vec::new(),

@@ -844,6 +844,17 @@ impl DocumentStore {
         self.apply_batch_with_origin_and_validation(batch, origin, true)
     }
 
+    /// Showing or hiding a tag or keeping a saved view only changes what is viewed, so the
+    /// program keeps owning the model; any other edit detaches it.
+    fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<RuleProgramSource> {
+        batch
+            .commands
+            .iter()
+            .all(CanonicalCommand::is_view_only)
+            .then(|| self.revisions[self.cursor].rule_program.clone())
+            .flatten()
+    }
+
     pub(super) fn apply_batch_with_origin_and_validation(
         &mut self,
         batch: &CommandBatch,
@@ -1205,11 +1216,11 @@ impl DocumentStore {
                     if product
                         .occurrences
                         .values()
-                        .any(|occurrence| occurrence.tag == Some(*id))
+                        .any(|occurrence| occurrence.tags.contains(id))
                         || product
                             .local_occurrences
                             .values()
-                            .any(|occurrence| occurrence.tag == Some(*id))
+                            .any(|occurrence| occurrence.tags.contains(id))
                     {
                         return Err(CanonicalError::TagInUse(*id));
                     }
@@ -1217,6 +1228,10 @@ impl DocumentStore {
                         .tags
                         .remove(id)
                         .ok_or(CanonicalError::TagNotFound(*id))?;
+                    forget_tag_in_saved_views(&mut product, *id);
+                }
+                CanonicalCommand::UpsertSavedView(_) | CanonicalCommand::DeleteSavedView { .. } => {
+                    apply_saved_view_command(&mut product, command)?;
                 }
                 CanonicalCommand::SetTagVisibility { id, visible } => {
                     let existing = product
@@ -2270,7 +2285,7 @@ impl DocumentStore {
                     name,
                     transform,
                     parent,
-                    tag,
+                    tags,
                     visible,
                 } => {
                     group_conversion::create_occurrence(
@@ -2281,7 +2296,7 @@ impl DocumentStore {
                             name: name.clone(),
                             transform: *transform,
                             parent: *parent,
-                            tag: *tag,
+                            tags: tags.clone(),
                             visible: *visible,
                             color: None,
                         },
@@ -2304,7 +2319,7 @@ impl DocumentStore {
                     name,
                     transform,
                     parent,
-                    tag,
+                    tags,
                     visible,
                 } => {
                     group_conversion::create_local_occurrence(
@@ -2315,7 +2330,7 @@ impl DocumentStore {
                             name: name.clone(),
                             transform: *transform,
                             parent: *parent,
-                            tag: *tag,
+                            tags: tags.clone(),
                             visible: *visible,
                             color: None,
                         },
@@ -2686,23 +2701,15 @@ impl DocumentStore {
                         }),
                     );
                 }
-                CanonicalCommand::SetOccurrenceTag { id, tag } => {
-                    if let Some(tag_id) = tag
-                        && !product.tags.contains_key(tag_id)
-                    {
-                        return Err(CanonicalError::TagNotFound(*tag_id));
+                CanonicalCommand::SetOccurrenceTags { id, tags } => {
+                    if let Some(missing) = tags.iter().find(|tag| !product.tags.contains_key(tag)) {
+                        return Err(CanonicalError::TagNotFound(*missing));
                     }
                     let existing = product
                         .occurrences
-                        .get(id)
+                        .get_mut(id)
                         .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
-                    product.occurrences.insert(
-                        *id,
-                        Arc::new(Occurrence {
-                            tag: *tag,
-                            ..existing.as_ref().clone()
-                        }),
-                    );
+                    Arc::make_mut(existing).tags = tags.clone();
                 }
                 CanonicalCommand::RepointOccurrence { id, definition_id } => {
                     let existing = product
@@ -2930,6 +2937,7 @@ impl DocumentStore {
                 .filter(|id| product.features.contains_key(id)),
         );
         let feature_states = feature_graph.evaluation_states(&dirty_features, &BTreeSet::new());
+        let rule_program = self.rule_program_kept_by(batch);
         let snapshot = Snapshot {
             revision_id,
             product: Arc::new(product),
@@ -2940,7 +2948,7 @@ impl DocumentStore {
             batch_digest: batch.digest(),
             origin,
             checkpoint: None,
-            rule_program: None,
+            rule_program,
             recomputed_nodes,
             dirty_features,
             feature_states,

@@ -331,7 +331,7 @@ fn weldment_cut_list_is_exact_associative_stable_and_fail_closed() {
                 name: "Welded frame".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {
@@ -591,7 +591,7 @@ fn multisegment_weldment_has_exact_geometry_but_no_ambiguous_cut_list() {
                 name: "Bent member".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::UpsertClassificationDimension {

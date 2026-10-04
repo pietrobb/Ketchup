@@ -232,7 +232,7 @@ pub fn plan_iges_import(
             name: display_name,
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
         CanonicalCommand::RecordImport(receipt),
@@ -369,7 +369,7 @@ pub fn plan_iges_xde_import(
             name: node.name.clone(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
         let color = node

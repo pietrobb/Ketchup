@@ -11,7 +11,7 @@ use crate::document::{FeatureId, ProductModel, Snapshot};
 use std::collections::BTreeMap;
 
 /// Format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 101;
+pub(super) const SNAPSHOT_FORMAT: u16 = 102;
 
 /// First format this codec wrote. Numbers below it belong to the retired hand-written
 /// codec.
@@ -101,6 +101,9 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
         Some(product) => read_format_100_sheet_metal(product)?,
         None => BTreeMap::new(),
     };
+    if let Some(product) = field(&mut value, "product") {
+        format_101_occurrence_tags(product, false);
+    }
     let decoded: DecodedSnapshot = value.deserialized().map_err(|error| invalid(&error))?;
     // The writer hashed the identity form under its own field names, and before
     // [`rename_format_99_role_categories`], which the caller applies to every older format.
@@ -108,6 +111,7 @@ pub(super) fn decode(format: u16, body: &[u8]) -> Result<Decoded, PersistenceErr
         crate::document::identity_form(|| ciborium::Value::serialized(&decoded.product))
             .map_err(|error| invalid(&error))?;
     restore_format_100_sheet_metal(&mut writer_form, sheet_metal);
+    format_101_occurrence_tags(&mut writer_form, true);
     if format_98 {
         rename_format_98_fields(&mut writer_form, |(old, new)| (new, old));
     }
@@ -185,6 +189,35 @@ pub(super) fn rename_format_99_role_categories(product: &mut ProductModel) {
             if let Some(category) = dimension.categories.get_mut(&id) {
                 category.name = name;
             }
+        }
+    }
+}
+
+/// Format 102 lets a part belong to several tags: an occurrence's optional `tag` became
+/// the set `tags`. Converts every root and local occurrence of `product` to the new form,
+/// or with `back` from it to the old one (which holds at most one tag).
+fn format_101_occurrence_tags(product: &mut ciborium::Value, back: bool) {
+    for occurrences in ["occurrences", "local_occurrences"] {
+        let Some(ciborium::Value::Map(entries)) = field(product, occurrences) else {
+            continue;
+        };
+        for (_, occurrence) in entries {
+            let (from, to) = if back {
+                ("tags", "tag")
+            } else {
+                ("tag", "tags")
+            };
+            let Some(value) = rename_field(occurrence, from, to) else {
+                continue;
+            };
+            *value = match std::mem::replace(value, ciborium::Value::Null) {
+                ciborium::Value::Null if !back => ciborium::Value::Array(Vec::new()),
+                ciborium::Value::Array(mut tags) if back && tags.len() <= 1 => {
+                    tags.pop().unwrap_or(ciborium::Value::Null)
+                }
+                id if !back => ciborium::Value::Array(vec![id]),
+                other => other,
+            };
         }
     }
 }
@@ -434,6 +467,109 @@ mod tests {
         assert_eq!(
             decoded.product.features[&FeatureId(2)].kind,
             FeatureKind::SheetMetal(current)
+        );
+    }
+
+    #[test]
+    fn format_101_single_tag_reads_as_a_tag_set_under_its_writer_digest() {
+        use crate::document::{OccurrenceId, TagId, Transform};
+        let mut store = DocumentStore::new();
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateTag {
+                    id: TagId(3),
+                    name: "Walls".into(),
+                    visible: false,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Tagged".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tags: [TagId(3)].into(),
+                    visible: true,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(2),
+                    definition_id: DefinitionId(1),
+                    name: "Untagged".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tags: Default::default(),
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let snapshot = store.current();
+        let as_format_101 = |mut product: ciborium::Value| {
+            format_101_occurrence_tags(&mut product, true);
+            product
+        };
+        let product = as_format_101(ciborium::Value::serialized(snapshot.product()).unwrap());
+        let ciborium::Value::Map(occurrences) = product
+            .as_map()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|(key, _)| key.as_text() == Some("occurrences"))
+            })
+            .map(|(_, value)| value.clone())
+            .unwrap()
+        else {
+            panic!("occurrences map")
+        };
+        let stored_tags = occurrences
+            .iter()
+            .map(|(_, occurrence)| {
+                occurrence
+                    .as_map()
+                    .unwrap()
+                    .iter()
+                    .find(|(key, _)| key.as_text() == Some("tag"))
+                    .map(|(_, value)| value.clone())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stored_tags,
+            [ciborium::Value::Integer(3.into()), ciborium::Value::Null]
+        );
+        let writer_digest = crate::document::digest_product(&as_format_101(
+            crate::document::identity_form(|| ciborium::Value::serialized(snapshot.product()))
+                .unwrap(),
+        ));
+        let mut payload = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Text("revision_id".into()),
+                    ciborium::Value::Integer(snapshot.revision_id().into()),
+                ),
+                (ciborium::Value::Text("product".into()), product),
+            ]),
+            &mut payload,
+        )
+        .unwrap();
+        let mut body = crate::graph::sha256_bytes(&payload).to_vec();
+        body.extend_from_slice(&payload);
+
+        let decoded = decode(101, &body).unwrap();
+        assert_eq!(decoded.writer_digest, Some(writer_digest));
+        assert!(
+            decoded.product.occurrences[&OccurrenceId(1)]
+                .tags
+                .iter()
+                .eq([&TagId(3)])
+        );
+        assert!(
+            decoded.product.occurrences[&OccurrenceId(2)]
+                .tags
+                .is_empty()
         );
     }
 }

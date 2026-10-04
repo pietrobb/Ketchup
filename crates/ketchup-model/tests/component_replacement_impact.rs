@@ -94,7 +94,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Selected source".into(),
         transform: Transform::from_translation(5.0, 6.0, 7.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     };
     let sibling = CanonicalCommand::CreateOccurrence {
@@ -103,7 +103,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Source sibling".into(),
         transform: Transform::from_translation(25.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     };
     let mut commands = vec![
@@ -151,7 +151,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Existing target occurrence".into(),
         transform: Transform::from_translation(50.0, 6.0, 7.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     });
     document.apply_batch(&CommandBatch::new(commands)).unwrap();

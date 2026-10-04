@@ -309,7 +309,7 @@ fn constrained_circle_snap_uses_solved_geometry_on_yz() {
                 name: "Circle".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

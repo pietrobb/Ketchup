@@ -727,7 +727,7 @@ pub fn plan_step_import(
             name: display_name,
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
         CanonicalCommand::RecordImport(receipt),
@@ -937,7 +937,7 @@ pub fn plan_step_xde_import(
                 name: node.name.clone(),
                 transform: node.transform,
                 parent,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             });
             let mut color = node.color;
@@ -1320,7 +1320,7 @@ pub fn plan_stl_import(
             name: display_name,
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         },
         CanonicalCommand::RecordImport(receipt),

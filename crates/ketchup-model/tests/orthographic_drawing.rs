@@ -266,7 +266,7 @@ fn overlapping_pair_with_views(
                 name: "Rear".into(),
                 transform: rear_transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -275,7 +275,7 @@ fn overlapping_pair_with_views(
                 name: "Front".into(),
                 transform: front_transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -783,7 +783,7 @@ fn under_constrained_assembly_source_is_rejected_without_mutation() {
                 name: "Fixed".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -792,7 +792,7 @@ fn under_constrained_assembly_source_is_rejected_without_mutation() {
                 name: "Free".into(),
                 transform: Transform::from_translation(50.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -833,7 +833,7 @@ fn rigid_assembly_source_projects_fixed_occurrences_in_world_space() {
                 name: "Left".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -842,7 +842,7 @@ fn rigid_assembly_source_projects_fixed_occurrences_in_world_space() {
                 name: "Right".into(),
                 transform: Transform::from_translation(50.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -1032,7 +1032,7 @@ fn section_view_reveals_an_internal_opening_hidden_by_front_geometry() {
             name: format!("Opening member {offset}"),
             transform: Transform::from_translation(x, y, z).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
         commands.push(CanonicalCommand::SetOccurrenceGrounded { id, grounded: true });
@@ -2510,7 +2510,7 @@ fn excessive_occlusion_work_is_rejected_without_mutation() {
             name: format!("Bounded {offset}"),
             transform: Transform::from_translation(offset as f64 * 30.0, 0.0, 0.0).unwrap(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         });
         commands.push(CanonicalCommand::SetOccurrenceGrounded { id, grounded: true });

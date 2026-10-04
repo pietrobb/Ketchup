@@ -757,7 +757,7 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 name: "Shared part A".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -766,7 +766,7 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 name: "Shared part B".into(),
                 transform: Transform::from_translation(150.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

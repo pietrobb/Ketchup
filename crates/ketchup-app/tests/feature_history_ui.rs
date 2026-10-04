@@ -154,7 +154,7 @@ fn write_component_replacement_fixture(path: &Path) {
                 name: "Selected source".to_owned(),
                 transform: Transform::from_translation(5.0, 6.0, 7.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -163,7 +163,7 @@ fn write_component_replacement_fixture(path: &Path) {
                 name: "Source sibling".to_owned(),
                 transform: Transform::from_translation(30.0, 6.0, 7.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -172,7 +172,7 @@ fn write_component_replacement_fixture(path: &Path) {
                 name: "Existing target".to_owned(),
                 transform: Transform::from_translation(55.0, 6.0, 7.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -310,7 +310,7 @@ fn write_movable_fitting_pocket_fixture(path: &Path) {
                 name: "Furniture panel".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -399,7 +399,7 @@ fn write_sketch_construction_fixture(path: &Path, constraint_editing: bool) {
                 name: "Construction part".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1712,7 +1712,7 @@ fn write_general_revolve_history_fixture(path: &Path) {
                 name: "Revolved part".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

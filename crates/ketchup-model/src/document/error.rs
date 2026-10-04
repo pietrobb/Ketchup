@@ -127,6 +127,8 @@ pub enum CanonicalError {
     TagAlreadyExists(TagId),
     TagNotFound(TagId),
     TagInUse(TagId),
+    InvalidSavedView(SavedViewId),
+    SavedViewNotFound(SavedViewId),
     InvalidClassificationDimension(ClassificationDimensionId),
     ClassificationDimensionNotFound(ClassificationDimensionId),
     ClassificationCategoryNotFound(ClassificationDimensionId, ClassificationCategoryId),
@@ -313,6 +315,8 @@ impl CanonicalError {
             Self::TagAlreadyExists(..) => "canonical.tag_already_exists",
             Self::TagNotFound(..) => "canonical.tag_not_found",
             Self::TagInUse(..) => "canonical.tag_in_use",
+            Self::InvalidSavedView(..) => "canonical.invalid_saved_view",
+            Self::SavedViewNotFound(..) => "canonical.saved_view_not_found",
             Self::InvalidClassificationDimension(..) => {
                 "canonical.invalid_classification_dimension"
             }
@@ -681,6 +685,12 @@ impl fmt::Display for CanonicalError {
             Self::TagAlreadyExists(id) => write!(formatter, "tag {} already exists", id.0),
             Self::TagNotFound(id) => write!(formatter, "tag {} does not exist", id.0),
             Self::TagInUse(id) => write!(formatter, "tag {} is still assigned", id.0),
+            Self::InvalidSavedView(id) => write!(
+                formatter,
+                "saved view {} needs a unique name, a finite camera and existing tags",
+                id.0
+            ),
+            Self::SavedViewNotFound(id) => write!(formatter, "saved view {} does not exist", id.0),
             Self::InvalidClassificationDimension(id) => {
                 write!(formatter, "classification dimension {} is invalid", id.0)
             }

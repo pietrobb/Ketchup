@@ -924,7 +924,7 @@ fn circular_pattern_binds_exact_edge_axis_to_the_selected_world_instance() {
                 name: "Repeated transformed axis source".into(),
                 transform: Transform::from_translation(4.0, 5.0, 6.0).unwrap(),
                 parent: Some(GroupId(1)),
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -936,7 +936,7 @@ fn circular_pattern_binds_exact_edge_axis_to_the_selected_world_instance() {
                 ])
                 .unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1525,7 +1525,7 @@ fn real_worker_face_supported_pocket_keeps_intermediate_and_roundtrips() {
             name: "Pad".into(),
             transform: Transform::identity(),
             parent: None,
-            tag: None,
+            tags: Default::default(),
             visible: true,
         }]),
     )
@@ -1775,7 +1775,7 @@ fn planar_offset_is_evaluated_as_an_exact_surface_body() {
                 name: "Offset plate".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

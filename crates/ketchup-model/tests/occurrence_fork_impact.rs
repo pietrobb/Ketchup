@@ -118,7 +118,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Selected reuse".into(),
         transform: Transform::identity(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     };
     let second = CanonicalCommand::CreateOccurrence {
@@ -127,7 +127,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Sibling reuse".into(),
         transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     };
     let mut commands = vec![
@@ -163,7 +163,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         name: "Unrelated occurrence".into(),
         transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
         parent: None,
-        tag: None,
+        tags: Default::default(),
         visible: true,
     });
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
@@ -1303,7 +1303,7 @@ fn failed_followup_fork_preserves_existing_source_and_fork_outputs() {
                 name: "Remaining source reuse".into(),
                 transform: Transform::from_translation(40.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

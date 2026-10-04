@@ -41,7 +41,7 @@ fn released_document() -> DocumentStore {
                 name: "Bracket A".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

@@ -37,7 +37,7 @@ pub(crate) fn prism(points: &[[f64; 2]], transform: Transform) -> KetchupApp {
                 name: "Prism".into(),
                 transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))

@@ -372,6 +372,7 @@ fn feature_level_changes(
         comparable.color = before.color;
         comparable.material = before.material.clone();
         comparable.attributes = before.attributes.clone();
+        comparable.tags = before.tags.clone();
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();
@@ -423,6 +424,7 @@ fn part_replacements(
         comparable.color = before.color;
         comparable.material = before.material.clone();
         comparable.attributes = before.attributes.clone();
+        comparable.tags = before.tags.clone();
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.operations = before.operations.clone();

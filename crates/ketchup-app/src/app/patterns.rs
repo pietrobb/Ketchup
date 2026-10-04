@@ -137,7 +137,7 @@ impl KetchupApp {
                     ),
                     transform,
                     parent: source.parent(),
-                    tag: source.tag(),
+                    tags: source.tags().clone(),
                     visible: source.visible(),
                 });
                 if let Some(color) = source.color() {
@@ -262,7 +262,7 @@ impl KetchupApp {
                 ),
                 transform,
                 parent: source.source_parent,
-                tag: source.source_tag,
+                tags: source.source_tags.clone(),
                 visible: source.source_visible,
             });
             if let Some(color) = source.source_color {
@@ -559,7 +559,7 @@ impl KetchupApp {
                     ),
                     transform,
                     parent: source.source_parent,
-                    tag: source.source_tag,
+                    tags: source.source_tags.clone(),
                     visible: source.source_visible,
                 });
                 if let Some(color) = source.source_color {
@@ -933,7 +933,7 @@ impl KetchupApp {
                 ),
                 transform: rotation.compose(source.source_transform),
                 parent: source.source_parent,
-                tag: source.source_tag,
+                tags: source.source_tags.clone(),
                 visible: source.source_visible,
             });
             if let Some(color) = source.source_color {

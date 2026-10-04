@@ -160,7 +160,7 @@ fn seeded_circle_document() -> (DocumentStore, ketchup_model::exact_product::Bod
                 name: "Cylinder A".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -169,7 +169,7 @@ fn seeded_circle_document() -> (DocumentStore, ketchup_model::exact_product::Bod
                 name: "Cylinder B".into(),
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -220,7 +220,7 @@ fn seeded_document() -> (
                 name: "Part A".into(),
                 transform: Transform::identity(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -229,7 +229,7 @@ fn seeded_document() -> (
                 name: "Part B".into(),
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -509,7 +509,7 @@ fn repeated_component_mate_endpoints_keep_full_instance_paths_through_solve_and_
                 name: "Reusable mate component copy".into(),
                 transform: Transform::from_translation(500.0, 0.0, 50.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
         ]))
@@ -1508,7 +1508,7 @@ fn three_occurrence_chain_is_permutation_deterministic_bounded_and_branch_safe()
                 name: "Part C".into(),
                 transform: Transform::from_translation(40.0, 0.0, 0.0).unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::CreateOccurrence {
@@ -1517,7 +1517,7 @@ fn three_occurrence_chain_is_permutation_deterministic_bounded_and_branch_safe()
                 name: "Unrelated branch".into(),
                 transform: unrelated_transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -1629,7 +1629,7 @@ fn assembly_recompute_rebinds_current_topology_and_persists_fail_closed_diagnost
                 name: "Unrelated".into(),
                 transform: unrelated_transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {
@@ -1879,7 +1879,7 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
                 name: "Unrelated".into(),
                 transform: unrelated_transform,
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             },
             CanonicalCommand::SetOccurrenceGrounded {

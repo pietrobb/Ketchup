@@ -380,10 +380,12 @@ pub(super) fn proposal_value(
                         name: occurrence.name().to_owned(),
                         transform: occurrence.transform(),
                         parent: occurrence.parent(),
-                        tag: occurrence.tag(),
+                        tags: occurrence.tags().clone(),
                         visible: occurrence.visible(),
                     },
-                    ProposalGoal::SetOccurrenceTag(_) => ProposalValue::Tag(occurrence.tag()),
+                    ProposalGoal::SetOccurrenceTags(_) => {
+                        ProposalValue::Tags(occurrence.tags().clone())
+                    }
                     ProposalGoal::RepointOccurrence(_) => {
                         ProposalValue::Definition(occurrence.definition_id())
                     }
@@ -399,7 +401,7 @@ pub(super) fn proposal_value(
                             name: occurrence.name().to_owned(),
                             transform: occurrence.transform(),
                             parent: occurrence.parent(),
-                            tag: occurrence.tag(),
+                            tags: occurrence.tags().clone(),
                             visible: occurrence.visible(),
                         }
                     }
@@ -548,6 +550,18 @@ pub(super) fn authoritative_writes(
             | CanonicalCommand::SetTagVisibility { id, .. }
             | CanonicalCommand::SetTagName { id, .. } => {
                 writes.insert(AuthoritativeDependency::Tag(*id));
+                if matches!(command, CanonicalCommand::DeleteTag { .. }) {
+                    writes.extend(
+                        snapshot
+                            .saved_views()
+                            .filter(|view| view.hidden_tags.contains(id))
+                            .map(|view| AuthoritativeDependency::SavedView(view.id)),
+                    );
+                }
+            }
+            CanonicalCommand::UpsertSavedView(SavedView { id, .. })
+            | CanonicalCommand::DeleteSavedView { id } => {
+                writes.insert(AuthoritativeDependency::SavedView(*id));
             }
             CanonicalCommand::UpsertClassificationDimension { id, .. } => {
                 writes.insert(AuthoritativeDependency::ClassificationDimension(*id));
@@ -710,7 +724,7 @@ pub(super) fn authoritative_writes(
             | CanonicalCommand::RenameEntity { id, .. }
             | CanonicalCommand::SetOccurrenceColor { id, .. }
             | CanonicalCommand::SetOccurrenceVisibility { id, .. }
-            | CanonicalCommand::SetOccurrenceTag { id, .. }
+            | CanonicalCommand::SetOccurrenceTags { id, .. }
             | CanonicalCommand::RepointOccurrence { id, .. }
             | CanonicalCommand::SetOccurrenceParent { id, .. } => {
                 writes.insert(AuthoritativeDependency::Occurrence(*id));
@@ -797,11 +811,9 @@ fn add_structure_command_dependencies(
             dependencies.insert(AuthoritativeDependency::Occurrence(*id));
             dependencies.insert(AuthoritativeDependency::OccurrenceCollections(*id));
         }
-        CanonicalCommand::SetOccurrenceTag { id, tag } => {
+        CanonicalCommand::SetOccurrenceTags { id, tags } => {
             dependencies.insert(AuthoritativeDependency::Occurrence(*id));
-            if let Some(tag_id) = tag {
-                dependencies.insert(AuthoritativeDependency::Tag(*tag_id));
-            }
+            dependencies.extend(tags.iter().copied().map(AuthoritativeDependency::Tag));
         }
         CanonicalCommand::RepointOccurrence { id, definition_id } => {
             dependencies.insert(AuthoritativeDependency::Occurrence(*id));
@@ -823,6 +835,18 @@ fn add_structure_command_dependencies(
         CanonicalCommand::SetGroupTransform { id, .. } => {
             dependencies.insert(AuthoritativeDependency::Group(*id));
         }
+        CanonicalCommand::UpsertSavedView(view) => {
+            dependencies.insert(AuthoritativeDependency::SavedView(view.id));
+            dependencies.extend(
+                view.hidden_tags
+                    .iter()
+                    .copied()
+                    .map(AuthoritativeDependency::Tag),
+            );
+        }
+        CanonicalCommand::DeleteSavedView { id } => {
+            dependencies.insert(AuthoritativeDependency::SavedView(*id));
+        }
         _ => {}
     }
 }
@@ -832,22 +856,23 @@ fn add_local_edit_dependencies(
     command: &CanonicalCommand,
     dependencies: &mut BTreeSet<AuthoritativeDependency>,
 ) {
-    let (key, target, parent, tag) = match command {
+    let none = BTreeSet::new();
+    let (key, target, parent, tags) = match command {
         CanonicalCommand::CreateLocalOccurrence {
             key,
             definition_id,
             parent,
-            tag,
+            tags,
             ..
-        } => (*key, Some(*definition_id), *parent, *tag),
+        } => (*key, Some(*definition_id), *parent, tags),
         CanonicalCommand::RepointLocalOccurrence { key, definition_id } => {
-            (*key, Some(*definition_id), None, None)
+            (*key, Some(*definition_id), None, &none)
         }
-        CanonicalCommand::SetLocalOccurrenceParent { key, parent } => (*key, None, *parent, None),
+        CanonicalCommand::SetLocalOccurrenceParent { key, parent } => (*key, None, *parent, &none),
         CanonicalCommand::DeleteLocalOccurrence { key }
         | CanonicalCommand::RenameLocalOccurrence { key, .. }
         | CanonicalCommand::SetLocalOccurrenceColor { key, .. }
-        | CanonicalCommand::SetLocalOccurrenceTransform { key, .. } => (*key, None, None, None),
+        | CanonicalCommand::SetLocalOccurrenceTransform { key, .. } => (*key, None, None, &none),
         CanonicalCommand::CreateLocalGroup { key, parent, .. }
         | CanonicalCommand::SetLocalGroupParent { key, parent } => {
             dependencies.insert(AuthoritativeDependency::LocalGroup(*key));
@@ -869,9 +894,7 @@ fn add_local_edit_dependencies(
         _ => return,
     };
     dependencies.insert(AuthoritativeDependency::LocalOccurrence(key));
-    if let Some(tag) = tag {
-        dependencies.insert(AuthoritativeDependency::Tag(tag));
-    }
+    dependencies.extend(tags.iter().copied().map(AuthoritativeDependency::Tag));
     if let Some(local_id) = parent {
         dependencies.insert(AuthoritativeDependency::LocalGroup(LocalGroupKey {
             definition_id: key.definition_id,
@@ -1535,14 +1558,12 @@ pub(super) fn authoritative_dependencies(
                 id,
                 definition_id,
                 parent,
-                tag,
+                tags,
                 ..
             } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
                 dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
-                if let Some(tag_id) = tag {
-                    dependencies.insert(AuthoritativeDependency::Tag(*tag_id));
-                }
+                dependencies.extend(tags.iter().copied().map(AuthoritativeDependency::Tag));
                 add_group_ancestry(snapshot, *parent, &mut dependencies);
             }
             CanonicalCommand::SetOccurrenceTransform { id, .. }
@@ -1565,13 +1586,15 @@ pub(super) fn authoritative_dependencies(
                 add_local_edit_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::DeleteOccurrence { .. }
-            | CanonicalCommand::SetOccurrenceTag { .. }
+            | CanonicalCommand::SetOccurrenceTags { .. }
             | CanonicalCommand::RepointOccurrence { .. }
             | CanonicalCommand::SetOccurrenceParent { .. }
             | CanonicalCommand::CreateGroup { .. }
             | CanonicalCommand::DeleteGroup { .. }
             | CanonicalCommand::SetGroupTransform { .. }
-            | CanonicalCommand::SetGroupParent { .. } => {
+            | CanonicalCommand::SetGroupParent { .. }
+            | CanonicalCommand::UpsertSavedView(_)
+            | CanonicalCommand::DeleteSavedView { .. } => {
                 add_structure_command_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {

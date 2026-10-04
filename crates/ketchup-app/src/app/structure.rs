@@ -177,7 +177,7 @@ impl KetchupApp {
             moving_name: moving.name().to_owned(),
             moving_transform: moving.transform(),
             moving_parent: moving.parent(),
-            moving_tag: moving.tag(),
+            moving_tags: moving.tags().clone(),
             moving_visible: moving.visible(),
             moving_box,
             reference_id,
@@ -185,7 +185,7 @@ impl KetchupApp {
             reference_name: reference.name().to_owned(),
             reference_transform: reference.transform(),
             reference_parent: reference.parent(),
-            reference_tag: reference.tag(),
+            reference_tags: reference.tags().clone(),
             reference_visible: reference.visible(),
             reference_box,
         })
@@ -240,7 +240,7 @@ impl KetchupApp {
                     name: occurrence.name().to_owned(),
                     transform: occurrence.transform(),
                     parent: occurrence.parent(),
-                    tag: occurrence.tag(),
+                    tags: occurrence.tags().clone(),
                     visible: occurrence.visible(),
                     render_box,
                 },
@@ -295,7 +295,7 @@ impl KetchupApp {
                 definition_name: definition.name().to_owned(),
                 source_transform: source.transform(),
                 source_parent: source.parent(),
-                source_tag: source.tag(),
+                source_tags: source.tags().clone(),
                 source_visible: source.visible(),
                 source_color: source.color(),
                 next_occurrence_id,
@@ -340,7 +340,7 @@ impl KetchupApp {
                 definition_name: definition.name().to_owned(),
                 source_transform: source.transform(),
                 source_parent: source.parent(),
-                source_tag: source.tag(),
+                source_tags: source.tags().clone(),
                 source_visible: source.visible(),
                 source_color: source.color(),
                 next_occurrence_id,
@@ -385,7 +385,7 @@ impl KetchupApp {
                 definition_name: definition.name().to_owned(),
                 source_transform: source.transform(),
                 source_parent: source.parent(),
-                source_tag: source.tag(),
+                source_tags: source.tags().clone(),
                 source_visible: source.visible(),
                 source_color: source.color(),
                 next_occurrence_id,
@@ -1841,7 +1841,7 @@ impl KetchupApp {
                 ),
                 transform,
                 parent: source.parent(),
-                tag: source.tag(),
+                tags: source.tags().clone(),
                 visible: source.visible(),
             });
             if let Some(color) = source.color() {
@@ -1989,7 +1989,7 @@ impl KetchupApp {
                 ),
                 transform,
                 parent: source.parent(),
-                tag: source.tag(),
+                tags: source.tags().clone(),
                 visible: source.visible(),
             });
             if let Some(color) = source.color() {
@@ -2793,7 +2793,7 @@ impl KetchupApp {
                 ),
                 transform,
                 parent: source.parent(),
-                tag: source.tag(),
+                tags: source.tags().clone(),
                 visible: source.visible(),
             });
             if let Some(color) = source.color() {

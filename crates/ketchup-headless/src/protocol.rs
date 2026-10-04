@@ -2288,7 +2288,7 @@ mod tests {
                 )
                 .unwrap(),
                 parent: None,
-                tag: None,
+                tags: Default::default(),
                 visible: true,
             }
         }));
@@ -2668,7 +2668,7 @@ mod tests {
                     name: "Cylinder instance".into(),
                     transform: Transform::identity(),
                     parent: None,
-                    tag: None,
+                    tags: Default::default(),
                     visible: true,
                 },
             ]))

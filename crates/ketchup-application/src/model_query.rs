@@ -289,8 +289,15 @@ impl ModelQuery {
                 instance_budget_value(Some(*exceeded), 0),
             ),
         };
+        let tags = snapshot
+            .tags()
+            .take(MAX_PAGE)
+            .map(|tag| json!({"id":tag.id().0,"name":bounded_text(tag.name()),"visible":tag.visible()}))
+            .collect::<Vec<_>>();
         json!({"identity":identity(snapshot),"coverage":coverage(None),
+            "tags":tags,"tags_complete":snapshot.tags().count() <= MAX_PAGE,
             "counts":{"root_occurrences":snapshot.occurrences().count(),
+                "tags":snapshot.tags().count(),
                 "instances":instance_count,
                 "definitions":snapshot.definitions().count(),"features":snapshot.features().count(),
                 "relations":relation_count(snapshot)},
@@ -1283,7 +1290,7 @@ impl ModelQuery {
                 item["transform"] = json!(o.transform().matrix());
                 item["color"] = json!(o.color());
                 item["parent_group_id"] = json!(o.parent().map(|id| id.0));
-                item["tag_id"] = json!(o.tag().map(|id| id.0));
+                item["tag_ids"] = json!(o.tags().iter().map(|id| id.0).collect::<Vec<_>>());
                 json!(["nested_hierarchy", "world_transform", "geometry"])
             }
             EntityKind::Definitions => {
@@ -1656,7 +1663,7 @@ fn entity_properties_match(
     };
     request
         .tag_id
-        .is_none_or(|tag_id| occurrence.tag() == Some(TagId(tag_id)))
+        .is_none_or(|tag_id| occurrence.tags().contains(&TagId(tag_id)))
         && classification_matches(
             snapshot,
             occurrence.id(),
@@ -1686,7 +1693,7 @@ fn instance_has_tag(snapshot: &Snapshot, path: &InstancePath, wanted: TagId) -> 
     let Some(root) = snapshot.occurrence(path.root_occurrence()) else {
         return false;
     };
-    if root.tag() == Some(wanted) {
+    if root.tags().contains(&wanted) {
         return true;
     }
     let mut owner_definition_id = root.definition_id();
@@ -1698,7 +1705,7 @@ fn instance_has_tag(snapshot: &Snapshot, path: &InstancePath, wanted: TagId) -> 
             }) else {
                 return false;
             };
-            if local.tag() == Some(wanted) {
+            if local.tags().contains(&wanted) {
                 return true;
             }
             owner_definition_id = local.definition_id();
@@ -1982,10 +1989,10 @@ fn instance_row(snapshot: &Snapshot, occurrence: &ProjectedOccurrence) -> Option
 fn instance_properties(snapshot: &Snapshot, path: &InstancePath) -> Option<Value> {
     let root = snapshot.occurrence(path.root_occurrence())?;
     let mut tags = Vec::new();
-    if let Some(tag_id) = root.tag() {
+    for tag_id in root.tags() {
         tags.push(tag_metadata(
             snapshot,
-            tag_id,
+            *tag_id,
             json!({"kind":"root_occurrence","occurrence_id":root.id().0}),
         )?);
     }
@@ -1996,10 +2003,10 @@ fn instance_properties(snapshot: &Snapshot, path: &InstancePath) -> Option<Value
                 definition_id: owner_definition_id,
                 local_id,
             })?;
-            if let Some(tag_id) = local.tag() {
+            for tag_id in local.tags() {
                 tags.push(tag_metadata(
                     snapshot,
-                    tag_id,
+                    *tag_id,
                     json!({"kind":"local_occurrence","owner_definition_id":owner_definition_id.0,
                         "local_id":local_id.0,"path_step_index":path_step_index}),
                 )?);
@@ -2014,17 +2021,19 @@ fn instance_properties(snapshot: &Snapshot, path: &InstancePath) -> Option<Value
 
 fn occurrence_properties(snapshot: &Snapshot, occurrence_id: OccurrenceId) -> Option<Value> {
     let occurrence = snapshot.occurrence(occurrence_id)?;
-    let tag = if let Some(tag_id) = occurrence.tag() {
-        Some(tag_metadata(
-            snapshot,
-            tag_id,
-            json!({"kind":"root_occurrence","occurrence_id":occurrence_id.0}),
-        )?)
-    } else {
-        None
-    };
+    let tags = occurrence
+        .tags()
+        .iter()
+        .map(|tag_id| {
+            tag_metadata(
+                snapshot,
+                *tag_id,
+                json!({"kind":"root_occurrence","occurrence_id":occurrence_id.0}),
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
     Some(
-        json!({"tag":tag,"classifications":classification_metadata(snapshot, occurrence_id),
+        json!({"tags":tags,"classifications":classification_metadata(snapshot, occurrence_id),
         "classification_scope":"root_occurrence"}),
     )
 }

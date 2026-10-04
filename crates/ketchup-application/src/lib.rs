@@ -29,6 +29,7 @@ mod rule_motion;
 mod rule_operations;
 mod rule_program;
 mod rule_support;
+mod rule_tags;
 mod sketch;
 pub mod topology;
 pub mod transforms;

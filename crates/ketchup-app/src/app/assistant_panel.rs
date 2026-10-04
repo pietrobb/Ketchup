@@ -29,11 +29,19 @@ impl KetchupApp {
                 "assistant-value-transform",
                 &BTreeMap::from([("matrix", Self::assistant_transform_matrix_label(value))]),
             ),
-            ProposalValue::Tag(Some(id)) => self.catalog.format(
+            ProposalValue::Tags(ids) if ids.is_empty() => {
+                self.catalog.text("assistant-value-no-tag")
+            }
+            ProposalValue::Tags(ids) => self.catalog.format(
                 "assistant-value-tag",
-                &BTreeMap::from([("id", id.0.to_string())]),
+                &BTreeMap::from([(
+                    "ids",
+                    ids.iter()
+                        .map(|id| id.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )]),
             ),
-            ProposalValue::Tag(None) => self.catalog.text("assistant-value-no-tag"),
             ProposalValue::Definition(id) => self.catalog.format(
                 "assistant-value-definition",
                 &BTreeMap::from([("id", id.0.to_string())]),
@@ -353,7 +361,7 @@ impl KetchupApp {
                 name,
                 transform,
                 parent,
-                tag,
+                tags,
                 visible,
             } => {
                 let matrix = transform.matrix();
@@ -375,10 +383,14 @@ impl KetchupApp {
                         ),
                         (
                             "tag",
-                            self.assistant_optional_id_label(
-                                tag.map(|id| id.0),
-                                "assistant-value-no-tag",
-                            ),
+                            if tags.is_empty() {
+                                self.catalog.text("assistant-value-no-tag")
+                            } else {
+                                tags.iter()
+                                    .map(|id| id.0.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            },
                         ),
                         ("visible", self.assistant_bool_label(*visible)),
                     ]),
