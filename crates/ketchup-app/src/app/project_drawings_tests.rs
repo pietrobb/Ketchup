@@ -1,7 +1,9 @@
 //! Project drawings of the timber-frame house: the sheet carries the floor plan,
-//! both sections and four elevations, and follows the visible layers.
+//! both sections and four elevations with a title block, follows the visible
+//! layers and is written as PDF.
 use crate::*;
 use ketchup_manufacturing::project_drawings::{ProjectSheet, ProjectView};
+use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
 use std::time::{Duration, Instant};
 
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
@@ -46,15 +48,21 @@ fn the_house_sheet_has_plan_sections_and_elevations_of_the_visible_layers() {
 
     let concept = harness.state().project_drawings().unwrap();
     assert_eq!(concept.views.len(), ProjectView::ALL.len());
-    assert!(concept.svg.starts_with("<?xml") || concept.svg.starts_with("<svg"));
+    let texts = concept.page.texts().collect::<Vec<_>>();
     for key in [
         "drawings-view-longitudinal",
         "drawings-view-cross",
         "drawings-view-front",
+        "drawings-default-sheet",
+        "title-field-client",
     ] {
         let title = harness.state().catalog.text(key);
-        assert!(concept.svg.contains(&title), "{key} missing");
+        assert!(texts.contains(&title.as_str()), "{key} missing");
     }
+    assert!(
+        texts.contains(&"tiny-house.star"),
+        "the project defaults to the document"
+    );
     for view in [
         ProjectView::Plan,
         ProjectView::LongitudinalSection,
@@ -82,10 +90,28 @@ fn the_house_sheet_has_plan_sections_and_elevations_of_the_visible_layers() {
         "hiding the concept layer leaves the studs and layers: {without_concept} of {all}"
     );
 
-    let path = std::env::temp_dir().join(format!("ketchup-drawings-{}.svg", std::process::id()));
+    // The title block and format the user sets are kept in the document.
+    assert!(!app.drawings.unsaved, "drawing the sheet changes nothing");
+    let mut settings = app.sheet_settings();
+    settings.format = Some(SheetFormat::A0);
+    settings
+        .title_block
+        .insert(TitleField::Client, "Ján Novák".to_owned());
+    app.store_sheet_settings(settings);
+    assert!(app.drawings.unsaved && app.is_dirty());
+    assert_eq!(
+        app.stored_sheet_settings().title_block[&TitleField::Client],
+        "Ján Novák"
+    );
+
+    let path = std::env::temp_dir().join(format!("ketchup-drawings-{}.pdf", std::process::id()));
     assert!(app.export_project_drawings_to(&path));
-    let written = std::fs::read_to_string(&path).unwrap();
+    let written = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).ok();
-    assert_eq!(written, construction.svg);
-    assert!(app.digest.contains("1:"), "{}", app.digest);
+    assert!(written.starts_with(b"%PDF-"));
+    assert!(written.windows(10).any(|window| window == b"/FontFile2"));
+    let sheet = app.project_drawings().unwrap();
+    assert_eq!(sheet.format, SheetFormat::A0);
+    assert!(sheet.page.texts().any(|text| text == "Ján Novák"));
+    assert!(app.digest.contains("A0"), "{}", app.digest);
 }

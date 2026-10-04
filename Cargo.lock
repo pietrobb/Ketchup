@@ -2365,11 +2365,14 @@ dependencies = [
 name = "ketchup-manufacturing"
 version = "0.1.0"
 dependencies = [
+ "epaint_default_fonts",
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-test-env",
+ "miniz_oxide",
  "serde",
  "serde_json",
+ "ttf-parser",
 ]
 
 [[package]]

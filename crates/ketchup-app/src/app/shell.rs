@@ -155,6 +155,7 @@ impl KetchupApp {
                 command_search: String::new(),
             },
             takeoff: app_state::TakeoffState::default(),
+            drawings: app_state::DrawingsState::default(),
             saved_view_name: String::new(),
             section: None,
             digest,
@@ -1296,6 +1297,7 @@ impl KetchupApp {
         self.show_shortcuts_window(context);
         self.show_about_window(context);
         self.show_material_takeoff_window(context);
+        self.show_project_drawings_window(context);
         self.show_live_consent(context);
         self.poll_assistant_chat(context);
         self.finish_live_image_frame(context);

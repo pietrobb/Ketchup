@@ -129,6 +129,20 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Send the cursor with the unchanged query that returned it, or drop the cursor.",
     ),
     entry(
+        "drawings_unavailable",
+        Validation,
+        "document",
+        "There are no visible exact solids to draw yet.",
+        "Show at least one layer and wait until inspect action=status reports the exact evaluation complete, then export again.",
+    ),
+    entry(
+        "drawings_write_failed",
+        Io,
+        "path",
+        "The PDF could not be written.",
+        "Choose a writable absolute path ending in .pdf and export again.",
+    ),
+    entry(
         "entity_not_found",
         Validation,
         "entity_id",
@@ -281,6 +295,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "selection",
         "The selection lists a zero id or more ids than one request may carry.",
         "List existing root occurrence ids from status or query.",
+    ),
+    entry(
+        "invalid_sheet_format",
+        Request,
+        "format",
+        "The sheet format is not one of auto, A3, A2, A1 or A0.",
+        "Pass format as auto, A3, A2, A1 or A0, or omit it to keep the document's format.",
     ),
     entry(
         "job_timeout",

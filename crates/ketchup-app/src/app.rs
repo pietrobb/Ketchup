@@ -16,7 +16,7 @@ mod patterns;
 #[cfg(test)]
 #[path = "program_outliner_tests.rs"]
 mod program_outliner_tests;
-mod project_drawings;
+pub(crate) mod project_drawings;
 #[cfg(test)]
 #[path = "app/project_drawings_tests.rs"]
 mod project_drawings_tests;

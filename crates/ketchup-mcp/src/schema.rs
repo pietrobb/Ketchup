@@ -147,10 +147,19 @@ pub fn tools() -> Value {
         },
         {
             "name": "file",
-            "description": "save the document, save_as an absolute path, or open an absolute path in the window (the user confirms in the window when work would be lost).",
+            "description": "save the document, save_as an absolute path, or open an absolute path in the window (the user confirms in the window when work would be lost). \
+    export_drawings writes the project drawings of the visible layers (floor plan cut, longitudinal and cross section, four elevations with overall dimensions) as one vector PDF sheet with a frame and a title block; \
+    title_block fields and format given here are kept in the document (an empty string clears a field), scale and format cells are filled in by the sheet. Hidden layers are left out.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
-                "action": {"type": "string", "enum": ["save", "save_as", "open"]},
-                "path": {"type": "string", "description": "For save_as and open."},
+                "action": {"type": "string", "enum": ["save", "save_as", "open", "export_drawings"]},
+                "path": {"type": "string", "description": "For save_as and open; for export_drawings an absolute path ending in .pdf."},
+                "format": {"type": "string", "enum": ["auto", "A3", "A2", "A1", "A0"], "description": "For export_drawings: sheet format; auto picks the smallest sheet that holds the views at 1:50 or finer. Omit to keep the document's format."},
+                "title_block": {"type": "object", "description": "For export_drawings: title block values to keep in the document.", "additionalProperties": false, "properties": {
+                    "project": {"type": "string"}, "location": {"type": "string"}, "client": {"type": "string"},
+                    "drawing": {"type": "string"}, "drawing_number": {"type": "string"}, "stage": {"type": "string"},
+                    "date": {"type": "string"}, "job_number": {"type": "string"}, "office": {"type": "string"},
+                    "designer": {"type": "string"}, "author": {"type": "string"}, "checked_by": {"type": "string"},
+                }},
                 "expected": {"type": "object", "description": EXPECTED},
             }},
         },

@@ -194,15 +194,64 @@ def openings_of(side, start, reverse):
     return found
 
 T = ["konštrukcia"]
-buildup("konštrukcia/stena južná", (WALL, WALL, SLAB), (1, 0, 0), (0, 0, 1), L - 2 * WALL, system["wall"],
-        height = eave - SLAB, openings = openings_of("south", WALL, False), tags = T)
-buildup("konštrukcia/stena severná", (L - WALL, B - WALL, SLAB), (-1, 0, 0), (0, 0, 1), L - 2 * WALL, system["wall"],
-        height = eave - SLAB, openings = openings_of("north", L - WALL, True), tags = T)
-GABLE_TOP = [(0, eave - SLAB), (B / 2.0, ridge - SLAB), (B, eave - SLAB)]
-buildup("konštrukcia/štít západ", (WALL, B, SLAB), (0, -1, 0), (0, 0, 1), B, system["wall"],
-        top = GABLE_TOP, openings = openings_of("west", B, True), tags = T)
-buildup("konštrukcia/štít východ", (L - WALL, 0, SLAB), (0, 1, 0), (0, 0, 1), B, system["wall"],
-        top = GABLE_TOP, openings = openings_of("east", 0, False), tags = T)
+KROV = T + ["krokvy"]
+cos_a = math.cos(a)
+sin_a = math.sin(a)
+
+# Krov: krokvy ležia hore na hrebeňovej väznici (zvislý rez krokvy dosadá celou
+# plochou na bok väznice, zošikmený vrch väznice nesie debnenie) a dole sú osedlané
+# na pomúrnici na nadmurovke. Väznica prechádza kapsami v štítoch až do presahu.
+ROOF_LAYERS = system["roof"]
+G = ROOF_LAYERS[0]["thickness"]       # podhľad pod krokvami
+RAFTER = ROOF_LAYERS[1]
+R = RAFTER["thickness"]               # výška krokvy kolmo na sklon
+RAFTER_W = RAFTER["stud"]             # šírka krokvy
+WALL_LAYERS = system["wall"]
+FACADE = WALL_LAYERS[-1]["thickness"]
+STUDS = WALL_LAYERS[2]["thickness"]
+PLATE_H = 100                         # výška pomúrnice
+RIDGE_W = 160                         # šírka hrebeňovej väznice
+FIRE = 50                             # odstup dreva od komína
+
+def roof_z(d, o):
+    """Výška roviny strešného plášťa vo výške o kolmo nad jeho spodkom, d vodorovne
+    od vonkajšieho líca obvodovej steny smerom k hrebeňu."""
+    return eave + d * tan + o / cos_a
+
+seat = min(STUDS, R / 3.0 / tan)      # osedlanie najviac do tretiny výšky krokvy
+plate_top = roof_z(FACADE + seat, G)
+plate_bottom = plate_top - PLATE_H
+d_ridge = B / 2.0 - RIDGE_W / 2.0     # bok väznice
+apex = roof_z(B / 2.0, G + R)         # vrch väznice pod debnením
+ridge_bottom = apex - 20 * int((apex - roof_z(d_ridge, 0) + 40) / 20.0 + 0.999)
+
+# Vrstvy obvodovej steny končia pod krovom: stĺpiky pod pomúrnicou, fasáda pod
+# krokvami, vnútorné vrstvy pod podhľadom strechy.
+def wall_top(offset):
+    start = 0.0
+    for k in range(len(WALL_LAYERS)):
+        if abs(start - offset) < 0.001:
+            outer = WALL - offset - WALL_LAYERS[k]["thickness"]
+            if k == 2:
+                z = plate_bottom
+            elif k == len(WALL_LAYERS) - 1:
+                z = roof_z(0, G)
+            else:
+                z = roof_z(outer, 0)
+            return [(0, z - SLAB), (L - 2 * WALL, z - SLAB)]
+        start += WALL_LAYERS[k]["thickness"]
+    fail("wall layer at offset %s" % offset)
+
+buildup("konštrukcia/stena južná", (WALL, WALL, SLAB), (1, 0, 0), (0, 0, 1), L - 2 * WALL, WALL_LAYERS,
+        top = wall_top, openings = openings_of("south", WALL, False), tags = T)
+buildup("konštrukcia/stena severná", (L - WALL, B - WALL, SLAB), (-1, 0, 0), (0, 0, 1), L - 2 * WALL, WALL_LAYERS,
+        top = wall_top, openings = openings_of("north", L - WALL, True), tags = T)
+GABLE_TOP = [(0, roof_z(0, G) - SLAB), (B / 2.0, roof_z(B / 2.0, G) - SLAB), (B, roof_z(0, G) - SLAB)]
+RIDGE_POCKET = (B / 2.0 - RIDGE_W / 2.0, ridge_bottom - SLAB, RIDGE_W, apex - ridge_bottom + 200)
+buildup("konštrukcia/štít západ", (WALL, B, SLAB), (0, -1, 0), (0, 0, 1), B, WALL_LAYERS,
+        top = GABLE_TOP, openings = openings_of("west", B, True) + [RIDGE_POCKET], tags = T)
+buildup("konštrukcia/štít východ", (L - WALL, 0, SLAB), (0, 1, 0), (0, 0, 1), B, WALL_LAYERS,
+        top = GABLE_TOP, openings = openings_of("east", 0, False) + [RIDGE_POCKET], tags = T)
 
 buildup("konštrukcia/strop", (WALL, WALL, ceiling), (1, 0, 0), (0, 1, 0), L - 2 * WALL, system["floor"],
         height = B - 2 * WALL, tags = T, openings = [
@@ -210,19 +259,132 @@ buildup("konštrukcia/strop", (WALL, WALL, ceiling), (1, 0, 0), (0, 1, 0), L - 2
             (ch_x - WALL, ch_y - WALL, CH, CH),
         ])
 
-# Strešné roviny: v ide po spáde od odkvapu k hrebeňu; vrstva sa končí vo zvislej
-# rovine hrebeňa na svojej vnútornej ploche, obe polovice sa tak neprekrývajú.
 ROOF_LENGTH = L + 2 * GABLE_OVER
-def roof_top(offset):
-    end = (B / 2.0 + EAVE_OVER + offset * math.sin(a)) / math.cos(a)
-    return [(0, end), (ROOF_LENGTH, end)]
 
-chimney_v = ((ch_y + EAVE_OVER) / math.cos(a), (ch_y + CH + EAVE_OVER + ROOF_T * math.sin(a)) / math.cos(a))
-buildup("konštrukcia/strecha južná", (-GABLE_OVER, -EAVE_OVER, low), (1, 0, 0), (0, math.cos(a), math.sin(a)),
-        ROOF_LENGTH, system["roof"], top = roof_top, tags = T,
-        openings = [(ch_x + GABLE_OVER, chimney_v[0], CH, chimney_v[1] - chimney_v[0])])
-buildup("konštrukcia/strecha severná", (L + GABLE_OVER, B + EAVE_OVER, low), (-1, 0, 0), (0, -math.cos(a), math.sin(a)),
-        ROOF_LENGTH, system["roof"], top = roof_top, tags = T)
+def on_side(points, north):
+    """Obrys (d, z) jednej strešnej polovice ako (y, z); severná je zrkadlová."""
+    if north:
+        return [[B - p[0], p[1]] for p in reversed(points)]
+    return [[p[0], p[1]] for p in points]
+
+def along_x(name, points, x0, x1, material, color, tags):
+    """Hranol s obrysom v rovine (y, z) od x0 po x1."""
+    part = extrude(name, profile = points, distance = x1 - x0, material = material, color = color, tags = tags)
+    return place(part, origin = (x0, 0, 0), z = (1, 0, 0), x = (0, 1, 0))
+
+def slab_between(d0, d1, o0, o1):
+    """Obrys (d, z) pásu strešného plášťa od o0 po o1 so zvislými koncami v d0 a d1."""
+    return [(d0, roof_z(d0, o0)), (d1, roof_z(d1, o0)), (d1, roof_z(d1, o1)), (d0, roof_z(d0, o1))]
+
+def rafter_outline(start, end, seated):
+    """Krokva od pätky na odkvape (start None, rez kolmo na sklon) alebo od zvislého
+    rezu v start po zvislý rez v end, osedlaná na pomúrnici, ak ju prekrýva."""
+    if start == None:
+        bottom = [(-EAVE_OVER - G * sin_a, low + G * cos_a)]
+        top = [(-EAVE_OVER - (G + R) * sin_a, low + (G + R) * cos_a)]
+    else:
+        bottom = [(start, roof_z(start, G))]
+        top = [(start, roof_z(start, G + R))]
+    if seated:
+        bottom += [(FACADE, roof_z(FACADE, G)), (FACADE, plate_top), (FACADE + seat, plate_top)]
+    return bottom + [(end, roof_z(end, G)), (end, roof_z(end, G + R))] + top
+
+# Krokvy: krajné v presahu štítov, nad každým štítom a medzi štítmi rovnomerne
+# najviac po RAFTER["spacing"].
+on_gables = [(WALL - RAFTER_W) / 2.0, L - (WALL + RAFTER_W) / 2.0]
+bays = int((on_gables[1] - on_gables[0]) / RAFTER["spacing"] + 0.999)
+RAFTERS = ([-GABLE_OVER, on_gables[0]] +
+           [on_gables[0] + k * (on_gables[1] - on_gables[0]) / bays for k in range(1, bays)] +
+           [on_gables[1], L + GABLE_OVER - RAFTER_W])
+
+# Prestup komína v južnej polovici: prerušené krokvy nesú výmeny pod a nad komínom.
+hole_x = (ch_x - FIRE, ch_x + CH + FIRE)
+hole_d = (ch_y - FIRE, ch_y + CH + FIRE)
+cut = [x for x in RAFTERS if x < hole_x[1] and hole_x[0] < x + RAFTER_W]
+trim_x = (max([x + RAFTER_W for x in RAFTERS if x + RAFTER_W <= hole_x[0]]),
+          min([x for x in RAFTERS if x >= hole_x[1]]))
+
+def roof_frame(side, north):
+    name = "konštrukcia/strecha %s" % side
+    for k in range(len(RAFTERS)):
+        x = RAFTERS[k]
+        seated = WALL <= x and x + RAFTER_W <= L - WALL
+        if not north and x in cut:
+            pieces = [rafter_outline(None, hole_d[0] - RAFTER_W, seated),
+                      rafter_outline(hole_d[1] + RAFTER_W, d_ridge, False)]
+        else:
+            pieces = [rafter_outline(None, d_ridge, seated)]
+        for j in range(len(pieces)):
+            label = "krokva %d" % (k + 1) if len(pieces) == 1 else "krokva %d%s" % (k + 1, "ab"[j])
+            along_x("%s/%s" % (name, label), on_side(pieces[j], north), x, x + RAFTER_W,
+                    RAFTER["material"], TIMBER_C, KROV)
+    if not north:
+        for j, (d0, d1) in enumerate([(hole_d[0] - RAFTER_W, hole_d[0]), (hole_d[1], hole_d[1] + RAFTER_W)]):
+            along_x("%s/výmena %s" % (name, ("dolná", "horná")[j]), on_side(slab_between(d0, d1, G, G + R), north),
+                    trim_x[0], trim_x[1], RAFTER["material"], TIMBER_C, KROV)
+    count = 0
+    for k in range(len(RAFTERS) - 1):
+        x0, x1 = max(RAFTERS[k] + RAFTER_W, WALL), min(RAFTERS[k + 1], L - WALL)
+        if x1 - x0 < 1:
+            continue
+        spans = [(WALL, d_ridge)]
+        if not north and x0 >= trim_x[0] - 0.001 and x1 <= trim_x[1] + 0.001:
+            spans = [(WALL, hole_d[0] - RAFTER_W), (hole_d[1] + RAFTER_W, d_ridge)]
+        for d0, d1 in spans:
+            count += 1
+            along_x("%s/izolácia %d" % (name, count), on_side(slab_between(d0, d1, G, G + R), north), x0, x1,
+                    RAFTER["infill"], RAFTER["infill_color"], T + RAFTER["infill_tags"])
+    box("konštrukcia/pomúrnica %s" % side, (L - 2 * WALL, STUDS, PLATE_H),
+        at = (WALL, B - FACADE - STUDS if north else FACADE, plate_bottom),
+        material = RAFTER["material"], color = TIMBER_C, tags = KROV)
+
+roof_frame("južná", False)
+roof_frame("severná", True)
+
+along_x("konštrukcia/hrebeňová väznica",
+        [[d_ridge, ridge_bottom], [B - d_ridge, ridge_bottom], [B - d_ridge, roof_z(d_ridge, G + R)],
+         [B / 2.0, apex], [d_ridge, roof_z(d_ridge, G + R)]],
+        -GABLE_OVER, L + GABLE_OVER, "BSH GL24h", TIMBER_C, KROV)
+
+# Plášť: podhľad pod krokvami len v interiéri, debnenie a krytina na krokvách.
+# Vrstva v je po spáde; debnenie a krytina končia vnútornou plochou v rovine hrebeňa.
+def chimney_hole(x0, d0, o0, thickness):
+    v0 = (hole_d[0] - d0 + o0 * sin_a) / cos_a
+    v1 = (hole_d[1] - d0 + (o0 + thickness) * sin_a) / cos_a
+    return (hole_x[0] - x0, v0, hole_x[1] - hole_x[0], v1 - v0)
+
+def lining(side, north):
+    sign = -1 if north else 1
+    start = (WALL if not north else L - WALL, B - WALL if north else WALL, roof_z(WALL, 0))
+    length = (B / 2.0 - RIDGE_W / 2.0 - WALL) / cos_a
+    buildup("konštrukcia/strecha %s/podhľad" % side, start, (sign, 0, 0), (0, sign * cos_a, sin_a),
+            L - 2 * WALL, [ROOF_LAYERS[0]], top = [(0, length), (L - 2 * WALL, length)], tags = T,
+            openings = [] if north else [chimney_hole(WALL, WALL, 0, G)])
+
+def cladding(side, north):
+    sign = -1 if north else 1
+    o0 = G + R
+    edge = (-EAVE_OVER - o0 * sin_a, low + o0 * cos_a)
+    start = (L + GABLE_OVER if north else -GABLE_OVER, B - edge[0] if north else edge[0], edge[1])
+    sheets = ROOF_LAYERS[2:]
+    def top(offset):
+        end = (B / 2.0 + EAVE_OVER + (o0 + offset) * sin_a) / cos_a
+        return [(0, end), (ROOF_LENGTH, end)]
+    buildup("konštrukcia/strecha %s" % side, start, (sign, 0, 0), (0, sign * cos_a, sin_a),
+            ROOF_LENGTH, sheets, top = top, tags = T,
+            openings = [] if north else [chimney_hole(-GABLE_OVER, -EAVE_OVER, o0, ROOF_T - o0)])
+
+for side, north in (("južná", False), ("severná", True)):
+    lining(side, north)
+    cladding(side, north)
+
+# Hrebenáč prekrýva styk krytiny oboch polovíc.
+CAP = 200
+cap = [(B / 2.0 - CAP, roof_z(B / 2.0 - CAP, ROOF_T)), (B / 2.0, roof_z(B / 2.0, ROOF_T))]
+cap_bottom = cap + [(B - p[0], p[1]) for p in reversed(cap[:-1])]
+along_x("konštrukcia/hrebenáč",
+        [[p[0], p[1]] for p in cap_bottom] + [[p[0], p[1] + 3 / cos_a] for p in reversed(cap_bottom)],
+        -GABLE_OVER, L + GABLE_OVER, "plechová krytina", ROOF_C, T + ["krytina"])
 
 # --- zariadenie (spoločné) ---
 box("kuchyňa/linka", (1800, 600, 900), at = (L - WALL - 1800, B - WALL - 600, SLAB), material = "lamino", color = (235, 235, 230))

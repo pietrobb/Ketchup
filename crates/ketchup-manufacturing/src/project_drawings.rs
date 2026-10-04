@@ -3,14 +3,20 @@
 //! scale. The parts the cutting plane passes through are filled and outlined
 //! heavily; each view carries its overall dimensions.
 //!
+//! The sheet is an ISO A format with a frame and a title block in the lower
+//! right corner, written as a vector PDF.
+//!
 //! The input is any set of closed triangulated solids in world millimetres (z up),
 //! so the sheet follows whatever is visible: hiding a layer leaves it out.
 //! Lines behind nearer faces are hidden by painting faces from far to near.
 
+use crate::sheet_pdf::{Anchor, Mark, Page, PdfInfo, Stroke, page_pdf};
+use crate::title_block::{
+    SheetFormat, TITLE_BLOCK_MM, TitleBlock, TitleField, draw_frame_and_title_block, drawing_area,
+};
 use ketchup_geometry::linalg::{Vec3, cross, dot, normalize_within, sub};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 type Point = [f64; 3];
 /// A closed outline in view millimetres.
@@ -57,13 +63,20 @@ impl ProjectView {
     }
 }
 
-/// What the caller decides: the sheet title, the view titles and the plan cut.
-#[derive(Clone, Debug)]
+/// What the caller decides: view titles, the plan cut, the sheet format and
+/// the title block.
+#[derive(Clone, Debug, Default)]
 pub struct ProjectSheetOptions {
-    pub title: String,
     pub view_titles: BTreeMap<ProjectView, String>,
     /// Height of the horizontal plan cut; [`default_plan_cut_z`] when absent.
     pub plan_cut_z_mm: Option<f64>,
+    /// The sheet format; when absent the smallest one that holds the views at
+    /// 1:50 or finer.
+    pub format: Option<SheetFormat>,
+    /// Captions of the title block cells.
+    pub title_labels: BTreeMap<TitleField, String>,
+    /// The title block values; scale and format are filled in by the sheet.
+    pub title_block: TitleBlock,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -79,13 +92,21 @@ pub struct ViewSummary {
     pub extent_mm: [f64; 2],
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProjectSheet {
-    pub svg: String,
+    pub page: Page,
     /// The sheet scale as 1:`scale`.
     pub scale: u32,
-    pub page_mm: [f64; 2],
+    pub format: SheetFormat,
     pub views: Vec<ViewSummary>,
+}
+
+impl ProjectSheet {
+    /// The sheet as a vector PDF with its typeface embedded.
+    #[must_use]
+    pub fn pdf(&self, info: &PdfInfo) -> Vec<u8> {
+        page_pdf(&self.page, info)
+    }
 }
 
 /// Why no sheet could be drawn.
@@ -510,12 +531,17 @@ fn view_frames(min: Point, max: Point, plan_cut_z: f64) -> [(ProjectView, ViewFr
 }
 
 const PLAN_CUT_ABOVE_LOWEST_MM: f64 = 1200.0;
-const PAGE_MM: [f64; 2] = [841.0, 594.0];
-const MARGIN_MM: f64 = 10.0;
-const TITLE_BLOCK_MM: [f64; 2] = [180.0, 30.0];
 /// Room around a view for its dimensions and title, in page millimetres.
 const VIEW_PAD_MM: f64 = 22.0;
 const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
+/// The coarsest scale a format is chosen for: building drawings are read at 1:50.
+const PREFERRED_SCALE: u32 = 50;
+
+const EDGE_STROKE_MM: f64 = 0.18;
+const EDGE_COLOR: [u8; 3] = [34, 34, 34];
+const CUT_STROKE_MM: f64 = 0.5;
+const DIMENSION_TEXT_MM: f64 = 2.5;
+const VIEW_TITLE_MM: f64 = 4.0;
 
 /// The view rows: cut views, then elevations.
 fn rows(views: &[DrawnView]) -> [Vec<usize>; 2] {
@@ -528,155 +554,144 @@ fn extent(view: &DrawnView) -> [f64; 2] {
     [view.max[0] - view.min[0], view.max[1] - view.min[1]]
 }
 
-/// The largest standard scale at which both rows fit the page.
-fn choose_scale(views: &[DrawnView]) -> u32 {
+/// The largest standard scale at which both rows fit the drawing area of
+/// `format` above the title block, if any does.
+fn choose_scale(views: &[DrawnView], format: SheetFormat) -> Option<u32> {
     let rows = rows(views);
-    let usable_width = PAGE_MM[0] - 2.0 * MARGIN_MM;
-    let usable_height = PAGE_MM[1] - 2.0 * MARGIN_MM - TITLE_BLOCK_MM[1];
-    SCALES
-        .into_iter()
-        .find(|scale| {
-            let scale = f64::from(*scale);
-            let widths_fit = rows.iter().all(|row| {
+    let [[left, top], [right, bottom]] = drawing_area(format);
+    let usable_width = right - left;
+    let usable_height = bottom - top - TITLE_BLOCK_MM[1];
+    SCALES.into_iter().find(|scale| {
+        let scale = f64::from(*scale);
+        let widths_fit = rows.iter().all(|row| {
+            row.iter()
+                .map(|index| extent(&views[*index])[0] / scale + 2.0 * VIEW_PAD_MM)
+                .sum::<f64>()
+                <= usable_width
+        });
+        let height = rows
+            .iter()
+            .map(|row| {
                 row.iter()
-                    .map(|index| extent(&views[*index])[0] / scale + 2.0 * VIEW_PAD_MM)
-                    .sum::<f64>()
-                    <= usable_width
-            });
-            let height = rows
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|index| extent(&views[*index])[1] / scale + 2.0 * VIEW_PAD_MM)
-                        .fold(0.0, f64::max)
-                })
-                .sum::<f64>();
-            widths_fit && height <= usable_height
+                    .map(|index| extent(&views[*index])[1] / scale + 2.0 * VIEW_PAD_MM)
+                    .fold(0.0, f64::max)
+            })
+            .sum::<f64>();
+        widths_fit && height <= usable_height
+    })
+}
+
+/// The requested format at its best scale, or the smallest format that holds
+/// the views at 1:50 or finer (A0 at whatever fits when none does).
+fn choose_layout(views: &[DrawnView], requested: Option<SheetFormat>) -> (SheetFormat, u32) {
+    let coarsest = SCALES[SCALES.len() - 1];
+    if let Some(format) = requested {
+        return (format, choose_scale(views, format).unwrap_or(coarsest));
+    }
+    SheetFormat::ALL
+        .into_iter()
+        .find_map(|format| {
+            choose_scale(views, format)
+                .filter(|scale| *scale <= PREFERRED_SCALE)
+                .map(|scale| (format, scale))
         })
-        .unwrap_or(SCALES[SCALES.len() - 1])
+        .unwrap_or_else(|| {
+            let format = SheetFormat::A0;
+            (format, choose_scale(views, format).unwrap_or(coarsest))
+        })
 }
 
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+/// A short oblique tick across a dimension line end, as architects draw it.
+fn tick(page: &mut Page, [x, y]: [f64; 2]) {
+    page.line(
+        vec![[x - 1.2, y + 1.2], [x + 1.2, y - 1.2]],
+        Stroke::solid(0.35),
+    );
 }
 
-fn hex(color: [u8; 3]) -> String {
-    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
-}
-
-/// Writes one view with its lower-left model corner at `origin` (page mm).
-fn write_view(svg: &mut String, view: &DrawnView, title: &str, origin: [f64; 2], scale: f64) {
-    let page = |point: [f64; 2]| {
+/// Draws one view with its lower-left model corner at `origin` (page mm).
+fn draw_view_on_page(page: &mut Page, view: &DrawnView, title: &str, origin: [f64; 2], scale: f64) {
+    let at = |point: [f64; 2]| {
         [
             origin[0] + (point[0] - view.min[0]) / scale,
             origin[1] - (point[1] - view.min[1]) / scale,
         ]
     };
-    let _ = writeln!(svg, r#"<g class="view" data-view="{:?}">"#, view.view);
-    // Runs of edges, and of faces of one colour, share one path element: an
-    // elevation has tens of thousands of depth-sorted pieces.
-    let mut run: Option<(Option<[u8; 3]>, String)> = None;
-    let flush = |svg: &mut String, run: &mut Option<(Option<[u8; 3]>, String)>| match run.take() {
-        Some((Some(color), d)) => {
-            let color = hex(color);
-            let _ = writeln!(
-                svg,
-                r#"<path d="{d}" fill="{color}" stroke="{color}" stroke-width="0.05"/>"#
-            );
-        }
-        Some((None, d)) => {
-            let _ = writeln!(
-                svg,
-                r#"<path class="edge" d="{d}" fill="none" stroke="rgb(34,34,34)" stroke-width="0.18"/>"#
-            );
-        }
-        None => {}
+    let edge = Stroke {
+        width_mm: EDGE_STROKE_MM,
+        color: EDGE_COLOR,
+        dash_mm: Vec::new(),
     };
     for item in &view.items {
-        let key = match item {
-            Item::Face { color, .. } => Some(*color),
-            Item::Edge(_) => None,
-        };
-        if run.as_ref().is_some_and(|(current, _)| *current != key) {
-            flush(svg, &mut run);
-        }
-        let d = &mut run.get_or_insert_with(|| (key, String::new())).1;
         match item {
-            Item::Face { points, .. } => {
-                for (index, point) in points.iter().enumerate() {
-                    let [x, y] = page(*point);
-                    let _ = write!(d, "{}{x:.1} {y:.1}", if index == 0 { "M" } else { "L" });
-                }
-                d.push('Z');
-            }
-            Item::Edge([a, b]) => {
-                let ([x1, y1], [x2, y2]) = (page(*a), page(*b));
-                let _ = write!(d, "M{x1:.1} {y1:.1}L{x2:.1} {y2:.1}");
-            }
+            Item::Face { points, color } => page.marks.push(Mark::Fill {
+                loops: vec![points.iter().map(|point| at(*point)).collect()],
+                color: *color,
+                // A hairline of the face colour closes the seams between pieces.
+                outline: Some(Stroke {
+                    width_mm: 0.05,
+                    color: *color,
+                    dash_mm: Vec::new(),
+                }),
+            }),
+            Item::Edge([a, b]) => page.line(vec![at(*a), at(*b)], edge.clone()),
         }
     }
-    flush(svg, &mut run);
     for (loops, color) in &view.cuts {
-        let mut path = String::new();
-        for polyline in loops {
-            for (index, point) in polyline.iter().enumerate() {
-                let [x, y] = page(*point);
-                let _ = write!(path, "{}{x:.2},{y:.2} ", if index == 0 { "M" } else { "L" });
-            }
-            path.push_str("Z ");
-        }
-        let fill = color.map(|channel| channel / 2);
-        let _ = writeln!(
-            svg,
-            r#"<path class="cut" d="{path}" fill="{}" fill-rule="evenodd" stroke="black" stroke-width="0.5"/>"#,
-            hex(fill)
-        );
+        page.marks.push(Mark::Fill {
+            loops: loops
+                .iter()
+                .map(|polyline| polyline.iter().map(|point| at(*point)).collect())
+                .collect(),
+            color: color.map(|channel| channel / 2),
+            outline: Some(Stroke::solid(CUT_STROKE_MM)),
+        });
     }
     let [width, height] = extent(view);
-    let [left, bottom] = page(view.min);
-    let [right, top] = page(view.max);
+    let [left, bottom] = at(view.min);
+    let [right, top] = at(view.max);
+    let thin = Stroke::solid(EDGE_STROKE_MM);
     // Overall width below the view and overall height on its left.
     let below = bottom + 8.0;
-    let _ = writeln!(
-        svg,
-        r#"<g class="dimension" stroke="black" stroke-width="0.18"><line x1="{left:.2}" y1="{below:.2}" x2="{right:.2}" y2="{below:.2}"/><line x1="{left:.2}" y1="{:.2}" x2="{left:.2}" y2="{:.2}"/><line x1="{right:.2}" y1="{:.2}" x2="{right:.2}" y2="{:.2}"/></g>"#,
-        bottom + 2.0,
-        below + 2.0,
-        bottom + 2.0,
-        below + 2.0
+    page.line(
+        vec![[left - 2.0, below], [right + 2.0, below]],
+        thin.clone(),
     );
-    let _ = writeln!(
-        svg,
-        r#"<text class="dimension" x="{:.2}" y="{:.2}" font-size="2.5" text-anchor="middle">{width:.0}</text>"#,
-        f64::midpoint(left, right),
-        below - 1.0
+    for x in [left, right] {
+        page.line(vec![[x, bottom + 2.0], [x, below + 2.0]], thin.clone());
+        tick(page, [x, below]);
+    }
+    page.text(
+        [f64::midpoint(left, right), below - 1.0],
+        &format!("{width:.0}"),
+        DIMENSION_TEXT_MM,
+        Anchor::Middle,
     );
     let aside = left - 8.0;
-    let _ = writeln!(
-        svg,
-        r#"<g class="dimension" stroke="black" stroke-width="0.18"><line x1="{aside:.2}" y1="{bottom:.2}" x2="{aside:.2}" y2="{top:.2}"/><line x1="{:.2}" y1="{bottom:.2}" x2="{:.2}" y2="{bottom:.2}"/><line x1="{:.2}" y1="{top:.2}" x2="{:.2}" y2="{top:.2}"/></g>"#,
-        aside - 2.0,
-        left - 2.0,
-        aside - 2.0,
-        left - 2.0
+    page.line(
+        vec![[aside, bottom + 2.0], [aside, top - 2.0]],
+        thin.clone(),
     );
-    let middle = f64::midpoint(bottom, top);
-    let _ = writeln!(
-        svg,
-        r#"<text class="dimension" x="{:.2}" y="{middle:.2}" font-size="2.5" text-anchor="middle" transform="rotate(-90 {:.2} {middle:.2})">{height:.0}</text>"#,
-        aside - 1.0,
-        aside - 1.0
-    );
-    let _ = writeln!(
-        svg,
-        r#"<text class="view-title" x="{left:.2}" y="{:.2}" font-size="4" font-weight="bold">{}</text>"#,
-        below + 8.0,
-        escape(title)
-    );
-    svg.push_str("</g>\n");
+    for y in [bottom, top] {
+        page.line(vec![[aside - 2.0, y], [left - 2.0, y]], thin.clone());
+        tick(page, [aside, y]);
+    }
+    page.marks.push(Mark::Text {
+        at: [aside - 1.0, f64::midpoint(bottom, top)],
+        text: format!("{height:.0}"),
+        height_mm: DIMENSION_TEXT_MM,
+        anchor: Anchor::Middle,
+        angle_deg: 90.0,
+        bold: false,
+    });
+    page.marks.push(Mark::Text {
+        at: [left, below + 8.0],
+        text: title.to_owned(),
+        height_mm: VIEW_TITLE_MM,
+        anchor: Anchor::Start,
+        angle_deg: 0.0,
+        bold: true,
+    });
 }
 
 fn bounds(solids: &[DrawingSolid]) -> Option<(Point, Point)> {
@@ -724,7 +739,7 @@ pub fn project_sheet(
         .map(|(view, frame)| draw_view(view, frame, solids, &edges))
         .filter(|view| view.min[0].is_finite())
         .collect::<Vec<_>>();
-    let scale = choose_scale(&views);
+    let (format, scale) = choose_layout(&views, options.format);
     let title_of = |view: ProjectView| {
         options
             .view_titles
@@ -733,28 +748,18 @@ pub fn project_sheet(
             .unwrap_or_else(|| format!("{view:?}"))
     };
 
-    let mut svg = String::new();
-    let _ = writeln!(
-        svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{0}mm" height="{1}mm" viewBox="0 0 {0} {1}" font-family="sans-serif">"#,
-        PAGE_MM[0], PAGE_MM[1]
-    );
-    let _ = writeln!(
-        svg,
-        r#"<rect x="0" y="0" width="{}" height="{}" fill="white"/><rect x="{MARGIN_MM}" y="{MARGIN_MM}" width="{}" height="{}" fill="none" stroke="black" stroke-width="0.7"/>"#,
-        PAGE_MM[0],
-        PAGE_MM[1],
-        PAGE_MM[0] - 2.0 * MARGIN_MM,
-        PAGE_MM[1] - 2.0 * MARGIN_MM
-    );
+    let mut page = Page {
+        size_mm: format.size_mm(),
+        marks: Vec::new(),
+    };
     let scale_f = f64::from(scale);
-    let mut top = MARGIN_MM;
+    let [[area_left, mut top], _] = drawing_area(format);
     for row in rows(&views) {
         let row_height = row
             .iter()
             .map(|index| extent(&views[*index])[1] / scale_f + 2.0 * VIEW_PAD_MM)
             .fold(0.0, f64::max);
-        let mut left = MARGIN_MM;
+        let mut left = area_left;
         for index in row {
             let view = &views[index];
             let [width, height] = extent(view);
@@ -762,29 +767,15 @@ pub fn project_sheet(
                 left + VIEW_PAD_MM,
                 top + VIEW_PAD_MM / 2.0 + height / scale_f,
             ];
-            write_view(&mut svg, view, &title_of(view.view), origin, scale_f);
+            draw_view_on_page(&mut page, view, &title_of(view.view), origin, scale_f);
             left += width / scale_f + 2.0 * VIEW_PAD_MM;
         }
         top += row_height;
     }
-    let block = [
-        PAGE_MM[0] - MARGIN_MM - TITLE_BLOCK_MM[0],
-        PAGE_MM[1] - MARGIN_MM - TITLE_BLOCK_MM[1],
-    ];
-    let _ = writeln!(
-        svg,
-        r#"<g class="title-block"><rect x="{:.1}" y="{:.1}" width="{}" height="{}" fill="none" stroke="black" stroke-width="0.5"/><text x="{:.1}" y="{:.1}" font-size="6" font-weight="bold">{}</text><text x="{:.1}" y="{:.1}" font-size="4">M 1:{scale}</text></g>"#,
-        block[0],
-        block[1],
-        TITLE_BLOCK_MM[0],
-        TITLE_BLOCK_MM[1],
-        block[0] + 5.0,
-        block[1] + 12.0,
-        escape(&options.title),
-        block[0] + 5.0,
-        block[1] + 22.0
-    );
-    svg.push_str("</svg>\n");
+    let mut values = options.title_block.clone();
+    values.insert(TitleField::Scale, format!("1:{scale}"));
+    values.insert(TitleField::Format, format.name().to_owned());
+    draw_frame_and_title_block(&mut page, format, &options.title_labels, &values);
 
     let summaries = views
         .iter()
@@ -797,9 +788,9 @@ pub fn project_sheet(
         })
         .collect();
     Ok(ProjectSheet {
-        svg,
+        page,
         scale,
-        page_mm: PAGE_MM,
+        format,
         views: summaries,
     })
 }
@@ -858,9 +849,11 @@ mod tests {
         project_sheet(
             &room(),
             &ProjectSheetOptions {
-                title: "Room <A>".to_owned(),
                 view_titles: BTreeMap::from([(ProjectView::Plan, "Floor plan".to_owned())]),
                 plan_cut_z_mm,
+                title_labels: BTreeMap::from([(TitleField::Project, "Stavba".to_owned())]),
+                title_block: TitleBlock::from([(TitleField::Project, "Room <A>".to_owned())]),
+                ..ProjectSheetOptions::default()
             },
         )
         .unwrap()
@@ -887,17 +880,32 @@ mod tests {
         assert_eq!(cut(ProjectView::Front).cut_solids, 0);
         assert_eq!(cut(ProjectView::Front).extent_mm, [6000.0, 2700.0]);
         assert_eq!(sheet.views.len(), 7);
-        assert_eq!(sheet.svg.matches(r#"class="cut""#).count(), 10);
-        assert_eq!(sheet.svg.matches(r#"class="view""#).count(), 7);
-        assert!(sheet.svg.contains(">6000</text>"));
-        assert!(sheet.svg.contains(">2700</text>"));
-        assert!(sheet.svg.contains("Floor plan"));
-        assert!(sheet.svg.contains("Room &lt;A&gt;"));
-        assert!(sheet.svg.contains(&format!("M 1:{}", sheet.scale)));
+        let cut_fills = sheet
+            .page
+            .marks
+            .iter()
+            .filter(|mark| {
+                matches!(mark, Mark::Fill { outline: Some(stroke), .. } if stroke.width_mm == CUT_STROKE_MM)
+            })
+            .count();
+        assert_eq!(cut_fills, 10);
+        let texts = sheet.page.texts().collect::<Vec<_>>();
+        assert!(texts.contains(&"6000"));
+        assert!(texts.contains(&"2700"));
+        assert!(texts.contains(&"Floor plan"));
+        assert!(texts.contains(&"Room <A>"));
+        assert!(texts.contains(&"Stavba"));
+        assert!(texts.contains(&format!("1:{}", sheet.scale).as_str()));
+        assert!(texts.contains(&sheet.format.name()));
+        assert_eq!(sheet.scale, 50, "a room is drawn at the building scale");
         assert_eq!(
-            sheet.scale, 50,
-            "the four elevations do not fit side by side at 1:25"
+            sheet.format,
+            SheetFormat::A2,
+            "the smallest sheet that holds it at 1:50"
         );
+        assert_eq!(sheet.page.size_mm, SheetFormat::A2.size_mm());
+        let pdf = sheet.pdf(&PdfInfo::default());
+        assert!(pdf.starts_with(b"%PDF-"));
     }
 
     #[test]
@@ -905,12 +913,13 @@ mod tests {
         let sheet = sheet(Some(5000.0));
         assert_eq!(sheet.views[0].cut_solids, 0);
         assert_eq!(sheet.views[0].extent_mm, [6000.0, 3000.0]);
-        let plan = sheet
-            .svg
-            .split(r#"data-view="LongitudinalSection""#)
-            .next()
-            .unwrap();
-        assert!(plan.contains(r#"class="edge""#));
+        let edges = sheet
+            .page
+            .marks
+            .iter()
+            .filter(|mark| matches!(mark, Mark::Line { stroke, .. } if stroke.color == EDGE_COLOR))
+            .count();
+        assert!(edges > 0, "the walls are drawn from above");
     }
 
     #[test]
@@ -929,13 +938,8 @@ mod tests {
 
     #[test]
     fn nothing_visible_is_an_error() {
-        let options = ProjectSheetOptions {
-            title: String::new(),
-            view_titles: BTreeMap::new(),
-            plan_cut_z_mm: None,
-        };
         assert_eq!(
-            project_sheet(&[], &options),
+            project_sheet(&[], &ProjectSheetOptions::default()),
             Err(ProjectDrawingError::Empty)
         );
     }

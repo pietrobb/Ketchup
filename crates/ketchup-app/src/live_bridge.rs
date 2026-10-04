@@ -61,6 +61,7 @@ use std::{
 pub mod bootstrap;
 mod busy;
 pub mod consent;
+mod drawings;
 mod image;
 mod program_access;
 mod program_check;
@@ -279,6 +280,17 @@ pub enum Request {
         #[serde(default)]
         expected: Option<Stamp>,
         path: String,
+    },
+    /// Writes the project drawings of the visible layers as PDF; `title_block`
+    /// fields and `format` given here are first kept in the document.
+    ExportDrawings {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        path: String,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        title_block: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
     },
     Selection {
         #[serde(default)]
@@ -2163,7 +2175,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -2426,6 +2438,9 @@ impl LiveBridge {
                     return Err("save_rejected");
                 }
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
+            }
+            request @ Request::ExportDrawings { .. } => {
+                Self::export_drawings(app, request, ui_busy)
             }
             Request::Open { expected, path } => {
                 Self::guard(app, &expected)?;

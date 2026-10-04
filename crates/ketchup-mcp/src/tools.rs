@@ -156,7 +156,8 @@ impl Tools {
                 self.send(&action, args, DEFAULT_WAIT)
             }
             "file" => {
-                let action = take_action(&mut args, &["save", "save_as", "open"])?;
+                let action =
+                    take_action(&mut args, &["save", "save_as", "open", "export_drawings"])?;
                 self.send(&action, args, DEFAULT_WAIT)
             }
             "view" => self.view(args),

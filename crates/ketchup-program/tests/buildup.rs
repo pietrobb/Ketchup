@@ -1,4 +1,5 @@
 use ketchup_program::model::ProgramModel;
+use ketchup_program::relations::{Relation, RelationKind};
 use ketchup_program::{Severity, run, validate};
 use std::collections::BTreeMap;
 
@@ -207,6 +208,74 @@ fn the_house_concept_and_construction_come_from_the_same_numbers() {
         max[1] - min[1]
     };
     assert_eq!((wall(&model), wall(&thicker)), (200.0, 250.0));
+}
+
+#[test]
+fn openings_closer_than_a_stud_share_the_stud_between_them() {
+    // The door's right stud (1500..1560) and the window's left stud (1520..1580)
+    // would overlap; the window also reaches over a stud of the door.
+    let source = WALL.replace(
+        "openings = [(600, 0, 900, 2100), (2000, 800, 1200, 1300)]",
+        "openings = [(600, 0, 900, 2100), (1580, 800, 1200, 1300)]",
+    );
+    let model = eval(&source, &[]);
+    assert_eq!(errors(&model), Vec::<String>::new());
+}
+
+/// Contact area between two parts, if the program reports their faces touching.
+fn contact_area(relations: &[Relation], a: &str, b: &str) -> Option<f64> {
+    relations
+        .iter()
+        .find(|relation| {
+            relation.kind == RelationKind::Contact
+                && (relation.parts == [a.to_owned(), b.to_owned()]
+                    || relation.parts == [b.to_owned(), a.to_owned()])
+        })
+        .and_then(|relation| relation.area_mm2)
+}
+
+#[test]
+fn the_house_rafters_bear_on_a_ridge_beam_that_sits_in_the_gables() {
+    const BEAM: &str = "konštrukcia/hrebeňová väznica";
+    for (system, rafter_depth, pitch) in [(0.0, 180.0, 40.0_f64), (1.0, 220.0, 50.0)] {
+        let overrides = [("system", system), ("roof_pitch", pitch)]
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), *value))
+            .collect::<BTreeMap<_, _>>();
+        let (evaluated, report) =
+            run("tiny-house.star", HOUSE, &overrides).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(errors(&evaluated.model), Vec::<String>::new());
+        let rafters = named(&evaluated.model, "konštrukcia/strecha")
+            .into_iter()
+            .filter(|name| name.contains("/krokva "))
+            .filter(|name| !name.ends_with('a'))
+            .collect::<Vec<_>>();
+        assert!(rafters.len() >= 18, "{rafters:?}");
+        // The plumb cut of every rafter that reaches the ridge bears on the beam
+        // with its whole face, not along an edge.
+        let plumb_face = 80.0 * rafter_depth / pitch.to_radians().cos();
+        for rafter in &rafters {
+            let area = contact_area(&report.relations, rafter, BEAM)
+                .unwrap_or_else(|| panic!("{rafter} does not bear on the ridge beam"));
+            assert!(
+                (area - plumb_face).abs() < 0.01 * plumb_face,
+                "{rafter}: {area} mm² instead of {plumb_face}"
+            );
+        }
+        for gable in ["západ", "východ"] {
+            let sill = format!("konštrukcia/štít {gable}/stĺpiky/sill 3");
+            let area = contact_area(&report.relations, &sill, BEAM)
+                .unwrap_or_else(|| panic!("the beam does not sit on {sill}"));
+            assert!(area > 160.0 * 100.0, "{sill}: {area}");
+        }
+        assert!(
+            evaluated
+                .model
+                .part("konštrukcia/pomúrnica južná")
+                .is_some()
+        );
+        assert!(evaluated.model.part("konštrukcia/hrebenáč").is_some());
+    }
 }
 
 #[test]

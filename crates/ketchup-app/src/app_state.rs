@@ -207,6 +207,15 @@ pub(crate) struct TakeoffState {
     pub(crate) cache: std::cell::RefCell<Option<TakeoffCache>>,
 }
 
+/// The project drawings window: the sheet settings being edited there.
+#[derive(Default)]
+pub(crate) struct DrawingsState {
+    pub(crate) open: bool,
+    pub(crate) editing: ketchup_manufacturing::title_block::SheetSettings,
+    /// The document's sheet settings changed since it was opened or saved.
+    pub(crate) unsaved: bool,
+}
+
 pub(crate) struct TakeoffCache {
     pub(crate) program: (String, String, BTreeMap<String, f64>),
     pub(crate) model: Result<Arc<ketchup_program::ProgramModel>, ketchup_program::ProgramError>,

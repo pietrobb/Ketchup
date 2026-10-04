@@ -62,7 +62,8 @@ def mcp(tmp_path):
             if payload.get("error") == "connection_lost":
                 status = request("tools/call", {"name": "inspect", "arguments": {"action": "status"}})
                 (tmp_path / "failed-request-status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
-            assert reply.get("isError", False) is error, payload
+            if error is not None:
+                assert reply.get("isError", False) is error, payload
             return payload
         try:
             request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "measurement-acceptance", "version": "1"}})
@@ -551,7 +552,10 @@ def test_house_layers_views_and_section_keep_the_program_through_public_mcp(mcp,
 
     # New dimensions recompute both representations; the views still switch between them.
     longer = mcp("program", action="apply", source_path=str(house), overrides={"length": 7400})
-    assert longer["result"]["removed_total"] == 0, longer["result"]
+    # Only the rafter trimmed around the roof window moves to the rafter now under it.
+    removed = longer["result"]["removed"]
+    assert longer["result"]["removed_total"] == len(removed) <= 4, longer["result"]
+    assert all("/krokva " in name for name in removed), removed
     framing, cursor = [], None
     while True:
         page = mcp("inspect", action="query", kind="occurrences", tag_id=ids["konštrukcia"], limit=100, **({"cursor": cursor} if cursor else {}))["result"]
@@ -573,3 +577,39 @@ def test_house_layers_views_and_section_keep_the_program_through_public_mcp(mcp,
     assert [view["name"] for view in views["saved_views"]] == ["Koncept", "Konštrukcia v reze"]
     mcp("view", action="show_view", name="Koncept")
     assert visible("koncept") and not visible("konštrukcia")
+
+
+def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp_path):
+    house = Path(__file__).resolve().parents[1] / "examples" / "programs" / "tiny-house.star"
+    mcp("program", action="apply", source_path=str(house), replace_document=True)
+    mcp("view", action="tag_visibility", name="koncept", visible=False)
+    sheet = tmp_path / "domcek.pdf"
+    title_block = {"client": "Ján Novák", "location": "Žilina, parc. č. 1234/5", "drawing_number": "D.1.01", "stage": "DSP"}
+    def export(**arguments):
+        # The sheet waits for the exact evaluation of every visible part.
+        deadline = time.monotonic() + 300
+        while True:
+            result = mcp("file", action="export_drawings", path=str(sheet), error=None, **arguments)
+            if result.get("error") != "drawings_unavailable" or time.monotonic() > deadline:
+                return result["result"]
+            time.sleep(2)
+
+    result = export(format="auto", title_block=title_block)
+    assert result["exported"] is True and result["scale"] == "1:50", result
+    assert result["title_block"]["client"] == "Ján Novák" and result["dirty"] is True, result
+    cuts = {view["view"]: view["cut_solids"] for view in result["views"]}
+    assert cuts["plan"] > 50 and cuts["longitudinal_section"] > 0 and cuts["cross_section"] > 0, cuts
+    import fitz
+    document = fitz.open(sheet)
+    text = document[0].get_text()
+    for expected in ["Ján Novák", "Žilina, parc. č. 1234/5", "D.1.01", "1:50", result["format"], "Longitudinal section"]:
+        assert expected in text, expected
+    assert mcp("file", action="export_drawings", path=str(tmp_path / "sheet.svg"), error=True)["error"] == "invalid_path"
+    assert mcp("file", action="export_drawings", path=str(sheet), format="B5", error=True)["error"] == "invalid_sheet_format"
+
+    # The title block is kept in the document.
+    saved = tmp_path / "house.ketchup"
+    mcp("file", action="save_as", path=str(saved))
+    mcp("file", action="open", path=str(saved))
+    again = export()
+    assert again["title_block"]["location"] == "Žilina, parc. č. 1234/5" and again["dirty"] is False, again

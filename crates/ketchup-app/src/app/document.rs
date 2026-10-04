@@ -56,6 +56,7 @@ impl KetchupApp {
         self.invalidate_pending_import_reviews();
         self.cancel_mesh_conversion();
         self.tool_preview = None;
+        self.drawings = crate::app_state::DrawingsState::default();
         self.push_pull.smart_proposal = None;
         self.push_pull.smart_planning = None;
         self.solid_tools.target = None;
@@ -738,6 +739,7 @@ impl KetchupApp {
                 self.file.saved_digest = self.document.history_digest();
                 self.assistant.saved_conversation_digest =
                     assistant_conversation_digest(&self.assistant.messages);
+                self.drawings.unsaved = false;
                 let digest_key = if truncate_history {
                     "digest-saved-document-current-only"
                 } else {
@@ -979,11 +981,7 @@ impl KetchupApp {
                     self.export_current_weldment_cut_list_to(&path);
                 }
             }
-            AppCommand::ExportProjectDrawings => {
-                if let Some(path) = self.choose_export_path("svg") {
-                    self.export_project_drawings_to(&path);
-                }
-            }
+            AppCommand::ExportProjectDrawings => self.open_project_drawings_window(),
             AppCommand::ExportSheetMetalManufacturing => {
                 match self.sole_exportable_sheet_metal_feature_id() {
                     Ok(feature_id) => {
@@ -1136,6 +1134,7 @@ impl KetchupApp {
             || self.document.history_digest() != self.file.saved_digest
             || assistant_conversation_digest(&self.assistant.messages)
                 != self.assistant.saved_conversation_digest
+            || self.drawings.unsaved
     }
 
     /// Opens a native Kečup document from a caller-provided path.

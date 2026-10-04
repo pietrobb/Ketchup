@@ -1379,7 +1379,9 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         for ou, ov, ow, oh in holes:
             for side in (ou - stud, ou + ow):
                 if side >= -0.001 and side + stud <= length + 0.001:
-                    kings.append(side)
+                    # Two openings closer than a stud share the stud beside them.
+                    if not [s for s in kings if abs(s - side) < stud - 0.001]:
+                        kings.append(side)
                 elif side > 0.001 and side + stud < length - 0.001:
                     fail("buildup(%s): opening at u = %s needs room for a stud beside it" % (name, fmt_mm(ou)))
         regular = [k * spacing for k in range(int((length - stud) / spacing) + 1) if length - stud - k * spacing >= stud]
@@ -1389,7 +1391,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         studs = sorted({u: 0 for u in studs}.keys())
         count = 0
         for u in studs:
-            blocks = [(z[2], z[3]) for z in zones if z[0] <= u + 0.001 and u + stud <= z[1] + 0.001]
+            # Also a shared stud reaching into the next opening stops at its sill and header.
+            blocks = [(z[2], z[3]) for z in zones if z[0] < u + stud - 0.001 and u < z[1] - 0.001]
             for poly in _column(points, drops, u, u + stud, stud, blocks):
                 count += 1
                 piece("%s/stud %d" % (label, count), poly, offset, thickness, material, color, layer_tags)
@@ -1406,7 +1409,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 a, b = studs[k] + stud, studs[k + 1]
                 if b - a < 1:
                     continue
-                blocks = [(z[2], z[3]) for z in zones if z[0] <= a + 0.001 and b <= z[1] + 0.001]
+                blocks = [(z[2], z[3]) for z in zones if z[0] < b - 0.001 and a < z[1] - 0.001]
                 bays += _column(points, drops, a, b, stud, blocks)
             for k in range(len(bays)):
                 piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags)

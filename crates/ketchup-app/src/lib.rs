@@ -4301,6 +4301,7 @@ pub struct KetchupApp {
     active_tool: ActiveTool,
     panels: app_state::Panels,
     takeoff: app_state::TakeoffState,
+    drawings: app_state::DrawingsState,
     digest: String,
     assistant: app_state::AssistantState,
     classification: app_state::ClassificationInputs,
