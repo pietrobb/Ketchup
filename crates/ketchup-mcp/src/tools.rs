@@ -282,10 +282,17 @@ impl Tools {
                 "saved_views",
                 "save_view",
                 "show_view",
+                "tag_visibility",
                 "section",
                 "close_section",
             ],
         )?;
+        if action == "tag_visibility" {
+            args.retain(|key, value| {
+                (key == "expected" || key == "name" || key == "visible") && is_set(value)
+            });
+            return self.send(&action, args, DEFAULT_WAIT);
+        }
         if matches!(action.as_str(), "section" | "close_section") {
             // A cut changes only the viewport; closing it ignores any defaulted plane fields.
             args.retain(|key, value| {

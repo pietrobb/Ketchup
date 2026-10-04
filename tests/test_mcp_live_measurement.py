@@ -523,3 +523,53 @@ def test_modular_cabinet_local_edit_and_complete_reports(mcp, tmp_path):
     reopened = mcp("program", action="validate")
     assert reopened["result"]["validation"]["state"] == "passed", reopened
     assert any(m["distance_mm"] == pytest.approx(650) for m in reopened["result"]["exact_collisions"]["measurements"])
+
+
+def test_house_layers_views_and_section_keep_the_program_through_public_mcp(mcp, tmp_path):
+    house = Path(__file__).resolve().parents[1] / "examples" / "programs" / "tiny-house.star"
+    mcp("program", action="apply", source_path=str(house), replace_document=True)
+    def tags():
+        return {tag["name"]["text"]: tag for tag in mcp("inspect", action="summary")["result"]["tags"]}
+    ids = {name: tag["id"] for name, tag in tags().items()}
+    assert {"koncept", "konštrukcia", "stĺpiky", "izolácia", "OSB", "krokvy"} <= set(ids)
+    def show_only(shown, hidden):
+        for name in (shown, hidden):
+            result = mcp("view", action="tag_visibility", name=name, visible=name == shown)["result"]
+            assert result["program_owned"] is True and result["visible"] is (name == shown), result
+    def visible(name):
+        return tags()[name]["visible"]
+
+    show_only("koncept", "konštrukcia")
+    mcp("view", action="save_view", name="Koncept")
+    show_only("konštrukcia", "koncept")
+    cut = mcp("view", action="section", normal=[0, 0, 1], offset_mm=1500)["result"]
+    assert cut["canonical_mutation"] is False and cut["section"], cut
+    listed = mcp("view", action="save_view", name="Konštrukcia v reze")["result"]
+    assert [view["name"] for view in listed["saved_views"]] == ["Koncept", "Konštrukcia v reze"]
+    assert listed["saved_views"][1]["hidden_tags"] == ["koncept"] and listed["saved_views"][1]["section"]
+    mcp("view", action="close_section")
+
+    # New dimensions recompute both representations; the views still switch between them.
+    longer = mcp("program", action="apply", source_path=str(house), overrides={"length": 7400})
+    assert longer["result"]["removed_total"] == 0, longer["result"]
+    framing, cursor = [], None
+    while True:
+        page = mcp("inspect", action="query", kind="occurrences", tag_id=ids["konštrukcia"], limit=100, **({"cursor": cursor} if cursor else {}))["result"]
+        framing += page["items"]
+        cursor = page["next_cursor"]
+        if not cursor:
+            break
+    assert len(framing) > 100 and all(row["name"]["text"].startswith("konštrukcia/") for row in framing)
+    for name, shown, hidden in [("Koncept", "koncept", "konštrukcia"), ("Konštrukcia v reze", "konštrukcia", "koncept")]:
+        result = mcp("view", action="show_view", name=name)["result"]
+        assert result["program_owned"] is True, result
+        assert visible(shown) and not visible(hidden), name
+    assert mcp("program", action="read")["result"]["overrides"] == {"length": 7400}
+
+    saved = tmp_path / "house.ketchup"
+    mcp("file", action="save_as", path=str(saved))
+    mcp("file", action="open", path=str(saved))
+    views = mcp("view", action="saved_views")["result"]
+    assert [view["name"] for view in views["saved_views"]] == ["Koncept", "Konštrukcia v reze"]
+    mcp("view", action="show_view", name="Koncept")
+    assert visible("koncept") and not visible("konštrukcia")

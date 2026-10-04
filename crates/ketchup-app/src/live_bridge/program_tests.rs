@@ -553,6 +553,50 @@ fn hiding_a_program_tag_through_mcp_keeps_the_program_and_hides_the_roof() {
 }
 
 #[test]
+fn tag_visibility_through_mcp_is_one_undo_step_without_validation() {
+    let (mut app, mut bridge) = setup();
+    let source = "wall = box(\"wall\", (3000, 150, 2500), tags = [\"koncept\"])\n\
+        roof = box(\"roof\", (3200, 3200, 200), at = (-100, -100, 2500), tags = [\"koncept\", \"strecha\"])\n";
+    bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    let toggle = |name: &str, visible: bool| Request::TagVisibility {
+        expected: None,
+        name: name.into(),
+        visible,
+    };
+    let roof = OccurrenceId(names(&app)["roof"]);
+    let undo_steps = app.undo_step_count();
+    let hidden = bridge
+        .execute(&mut app, toggle("strecha", false), false)
+        .unwrap();
+    assert_eq!(hidden["changed"], true, "{hidden}");
+    assert_eq!(hidden["program_owned"], true, "{hidden}");
+    assert_eq!(
+        app.document.current().occurrence_effectively_visible(roof),
+        Some(false)
+    );
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+    let again = bridge
+        .execute(&mut app, toggle("strecha", false), false)
+        .unwrap();
+    assert_eq!(again["changed"], false, "{again}");
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+    assert_eq!(
+        bridge.execute(&mut app, toggle("missing", true), false),
+        Err("entity_not_found")
+    );
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert_eq!(
+        app.document.current().occurrence_effectively_visible(roof),
+        Some(true)
+    );
+    assert_eq!(app.document.current_rule_program().unwrap().source, source);
+}
+
+#[test]
 fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
     let (mut app, mut bridge) = setup();
     let source = "wall = box(\"wall\", (3000, 150, 2500), tags = [\"koncept\"])\n\

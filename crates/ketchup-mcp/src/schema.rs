@@ -160,12 +160,14 @@ pub fn tools() -> Value {
     image returns a PNG render of the CAD viewport (not a screenshot, not a geometry check). \
     Saved views (stored in the document, never detach a program): saved_views lists them with hidden tag names; \
     save_view stores the current camera, display style and hidden tags under name (same name replaces; one Undo step); \
-    show_view name restores one (tag visibility is one Undo step). Hide or show tags first with model apply_and_verify set_tag_visibility; summary lists tags. \
+    show_view name restores one (tag visibility is one Undo step). tag_visibility name visible hides or shows every part of a tag (summary lists tags): \
+    one Undo step, no geometry change, no validation, never detaches a program. \
     section cuts the viewport open: everything on the side normal points to is hidden, cut solids show their inside in red; \
     it changes no geometry and no Undo history, and save_view stores it with the view. close_section removes it.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
-                "action": {"type": "string", "enum": ["selection", "view", "image", "saved_views", "save_view", "show_view", "section", "close_section"]},
-                "name": {"type": "string", "description": "For save_view and show_view: the saved view name."},
+                "action": {"type": "string", "enum": ["selection", "view", "image", "saved_views", "save_view", "show_view", "tag_visibility", "section", "close_section"]},
+                "name": {"type": "string", "description": "For save_view and show_view: the saved view name; for tag_visibility: the tag name."},
+                "visible": {"type": "boolean", "description": "For tag_visibility: true shows the tag, false hides it."},
                 "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "For section: direction of the hidden side, e.g. [0,0,1] hides everything above."},
                 "offset_mm": {"type": "number", "description": "For section: plane distance from the origin along normal, e.g. 1200 cuts at z=1200 for [0,0,1]."},
                 "occurrence_ids": {"type": "array", "items": {"type": "integer"}, "description": "For selection; [] clears it."},

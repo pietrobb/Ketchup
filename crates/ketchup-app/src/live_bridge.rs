@@ -307,6 +307,13 @@ pub enum Request {
         expected: Option<Stamp>,
         name: String,
     },
+    /// Show or hide every part of the tag `name`; a view change that needs no validation.
+    TagVisibility {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        name: String,
+        visible: bool,
+    },
     /// Open or move the section plane (`normal` and `offset_mm`), or close it (neither).
     Section {
         #[serde(default)]
@@ -2083,6 +2090,31 @@ impl LiveBridge {
                 self.query.invalidate();
                 Ok(json!({"shown":name,"program_owned":program_owned(app),"image":"not_requested"}))
             }
+            Request::TagVisibility {
+                expected,
+                name,
+                visible,
+            } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                let id = app
+                    .document
+                    .current()
+                    .tags()
+                    .find(|tag| tag.name() == name)
+                    .map(|tag| tag.id())
+                    .ok_or("entity_not_found")?;
+                Self::require_request_authority(cancelled)?;
+                // Geometry is untouched, so there is nothing to validate; an unchanged
+                // state is not an error and adds no Undo step.
+                let changed = app.set_tag_visibility(id, visible);
+                if !changed && app.tag_visibility(id) != Some(visible) {
+                    return Err("tag_visibility_rejected");
+                }
+                self.query.invalidate();
+                Ok(json!({"tag":name,"visible":visible,"changed":changed,
+                    "program_owned":program_owned(app),"image":"not_requested"}))
+            }
             Request::Section {
                 expected,
                 normal,
@@ -2134,7 +2166,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","selection","view","saved_views","save_view","show_view","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -2474,6 +2506,7 @@ impl LiveBridge {
             request @ (Request::SavedViews { .. }
             | Request::SaveView { .. }
             | Request::ShowView { .. }
+            | Request::TagVisibility { .. }
             | Request::Section { .. }) => self.saved_view_request(app, request, ui_busy, cancelled),
             Request::Image(ImageRequest {
                 expected,
