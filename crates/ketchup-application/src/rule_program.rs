@@ -230,7 +230,7 @@ pub fn plan_rule_program(
             } else {
                 crate::rule_components::incremental(document, old, reference)?
             };
-            let batch = crate::rule_support::append(document, reference, batch)?;
+            let batch = crate::rule_support::append(document, reference, Some(old), batch)?;
             let batch = crate::rule_motion::append_pose(document, reference, batch)?;
             commands.extend(prepared.commands);
             commands.extend(batch.commands().iter().cloned());
@@ -370,6 +370,8 @@ fn feature_level_changes(
         comparable.at_mm = before.at_mm;
         comparable.grounded = before.grounded;
         comparable.color = before.color;
+        comparable.material = before.material.clone();
+        comparable.attributes = before.attributes.clone();
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();
@@ -419,6 +421,8 @@ fn part_replacements(
         comparable.at_mm = before.at_mm;
         comparable.grounded = before.grounded;
         comparable.color = before.color;
+        comparable.material = before.material.clone();
+        comparable.attributes = before.attributes.clone();
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.operations = before.operations.clone();

@@ -145,6 +145,62 @@ impl AssemblyJointKind {
         self.is_valid().then(|| joint_motion_transform(self))
     }
 
+    /// Upper bound on the displacement of every enclosed point from `from` to ANY
+    /// position between `from` and `to`. Bounds are the zero-pose body in the joint's
+    /// parent frame, not body-local bounds. This bounds travel, not collision itself.
+    /// Invalid positions/axes return None; full revolutions never collapse to zero.
+    #[must_use]
+    pub fn interval_displacement_bound_mm(
+        self,
+        zero_bounds: Aabb,
+        from: f64,
+        to: f64,
+    ) -> Option<f64> {
+        if !self.with_position(from)?.is_valid() || !self.with_position(to)?.is_valid() {
+            return None;
+        }
+        let delta = (to - from).abs();
+        let bound = match self {
+            Self::Prismatic { .. } => delta,
+            Self::Revolute { axis, .. } | Self::Helical { axis, .. } => {
+                // Distance to the pivot encloses the radius about the axis. It also
+                // remains conservative for skew/offset parent-frame body envelopes.
+                let radius = zero_bounds
+                    .vertices()
+                    .iter()
+                    .map(|point| {
+                        let offset: [f64; 3] =
+                            std::array::from_fn(|i| point[i] - axis.pivot_in_parent_mm[i]);
+                        offset[0].hypot(offset[1]).hypot(offset[2])
+                    })
+                    .fold(0.0, f64::max);
+                // Beyond a half turn, some intermediate pose attains the diameter,
+                // even if the two endpoint transforms are identical.
+                let radial = 2.0 * radius * (delta.min(180.0).to_radians() / 2.0).sin();
+                let axial = match self {
+                    Self::Helical {
+                        lead_mm_per_revolution,
+                        ..
+                    } => lead_mm_per_revolution * delta / 360.0,
+                    _ => 0.0,
+                };
+                radial.hypot(axial)
+            }
+            Self::Fixed => return None,
+        };
+        // Cover arithmetic rounding; an exact-distance caller must additionally
+        // account for its geometry/kernel tolerance before proving separation.
+        let scale = zero_bounds
+            .min()
+            .into_iter()
+            .chain(zero_bounds.max())
+            .chain(self.axis()?.pivot_in_parent_mm())
+            .map(f64::abs)
+            .fold(from.abs().max(to.abs()).max(1.0), f64::max);
+        let guarded = bound * (1.0 + 64.0 * ROUNDING) + scale * 64.0 * ROUNDING + ROUNDING;
+        guarded.is_finite().then_some(guarded)
+    }
+
     #[must_use]
     pub fn is_valid(self) -> bool {
         match self {

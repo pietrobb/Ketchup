@@ -3542,7 +3542,7 @@ impl AssistantCadEditProgram {
                     || categories.iter().any(|category| {
                         category.id == 0
                             || category.name.trim().is_empty()
-                            || category.name.len() > limits::NAME_BYTES
+                            || category.name.len() > limits::TEXT_BYTES
                             || category.name.chars().any(char::is_control)
                             || !category_ids.insert(category.id)
                     })

@@ -1,6 +1,32 @@
 use super::*;
 use ketchup_tolerance::limits;
 
+fn create_evaluator_input(
+    product: &mut ProductModel,
+    id: NodeId,
+    name: &str,
+    dimension: &Dimension,
+    dependencies: &[NodeId],
+) -> Result<(), CanonicalError> {
+    if product.evaluator_nodes.contains_key(&id) {
+        return Err(CanonicalError::NodeAlreadyExists(id));
+    }
+    for dependency in dependencies {
+        if !product.evaluator_nodes.contains_key(dependency) {
+            return Err(CanonicalError::MissingDependency(*dependency));
+        }
+    }
+    let node = EvaluatorNode::parameter(
+        id,
+        name.to_owned(),
+        dimension.clone(),
+        dependencies.to_vec(),
+    )
+    .map_err(CanonicalError::Graph)?;
+    product.evaluator_nodes.insert(id, Arc::new(node));
+    Ok(())
+}
+
 pub struct DocumentStore {
     pub(super) revisions: Vec<Arc<Revision>>,
     pub(super) cursor: usize,
@@ -899,22 +925,13 @@ impl DocumentStore {
                     dimension,
                     dependencies,
                 } => {
-                    if product.evaluator_nodes.contains_key(id) {
-                        return Err(CanonicalError::NodeAlreadyExists(*id));
-                    }
-                    for dependency in dependencies {
-                        if !product.evaluator_nodes.contains_key(dependency) {
-                            return Err(CanonicalError::MissingDependency(*dependency));
-                        }
-                    }
-                    let node = EvaluatorNode::parameter(
-                        *id,
-                        name.clone(),
-                        dimension.clone(),
-                        dependencies.clone(),
-                    )
-                    .map_err(CanonicalError::Graph)?;
-                    product.evaluator_nodes.insert(*id, Arc::new(node));
+                    create_evaluator_input(&mut product, *id, name, dimension, dependencies)?;
+                }
+                CanonicalCommand::DeleteEvaluatorNode { id } => {
+                    product
+                        .evaluator_nodes
+                        .remove(id)
+                        .ok_or(CanonicalError::NodeNotFound(*id))?;
                 }
                 CanonicalCommand::SetEvaluatorDimension { id, dimension } => {
                     let existing = product

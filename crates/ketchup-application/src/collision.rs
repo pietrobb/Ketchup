@@ -5,6 +5,8 @@ mod bounds;
 mod hull;
 #[path = "collision_measurements.rs"]
 mod measurements;
+#[path = "collision_motion.rs"]
+mod motion;
 use crate::group_connectivity::validation_context as validation_context_with_groups;
 use crate::validation::AssistantValidationSelection;
 use crate::worker_pool::ExactWorkerUnavailable;
@@ -35,6 +37,16 @@ use ketchup_program::ExactPair;
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 use ketchup_scheduler::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation, WorkerError};
 use measurements::required_pairs;
+pub use motion::{ExactMotionPair, exact_motion_pair_with_worker};
+#[path = "collision_motion_program.rs"]
+mod motion_program;
+pub use motion_program::{ProgramMotionCheck, verify_rule_program_motion};
+#[path = "collision_assembly.rs"]
+mod assembly;
+pub use assembly::verify_rule_program_assembly;
+#[path = "collision_access.rs"]
+mod access;
+pub use access::verify_rule_program_tool_access;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

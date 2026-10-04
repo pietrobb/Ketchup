@@ -19,6 +19,26 @@ pub struct ProgramMotion {
     pub position: f64,
 }
 
+/// Ordered insertion of a rigid part/group using a named motion. The source
+/// order is the assembly order; undeclared parts are already present.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramAssemblyStep {
+    pub motion: String,
+    pub from: f64,
+    pub to: f64,
+}
+
+/// Auxiliary solid at its working pose, with a declared approach ending at zero.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramToolAccess {
+    pub name: String,
+    pub envelope: Option<String>,
+    pub kind: Option<AssemblyJointKind>,
+    pub limits: Option<AssemblyJointLimits>,
+    pub start: Option<f64>,
+    pub end: f64,
+}
+
 impl ProgramMotion {
     pub fn transform(&self) -> Option<Transform> {
         self.kind.transform_from_zero()

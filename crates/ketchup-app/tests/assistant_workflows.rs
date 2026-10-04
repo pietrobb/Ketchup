@@ -5319,6 +5319,55 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
     let mass_name = format!("physics.mass_kg.occurrence.{loaded_id}");
     let load_name = format!("physics.applied_load_n.occurrence.{loaded_id}");
     let capacity_name = format!("physics.support_capacity_n.occurrence.{support_id}");
+    let qualification = serde_json::json!({
+        "source": "synthetic test capacity, not design data", "units": "N",
+        "mode": "compression", "direction_world": [0, 0, -1],
+        "assumptions": "single support under axial compression", "additive": false
+    })
+    .to_string();
+    for (name, dimension, value) in [
+        (
+            "Support decoy epsilon",
+            "ketchup.static-load-mode.v1",
+            "compression",
+        ),
+        (
+            "Load decoy zeta",
+            "ketchup.support-capacity.v1",
+            qualification.as_str(),
+        ),
+    ] {
+        assert!(
+            shell
+                .app_mut()
+                .create_classification_dimension(dimension, value)
+        );
+        let snapshot = shell.app().document_snapshot();
+        let dimension = snapshot
+            .classification_dimension_named(dimension)
+            .unwrap()
+            .unwrap();
+        let category = dimension.categories().next().unwrap().id();
+        let occurrence = snapshot
+            .occurrences()
+            .find(|part| part.name() == name)
+            .unwrap()
+            .id();
+        assert!(shell.app_mut().headless_select_occurrence(occurrence));
+        assert!(
+            shell
+                .app_mut()
+                .assign_selection_to_classification(dimension.id(), Some(category))
+        );
+        assert_eq!(
+            shell
+                .app()
+                .document_snapshot()
+                .occurrence_classification(occurrence, dimension.id()),
+            Some(category),
+            "{name}"
+        );
+    }
     apply_reviewed_evaluator_inputs(
         &mut shell,
         &[
@@ -5351,7 +5400,7 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
     let validation = &contexts[0]["validation"];
     assert_eq!(validation["requested"], serde_json::json!(["static_load"]));
     assert_eq!(validation["executed"], validation["requested"]);
-    assert_eq!(validation["state"], "failed");
+    assert_eq!(validation["state"], "failed", "{validation:#}");
     assert_eq!(validation["complete"], true);
     assert_eq!(validation["issue_count"], 1);
     let report = &validation["static_load"];

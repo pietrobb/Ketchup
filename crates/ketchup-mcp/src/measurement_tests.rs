@@ -45,11 +45,11 @@ fn measurement_schema_and_transport_preserve_both_modes_and_nested_paths() {
     let result = call(
         &mut tools,
         "program",
-        json!({"action":"validate", "expected":stamp}),
+        json!({"action":"validate", "expected":stamp, "validators":["beam_deflection"], "motion":{"name":"travel","from":0,"to":20}}),
     );
     assert_eq!(result["isError"], false, "{result}");
     assert_eq!(
         received.recv().unwrap(),
-        json!({"method":"validate_program","expected":stamp})
+        json!({"method":"validate_program","expected":stamp,"validators":["beam_deflection"],"motion":{"name":"travel","from":0,"to":20}})
     );
 }

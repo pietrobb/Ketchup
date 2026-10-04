@@ -251,6 +251,10 @@ pub enum Request {
     ValidateProgram {
         #[serde(default)]
         expected: Option<Stamp>,
+        #[serde(default)]
+        validators: Option<Vec<String>>,
+        #[serde(default)]
+        motion: Option<ketchup_application::ProgramMotionCheck>,
     },
     Undo {
         #[serde(default)]
@@ -961,9 +965,13 @@ impl KetchupApp {
                     );
                     continue;
                 }
-                Request::ValidateProgram { expected } => {
+                Request::ValidateProgram {
+                    expected,
+                    validators,
+                    motion,
+                } => {
                     bridge.start_queued_validate_program(
-                        self, context, id, reply, cancelled, expected,
+                        self, context, id, reply, cancelled, expected, validators, motion,
                     );
                     continue;
                 }

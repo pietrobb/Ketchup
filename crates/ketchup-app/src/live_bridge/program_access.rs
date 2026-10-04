@@ -130,10 +130,16 @@ impl LiveBridge {
                 direction,
                 Arc::new(AtomicBool::new(cancelled.load(Ordering::Acquire))),
             ),
-            Request::ValidateProgram { expected } => self.validate_program(
+            Request::ValidateProgram {
+                expected,
+                validators,
+                motion,
+            } => self.validate_program(
                 app,
                 expected,
                 Arc::new(AtomicBool::new(cancelled.load(Ordering::Acquire))),
+                validators,
+                motion,
             ),
             _ => Err(invalid(
                 "action",

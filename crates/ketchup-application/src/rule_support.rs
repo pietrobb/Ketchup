@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) fn append(
     document: &DocumentStore,
     model: &ProgramModel,
+    old: Option<&ProgramModel>,
     batch: CommandBatch,
 ) -> Result<CommandBatch, RuleProgramApplyError> {
     let names = model.grounded_parts();
@@ -22,6 +23,8 @@ pub(crate) fn append(
         || !model.joints.is_empty()
         || !snapshot.contact_joints().is_empty()
         || crate::rule_appearance::needed(&snapshot, model)
+        || crate::rule_metadata::needed(model)
+        || old.is_some_and(crate::rule_metadata::needed)
     {
         let mut staged = document.fork_for_planning();
         if !batch.commands().is_empty() {
@@ -39,6 +42,14 @@ pub(crate) fn append(
             })
             .collect::<BTreeMap<_, _>>();
         crate::rule_appearance::append(&snapshot, model, &by_name, &mut commands)?;
+        crate::rule_metadata::append(
+            &document.current(),
+            &snapshot,
+            old,
+            model,
+            &by_name,
+            &mut commands,
+        )?;
         let paths = names
             .iter()
             .map(|name| {

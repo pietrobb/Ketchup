@@ -24,6 +24,7 @@ mod rule_continuity;
 mod rule_exact_collisions;
 mod rule_groups;
 mod rule_instances;
+mod rule_metadata;
 mod rule_motion;
 mod rule_operations;
 mod rule_program;
@@ -36,6 +37,10 @@ pub mod validation_rules;
 mod worker_pool;
 pub mod workflow_trace;
 
+pub use collision::{
+    ExactMotionPair, ProgramMotionCheck, exact_motion_pair_with_worker,
+    verify_rule_program_assembly, verify_rule_program_motion, verify_rule_program_tool_access,
+};
 pub use ketchup_program::SourceLines;
 pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,

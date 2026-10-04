@@ -5,6 +5,15 @@
     "steel": { "elastic_modulus_n_mm2": 210000.0 }
   },
   "default_material": "engineered_wood",
+  "required_roles": {
+    "beam_deflection": ["physics.beam.{xy|xz|yz}"],
+    "tipping": ["physics.freestanding.{x|y|z}"],
+    "anchoring": ["physics.freestanding.{x|y|z}"],
+    "hardware_manufacturing": ["manufacturing.panel.{xy|xz|yz}:<group>", "manufacturing.hole.{x|y|z}:<group>", "manufacturing.cup-bore.{x|y|z}:<group>", "hardware.linear-pair.{x|y|z}:<group>"],
+    "room_placement": ["spatial.room:<group>", "spatial.occupant:<group>"],
+    "passage_clearance": ["spatial.passage.{xy|xz|yz}:<group>"],
+    "static_load": ["physics.static.load:<case>", "physics.static.support:<case>"]
+  },
   "beam_deflection": {
     "design_load_n": 500.0,
     "span_ratio": 200.0,

@@ -1175,6 +1175,72 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
                op = "<=", tolerance = tolerance,
                hint = "The part sticks out of that face of the container by this much.")
 
+#@topic validation: Inputs for document validators
+#
+# material= also assigns ketchup.material.v1 on root/grouped parts. Unknown material
+# properties are not guessed. Known elastic moduli: engineered_wood, aluminium, steel.
+# attributes={"classification:<dimension>": "<category>"} assigns a canonical category;
+# material= takes precedence over classification:ketchup.material.v1 if both are given.
+# Example: box("shelf", (1000,300,20), material="steel",
+#              attributes={"classification:ketchup.validator-role.v1":"physics.beam.xy"})
+# MCP program(action="validate", validators=["beam_deflection"]) reports span, predicted
+# deflection, material and the library design-load assumption (not a strength certificate).
+# Changing/removing these attributes updates only source-owned assignments, in the same
+# Undo step as the program; geometry IDs and unrelated classification dimensions remain.
+# Shared component leaves are not supported by these occurrence-based classifications;
+# their attributes stay in the program/BOM and NEVER classify the assembly root.
+# Missing roles or unknown properties mean not_evaluated, not passed. Keep validation
+# subjects as root/grouped parts until instance-path classification is supported.
+# Mixed root/shared models report the unchecked instance paths; checked root failures remain visible.
+# Without material=, deflection uses the library default and labels material_source="rules_default";
+# this is an explicit assumption, not verification of the actual part's material.
+# Numeric inputs: attributes={"input:physics.mass_kg.occurrence.{occurrence}":"10"}.
+# {occurrence} resolves to the final root ID; values must be finite numeric strings.
+# Static-load inputs: physics.gravity_x_m_s2, physics.gravity_y_m_s2, physics.gravity_z_m_s2;
+# physics.mass_kg.occurrence.{occurrence}, physics.applied_load_n.occurrence.{occurrence},
+# physics.support_capacity_n.occurrence.{occurrence}. Declare all three gravity components.
+# Static roles: classification:ketchup.validator-role.v1 = physics.static.load:<case>
+# or physics.static.support:<case>. On each load also declare
+# classification:ketchup.static-load-mode.v1 = e.g. compression, shear, or pullout.
+# Each support needs classification:ketchup.support-capacity.v1 containing a JSON string (max 1024 bytes):
+# '{"source":"test/report reference","units":"N","mode":"compression","direction_world":[0,0,-1],"assumptions":"material, fixing, safety factors and applicability","additive":false}'
+# These are declared design capacities, NOT strengths inferred from shape, material or joint names.
+# The signed WORLD direction is the supported force direction, not the opposite support reaction.
+# It must match gravity (applied_load_n also acts along gravity); modes must match within a case.
+# Multiple supports require additive=true and documented load-sharing assumptions on EVERY support.
+# Only N is supported. Missing source/assumptions/mode, units or uncovered direction = not_evaluated.
+# A passing static_load report compares declared numbers; it does not verify sources, load paths,
+# moments, local reactions or certify strength. Smooth pins do not prove axial retention;
+# pullout, shear and adhesive capacities require supplied data or a separately verified model.
+# Removing an input removes its evaluator node; referenced inputs cannot be removed.
+# Identical shared global inputs coalesce; conflicting values or non-program name collisions reject.
+# Other attributes (e.g. grain) remain program metadata; they are not evaluator inputs.
+# Motion: name a joint, e.g. joint(a,b,kind="motion",name="travel",motion=slide((1,0,0),0,100)).
+# MCP program(action="validate",motion={"name":"travel","from":0,"to":100}) checks the
+# whole interval using native solid distances and conservative interval travel bounds.
+# Units: mm for slide, degrees for rotation. Stay inside declared limits. Other joints
+# remain at their current poses; a nonzero driven parent frame is not yet supported.
+# Contact, uncertified envelopes and work limits are incomplete, never successful samples.
+# validation.motion names obstacles and full instance paths. Preview arrays have explicit totals/truncation.
+# Assembly: assembly_step("travel",start=100,end=0) appends an insertion in SOURCE ORDER.
+# Each rigid part/group is inserted once, using a named motion; end must equal its modeled position.
+# Parts without a step are already installed. Future step members are absent; previous members stay fixed.
+# The motion's reference endpoint must be installed first. Steps on instances use expanded motion names.
+# MCP program(action="validate",validators=["assembly_path"]) reports validation.assembly_path.
+# Translation contact can pass only with a swept-hull proof within native contact tolerance.
+# Missing paths/order, unsupported motion and unproven final contact remain incomplete, not editing errors.
+# This checks declared paths only, not every possible assembly order, retention or internal group collisions.
+# Tool access: t=box("driver-envelope",(12,12,60),at=(0,0,5),tool=True)
+# tool_access("drive",envelope=t,motion=slide((0,0,1),0,100),start=100,end=0)
+# The auxiliary solid at its modeled pose represents the whole relevant tool/holder;
+# end must be zero (working pose). Axis/pivot use PROGRAM WORLD coordinates, not the tool frame.
+# MCP program(action="validate",validators=["tool_access"]) reports validation.tool_access.
+# A tool=True solid is never added to the physical model/BOM. Use unions for composite envelopes.
+# Include drill chucks or driver housings, not just a point, axis or cutting tip.
+# Positive clearance is required throughout the approach including the working pose.
+# Cutting/engagement, flexible cables, hand reach and simultaneous part motion are NOT assessed.
+# Missing envelope or path, unsupported geometry and exhausted exact work remain incomplete.
+#
 #@topic report: What program apply returns
 #
 # ok, errors, warnings and issues: each issue has kind, severity, parts,

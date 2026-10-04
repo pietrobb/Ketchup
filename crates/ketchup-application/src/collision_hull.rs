@@ -203,6 +203,34 @@ impl LocalHull {
 }
 
 impl WorldHull {
+    /// Encloses every intermediate hull for a straight translation, never a rotation.
+    pub(super) fn translation_envelope(self, end: Self) -> Option<Self> {
+        if self.axes != end.axes || self.half != end.half {
+            return None;
+        }
+        let displacement = [0, 1, 2].map(|i| end.center[i] - self.center[i]);
+        let scale = self
+            .center
+            .into_iter()
+            .chain(end.center)
+            .chain(self.half)
+            .map(f64::abs)
+            .fold(1.0, f64::max);
+        let guard = 64.0 * ROUNDING * scale;
+        let center = [0, 1, 2].map(|i| self.center[i] * 0.5 + end.center[i] * 0.5);
+        let half =
+            [0, 1, 2].map(|i| self.half[i] + dot(displacement, self.axes[i]).abs() * 0.5 + guard);
+        center
+            .iter()
+            .chain(&half)
+            .all(|v| v.is_finite())
+            .then_some(Self {
+                center,
+                half,
+                axes: self.axes,
+            })
+    }
+
     fn radius(&self, axis: [f64; 3]) -> f64 {
         (0..3)
             .map(|i| self.half[i] * dot(self.axes[i], axis).abs())

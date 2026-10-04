@@ -437,6 +437,8 @@ pub(crate) fn incremental(
         comparable.at_mm = before.at_mm;
         comparable.grounded = before.grounded;
         comparable.color = before.color;
+        comparable.material = before.material.clone();
+        comparable.attributes = before.attributes.clone();
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();

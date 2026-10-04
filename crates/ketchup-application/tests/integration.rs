@@ -3,7 +3,10 @@
 
 mod batch_task;
 mod cad_program;
+mod collision_access;
+mod collision_assembly;
 mod collision_brep;
+mod collision_motion;
 mod contact_joints;
 mod document_session;
 mod evaluation_deadline;
@@ -26,6 +29,7 @@ mod rule_program_groups;
 mod rule_program_instances;
 mod rule_program_local_groups;
 mod rule_program_members;
+mod rule_program_metadata;
 mod rule_program_motion;
 mod rule_program_named_topology;
 mod rule_program_nested;

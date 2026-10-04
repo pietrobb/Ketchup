@@ -215,6 +215,50 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         motion_value("rotate", axis, min, max, pivot, heap)
     }
 
+    /// Append an insertion path. Geometry conflicts are reported by validation,
+    /// not rejected while editing. Use the named motion's units for from/to.
+    fn assembly_step<'v>(
+        #[starlark(require = pos)] motion: &str,
+        #[starlark(require = named)] start: Value<'v>,
+        #[starlark(require = named)] end: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let step = crate::motion::ProgramAssemblyStep {
+            motion: motion.to_owned(),
+            from: number(start, "assembly_step start")?,
+            to: number(end, "assembly_step end")?,
+        };
+        state(eval)?.model.borrow_mut().assembly_steps.push(step);
+        Ok(NoneType)
+    }
+
+    /// Check an auxiliary volume approaching its zero-position working pose.
+    fn tool_access<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] envelope: Option<Value<'v>>,
+        #[starlark(require = named)] motion: Option<Value<'v>>,
+        #[starlark(require = named)] start: Option<Value<'v>>,
+        #[starlark(require = named)] end: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let parsed = given(motion)
+            .map(|v| parse_motion(v, 0.0, heap))
+            .transpose()?;
+        let access = crate::motion::ProgramToolAccess {
+            name: name.to_owned(),
+            envelope: given(envelope).map(|v| part_name(v, heap)).transpose()?,
+            kind: parsed.map(|(kind, _)| kind),
+            limits: parsed.map(|(_, limits)| limits),
+            start: given(start)
+                .map(|v| number(v, "tool_access start"))
+                .transpose()?,
+            end: given(end).map_or(Ok(0.0), |v| number(v, "tool_access end"))?,
+        };
+        state(eval)?.model.borrow_mut().tool_access.push(access);
+        Ok(NoneType)
+    }
+
     fn joint<'v>(
         #[starlark(require = pos)] a: Value<'v>,
         #[starlark(require = pos)] b: Value<'v>,

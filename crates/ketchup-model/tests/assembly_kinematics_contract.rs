@@ -944,6 +944,134 @@ fn combined_rotational_and_prismatic_motion_keeps_clearance_unresolved() {
 }
 
 #[test]
+fn interval_travel_bound_preserves_full_turns_and_reversed_translation() {
+    let bounds = Aabb::new([10.0, 0.0, 0.0], [11.0, 1.0, 1.0]).unwrap();
+    let rotation = AssemblyJointKind::Revolute {
+        axis: AssemblyJointAxis::new([0.0, 0.0, 1.0], [0.0; 3]),
+        limits: None,
+        position_degrees: 0.0,
+    };
+    let bound = rotation
+        .interval_displacement_bound_mm(bounds, 0.0, 360.0)
+        .unwrap();
+    assert!(bound >= 22.0);
+    let start = rotation
+        .transform_from_zero()
+        .unwrap()
+        .transform_point([11.0, 0.0, 0.0]);
+    let end = rotation
+        .with_position(360.0)
+        .unwrap()
+        .transform_from_zero()
+        .unwrap()
+        .transform_point([11.0, 0.0, 0.0]);
+    assert!((start[0] - end[0]).abs() < 1e-9);
+    let mid = rotation
+        .with_position(180.0)
+        .unwrap()
+        .transform_from_zero()
+        .unwrap()
+        .transform_point([11.0, 0.0, 0.0]);
+    assert!((start[0] - mid[0]).abs() >= 22.0 - 1e-9);
+    let translation = AssemblyJointKind::Prismatic {
+        axis: AssemblyJointAxis::new([0.0, 2.0, 0.0], [4.0, 5.0, 6.0]),
+        limits: None,
+        position_mm: 0.0,
+    };
+    let bound = translation
+        .interval_displacement_bound_mm(bounds, 35.0, -10.0)
+        .unwrap();
+    assert!((45.0..45.00001).contains(&bound), "{bound}");
+}
+
+#[test]
+fn interval_travel_bound_encloses_rotated_and_helical_intermediate_points() {
+    let bounds = Aabb::new([-10.0, -20.0, 8.0], [50.0, 30.0, 22.0]).unwrap();
+    let axis = AssemblyJointAxis::new([1.0, 2.0, -3.0], [120.0, -50.0, 75.0]);
+    for motion in [
+        AssemblyJointKind::Revolute {
+            axis,
+            limits: None,
+            position_degrees: 0.0,
+        },
+        AssemblyJointKind::Helical {
+            axis,
+            limits: None,
+            position_degrees: 0.0,
+            lead_mm_per_revolution: 120.0,
+        },
+    ] {
+        for (from, to) in [(30.0, 110.0), (110.0, 30.0), (-270.0, 450.0)] {
+            let bound = motion
+                .interval_displacement_bound_mm(bounds, from, to)
+                .unwrap();
+            let start = motion
+                .with_position(from)
+                .unwrap()
+                .transform_from_zero()
+                .unwrap();
+            for index in 0..=100 {
+                let position = from + (to - from) * f64::from(index) / 100.0;
+                let pose = motion
+                    .with_position(position)
+                    .unwrap()
+                    .transform_from_zero()
+                    .unwrap();
+                for point in bounds.vertices() {
+                    let a = start.transform_point(point);
+                    let b = pose.transform_point(point);
+                    let distance = (a[0] - b[0]).hypot(a[1] - b[1]).hypot(a[2] - b[2]);
+                    assert!(
+                        distance <= bound,
+                        "{from}..{to} at {position}: {distance} > {bound}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn interval_travel_bound_rejects_invalid_motion_instead_of_zero_travel() {
+    let bounds = Aabb::new([0.0; 3], [10.0; 3]).unwrap();
+    let motion = AssemblyJointKind::Prismatic {
+        axis: AssemblyJointAxis::new([0.0, 0.0, 1.0], [0.0; 3]),
+        limits: Some(AssemblyJointLimits::new(0.0, 100.0)),
+        position_mm: 0.0,
+    };
+    assert!(
+        motion
+            .interval_displacement_bound_mm(bounds, 0.0, 101.0)
+            .is_none()
+    );
+    assert!(
+        motion
+            .interval_displacement_bound_mm(bounds, f64::NAN, 10.0)
+            .is_none()
+    );
+    assert!(
+        motion
+            .interval_displacement_bound_mm(bounds, 0.0, f64::INFINITY)
+            .is_none()
+    );
+    assert!(
+        AssemblyJointKind::Fixed
+            .interval_displacement_bound_mm(bounds, 0.0, 1.0)
+            .is_none()
+    );
+    let invalid = AssemblyJointKind::Revolute {
+        axis: AssemblyJointAxis::new([0.0; 3], [0.0; 3]),
+        limits: None,
+        position_degrees: 0.0,
+    };
+    assert!(
+        invalid
+            .interval_displacement_bound_mm(bounds, 0.0, 90.0)
+            .is_none()
+    );
+}
+
+#[test]
 fn swept_clearance_detects_a_crossing_between_clear_endpoint_samples() {
     let document = crossing_motion_document();
     let before = store_stamp(&document);

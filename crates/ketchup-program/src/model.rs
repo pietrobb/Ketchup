@@ -1581,12 +1581,16 @@ pub struct ProgramModel {
     pub components: Vec<ProgramComponent>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub instances: Vec<ProgramInstance>,
-    /// Helper bodies used only as boolean tools: never built, listed or validated.
+    /// Auxiliary bodies for booleans or declared access checks; never physical parts.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Part>,
     pub joints: Vec<Joint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub motions: Vec<crate::motion::ProgramMotion>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assembly_steps: Vec<crate::motion::ProgramAssemblyStep>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_access: Vec<crate::motion::ProgramToolAccess>,
     /// Conditions the program states about its geometry (`expect()`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub expectations: Vec<crate::expect::Expectation>,

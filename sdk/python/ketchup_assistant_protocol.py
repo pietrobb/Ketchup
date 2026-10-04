@@ -3007,11 +3007,15 @@ def _validation_report(context: dict) -> dict:
     for entry in catalog:
         if (
             not isinstance(entry, dict)
-            or set(entry) != {"id", "checks"}
+            or set(entry) != {"id", "checks", "required_roles"}
             or not isinstance(entry["id"], str)
             or not entry["id"]
             or not isinstance(entry["checks"], str)
             or not entry["checks"]
+            or (entry["required_roles"] is not None and (
+                not isinstance(entry["required_roles"], list)
+                or any(not isinstance(role, str) or not role for role in entry["required_roles"])
+            ))
         ):
             raise ProtocolError("validator catalog entry is invalid")
     return validation
@@ -3037,6 +3041,7 @@ def _list_validators(context: dict, arguments: object) -> dict:
             {
                 "id": entry["id"],
                 "checks": entry["checks"],
+                "required_roles": entry["required_roles"],
                 "already_run_on_this_revision": entry["id"] in executed,
             }
             for entry in validation["validators"]

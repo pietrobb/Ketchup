@@ -31,7 +31,13 @@ fn program_validation_is_read_only_and_keeps_exact_coverage_after_removing_holes
         let history = (app.undo_step_count(), app.redo_step_count());
         let selection = LiveBridge::selection(&app);
         let result = bridge
-            .validate_program(&app, Some(before.clone()), Arc::new(AtomicBool::new(false)))
+            .validate_program(
+                &app,
+                Some(before.clone()),
+                Arc::new(AtomicBool::new(false)),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(result["canonical_mutation"], false);
         assert_eq!(result["validation_only"], true);
@@ -48,6 +54,29 @@ fn program_validation_is_read_only_and_keeps_exact_coverage_after_removing_holes
         assert_eq!(app.live_bridge_stamp(), before);
         assert_eq!((app.undo_step_count(), app.redo_step_count()), history);
         assert_eq!(LiveBridge::selection(&app), selection);
+    }
+}
+
+#[test]
+fn requested_motion_finds_hidden_path_collision_without_editing() {
+    let _turn = integration_support::file_turn();
+    let (mut app, mut bridge) = setup();
+    app.new_document();
+    let source = RuleProgramSource { file_name: "motion.star".into(), source: "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2))\nbox('obstacle',(2,2,2),at=(10,0,0))\njoint(a,b,kind='motion',name='travel',motion=slide((1,0,0),0,20))".into(), overrides: BTreeMap::new() };
+    app.apply_program_source(source.clone(), false).unwrap();
+    let before = app.document.current().scene_query();
+    let history = (app.undo_step_count(), app.redo_step_count());
+    for (to, state) in [(3., "passed"), (20., "failed"), (21., "incomplete")] {
+        let request = serde_json::from_value(
+            json!({"method":"validate_program","motion":{"name":"travel","from":0,"to":to}}),
+        )
+        .unwrap();
+        let result = bridge.execute(&mut app, request, false).unwrap();
+        assert_eq!(result["validation"]["motion"]["state"], state, "{result}");
+        assert_eq!(result["validation"]["state"], state, "{result}");
+        assert_eq!(app.document.current().scene_query(), before);
+        assert_eq!((app.undo_step_count(), app.redo_step_count()), history);
+        assert_eq!(app.document.current_rule_program(), Some(&source));
     }
 }
 
@@ -88,6 +117,73 @@ fn program_validation_does_not_publish_results_for_a_replaced_document() {
 }
 
 #[test]
+fn requested_document_checks_use_program_metadata_and_never_mutate_or_detach() {
+    let _turn = integration_support::file_turn();
+    let (mut app, mut bridge) = setup();
+    app.new_document();
+    for (material, state) in [
+        ("steel", "passed"),
+        ("engineered_wood", "failed"),
+        ("unknown", "incomplete"),
+    ] {
+        let source = RuleProgramSource {
+            file_name: "structural.star".into(),
+            source: format!(
+                "box('shelf',(1000,300,20),material='{material}',attributes={{'classification:ketchup.validator-role.v1':'physics.beam.xy'}})"
+            ),
+            overrides: BTreeMap::new(),
+        };
+        app.apply_program_source(source.clone(), false).unwrap();
+        let before = app.document.current();
+        let history = (app.undo_step_count(), app.redo_step_count());
+        let selection = LiveBridge::selection(&app);
+        let request = serde_json::from_value(
+            json!({"method":"validate_program", "validators":["beam_deflection"]}),
+        )
+        .unwrap();
+        let result = bridge.execute(&mut app, request, false).unwrap();
+        assert_eq!(result["validation"]["state"], state, "{result:#}");
+        let check = &result["validation"]["document_checks"]["beam_deflection"];
+        assert_eq!(
+            check["state"],
+            if state == "incomplete" {
+                "not_evaluated"
+            } else {
+                state
+            }
+        );
+        if material != "unknown" {
+            assert_eq!(check["evaluations"][0]["material"], material);
+            assert_eq!(check["evaluations"][0]["span_mm"], 1000.0);
+        }
+        assert_eq!(app.document.current().scene_query(), before.scene_query());
+        assert_eq!(
+            app.document.current().canonical_digest(),
+            before.canonical_digest()
+        );
+        assert_eq!(app.document.current_rule_program(), Some(&source));
+        assert_eq!((app.undo_step_count(), app.redo_step_count()), history);
+        assert_eq!(LiveBridge::selection(&app), selection);
+    }
+    for names in [vec![], vec!["not_a_validator".to_owned()]] {
+        let result = bridge
+            .validate_program(
+                &app,
+                None,
+                Arc::new(AtomicBool::new(false)),
+                Some(names),
+                None,
+            )
+            .unwrap();
+        assert_eq!(result["validation"]["state"], "incomplete", "{result:#}");
+        assert_ne!(
+            result["validation"]["document_checks"]["selection_error"],
+            Value::Null
+        );
+    }
+}
+
+#[test]
 fn program_validation_reports_preexisting_box_collisions() {
     let (mut app, mut bridge) = setup();
     app.new_document();
@@ -95,7 +191,7 @@ fn program_validation_reports_preexisting_box_collisions() {
     program.source = "box('a',(10,10,10))\nbox('b',(10,10,10),at=(5,0,0))\n".into();
     app.apply_program_source(program, false).unwrap();
     let result = bridge
-        .validate_program(&app, None, Arc::new(AtomicBool::new(false)))
+        .validate_program(&app, None, Arc::new(AtomicBool::new(false)), None, None)
         .unwrap();
     assert_eq!(result["exact_collisions"]["state"], "verified", "{result}");
     assert_eq!(result["exact_collisions"]["collisions"], 1, "{result}");
@@ -116,7 +212,7 @@ fn an_impossible_join_remains_editable_without_fabricated_holes_or_hardware() {
     assert_eq!(app.undo_step_count(), undo + 1);
     assert_eq!(app.document.current().scene_query().len(), 2);
     let result = bridge
-        .validate_program(&app, None, Arc::new(AtomicBool::new(false)))
+        .validate_program(&app, None, Arc::new(AtomicBool::new(false)), None, None)
         .unwrap();
     assert_eq!(result["validation"]["program"]["state"], "accepted");
     assert_eq!(result["validation"]["state"], "failed");
@@ -132,7 +228,7 @@ fn an_impossible_join_remains_editable_without_fabricated_holes_or_hardware() {
     program.source = program.source.replace("count=30", "count=2,margin=20");
     app.apply_program_source(program, false).unwrap();
     let repaired = bridge
-        .validate_program(&app, None, Arc::new(AtomicBool::new(false)))
+        .validate_program(&app, None, Arc::new(AtomicBool::new(false)), None, None)
         .unwrap();
     assert_eq!(repaired["validation"]["joints_and_holes"]["holes"], 4);
     assert_eq!(repaired["report"]["errors"], 0, "{repaired}");

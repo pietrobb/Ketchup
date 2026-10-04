@@ -21,6 +21,67 @@ pub(super) struct ProgramValidationJob {
         mpsc::Receiver<Result<(Value, ketchup_program::Report), ketchup_program::ProgramError>>,
 }
 
+struct ValidationOptions {
+    undo_steps: usize,
+    assembly: bool,
+    tool_access: bool,
+    motion: Option<ketchup_application::ProgramMotionCheck>,
+    checks: Option<(
+        ketchup_application::AssistantValidationSelection,
+        ketchup_model::exact_product::ExactResultRegistry,
+    )>,
+}
+
+impl ValidationOptions {
+    fn new(
+        app: &KetchupApp,
+        validators: Option<Vec<String>>,
+        motion: Option<ketchup_application::ProgramMotionCheck>,
+    ) -> Self {
+        let assembly = validators
+            .as_ref()
+            .is_some_and(|names| names.iter().any(|n| n == "assembly_path"));
+        let tool_access = validators
+            .as_ref()
+            .is_some_and(|names| names.iter().any(|n| n == "tool_access"));
+        let validators = validators
+            .map(|mut names| {
+                names.retain(|name| name != "assembly_path" && name != "tool_access");
+                names
+            })
+            .filter(|names| !(assembly || tool_access) || !names.is_empty());
+        Self {
+            undo_steps: app.undo_step_count(),
+            assembly,
+            tool_access,
+            motion,
+            checks: validators.map(|names| {
+                let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+                (
+                    ketchup_application::AssistantValidationSelection::only(&names),
+                    app.exact.results.clone(),
+                )
+            }),
+        }
+    }
+}
+
+fn merge_check(result: &mut Value, name: &str, check: Value) {
+    result["validation"]["state"] = json!(if result["validation"]["state"] == "failed"
+        || check["state"] == "failed"
+    {
+        "failed"
+    } else if result["validation"]["state"] == "passed"
+        && check["state"] == "passed"
+        && check["complete"] == true
+    {
+        "passed"
+    } else {
+        "incomplete"
+    });
+    result["validation"][name] = check;
+}
+
 fn validate(
     source: RuleProgramSource,
     snapshot: Snapshot,
@@ -28,8 +89,9 @@ fn validate(
     worker_path: Option<PathBuf>,
     cancelled: Arc<AtomicBool>,
     stamp: Stamp,
-    undo_steps: usize,
+    options: ValidationOptions,
 ) -> Result<(Value, ketchup_program::Report), ketchup_program::ProgramError> {
+    let started = Instant::now();
     let (evaluated, mut report) =
         ketchup_program::run(&source.file_name, &source.source, &source.overrides)?;
     let exact = verify_rule_program_all(
@@ -37,9 +99,9 @@ fn validate(
         &evaluated.model,
         &mut report,
         &container,
-        worker_path,
-        PROGRAM_EXACT_TIMEOUT,
-        cancelled,
+        worker_path.clone(),
+        PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+        cancelled.clone(),
     );
     let mut result = program_edit_result(
         crate::program_edit::ProgramEdit::Unchanged,
@@ -47,9 +109,64 @@ fn validate(
         &snapshot,
         &snapshot,
         &stamp,
-        undo_steps,
+        options.undo_steps,
         exact,
     );
+    if options.assembly {
+        let check = ketchup_application::verify_rule_program_assembly(
+            &snapshot,
+            &evaluated.model,
+            worker_path.clone(),
+            PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+            cancelled.clone(),
+        );
+        merge_check(&mut result, "assembly_path", check);
+    }
+    if options.tool_access {
+        let check = ketchup_application::verify_rule_program_tool_access(
+            &snapshot,
+            &evaluated.model,
+            worker_path.clone(),
+            PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+            cancelled.clone(),
+        );
+        merge_check(&mut result, "tool_access", check);
+    }
+    if let Some(motion) = options.motion {
+        let check = ketchup_application::verify_rule_program_motion(
+            &snapshot,
+            &evaluated.model,
+            &motion,
+            worker_path.clone(),
+            PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+            cancelled.clone(),
+        );
+        merge_check(&mut result, "motion", check);
+    }
+    if let Some((selection, exact_results)) = options.checks {
+        let checks =
+            ketchup_application::validation::assistant_validation_context_with_worker_cancellation(
+                &snapshot,
+                &exact_results,
+                &selection,
+                &container,
+                worker_path,
+                PROGRAM_EXACT_TIMEOUT.saturating_sub(started.elapsed()),
+                cancelled,
+            );
+        let state = if result["validation"]["state"] == "failed" || checks["state"] == "failed" {
+            "failed"
+        } else if result["validation"]["state"] == "passed"
+            && checks["state"] == "passed"
+            && checks["complete"] == true
+        {
+            "passed"
+        } else {
+            "incomplete"
+        };
+        result["validation"]["state"] = json!(state);
+        result["validation"]["document_checks"] = checks;
+    }
     result["validation_only"] = json!(true);
     result["canonical_mutation"] = json!(false);
     result["validation_scope"] = json!("all_visible_program_parts");
@@ -62,6 +179,8 @@ impl LiveBridge {
         app: &KetchupApp,
         expected: Option<Stamp>,
         cancelled: Arc<AtomicBool>,
+        validators: Option<Vec<String>>,
+        motion: Option<ketchup_application::ProgramMotionCheck>,
     ) -> Result<Value, &'static str> {
         Self::guard(app, &expected)?;
         Self::require_request_authority(&cancelled)?;
@@ -83,7 +202,7 @@ impl LiveBridge {
             Self::worker_path(app),
             cancelled,
             app.live_bridge_stamp(),
-            app.undo_step_count(),
+            ValidationOptions::new(app, validators, motion),
         )
         .map(|(value, report)| {
             self.program_report = Some((app.live_bridge_stamp(), report, "explicit_validation"));
@@ -101,6 +220,8 @@ impl LiveBridge {
         reply: mpsc::SyncSender<Response>,
         cancelled: Arc<AtomicBool>,
         expected: Option<Stamp>,
+        validators: Option<Vec<String>>,
+        motion: Option<ketchup_application::ProgramMotionCheck>,
     ) {
         take_error_details();
         let prepared = (|| {
@@ -133,7 +254,7 @@ impl LiveBridge {
         let worker_path = Self::worker_path(app);
         let before = app.live_bridge_stamp();
         let stamp = before.clone();
-        let undo_steps = app.undo_step_count();
+        let options = ValidationOptions::new(app, validators, motion);
         let worker_cancelled = Arc::clone(&cancelled);
         let (sender, receiver) = mpsc::sync_channel(1);
         let repaint = context.clone();
@@ -147,7 +268,7 @@ impl LiveBridge {
                     worker_path,
                     worker_cancelled,
                     stamp,
-                    undo_steps,
+                    options,
                 );
                 let _ = sender.try_send(result);
                 repaint.request_repaint();

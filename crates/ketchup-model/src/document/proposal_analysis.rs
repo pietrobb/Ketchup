@@ -1,5 +1,17 @@
 use super::*;
 
+fn add_created_input_dependencies(
+    snapshot: &Snapshot,
+    id: NodeId,
+    inputs: &[NodeId],
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    dependencies.insert(AuthoritativeDependency::EvaluatorNode(id));
+    for input in inputs {
+        add_evaluator_dependency_closure(snapshot, *input, dependencies);
+    }
+}
+
 pub(super) fn proposal_candidate_snapshot(
     snapshot: &Snapshot,
     batch: &CommandBatch,
@@ -462,6 +474,7 @@ pub(super) fn authoritative_writes(
             CanonicalCommand::CreateEvaluatorNode { id, .. }
             | CanonicalCommand::SetEvaluatorDimension { id, .. }
             | CanonicalCommand::RenameEvaluatorNode { id, .. }
+            | CanonicalCommand::DeleteEvaluatorNode { id }
             | CanonicalCommand::CreateExpressionNode { id, .. }
             | CanonicalCommand::CreateRuleNode { id, .. }
             | CanonicalCommand::SetNodeExpression { id, .. }
@@ -946,13 +959,11 @@ pub(super) fn authoritative_dependencies(
                 dependencies: node_dependencies,
                 ..
             } => {
-                dependencies.insert(AuthoritativeDependency::EvaluatorNode(*id));
-                for dependency in node_dependencies {
-                    add_evaluator_dependency_closure(snapshot, *dependency, &mut dependencies);
-                }
+                add_created_input_dependencies(snapshot, *id, node_dependencies, &mut dependencies);
             }
             CanonicalCommand::SetEvaluatorDimension { id, .. }
-            | CanonicalCommand::RenameEvaluatorNode { id, .. } => {
+            | CanonicalCommand::RenameEvaluatorNode { id, .. }
+            | CanonicalCommand::DeleteEvaluatorNode { id } => {
                 add_evaluator_dependency_closure(snapshot, *id, &mut dependencies);
             }
             CanonicalCommand::RecordImport(receipt) => {

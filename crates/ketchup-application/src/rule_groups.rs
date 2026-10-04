@@ -17,7 +17,7 @@ pub fn plan_rule_model_batch(
             .map_err(SessionError::Planning)?;
         reconcile(&document.current(), &ProgramModel::default(), model, parts)?
     };
-    let batch = crate::rule_support::append(document, model, batch)?;
+    let batch = crate::rule_support::append(document, model, None, batch)?;
     crate::rule_motion::append_pose(document, model, batch)
 }
 

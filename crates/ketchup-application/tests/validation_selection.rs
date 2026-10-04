@@ -73,6 +73,27 @@ fn structural_document(occurrence_count: u64) -> DocumentStore {
         },
     ]);
     for (id, name, value) in [
+        (2, "ketchup.static-load-mode.v1", "compression"),
+        (
+            3,
+            "ketchup.support-capacity.v1",
+            r#"{"source":"synthetic test capacity, not design data","units":"N","mode":"compression","direction_world":[0,0,-1],"assumptions":"test fixture only","additive":true}"#,
+        ),
+    ] {
+        commands.push(CanonicalCommand::UpsertClassificationDimension {
+            id: ClassificationDimensionId(id),
+            name: name.into(),
+            categories: vec![(ClassificationCategoryId(1), value.into())],
+        });
+        for occurrence in 1..=occurrence_count {
+            commands.push(CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(occurrence),
+                dimension_id: ClassificationDimensionId(id),
+                category_id: Some(ClassificationCategoryId(1)),
+            });
+        }
+    }
+    for (id, name, value) in [
         (1, "physics.gravity_x_m_s2", 0.0),
         (2, "physics.gravity_y_m_s2", 0.0),
         (3, "physics.gravity_z_m_s2", -9.81),
@@ -1275,6 +1296,159 @@ fn shared_support_capacity_aggregates_by_load_case_with_scoped_global_parity() {
 }
 
 #[test]
+fn static_capacity_requires_source_units_mode_and_signed_world_direction() {
+    let qualified = serde_json::json!({
+        "source": "synthetic test capacity, not design data", "units": "N", "mode": "compression",
+        "direction_world": [0,0,-1], "assumptions": "test fixture only", "additive": false,
+    });
+    let mut cases = vec![(qualified.clone(), "passed", "")];
+    for (field, value, reason) in [
+        (
+            "source",
+            serde_json::json!(""),
+            "missing_capacity_source_or_assumptions",
+        ),
+        (
+            "assumptions",
+            serde_json::json!(" "),
+            "missing_capacity_source_or_assumptions",
+        ),
+        (
+            "units",
+            serde_json::json!("kg"),
+            "unsupported_capacity_units",
+        ),
+        ("mode", serde_json::json!("pullout"), "uncovered_load_mode"),
+        (
+            "source",
+            serde_json::json!("x".repeat(1025)),
+            "capacity_qualification_too_long",
+        ),
+        (
+            "additive",
+            serde_json::json!("yes"),
+            "invalid_capacity_qualification",
+        ),
+        (
+            "direction_world",
+            serde_json::json!([1, 0, 0]),
+            "uncovered_load_direction",
+        ),
+        (
+            "direction_world",
+            serde_json::json!([0, 0, 1]),
+            "uncovered_load_direction",
+        ),
+        (
+            "direction_world",
+            serde_json::json!([0, 0, 0]),
+            "invalid_capacity_direction",
+        ),
+    ] {
+        let mut declaration = qualified.clone();
+        declaration[field] = value;
+        cases.push((declaration, "not_evaluated", reason));
+    }
+    for (declaration, state, reason) in cases {
+        let mut document = structural_document(2);
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: ClassificationDimensionId(3),
+                    name: "ketchup.support-capacity.v1".into(),
+                    categories: vec![(ClassificationCategoryId(1), declaration.to_string())],
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let scope = StructuralValidationScope::bind(&snapshot, [OccurrenceId(1)]);
+        let report = scoped_static_load_report(&snapshot, &scope, || false);
+        assert_eq!(report["state"], state, "{report:#}");
+        if state == "passed" {
+            assert_eq!(report["evaluations"][0]["capacity_margin_n"], 819.0);
+            assert_eq!(
+                report["evaluations"][0]["supports"][0]["qualification"]["source"],
+                qualified["source"]
+            );
+        } else {
+            assert_eq!(report["complete"], false);
+            assert!(report["evaluations"].as_array().unwrap().is_empty());
+            assert_eq!(report["not_evaluated"][0]["reason"], reason);
+        }
+    }
+}
+
+#[test]
+fn multiple_supports_need_explicit_additive_capacity_assumptions() {
+    for additive in [false, true] {
+        let mut document = structural_document(3);
+        let declaration = serde_json::json!({"source":"synthetic only", "units":"N", "mode":"compression",
+            "direction_world":[0,0,-10], "assumptions":"test equal load sharing", "additive":additive});
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id: OccurrenceId(3),
+                    dimension_id: ClassificationDimensionId(1),
+                    category_id: Some(ClassificationCategoryId(2)),
+                },
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: ClassificationDimensionId(3),
+                    name: "ketchup.support-capacity.v1".into(),
+                    categories: vec![(ClassificationCategoryId(1), declaration.to_string())],
+                },
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(7),
+                    name: "physics.support_capacity_n.occurrence.3".into(),
+                    dimension: Dimension::new("2000", 2000.).unwrap(),
+                    dependencies: vec![],
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let scope = StructuralValidationScope::bind(&snapshot, [OccurrenceId(1)]);
+        let report = scoped_static_load_report(&snapshot, &scope, || false);
+        assert_eq!(
+            report["state"],
+            if additive { "passed" } else { "not_evaluated" },
+            "{report:#}"
+        );
+        if additive {
+            assert_eq!(report["evaluations"][0]["total_support_capacity_n"], 4000.);
+            assert_eq!(report["evaluations"][0]["capacity_margin_n"], 2819.);
+        } else {
+            assert_eq!(
+                report["not_evaluated"][0]["reason"],
+                "capacity_additivity_not_declared"
+            );
+        }
+    }
+}
+
+#[test]
+fn scalar_capacity_without_qualification_cannot_pass() {
+    for (occurrence, dimension) in [(1, 2), (2, 3)] {
+        let mut document = structural_document(2);
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id: OccurrenceId(occurrence),
+                    dimension_id: ClassificationDimensionId(dimension),
+                    category_id: None,
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let scope = StructuralValidationScope::bind(&snapshot, [OccurrenceId(1)]);
+        let report = scoped_static_load_report(&snapshot, &scope, || false);
+        assert_eq!(report["state"], "not_evaluated", "{report:#}");
+        assert_eq!(
+            report["not_evaluated"][0]["reason"],
+            "missing_capacity_qualification"
+        );
+    }
+}
+
+#[test]
 fn structural_validators_use_nonuniform_occurrence_scale_and_reject_shear() {
     let mut document = DocumentStore::new();
     document
@@ -1710,6 +1884,122 @@ fn scoped_static_load_handles_ten_thousand_sparse_occurrences() {
     assert_eq!(report["coverage"]["requested_occurrence_count"], 1);
     assert_eq!(report["coverage"]["checked_load_occurrence_count"], 1);
     assert_eq!(report["coverage"]["exact_geometry_loaded_count"], 0);
+}
+
+#[test]
+fn requested_checks_without_applicable_roles_are_not_a_success() {
+    let mut document = contact_recipe_document(0.0);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(1),
+                name: "ketchup.validator-role.v1".into(),
+                categories: vec![(ClassificationCategoryId(1), "spatial.context:test".into())],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(1),
+                category_id: Some(ClassificationCategoryId(1)),
+            },
+        ]))
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("missing-inputs.ketchup");
+    ketchup_model::persistence::save_atomic_document_store_with_container(
+        &path,
+        &document,
+        &ketchup_model::persistence::ContainerData::default(),
+    )
+    .unwrap();
+    let session = DocumentSession::open(&path, Default::default()).unwrap();
+    let before = ketchup_model::state_view::encode_semantic_state(&session.snapshot());
+    let undo_steps = session.visible_undo_steps();
+    for validator in [
+        "beam_deflection",
+        "tipping",
+        "anchoring",
+        "hardware_manufacturing",
+    ] {
+        let report = session.validators(&AssistantValidationSelection::only(&[validator]));
+        assert_eq!(report[validator]["state"], "not_evaluated", "{report:#}");
+        assert_eq!(report[validator]["complete"], false, "{report:#}");
+        assert_eq!(report[validator]["applicable_count"], 0);
+        assert_eq!(
+            report[validator]["not_evaluated"][0]["reason"],
+            "applicable_role_not_found"
+        );
+        assert!(
+            !report[validator]["not_evaluated"][0]["required_roles"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(report["state"], "not_evaluated");
+        assert_eq!(report["complete"], false);
+    }
+    assert_eq!(
+        ketchup_model::state_view::encode_semantic_state(&session.snapshot()),
+        before
+    );
+    assert_eq!(session.visible_undo_steps(), undo_steps);
+}
+
+#[test]
+fn known_structural_failure_survives_an_unchecked_part() {
+    for (validator, role, scale) in [
+        ("beam_deflection", "physics.beam.xy", [100.0, 30.0, 1.0]),
+        ("tipping", "physics.freestanding.z", [1.0, 1.0, 200.0]),
+        ("anchoring", "physics.freestanding.z", [1.0, 1.0, 200.0]),
+    ] {
+        let mut document = contact_recipe_document(0.0);
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::ClearAssemblyRecipe,
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: ClassificationDimensionId(1),
+                    name: "ketchup.validator-role.v1".into(),
+                    categories: vec![(ClassificationCategoryId(1), role.into())],
+                },
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id: OccurrenceId(1),
+                    dimension_id: ClassificationDimensionId(1),
+                    category_id: Some(ClassificationCategoryId(1)),
+                },
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id: OccurrenceId(2),
+                    dimension_id: ClassificationDimensionId(1),
+                    category_id: Some(ClassificationCategoryId(1)),
+                },
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OccurrenceId(1),
+                    transform: Transform::from_matrix([
+                        scale[0], 0.0, 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 0.0, scale[2], 0.0,
+                        0.0, 0.0, 0.0, 1.0,
+                    ])
+                    .unwrap(),
+                },
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OccurrenceId(2),
+                    transform: Transform::from_matrix([
+                        1.0, 0.25, 0.0, 2000.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0,
+                    ])
+                    .unwrap(),
+                },
+            ]))
+            .unwrap();
+        let report = assistant_validation_context(
+            &document.current(),
+            &ExactResultRegistry::default(),
+            &AssistantValidationSelection::only(&[validator]),
+        );
+        assert_eq!(report[validator]["state"], "failed", "{report:#}");
+        assert_eq!(report[validator]["complete"], false);
+        assert_eq!(report[validator]["issues"][0]["occurrence_id"], 1);
+        assert_eq!(report[validator]["not_evaluated"][0]["occurrence_id"], 2);
+        assert_eq!(report["state"], "failed");
+        assert_eq!(report["complete"], false);
+    }
 }
 
 #[test]

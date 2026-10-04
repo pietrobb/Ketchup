@@ -3319,14 +3319,17 @@ def validator_tool_context():
             {
                 "id": "collision",
                 "checks": "solid bodies that overlap each other instead of touching",
+                "required_roles": None,
             },
             {
                 "id": "gravity_support",
                 "checks": "parts that are not carried, directly or transitively, by the ground",
+                "required_roles": None,
             },
             {
                 "id": "tipping",
                 "checks": "free-standing bodies that tip below the minimum safe tilt angle",
+                "required_roles": ["physics.freestanding.{x|y|z}"],
             },
         ],
         "requested": ["collision", "gravity_support", "tipping"],
@@ -3392,6 +3395,9 @@ def test_list_validators_names_every_validator_and_what_it_checks():
         "tipping",
     ]
     assert all(entry["checks"] for entry in result["validators"])
+    assert [entry["required_roles"] for entry in result["validators"]] == [
+        None, None, ["physics.freestanding.{x|y|z}"]
+    ]
     assert [entry["already_run_on_this_revision"] for entry in result["validators"]] == [
         True,
         True,
@@ -3441,6 +3447,14 @@ def test_validator_tools_are_fail_closed_on_unknown_names_and_missing_reports():
         assistant._read_only_tool_result(message, "run_validators", {"validators": []})
     with pytest.raises(assistant.ProtocolError, match="no arguments"):
         assistant._read_only_tool_result(message, "list_validators", {"validators": ["collision"]})
+
+    for roles in ["physics.freestanding.x", [""], [42], {}]:
+        invalid_catalog = validator_tool_context()
+        invalid_catalog["validation"]["validators"][0]["required_roles"] = roles
+        with pytest.raises(assistant.ProtocolError, match="validator catalog entry"):
+            assistant._read_only_tool_result(
+                validator_tool_message(invalid_catalog), "list_validators", {}
+            )
 
     without_catalog = validator_tool_context()
     without_catalog["validation"].pop("validators")

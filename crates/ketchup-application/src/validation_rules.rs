@@ -71,6 +71,7 @@ pub struct ValidationRules {
     pub materials: BTreeMap<String, MaterialProperties>,
     /// Material of a part that no `ketchup.material.v1` classification names.
     pub default_material: String,
+    pub required_roles: BTreeMap<String, Vec<String>>,
     pub beam_deflection: BeamDeflectionRule,
     pub tipping: TippingRule,
     pub anchoring: AnchoringRule,

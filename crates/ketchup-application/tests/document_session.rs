@@ -1635,6 +1635,24 @@ fn typed_cad_program_commits_static_metadata_atomically() {
     let metadata = AssistantCadEditProgram {
         operations: vec![
             AssistantCadEditOperation::UpsertClassificationDimension {
+                dimension_id: 2,
+                name: "ketchup.static-load-mode.v1".into(),
+                categories: vec![AssistantCadClassificationCategory { id: 1, name: "compression".into() }],
+            },
+            AssistantCadEditOperation::SetOccurrenceClassification {
+                selector: AssistantCadEntitySelector::Occurrences { occurrence_ids: vec![1] },
+                dimension_id: 2, category_id: Some(1),
+            },
+            AssistantCadEditOperation::UpsertClassificationDimension {
+                dimension_id: 3,
+                name: "ketchup.support-capacity.v1".into(),
+                categories: vec![AssistantCadClassificationCategory { id: 1, name: r#"{"source":"synthetic test capacity, not design data","units":"N","mode":"compression","direction_world":[0,0,-1],"assumptions":"test fixture only","additive":false}"#.into() }],
+            },
+            AssistantCadEditOperation::SetOccurrenceClassification {
+                selector: AssistantCadEntitySelector::Occurrences { occurrence_ids: vec![2] },
+                dimension_id: 3, category_id: Some(1),
+            },
+            AssistantCadEditOperation::UpsertClassificationDimension {
                 dimension_id: 1,
                 name: "ketchup.validator-role.v1".into(),
                 categories: vec![

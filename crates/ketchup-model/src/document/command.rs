@@ -37,6 +37,9 @@ pub enum CanonicalCommand {
         id: NodeId,
         name: String,
     },
+    DeleteEvaluatorNode {
+        id: NodeId,
+    },
     CreateExpressionNode {
         id: NodeId,
         name: String,

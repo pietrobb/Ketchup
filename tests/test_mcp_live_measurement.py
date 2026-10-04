@@ -85,6 +85,148 @@ def mcp(tmp_path):
             server.stdout.close()
 
 
+def test_tool_access_through_public_mcp(mcp, tmp_path):
+    geometry = "box('work',(20,20,2),at=(-10,-10,-4))\nt=box('holder',(4,4,8),at=(-2,-2,0),tool=True)\n"
+    declaration = "tool_access('approach',envelope=t,motion=slide((0,0,1),0,20),start=20)\n"
+    obstacle = "box('lip',(2,4,2),at=(1,-2,14))\n"
+    for suffix, state in [("", "incomplete"), ("tool_access('missing')", "incomplete"), (declaration, "passed"), (declaration + obstacle, "failed")]:
+        source = geometry + suffix
+        mcp("program", action="apply", file_name="access.star", source=source)
+        before = mcp("inspect", action="status")
+        result = mcp("program", action="validate", expected=before["stamp"], validators=["tool_access"])["result"]
+        check = result["validation"]["tool_access"]
+        assert check["state"] == state, result
+        assert result["validation"]["state"] == state, result
+        assert result["canonical_mutation"] is False
+        assert mcp("inspect", action="status") == before
+        assert mcp("program", action="read")["result"]["source"] == source
+        parts = mcp("inspect", action="query", kind="occurrences", limit=100)["result"]["items"]
+        assert all(p["name"]["text"] != "holder" for p in parts)
+        if state == "passed":
+            mixed = mcp("program", action="validate", validators=["tool_access", "unknown_validator"])["result"]
+            assert mixed["validation"]["tool_access"]["state"] == "passed", mixed
+            assert mixed["validation"]["state"] == "incomplete", mixed
+        if state == "failed":
+            hit = check["checks"][0]["pairs"][0]
+            assert hit["obstacle"]["name"] == "lip"
+            assert hit["issues"][0]["common_volume_mm3"] > 0
+    mcp("edit", action="undo")
+    assert mcp("program", action="validate", validators=["tool_access"])["result"]["validation"]["tool_access"]["state"] == "passed"
+    mcp("edit", action="redo")
+    path = str(tmp_path / "access.ketchup")
+    mcp("file", action="save_as", path=path)
+    mcp("file", action="open", path=path)
+    assert mcp("program", action="validate", validators=["tool_access"])["result"]["validation"]["tool_access"]["state"] == "failed"
+
+
+@pytest.mark.parametrize("rotated", [False, True])
+def test_tool_access_aperture_through_public_mcp(mcp, rotated):
+    for width, state in [(2, "passed"), (6, "failed")]:
+        source = f"a=box('left',(10,20,2),at=(-12,-10,10))\nb=box('right',(10,20,2),at=(2,-10,10))\nt=box('holder',({width},2,4),at=(-{width}/2,-1,0),tool=True)\n"
+        if rotated:
+            source += "rotate(t,axis=(0,1,0),angle=90,pivot=(0,0,0))\nrotate(a,axis=(0,1,0),angle=90,pivot=(0,0,0))\nrotate(b,axis=(0,1,0),angle=90,pivot=(0,0,0))\n"
+        axis = "(1,0,0)" if rotated else "(0,0,1)"
+        source += f"tool_access('aperture',envelope=t,motion=slide({axis},0,20),start=20)"
+        mcp("program", action="apply", file_name="access.star", source=source)
+        before = mcp("inspect", action="status")
+        result = mcp("program", action="validate", validators=["tool_access"])["result"]
+        assert result["validation"]["tool_access"]["state"] == state, result
+        assert mcp("inspect", action="status") == before
+
+
+def test_ordered_assembly_paths_through_public_mcp(mcp, tmp_path):
+    geometry = "a=box('base',(2,2,2),at=(-100,0,0))\nb=box('insert',(2,2,2),at=(20,0,0))\nc=box('stop',(2,2,2),at=(10,0,0))\njoint(a,b,kind='motion',name='insert',motion=slide((1,0,0),-20,0))\njoint(a,c,kind='motion',name='stop',motion=slide((0,1,0),0,20))\n"
+    insert = "assembly_step('insert',start=-20,end=0)\n"
+    stop = "assembly_step('stop',start=20,end=0)\n"
+    for suffix, state in [("", "incomplete"), (insert + stop, "passed"), (stop + insert, "failed")]:
+        source = geometry + suffix
+        mcp("program", action="apply", file_name="assembly.star", source=source)
+        before = mcp("inspect", action="status")
+        result = mcp("program", action="validate", expected=before["stamp"], validators=["assembly_path"])["result"]
+        check = result["validation"]["assembly_path"]
+        assert check["state"] == state, result
+        assert result["validation"]["state"] == state, result
+        assert result["canonical_mutation"] is False
+        assert mcp("inspect", action="status") == before
+        assert mcp("program", action="read")["result"]["source"] == source
+        if state == "passed":
+            mixed = mcp("program", action="validate", validators=["assembly_path", "unknown_validator"])["result"]
+            assert mixed["validation"]["assembly_path"]["state"] == "passed", mixed
+            assert mixed["validation"]["state"] == "incomplete", mixed
+        if state == "failed":
+            hit = check["steps"][1]["pairs"][0]
+            assert hit["moving"]["name"] == "insert"
+            assert hit["obstacle"]["name"] == "stop"
+            assert hit["issues"][0]["common_volume_mm3"] > 7.99
+    mcp("edit", action="undo")
+    assert mcp("program", action="validate", validators=["assembly_path"])["result"]["validation"]["assembly_path"]["state"] == "passed"
+    mcp("edit", action="redo")
+    path = str(tmp_path / "assembly.ketchup")
+    mcp("file", action="save_as", path=path)
+    mcp("file", action="open", path=path)
+    assert mcp("program", action="validate", validators=["assembly_path"])["result"]["validation"]["assembly_path"]["state"] == "failed"
+    # Supported contact needs a swept-hull proof; unsupported contact remains incomplete.
+    contact = "a=box('base',(2,2,2))\nb=box('insert',(2,2,2),at=(2,0,0))\njoint(a,b,kind='motion',name='insert',motion=slide((1,0,0),0,10))\nassembly_step('insert',start=10,end=0)"
+    mcp("program", action="apply", file_name="assembly.star", source=contact)
+    before = mcp("inspect", action="status")
+    result = mcp("program", action="validate", validators=["assembly_path"])["result"]
+    assert result["validation"]["assembly_path"]["state"] == "passed", result
+    pair = result["validation"]["assembly_path"]["steps"][0]["pairs"][0]
+    assert any(i.get("method") == "translation_swept_hull_with_native_contact_tolerance" for i in pair["verified_intervals"])
+    assert mcp("inspect", action="status") == before
+    rounded = contact.replace("box('insert',(2,2,2),at=(2,0,0))", "extrude('insert',distance=2,profile=round_corners([[2,0],[4,0],[4,2],[2,2]],0.25))")
+    mcp("program", action="apply", file_name="assembly.star", source=rounded)
+    before = mcp("inspect", action="status")
+    result = mcp("program", action="validate", validators=["assembly_path"])["result"]
+    assert result["validation"]["assembly_path"]["state"] == "incomplete", result
+    assert mcp("inspect", action="status") == before
+
+
+def test_continuous_motion_through_public_mcp(mcp):
+    source = "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2))\nbox('obstacle',(2,2,2),at=(10,0,0))\njoint(a,b,kind='motion',name='travel',motion=slide((1,0,0),0,20))\n"
+    mcp("program", action="apply", file_name="motion.star", source=source)
+    before = mcp("inspect", action="status")
+    for end, state in [(3, "passed"), (20, "failed"), (21, "incomplete")]:
+        result = mcp("program", action="validate", expected=before["stamp"], motion={"name":"travel", "from":0, "to":end})["result"]
+        assert result["validation"]["motion"]["state"] == state, result
+        assert result["validation"]["state"] == state, result
+        assert result["canonical_mutation"] is False
+        if state == "failed":
+            hit = next(p for p in result["validation"]["motion"]["pairs"] if p["state"] == "failed")
+            assert hit["obstacle"]["name"] == "obstacle"
+            assert hit["issues"][0]["position"] == pytest.approx(10)
+    assert mcp("inspect", action="status") == before
+    assert mcp("program", action="read")["result"]["source"] == source
+
+
+@pytest.mark.parametrize("case", ["rotation", "nested", "cavity", "cavity_with_retained_part"])
+def test_exact_motion_geometry_through_public_mcp(mcp, case):
+    if case == "rotation":
+        source = "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2),at=(10,0,0))\nbox('obstacle',(2,2,2),at=(-2,10,0))\njoint(a,b,kind='motion',name='travel',motion=rotate_motion((0,0,1),0,360))"
+        end, state, position = 360, "failed", 90
+    elif case == "nested":
+        source = "a=box('a',(2,2,2),at=(-100,0,0))\nb=box('b',(2,2,2))\nc=component('base',[a,b])\ni=instance('copy',c,at=(100,0,0),x=(0,1,0))\njoint(a,i,kind='motion',name='travel',motion=slide((1,0,0),0,20),position=3)\nbox('obstacle',(2,2,2),at=(108,0,0))"
+        end, state, position = 20, "failed", 10
+    else:
+        source = "a=box('obstacle',(20,20,10))\nc=box('cut',(16,16,12),at=(2,2,-1),tool=" + str(case == "cavity") + ")\nsubtract(a,c)\nb=box('b',(2,2,2),at=(4,4,4))\njoint(a,b,kind='motion',name='travel',motion=slide((1,0,0),0,8))"
+        end, state, position = (8, "passed", None) if case == "cavity" else (8, "failed", 4)
+    mcp("program", action="apply", file_name="motion.star", source=source)
+    before = mcp("inspect", action="status")
+    result = mcp("program", action="validate", expected=before["stamp"], motion={"name":"travel", "from":0, "to":end})["result"]
+    check = result["validation"]["motion"]
+    assert check["state"] == state, result
+    if position is not None:
+        hit = next(p for p in check["pairs"] if p["state"] == "failed")
+        assert hit["issues"][0]["position"] == pytest.approx(position)
+        if case == "nested":
+            assert hit["moving"]["name"] == "copy/b"
+            assert hit["moving"]["instance_path"]["steps"]
+    else:
+        assert check["complete"] is True
+    assert mcp("inspect", action="status") == before
+    assert mcp("program", action="read")["result"]["source"] == source
+
+
 def test_native_face_measurement_and_validation_are_read_only_through_public_mcp(mcp, tmp_path):
     source = "bottom=box('bottom',(100,100,18))\nhole(bottom,'z+',at=(50,50),diameter=8,depth=12)\nshelf=box('shelf',(100,100,18),at=(0,0,668))\nexpect_gap(bottom,shelf,650)\n"
     applied = mcp("program", action="apply", file_name="measurement.star", source=source)
@@ -137,6 +279,114 @@ def test_native_face_measurement_and_validation_are_read_only_through_public_mcp
     assert saved.is_file()
     mcp("file", action="open", path=str(saved))
     assert mcp("program", action="read")["result"]["source"] == source
+
+
+def test_program_scalar_loads_drive_read_only_validation_and_survive_reopen(mcp, tmp_path):
+    source = "box('load',(10,10,10),attributes={'classification:ketchup.validator-role.v1':'physics.static.load:test','classification:ketchup.static-load-mode.v1':'compression','input:physics.mass_kg.occurrence.{occurrence}':'100','input:physics.applied_load_n.occurrence.{occurrence}':'200','input:physics.gravity_x_m_s2':'0','input:physics.gravity_y_m_s2':'0','input:physics.gravity_z_m_s2':'-9.81'})\nbox('support',(10,10,10),at=(20,0,0),attributes={'classification:ketchup.validator-role.v1':'physics.static.support:test','classification:ketchup.support-capacity.v1':'{\"source\":\"synthetic test capacity, not design data\",\"units\":\"N\",\"mode\":\"compression\",\"direction_world\":[0,0,-1],\"assumptions\":\"test fixture only\",\"additive\":false}','input:physics.support_capacity_n.occurrence.{occurrence}':'2000'})"
+    for current, state, reason in [
+        (source, "passed", None),
+        (source.replace('synthetic test capacity, not design data', ''), "incomplete", "missing_capacity_source_or_assumptions"),
+        (source.replace('[0,0,-1]', '[0,0,1]'), "incomplete", "uncovered_load_direction"),
+        (source.replace('"mode":"compression"', '"mode":"pullout"'), "incomplete", "uncovered_load_mode"),
+        (source.replace('"units":"N"', '"units":"kg"'), "incomplete", "unsupported_capacity_units"),
+        (source.replace('classification:ketchup.support-capacity.v1', 'unqualified-capacity'), "incomplete", "missing_capacity_qualification"),
+        (source.replace("'2000'", "'500'"), "failed", None),
+        (source.replace("'input:physics.mass_kg.occurrence.{occurrence}':'100',", ""), "incomplete", "missing_or_ambiguous_mass"),
+    ]:
+        mcp("program", action="apply", file_name="loads.star", source=current)
+        before = mcp("inspect", action="status")
+        checked = mcp("program", action="validate", validators=["static_load"], expected=before["stamp"])
+        assert checked["result"]["validation"]["state"] == state, checked
+        detail = checked["result"]["validation"]["document_checks"]["static_load"]
+        if state == "incomplete":
+            assert any(row["reason"] == reason for row in detail["not_evaluated"]), detail
+            assert not detail["evaluations"], detail
+        else:
+            measured = detail["evaluations"][0]
+            assert measured["name"] == "load"
+            assert measured["resultant_force_n"] == pytest.approx(1181)
+            assert measured["supports"][0]["name"] == "support"
+            evidence = measured["supports"][0]["qualification"]
+            assert evidence["source"] == "synthetic test capacity, not design data"
+            assert evidence["mode"] == "compression" and evidence["units"] == "N"
+            assert evidence["direction_world"] == [0, 0, -1]
+            assert evidence["basis"] == "user_declared_capacity_not_independently_verified"
+            assert measured["capacity_margin_n"] == pytest.approx(819 if state == "passed" else -681)
+        after = mcp("inspect", action="status")
+        assert after["stamp"] == checked["stamp"] == before["stamp"]
+        for field in ["undo_steps", "redo_steps", "selection"]:
+            assert after["result"][field] == before["result"][field]
+        assert mcp("program", action="read")["result"]["source"] == current
+    mcp("edit", action="undo")
+    assert mcp("program", action="validate", validators=["static_load"])["result"]["validation"]["state"] == "failed"
+    mcp("edit", action="redo")
+    saved = tmp_path / "loads.ketchup"
+    mcp("file", action="save_as", path=str(saved))
+    mcp("file", action="open", path=str(saved))
+    assert mcp("program", action="read")["result"]["source"] == current
+    assert mcp("program", action="validate", validators=["static_load"])["result"]["validation"]["state"] == "incomplete"
+    repaired = mcp("program", action="apply", source=source)
+    assert repaired["result"]["added_total"] == repaired["result"]["removed_total"] == 0
+    before = mcp("inspect", action="status")
+    checked = mcp("program", action="validate", validators=["static_load"])
+    assert checked["result"]["validation"]["state"] == "passed", checked
+    assert checked["stamp"] == before["stamp"]
+    mcp("edit", action="undo")
+    assert mcp("program", action="validate", validators=["static_load"])["result"]["validation"]["state"] == "incomplete"
+    mcp("edit", action="redo")
+    mcp("file", action="save")
+    mcp("file", action="open", path=str(saved))
+    checked = mcp("program", action="validate", validators=["static_load"])
+    assert checked["result"]["validation"]["state"] == "passed", checked
+    evidence = checked["result"]["validation"]["document_checks"]["static_load"]["evaluations"][0]["supports"][0]["qualification"]
+    assert evidence["source"] == "synthetic test capacity, not design data"
+
+
+def test_mixed_nested_validation_names_unchecked_parts_without_hiding_failures(mcp):
+    source = "a=box('shelf',(1000,300,20),material='steel',attributes={'classification:ketchup.validator-role.v1':'physics.beam.xy'})\nc=component('shared',[a])\ninstance('copy',c,at=(2000,0,0))\nbox('root',(1000,300,20),at=(4000,0,0),material='steel',attributes={'classification:ketchup.validator-role.v1':'physics.beam.xy'})"
+    for material, state in [("steel", "incomplete"), ("engineered_wood", "failed")]:
+        mcp("program", action="apply", file_name="mixed.star", source=source.replace("steel", material))
+        before = mcp("inspect", action="status")
+        checked = mcp("program", action="validate", validators=["beam_deflection"], expected=before["stamp"])
+        assert checked["result"]["validation"]["state"] == state, checked
+        detail = checked["result"]["validation"]["document_checks"]["beam_deflection"]
+        assert detail["complete"] is False
+        assert [row["name"] for row in detail["evaluations"]] == ["root"]
+        assert any("shelf" in row.get("name", "") and row["instance_path"]["steps"] for row in detail["not_evaluated"]), detail
+        assert mcp("inspect", action="status")["stamp"] == before["stamp"]
+
+
+def test_program_materials_drive_requested_read_only_validators(mcp, tmp_path):
+    source = "box('shelf',(1000,300,20),material='steel',attributes={'classification:ketchup.validator-role.v1':'physics.beam.xy'})"
+    for material, state in [("steel", "passed"), ("engineered_wood", "failed"), ("unknown", "incomplete")]:
+        current = source.replace("'steel'", repr(material))
+        mcp("program", action="apply", file_name="structural.star", source=current)
+        before = mcp("inspect", action="status")
+        checked = mcp("program", action="validate", validators=["beam_deflection"], expected=before["stamp"])
+        assert checked["stamp"] == before["stamp"]
+        assert checked["result"]["validation"]["state"] == state, checked
+        detail = checked["result"]["validation"]["document_checks"]["beam_deflection"]
+        assert detail["state"] == ("not_evaluated" if state == "incomplete" else state), detail
+        if material != "unknown":
+            assert detail["evaluations"][0]["material"] == material
+            assert detail["evaluations"][0]["span_mm"] == pytest.approx(1000)
+            assert detail["evaluations"][0]["predicted_deflection_mm"] > 0
+        after = mcp("inspect", action="status")
+        assert after["stamp"] == before["stamp"]
+        for field in ["undo_steps", "redo_steps", "selection"]:
+            assert after["result"][field] == before["result"][field]
+        assert mcp("program", action="read")["result"]["source"] == current
+    mcp("edit", action="undo")
+    assert mcp("program", action="validate", validators=["beam_deflection"])["result"]["validation"]["state"] == "failed"
+    mcp("edit", action="redo")
+    saved = tmp_path / "structural.ketchup"
+    mcp("file", action="save_as", path=str(saved))
+    mcp("file", action="open", path=str(saved))
+    assert mcp("program", action="read")["result"]["source"] == current
+    assert mcp("program", action="validate", validators=["beam_deflection"])["result"]["validation"]["state"] == "incomplete"
+    for names in [[], ["unknown_validator"]]:
+        checked = mcp("program", action="validate", validators=names)
+        assert checked["result"]["validation"]["state"] == "incomplete", checked
 
 
 def test_modular_cabinet_local_edit_and_complete_reports(mcp, tmp_path):

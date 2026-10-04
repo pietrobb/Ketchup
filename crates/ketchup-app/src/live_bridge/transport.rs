@@ -511,7 +511,11 @@ mod tests {
             json!({"method":"apply_program", "source":"a=box('a',(1,1,1))"}),
         )
         .unwrap();
-        let validate = Request::ValidateProgram { expected: None };
+        let validate = Request::ValidateProgram {
+            expected: None,
+            validators: None,
+            motion: None,
+        };
         for request in [apply, validate] {
             assert_eq!(response_wait(&request), ketchup_mcp::PROGRAM_RESPONSE_WAIT);
             assert!(response_wait(&request) > DEFAULT_RESPONSE_WAIT);

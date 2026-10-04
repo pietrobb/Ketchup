@@ -19,6 +19,8 @@ fn queued_validation_returns_native_distance_without_changing_the_document() {
         reply,
         Arc::new(AtomicBool::new(false)),
         Some(app.live_bridge_stamp()),
+        None,
+        None,
     );
     let deadline = Instant::now() + Duration::from_secs(30);
     let response = loop {

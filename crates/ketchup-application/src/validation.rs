@@ -1,3 +1,5 @@
+mod capacity;
+mod coverage;
 pub use crate::part_role::{PartRole, RoleFrame, RoleFunction};
 use crate::validation_rules::{ValidationRules, occurrence_materials};
 use ketchup_geometry::linalg::dot;
@@ -25,12 +27,13 @@ const MAX_STRUCTURAL_SCOPE_PARAMETERS: usize = 30_000;
 const MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS: usize = 100;
 const MAX_STRUCTURAL_ROLE_CATEGORIES: usize = 10_000;
 pub const ASSEMBLY_RETENTION_ROLE_DIMENSION_V1: &str = "ketchup.assembly-retention-role.v1";
+const DEFLECTION_CHECK: &str = "beam_deflection";
 pub const ASSISTANT_VALIDATOR_IDS: [&str; 11] = [
     "group_connectivity",
     "collision",
     "assembly_retention",
     "gravity_support",
-    "beam_deflection",
+    DEFLECTION_CHECK,
     "tipping",
     "anchoring",
     "hardware_manufacturing",
@@ -60,7 +63,7 @@ pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 11] = [
         "parts that are not carried, directly or transitively, by the ground along the declared gravity axis",
     ),
     (
-        "beam_deflection",
+        DEFLECTION_CHECK,
         "sag of declared load-bearing plates under the rule set's design load, with stiffness from each part's material, against the span and absolute deflection limits",
     ),
     (
@@ -434,7 +437,7 @@ impl AssistantValidationSelection {
 pub fn assistant_validator_catalog() -> Vec<serde_json::Value> {
     ASSISTANT_VALIDATOR_CATALOG
         .into_iter()
-        .map(|(id, checks)| serde_json::json!({ "id": id, "checks": checks }))
+        .map(|(id, checks)| serde_json::json!({ "id": id, "checks": checks, "required_roles": ValidationRules::library().required_roles.get(id) }))
         .collect()
 }
 
@@ -1552,14 +1555,14 @@ pub fn assistant_beam_deflection_report(
         evaluations.push(evaluation);
     }
     let issue_count = issues.len();
-    let complete = coverage_complete && not_evaluated.is_empty();
-    let state = if !complete {
-        "not_evaluated"
-    } else if issue_count > 0 {
-        "failed"
-    } else {
-        "passed"
-    };
+    let (state, complete) = coverage::role_check_state(
+        DEFLECTION_CHECK,
+        rules,
+        evaluations.len(),
+        issue_count,
+        coverage_complete,
+        &mut not_evaluated,
+    );
     serde_json::json!({
         "state": state,
         "complete": complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
@@ -1710,14 +1713,14 @@ pub fn assistant_tipping_report(
         evaluations.push(evaluation);
     }
     let issue_count = issues.len();
-    let complete = coverage_complete && not_evaluated.is_empty();
-    let state = if !complete {
-        "not_evaluated"
-    } else if issue_count > 0 {
-        "failed"
-    } else {
-        "passed"
-    };
+    let (state, complete) = coverage::role_check_state(
+        "tipping",
+        rules,
+        evaluations.len(),
+        issue_count,
+        coverage_complete,
+        &mut not_evaluated,
+    );
     serde_json::json!({
         "state": state,
         "complete": complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
@@ -1864,14 +1867,14 @@ pub fn assistant_anchoring_report(
         evaluations.push(evaluation);
     }
     let issue_count = issues.len();
-    let complete = coverage_complete && not_evaluated.is_empty();
-    let state = if !complete {
-        "not_evaluated"
-    } else if issue_count > 0 {
-        "failed"
-    } else {
-        "passed"
-    };
+    let (state, complete) = coverage::role_check_state(
+        "anchoring",
+        rules,
+        evaluations.len(),
+        issue_count,
+        coverage_complete,
+        &mut not_evaluated,
+    );
     serde_json::json!({
         "state": state,
         "complete": complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
@@ -2314,18 +2317,17 @@ pub fn assistant_hardware_manufacturing_report(
 
     let issue_count = issues.len();
     let applicable_count = evaluations.len();
-    let state = if issue_count > 0 {
-        "failed"
-    } else if !coverage_complete || !not_evaluated.is_empty() {
-        "not_evaluated"
-    } else {
-        "passed"
-    };
+    let (state, complete) = coverage::role_check_state(
+        "hardware_manufacturing",
+        rules,
+        applicable_count,
+        issue_count,
+        coverage_complete,
+        &mut not_evaluated,
+    );
     serde_json::json!({
         "state": state,
-        "complete": coverage_complete
-            && not_evaluated.is_empty()
-            && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "complete": complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "applicable_count": applicable_count,
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
@@ -3209,19 +3211,22 @@ fn assistant_static_load_report_filtered(
             continue;
         }
 
-        let support_inputs = support_ids
-            .iter()
-            .map(|support_id| {
-                let (capacity_node_id, capacity_n) = capacities[support_id][0];
-                serde_json::json!({
-                    "occurrence_id": support_id.0,
-                    "name": names.get(support_id),
-                    "role_case": load_case,
-                    "capacity_node_id": capacity_node_id,
-                    "capacity_n": capacity_n,
-                })
-            })
-            .collect::<Vec<_>>();
+        let support_inputs = match capacity::support_inputs(
+            snapshot,
+            names,
+            loads.iter().map(|load| load.occurrence_id),
+            &support_ids,
+            &capacities,
+            gravity.direction,
+            &load_case,
+        ) {
+            Ok(inputs) => inputs,
+            Err(mut reason) => {
+                reason["role_case"] = serde_json::json!(load_case);
+                not_evaluated.push(reason);
+                continue;
+            }
+        };
         let total_support_capacity_n = support_inputs
             .iter()
             .filter_map(|support| support["capacity_n"].as_f64())
@@ -3308,11 +3313,16 @@ fn assistant_static_load_report_filtered(
             "gravity": ["physics.gravity_x_m_s2", "physics.gravity_y_m_s2", "physics.gravity_z_m_s2"],
             "roles": ["physics.static.load:<case>", "physics.static.support:<case>"],
             "support_capacity": "physics.support_capacity_n.occurrence.<support_id>",
+            "load_mode_classification": capacity::LOAD_MODE,
+            "capacity_qualification_classification": capacity::CAPACITY,
         },
         "assumptions": [
             "all physical quantities are explicit canonical evaluator parameters",
             "applied_load_n acts in the declared gravity direction",
-            "support capacities are additive for explicitly linked supports",
+            "support capacities are additive only when explicitly declared with load-sharing assumptions",
+            "passed means declared demand is within declared capacity, not structural certification",
+            "capacity sources and applicability assumptions are supplied by the caller, not independently verified",
+            "no pullout, shear, adhesive strength, retention, or load distribution is derived from geometry",
             "no mass, load, gravity, support, or capacity is inferred from occurrence names or geometry",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
@@ -3556,16 +3566,7 @@ pub(crate) fn assistant_validation_context_base(
     }
     let occurrence_limit_complete = scene_query_error.is_none()
         && visible_occurrences.len() <= MAX_ASSISTANT_VALIDATION_OCCURRENCES;
-    let names = visible_occurrences
-        .iter()
-        .take(MAX_ASSISTANT_VALIDATION_OCCURRENCES)
-        .map(|occurrence| {
-            (
-                occurrence.instance_path.root_occurrence(),
-                occurrence.occurrence_name.clone(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let names = coverage::occurrence_names(&visible_occurrences);
     let mut participants = Vec::new();
     let mut unavailable = Vec::new();
     for occurrence in visible_occurrences
@@ -3676,6 +3677,8 @@ pub(crate) fn assistant_validation_context_base(
         coverage_complete,
     );
     let rules = ValidationRules::library();
+    participants.retain(|part| part.instance_path().steps().is_empty());
+
     let beam_deflection = assistant_beam_deflection_report(
         &participants,
         &names,
@@ -3987,62 +3990,65 @@ pub(crate) fn assistant_validation_context_base(
         })
     });
     // Collision issues are already resource-bounded and must not be silently truncated.
-    serde_json::json!({
-        "schema": "ketchup.assistant-validation-context.v1",
-        "document_id": snapshot.document_id().0,
-        "revision": snapshot.revision_id(),
-        "canonical_digest": snapshot.canonical_digest(),
-        "selection_mode": selection.mode,
-        "validators": assistant_validator_catalog(),
-        "requested": requested,
-        "executed": requested,
-        "skipped": skipped,
-        "not_evaluated": not_evaluated,
-        "selection_error": null,
-        "validation_context_resource_limit": validation_context_resource_limit,
-        "state": state,
-        "complete": complete,
-        "visible_occurrence_count": visible_occurrence_count,
-        "visible_occurrence_count_at_least": visible_occurrence_count_at_least,
-        "checked_occurrence_count": if selection.requested.contains("collision") {
-            collision["checked_occurrence_count"].clone()
-        } else { serde_json::json!(participants.len()) },
-        "checked_pair_count": collision["checked_pair_count"],
-        "issue_count": total_issue_count,
-        "issues_complete": all_issues.len() == total_issue_count,
-        "issues": all_issues,
-        "collision": collision,
-        "assembly_retention": assembly_retention,
-        "assembly_constraints": assembly_constraints,
-        "gravity_support": {
-            "state": gravity_state,
-            "complete": selection.requested.contains("gravity_support")
-                && coverage_complete
-                && !matches!(gravity_state, "not_evaluated" | "unavailable")
-                && gravity_unproven_count == 0
-                && gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-            "gravity_axis": "-Z",
-            "floor_z_mm": snapshot.floor_z_mm().unwrap_or(0.0),
-            "checked_occurrence_count": if selection.requested.contains("gravity_support") {
-                gravity_participants.len()
-            } else {
-                0
+    coverage::with_nested_scope(
+        serde_json::json!({
+            "schema": "ketchup.assistant-validation-context.v1",
+            "document_id": snapshot.document_id().0,
+            "revision": snapshot.revision_id(),
+            "canonical_digest": snapshot.canonical_digest(),
+            "selection_mode": selection.mode,
+            "validators": assistant_validator_catalog(),
+            "requested": requested,
+            "executed": requested,
+            "skipped": skipped,
+            "not_evaluated": not_evaluated,
+            "selection_error": null,
+            "validation_context_resource_limit": validation_context_resource_limit,
+            "state": state,
+            "complete": complete,
+            "visible_occurrence_count": visible_occurrence_count,
+            "visible_occurrence_count_at_least": visible_occurrence_count_at_least,
+            "checked_occurrence_count": if selection.requested.contains("collision") {
+                collision["checked_occurrence_count"].clone()
+            } else { serde_json::json!(participants.len()) },
+            "checked_pair_count": collision["checked_pair_count"],
+            "issue_count": total_issue_count,
+            "issues_complete": all_issues.len() == total_issue_count,
+            "issues": all_issues,
+            "collision": collision,
+            "assembly_retention": assembly_retention,
+            "assembly_constraints": assembly_constraints,
+            "gravity_support": {
+                "state": gravity_state,
+                "complete": selection.requested.contains("gravity_support")
+                    && coverage_complete
+                    && !matches!(gravity_state, "not_evaluated" | "unavailable")
+                    && gravity_unproven_count == 0
+                    && gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+                "gravity_axis": "-Z",
+                "floor_z_mm": snapshot.floor_z_mm().unwrap_or(0.0),
+                "checked_occurrence_count": if selection.requested.contains("gravity_support") {
+                    gravity_participants.len()
+                } else {
+                    0
+                },
+                "unsupported_count": gravity_unsupported_count,
+                "unproven_contact_count": gravity_unproven_count,
+                "issues_complete": gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+                "issues": gravity_issues,
+                "assumptions": gravity_assumptions,
             },
-            "unsupported_count": gravity_unsupported_count,
-            "unproven_contact_count": gravity_unproven_count,
-            "issues_complete": gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-            "issues": gravity_issues,
-            "assumptions": gravity_assumptions,
-        },
-        "beam_deflection": beam_deflection,
-        "tipping": tipping,
-        "anchoring": anchoring,
-        "hardware_manufacturing": hardware_manufacturing,
-        "room_placement": room_placement,
-        "passage_clearance": passage_clearance,
-        "static_load": static_load,
-        "unavailable_occurrences": if selection.requested.iter().all(|id| *id == "collision") {
-            collision["unavailable_occurrences"].clone()
-        } else { serde_json::json!(unavailable) },
-    })
+            "beam_deflection": beam_deflection,
+            "tipping": tipping,
+            "anchoring": anchoring,
+            "hardware_manufacturing": hardware_manufacturing,
+            "room_placement": room_placement,
+            "passage_clearance": passage_clearance,
+            "static_load": static_load,
+            "unavailable_occurrences": if selection.requested.iter().all(|id| *id == "collision") {
+                collision["unavailable_occurrences"].clone()
+            } else { serde_json::json!(unavailable) },
+        }),
+        &visible_occurrences,
+    )
 }
