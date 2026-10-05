@@ -67,6 +67,67 @@ impl DesignReport {
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
     }
+
+    /// Counts by status, the most utilized member and the first failing ones.
+    #[must_use]
+    pub fn summary(&self) -> DesignSummary {
+        let count = |status: &str| self.members.iter().filter(|m| m.status == status).count();
+        let highest = self
+            .members
+            .iter()
+            .filter(|m| m.utilization.is_some())
+            .max_by(|a, b| {
+                a.utilization
+                    .unwrap_or(0.0)
+                    .total_cmp(&b.utilization.unwrap_or(0.0))
+            })
+            .map(|m| Highest {
+                part: m.part.clone(),
+                utilization: m.utilization.unwrap_or(0.0),
+                governing: m.governing.clone().unwrap_or_default(),
+                status: m.status,
+            });
+        DesignSummary {
+            members: self.members.len(),
+            with_utilization: self
+                .members
+                .iter()
+                .filter(|m| m.utilization.is_some())
+                .count(),
+            pass: count("pass"),
+            fail: count("fail"),
+            not_verified: count("not_verified"),
+            highest,
+            failing: self
+                .members
+                .iter()
+                .filter(|m| m.status == "fail")
+                .take(10)
+                .map(|m| m.part.clone())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Highest {
+    pub part: String,
+    pub utilization: f64,
+    pub governing: String,
+    pub status: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DesignSummary {
+    pub members: usize,
+    pub with_utilization: usize,
+    pub pass: usize,
+    pub fail: usize,
+    pub not_verified: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highest: Option<Highest>,
+    /// The first ten failing members.
+    pub failing: Vec<String>,
 }
 
 pub const BASIS: [&str; 8] = [

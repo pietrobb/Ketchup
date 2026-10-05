@@ -40,7 +40,34 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
         .iter()
         .map(|part| part.finished_holes().count())
         .sum::<usize>();
+    let mut not_assessed = vec!["assembly_access", "machine_specific_export"];
+    let load_capacity = if report.design.is_empty() {
+        not_assessed.insert(0, "load_capacity");
+        Value::Null
+    } else {
+        let members = report.design.summary();
+        let joints_open = report
+            .joints
+            .iter()
+            .filter(|joint| joint.status == "not_verified")
+            .count();
+        let state = if members.fail > 0 {
+            "failed"
+        } else if members.not_verified > 0 || joints_open > 0 {
+            "incomplete"
+        } else {
+            "passed"
+        };
+        json!({
+            "state": state,
+            "method": "ec5_member_check_computed_not_authorized_design",
+            "scope": "load_path_members_and_bearing_joints",
+            "members": members.members, "fail": members.fail, "not_verified": members.not_verified,
+            "bearing_joints_not_verified": joints_open
+        })
+    };
     json!({
+        "load_capacity": load_capacity,
         "state": state,
         "program": {"state": "accepted", "method": "starlark_evaluation"},
         "declared_intent": {
@@ -65,7 +92,7 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             "scope": "declared_joints_and_machining_only",
             "exact_manufacturing_verification": "not_evaluated"
         },
-        "not_assessed": ["load_capacity", "assembly_access", "machine_specific_export"]
+        "not_assessed": not_assessed
     })
 }
 

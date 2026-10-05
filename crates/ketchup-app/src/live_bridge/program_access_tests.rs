@@ -301,6 +301,33 @@ fn the_members_report_lists_the_timber_check_of_every_load_path_member() {
     bridge
         .execute(&mut app, apply_source(source), false)
         .unwrap();
+    let applied = bridge
+        .execute(
+            &mut app,
+            apply_source(&source.replace("200)", "201)")),
+            false,
+        )
+        .unwrap();
+    let statics = &applied["report"]["statics"]["members"];
+    assert_eq!(statics["members"], 1, "{applied}");
+    assert_eq!(statics["pass"], 1);
+    assert_eq!(statics["highest"]["part"], "beam");
+    assert_eq!(applied["validation"]["load_capacity"]["state"], "passed");
+    let weak_source = format!(
+        "{}\narea_load(\"live\", kind=\"imposed\", kn_m2=2, on=[\"d\"], source=\"test\")\nbox(\"d\", (3000,600,20), at=(0,-250,1060), material=\"C24\", tags=[\"d\"])",
+        source.replace("100,200)", "40,60)")
+    );
+    let weak = bridge
+        .execute(&mut app, apply_source(&weak_source), false)
+        .unwrap();
+    assert_eq!(
+        weak["report"]["statics"]["members"]["failing"],
+        json!(["beam"])
+    );
+    assert_eq!(weak["validation"]["load_capacity"]["state"], "failed");
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
     let rows = all_rows(&mut app, &mut bridge, ReportSection::Members);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["part"], "beam");

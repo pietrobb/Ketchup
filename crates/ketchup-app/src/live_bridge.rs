@@ -648,13 +648,31 @@ fn program_edit_result(
             "bom": {"total_parts": report.bom.total_parts, "cut_list_groups": report.bom.cut_list.len(),
                 "hardware_items": report.bom.hardware.len(),
                 "machining_operations": report.bom.machining.iter().map(|part| part.operations.len()).sum::<usize>()},
-            "details": "program action=report with expected=after, section=cut_list/hardware/machining/relations/issues/material_takeoff; follow next_offset until null",
+            "statics": statics_summary(report),
+            "details": "program action=report with expected=after, section=cut_list/hardware/machining/relations/issues/material_takeoff/joints/loads/members; follow next_offset until null",
             "params": report.params,
             "unused_overrides": report.unused_overrides,
             "log": log,
         },
         "geometry_evaluated": exact.as_ref().is_some_and(|exact| exact["state"] == "verified"),
         "validation": program_validation_summary::summary(report, model, exact.as_ref()), "exact_collisions": exact,
+    })
+}
+
+/// Member check counts and bearing joints by status; null for a program without them.
+fn statics_summary(report: &ketchup_program::Report) -> Value {
+    if report.design.is_empty() && report.joints.is_empty() {
+        return Value::Null;
+    }
+    let joints_not_verified = report
+        .joints
+        .iter()
+        .filter(|joint| joint.status == "not_verified")
+        .count();
+    json!({
+        "members": (!report.design.is_empty()).then(|| report.design.summary()),
+        "bearing_joints": report.joints.len(),
+        "bearing_joints_not_verified": joints_not_verified,
     })
 }
 
