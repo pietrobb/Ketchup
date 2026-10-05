@@ -263,10 +263,15 @@ fn the_house_rafters_bear_on_a_ridge_beam_that_sits_in_the_gables() {
             );
         }
         for gable in ["západ", "východ"] {
-            let sill = format!("konštrukcia/štít {gable}/stĺpiky/sill 2");
-            let area = contact_area(&report.relations, &sill, BEAM)
-                .unwrap_or_else(|| panic!("the beam does not sit on {sill}"));
-            assert!(area > 160.0 * 100.0, "{sill}: {area}");
+            let prefix = format!("konštrukcia/štít {gable}/stĺpiky/sill ");
+            let area = named(&evaluated.model, &prefix)
+                .into_iter()
+                .filter_map(|sill| contact_area(&report.relations, sill, BEAM))
+                .fold(0.0, f64::max);
+            assert!(
+                area > 160.0 * 100.0,
+                "the beam does not sit on {prefix}*: {area}"
+            );
         }
         assert!(
             evaluated
@@ -275,6 +280,53 @@ fn the_house_rafters_bear_on_a_ridge_beam_that_sits_in_the_gables() {
                 .is_some()
         );
         assert!(evaluated.model.part("konštrukcia/hrebenáč").is_some());
+    }
+}
+
+#[test]
+fn the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() {
+    for (system, studs) in [(0.0, 140.0), (1.0, 160.0)] {
+        let overrides: BTreeMap<_, _> = [("system".to_owned(), system)].into_iter().collect();
+        let (evaluated, report) =
+            run("tiny-house.star", HOUSE, &overrides).unwrap_or_else(|error| panic!("{error}"));
+        let model = &evaluated.model;
+        assert_eq!(errors(model), Vec::<String>::new());
+        // A joist bears on the top plate beside the 80 mm rim joist, from below.
+        let bearing = 80.0 * (studs - 80.0);
+        let joists = named(model, "konštrukcia/strop/stropnice/stud ");
+        for wall in ["južná", "severná"] {
+            let plate = format!("konštrukcia/prízemie/stena {wall}/stĺpiky/top plate");
+            let carried = joists
+                .iter()
+                .filter(|joist| {
+                    contact_area(&report.relations, joist, &plate)
+                        .is_some_and(|area| (area - bearing).abs() < 1.0)
+                })
+                .count();
+            assert!(carried >= 8, "{carried} joists bear on {plate}");
+            let rim = contact_area(
+                &report.relations,
+                "konštrukcia/strop/stropnice/bottom plate",
+                &plate,
+            )
+            .or_else(|| {
+                contact_area(
+                    &report.relations,
+                    "konštrukcia/strop/stropnice/top plate",
+                    &plate,
+                )
+            });
+            assert!(rim.is_some(), "no rim joist on {plate}");
+        }
+        for upper in ["podkrovie/nadmurovka južná", "štít západ"] {
+            let sole = format!("konštrukcia/{upper}/stĺpiky/bottom plate");
+            let on_deck = named(model, "konštrukcia/strop/OSB")
+                .into_iter()
+                .any(|deck| contact_area(&report.relations, &sole, deck).is_some());
+            assert!(on_deck, "{sole} does not stand on the floor deck");
+        }
+        assert!(model.part("komín/izolovaný komín").is_some());
+        assert!(model.part("komín/teleso").is_none());
     }
 }
 

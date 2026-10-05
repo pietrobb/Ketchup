@@ -1,5 +1,6 @@
-# Mini domček: prízemie, spacie podkrovie, sedlová strecha, komín s kachľami,
-# priame schody, okná, dvere a terasa. Hrebeň beží pozdĺž dlhej strany (x).
+# Mini domček: prízemie, spacie podkrovie, sedlová strecha, kachle s nerezovým
+# izolovaným komínom, priame schody, okná, dvere a terasa. Hrebeň beží pozdĺž
+# dlhej strany (x).
 #
 # Ten istý dom je tu dvakrát z rovnakých čísel: ako koncept (plné steny, strecha
 # a strop, tag "koncept") a ako konštrukcia drevostavby (skladby stien, stropu a
@@ -19,7 +20,7 @@ SLAB_C = (150, 150, 150)
 ROOF_C = (72, 72, 78)
 GLASS_C = (150, 200, 230)
 WOOD_C = (150, 100, 60)
-BRICK_C = (165, 75, 55)
+STEEL_C = (190, 192, 196)
 TIMBER_C = (205, 165, 110)
 WOOL_C = (238, 214, 120)
 OSB_C = (196, 160, 105)
@@ -138,7 +139,7 @@ for side, name, lo, hi, z0, z1 in OPENINGS:
         material = "drevo" if door else "izolačné sklo", color = WOOD_C if door else GLASS_C,
         tags = [] if door else ["okno"])
 
-# --- koncept: strop / podlaha podkrovia s otvorom pre schody a komín ---
+# --- koncept: strop / podlaha podkrovia s otvormi pre schody a komín ---
 attic_floor = box("podkrovie/podlaha", (L - 2 * WALL, B - 2 * WALL, FLOOR), at = (WALL, WALL, ceiling),
                   material = "drevený strop", color = WOOD_C, tags = "koncept")
 
@@ -181,18 +182,40 @@ for side, size, at in (("juh", (stair_end - stair_x, 40, 1000), (stair_x, hole_y
 
 stair_space("schody", treads, attic, landing = LANDING)
 
-# --- komín s kachľami ---
-CH = 450
-ch_x = round_to(L * 0.42, 5)
-ch_y = 1050
-ch_top = ridge + lift + 450
-chimney = box("komín/teleso", (CH, CH, ch_top - SLAB), at = (ch_x, ch_y, SLAB), material = "tehla", color = BRICK_C)
-box("komín/krycia doska", (CH + 150, CH + 150, 80), at = (ch_x - 75, ch_y - 75, ch_top),
-    material = "betón", color = SLAB_C)
-# Kachle stoja pri východnej strane komína, dvierka smerujú do obývačky.
-stove = box("kachle", (450, 500, 800), at = (ch_x + CH, ch_y + CH / 2.0 - 250, SLAB), material = "liatina", color = (45, 45, 45))
+# --- kachle a nerezový izolovaný komín ---
+# Z vrchu kachlí ide dymovod do izolovaného dvojplášťového komína; ten nesie
+# stropný prechod na podlahe podkrovia a prechádza strechou 650 mm nad hrebeň.
+# Drevo je od plášťa komína odsadené o FIRE.
+STOVE = (450, 500, 800)
+stove_x = round_to(L * 0.49, 5)
+stove_y = 1025
+FLUE_D = 250                          # vonkajší plášť izolovaného komína
+PIPE_D = 150                          # dymovod
+FIRE = 50                             # odstup dreva od plášťa komína
+fx, fy = stove_x + STOVE[0] / 2.0, stove_y + STOVE[1] / 2.0
+flue_join = ceiling - 500
+flue_top = ridge + lift + 650
+hole_x = (fx - FLUE_D / 2.0 - FIRE, fx + FLUE_D / 2.0 + FIRE)
+hole_d = (fy - FLUE_D / 2.0 - FIRE, fy + FLUE_D / 2.0 + FIRE)
+
+stove = box("kachle", STOVE, at = (stove_x, stove_y, SLAB), material = "liatina", color = (45, 45, 45))
 service_space(stove, "x+", 1000, height = 1800, name = "kachle/miesto na prikladanie")
-subtract(attic_floor, chimney, name = "prestup komína")
+
+def round_profile(diameter):
+    return ellipse(diameter / 2.0, diameter / 2.0)
+
+extrude("komín/dymovod", profile = round_profile(PIPE_D), distance = flue_join - SLAB - STOVE[2],
+        at = (fx, fy, SLAB + STOVE[2]), material = "oceľ", color = (40, 40, 40))
+extrude("komín/izolovaný komín", profile = round_profile(FLUE_D), distance = flue_top - flue_join,
+        at = (fx, fy, flue_join), material = "nerez, dvojplášťový izolovaný", color = STEEL_C)
+PASS = hole_x[1] - hole_x[0] + 200
+collar = box("komín/stropný prechod", (PASS, PASS, 3), at = (fx - PASS / 2.0, fy - PASS / 2.0, attic),
+             material = "nerez", color = STEEL_C)
+subtract(collar, extrude("komín/stropný prechod/otvor", profile = round_profile(FLUE_D), distance = 5,
+                         at = (fx, fy, attic - 1), tool = True), name = "otvor komína")
+flue_hole = box("komín/prestup", (hole_x[1] - hole_x[0], hole_d[1] - hole_d[0], flue_top - SLAB),
+                at = (hole_x[0], hole_d[0], SLAB), tool = True)
+subtract(attic_floor, flue_hole, name = "prestup komína")
 
 # --- koncept: sedlová strecha ---
 def roof(name, profile):
@@ -203,16 +226,17 @@ def roof(name, profile):
 low = eave - EAVE_OVER * tan
 roof_south = roof("strecha/južná", [[-EAVE_OVER, low], [B / 2.0, ridge], [B / 2.0, ridge + lift], [-EAVE_OVER, low + lift]])
 roof_north = roof("strecha/severná", [[B / 2.0, ridge], [B + EAVE_OVER, low], [B + EAVE_OVER, low + lift], [B / 2.0, ridge + lift]])
-subtract(roof_south, chimney, name = "prestup komína")
+subtract(roof_south, flue_hole, name = "prestup komína")
 
 # --- konštrukcia: tie isté rozmery, skladby podľa systému ---
-def openings_of(side, start, reverse):
-    """Otvory steny v jej súradniciach (u od `start` pozdĺž steny, v od vrchu dosky)."""
+def openings_of(side, start, reverse, base = SLAB, below = None):
+    """Otvory steny medzi výškami base a below v jej súradniciach (u od `start`
+    pozdĺž steny, v od base)."""
     found = []
     for wall, name, lo, hi, z0, z1 in OPENINGS:
-        if wall == side:
+        if wall == side and z0 >= base and (below == None or z1 <= below):
             u = start - hi if reverse else lo - start
-            found.append((u, z0 - SLAB, hi - lo, z1 - z0))
+            found.append((u, z0 - base, hi - lo, z1 - z0))
     return found
 
 T = ["konštrukcia"]
@@ -233,7 +257,6 @@ FACADE = WALL_LAYERS[-1]["thickness"]
 STUDS = WALL_LAYERS[2]["thickness"]
 PLATE_H = 100                         # výška pomúrnice
 RIDGE_W = 160                         # šírka hrebeňovej väznice
-FIRE = 50                             # odstup dreva od komína
 
 def roof_z(d, o):
     """Výška roviny strešného plášťa vo výške o kolmo nad jeho spodkom, d vodorovne
@@ -247,39 +270,74 @@ d_ridge = B / 2.0 - RIDGE_W / 2.0     # bok väznice
 apex = roof_z(B / 2.0, G + R)         # vrch väznice pod debnením
 ridge_bottom = apex - 20 * int((apex - roof_z(d_ridge, 0) + 40) / 20.0 + 0.999)
 
-# Vrstvy obvodovej steny končia pod krovom: stĺpiky pod pomúrnicou, fasáda pod
-# krokvami, vnútorné vrstvy pod podhľadom strechy.
-def wall_top(offset):
+# Platformová drevostavba: steny prízemia končia hornou pásnicou, na nej leží strop
+# (stropnice s obvodovým vencom a OSB) a na jeho podlahe stoja nadmurovky a štíty
+# podkrovia. Fasáda ide cez obe podlažia a kryje čelo stropu. Štíty sú medzi
+# fasádami pozdĺžnych stien, takže fasáda prechádza aj cez nároží.
+INNER = WALL_LAYERS[:-1]              # sadrokartón, OSB, stĺpiky
+FLOOR_LAYERS = system["floor"]
+deck = ceiling + FLOOR_LAYERS[0]["thickness"]   # vrch pásnice prízemia = spodok stropníc
+
+def floor_holes(x0, y0):
+    return [(stair_x - x0, hole_y[0] - y0, stair_end - stair_x, hole_y[1] - hole_y[0]),
+            (hole_x[0] - x0, hole_d[0] - y0, hole_x[1] - hole_x[0], hole_d[1] - hole_d[0])]
+
+# Nadmurovka: stĺpiky pod pomúrnicou, vnútorné vrstvy pod podhľadom strechy.
+def knee_top(offset):
     start = 0.0
-    for k in range(len(WALL_LAYERS)):
+    for k in range(len(INNER)):
         if abs(start - offset) < 0.001:
-            outer = WALL - offset - WALL_LAYERS[k]["thickness"]
-            if k == 2:
-                z = plate_bottom
-            elif k == len(WALL_LAYERS) - 1:
-                z = roof_z(0, G)
-            else:
-                z = roof_z(outer, 0)
-            return [(0, z - SLAB), (L - 2 * WALL, z - SLAB)]
-        start += WALL_LAYERS[k]["thickness"]
+            z = plate_bottom if k == 2 else roof_z(WALL - offset - INNER[k]["thickness"], 0)
+            return [(0, z - attic), (L - 2 * WALL, z - attic)]
+        start += INNER[k]["thickness"]
     fail("wall layer at offset %s" % offset)
 
-buildup("konštrukcia/stena južná", (WALL, WALL, SLAB), (1, 0, 0), (0, 0, 1), L - 2 * WALL, WALL_LAYERS,
-        top = wall_top, openings = openings_of("south", WALL, False), tags = T)
-buildup("konštrukcia/stena severná", (L - WALL, B - WALL, SLAB), (-1, 0, 0), (0, 0, 1), L - 2 * WALL, WALL_LAYERS,
-        top = wall_top, openings = openings_of("north", L - WALL, True), tags = T)
-GABLE_TOP = [(0, roof_z(0, G) - SLAB), (B / 2.0, roof_z(B / 2.0, G) - SLAB), (B, roof_z(0, G) - SLAB)]
-RIDGE_POCKET = (B / 2.0 - RIDGE_W / 2.0, ridge_bottom - SLAB, RIDGE_W, apex - ridge_bottom + 200)
-buildup("konštrukcia/štít západ", (WALL, B, SLAB), (0, -1, 0), (0, 0, 1), B, WALL_LAYERS,
-        top = GABLE_TOP, openings = openings_of("west", B, True) + [RIDGE_POCKET], tags = T)
-buildup("konštrukcia/štít východ", (L - WALL, 0, SLAB), (0, 1, 0), (0, 0, 1), B, WALL_LAYERS,
-        top = GABLE_TOP, openings = openings_of("east", 0, False) + [RIDGE_POCKET], tags = T)
+def gable_top(base):
+    """Vrch štítu pod krokvami medzi fasádami pozdĺžnych stien."""
+    return [(0, roof_z(FACADE, G) - base), (B / 2.0 - FACADE, roof_z(B / 2.0, G) - base),
+            (B - 2 * FACADE, roof_z(FACADE, G) - base)]
 
-buildup("konštrukcia/strop", (WALL, WALL, ceiling), (1, 0, 0), (0, 1, 0), L - 2 * WALL, system["floor"],
-        height = B - 2 * WALL, tags = T, openings = [
-            (stair_x - WALL, hole_y[0] - WALL, stair_end - stair_x, hole_y[1] - hole_y[0]),
-            (ch_x - WALL, ch_y - WALL, CH, CH),
-        ])
+def ridge_pocket(u0, base):
+    return (B / 2.0 - RIDGE_W / 2.0 - u0, ridge_bottom - base, RIDGE_W, apex - ridge_bottom + 200)
+
+GROUND = deck - SLAB
+SIDES = [
+    # stena, prízemie, podkrovie, (začiatok, smer), dĺžka, otvory od
+    ("south", "prízemie/stena južná", "podkrovie/nadmurovka južná", (WALL, WALL), (1, 0, 0), L - 2 * WALL, WALL, False),
+    ("north", "prízemie/stena severná", "podkrovie/nadmurovka severná", (L - WALL, B - WALL), (-1, 0, 0), L - 2 * WALL, L - WALL, True),
+    ("west", "prízemie/stena západ", "štít západ", (WALL, B - FACADE), (0, -1, 0), B - 2 * FACADE, B - FACADE, True),
+    ("east", "prízemie/stena východ", "štít východ", (L - WALL, FACADE), (0, 1, 0), B - 2 * FACADE, FACADE, False),
+]
+for side, ground, upper, (x, y), along, length, start, reverse in SIDES:
+    buildup("konštrukcia/" + ground, (x, y, SLAB), along, (0, 0, 1), length, INNER, height = GROUND,
+            openings = openings_of(side, start, reverse, SLAB, deck), tags = T)
+    attic_openings = openings_of(side, start, reverse, attic)
+    if side in ("south", "north"):
+        buildup("konštrukcia/" + upper, (x, y, attic), along, (0, 0, 1), length, INNER, top = knee_top,
+                openings = attic_openings, tags = T)
+    else:
+        buildup("konštrukcia/" + upper, (x, y, attic), along, (0, 0, 1), length, INNER, top = gable_top(attic),
+                openings = attic_openings + [ridge_pocket(FACADE, attic)], tags = T)
+
+FACADE_LAYERS = WALL_LAYERS[-1:]
+eave_line = roof_z(0, G) - SLAB
+for side, (x, y), along, length, start, reverse in (
+        ("south", (FACADE, FACADE), (1, 0, 0), L - 2 * FACADE, FACADE, False),
+        ("north", (L - FACADE, B - FACADE), (-1, 0, 0), L - 2 * FACADE, L - FACADE, True)):
+    buildup("konštrukcia/fasáda %s" % ("južná" if side == "south" else "severná"), (x, y, SLAB), along, (0, 0, 1),
+            length, FACADE_LAYERS, height = eave_line, openings = openings_of(side, start, reverse), tags = T)
+for side, name, (x, y), along, start, reverse in (("west", "západ", (FACADE, B), (0, -1, 0), B, True),
+                                                  ("east", "východ", (L - FACADE, 0), (0, 1, 0), 0, False)):
+    buildup("konštrukcia/fasáda %s" % name, (x, y, SLAB), along, (0, 0, 1), B, FACADE_LAYERS,
+            top = [(0, eave_line), (B / 2.0, roof_z(B / 2.0, G) - SLAB), (B, eave_line)],
+            openings = openings_of(side, start, reverse) + [ridge_pocket(0, SLAB)], tags = T)
+
+# Strop: stropnice ležia na hornej pásnici stien prízemia, obvodový veniec (krajné
+# stropnice a čelné fošne) stojí na jej vonkajšej časti. Podhľad je len v interiéri.
+buildup("konštrukcia/podhľad prízemia", (WALL, WALL, ceiling), (1, 0, 0), (0, 1, 0), L - 2 * WALL, FLOOR_LAYERS[:1],
+        height = B - 2 * WALL, openings = floor_holes(WALL, WALL), tags = T)
+buildup("konštrukcia/strop", (FACADE, FACADE, deck), (1, 0, 0), (0, 1, 0), L - 2 * FACADE, FLOOR_LAYERS[1:],
+        height = B - 2 * FACADE, openings = floor_holes(FACADE, FACADE), tags = T)
 
 ROOF_LENGTH = L + 2 * GABLE_OVER
 
@@ -319,9 +377,8 @@ RAFTERS = ([-GABLE_OVER, on_gables[0]] +
            [on_gables[0] + k * (on_gables[1] - on_gables[0]) / bays for k in range(1, bays)] +
            [on_gables[1], L + GABLE_OVER - RAFTER_W])
 
-# Prestup komína v južnej polovici: prerušené krokvy nesú výmeny pod a nad komínom.
-hole_x = (ch_x - FIRE, ch_x + CH + FIRE)
-hole_d = (ch_y - FIRE, ch_y + CH + FIRE)
+# Prestup komína v južnej polovici: výmeny pod a nad komínom ohraničia otvor
+# medzi susednými krokvami a nesú krokvy, ktoré otvor preruší.
 cut = [x for x in RAFTERS if x < hole_x[1] and hole_x[0] < x + RAFTER_W]
 trim_x = (max([x + RAFTER_W for x in RAFTERS if x + RAFTER_W <= hole_x[0]]),
           min([x for x in RAFTERS if x >= hole_x[1]]))

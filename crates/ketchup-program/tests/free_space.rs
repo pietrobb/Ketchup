@@ -69,7 +69,7 @@ fn a_stair_ending_at_the_wall_has_no_landing() {
     ));
     assert!(
         found.iter().any(
-            |(part, message)| part.starts_with("konštrukcia/štít západ/")
+            |(part, message)| part.starts_with("konštrukcia/prízemie/stena západ/")
                 && message.contains("schody/landing at the foot")
         ),
         "{found:#?}"
