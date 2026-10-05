@@ -36,6 +36,17 @@ pub(crate) struct PushPullState {
     pub(crate) smart_proposal: Option<SmartPushPullProposal>,
     pub(crate) smart_planning: Option<SmartPushPullPlanning>,
     pub(crate) last: Option<LastPushPull>,
+    /// The last re-planned preview and the command digest it re-planned to,
+    /// `None` when the preview no longer re-plans to itself.
+    pub(crate) preview_check: std::cell::RefCell<Option<(PreviewCheckKey, Option<String>)>>,
+    /// The owning program evaluated once per source, for the drawn-shape
+    /// Push/Pull that looks up program parts on every pointer move.
+    pub(crate) program_evaluation: std::cell::RefCell<
+        Option<(
+            ketchup_model::document::RuleProgramSource,
+            Option<std::rc::Rc<ketchup_program::Evaluated>>,
+        )>,
+    >,
 }
 
 /// Targets and typed inputs of the solid tools (revolve, loft, pocket editor).

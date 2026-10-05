@@ -1021,6 +1021,23 @@ struct EphemeralBoxPreview {
     batch: CommandBatch,
 }
 
+/// Everything [`KetchupApp::has_preview`] re-plans the Push/Pull from.
+/// Re-planning touches the whole document and painting asks once per face,
+/// so the answer is kept until one of these changes.
+#[derive(PartialEq)]
+struct PreviewCheckKey {
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    planning: Option<PushPullPlanningPlan>,
+    exact_results_stamps: (u64, u64),
+    primary: Option<SelectionId>,
+    selected_group: Option<GroupId>,
+    edit_context: Vec<EditContext>,
+    topological: Vec<(SelectionId, SnapshotBoundTopologicalSelection)>,
+    preview: EphemeralBoxPreview,
+}
+
 #[derive(Clone)]
 enum SmartPushPullPlanning {
     Append,

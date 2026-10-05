@@ -1855,7 +1855,9 @@ impl KetchupApp {
                 .map(|anchor| anchor.0)
             {
                 if self.update_push_pull_gesture(&anchor, pointer)
-                    && (self.has_preview() || self.has_occurrence_operation_preview())
+                    && (self.has_preview()
+                        || self.has_occurrence_operation_preview()
+                        || self.has_drawn_shape_preview())
                 {
                     self.confirm_push_pull_preview();
                 } else if self.push_pull_gesture_is_current(&anchor) {
@@ -2282,7 +2284,10 @@ impl KetchupApp {
             } else if let Some(drag) = self.take_scale_session() {
                 self.commit_scale_drag(&drag);
             } else if let Some(drag) = self.gesture.drag.remove::<PushPullDrag>() {
-                if self.has_preview() || self.has_occurrence_operation_preview() {
+                if self.has_preview()
+                    || self.has_occurrence_operation_preview()
+                    || self.has_drawn_shape_preview()
+                {
                     self.confirm_push_pull_preview();
                 } else if self.push_pull_gesture_is_current(&drag) {
                     self.gesture.drag.open(PushPullAnchor(drag));

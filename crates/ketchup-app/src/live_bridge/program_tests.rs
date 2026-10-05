@@ -1407,7 +1407,8 @@ fn only_shapes_lying_on_a_part_face_become_program_edits_and_may_run_off_it() {
     let square = lines(&[[10.0, 10.0], [30.0, 10.0], [30.0, 30.0], [10.0, 30.0]]);
 
     // Floating above the part, tilted against its top, or next to it on the
-    // top's plane: none of these is on a face, so Push/Pull stays as it was.
+    // top's plane: none of these is on a face, so each would become a part of
+    // its own, not a pocket or a boss.
     let tilt = 0.5f64.sqrt();
     for (origin, y) in [
         ([0.0, 0.0, 100.0], [0.0, 1.0, 0.0]),
@@ -1416,7 +1417,10 @@ fn only_shapes_lying_on_a_part_face_become_program_edits_and_may_run_off_it() {
     ] {
         let shape = draw(&mut app, origin, [1.0, 0.0, 0.0], y, square.clone());
         assert!(
-            app.drawn_shape_edit(&shape, -5.0).is_none(),
+            matches!(
+                app.drawn_shape_edit(&shape, -5.0),
+                Some(Ok(edit)) if edit.kind == crate::drawn_shape::DrawnShapeKind::Part
+            ),
             "{origin:?} {y:?}"
         );
     }
@@ -1449,5 +1453,42 @@ fn only_shapes_lying_on_a_part_face_become_program_edits_and_may_run_off_it() {
     assert_volume(
         exact_volume(&app, "block"),
         BLOCK_VOLUME - 20.0 * 20.0 * 5.0,
+    );
+}
+
+#[test]
+fn a_rectangle_or_an_ellipse_drawn_beside_program_parts_becomes_a_program_part() {
+    const BLOCK: &str = "block = box(\"block\", (100, 60, 40))\n";
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
+    // Far from the origin, as beside a house.
+    draw(
+        &mut app,
+        [-2500.0, -2500.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        lines(&[[0.0, 0.0], [1000.0, 0.0], [1000.0, 700.0], [0.0, 700.0]]),
+    );
+    assert!(push_pull_drawn(&mut app, "420"), "{}", app.digest);
+    draw(
+        &mut app,
+        [-2500.0, 2500.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        ketchup_model::document::ellipse_segments([0.0, 0.0], 1220.0, 820.0, 0.6),
+    );
+    assert!(push_pull_drawn(&mut app, "300"), "{}", app.digest);
+
+    let program = app.document.current_rule_program().unwrap().source.clone();
+    assert!(program.starts_with(BLOCK), "{program}");
+    assert!(program.contains("place(extrude(\"shape 1\""), "{program}");
+    assert!(program.contains("place(extrude(\"shape 2\""), "{program}");
+    // The drawn shapes are used up.
+    assert_eq!(names(&app).len(), 3, "{:?}", names(&app));
+    evaluate_exact(&mut app);
+    assert_volume(exact_volume(&app, "shape 1"), 1000.0 * 700.0 * 420.0);
+    assert_volume(
+        exact_volume(&app, "shape 2"),
+        std::f64::consts::PI * 1220.0 * 820.0 * 300.0,
     );
 }

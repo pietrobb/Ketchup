@@ -23,6 +23,9 @@ pub(crate) mod project_drawings;
 #[cfg(test)]
 #[path = "app/project_drawings_tests.rs"]
 mod project_drawings_tests;
+#[cfg(test)]
+#[path = "app/push_pull_house_tests.rs"]
+mod push_pull_house_tests;
 mod saved_views;
 mod section;
 mod selection;

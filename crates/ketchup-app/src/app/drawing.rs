@@ -1969,26 +1969,65 @@ impl KetchupApp {
             return false;
         }
         let snapshot = self.document.current();
-        self.derive_push_pull_preview_plan(
-            &preview.plan.source,
-            preview.plan.principal,
-            &preview.plan.distance_expression,
-            f64::from_bits(preview.plan.distance_mm_bits),
-        )
-        .is_some_and(|(plan, batch, candidate)| {
-            plan == preview.plan
-                && batch == preview.batch
-                && candidate.is_current(&snapshot)
-                && self
-                    .push_pull
-                    .smart_proposal
-                    .as_ref()
-                    .is_some_and(|proposal| {
-                        proposal.is_current(&snapshot)
-                            && proposal.batch() == &batch
-                            && proposal.command_digest() == candidate.command_digest()
+        let key = self.preview_check_key(&snapshot, preview);
+        let cached = self
+            .push_pull
+            .preview_check
+            .borrow()
+            .as_ref()
+            .and_then(|(cached, digest)| (*cached == key).then(|| digest.clone()));
+        let digest = match cached {
+            Some(digest) => digest,
+            None => {
+                let digest = self
+                    .derive_push_pull_preview_plan(
+                        &preview.plan.source,
+                        preview.plan.principal,
+                        &preview.plan.distance_expression,
+                        f64::from_bits(preview.plan.distance_mm_bits),
+                    )
+                    .filter(|(plan, batch, candidate)| {
+                        *plan == preview.plan
+                            && *batch == preview.batch
+                            && candidate.is_current(&snapshot)
                     })
+                    .map(|(_, _, candidate)| candidate.command_digest().to_owned());
+                *self.push_pull.preview_check.borrow_mut() = Some((key, digest.clone()));
+                digest
+            }
+        };
+        digest.is_some_and(|digest| {
+            self.push_pull
+                .smart_proposal
+                .as_ref()
+                .is_some_and(|proposal| {
+                    proposal.is_current(&snapshot)
+                        && proposal.batch() == &preview.batch
+                        && proposal.command_digest() == digest
+                })
         })
+    }
+
+    pub(crate) fn preview_check_key(
+        &self,
+        snapshot: &Snapshot,
+        preview: &EphemeralBoxPreview,
+    ) -> PreviewCheckKey {
+        PreviewCheckKey {
+            document_id: snapshot.document_id(),
+            revision_id: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
+            planning: self.push_pull_planning_plan(),
+            exact_results_stamps: (
+                self.exact.results.contents_stamp(),
+                self.exact.topology_results.contents_stamp(),
+            ),
+            primary: self.selection.primary.clone(),
+            selected_group: self.selection.selected_group,
+            edit_context: self.selection.edit_context.clone(),
+            topological: self.selection.topological.clone(),
+            preview: preview.clone(),
+        }
     }
 
     pub fn cancel_preview(&mut self) {

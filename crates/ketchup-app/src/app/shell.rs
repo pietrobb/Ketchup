@@ -95,6 +95,8 @@ impl KetchupApp {
                 smart_proposal: None,
                 smart_planning: None,
                 last: None,
+                preview_check: std::cell::RefCell::new(None),
+                program_evaluation: std::cell::RefCell::new(None),
             },
             solid_tools: app_state::SolidToolInputs {
                 target: None,

@@ -32,8 +32,32 @@ pub(super) enum DrawnShapeChange {
 pub(super) struct DrawnShapeEdit {
     pub change: DrawnShapeChange,
     pub part: String,
-    pub pocket: bool,
+    pub kind: DrawnShapeKind,
     pub amount_mm: f64,
+}
+
+/// What a drawn-shape Push/Pull makes of the shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum DrawnShapeKind {
+    /// Milled into the part it lies on.
+    Pocket,
+    /// Standing out of the part it lies on, joined to it.
+    Boss,
+    /// A part of its own, standing on no part.
+    Part,
+}
+
+impl DrawnShapeKind {
+    const fn digest_key(self, committed: bool) -> &'static str {
+        match (self, committed) {
+            (Self::Pocket, false) => "digest-drawn-shape-pocket-live",
+            (Self::Boss, false) => "digest-drawn-shape-boss-live",
+            (Self::Part, false) => "digest-drawn-shape-part-live",
+            (Self::Pocket, true) => "digest-drawn-shape-pocket-committed",
+            (Self::Boss, true) => "digest-drawn-shape-boss-committed",
+            (Self::Part, true) => "digest-drawn-shape-part-committed",
+        }
+    }
 }
 
 /// A drawn-shape Push/Pull waiting for Enter. It stays valid only while the
@@ -47,12 +71,100 @@ pub(super) struct DrawnShapePreview {
 }
 
 /// One edge of the drawn loop in world coordinates; `arc` holds the centre
-/// and the direction as drawn.
+/// and the direction as drawn, `controls` the inner points of a cubic.
 #[derive(Clone, Copy)]
 struct WorldSegment {
     start: Vec3,
     end: Vec3,
     arc: Option<(Vec3, bool)>,
+    controls: Option<[Vec3; 2]>,
+}
+
+/// The drawn loop placed by `transform`, or `None` when it holds a spline,
+/// which a program profile cannot express.
+fn world_segments(transform: Transform, segments: &[ProfileSegment]) -> Option<Vec<WorldSegment>> {
+    let to_world =
+        |value: [f64; 2]| transform_model_point(transform, Vec3::new(value[0], value[1], 0.0));
+    segments
+        .iter()
+        .map(|segment| {
+            let (start, end, arc, controls) = match segment {
+                ProfileSegment::Line { start_mm, end_mm } => (start_mm, end_mm, None, None),
+                ProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => (
+                    start_mm,
+                    end_mm,
+                    Some((to_world(*center_mm), *clockwise)),
+                    None,
+                ),
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => (
+                    start_mm,
+                    end_mm,
+                    None,
+                    Some([to_world(*control_1_mm), to_world(*control_2_mm)]),
+                ),
+                ProfileSegment::Spline { .. } => return None,
+            };
+            Some(WorldSegment {
+                start: to_world(*start),
+                end: to_world(*end),
+                arc,
+                controls,
+            })
+        })
+        .collect()
+}
+
+/// The program profile of `world` in the face coordinates `uv`: a point
+/// list for a polygon, named segments when it holds arcs or cubics. A
+/// `mirrored` frame turns arcs the other way.
+fn program_profile(
+    world: &[WorldSegment],
+    uv: impl Fn(Vec3) -> [f64; 2],
+    mirrored: bool,
+) -> String {
+    let pair = |p: Vec3| {
+        let [u, v] = uv(p);
+        format!("[{}, {}]", number(u), number(v))
+    };
+    if world
+        .iter()
+        .all(|segment| segment.arc.is_none() && segment.controls.is_none())
+    {
+        let points = world.iter().map(|segment| pair(segment.start));
+        return format!("[{}]", points.collect::<Vec<_>>().join(", "));
+    }
+    let items = world.iter().enumerate().map(|(index, segment)| {
+        let name = quote(&format!("edge{}", index + 1));
+        let (start, end) = (pair(segment.start), pair(segment.end));
+        match (segment.arc, segment.controls) {
+            (Some((center, clockwise)), _) => {
+                let [cu, cv] = uv(center);
+                let clockwise = if clockwise != mirrored { "True" } else { "False" };
+                format!(
+                    "[{name}, {start}, {end}, {{\"center\": ({}, {}), \"clockwise\": {clockwise}}}]",
+                    number(cu),
+                    number(cv)
+                )
+            }
+            (None, Some([first, second])) => format!(
+                "[{name}, {start}, {end}, {{\"controls\": [{}, {}]}}]",
+                pair(first),
+                pair(second)
+            ),
+            (None, None) => format!("[{name}, {start}, {end}]"),
+        }
+    });
+    format!("[{}]", items.collect::<Vec<_>>().join(", "))
 }
 
 /// A program part face the drawn shape lies on.
@@ -171,6 +283,66 @@ fn loop_bounds(segments: &[ProfileSegment]) -> ([f64; 2], [f64; 2]) {
     (low, high)
 }
 
+/// The program line that extrudes a drawn shape lying on no part into a part
+/// of its own, `distance_mm` along the drawing's normal.
+fn free_shape_program_edit(
+    mut program: RuleProgramSource,
+    evaluated: &ketchup_program::Evaluated,
+    snapshot: &Snapshot,
+    drawn: &Occurrence,
+    segments: &[ProfileSegment],
+    distance_mm: f64,
+) -> Result<DrawnShapeEdit, DrawnShapeRefusal> {
+    let transform = drawn.transform();
+    let world = world_segments(transform, segments).ok_or(DrawnShapeRefusal::CurveOnProgramPart)?;
+    let at = |x, y, z| transform_model_point(transform, Vec3::new(x, y, z));
+    let origin = at(0.0, 0.0, 0.0);
+    let unit = |v: Vec3| v * (1.0 / length(v));
+    let (x, y, z) = (
+        at(1.0, 0.0, 0.0) - origin,
+        at(0.0, 1.0, 0.0) - origin,
+        at(0.0, 0.0, 1.0) - origin,
+    );
+    let mirrored = dot(cross(x, y), z) < 0.0;
+    let (x, z) = (unit(x), unit(z));
+    let y = cross(z, x);
+    let profile = program_profile(
+        &world,
+        |p| [dot(p - origin, x), dot(p - origin, y)],
+        mirrored,
+    );
+    // The part rises from the drawing along its normal, or sinks below it.
+    let amount_mm = distance_mm.abs();
+    let base = origin + z * distance_mm.min(0.0);
+    let name = (1..)
+        .map(|index| format!("shape {index}"))
+        .find(|name| {
+            !evaluated.part_sources.contains_key(name) && !program.source.contains(&quote(name))
+        })
+        .expect("some name is free");
+    let triple = |v: Vec3| format!("({}, {}, {})", number(v.x), number(v.y), number(v.z));
+    if !program.source.ends_with('\n') {
+        program.source.push('\n');
+    }
+    program.source.push_str(&format!(
+        "place(extrude({}, profile = {profile}, distance = {}), origin = {}, z = {}, x = {})\n",
+        quote(&name),
+        number(amount_mm),
+        triple(base),
+        triple(z),
+        triple(x),
+    ));
+    Ok(DrawnShapeEdit {
+        change: DrawnShapeChange::Program {
+            source: program,
+            consumed: consumed(snapshot, drawn),
+        },
+        part: name,
+        kind: DrawnShapeKind::Part,
+        amount_mm,
+    })
+}
+
 /// Why a drawn shape cannot be pushed or pulled into the part it lies on.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DrawnShapeRefusal {
@@ -235,12 +407,13 @@ impl KetchupApp {
         let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
         let segments = drawn_loop(&snapshot, occurrence.definition_id())?;
         if let Some(program) = self.document.current_rule_program().filter(|_| !correcting) {
-            let owned = ketchup_application::rule_program_part_sources(program).ok()?;
-            if owned.contains_key(occurrence.name()) {
+            let evaluated = self.evaluated_program(program)?;
+            if evaluated.part_sources.contains_key(occurrence.name()) {
                 return None;
             }
             if let Some(edit) = self.program_shape_edit(
                 program.clone(),
+                &evaluated,
                 &snapshot,
                 occurrence,
                 &segments,
@@ -248,8 +421,42 @@ impl KetchupApp {
             ) {
                 return Some(edit);
             }
+            // A shape on no part becomes a part of the program, which keeps
+            // owning the document.
+            return self
+                .definition_shape_edit(&snapshot, occurrence, &segments, distance_mm)
+                .or_else(|| {
+                    Some(free_shape_program_edit(
+                        program.clone(),
+                        &evaluated,
+                        &snapshot,
+                        occurrence,
+                        &segments,
+                        distance_mm,
+                    ))
+                });
         }
         self.definition_shape_edit(&snapshot, occurrence, &segments, distance_mm)
+    }
+
+    /// `program` evaluated once per source and overrides: a Push/Pull drag
+    /// asks on every pointer move, and a house program takes a second.
+    fn evaluated_program(
+        &self,
+        program: &RuleProgramSource,
+    ) -> Option<std::rc::Rc<ketchup_program::Evaluated>> {
+        if let Some((cached, evaluated)) = self.push_pull.program_evaluation.borrow().as_ref()
+            && cached == program
+        {
+            return evaluated.clone();
+        }
+        let evaluated =
+            ketchup_program::evaluate(&program.file_name, &program.source, &program.overrides)
+                .ok()
+                .map(std::rc::Rc::new);
+        *self.push_pull.program_evaluation.borrow_mut() =
+            Some((program.clone(), evaluated.clone()));
+        evaluated
     }
 
     /// The program line a Push/Pull on a face of a program part writes, or
@@ -257,45 +464,21 @@ impl KetchupApp {
     fn program_shape_edit(
         &self,
         program: RuleProgramSource,
+        evaluated: &ketchup_program::Evaluated,
         snapshot: &Snapshot,
         occurrence: &Occurrence,
         segments: &[ProfileSegment],
         distance_mm: f64,
     ) -> Option<Result<DrawnShapeEdit, DrawnShapeRefusal>> {
-        let owned = ketchup_application::rule_program_part_sources(&program).ok()?;
+        let owned = &evaluated.part_sources;
         let transform = occurrence.transform();
-        let to_world =
-            |value: [f64; 2]| transform_model_point(transform, Vec3::new(value[0], value[1], 0.0));
-        let mut world = Vec::with_capacity(segments.len());
-        for segment in segments {
-            world.push(match segment {
-                ProfileSegment::Line { start_mm, end_mm } => WorldSegment {
-                    start: to_world(*start_mm),
-                    end: to_world(*end_mm),
-                    arc: None,
-                },
-                ProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => WorldSegment {
-                    start: to_world(*start_mm),
-                    end: to_world(*end_mm),
-                    arc: Some((to_world(*center_mm), *clockwise)),
-                },
-                ProfileSegment::CubicBezier { .. } | ProfileSegment::Spline { .. } => {
-                    return Some(Err(DrawnShapeRefusal::CurveOnProgramPart));
-                }
-            });
-        }
-        let origin = to_world([0.0, 0.0]);
+        let Some(world) = world_segments(transform, segments) else {
+            return Some(Err(DrawnShapeRefusal::CurveOnProgramPart));
+        };
+        let origin = transform_model_point(transform, Vec3::new(0.0, 0.0, 0.0));
         let drawn_normal = transform_model_point(transform, Vec3::new(0.0, 0.0, 1.0)) - origin;
         let drawn_normal = drawn_normal * (1.0 / length(drawn_normal));
-        let model = ketchup_application::plan_rule_program(&self.document, &program)
-            .ok()?
-            .evaluated
-            .model;
+        let model = &evaluated.model;
 
         // Every program part face the shape lies on, with the distance
         // turned into a move along that face's outward normal.
@@ -370,46 +553,13 @@ impl KetchupApp {
             chosen.along,
             chosen.mirrored,
         );
-        let uv = |p: Vec3| chosen.uv(p);
-        let pair = |p: Vec3| {
-            let [u, v] = uv(p);
-            format!("[{}, {}]", number(u), number(v))
-        };
-        let profile = if world.iter().all(|segment| segment.arc.is_none()) {
-            format!(
-                "[{}]",
-                world
-                    .iter()
-                    .map(|segment| pair(segment.start))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+        let profile = program_profile(&world, |p| chosen.uv(p), mirrored);
+        let kind = if along < 0.0 {
+            DrawnShapeKind::Pocket
         } else {
-            let items = world
-                .iter()
-                .enumerate()
-                .map(|(index, segment)| {
-                    let name = quote(&format!("edge{}", index + 1));
-                    match segment.arc {
-                        None => format!("[{name}, {}, {}]", pair(segment.start), pair(segment.end)),
-                        Some((center, clockwise)) => {
-                            let [cu, cv] = uv(center);
-                            let clockwise = if clockwise != mirrored { "True" } else { "False" };
-                            format!(
-                                "[{name}, {}, {}, {{\"center\": ({}, {}), \"clockwise\": {clockwise}}}]",
-                                pair(segment.start),
-                                pair(segment.end),
-                                number(cu),
-                                number(cv)
-                            )
-                        }
-                    }
-                })
-                .collect::<Vec<_>>();
-            format!("[{}]", items.join(", "))
+            DrawnShapeKind::Boss
         };
-        let pocket = along < 0.0;
-        let (call, prefix) = if pocket {
+        let (call, prefix) = if kind == DrawnShapeKind::Pocket {
             ("pocket_shape", "pocket")
         } else {
             ("boss", "boss")
@@ -437,7 +587,7 @@ impl KetchupApp {
                 consumed: consumed(snapshot, occurrence),
             },
             part,
-            pocket,
+            kind,
             amount_mm,
         }))
     }
@@ -460,6 +610,9 @@ impl KetchupApp {
         // sign says whether that face looks along the drawing's normal.
         let mut hosts = Vec::new();
         let current = self.document.current();
+        // Looked up per host, so indexed once rather than scanned per host.
+        let rendered = self.exact.topology_results.render_by_definition(snapshot);
+        let rendered_current = self.exact.topology_results.render_by_definition(&current);
         for host in snapshot.occurrences() {
             if host.id() == drawn.id() || host.definition_id() == drawn.definition_id() {
                 continue;
@@ -467,24 +620,16 @@ impl KetchupApp {
             let definition_id = host.definition_id();
             // A correction plans against an earlier revision; a host the last
             // step left alone keeps the solid evaluated for the current one.
-            let Some(package) = self
-                .exact
-                .topology_results
-                .get_render(snapshot, definition_id)
-                .or_else(|| {
-                    let package = self
-                        .exact
-                        .topology_results
-                        .get_render(&current, definition_id)?;
-                    let producer = package.producer_feature_id();
-                    let input = |snapshot: &Snapshot| {
-                        snapshot
-                            .exact_brep_graph(definition_id, producer)
-                            .map(|graph| graph.canonical_input_digest.clone())
-                    };
-                    (input(snapshot)? == input(&current)?).then_some(package)
-                })
-            else {
+            let Some(package) = rendered.get(&definition_id).copied().or_else(|| {
+                let package = *rendered_current.get(&definition_id)?;
+                let producer = package.producer_feature_id();
+                let input = |snapshot: &Snapshot| {
+                    snapshot
+                        .exact_brep_graph(definition_id, producer)
+                        .map(|graph| graph.canonical_input_digest.clone())
+                };
+                (input(snapshot)? == input(&current)?).then_some(package)
+            }) else {
                 continue;
             };
             let Some(to_host) = host
@@ -497,6 +642,34 @@ impl KetchupApp {
             let m = *to_host.matrix();
             let origin = [m[3], m[7], m[11]];
             let axes = [[m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]];
+            // Every face the triangle test below accepts lies in the host's
+            // bounds, so a host whose bounds miss the drawing's plane or the
+            // shape within it is skipped without walking its triangles.
+            let [min, max] = package.bounds_mm();
+            let corners = (0..8).map(|index| {
+                let pick = |axis: usize| {
+                    if index >> axis & 1 == 0 {
+                        min[axis]
+                    } else {
+                        max[axis]
+                    }
+                };
+                sub([pick(0), pick(1), pick(2)], origin)
+            });
+            let ranges = corners.fold([[f64::INFINITY, f64::NEG_INFINITY]; 3], |mut ranges, p| {
+                for (range, axis) in ranges.iter_mut().zip(axes) {
+                    let value = dot(p, axis);
+                    range[0] = range[0].min(value);
+                    range[1] = range[1].max(value);
+                }
+                ranges
+            });
+            if ranges[2][0] > plane_mm
+                || ranges[2][1] < -plane_mm
+                || (0..2).any(|i| ranges[i][0] >= high[i] || ranges[i][1] <= low[i])
+            {
+                continue;
+            }
             let vertices = package.vertices();
             let facing = package.triangles().iter().find_map(|triangle| {
                 let [a, b, c] = triangle.vertex_indices.map(|index| {
@@ -645,7 +818,7 @@ impl KetchupApp {
         Some(Ok(DrawnShapeEdit {
             change: DrawnShapeChange::Definition(batch),
             part: host.name().to_owned(),
-            pocket: true,
+            kind: DrawnShapeKind::Pocket,
             amount_mm,
         }))
     }
@@ -672,11 +845,7 @@ impl KetchupApp {
         self.push_pull.smart_planning = planning;
         self.status_key = "status-preview";
         self.digest = self.catalog.format(
-            if edit.pocket {
-                "digest-drawn-shape-pocket-live"
-            } else {
-                "digest-drawn-shape-boss-live"
-            },
+            edit.kind.digest_key(false),
             &BTreeMap::from([
                 ("amount", format_height(edit.amount_mm)),
                 ("part", edit.part.clone()),
@@ -737,11 +906,7 @@ impl KetchupApp {
         self.push_pull.smart_planning = None;
         self.status_key = "status-ready";
         self.digest = self.catalog.format(
-            if edit.pocket {
-                "digest-drawn-shape-pocket-committed"
-            } else {
-                "digest-drawn-shape-boss-committed"
-            },
+            edit.kind.digest_key(true),
             &BTreeMap::from([
                 ("amount", format_height(edit.amount_mm)),
                 ("part", edit.part),

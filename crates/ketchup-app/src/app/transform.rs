@@ -1339,6 +1339,7 @@ impl KetchupApp {
         };
         let new_extent_mm = f64::from_bits(plan.new_extent_mm_bits);
         let shared_count = plan.shared_count;
+        let digest = proposal.command_digest().to_owned();
         self.push_pull.smart_proposal = Some(proposal);
         self.tool_preview.close::<OccurrenceOperationPreview>();
         if plan.source.topological_reference.is_some()
@@ -1350,7 +1351,11 @@ impl KetchupApp {
             self.push_pull.face_offset_preview_due =
                 Some(Instant::now() + Duration::from_millis(150));
         }
-        self.tool_preview.open(EphemeralBoxPreview { plan, batch });
+        let preview = EphemeralBoxPreview { plan, batch };
+        // Derived just now from this state, so its check need not derive it again.
+        let key = self.preview_check_key(&self.document.current(), &preview);
+        *self.push_pull.preview_check.borrow_mut() = Some((key, Some(digest)));
+        self.tool_preview.open(preview);
         self.status_key = "status-preview";
         self.digest = match &selection.element {
             ElementId::Face { axis: Axis::Z, .. } => self.catalog.format(
@@ -1570,8 +1575,15 @@ impl KetchupApp {
         let distance = snapped.unwrap_or_else(|| {
             push_pull_distance_from_pointer(drag, pointer, self.face_workflow.snaps_enabled())
         });
-        self.push_pull.distance_input =
-            snapped.map_or_else(|| format_height(distance), |value| value.to_string());
+        let input = snapped.map_or_else(|| format_height(distance), |value| value.to_string());
+        // A held button repaints every frame; re-planning an unchanged
+        // distance would cost a whole-document proposal per frame.
+        if input == self.push_pull.distance_input
+            && (self.has_preview() || self.has_drawn_shape_preview())
+        {
+            return true;
+        }
+        self.push_pull.distance_input = input;
         self.value_box.input = self.push_pull.distance_input.clone();
         if distance.abs() >= 0.01 {
             self.start_preview()

@@ -389,7 +389,9 @@ pub(super) fn point_line_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2
 }
 
 pub(super) fn flatten_cubic(points: [[f64; 2]; 4]) -> Result<Vec<[f64; 2]>, SketchError> {
-    let tolerance = CUBIC_FLATTEN_TOLERANCE_MM;
+    // The tolerance is relative to the curve's size: an absolute micrometre
+    // fraction cuts a metre-sized curve into more pieces than the limit allows.
+    let tolerance = CUBIC_FLATTEN_TOLERANCE_MM * cubic_control_polygon_length(points).max(1.0);
     let mut output = vec![points[0]];
     let mut stack = vec![(points, 0_u8)];
     while let Some((curve, depth)) = stack.pop() {
