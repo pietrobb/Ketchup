@@ -226,7 +226,7 @@ pub(crate) fn is_box(part: &Part) -> bool {
 /// intersected with it leaves a decidable convex question, which
 /// `booleans_leave_overlap` already answered. Profile bodies, and two or more
 /// tools reaching into the shared volume, need the exact solids.
-fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
+pub(crate) fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
     if [a, b].iter().any(|part| {
         !is_box(part) || part.holes().next().is_some() || part.pockets().next().is_some()
     }) {
@@ -631,6 +631,7 @@ pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
     params(model, &mut issues);
     crate::motion::issues(model, &mut issues);
     collisions(model, exact, &mut issues);
+    crate::clearance::issues(model, &mut issues);
     holes(model, &mut issues);
     let mut faces = ContactFaces::default();
     joints(model, exact, &mut issues, &mut faces);

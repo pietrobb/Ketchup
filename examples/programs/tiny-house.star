@@ -1,5 +1,5 @@
 # Mini domček: prízemie, spacie podkrovie, sedlová strecha, komín s kachľami,
-# konzolové schody, okná, dvere a terasa. Hrebeň beží pozdĺž dlhej strany (x).
+# priame schody, okná, dvere a terasa. Hrebeň beží pozdĺž dlhej strany (x).
 #
 # Ten istý dom je tu dvakrát z rovnakých čísel: ako koncept (plné steny, strecha
 # a strop, tag "koncept") a ako konštrukcia drevostavby (skladby stien, stropu a
@@ -90,14 +90,14 @@ box("základ/doska", (L, B, SLAB), material = "betón", color = SLAB_C)
 box("terasa", (2400, 1500, SLAB - 30), at = (450, -1500, 0), material = "drevo terasa", color = WOOD_C)
 
 # Otvory: stena, názov, od, do (pozdĺž steny vo svetových x alebo y), spodok, vrch (z).
+# Západný štít pri nástupe na schody a východný štít nad posteľou okno v danom
+# podlaží nemajú.
 OPENINGS = [
     ("south", "dvere", 800, 1700, SLAB, SLAB + 2100),
     ("south", "obývačka juh", 3500, 5300, SLAB + 750, SLAB + 2100),
     ("north", "kuchyňa sever", 4400, 5400, SLAB + 1000, SLAB + 2100),
-    ("west", "prízemie západ", 1200, 2200, SLAB + 750, SLAB + 2100),
     ("west", "podkrovie západ", 1500, 2500, attic + 500, attic + 1600),
     ("east", "prízemie východ", 1400, 2600, SLAB + 750, SLAB + 2100),
-    ("east", "podkrovie východ", 1500, 2500, attic + 500, attic + 1500),
 ]
 
 # --- koncept: plné steny ---
@@ -135,41 +135,63 @@ for side, name, lo, hi, z0, z1 in OPENINGS:
     tool = box(part_info(wall).name + "/" + name, tool_size, at = tool_at, tool = True)
     subtract(wall, tool, name = name)
     box("dvere/krídlo" if door else "okná/" + name, fill_size, at = fill_at,
-        material = "drevo" if door else "izolačné sklo", color = WOOD_C if door else GLASS_C)
+        material = "drevo" if door else "izolačné sklo", color = WOOD_C if door else GLASS_C,
+        tags = [] if door else ["okno"])
 
 # --- koncept: strop / podlaha podkrovia s otvorom pre schody a komín ---
 attic_floor = box("podkrovie/podlaha", (L - 2 * WALL, B - 2 * WALL, FLOOR), at = (WALL, WALL, ceiling),
                   material = "drevený strop", color = WOOD_C, tags = "koncept")
 
+# Priame schody na dvoch schodniciach stúpajú od západu na východ blízko stredu
+# domu: pred prvým stupňom je voľná nástupná plocha a hore vychádzajú pod
+# hrebeňom, kde je nad nimi aj nad výstupom dosť miesta na hlavu.
 RISES = 14
 rise = (attic - SLAB) / RISES
 RUN = 230
 STAIR_W = 800
-stair_x = WALL + 200
-stair_y = B - WALL - STAIR_W
+STRINGER = 50
+LANDING = 900
+stair_x = WALL + LANDING
+stair_y = B / 2.0 - 100
 stair_end = stair_x + (RISES - 1) * RUN
+hole_y = (stair_y - STRINGER, stair_y + STAIR_W + STRINGER)
 
-hole_tool = box("podkrovie/podlaha/schodisko", (stair_end - WALL + 1, STAIR_W + 1, FLOOR + 2),
-                at = (WALL - 1, stair_y, ceiling - 1), tool = True)
+hole_tool = box("podkrovie/podlaha/schodisko", (stair_end - stair_x, hole_y[1] - hole_y[0], FLOOR + 2),
+                at = (stair_x, hole_y[0], ceiling - 1), tool = True)
 subtract(attic_floor, hole_tool, name = "otvor schodisko")
 
-# konzolové stupne kotvené do severnej steny
-for k in range(1, RISES):
-    box("schody/stupeň %d" % k, (RUN, STAIR_W, 40), at = (stair_x + (k - 1) * RUN, stair_y, SLAB + k * rise - 40),
-        material = "dub", color = WOOD_C)
+treads = [box("schody/stupeň %d" % k, (RUN, STAIR_W, 40), at = (stair_x + (k - 1) * RUN, stair_y, SLAB + k * rise - 40),
+              material = "dub", color = WOOD_C) for k in range(1, RISES)]
 
-box("podkrovie/zábradlie", (stair_end - WALL, 40, 1000), at = (WALL, stair_y - 40, attic),
-    material = "drevo", color = WOOD_C)
+# Schodnica: pás nad a pod čiarou hrán stupňov, dole na doske, hore zvislým
+# rezom dosadá na hranu stropu.
+slope = rise / RUN
+DEEP = 280
+stringer = [(stair_x, SLAB), (stair_x + (DEEP - rise) / slope, SLAB), (stair_end, attic - DEEP),
+            (stair_end, attic), (stair_end - 50 / slope, attic), (stair_x, SLAB + rise + 50)]
+for side, y in (("južná", hole_y[0]), ("severná", stair_y + STAIR_W)):
+    part = extrude("schody/schodnica %s" % side, profile = [[p[0], p[1]] for p in stringer], distance = STRINGER,
+                   material = "dub", color = WOOD_C)
+    place(part, origin = (0, y + STRINGER, 0), z = (0, -1, 0), x = (1, 0, 0))
+
+for side, size, at in (("juh", (stair_end - stair_x, 40, 1000), (stair_x, hole_y[0] - 40, attic)),
+                       ("sever", (stair_end - stair_x, 40, 1000), (stair_x, hole_y[1], attic)),
+                       ("západ", (40, hole_y[1] - hole_y[0] + 80, 1000), (stair_x - 40, hole_y[0] - 40, attic))):
+    box("podkrovie/zábradlie %s" % side, size, at = at, material = "drevo", color = WOOD_C)
+
+stair_space("schody", treads, attic, landing = LANDING)
 
 # --- komín s kachľami ---
 CH = 450
 ch_x = round_to(L * 0.42, 5)
-ch_y = 1200
+ch_y = 1050
 ch_top = ridge + lift + 450
 chimney = box("komín/teleso", (CH, CH, ch_top - SLAB), at = (ch_x, ch_y, SLAB), material = "tehla", color = BRICK_C)
 box("komín/krycia doska", (CH + 150, CH + 150, 80), at = (ch_x - 75, ch_y - 75, ch_top),
     material = "betón", color = SLAB_C)
-box("kachle", (500, 450, 800), at = (ch_x - 25, ch_y - 450, SLAB), material = "liatina", color = (45, 45, 45))
+# Kachle stoja pri východnej strane komína, dvierka smerujú do obývačky.
+stove = box("kachle", (450, 500, 800), at = (ch_x + CH, ch_y + CH / 2.0 - 250, SLAB), material = "liatina", color = (45, 45, 45))
+service_space(stove, "x+", 1000, height = 1800, name = "kachle/miesto na prikladanie")
 subtract(attic_floor, chimney, name = "prestup komína")
 
 # --- koncept: sedlová strecha ---
@@ -255,7 +277,7 @@ buildup("konštrukcia/štít východ", (L - WALL, 0, SLAB), (0, 1, 0), (0, 0, 1)
 
 buildup("konštrukcia/strop", (WALL, WALL, ceiling), (1, 0, 0), (0, 1, 0), L - 2 * WALL, system["floor"],
         height = B - 2 * WALL, tags = T, openings = [
-            (0, stair_y - WALL, stair_end - WALL, B - WALL - stair_y),
+            (stair_x - WALL, hole_y[0] - WALL, stair_end - stair_x, hole_y[1] - hole_y[0]),
             (ch_x - WALL, ch_y - WALL, CH, CH),
         ])
 
@@ -389,12 +411,15 @@ along_x("konštrukcia/hrebenáč",
 # --- zariadenie (spoločné) ---
 box("kuchyňa/linka", (1800, 600, 900), at = (L - WALL - 1800, B - WALL - 600, SLAB), material = "lamino", color = (235, 235, 230))
 
+# Posteľ v podkroví vedľa otvoru schodiska; nad ňou ani pri nej nesmie byť okno.
+BED_W = 1400
 bed_x = L - WALL - 100 - 2000
-bed_y = B / 2.0 - 800
-box("podkrovie/posteľ rám", (2000, 1600, 250), at = (bed_x, bed_y, attic), material = "drevo", color = WOOD_C)
-box("podkrovie/matrac", (1950, 1550, 180), at = (bed_x + 25, bed_y + 25, attic + 250), material = "matrac", color = (240, 240, 245))
-for i, y in enumerate((bed_y + 150, bed_y + 900)):
+bed_y = hole_y[0] - 40 - 100 - BED_W
+bed = box("podkrovie/posteľ rám", (2000, BED_W, 250), at = (bed_x, bed_y, attic), material = "drevo", color = WOOD_C)
+box("podkrovie/matrac", (1950, BED_W - 50, 180), at = (bed_x + 25, bed_y + 25, attic + 250), material = "matrac", color = (240, 240, 245))
+for i, y in enumerate((bed_y + 100, bed_y + BED_W - 650)):
     box("podkrovie/vankúš %d" % (i + 1), (350, 550, 100), at = (bed_x + 1550, y, attic + 430), material = "textil", color = (200, 215, 235))
+no_window_over(bed, tag = "okno")
 
 print("stena %s mm, strop %s mm, strecha %s mm; podkrovie: podlaha %d, hrebeň (spodok strechy) %d mm" %
       (fmt_mm(WALL), fmt_mm(FLOOR), fmt_mm(ROOF_T), attic, ridge))

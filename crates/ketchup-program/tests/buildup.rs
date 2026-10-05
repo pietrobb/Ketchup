@@ -263,7 +263,7 @@ fn the_house_rafters_bear_on_a_ridge_beam_that_sits_in_the_gables() {
             );
         }
         for gable in ["západ", "východ"] {
-            let sill = format!("konštrukcia/štít {gable}/stĺpiky/sill 3");
+            let sill = format!("konštrukcia/štít {gable}/stĺpiky/sill 2");
             let area = contact_area(&report.relations, &sill, BEAM)
                 .unwrap_or_else(|| panic!("the beam does not sit on {sill}"));
             assert!(area > 160.0 * 100.0, "{sill}: {area}");

@@ -1183,6 +1183,99 @@ def expect_inside(part, container, tolerance = 0.1, name = None):
                op = "<=", tolerance = tolerance,
                hint = "The part sticks out of that face of the container by this much.")
 
+#@topic space: Free space: landings, headroom, room to use things, zones a kind of part avoids
+#
+#   keep_clear(zone, name=None, only=None, ignore=[], hint=None)
+#     `zone` is a tool body (box(..., tool=True)): never built, drawn or listed.
+#     Every part of the final model that reaches into it is a free_space_occupied
+#     error naming the part and the overlap in mm; editing is not blocked.
+#     only= tag name(s): only parts carrying one of them count (windows over a bed).
+#     ignore= parts that belong in the space. A part whose solid boxes and plain
+#     profiles cannot decide is a free_space_unverified warning, never a pass.
+#   free_space(name, size, at, only=None, ignore=[], hint=None)  -> the zone
+#   service_space(part, side, depth, height=None, name=None, hint=None)  -> zone
+#     room in front of a world side ("x-", "x+", "y-", "y+") of the part's box to
+#     open and use it (a stove's fire door, a cupboard, an appliance), as wide as
+#     the part, from its bottom up to `height` (default: the part's height).
+#   stair_space(name, treads, top, landing=900, headroom=2000)  -> zones
+#     `treads` in climbing order: a landing max(landing, stair width) deep before
+#     the first tread and after the last one on the upper floor at world z `top`,
+#     and `headroom` clear above every tread and both landings.
+#   no_window_over(part, tag="window", margin=300, height=1500)  -> zone
+#     nothing tagged `tag` above `part` (a bed) or within `margin` of it sideways,
+#     up to `height` above its top.
+# Example: stove = box("stove", (450, 500, 800), at=(3000, 1200, 0))
+#          service_space(stove, "x+", 1000, height=1800)
+
+def free_space(name, size, at, only = None, ignore = [], hint = None):
+    """A tool box at `at` of `size` that parts (with a tag of `only`) stay out of."""
+    zone = box(name, size, at = at, tool = True)
+    keep_clear(zone, name = name, only = only, ignore = ignore, hint = hint)
+    return zone
+
+def _space_between(name, lo, hi, hint, only = None, ignore = []):
+    return free_space(name, (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), (lo[0], lo[1], lo[2]),
+                      only = only, ignore = ignore, hint = hint)
+
+def service_space(part, side, depth, height = None, name = None, hint = None):
+    """Room `depth` deep in front of world side `side` of `part` to open and use it."""
+    info = part_info(part)
+    if len(side) != 2 or side[0] not in ("x", "y") or side[1] not in ("+", "-"):
+        fail("service_space(%r): side must be \"x-\", \"x+\", \"y-\" or \"y+\", got %r" % (_name(part), side))
+    axis = AXES[side[0]]
+    lo, hi = list(info.min), list(info.max)
+    if side[1] == "+":
+        lo[axis], hi[axis] = info.max[axis], info.max[axis] + depth
+    else:
+        lo[axis], hi[axis] = info.min[axis] - depth, info.min[axis]
+    hi[2] = info.min[2] + (height if height != None else info.max[2] - info.min[2])
+    return _space_between(name or "%s/service space" % info.name, lo, hi,
+                          hint or "Keep %s mm in front of %s (%s) free to open and use it: move what stands there, or move or turn %s." %
+                                  (fmt_mm(depth), info.name, side, info.name),
+                          ignore = [part])
+
+def stair_space(name, treads, top, landing = 900, headroom = 2000):
+    """Landings at both ends of a straight flight and headroom over every tread."""
+    if len(treads) < 2:
+        fail("stair_space(%r): give at least two treads in climbing order" % name)
+    first, second, last = part_info(treads[0]), part_info(treads[1]), part_info(treads[-1])
+    shift = vec_sub(last.min, first.min)
+    axis = 0 if abs(shift[0]) >= abs(shift[1]) else 1
+    across = 1 - axis
+    up = shift[axis] > 0
+    width = first.max[across] - first.min[across]
+    depth = max(landing, width)
+    rise = second.max[2] - first.max[2]
+
+    def zone(label, a0, a1, z0, hint):
+        lo, hi = [0, 0, z0], [0, 0, z0 + headroom]
+        lo[axis], hi[axis] = min(a0, a1), max(a0, a1)
+        lo[across], hi[across] = first.min[across], first.max[across]
+        return _space_between("%s/%s" % (name, label), lo, hi, hint)
+
+    landing_hint = ("A stair needs a free landing at least as deep as it is wide (%s mm here) before the first " +
+                    "and after the last step, with %s mm headroom: move the stair or what stands there.") % (fmt_mm(depth), fmt_mm(headroom))
+    foot = first.min[axis] if up else first.max[axis]
+    head = last.max[axis] if up else last.min[axis]
+    step = depth if up else -depth
+    zones = [zone("landing at the foot", foot - step, foot, first.max[2] - rise, landing_hint)]
+    for k in range(len(treads)):
+        tread = part_info(treads[k])
+        zones.append(zone("headroom %d" % (k + 1), tread.min[axis], tread.max[axis], tread.max[2],
+                          "%s mm headroom above every step: open the floor above or lower what hangs over the stair." % fmt_mm(headroom)))
+    zones.append(zone("landing at the top", head, head + step, top, landing_hint))
+    return zones
+
+def no_window_over(part, tag = "window", margin = 300, height = 1500):
+    """No part tagged `tag` above `part` or within `margin` of it, up to `height`."""
+    info = part_info(part)
+    lo = (info.min[0] - margin, info.min[1] - margin, info.max[2])
+    hi = (info.max[0] + margin, info.max[1] + margin, info.max[2] + height)
+    return _space_between("%s/no %s above" % (info.name, tag), lo, hi,
+                          "Never put a %s over %s (draught, cold and condensation on the sleeper, glass overhead): move the %s or %s." %
+                          (tag, info.name, tag, info.name),
+                          only = [tag])
+
 #@topic buildup: Layered build-ups: framed walls, floors and roofs
 #
 #   buildup(name, origin, along, up, length, layers, height=None, top=None,

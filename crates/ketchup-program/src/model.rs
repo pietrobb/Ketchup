@@ -1597,6 +1597,9 @@ pub struct ProgramModel {
     /// Conditions the program states about its geometry (`expect()`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub expectations: Vec<crate::expect::Expectation>,
+    /// Spaces parts must stay out of (`keep_clear()`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub free_spaces: Vec<crate::clearance::FreeSpace>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

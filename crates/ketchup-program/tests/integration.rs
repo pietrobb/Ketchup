@@ -11,6 +11,7 @@ mod example_programs;
 mod expect;
 mod face_at;
 mod faces;
+mod free_space;
 mod joint_links;
 mod motion;
 mod opposing_holes;

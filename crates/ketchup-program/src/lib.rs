@@ -10,6 +10,7 @@
 
 pub mod bom;
 pub mod cad;
+pub mod clearance;
 mod connectivity;
 pub mod contact;
 pub mod document;
