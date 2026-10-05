@@ -30,7 +30,7 @@ FACADE_C = (120, 95, 70)
 def layer(name, thickness, material, color, tags):
     return {"name": name, "thickness": thickness, "material": material, "color": color, "tags": tags}
 
-def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None, header = None):
+def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None, header = None, noggins = None):
     layer = {"name": name, "thickness": thickness, "material": material, "color": TIMBER_C, "tags": tags,
              "spacing": spacing, "stud": stud, "infill": "minerálna vlna", "infill_color": WOOL_C,
              "infill_tags": ["izolácia"]}
@@ -38,6 +38,9 @@ def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None, h
         layer["hanger"] = hanger
     if header != None:
         layer["header"] = header
+    if noggins != None:
+        layer["noggins"] = noggins
+        layer["noggin_tags"] = ["priečky"]
     return layer
 
 # Spojovací materiál (BB-TECHNIK Banská Bystrica). Všetko je poskladané na sebe;
@@ -52,13 +55,17 @@ SILL_ANCHOR = "kotva do betónu M12"
 POST_BASE = "kotevná pätka stĺpika"
 # Preklad nad otvorom v stene: hranol na výšku (posudok EC5 vyžaduje viac než 60 mm stĺpika).
 HEADER = 200
+# Vodorovné priečky v stene: rady najviac 900 mm od seba, zapustené do drážok v stĺpikoch,
+# v susedných poliach striedavo vyššie a nižšie, aby stĺpik nebol oslabený z oboch strán
+# v jednej výške. Vedľa stĺpika pod prekladom stojí plný stĺpik až po hornú pásnicu.
+NOGGINS = 900
 
 # Skladby od interiéru von (strop: od spodku nahor). Hrúbky dávajú aj rozmery konceptu.
 SYSTEMS = [
     {
         "wall": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  layer("OSB", 15, "OSB 3", OSB_C, ["OSB"]),
-                 framed("stĺpiky", 140, "KVH C24", 625, ["stĺpiky"], header = HEADER),
+                 framed("stĺpiky", 140, "KVH C24", 625, ["stĺpiky"], header = HEADER, noggins = NOGGINS),
                  layer("fasáda", 32.5, "drevovláknitá doska", FACADE_C, ["fasáda"])],
         "roof": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  framed("krokvy", 180, "KVH C24", 900, ["krokvy"], stud = 80),
@@ -71,7 +78,7 @@ SYSTEMS = [
     {
         "wall": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  layer("OSB", 15, "OSB 3", OSB_C, ["OSB"]),
-                 framed("stĺpiky", 160, "KVH C24", 625, ["stĺpiky"], header = HEADER),
+                 framed("stĺpiky", 160, "KVH C24", 625, ["stĺpiky"], header = HEADER, noggins = NOGGINS),
                  layer("fasáda", 62.5, "drevovláknitá doska", FACADE_C, ["fasáda"])],
         "roof": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  framed("krokvy", 220, "KVH C24", 900, ["krokvy"], stud = 80),

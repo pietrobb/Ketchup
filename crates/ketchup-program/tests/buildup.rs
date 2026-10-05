@@ -222,6 +222,73 @@ fn openings_closer_than_a_stud_share_the_stud_between_them() {
     assert_eq!(errors(&model), Vec::<String>::new());
 }
 
+#[test]
+fn a_wall_has_full_height_studs_beside_the_header_studs_and_staggered_let_in_noggins() {
+    let source = WALL.replace("\"spacing\": 625,", "\"spacing\": 625, \"noggins\": 900,");
+    let model = eval(&source, &[]);
+    assert_eq!(errors(&model), Vec::<String>::new());
+    // (x min, x max, z min, z max) of a part; the wall runs along x from x = 0.
+    let span = |name: &str| {
+        let (min, max) = model.part(name).unwrap().world_bounds();
+        (min[0], max[0], min[2], max[2])
+    };
+    let studs: Vec<_> = named(&model, "wall/frame/stud ")
+        .into_iter()
+        .map(|name| (name, span(name)))
+        .collect();
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    // Beside the door (600..1500, header 2100..2240) the stud under the header stops
+    // under it and a full-height stud stands next to it up to the top plate.
+    for (jack, full) in [(540.0, 480.0), (1500.0, 1560.0)] {
+        assert!(
+            studs
+                .iter()
+                .any(|(_, s)| near(s.0, jack) && near(s.2, 0.0 + 60.0) && near(s.3, 2100.0)),
+            "a stud at x = {jack} under the door header: {studs:?}"
+        );
+        assert!(
+            studs
+                .iter()
+                .any(|(_, s)| near(s.0, full) && near(s.2, 60.0) && near(s.3, 2540.0)),
+            "a full-height stud at x = {full}: {studs:?}"
+        );
+    }
+    let noggins: Vec<_> = named(&model, "wall/frame/noggin ")
+        .into_iter()
+        .map(span)
+        .collect();
+    assert!(noggins.len() >= 8, "{noggins:?}");
+    // Rows at most 900 apart over the 2480 mm between the plates: two per full bay.
+    let full_bay = noggins.iter().filter(|n| n.0 > 2000.0 + 1200.0).count();
+    assert!(full_bay >= 2, "{noggins:?}");
+    for (index, n) in noggins.iter().enumerate() {
+        // Each end sits 10 mm deep in a notch of the stud beside it.
+        let left = studs
+            .iter()
+            .find(|(_, s)| near(s.1, n.0 + 10.0) && s.2 < n.2 && n.3 < s.3);
+        let right = studs
+            .iter()
+            .find(|(_, s)| near(s.0, n.1 - 10.0) && s.2 < n.2 && n.3 < s.3);
+        let (Some((left, _)), Some((right, _))) = (left, right) else {
+            panic!("noggin {index} {n:?} between two studs: {studs:?}");
+        };
+        for stud in [left, right] {
+            let part = model.part(stud).unwrap();
+            assert!(part.tags.contains("frame"));
+        }
+        // A noggin on the other side of the same stud never sits at the same height.
+        for other in &noggins[index + 1..] {
+            if near(other.0, n.1 - 20.0 + 60.0) || near(other.1, n.0 + 20.0 - 60.0) {
+                assert!(other.3 <= n.2 || n.3 <= other.2, "{n:?} {other:?}");
+            }
+        }
+    }
+    // The wool stops at the noggins.
+    let wool = named(&model, "wall/frame/infill").len();
+    let plain = eval(WALL, &[]);
+    assert!(wool > named(&plain, "wall/frame/infill").len());
+}
+
 /// Contact area between two parts, if the program reports their faces touching.
 fn contact_area(relations: &[Relation], a: &str, b: &str) -> Option<f64> {
     relations

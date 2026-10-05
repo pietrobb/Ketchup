@@ -136,7 +136,7 @@ pub const BASIS: [&str; 8] = [
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2, gamma_M 1.3 solid / 1.25 glulam (table 2.3)",
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, the reaction at half the bearing length from the notch",
-    "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted; axial force in sloped beams neglected",
+    "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "deflection: simple spans between supports and cantilevers as the loads are passed down, w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
 ];
@@ -307,6 +307,8 @@ struct Shape {
     h: f64,
     /// Section area, second moment and modulus about the bending axis.
     area: f64,
+    /// Area of the thinnest section away from the ends (notches cut into a side).
+    net_area: f64,
     inertia: f64,
     modulus: f64,
     /// True length per unit of the load frame's position.
@@ -341,6 +343,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             b: size[1 - depth],
             h: size[depth],
             area,
+            net_area: area,
             inertia,
             modulus: inertia / reach,
             arc: 1.0,
@@ -378,6 +381,18 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         })
         .fold(0.0, f64::max)
         * along;
+    // The chord is linear between the profile's corners, so its least value lies at
+    // one of them; the ends (cut to a slope, seated) stay out, twice the width deep.
+    let mut corners: Vec<f64> = segments.iter().map(|s| s.start_mm[long]).collect();
+    corners.sort_by(f64::total_cmp);
+    corners.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let reach = 2.0 * thickest / along;
+    let thinnest = corners
+        .windows(2)
+        .map(|pair| (pair[0] + pair[1]) / 2.0)
+        .filter(|u| *u - start > reach && start + length - *u > reach)
+        .map(|u| chord(segments, long, u) * along)
+        .fold(thickest, f64::min);
     let depth_in_plane = across[2].abs() >= world[2][2].abs();
     let (b, h) = if depth_in_plane {
         (*distance_mm, thickest)
@@ -390,6 +405,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
         b,
         h,
         area: b * h,
+        net_area: distance_mm * thinnest,
         inertia: b * h.powi(3) / 12.0,
         modulus: b * h * h / 6.0,
         arc: 1.0 / along,
@@ -887,12 +903,20 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
     let kc = kc(lambda_rel(shape.b.min(shape.h)));
     let mut best = Best(None);
     for combination in uls {
-        let sigma = factor(&combination.factors, &load.loads_n) / (shape.b * shape.h);
+        let force = factor(&combination.factors, &load.loads_n);
+        let strength = design.strength(class.fc0_k, combination.duration);
+        let buckling = force / (shape.b * shape.h) / (kc * strength);
+        let net = force / shape.net_area / strength;
+        let detail = if net > buckling {
+            format!("net section {} mm² at a notch", shape.net_area.round())
+        } else {
+            format!("length {} mm", length.round())
+        };
         best.offer(
             "compression",
-            sigma / (kc * design.strength(class.fc0_k, combination.duration)),
+            buckling.max(net),
             &combination.label,
-            &format!("length {} mm", length.round()),
+            &detail,
         );
     }
     best.0.expect("at least the permanent combination")

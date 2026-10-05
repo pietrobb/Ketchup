@@ -1372,8 +1372,12 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     between the studs; "infill_color", "infill_tags"): a bottom plate, a top plate
 #     following the outline, studs at `spacing`, a stud on each side of every opening
 #     with a header above and a sill under it, and infill in every bay.
-#     In a wall a header rests on the studs beside the opening and a sill on a cripple
-#     under each end. In a floor or roof, a framed layer's "hanger" (fastener name)
+#     In a wall a header rests on the studs beside the opening, each with a full-height
+#     stud beside it where there is room, and a sill on a cripple under each end. A
+#     wall's "noggins" (mm) adds horizontal noggins between the studs in rows at most that
+#     far apart, staggered a stud width up and down in neighbouring bays and let into
+#     notches "noggin_notch" (default 10 mm) deep in the studs' sides; "noggin_tags"
+#     (default the layer's tags). In a floor or roof, a framed layer's "hanger" (fastener name)
 #     hangs the headers on the joists beside the opening and the cut joists on the
 #     headers with bearing joints. anchor={"to": part, "fastener": name, "spacing": 1000,
 #     "edge": 300} anchors every bottom plate to `to` (a slab) with at least two anchors.
@@ -1444,6 +1448,18 @@ def _column(points, drops, a, b, bottom, blocks):
         bottom = max(bottom, high)
     rest = _under(points, drops, a, b, bottom)
     return pieces + ([rest] if rest != None else [])
+
+def _notched(poly, left, right, depth):
+    """A column piece [(a, v0), (b, v0), top from b back to a] with notches (low, high)
+    cut `depth` into its side u = a (left) and u = b (right)."""
+    a, b = poly[0][0], poly[1][0]
+    out = [poly[0], poly[1]]
+    for low, high in sorted(right):
+        out += [(b, low), (b - depth, low), (b - depth, high), (b, high)]
+    out += poly[2:]
+    for low, high in sorted(left, reverse = True):
+        out += [(a, high), (a + depth, high), (a + depth, low), (a, low)]
+    return out
 
 def _spans(length, cuts):
     """The parts of 0..length left between the (start, end) ranges in cuts."""
@@ -1579,10 +1595,26 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         for ou, ov, ow, oh in holes:
             if upright and ov >= 2 * stud and ow >= 2 * stud:
                 cripples += [ou, ou + ow - stud]
+        # In a wall the stud under a header has a full-height stud beside it, out of
+        # the opening, where there is room for one.
+        fulls = []
+        for k in range(len(holes)):
+            ou, ov, ow, oh = holes[k]
+            if not upright or zones[k][3] == None:
+                continue
+            for side, step in ((ou - stud, -stud), (ou + ow, stud)):
+                jack = [s for s in kings if abs(s - side) < stud - 0.001]
+                if not jack:
+                    continue
+                u = jack[0] + step
+                if (u < -0.001 or u + stud > length + 0.001 or [s for s in kings + fulls if abs(s - u) < stud - 0.001]
+                        or [z for z in zones if z[0] < u + stud - 0.001 and u < z[1] - 0.001]):
+                    continue
+                fulls.append(u)
         regular = [k * spacing for k in range(int((length - stud) / spacing) + 1) if length - stud - k * spacing >= stud]
         regular.append(length - stud)
-        studs = kings + cripples + [u for u in regular if not [s for s in kings + cripples if abs(s - u) < stud]
-                                    and not [o for o in holes if (u < o[0] and o[0] < u + stud) or (u < o[0] + o[2] and o[0] + o[2] < u + stud)]]
+        studs = kings + fulls + cripples + [u for u in regular if not [s for s in kings + fulls + cripples if abs(s - u) < stud]
+                                            and not [o for o in holes if (u < o[0] and o[0] < u + stud) or (u < o[0] + o[2] and o[0] + o[2] < u + stud)]]
         studs = sorted({u: 0 for u in studs}.keys())
         # Headers and sills reach the studs beside the opening, also a stud shared
         # with another opening a little off its side. In a wall a header runs over
@@ -1617,15 +1649,64 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 continue
             a, b = beam_span(ou, ow, upright)
             spans.append((a, b, ov + oh, ov + oh + head))
-        count = 0
-        members = []
+        columns = []
         for u in studs:
             # Also a shared stud reaching into the next opening stops at its sill and header.
             blocks = [(z[2], z[3]) for z in zones if z[0] < u + stud - 0.001 and u < z[1] - 0.001]
             blocks += [(s[2], s[3]) for s in spans if s != None and s[0] < u + stud - 0.001 and u < s[1] - 0.001]
-            for poly in _column(points, drops, u, u + stud, stud, blocks):
+            columns.append(_column(points, drops, u, u + stud, stud, blocks))
+
+        # The room between stud k and the next one, around openings and the `extra` v ranges.
+        def bay(k, extra = []):
+            a, b = studs[k] + stud, studs[k + 1]
+            blocks = [(z[2], z[3]) for z in zones if z[0] < b - 0.001 and a < z[1] - 0.001]
+            blocks += [(s[2], s[3]) for s in spans + sills if s != None and s[0] < b - 0.001 and a < s[1] - 0.001]
+            return _column(points, drops, a, b, stud, blocks + extra)
+
+        # In a wall, noggins between the studs, let into notches in their sides; rows at
+        # most "noggins" apart, in neighbouring bays a noggin higher and lower so a stud
+        # is never notched from both sides at one height.
+        rows = [[] for _ in studs]
+        notches = [([], []) for _ in studs]
+        nog = layer.get("noggins")
+        depth = float(layer.get("noggin_notch", 10))
+        if upright and nog != None:
+            if depth <= 0 or depth >= stud / 2.0:
+                fail("buildup(%s): layer %s noggin_notch must lie between 0 and half the stud width" % (name, label))
+            clear = min([p[1] for p in points]) - max(drops) - stud
+            step = clear / max(1, -int(-clear // float(nog)))
+            highest = max([p[1] for p in points])
+            for k in range(len(studs) - 1):
+                if studs[k + 1] - studs[k] < 2 * stud:
+                    continue
+                polys = bay(k)
+                for i in range(1, int((highest - stud) / step) + 1):
+                    lo = stud + i * step + (stud if k % 2 else -2 * stud)
+                    hi = lo + stud
+                    fits = [p for p in polys if p[0][1] + stud <= lo and hi + stud <= min(p[2][1], p[-1][1])]
+                    left = [p for p in columns[k] if p[1][1] < lo and hi < p[2][1]]
+                    right = [p for p in columns[k + 1] if p[0][1] < lo and hi < p[-1][1]]
+                    if fits and left and right:
+                        rows[k].append((lo, hi))
+                        notches[k][1].append((lo, hi))
+                        notches[k + 1][0].append((lo, hi))
+        count = 0
+        members = []
+        for i in range(len(studs)):
+            for poly in columns[i]:
+                left = [n for n in notches[i][0] if poly[0][1] < n[0] and n[1] < poly[-1][1]]
+                right = [n for n in notches[i][1] if poly[1][1] < n[0] and n[1] < poly[2][1]]
                 count += 1
-                members.append(piece("%s/stud %d" % (label, count), poly, offset, thickness, material, color, layer_tags))
+                members.append(piece("%s/stud %d" % (label, count), _notched(poly, left, right, depth) if left or right else poly,
+                                     offset, thickness, material, color, layer_tags))
+        if [r for r in rows if r]:
+            nog_tags = base_tags + _names(layer.get("noggin_tags", layer.get("tags")))
+            count = 0
+            for k in range(len(rows)):
+                for lo, hi in rows[k]:
+                    count += 1
+                    piece("%s/noggin %d" % (label, count), _rect(studs[k] + stud - depth, lo, studs[k + 1] + depth, hi),
+                          offset, thickness, material, color, nog_tags)
         beams = []
         for k in range(len(holes)):
             ou, ov, ow, oh = holes[k]
@@ -1653,12 +1734,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
             bays = []
             for k in range(len(studs) - 1):
-                a, b = studs[k] + stud, studs[k + 1]
-                if b - a < 1:
-                    continue
-                blocks = [(z[2], z[3]) for z in zones if z[0] < b - 0.001 and a < z[1] - 0.001]
-                blocks += [(s[2], s[3]) for s in spans + sills if s != None and s[0] < b - 0.001 and a < s[1] - 0.001]
-                bays += _column(points, drops, a, b, stud, blocks)
+                if studs[k + 1] - studs[k] - stud >= 1:
+                    bays += bay(k, rows[k])
             for k in range(len(bays)):
                 piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags)
         offset += thickness

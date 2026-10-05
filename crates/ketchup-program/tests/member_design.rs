@@ -112,6 +112,50 @@ fn beam_named(material: &str) -> String {
     beam(material, 100.0, 200.0)
 }
 
+/// A 60 x 140 mm post 500 mm high on a grounded slab under a deck loaded with about
+/// 17 kN (enough for a readable utilization), with a
+/// 10 mm deep notch from z = 250 to 310 in one side when `notched`.
+fn post(notched: bool) -> String {
+    let notch = if notched {
+        "(60, 200), (50, 200), (50, 260), (60, 260), "
+    } else {
+        ""
+    };
+    format!(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"heavy\", kind = \"imposed\", kn_m2 = 2000.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"slab\", (300, 300, 50), at = (-100, -80, 0), material = \"C24\", grounded = True)
+part = extrude(\"post\", profile = [(0, 0), (60, 0), {notch}(60, 500), (0, 500)], distance = 140,
+               material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 140, 50), z = (0, -1, 0), x = (1, 0, 0))
+box(\"deck\", (60, 140, 20), at = (0, 0, 550), material = \"OSB\", tags = [\"deck\"])
+"
+    )
+}
+
+#[test]
+fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_the_net_section() {
+    let compression = |notched: bool| {
+        let report = report(&post(notched), &[]);
+        let post = member(&report, "post");
+        assert_eq!(post.role, "column");
+        let check = post
+            .checks
+            .iter()
+            .find(|c| c.name == "compression")
+            .unwrap_or_else(|| panic!("{:?}", post.checks))
+            .clone();
+        (check.utilization, check.at)
+    };
+    let (plain, plain_at) = compression(false);
+    let (notched, notched_at) = compression(true);
+    assert!(plain_at.starts_with("length"), "{plain_at}");
+    assert_eq!(notched_at, "net section 7000 mm² at a notch");
+    // Short: kc is near 1, so the net 50 x 140 section is what decides.
+    assert!(notched > plain * 1.1, "{notched} {plain}");
+}
+
 #[test]
 fn an_incomplete_load_reports_the_known_utilization_but_never_passes() {
     let source = format!(
