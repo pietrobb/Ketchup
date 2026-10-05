@@ -10458,6 +10458,74 @@
     {
       "parts": [
         "základ/doska",
+        "konštrukcia/strop/stĺpik pod výmenou juh západ"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "z-"
+      ],
+      "area_mm2": 12800.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "základ/doska",
+        "konštrukcia/strop/stĺpik pod výmenou sever západ"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "z-"
+      ],
+      "area_mm2": 12800.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "základ/doska",
+        "konštrukcia/strop/stĺpik pod výmenou juh východ"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "z-"
+      ],
+      "area_mm2": 12800.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "základ/doska",
+        "konštrukcia/strop/stĺpik pod výmenou sever východ"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "z-"
+      ],
+      "area_mm2": 12800.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "základ/doska",
         "kuchyňa/linka"
       ],
       "kind": "contact",
@@ -11892,7 +11960,7 @@
         "y+",
         "segment1"
       ],
-      "area_mm2": 11250.0,
+      "area_mm2": 10250.0,
       "direction": [
         0.0,
         1.0,
@@ -11909,7 +11977,7 @@
         "y+",
         "segment1"
       ],
-      "area_mm2": 24875.0,
+      "area_mm2": 1000.0,
       "direction": [
         0.0,
         1.0,
@@ -11919,14 +11987,14 @@
     {
       "parts": [
         "steny/južná",
-        "konštrukcia/podhľad prízemia/sadrokartón 4"
+        "konštrukcia/podhľad prízemia/sadrokartón 5"
       ],
       "kind": "contact",
       "faces": [
         "y+",
         "segment1"
       ],
-      "area_mm2": 4375.0,
+      "area_mm2": 1000.0,
       "direction": [
         0.0,
         1.0,
@@ -11943,7 +12011,7 @@
         "y+",
         "segment1"
       ],
-      "area_mm2": 8125.0,
+      "area_mm2": 23875.0,
       "direction": [
         0.0,
         1.0,
@@ -11960,7 +12028,75 @@
         "y+",
         "segment1"
       ],
-      "area_mm2": 23875.0,
+      "area_mm2": 4375.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/južná",
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 7125.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/južná",
+        "konštrukcia/podhľad prízemia/sadrokartón 14"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/južná",
+        "konštrukcia/podhľad prízemia/sadrokartón 16"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/južná",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 22875.0,
       "direction": [
         0.0,
         1.0,
@@ -13960,7 +14096,7 @@
         "y-",
         "segment3"
       ],
-      "area_mm2": 11250.0,
+      "area_mm2": 10250.0,
       "direction": [
         0.0,
         -1.0,
@@ -13970,14 +14106,14 @@
     {
       "parts": [
         "steny/severná",
-        "konštrukcia/podhľad prízemia/sadrokartón 3"
+        "konštrukcia/podhľad prízemia/sadrokartón 4"
       ],
       "kind": "contact",
       "faces": [
         "y-",
         "segment3"
       ],
-      "area_mm2": 24875.0,
+      "area_mm2": 1000.0,
       "direction": [
         0.0,
         -1.0,
@@ -13994,7 +14130,7 @@
         "y-",
         "segment3"
       ],
-      "area_mm2": 4375.0,
+      "area_mm2": 1000.0,
       "direction": [
         0.0,
         -1.0,
@@ -14011,7 +14147,7 @@
         "y-",
         "segment3"
       ],
-      "area_mm2": 8125.0,
+      "area_mm2": 23875.0,
       "direction": [
         0.0,
         -1.0,
@@ -14021,14 +14157,82 @@
     {
       "parts": [
         "steny/severná",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 11"
       ],
       "kind": "contact",
       "faces": [
         "y-",
         "segment3"
       ],
-      "area_mm2": 23875.0,
+      "area_mm2": 4375.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/severná",
+        "konštrukcia/podhľad prízemia/sadrokartón 13"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 7125.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/severná",
+        "konštrukcia/podhľad prízemia/sadrokartón 15"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/severná",
+        "konštrukcia/podhľad prízemia/sadrokartón 18"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "steny/severná",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 22875.0,
       "direction": [
         0.0,
         -1.0,
@@ -18076,7 +18280,7 @@
     {
       "parts": [
         "steny/štít východ",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "contact",
       "faces": [
@@ -19574,6 +19778,62 @@
     {
       "parts": [
         "podkrovie/podlaha",
+        "konštrukcia/strop/stĺpik pod výmenou juh západ"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/strop/stĺpik pod výmenou sever západ"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/strop/stĺpik pod výmenou juh východ"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/strop/stĺpik pod výmenou sever východ"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
         "konštrukcia/podhľad prízemia/sadrokartón 1"
       ],
       "kind": "overlap",
@@ -19687,6 +19947,146 @@
       "parts": [
         "podkrovie/podlaha",
         "konštrukcia/podhľad prízemia/sadrokartón 9"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 10"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 11"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 13"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 14"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 15"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 16"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 17"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 18"
+      ],
+      "kind": "overlap",
+      "depth_mm": 12.5,
+      "status": "boxes_only",
+      "direction": [
+        0.0,
+        0.0,
+        -1.0
+      ]
+    },
+    {
+      "parts": [
+        "podkrovie/podlaha",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "overlap",
       "depth_mm": 12.5,
@@ -20997,7 +21397,7 @@
     {
       "parts": [
         "schody/stupeň 13",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 17"
       ],
       "kind": "contact",
       "faces": [
@@ -21053,22 +21453,14 @@
     {
       "parts": [
         "schody/schodnica južná",
-        "konštrukcia/podhľad prízemia/sadrokartón 1"
+        "konštrukcia/strop/stĺpik pod výmenou juh západ"
       ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
+      "kind": "contact",
+      "faces": [
+        "end",
+        "y+"
       ],
-      "approx": true
-    },
-    {
-      "parts": [
-        "schody/schodnica južná",
-        "konštrukcia/podhľad prízemia/sadrokartón 2"
-      ],
-      "kind": "touch",
+      "area_mm2": 22447.0,
       "direction": [
         0.0,
         -1.0,
@@ -21079,12 +21471,30 @@
     {
       "parts": [
         "schody/schodnica južná",
-        "konštrukcia/podhľad prízemia/sadrokartón 5"
+        "konštrukcia/strop/stĺpik pod výmenou juh východ"
       ],
-      "kind": "touch",
+      "kind": "contact",
+      "faces": [
+        "end",
+        "y+"
+      ],
+      "area_mm2": 10133.0,
       "direction": [
         0.0,
         -1.0,
+        0.0
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "schody/schodnica južná",
+        "konštrukcia/podhľad prízemia/sadrokartón 3"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
         0.0
       ],
       "approx": true
@@ -21094,12 +21504,7 @@
         "schody/schodnica južná",
         "konštrukcia/podhľad prízemia/sadrokartón 7"
       ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "segment3"
-      ],
-      "area_mm2": 3568.0,
+      "kind": "touch",
       "direction": [
         0.0,
         -1.0,
@@ -21110,7 +21515,38 @@
     {
       "parts": [
         "schody/schodnica južná",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 10"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "schody/schodnica južná",
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "segment3"
+      ],
+      "area_mm2": 2568.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "schody/schodnica južná",
+        "konštrukcia/podhľad prízemia/sadrokartón 17"
       ],
       "kind": "contact",
       "faces": [
@@ -21278,7 +21714,43 @@
     {
       "parts": [
         "schody/schodnica severná",
-        "konštrukcia/podhľad prízemia/sadrokartón 1"
+        "konštrukcia/strop/stĺpik pod výmenou sever západ"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "y-"
+      ],
+      "area_mm2": 22447.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "schody/schodnica severná",
+        "konštrukcia/strop/stĺpik pod výmenou sever východ"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "y-"
+      ],
+      "area_mm2": 10133.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "schody/schodnica severná",
+        "konštrukcia/podhľad prízemia/sadrokartón 3"
       ],
       "kind": "touch",
       "direction": [
@@ -21291,40 +21763,40 @@
     {
       "parts": [
         "schody/schodnica severná",
-        "konštrukcia/podhľad prízemia/sadrokartón 3"
-      ],
-      "kind": "touch",
-      "direction": [
-        0.0,
-        1.0,
-        0.0
-      ],
-      "approx": true
-    },
-    {
-      "parts": [
-        "schody/schodnica severná",
-        "konštrukcia/podhľad prízemia/sadrokartón 6"
-      ],
-      "kind": "touch",
-      "direction": [
-        0.0,
-        1.0,
-        0.0
-      ],
-      "approx": true
-    },
-    {
-      "parts": [
-        "schody/schodnica severná",
         "konštrukcia/podhľad prízemia/sadrokartón 8"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "schody/schodnica severná",
+        "konštrukcia/podhľad prízemia/sadrokartón 11"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "approx": true
+    },
+    {
+      "parts": [
+        "schody/schodnica severná",
+        "konštrukcia/podhľad prízemia/sadrokartón 13"
       ],
       "kind": "contact",
       "faces": [
         "start",
         "segment1"
       ],
-      "area_mm2": 3568.0,
+      "area_mm2": 2568.0,
       "direction": [
         0.0,
         1.0,
@@ -21335,7 +21807,7 @@
     {
       "parts": [
         "schody/schodnica severná",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 17"
       ],
       "kind": "contact",
       "faces": [
@@ -25435,7 +25907,7 @@
         "start",
         "segment1"
       ],
-      "area_mm2": 3750.0,
+      "area_mm2": 2750.0,
       "direction": [
         0.0,
         1.0,
@@ -25452,7 +25924,41 @@
         "start",
         "segment1"
       ],
-      "area_mm2": 7500.0,
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/sadrokartón 2",
+        "konštrukcia/podhľad prízemia/sadrokartón 5"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/sadrokartón 2",
+        "konštrukcia/podhľad prízemia/sadrokartón 7"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment1"
+      ],
+      "area_mm2": 6500.0,
       "direction": [
         0.0,
         1.0,
@@ -25855,7 +26361,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/sadrokartón 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 2"
+        "konštrukcia/podhľad prízemia/sadrokartón 7"
       ],
       "kind": "contact",
       "faces": [
@@ -25872,7 +26378,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/sadrokartón 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 4"
+        "konštrukcia/podhľad prízemia/sadrokartón 9"
       ],
       "kind": "contact",
       "faces": [
@@ -25889,7 +26395,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/sadrokartón 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 7"
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
       ],
       "kind": "contact",
       "faces": [
@@ -26491,14 +26997,14 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/sadrokartón 5",
-        "konštrukcia/podhľad prízemia/sadrokartón 7"
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
       ],
       "kind": "contact",
       "faces": [
         "start",
         "segment1"
       ],
-      "area_mm2": 7375.0,
+      "area_mm2": 6375.0,
       "direction": [
         0.0,
         1.0,
@@ -26508,14 +27014,48 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/sadrokartón 5",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 14"
       ],
       "kind": "contact",
       "faces": [
         "start",
         "segment1"
       ],
-      "area_mm2": 15125.0,
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/sadrokartón 5",
+        "konštrukcia/podhľad prízemia/sadrokartón 16"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/sadrokartón 5",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment1"
+      ],
+      "area_mm2": 14125.0,
       "direction": [
         0.0,
         1.0,
@@ -26909,7 +27449,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/sadrokartón 6",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "contact",
       "faces": [
@@ -27383,6 +27923,32 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/OSB 2",
+        "konštrukcia/podhľad prízemia/sadrokartón 5"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/OSB 2",
+        "konštrukcia/podhľad prízemia/sadrokartón 7"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/OSB 2",
         "konštrukcia/strop/stropnice/stud 3"
       ],
       "kind": "contact",
@@ -27761,33 +28327,33 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/OSB 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 2"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.5,
-      "direction": [
-        0.0,
-        1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/prízemie/stena južná/OSB 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 4"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.5,
-      "direction": [
-        0.0,
-        1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/prízemie/stena južná/OSB 3",
         "konštrukcia/podhľad prízemia/sadrokartón 7"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/OSB 3",
+        "konštrukcia/podhľad prízemia/sadrokartón 9"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/OSB 3",
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -28371,7 +28937,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/OSB 5",
-        "konštrukcia/podhľad prízemia/sadrokartón 7"
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -28384,7 +28950,33 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/OSB 5",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 14"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/OSB 5",
+        "konštrukcia/podhľad prízemia/sadrokartón 16"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena južná/OSB 5",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -28764,7 +29356,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena južná/OSB 6",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -36097,7 +36689,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/sadrokartón 1",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "contact",
       "faces": [
@@ -36549,7 +37141,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/sadrokartón 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "contact",
       "faces": [
@@ -37028,7 +37620,7 @@
         "start",
         "segment3"
       ],
-      "area_mm2": 11250.0,
+      "area_mm2": 10250.0,
       "direction": [
         0.0,
         -1.0,
@@ -37038,14 +37630,14 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/sadrokartón 4",
-        "konštrukcia/podhľad prízemia/sadrokartón 3"
+        "konštrukcia/podhľad prízemia/sadrokartón 4"
       ],
       "kind": "contact",
       "faces": [
         "start",
         "segment3"
       ],
-      "area_mm2": 24875.0,
+      "area_mm2": 1000.0,
       "direction": [
         0.0,
         -1.0,
@@ -37062,7 +37654,7 @@
         "start",
         "segment3"
       ],
-      "area_mm2": 4375.0,
+      "area_mm2": 1000.0,
       "direction": [
         0.0,
         -1.0,
@@ -37079,7 +37671,7 @@
         "start",
         "segment3"
       ],
-      "area_mm2": 8125.0,
+      "area_mm2": 23875.0,
       "direction": [
         0.0,
         -1.0,
@@ -37089,14 +37681,82 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/sadrokartón 4",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 11"
       ],
       "kind": "contact",
       "faces": [
         "start",
         "segment3"
       ],
-      "area_mm2": 3875.0,
+      "area_mm2": 4375.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/sadrokartón 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 13"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment3"
+      ],
+      "area_mm2": 7125.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/sadrokartón 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 15"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/sadrokartón 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 18"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/sadrokartón 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "start",
+        "segment3"
+      ],
+      "area_mm2": 2875.0,
       "direction": [
         0.0,
         -1.0,
@@ -37690,7 +38350,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/OSB 1",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -38100,7 +38760,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/OSB 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -38612,7 +39272,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/OSB 4",
-        "konštrukcia/podhľad prízemia/sadrokartón 3"
+        "konštrukcia/podhľad prízemia/sadrokartón 4"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -38651,7 +39311,59 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena severná/OSB 4",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 11"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/OSB 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 13"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/OSB 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 15"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/OSB 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 18"
+      ],
+      "kind": "gap",
+      "gap_mm": 12.5,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/prízemie/stena severná/OSB 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -54463,7 +55175,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena východ/sadrokartón 1",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "contact",
       "faces": [
@@ -54864,7 +55576,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena východ/sadrokartón 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "contact",
       "faces": [
@@ -55151,7 +55863,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena východ/sadrokartón 4",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "contact",
       "faces": [
@@ -55437,7 +56149,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena východ/OSB 1",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -55804,7 +56516,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena východ/OSB 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -56078,7 +56790,7 @@
     {
       "parts": [
         "konštrukcia/prízemie/stena východ/OSB 4",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
       ],
       "kind": "gap",
       "gap_mm": 12.5,
@@ -64684,6 +65396,578 @@
     },
     {
       "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x-",
+        "segment2"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 2"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 3"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 5"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 7"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x+",
+        "segment4"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/strop/stropnice/stud 3"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/strop/stropnice/infill 2"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh západ",
+        "konštrukcia/strop/stropnice/infill 3"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x-",
+        "segment2"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 3"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 4"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 6"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/podhľad prízemia/sadrokartón 8"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x+",
+        "segment4"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/strop/stropnice/stud 3"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/strop/stropnice/infill 2"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever západ",
+        "konštrukcia/strop/stropnice/infill 4"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x-",
+        "segment2"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 14"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 16"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 17"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x+",
+        "segment4"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/strop/stropnice/stud 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/strop/stropnice/infill 19"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou juh východ",
+        "konštrukcia/strop/stropnice/infill 21"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 13"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x-",
+        "segment2"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 15"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 17"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y-",
+        "segment3"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 18"
+      ],
+      "kind": "contact",
+      "faces": [
+        "y+",
+        "segment1"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "x+",
+        "segment4"
+      ],
+      "area_mm2": 1000.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/strop/stropnice/stud 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "start"
+      ],
+      "area_mm2": 6400.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/strop/stropnice/infill 20"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/strop/stĺpik pod výmenou sever východ",
+        "konštrukcia/strop/stropnice/infill 21"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 1",
         "konštrukcia/podhľad prízemia/sadrokartón 2"
       ],
@@ -64692,7 +65976,7 @@
         "segment2",
         "segment4"
       ],
-      "area_mm2": 20625.0,
+      "area_mm2": 19625.0,
       "direction": [
         1.0,
         0.0,
@@ -64709,7 +65993,24 @@
         "segment2",
         "segment4"
       ],
-      "area_mm2": 13125.0,
+      "area_mm2": 11250.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 1",
+        "konštrukcia/podhľad prízemia/sadrokartón 4"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 12125.0,
       "direction": [
         1.0,
         0.0,
@@ -64737,35 +66038,6 @@
       "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 1",
         "konštrukcia/strop/stropnice/stud 3"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 288000.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 1",
-        "konštrukcia/strop/stropnice/header 1"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 1",
-        "konštrukcia/strop/stropnice/sill 1"
       ],
       "kind": "touch",
       "direction": [
@@ -64810,47 +66082,6 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 1",
-        "konštrukcia/strop/stropnice/infill 3"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 1",
-        "konštrukcia/strop/stropnice/infill 4"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/podhľad prízemia/sadrokartón 4"
-      ],
-      "kind": "contact",
-      "faces": [
-        "segment2",
-        "segment4"
-      ],
-      "area_mm2": 11250.0,
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 2",
         "konštrukcia/podhľad prízemia/sadrokartón 5"
       ],
@@ -64859,7 +66090,7 @@
         "segment2",
         "segment4"
       ],
-      "area_mm2": 5000.0,
+      "area_mm2": 19625.0,
       "direction": [
         1.0,
         0.0,
@@ -64870,69 +66101,6 @@
       "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 2",
         "konštrukcia/strop/stropnice/stud 3"
-      ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/stud 4"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 125600.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/stud 6"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 125600.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/stud 8"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 125600.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/stud 10"
       ],
       "kind": "contact",
       "faces": [
@@ -64951,23 +66119,6 @@
         "konštrukcia/podhľad prízemia/sadrokartón 2",
         "konštrukcia/strop/stropnice/sill 1"
       ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 159200.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/header 2"
-      ],
       "kind": "touch",
       "direction": [
         1.0,
@@ -64978,11 +66129,11 @@
     {
       "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/sill 2"
+        "konštrukcia/strop/stropnice/infill 2"
       ],
       "kind": "touch",
       "direction": [
-        1.0,
+        -1.0,
         0.0,
         0.0
       ]
@@ -64992,104 +66143,7 @@
         "konštrukcia/podhľad prízemia/sadrokartón 2",
         "konštrukcia/strop/stropnice/infill 3"
       ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 286525.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/infill 5"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 855650.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/infill 7"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 855650.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/infill 9"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 624075.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/infill 11"
-      ],
       "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 2",
-        "konštrukcia/strop/stropnice/infill 12"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/podhľad prízemia/sadrokartón 6"
-      ],
-      "kind": "contact",
-      "faces": [
-        "segment2",
-        "segment4"
-      ],
-      "area_mm2": 13125.0,
       "direction": [
         1.0,
         0.0,
@@ -65101,75 +66155,12 @@
         "konštrukcia/podhľad prízemia/sadrokartón 3",
         "konštrukcia/strop/stropnice/stud 3"
       ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/stud 5"
-      ],
       "kind": "contact",
       "faces": [
         "end",
         "start"
       ],
-      "area_mm2": 77600.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/stud 7"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 77600.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/stud 9"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 77600.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/stud 11"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 77600.0,
+      "area_mm2": 72000.0,
       "direction": [
         0.0,
         0.0,
@@ -65181,12 +66172,65 @@
         "konštrukcia/podhľad prízemia/sadrokartón 3",
         "konštrukcia/strop/stropnice/header 1"
       ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 3",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 3",
+        "konštrukcia/strop/stropnice/infill 2"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 4",
+        "konštrukcia/podhľad prízemia/sadrokartón 6"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 12125.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 4",
+        "konštrukcia/strop/stropnice/stud 3"
+      ],
       "kind": "contact",
       "faces": [
         "end",
         "start"
       ],
-      "area_mm2": 159200.0,
+      "area_mm2": 77600.0,
       "direction": [
         0.0,
         0.0,
@@ -65195,191 +66239,38 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
+        "konštrukcia/podhľad prízemia/sadrokartón 4",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 4",
+        "konštrukcia/strop/stropnice/infill 2"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 4",
         "konštrukcia/strop/stropnice/infill 4"
       ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 177025.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/infill 6"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 528650.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/infill 8"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 528650.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/infill 10"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 385575.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 3",
-        "konštrukcia/strop/stropnice/infill 13"
-      ],
       "kind": "touch",
       "direction": [
         1.0,
         0.0,
         0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 4",
-        "konštrukcia/podhľad prízemia/sadrokartón 7"
-      ],
-      "kind": "contact",
-      "faces": [
-        "segment2",
-        "segment4"
-      ],
-      "area_mm2": 11250.0,
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 4",
-        "konštrukcia/strop/stropnice/stud 10"
-      ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 4",
-        "konštrukcia/strop/stropnice/stud 12"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 65600.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 4",
-        "konštrukcia/strop/stropnice/stud 15"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 4",
-        "konštrukcia/strop/stropnice/sill 2"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 28000.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 4",
-        "konštrukcia/strop/stropnice/infill 11"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 55350.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 4",
-        "konštrukcia/strop/stropnice/infill 14"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 166050.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
       ]
     },
     {
@@ -65392,7 +66283,7 @@
         "segment2",
         "segment4"
       ],
-      "area_mm2": 5000.0,
+      "area_mm2": 19625.0,
       "direction": [
         1.0,
         0.0,
@@ -65402,40 +66293,11 @@
     {
       "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 5",
-        "konštrukcia/strop/stropnice/stud 10"
+        "konštrukcia/strop/stropnice/stud 3"
       ],
       "kind": "touch",
       "direction": [
         -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 5",
-        "konštrukcia/strop/stropnice/stud 13"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 19200.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 5",
-        "konštrukcia/strop/stropnice/stud 15"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
         0.0,
         0.0
       ]
@@ -65445,63 +66307,24 @@
         "konštrukcia/podhľad prízemia/sadrokartón 5",
         "konštrukcia/strop/stropnice/sill 1"
       ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 28000.0,
+      "kind": "touch",
       "direction": [
         0.0,
-        0.0,
-        1.0
+        1.0,
+        0.0
       ]
     },
     {
       "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 5",
-        "konštrukcia/strop/stropnice/header 2"
+        "konštrukcia/strop/stropnice/infill 3"
       ],
       "kind": "contact",
       "faces": [
         "end",
         "start"
       ],
-      "area_mm2": 28000.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 5",
-        "konštrukcia/strop/stropnice/infill 12"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 16200.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 5",
-        "konštrukcia/strop/stropnice/infill 15"
-      ],
-      "kind": "contact",
-      "faces": [
-        "end",
-        "start"
-      ],
-      "area_mm2": 48600.0,
+      "area_mm2": 125600.0,
       "direction": [
         0.0,
         0.0,
@@ -65518,7 +66341,7 @@
         "segment2",
         "segment4"
       ],
-      "area_mm2": 13125.0,
+      "area_mm2": 12125.0,
       "direction": [
         1.0,
         0.0,
@@ -65528,7 +66351,7 @@
     {
       "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 6",
-        "konštrukcia/strop/stropnice/stud 11"
+        "konštrukcia/strop/stropnice/stud 3"
       ],
       "kind": "touch",
       "direction": [
@@ -65540,6 +66363,716 @@
     {
       "parts": [
         "konštrukcia/podhľad prízemia/sadrokartón 6",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 6",
+        "konštrukcia/strop/stropnice/infill 4"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 77600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 9"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 11250.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 10"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 5000.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/stud 4"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 125600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/stud 6"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 125600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/stud 8"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 125600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/stud 10"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 125600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 152800.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/header 2"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/sill 2"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/infill 3"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 160925.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/infill 5"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 855650.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/infill 7"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 855650.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/infill 9"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 624075.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/infill 11"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/strop/stropnice/infill 12"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/podhľad prízemia/sadrokartón 11"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 13125.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/stud 5"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 77600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/stud 7"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 77600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/stud 9"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 77600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/stud 11"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 77600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 152800.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/infill 4"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 99425.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/infill 6"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 528650.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/infill 8"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 528650.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/infill 10"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 385575.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/strop/stropnice/infill 13"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 11250.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/strop/stropnice/stud 10"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/strop/stropnice/stud 12"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 65600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/strop/stropnice/stud 15"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/strop/stropnice/sill 2"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 28000.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/strop/stropnice/infill 11"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 55350.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/strop/stropnice/infill 14"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 166050.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/podhľad prízemia/sadrokartón 12"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 5000.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/strop/stropnice/stud 10"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/strop/stropnice/stud 13"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 19200.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/strop/stropnice/stud 15"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 28000.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/strop/stropnice/header 2"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 28000.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/strop/stropnice/infill 12"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 16200.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 10",
+        "konštrukcia/strop/stropnice/infill 15"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 48600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 11",
+        "konštrukcia/podhľad prízemia/sadrokartón 13"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 13125.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 11",
+        "konštrukcia/strop/stropnice/stud 11"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 11",
         "konštrukcia/strop/stropnice/stud 14"
       ],
       "kind": "contact",
@@ -65556,7 +67089,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 6",
+        "konštrukcia/podhľad prízemia/sadrokartón 11",
         "konštrukcia/strop/stropnice/stud 16"
       ],
       "kind": "touch",
@@ -65568,7 +67101,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 6",
+        "konštrukcia/podhľad prízemia/sadrokartón 11",
         "konštrukcia/strop/stropnice/header 1"
       ],
       "kind": "contact",
@@ -65585,7 +67118,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 6",
+        "konštrukcia/podhľad prízemia/sadrokartón 11",
         "konštrukcia/strop/stropnice/infill 13"
       ],
       "kind": "contact",
@@ -65602,7 +67135,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 6",
+        "konštrukcia/podhľad prízemia/sadrokartón 11",
         "konštrukcia/strop/stropnice/infill 16"
       ],
       "kind": "contact",
@@ -65619,15 +67152,15 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
+        "konštrukcia/podhľad prízemia/sadrokartón 14"
       ],
       "kind": "contact",
       "faces": [
         "segment2",
         "segment4"
       ],
-      "area_mm2": 20625.0,
+      "area_mm2": 19625.0,
       "direction": [
         1.0,
         0.0,
@@ -65636,7 +67169,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/stud 15"
       ],
       "kind": "contact",
@@ -65653,7 +67186,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/stud 17"
       ],
       "kind": "contact",
@@ -65670,19 +67203,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
-        "konštrukcia/strop/stropnice/stud 19"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/sill 1"
       ],
       "kind": "contact",
@@ -65690,7 +67211,7 @@
         "end",
         "start"
       ],
-      "area_mm2": 52000.0,
+      "area_mm2": 45600.0,
       "direction": [
         0.0,
         0.0,
@@ -65699,7 +67220,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/header 2"
       ],
       "kind": "touch",
@@ -65711,7 +67232,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/sill 2"
       ],
       "kind": "touch",
@@ -65723,7 +67244,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/infill 14"
       ],
       "kind": "touch",
@@ -65735,7 +67256,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/infill 15"
       ],
       "kind": "touch",
@@ -65747,7 +67268,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/infill 17"
       ],
       "kind": "contact",
@@ -65764,7 +67285,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 7",
+        "konštrukcia/podhľad prízemia/sadrokartón 12",
         "konštrukcia/strop/stropnice/infill 19"
       ],
       "kind": "contact",
@@ -65772,7 +67293,7 @@
         "end",
         "start"
       ],
-      "area_mm2": 357175.0,
+      "area_mm2": 231575.0,
       "direction": [
         0.0,
         0.0,
@@ -65781,15 +67302,15 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
-        "konštrukcia/podhľad prízemia/sadrokartón 9"
+        "konštrukcia/podhľad prízemia/sadrokartón 13",
+        "konštrukcia/podhľad prízemia/sadrokartón 15"
       ],
       "kind": "contact",
       "faces": [
         "segment2",
         "segment4"
       ],
-      "area_mm2": 13125.0,
+      "area_mm2": 12125.0,
       "direction": [
         1.0,
         0.0,
@@ -65798,7 +67319,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/podhľad prízemia/sadrokartón 13",
         "konštrukcia/strop/stropnice/stud 16"
       ],
       "kind": "contact",
@@ -65815,7 +67336,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/podhľad prízemia/sadrokartón 13",
         "konštrukcia/strop/stropnice/stud 18"
       ],
       "kind": "contact",
@@ -65832,19 +67353,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
-        "konštrukcia/strop/stropnice/stud 19"
-      ],
-      "kind": "touch",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/podhľad prízemia/sadrokartón 13",
         "konštrukcia/strop/stropnice/header 1"
       ],
       "kind": "contact",
@@ -65852,7 +67361,7 @@
         "end",
         "start"
       ],
-      "area_mm2": 52000.0,
+      "area_mm2": 45600.0,
       "direction": [
         0.0,
         0.0,
@@ -65861,7 +67370,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/podhľad prízemia/sadrokartón 13",
         "konštrukcia/strop/stropnice/infill 16"
       ],
       "kind": "touch",
@@ -65873,7 +67382,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/podhľad prízemia/sadrokartón 13",
         "konštrukcia/strop/stropnice/infill 18"
       ],
       "kind": "contact",
@@ -65890,7 +67399,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 8",
+        "konštrukcia/podhľad prízemia/sadrokartón 13",
         "konštrukcia/strop/stropnice/infill 20"
       ],
       "kind": "contact",
@@ -65898,7 +67407,7 @@
         "end",
         "start"
       ],
-      "area_mm2": 220675.0,
+      "area_mm2": 143075.0,
       "direction": [
         0.0,
         0.0,
@@ -65907,7 +67416,140 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 14",
+        "konštrukcia/podhľad prízemia/sadrokartón 16"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 19625.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 14",
+        "konštrukcia/strop/stropnice/stud 19"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 14",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 14",
+        "konštrukcia/strop/stropnice/infill 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 125600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 15",
+        "konštrukcia/podhľad prízemia/sadrokartón 18"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 12125.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 15",
+        "konštrukcia/strop/stropnice/stud 19"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 15",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 15",
+        "konštrukcia/strop/stropnice/infill 20"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 77600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 16",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 19625.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 16",
         "konštrukcia/strop/stropnice/stud 19"
       ],
       "kind": "contact",
@@ -65915,7 +67557,7 @@
         "end",
         "start"
       ],
-      "area_mm2": 288000.0,
+      "area_mm2": 125600.0,
       "direction": [
         0.0,
         0.0,
@@ -65924,7 +67566,195 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 16",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 16",
+        "konštrukcia/strop/stropnice/infill 19"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 16",
+        "konštrukcia/strop/stropnice/infill 21"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 17",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 11250.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 17",
+        "konštrukcia/strop/stropnice/stud 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 72000.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 17",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 17",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 17",
+        "konštrukcia/strop/stropnice/infill 21"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 18",
+        "konštrukcia/podhľad prízemia/sadrokartón 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "segment2",
+        "segment4"
+      ],
+      "area_mm2": 12125.0,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 18",
+        "konštrukcia/strop/stropnice/stud 19"
+      ],
+      "kind": "contact",
+      "faces": [
+        "end",
+        "start"
+      ],
+      "area_mm2": 77600.0,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 18",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 18",
+        "konštrukcia/strop/stropnice/infill 20"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 18",
+        "konštrukcia/strop/stropnice/infill 21"
+      ],
+      "kind": "touch",
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
+        "konštrukcia/strop/stropnice/stud 19"
+      ],
+      "kind": "touch",
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "parts": [
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
         "konštrukcia/strop/stropnice/stud 20"
       ],
       "kind": "contact",
@@ -65941,7 +67771,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
         "konštrukcia/strop/stropnice/stud 21"
       ],
       "kind": "contact",
@@ -65958,7 +67788,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
         "konštrukcia/strop/stropnice/stud 22"
       ],
       "kind": "contact",
@@ -65975,55 +67805,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
-        "konštrukcia/strop/stropnice/header 1"
-      ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
-        "konštrukcia/strop/stropnice/sill 1"
-      ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
-        "konštrukcia/strop/stropnice/infill 19"
-      ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
-        "konštrukcia/strop/stropnice/infill 20"
-      ],
-      "kind": "touch",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
         "konštrukcia/strop/stropnice/infill 21"
       ],
       "kind": "contact",
@@ -66040,7 +67822,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
         "konštrukcia/strop/stropnice/infill 22"
       ],
       "kind": "contact",
@@ -66057,7 +67839,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
         "konštrukcia/strop/stropnice/infill 23"
       ],
       "kind": "contact",
@@ -66074,7 +67856,7 @@
     },
     {
       "parts": [
-        "konštrukcia/podhľad prízemia/sadrokartón 9",
+        "konštrukcia/podhľad prízemia/sadrokartón 19",
         "konštrukcia/strop/stropnice/infill 24"
       ],
       "kind": "contact",
@@ -75497,6 +77279,21 @@
       {
         "material": "KVH C24",
         "dimensions_mm": [
+          2562.5,
+          160.0,
+          80.0
+        ],
+        "count": 4,
+        "parts": [
+          "konštrukcia/strop/stĺpik pod výmenou juh západ",
+          "konštrukcia/strop/stĺpik pod výmenou sever západ",
+          "konštrukcia/strop/stĺpik pod výmenou juh východ",
+          "konštrukcia/strop/stĺpik pod výmenou sever východ"
+        ]
+      },
+      {
+        "material": "KVH C24",
+        "dimensions_mm": [
           2990.0,
           165.0,
           80.0
@@ -77444,7 +79241,7 @@
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 5"
+          "konštrukcia/podhľad prízemia/sadrokartón 10"
         ]
       },
       {
@@ -77488,12 +79285,25 @@
         "material": "sadrokartón",
         "dimensions_mm": [
           900.0,
+          80.0,
+          12.5
+        ],
+        "count": 2,
+        "parts": [
+          "konštrukcia/podhľad prízemia/sadrokartón 3",
+          "konštrukcia/podhľad prízemia/sadrokartón 17"
+        ]
+      },
+      {
+        "material": "sadrokartón",
+        "dimensions_mm": [
+          900.0,
           350.0,
           12.5
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 4"
+          "konštrukcia/podhľad prízemia/sadrokartón 9"
         ]
       },
       {
@@ -77518,6 +79328,21 @@
         "count": 1,
         "parts": [
           "konštrukcia/štít západ/sadrokartón 5"
+        ]
+      },
+      {
+        "material": "sadrokartón",
+        "dimensions_mm": [
+          970.0,
+          80.0,
+          12.5
+        ],
+        "count": 4,
+        "parts": [
+          "konštrukcia/podhľad prízemia/sadrokartón 4",
+          "konštrukcia/podhľad prízemia/sadrokartón 6",
+          "konštrukcia/podhľad prízemia/sadrokartón 15",
+          "konštrukcia/podhľad prízemia/sadrokartón 18"
         ]
       },
       {
@@ -77566,19 +79391,19 @@
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 6"
+          "konštrukcia/podhľad prízemia/sadrokartón 11"
         ]
       },
       {
         "material": "sadrokartón",
         "dimensions_mm": [
           1050.0,
-          650.0,
+          570.0,
           12.5
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 8"
+          "konštrukcia/podhľad prízemia/sadrokartón 13"
         ]
       },
       {
@@ -77620,13 +79445,28 @@
       {
         "material": "sadrokartón",
         "dimensions_mm": [
+          1570.0,
+          80.0,
+          12.5
+        ],
+        "count": 4,
+        "parts": [
+          "konštrukcia/podhľad prízemia/sadrokartón 2",
+          "konštrukcia/podhľad prízemia/sadrokartón 5",
+          "konštrukcia/podhľad prízemia/sadrokartón 14",
+          "konštrukcia/podhľad prízemia/sadrokartón 16"
+        ]
+      },
+      {
+        "material": "sadrokartón",
+        "dimensions_mm": [
           1650.0,
-          650.0,
+          570.0,
           12.5
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 7"
+          "konštrukcia/podhľad prízemia/sadrokartón 12"
         ]
       },
       {
@@ -77656,25 +79496,25 @@
       {
         "material": "sadrokartón",
         "dimensions_mm": [
-          1990.0,
+          1910.0,
           1050.0,
           12.5
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 3"
+          "konštrukcia/podhľad prízemia/sadrokartón 8"
         ]
       },
       {
         "material": "sadrokartón",
         "dimensions_mm": [
-          1990.0,
+          1910.0,
           1650.0,
           12.5
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 2"
+          "konštrukcia/podhľad prízemia/sadrokartón 7"
         ]
       },
       {
@@ -77793,7 +79633,7 @@
         "material": "sadrokartón",
         "dimensions_mm": [
           3600.0,
-          900.0,
+          820.0,
           12.5
         ],
         "count": 1,
@@ -77805,12 +79645,12 @@
         "material": "sadrokartón",
         "dimensions_mm": [
           3600.0,
-          1910.0,
+          1830.0,
           12.5
         ],
         "count": 1,
         "parts": [
-          "konštrukcia/podhľad prízemia/sadrokartón 9"
+          "konštrukcia/podhľad prízemia/sadrokartón 19"
         ]
       },
       {
@@ -77891,7 +79731,7 @@
     ],
     "hardware": [],
     "machining": [],
-    "total_parts": 466
+    "total_parts": 480
   },
   "log": [
     "stena 200 mm, strop 200 mm, strecha 250 mm; podkrovie: podlaha 3000, hrebeň (spodok strechy) 5678 mm"

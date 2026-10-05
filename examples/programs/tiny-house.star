@@ -334,8 +334,19 @@ for side, name, (x, y), along, start, reverse in (("west", "západ", (FACADE, B)
 
 # Strop: stropnice ležia na hornej pásnici stien prízemia, obvodový veniec (krajné
 # stropnice a čelné fošne) stojí na jej vonkajšej časti. Podhľad je len v interiéri.
+# Výmeny pozdĺž otvoru schodiska sú dlhé ako schody a nesú skrátené stropnice,
+# preto nevisia len z boku na krajných stropniciach: každý ich koniec spolu s
+# krajnou stropnicou leží zhora na stĺpiku postavenom na základovej doske.
+POST = 80
+stair_posts = [(name, x - POST, y) for name, x in (("západ", stair_x), ("východ", stair_end))
+               for y in (hole_y[0] - POST, hole_y[1])]
+for name, x, y in stair_posts:
+    box("konštrukcia/strop/stĺpik pod výmenou %s %s" % ("juh" if y < hole_y[0] else "sever", name),
+        (2 * POST, POST, deck - SLAB), at = (x, y, SLAB), material = "KVH C24", color = TIMBER_C,
+        tags = T + ["stĺpiky"])
 buildup("konštrukcia/podhľad prízemia", (WALL, WALL, ceiling), (1, 0, 0), (0, 1, 0), L - 2 * WALL, FLOOR_LAYERS[:1],
-        height = B - 2 * WALL, openings = floor_holes(WALL, WALL), tags = T)
+        height = B - 2 * WALL, openings = floor_holes(WALL, WALL) +
+        [(x - WALL, y - WALL, 2 * POST, POST) for _, x, y in stair_posts], tags = T)
 buildup("konštrukcia/strop", (FACADE, FACADE, deck), (1, 0, 0), (0, 1, 0), L - 2 * FACADE, FLOOR_LAYERS[1:],
         height = B - 2 * FACADE, openings = floor_holes(FACADE, FACADE), tags = T)
 

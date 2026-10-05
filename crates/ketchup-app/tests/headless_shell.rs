@@ -11258,6 +11258,41 @@ fn shift_click_removing_the_primary_occurrence_promotes_the_remaining_exact_face
 }
 
 #[test]
+fn shift_click_adds_the_clicked_part_of_a_group_not_the_whole_group() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    for _ in 0..3 {
+        assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
+    }
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    // The copies share one definition, so one exact body serves all four.
+    wait_for_one_exact_body(&mut shell);
+    shell.click_command(AppCommand::Select);
+    // With exact faces a click picks the part inside the group, not the group.
+    shell.click_at(shell.top_face_centre(1));
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+    for added in [2, 3] {
+        shell.click_at_with(shell.top_face_centre(added), shift());
+        assert_eq!(shell.app().selected_occurrence_count(), added as usize);
+    }
+    for id in [1, 2, 3] {
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(id)));
+    }
+    assert!(!shell.app().occurrence_is_selected(OccurrenceId(4)));
+
+    shell.click_at_with(shell.top_face_centre(2), shift());
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+    assert!(!shell.app().occurrence_is_selected(OccurrenceId(2)));
+}
+
+#[test]
 fn tab_cycles_overlapping_occurrences_and_click_selects_the_visible_choice() {
     let mut shell = Shell::new();
     shell

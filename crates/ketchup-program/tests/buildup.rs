@@ -325,6 +325,21 @@ fn the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() 
                 .any(|deck| contact_area(&report.relations, &sole, deck).is_some());
             assert!(on_deck, "{sole} does not stand on the floor deck");
         }
+        // The long headers along the stair opening and the joists beside it rest on
+        // posts at both ends instead of hanging on the trimmers.
+        for (beam, side) in [("sill 1", "juh"), ("header 1", "sever")] {
+            let beam = format!("konštrukcia/strop/stropnice/{beam}");
+            for end in ["západ", "východ"] {
+                let post = format!("konštrukcia/strop/stĺpik pod výmenou {side} {end}");
+                let area = contact_area(&report.relations, &beam, &post)
+                    .unwrap_or_else(|| panic!("{beam} does not rest on {post}"));
+                assert!((area - 80.0 * 80.0).abs() < 1.0, "{beam} on {post}: {area}");
+                let trimmer = joists
+                    .iter()
+                    .any(|joist| contact_area(&report.relations, joist, &post).is_some());
+                assert!(trimmer, "no joist beside the opening rests on {post}");
+            }
+        }
         assert!(model.part("komín/izolovaný komín").is_some());
         assert!(model.part("komín/teleso").is_none());
     }

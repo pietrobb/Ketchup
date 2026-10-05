@@ -491,6 +491,17 @@ impl KetchupApp {
             self.select_group(group_id);
             return;
         }
+        self.select_part_from_viewport(target, additive);
+    }
+
+    /// Selects the clicked part itself even inside a group: a click on an exact
+    /// face picks that part, so Shift on another face adds or removes that part.
+    fn select_part_from_viewport(&mut self, target: SelectionId, additive: bool) {
+        if !self.occurrence_in_active_context(&target.instance_path) {
+            return;
+        }
+        self.end_transform_correction();
+        let snapshot = self.document.current();
         self.selection.select_exact(target.clone(), additive);
         if let Some(item) = snapshot
             .scene_query()
@@ -1817,9 +1828,10 @@ impl KetchupApp {
                             .select_topological(target.clone(), topological, additive)
                             && !same_topological_scope
                         {
-                            self.select_from_viewport(Some(target), additive);
+                            self.select_part_from_viewport(target, additive);
                         }
                     }
+                    (Some(target), Some(_)) => self.select_part_from_viewport(target, additive),
                     (target, _) => self.select_from_viewport(target, additive),
                 }
             }
