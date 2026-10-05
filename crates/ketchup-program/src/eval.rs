@@ -2300,8 +2300,23 @@ fn evaluation_error(code: &'static str, error: impl std::fmt::Display) -> Progra
     }
 }
 
+/// A prelude read from a file instead of the built-in one, with its path.
+static PRELUDE_OVERRIDE: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+/// Makes every later evaluation in this process use `source` (read from
+/// `path`) as the prelude instead of the built-in [`PRELUDE`], so an edited
+/// prelude is checked without rebuilding. `false` when one was already set.
+pub fn use_prelude(path: String, source: String) -> bool {
+    PRELUDE_OVERRIDE.set((path, source)).is_ok()
+}
+
 fn prelude(globals: &Globals) -> Result<FrozenModule, ProgramError> {
-    let ast = AstModule::parse("prelude.star", PRELUDE.to_owned(), &dialect())
+    let (name, source) = PRELUDE_OVERRIDE
+        .get()
+        .map_or(("prelude.star", PRELUDE), |(path, source)| {
+            (path.as_str(), source.as_str())
+        });
+    let ast = AstModule::parse(name, source.to_owned(), &dialect())
         .map_err(|error| evaluation_error("prelude_invalid", error))?;
     let module = Module::new();
     {

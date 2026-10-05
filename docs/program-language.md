@@ -24,6 +24,7 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 | Way | Command |
 |---|---|
 | Command line, no OCCT or GUI needed | `ketchup-program check cabinet.star --set width=700` |
+| Quick check of a large program or an edited prelude, no build | `ketchup-program check house.star --summary --prelude crates/ketchup-program/library/prelude.star` (parts per layer, statics, issues grouped by kind); `--diff saved.json` lists what changed against a summary saved earlier |
 | Headless protocol | `program_check` (report only), `program_apply` (replace the document, one undo step) |
 | Python SDK | `session.check_program(source, params={...})`, `session.program_document(source, ...)` |
 | AI agent (MCP, `ketchup-app --mcp`) | `program` with `action=apply` in the open window; `action=docs` lists the library topics, `name=<topic>` returns one |
