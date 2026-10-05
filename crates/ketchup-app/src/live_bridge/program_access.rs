@@ -19,6 +19,7 @@ pub enum ReportSection {
     MaterialTakeoff,
     Joints,
     Loads,
+    Members,
 }
 
 pub(super) fn invalid(target: &str, reason: impl Into<String>, hint: &str) -> &'static str {
@@ -321,6 +322,7 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
         ReportSection::MaterialTakeoff => Vec::new(),
         ReportSection::Joints => report.joints.iter().map(|row| json!(row)).collect(),
         ReportSection::Loads => report.loads.members.iter().map(|row| json!(row)).collect(),
+        ReportSection::Members => report.design.members.iter().map(|row| json!(row)).collect(),
     }
 }
 

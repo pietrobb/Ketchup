@@ -1367,7 +1367,8 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     whose end another plane cuts (roof halves meeting in the ridge).
 #     A layer is a dict {"name", "thickness", "material", "color", "tags"}. A sheet layer
 #     is cut into pieces around the openings. A framed layer adds "spacing" (stud
-#     centres in mm), "stud" (stud width, default 60) and optionally "infill" (material
+#     centres in mm), "stud" (stud width, default 60), "header" (depth of the headers
+#     over openings in a wall, default the stud width) and optionally "infill" (material
 #     between the studs; "infill_color", "infill_tags"): a bottom plate, a top plate
 #     following the outline, studs at `spacing`, a stud on each side of every opening
 #     with a header above and a sill under it, and infill in every bay.
@@ -1525,16 +1526,17 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
             fail("buildup(%s): layer %s spacing %s is narrower than its studs" % (name, label, fmt_mm(spacing)))
         slopes = [(points[i + 1][1] - points[i][1]) / (points[i + 1][0] - points[i][0]) for i in range(len(points) - 1)]
         drops = [stud * math.sqrt(1 + slope * slope) for slope in slopes]
+        head = float(layer.get("header", stud)) if upright else stud
         # A stud, joist or rafter is blocked over an opening and its sill and header.
         zones = []
         for i in range(len(holes)):
             ou, ov, ow, oh = holes[i]
-            if through[i] or _under(points, drops, ou, ou + ow, ov + oh + stud) == None:
+            if through[i] or _under(points, drops, ou, ou + ow, ov + oh + head) == None:
                 if not through[i]:
                     fail("buildup(%s): opening %s leaves no room for a header under the top plate" % (name, holes[i]))
                 high = None
             else:
-                high = ov + oh + stud
+                high = ov + oh + head
             zones.append((ou, ou + ow, ov - stud if ov >= 2 * stud else 0.0, high))
         for i in range(len(zones)):
             for j in range(i):
@@ -1614,7 +1616,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 spans.append(None)
                 continue
             a, b = beam_span(ou, ow, upright)
-            spans.append((a, b, ov + oh, ov + oh + stud))
+            spans.append((a, b, ov + oh, ov + oh + head))
         count = 0
         members = []
         for u in studs:
@@ -1710,6 +1712,41 @@ IMPOSED_LOADS = {
     "A": (2.0, "EN 1991-1-1 table 6.2, category A floors: 1.5-2.0 kN/m2, upper value; the national annex may differ"),
     "H": (0.4, "EN 1991-1-1 table 6.10, category H roofs: recommended 0.4 kN/m2; the national annex may differ"),
 }
+
+#@topic member_check: Timber member check after EN 1995-1-1 (EC5)
+#
+#   timber_design(materials, service_class=1, classes=TIMBER_CLASSES)
+#     materials: {material name: strength class}, e.g. {"KVH C24": "C24"}. Each load_path()
+#     member of such a material is checked on the loads of the loads topic.
+#   TIMBER_CLASSES: C16, C24 (EN 338:2016), GL24h, GL28h (EN 14080:2013) characteristic values.
+#   The report's design.members lists every load-path member: role (beam or column),
+#   section [width, depth], the checks with their utilization, governing combination and
+#   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =
+#   compression perpendicular to the grain, compression with buckling for columns), the
+#   largest utilization and status: "pass", "fail" or "not_verified" when an input is
+#   missing (the utilization is then from the known loads only). design.basis states the
+#   factors and assumptions. A computed check, not an authorized structural design.
+#   Example:
+#     timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)
+
+TIMBER_CLASSES = {
+    "C16": {"glulam": False, "fm_k": 16, "fv_k": 3.2, "fc0_k": 17, "fc90_k": 2.2, "e0_mean": 8000, "e0_05": 5400,
+            "source": "EN 338:2016 table 1, C16"},
+    "C24": {"glulam": False, "fm_k": 24, "fv_k": 4.0, "fc0_k": 21, "fc90_k": 2.5, "e0_mean": 11000, "e0_05": 7400,
+            "source": "EN 338:2016 table 1, C24"},
+    "GL24h": {"glulam": True, "fm_k": 24, "fv_k": 3.5, "fc0_k": 24, "fc90_k": 2.5, "e0_mean": 11500, "e0_05": 9600,
+              "source": "EN 14080:2013 table 5, GL24h"},
+    "GL28h": {"glulam": True, "fm_k": 28, "fv_k": 3.5, "fc0_k": 28, "fc90_k": 2.5, "e0_mean": 12600, "e0_05": 10500,
+              "source": "EN 14080:2013 table 5, GL28h"},
+}
+
+def timber_design(materials, service_class = 1, classes = None):
+    """Declares the strength class of each timber material; see the member_check topic."""
+    table = TIMBER_CLASSES if classes == None else classes
+    for material, name in materials.items():
+        if name not in table:
+            fail("timber_design: unknown strength class %r for %r (known: %s)" % (name, material, ", ".join(table.keys())))
+        timber_strength(material, strength_class = name, service_class = service_class, **table[name])
 
 def snow_load(sk, pitch, exposure = 1.0, thermal = 1.0):
     """Snow on a pitched roof, kN/m2 of plan: mu1(pitch) * Ce * Ct * sk (EN 1991-1-3

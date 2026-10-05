@@ -30,12 +30,14 @@ FACADE_C = (120, 95, 70)
 def layer(name, thickness, material, color, tags):
     return {"name": name, "thickness": thickness, "material": material, "color": color, "tags": tags}
 
-def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None):
+def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None, header = None):
     layer = {"name": name, "thickness": thickness, "material": material, "color": TIMBER_C, "tags": tags,
              "spacing": spacing, "stud": stud, "infill": "minerálna vlna", "infill_color": WOOL_C,
              "infill_tags": ["izolácia"]}
     if hanger != None:
         layer["hanger"] = hanger
+    if header != None:
+        layer["header"] = header
     return layer
 
 # Spojovací materiál (BB-TECHNIK Banská Bystrica). Všetko je poskladané na sebe;
@@ -48,33 +50,35 @@ RAFTER_TIE = "krokvová spojka 30x210 VORMANN"
 RIDGE_SCREW = "vrut tesársky 8x260/80 TX40 tanierová hlava"
 SILL_ANCHOR = "kotva do betónu M12"
 POST_BASE = "kotevná pätka stĺpika"
+# Preklad nad otvorom v stene: hranol na výšku (posudok EC5 vyžaduje viac než 60 mm stĺpika).
+HEADER = 200
 
 # Skladby od interiéru von (strop: od spodku nahor). Hrúbky dávajú aj rozmery konceptu.
 SYSTEMS = [
     {
         "wall": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  layer("OSB", 15, "OSB 3", OSB_C, ["OSB"]),
-                 framed("stĺpiky", 140, "KVH C24", 625, ["stĺpiky"]),
+                 framed("stĺpiky", 140, "KVH C24", 625, ["stĺpiky"], header = HEADER),
                  layer("fasáda", 32.5, "drevovláknitá doska", FACADE_C, ["fasáda"])],
         "roof": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  framed("krokvy", 180, "KVH C24", 900, ["krokvy"], stud = 80),
                  layer("debnenie", 22, "OSB 3", OSB_C, ["OSB"]),
                  layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
-                  framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
+                  framed("stropnice", 200, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
                   layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB", "podlaha"])],
     },
     {
         "wall": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  layer("OSB", 15, "OSB 3", OSB_C, ["OSB"]),
-                 framed("stĺpiky", 160, "KVH C24", 625, ["stĺpiky"]),
+                 framed("stĺpiky", 160, "KVH C24", 625, ["stĺpiky"], header = HEADER),
                  layer("fasáda", 62.5, "drevovláknitá doska", FACADE_C, ["fasáda"])],
         "roof": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  framed("krokvy", 220, "KVH C24", 900, ["krokvy"], stud = 80),
                  layer("debnenie", 22, "OSB 3", OSB_C, ["OSB"]),
                  layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
-                  framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
+                  framed("stropnice", 200, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
                   layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB", "podlaha"])],
     },
 ]
@@ -114,6 +118,8 @@ area_load("údržba strechy", kind = "roof", kn_m2 = IMPOSED_LOADS["H"][0], on =
           source = IMPOSED_LOADS["H"][1])
 area_load("sneh", kind = "snow", kn_m2 = snow_load(SNOW_SK, PITCH), on = ["krytina"],
           source = "EN 1991-1-3 5.2(3), tab. 5.2; sk = %s kN/m²" % SNOW_SK)
+# Posudok prútov podľa EC5: KVH C24, vnútorné prostredie (trieda prevádzky 1).
+timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)
 
 # --- základ a terasa (spoločné pre koncept aj konštrukciu) ---
 box("základ/doska", (L, B, SLAB), material = "betón", color = SLAB_C)

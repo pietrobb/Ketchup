@@ -24,6 +24,7 @@ pub mod frame;
 pub mod joint_check;
 pub mod load_path;
 pub mod loads;
+pub mod member_check;
 pub mod model;
 pub mod motion;
 mod opposing_holes;
@@ -71,6 +72,9 @@ pub struct Report {
     /// Characteristic loads on every load-path member, when the program declares them.
     #[serde(skip_serializing_if = "loads::LoadReport::is_empty")]
     pub loads: loads::LoadReport,
+    /// EN 1995-1-1 check of every load-path member, when timber strength classes are declared.
+    #[serde(skip_serializing_if = "member_check::DesignReport::is_empty")]
+    pub design: member_check::DesignReport,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
 }
@@ -122,6 +126,7 @@ pub fn run(
         params: evaluated.model.params.clone(),
         bom: bom(&evaluated.model),
         joints: joint_check::joint_checks(&evaluated.model, &loads),
+        design: member_check::member_checks(&evaluated.model, &loads),
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),

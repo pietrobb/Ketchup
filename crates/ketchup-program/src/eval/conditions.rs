@@ -212,4 +212,54 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         state(eval)?.model.borrow_mut().area_loads.push(load);
         Ok(NoneType)
     }
+
+    /// Strength class of a timber material for the EN 1995-1-1 member check:
+    /// characteristic strengths and moduli in N/mm², the service class (1-3)
+    /// and the source of the values.
+    fn timber_strength<'v>(
+        #[starlark(require = pos)] material: &str,
+        #[starlark(require = named)] strength_class: &str,
+        #[starlark(require = named)] service_class: i32,
+        #[starlark(require = named)] glulam: bool,
+        #[starlark(require = named)] fm_k: Value<'v>,
+        #[starlark(require = named)] fv_k: Value<'v>,
+        #[starlark(require = named)] fc0_k: Value<'v>,
+        #[starlark(require = named)] fc90_k: Value<'v>,
+        #[starlark(require = named)] e0_mean: Value<'v>,
+        #[starlark(require = named)] e0_05: Value<'v>,
+        #[starlark(require = named)] source: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let positive = |value: Value<'v>, what: &str| {
+            let number = number(value, what)?;
+            if !number.is_finite() || number <= 0.0 {
+                anyhow::bail!("timber_strength({material:?}): {what} must be positive");
+            }
+            Ok(number)
+        };
+        if !(1..=3).contains(&service_class) {
+            anyhow::bail!("timber_strength({material:?}): service_class must be 1, 2 or 3");
+        }
+        let class = crate::member_check::TimberClass {
+            strength_class: strength_class.to_owned(),
+            service_class: service_class as u8,
+            glulam,
+            fm_k: positive(fm_k, "fm_k")?,
+            fv_k: positive(fv_k, "fv_k")?,
+            fc0_k: positive(fc0_k, "fc0_k")?,
+            fc90_k: positive(fc90_k, "fc90_k")?,
+            e0_mean: positive(e0_mean, "e0_mean")?,
+            e0_05: positive(e0_05, "e0_05")?,
+            source: source.trim().to_owned(),
+        };
+        if class.source.is_empty() {
+            anyhow::bail!("timber_strength({material:?}): name the source of the values");
+        }
+        state(eval)?
+            .model
+            .borrow_mut()
+            .timber
+            .insert(material.to_owned(), class);
+        Ok(NoneType)
+    }
 }

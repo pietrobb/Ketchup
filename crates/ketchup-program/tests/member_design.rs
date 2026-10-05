@@ -1,0 +1,161 @@
+use ketchup_program::member_check::MemberCheck;
+use ketchup_program::{Report, run};
+use std::collections::BTreeMap;
+
+const HOUSE: &str = include_str!("../../../examples/programs/tiny-house.star");
+
+fn report(source: &str, overrides: &[(&str, f64)]) -> Report {
+    let overrides: BTreeMap<String, f64> = overrides
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), *value))
+        .collect();
+    run("design.star", source, &overrides)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .1
+}
+
+fn member<'a>(report: &'a Report, name: &str) -> &'a MemberCheck {
+    report
+        .design
+        .members
+        .iter()
+        .find(|member| member.part == name)
+        .unwrap_or_else(|| panic!("no check of {name}: {:?}", report.design.members))
+}
+
+fn utilization(member: &MemberCheck, check: &str) -> f64 {
+    member
+        .checks
+        .iter()
+        .find(|c| c.name == check)
+        .unwrap_or_else(|| panic!("no {check} in {:?}", member.checks))
+        .utilization
+}
+
+fn close(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() <= 0.01 * expected + 0.002,
+        "{actual} != {expected}"
+    );
+}
+
+/// A beam `b` x `h` mm, 4000 mm long, on two grounded 100 mm posts (centres 50
+/// and 3950 mm), under a 600 mm wide deck with 2 kN/m² imposed load.
+fn beam(material: &str, b: f64, h: f64) -> String {
+    format!(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({{\"C24\": \"C24\"}})
+box(\"post a\", (100, {b}, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, {b}, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (4000, {b}, {h}), at = (0, 0, 2000), material = \"{material}\", tags = [\"frame\"])
+box(\"deck\", (4000, 600, 20), at = (0, {b} / 2.0 - 300, 2000 + {h}), material = \"OSB\", tags = [\"deck\"])
+"
+    )
+}
+
+#[test]
+fn a_simply_supported_beam_matches_the_hand_calculation() {
+    let report = report(&beam("C24", 100.0, 200.0), &[]);
+    let beam = member(&report, "beam");
+    assert_eq!(beam.role, "beam");
+    assert_eq!(beam.section_mm, Some([100.0, 200.0]));
+    assert_eq!(beam.missing, Vec::<String>::new());
+    // q = 2 kN/m² x 0.6 m = 1.2 N/mm over the span of 3900 mm between the post centres;
+    // medium-term imposed load: kmod 0.8, gamma_M 1.3, kh 1 (h > 150 mm).
+    let (q, l) = (1.2, 3900.0);
+    let moment = 1.5 * q * l * l / 8.0;
+    close(
+        utilization(beam, "bending"),
+        moment / (100.0 * 200.0 * 200.0 / 6.0) / (0.8 * 24.0 / 1.3),
+    );
+    let shear = 1.5 * q * l / 2.0;
+    close(
+        utilization(beam, "shear"),
+        1.5 * shear / (0.67 * 100.0 * 200.0) / (0.8 * 4.0 / 1.3),
+    );
+    let ei = 11000.0 * 100.0 * 200f64.powi(3) / 12.0;
+    let w = 5.0 * q * l.powi(4) / (384.0 * ei);
+    close(utilization(beam, "deflection_inst"), w / (l / 300.0));
+    close(
+        utilization(beam, "deflection_fin"),
+        w * (1.0 + 0.3 * 0.6) / (l / 250.0),
+    );
+    // Each post takes half of the whole 4000 mm on its 100 x 100 mm top.
+    let reaction = 1.5 * q * 2000.0;
+    close(
+        utilization(beam, "bearing"),
+        reaction / 10_000.0 / (0.8 * 2.5 / 1.3),
+    );
+    assert_eq!(beam.governing.as_deref(), Some("deflection_inst"));
+    assert_eq!(beam.status, "pass");
+}
+
+#[test]
+fn an_undersized_beam_fails_and_a_beam_without_a_strength_class_is_not_verified() {
+    let weak = report(&beam("C24", 60.0, 100.0), &[]);
+    let beam = member(&weak, "beam");
+    assert_eq!(beam.status, "fail");
+    assert!(utilization(beam, "bending") > 2.0, "{:?}", beam.checks);
+
+    let unknown = report(&beam_named("spruce"), &[]);
+    let beam = member(&unknown, "beam");
+    assert_eq!(beam.status, "not_verified");
+    assert!(beam.checks.is_empty());
+    assert_eq!(
+        beam.missing,
+        ["material \"spruce\" has no timber strength class (timber_strength)"]
+    );
+}
+
+fn beam_named(material: &str) -> String {
+    beam(material, 100.0, 200.0)
+}
+
+#[test]
+fn an_incomplete_load_reports_the_known_utilization_but_never_passes() {
+    let source = format!(
+        "{}area_load(\"snow\", kind = \"snow\", kn_m2 = snow_load(0, 40), on = [\"deck\"])\n",
+        beam("C24", 100.0, 200.0)
+    );
+    let report = report(&source, &[]);
+    let beam = member(&report, "beam");
+    assert!(beam.utilization.is_some_and(|u| u > 0.3 && u < 1.0));
+    assert_eq!(beam.missing, ["snow (snow) has no value"]);
+    assert_eq!(beam.status, "not_verified");
+}
+
+#[test]
+fn every_member_of_the_house_has_a_utilization_and_passes_once_the_snow_is_given() {
+    let with = report(HOUSE, &[("snow_sk", 1.5)]);
+    let members = &with.design.members;
+    assert_eq!(members.len(), with.loads.members.len());
+    assert!(members.len() > 200, "{}", members.len());
+    assert!(!with.design.basis.is_empty());
+    for member in members {
+        assert!(member.utilization.is_some(), "{member:?}");
+        assert_eq!(member.missing, Vec::<String>::new(), "{}", member.part);
+        assert_eq!(member.status, "pass", "{member:?}");
+    }
+    let columns = members.iter().filter(|m| m.role == "column").count();
+    assert!(columns > 50, "{columns}");
+    // The rafters sit on the wall plate with a birdsmouth: the notch is checked.
+    let rafter = member(&with, "konštrukcia/strecha južná/krokva 3");
+    for check in [
+        "bending",
+        "shear",
+        "deflection_fin",
+        "shear_notch",
+        "bearing",
+    ] {
+        assert!(utilization(rafter, check) > 0.0, "{check}");
+    }
+    // Without the site's snow nothing under the roof passes.
+    let without = report(HOUSE, &[]);
+    for member in &without.design.members {
+        assert!(member.utilization.is_some(), "{}", member.part);
+        if !member.missing.is_empty() {
+            assert_eq!(member.status, "not_verified", "{}", member.part);
+        }
+    }
+}

@@ -54,6 +54,9 @@ pub struct Patch {
     pub loads_n: Loads,
     /// "own weight", an area load's name, or the part it carries.
     pub source: String,
+    /// Where a carried part bears on this one (world points); empty for own loads.
+    #[serde(skip)]
+    pub footprint: Vec<[f64; 3]>,
 }
 
 /// What a member passes to one of its supports.
@@ -61,6 +64,10 @@ pub struct Patch {
 pub struct Reaction {
     pub part: String,
     pub at_mm: f64,
+    /// Length of the bearing along the member.
+    pub length_mm: f64,
+    /// Area of the faces it bears on (0 through a joint).
+    pub contact_mm2: f64,
     pub loads_n: Loads,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub joint: Option<String>,
@@ -128,7 +135,7 @@ fn polygon_area(points: &[[f64; 3]]) -> f64 {
 }
 
 /// Area of a straight-sided extrusion's profile.
-fn profile_area(part: &Part) -> Option<f64> {
+pub(crate) fn profile_area(part: &Part) -> Option<f64> {
     let ProgramPartBody::Extrusion { segments, .. } = &part.body else {
         return None;
     };
@@ -142,13 +149,13 @@ fn profile_area(part: &Part) -> Option<f64> {
     Some(twice.abs() / 2.0)
 }
 
-fn extents(part: &Part) -> [f64; 3] {
+pub(crate) fn extents(part: &Part) -> [f64; 3] {
     let (min, max) = part.local_bounds();
     std::array::from_fn(|axis| max[axis] - min[axis])
 }
 
 /// World directions of the part's local axes.
-fn axes(part: &Part) -> [[f64; 3]; 3] {
+pub(crate) fn axes(part: &Part) -> [[f64; 3]; 3] {
     let origin = part.to_world([0.0; 3]);
     std::array::from_fn(|axis| {
         sub(
@@ -232,12 +239,58 @@ impl Frame {
                 (lo.min(at), hi.max(at))
             })
     }
+
+    /// Positions of plan points (x, y) projected along the member seen from
+    /// above; None for an upright member.
+    fn plan_range(&self, points: &[[f64; 2]]) -> Option<(f64, f64)> {
+        let flat = self.axis[0] * self.axis[0] + self.axis[1] * self.axis[1];
+        if flat < 0.09 {
+            return None;
+        }
+        let along = |p: &[f64; 2]| {
+            ((p[0] - self.centre[0]) * self.axis[0] + (p[1] - self.centre[1]) * self.axis[1]) / flat
+                + self.length / 2.0
+        };
+        Some(
+            points
+                .iter()
+                .map(along)
+                .fold((f64::MAX, f64::MIN), |(lo, hi), at| {
+                    (lo.min(at), hi.max(at))
+                }),
+        )
+    }
+}
+
+/// Plan bounding box [min x, min y, max x, max y] of points, grown by `margin`.
+fn plan_box(points: &[[f64; 3]], margin: f64) -> [f64; 4] {
+    points
+        .iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            [
+                b[0].min(p[0] - margin),
+                b[1].min(p[1] - margin),
+                b[2].max(p[0] + margin),
+                b[3].max(p[1] + margin),
+            ]
+        })
+}
+
+fn plan_overlap(a: [f64; 4], b: [f64; 4]) -> Option<[f64; 4]> {
+    let o = [
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+        a[2].min(b[2]),
+        a[3].min(b[3]),
+    ];
+    (o[2] > o[0] && o[3] > o[1]).then_some(o)
 }
 
 /// Where a part bears on one supporter.
 struct Support {
     supporter: usize,
     points: Vec<[f64; 3]>,
+    area: f64,
     joint: Option<String>,
 }
 
@@ -251,6 +304,7 @@ fn grouped(supports: Vec<Support>) -> Vec<Support> {
         {
             Some(group) => {
                 group.points.extend(support.points);
+                group.area += support.area;
                 group.joint = group.joint.take().or(support.joint);
             }
             None => groups.push(support),
@@ -316,6 +370,65 @@ fn beam_shares(patches: &[Patch], positions: &[f64]) -> Vec<Loads> {
         }
     }
     shares
+}
+
+/// Where loads land on a supporter: (loads, range along it or None for its whole bearing).
+type Pieces = Vec<(Loads, Option<(f64, f64)>)>;
+
+/// A part that is no member (a deck, a sheet) shares its own loads among its
+/// supports by contact area, and passes each load it carries to the supports
+/// under where that load bears on it seen from above (searching up to 1 m
+/// around it), at that place along them.
+fn sheet_shares(patches: &[Patch], list: &[Support], frames: &[Frame]) -> Vec<Pieces> {
+    let mut out: Vec<Pieces> = list.iter().map(|_| Vec::new()).collect();
+    let mut own = Loads::new();
+    for patch in patches {
+        if patch.footprint.is_empty() {
+            add(&mut own, &patch.loads_n, 1.0);
+            continue;
+        }
+        let found = [0.0, 0.5, 100.0, 300.0, 1000.0].iter().find_map(|margin| {
+            let foot = plan_box(&patch.footprint, *margin);
+            let overlaps: Vec<Option<[f64; 4]>> = list
+                .iter()
+                .map(|support| plan_overlap(foot, plan_box(&support.points, 0.5)))
+                .collect();
+            let weights: Vec<f64> = overlaps
+                .iter()
+                .map(|o| o.map_or(0.0, |o| (o[2] - o[0]) * (o[3] - o[1])))
+                .collect();
+            let total: f64 = weights.iter().sum();
+            (total > 0.0).then_some((overlaps, weights, total))
+        });
+        let Some((overlaps, weights, total)) = found else {
+            add(&mut own, &patch.loads_n, 1.0);
+            continue;
+        };
+        for (k, support) in list.iter().enumerate() {
+            let Some(o) = overlaps[k] else {
+                continue;
+            };
+            let mut share = Loads::new();
+            add(&mut share, &patch.loads_n, weights[k] / total);
+            let corners = [[o[0], o[1]], [o[2], o[1]], [o[0], o[3]], [o[2], o[3]]];
+            out[k].push((share, frames[support.supporter].plan_range(&corners)));
+        }
+    }
+    if !own.is_empty() {
+        let areas: Vec<f64> = list.iter().map(|s| polygon_area(&s.points)).collect();
+        let sum: f64 = areas.iter().sum();
+        for (k, area) in areas.iter().enumerate() {
+            let factor = if sum > 0.0 {
+                area / sum
+            } else {
+                1.0 / list.len() as f64
+            };
+            let mut share = Loads::new();
+            add(&mut share, &own, factor);
+            out[k].push((share, None));
+        }
+    }
+    out
 }
 
 fn round(value: f64) -> f64 {
@@ -388,6 +501,7 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
                 let support = |supporter| Support {
                     supporter,
                     points: contact.points_mm.clone(),
+                    area: polygon_area(&contact.points_mm),
                     joint: None,
                 };
                 let (upper, lower) = if contact.normal[2] <= RESTS_ON {
@@ -427,6 +541,7 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
         rests[a].push(Support {
             supporter: b,
             points,
+            area: 0.0,
             joint: Some(joint.name.clone()),
         });
     }
@@ -455,6 +570,7 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
             to_mm: frames[item].length,
             loads_n,
             source: source.to_owned(),
+            footprint: Vec::new(),
         };
         if !part.tags.is_disjoint(&model.weight_scope) {
             let material = part.material.as_deref().unwrap_or("");
@@ -520,7 +636,9 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
             }
             continue;
         }
-        let shares = if member[item] {
+        // What each support takes, in pieces with where they act on the supporter
+        // (None: along the whole bearing).
+        let pieces: Vec<Pieces> = if member[item] {
             let positions: Vec<f64> = list
                 .iter()
                 .map(|support| {
@@ -529,36 +647,27 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
                 })
                 .collect();
             beam_shares(&patches[item], &positions)
-        } else {
-            let mut total = Loads::new();
-            for patch in &patches[item] {
-                add(&mut total, &patch.loads_n, 1.0);
-            }
-            let areas: Vec<f64> = list.iter().map(|s| polygon_area(&s.points)).collect();
-            let sum: f64 = areas.iter().sum();
-            areas
-                .iter()
-                .map(|area| {
-                    let mut share = Loads::new();
-                    let factor = if sum > 0.0 {
-                        area / sum
-                    } else {
-                        1.0 / list.len() as f64
-                    };
-                    add(&mut share, &total, factor);
-                    share
-                })
+                .into_iter()
+                .map(|share| vec![(share, None)])
                 .collect()
+        } else {
+            sheet_shares(&patches[item], list, &frames)
         };
         let carried = missing[item].clone();
-        for (support, share) in list.iter().zip(shares) {
+        for (support, pieces) in list.iter().zip(pieces) {
             let target = support.supporter;
             let (from_mm, to_mm) = frames[target].range(&support.points);
+            let mut share = Loads::new();
+            for (loads, _) in &pieces {
+                add(&mut share, loads, 1.0);
+            }
             if member[item] {
                 let (lo, hi) = frames[item].range(&support.points);
                 reactions[item].push(Reaction {
                     part: parts[target].name.clone(),
                     at_mm: round((lo + hi) / 2.0),
+                    length_mm: round(hi - lo),
+                    contact_mm2: round(support.area),
                     loads_n: rounded(&share),
                     joint: support.joint.clone(),
                 });
@@ -572,12 +681,16 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
                     },
                 );
             }
-            patches[target].push(Patch {
-                from_mm: from_mm.max(0.0),
-                to_mm: to_mm.min(frames[target].length),
-                loads_n: share,
-                source: parts[item].name.clone(),
-            });
+            for (loads, range) in pieces {
+                let (lo, hi) = range.unwrap_or((from_mm, to_mm));
+                patches[target].push(Patch {
+                    from_mm: lo.max(0.0),
+                    to_mm: hi.min(frames[target].length),
+                    loads_n: loads,
+                    source: parts[item].name.clone(),
+                    footprint: support.points.clone(),
+                });
+            }
             missing[target].extend(carried.iter().cloned());
             pending[target] -= 1;
             if pending[target] == 0 {
@@ -609,6 +722,7 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
                     to_mm: round(patch.to_mm),
                     loads_n: rounded(&patch.loads_n),
                     source: patch.source.clone(),
+                    footprint: Vec::new(),
                 })
                 .collect(),
             reactions: std::mem::take(&mut reactions[item]),

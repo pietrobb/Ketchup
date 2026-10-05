@@ -295,6 +295,21 @@ fn the_joints_report_lists_every_bearing_joint_with_its_rating_or_what_it_lacks(
 }
 
 #[test]
+fn the_members_report_lists_the_timber_check_of_every_load_path_member() {
+    let (mut app, mut bridge) = setup();
+    let source = "load_path(only=[\"f\"])\nself_weight([\"f\"])\ntimber_design({\"C24\": \"C24\"})\nbox(\"a\", (100,100,1000), grounded=True, material=\"C24\")\nbox(\"b\", (100,100,1000), at=(2900,0,0), grounded=True, material=\"C24\")\nbox(\"beam\", (3000,100,200), at=(0,0,1000), material=\"C24\", tags=[\"f\"])";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let rows = all_rows(&mut app, &mut bridge, ReportSection::Members);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["part"], "beam");
+    assert_eq!(rows[0]["status"], "pass");
+    assert!(rows[0]["utilization"].as_f64().unwrap() > 0.0);
+    assert_eq!(rows[0]["strength_class"], "C24");
+}
+
+#[test]
 fn report_pages_reconstruct_complete_model_bom_and_relations() {
     let (mut app, mut bridge) = setup();
     let source = "parts=[]\nfor i in range(18):\n    p=board(\"p%d\" % i, (40,100,100), at=(i*40,0,0))\n    parts.append(p)\n    hole(p, \"z+\", at=(9,50), diameter=4, depth=8)\nfor i in range(17):\n    dowels(parts[i], parts[i+1], dowel=\"8x30\", margin=25)";

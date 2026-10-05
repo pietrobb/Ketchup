@@ -15,6 +15,7 @@ mod free_space;
 mod joint_links;
 mod joint_ratings;
 mod load_path;
+mod member_design;
 mod member_loads;
 mod motion;
 mod opposing_holes;

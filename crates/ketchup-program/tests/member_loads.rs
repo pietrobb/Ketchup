@@ -84,6 +84,34 @@ fn a_beam_passes_its_weight_and_what_lies_on_it_to_its_posts_by_the_lever_rule()
 }
 
 #[test]
+fn a_deck_passes_what_stands_on_it_to_the_joist_underneath_at_that_place() {
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+material_weight(\"steel\", kg_m3 = 7850, source = \"test\")
+weight_scope([\"heavy\"])
+for y in (0, 1000):
+    box(\"post a %d\" % y, (100, 80, 1000), at = (0, y, 0), material = \"C24\", grounded = True)
+    box(\"post b %d\" % y, (100, 80, 1000), at = (2900, y, 0), material = \"C24\", grounded = True)
+    box(\"joist %d\" % y, (3000, 80, 200), at = (0, y, 1000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (3000, 1080, 20), at = (0, 0, 1200), material = \"OSB\", tags = [\"deck\"])
+box(\"weight\", (100, 80, 100), at = (200, 0, 1220), material = \"steel\", tags = [\"heavy\"])\n",
+        &[],
+    );
+    let weight = 0.0008 * 7850.0 * 9.81;
+    let near = member(&report, "joist 0");
+    close(near.loads_n["permanent"], weight);
+    let patch = near
+        .patches
+        .iter()
+        .find(|patch| patch.source == "deck")
+        .expect("the deck's patch");
+    close(patch.from_mm, 200.0);
+    close(patch.to_mm, 300.0);
+    let far = member(&report, "joist 1000");
+    assert_eq!(far.loads_n.get("permanent").copied().unwrap_or(0.0), 0.0);
+}
+
+#[test]
 fn unknown_weights_and_loads_are_listed_with_the_members_they_reach() {
     let source = format!(
         "{BEAM}box(\"crate\", (300, 100, 50), at = (600, 0, 2200), material = \"mystery\", tags = [\"construction\"])
