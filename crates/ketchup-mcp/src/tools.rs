@@ -6,7 +6,7 @@
 use crate::{
     bridge::{BridgeError, Connection, MAX_REQUEST_BYTES, Reply},
     discovery::{self, Window},
-    docs,
+    docs, stage,
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -433,7 +433,8 @@ impl Tools {
             )
         };
         let token = discovery::nonce().map_err(failed)?;
-        let mut child = spawn_window(&executable, document).map_err(failed)?;
+        let staged = stage::window_executable(&executable).map_err(failed)?;
+        let mut child = spawn_window(&staged, document).map_err(failed)?;
         let launched = launch_connection(&mut child, token, document.unwrap_or("Untitled"));
         let (window, connection) = match launched {
             Ok(launched) => launched,

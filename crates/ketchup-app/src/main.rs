@@ -21,7 +21,7 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
         // Stdout carries only MCP messages from here on.
-        if let Err(error) = ketchup_mcp::serve_stdio(std::env::current_exe().ok()) {
+        if let Err(error) = ketchup_mcp::serve_stdio(ketchup_mcp::stage::window_source()) {
             eprintln!("MCP server stopped: {error}");
             std::process::exit(2);
         }

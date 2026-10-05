@@ -13,6 +13,7 @@ mod docs;
 pub mod local_auth;
 mod schema;
 mod server;
+pub mod stage;
 #[cfg(test)]
 mod tests;
 mod tools;
