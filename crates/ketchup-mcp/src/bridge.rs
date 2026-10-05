@@ -11,7 +11,7 @@ use std::{
 };
 
 /// The window rejects larger requests (`live_bridge::MAX_FRAME_BYTES`).
-pub const MAX_REQUEST_BYTES: usize = 32 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 /// Images are the largest replies (`live_bridge::MAX_IMAGE_FRAME_BYTES`).
 const MAX_REPLY_BYTES: usize = 12 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

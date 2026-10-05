@@ -1,6 +1,7 @@
 //! Opt-in live GUI bridge v1. No independent document/session or scripting engine.
 //! Wire: u32 big-endian byte length, then UTF-8 JSON `Envelope`; responses use
-//! the same framing. Both directions are capped at 32 KiB. At most four active clients,
+//! the same framing. Both directions are capped at 256 KiB (whole programs travel in
+//! one frame; report pages keep their own smaller budget). At most four active clients,
 //! one in-flight request per client, queue capacity 8, at most 4 requests per UI frame.
 //! Authentication is required on EVERY request. Never publish credentials in
 //! logs, command lines, environment variables, documents, or ordinary UI output.
@@ -74,7 +75,7 @@ mod program_validation_summary;
 mod tests;
 mod transport;
 mod validator_catalog;
-pub const MAX_FRAME_BYTES: usize = 32 * 1024;
+pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_IMAGE_FRAME_BYTES: usize = 12 * 1024 * 1024;
 pub const MIN_IMAGE_SIDE_PX: u32 = 512;
 pub const MAX_IMAGE_SIDE_PX: u32 = 1600;

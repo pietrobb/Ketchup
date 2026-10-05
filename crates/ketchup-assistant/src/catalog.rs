@@ -202,7 +202,7 @@ mod tests {
             cad_operation_catalog(Some("nope")),
             Err("unknown_operation")
         );
-        // Live bridge frames are 32 KiB including the envelope.
+        // Keep catalog replies compact (well under one live bridge frame).
         let size = |value: &Value| serde_json::to_vec(value).unwrap().len();
         let largest = names
             .iter()
