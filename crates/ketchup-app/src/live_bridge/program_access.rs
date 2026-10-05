@@ -17,6 +17,7 @@ pub enum ReportSection {
     Relations,
     Issues,
     MaterialTakeoff,
+    Joints,
 }
 
 pub(super) fn invalid(target: &str, reason: impl Into<String>, hint: &str) -> &'static str {
@@ -317,6 +318,7 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
         ReportSection::Relations => report.relations.iter().map(|row| json!(row)).collect(),
         ReportSection::Issues => report.issues.iter().map(|row| json!(row)).collect(),
         ReportSection::MaterialTakeoff => Vec::new(),
+        ReportSection::Joints => report.joints.iter().map(|row| json!(row)).collect(),
     }
 }
 

@@ -272,6 +272,21 @@ fn all_rows(app: &mut KetchupApp, bridge: &mut LiveBridge, section: ReportSectio
 }
 
 #[test]
+fn the_joints_report_lists_every_bearing_joint_with_its_rating_or_what_it_lacks() {
+    let (mut app, mut bridge) = setup();
+    let source = "h=box(\"h\", (120,2000,240), grounded=True)\nj=box(\"j\", (3000,60,200), at=(120,500,40))\nk=box(\"k\", (3000,60,200), at=(120,1000,40))\narunda(j, h, \"50 B\")\njoint(k, h, kind=\"hanger\", fastener=\"strmeň\", bearing=True)";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let rows = all_rows(&mut app, &mut bridge, ReportSection::Joints);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["rating"]["basis"], "allowable");
+    assert!(rows.iter().all(|row| row["status"] == "not_verified"));
+    assert_eq!(rows[1]["rating"], Value::Null);
+    assert_eq!(rows[1]["missing"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn report_pages_reconstruct_complete_model_bom_and_relations() {
     let (mut app, mut bridge) = setup();
     let source = "parts=[]\nfor i in range(18):\n    p=board(\"p%d\" % i, (40,100,100), at=(i*40,0,0))\n    parts.append(p)\n    hole(p, \"z+\", at=(9,50), diameter=4, depth=8)\nfor i in range(17):\n    dowels(parts[i], parts[i+1], dowel=\"8x30\", margin=25)";

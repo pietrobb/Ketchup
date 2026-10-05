@@ -1,6 +1,6 @@
 //! Physical connections and independent rigid assembly motion declarations.
 use super::*;
-use crate::model::{JointLink, JointOperationRef};
+use crate::model::{JointLink, JointOperationRef, JointRating};
 
 fn link_field<'v>(value: Value<'v>, name: &str, heap: &'v Heap) -> anyhow::Result<Value<'v>> {
     value
@@ -48,6 +48,50 @@ fn parse_links<'v>(value: Option<Value<'v>>, heap: &'v Heap) -> anyhow::Result<V
         })
     })
     .collect()
+}
+
+const RATING_BASES: [&str; 3] = ["allowable", "characteristic", "design"];
+
+/// A `connector_rating()` struct: a published load with its basis and source.
+fn parse_rating<'v>(
+    value: Option<Value<'v>>,
+    heap: &'v Heap,
+) -> anyhow::Result<Option<JointRating>> {
+    let Some(value) = given(value) else {
+        return Ok(None);
+    };
+    let field = |name: &str| {
+        value.get_attr(name, heap).ok().flatten().ok_or_else(|| {
+            anyhow::anyhow!(
+                "rating is missing {name}; use connector_rating(load_n=, basis=, source=)"
+            )
+        })
+    };
+    let load_n = number(field("load_n")?, "rating load_n")?;
+    if !load_n.is_finite() || load_n <= 0.0 {
+        anyhow::bail!("rating load_n must be a positive number of newtons, got {load_n}");
+    }
+    let text_field = |name: &str| -> anyhow::Result<String> {
+        Ok(field(name)?
+            .unpack_str()
+            .ok_or_else(|| anyhow::anyhow!("rating {name} must be text"))?
+            .trim()
+            .to_owned())
+    };
+    let basis = text_field("basis")?;
+    if !RATING_BASES.contains(&basis.as_str()) {
+        anyhow::bail!("rating basis must be one of {RATING_BASES:?}, got {basis:?}");
+    }
+    let source = text_field("source")?;
+    if source.is_empty() {
+        anyhow::bail!("rating source must name the published table or document");
+    }
+    Ok(Some(JointRating {
+        load_n,
+        basis,
+        source,
+        note: text_field("note").unwrap_or_default(),
+    }))
 }
 
 /// Referential integrity only: ownership is explicit, never reconstructed by proximity.
@@ -272,9 +316,16 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] motion: Option<Value<'v>>,
         #[starlark(require = named)] position: Option<Value<'v>>,
         #[starlark(require = named, default = false)] bearing: bool,
+        #[starlark(require = named)] rating: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
+        let rating = parse_rating(rating, heap)?;
+        if rating.is_some() && !bearing {
+            anyhow::bail!(
+                "joint rating applies to a bearing joint; add bearing=True or leave rating out"
+            );
+        }
         let (a, b) = (part_name(a, heap)?, part_name(b, heap)?);
         let name = text(name, "name")?.unwrap_or_else(|| format!("{kind}:{a}+{b}"));
         let state = state(eval)?;
@@ -350,6 +401,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             fastener: text(fastener, "fastener")?,
             max_gap_mm: max_gap,
             bearing,
+            rating,
         });
         Ok(NoneType)
     }

@@ -90360,6 +90360,400 @@
     "machining": [],
     "total_parts": 528
   },
+  "joints": [
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 3+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 3",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 5+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 5",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 7+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 7",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 9+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 9",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 11+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 11",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 14+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 14",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 16+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 16",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 18+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 18",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 19+konštrukcia/strop/stropnice/header 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 19",
+        "konštrukcia/strop/stropnice/header 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 3+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 3",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 4+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 4",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 6+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 6",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 8+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 8",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 10+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 10",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 13+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 13",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 15+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 15",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 17+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 17",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 19+konštrukcia/strop/stropnice/sill 1",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 19",
+        "konštrukcia/strop/stropnice/sill 1"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 10+konštrukcia/strop/stropnice/header 2",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 10",
+        "konštrukcia/strop/stropnice/header 2"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 13+konštrukcia/strop/stropnice/header 2",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 13",
+        "konštrukcia/strop/stropnice/header 2"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 15+konštrukcia/strop/stropnice/header 2",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 15",
+        "konštrukcia/strop/stropnice/header 2"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 10+konštrukcia/strop/stropnice/sill 2",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 10",
+        "konštrukcia/strop/stropnice/sill 2"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 12+konštrukcia/strop/stropnice/sill 2",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 12",
+        "konštrukcia/strop/stropnice/sill 2"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strop/stropnice/stud 15+konštrukcia/strop/stropnice/sill 2",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strop/stropnice/stud 15",
+        "konštrukcia/strop/stropnice/sill 2"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strecha južná/krokva 5+konštrukcia/strecha južná/výmena dolná",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strecha južná/krokva 5",
+        "konštrukcia/strecha južná/výmena dolná"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strecha južná/krokva 6+konštrukcia/strecha južná/výmena dolná",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strecha južná/krokva 6",
+        "konštrukcia/strecha južná/výmena dolná"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strecha južná/krokva 5+konštrukcia/strecha južná/výmena horná",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strecha južná/krokva 5",
+        "konštrukcia/strecha južná/výmena horná"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    },
+    {
+      "joint": "hanger:konštrukcia/strecha južná/krokva 6+konštrukcia/strecha južná/výmena horná",
+      "kind": "hanger",
+      "parts": [
+        "konštrukcia/strecha južná/krokva 6",
+        "konštrukcia/strecha južná/výmena horná"
+      ],
+      "fastener": "strmeň vonkajší 80x120x2 typ A",
+      "status": "not_verified",
+      "missing": [
+        "no published rating with a source",
+        "the load on the joint is not computed"
+      ]
+    }
+  ],
   "log": [
     "stena 200 mm, strop 200 mm, strecha 250 mm; podkrovie: podlaha 3000, hrebeň (spodok strechy) 5678 mm"
   ],

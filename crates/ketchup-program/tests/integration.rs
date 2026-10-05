@@ -13,6 +13,7 @@ mod face_at;
 mod faces;
 mod free_space;
 mod joint_links;
+mod joint_ratings;
 mod load_path;
 mod motion;
 mod opposing_holes;

@@ -21,6 +21,7 @@ pub mod expect;
 mod face_at;
 pub mod faces;
 pub mod frame;
+pub mod joint_check;
 pub mod load_path;
 pub mod model;
 pub mod motion;
@@ -63,6 +64,9 @@ pub struct Report {
     pub relations: Vec<Relation>,
     pub params: Vec<model::Param>,
     pub bom: Bom,
+    /// Every bearing joint with its rating, or why it is not verified.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub joints: Vec<joint_check::JointCheck>,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
 }
@@ -112,6 +116,7 @@ pub fn run(
         issues,
         params: evaluated.model.params.clone(),
         bom: bom(&evaluated.model),
+        joints: joint_check::joint_checks(&evaluated.model),
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
     };

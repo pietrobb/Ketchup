@@ -1545,6 +1545,22 @@ pub struct Joint {
     /// hanger, structural screws), so the load path may hang on it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub bearing: bool,
+    /// The load the connection may carry, as its maker publishes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rating: Option<JointRating>,
+}
+
+/// A published load rating of one connection, with where it comes from.
+/// Never derived from geometry or names; absent means not verified.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct JointRating {
+    /// Load the whole connection carries, in newtons.
+    pub load_n: f64,
+    /// "allowable" (permissible load), "characteristic" (R_k) or "design" (R_d).
+    pub basis: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

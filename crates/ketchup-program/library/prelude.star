@@ -813,6 +813,18 @@ def boss(part, face, profile, height, name = "boss"):
 #     bearing=True: the joint carries a's weight into b (a hanger, a joist hanger,
 #     a dovetail): the load path counts it as a support at the fasteners (or the
 #     contact). Without it a joint only holds a part in place and carries nothing.
+#     rating=connector_rating(load_n=, basis=, source=, note="") on a bearing joint: the
+#     load the whole connection may carry as its maker publishes it; basis "allowable"
+#     (permissible load), "characteristic" (R_k) or "design" (R_d). The report's joints
+#     list shows every bearing joint with its rating, or not_verified with what is
+#     missing (a rating, the load on it). Ratings are data with a source, never guessed:
+#     CONNECTOR_RATINGS[fastener] holds the published ones (connector_rating_of(name)
+#     gives None for others, e.g. a hanger without a maker's table).
+#   arunda(a, b, template="80 B", name=None) -> None
+#     an Arunda routed dovetail (wood to wood, no hardware): carried a hangs on b, rated
+#     from the maker's load table; checks a's width and height against the template.
+#     Templates "50 B", "80 B", "120 B", "160 B" (square), "50 N", "80 N", "120 N" (tilting
+#     up to 50 degrees, rafters).
 #
 #   load_path(only=None, carriers=[], name=, ignore=[], hint=)
 #     Every member (part with one of the tags `only`; every part without) must pass
@@ -853,6 +865,60 @@ DOWELS = {
     "10x40": (10, 40),
     "10x50": (10, 50),
 }
+
+def connector_rating(load_n, basis, source, note = ""):
+    """A published load rating of a bearing connection; see joint(rating=)."""
+    return struct(load_n = load_n, basis = basis, source = source, note = note)
+
+_ARUNDA_SOURCE = "Arunda záťažová tabuľka (HYBOX Slovakia), https://arunda.sk/assets/docs/zatezova-tabulka.pdf"
+
+# template: (smallest and largest width of the carried timber, smallest height, allowable load in kg
+# at the lowest joint height). The table gives a range by joint height without the dependence,
+# so the rating is its lowest value; a taller joint carries more but is not credited.
+_ARUNDA = {
+    "50": (45, 100, 90, 240),
+    "80": (80, 140, 90, 330),
+    "120": (120, 200, 90, 500),
+    "160": (160, 300, 90, 560),
+}
+
+def _arunda_rating(template):
+    size = template.split(" ")[0]
+    low, high, height, kg = _ARUNDA[size]
+    return connector_rating(
+        load_n = kg * 9.81,
+        basis = "allowable",
+        source = _ARUNDA_SOURCE,
+        note = ("maker's allowable load per joint, %d kg at the lowest joint height; not an ETA or EC5 value; " +
+                "for timber %d-%d mm wide") % (kg, low, high),
+    )
+
+# Published ratings by fastener name. A connector missing here has no rating: its joints stay not_verified.
+CONNECTOR_RATINGS = {
+    "Arunda %s %s" % (size, shape): _arunda_rating(size)
+    for size in ["50", "80", "120", "160"]
+    for shape in ["B", "N"]
+    if not (size == "160" and shape == "N")
+}
+
+def connector_rating_of(fastener):
+    """The published rating of a fastener name, or None when there is none."""
+    return CONNECTOR_RATINGS.get(fastener)
+
+def arunda(a, b, template = "80 B", name = None):
+    """Carried part a hangs on b through an Arunda routed dovetail (wood to wood),
+    rated from the maker's load table. Reports an issue when a's width or height
+    does not suit the template."""
+    kind = "Arunda " + template
+    if kind not in CONNECTOR_RATINGS:
+        fail("arunda(): unknown template %r; use one of %s" % (template, sorted([k[7:] for k in CONNECTOR_RATINGS.keys()])))
+    low, high, height, _ = _ARUNDA[template.split(" ")[0]]
+    dims = sorted(part_info(a).size)
+    check(low - 0.001 <= dims[0] and dims[0] <= high + 0.001 and dims[1] >= height - 0.001,
+          "arunda(%s, %s): template %s takes timber %d-%d mm wide and at least %d mm high, %s is %s x %s mm" %
+          (part_info(a).name, part_info(b).name, template, low, high, height, part_info(a).name, fmt_mm(dims[0]), fmt_mm(dims[1])),
+          parts = [a, b], hint = "Choose the template for the width of the carried timber.")
+    joint(a, b, kind = kind, bearing = True, rating = CONNECTOR_RATINGS[kind], name = name)
 
 def fmt_mm(value, decimals = 1):
     """Millimetres as text, with 0-9 decimal places, trailing zeros omitted.
@@ -1576,7 +1642,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                     touch = contact(beam, other)
                     if touch != None:
                         joint(other, beam, kind = "hanger", fastener = hanger, bearing = True,
-                              fasteners = [vec_scale(vec_add(touch.min, touch.max), 0.5)])
+                              fasteners = [vec_scale(vec_add(touch.min, touch.max), 0.5)],
+                              rating = connector_rating_of(hanger))
         if layer.get("infill") != None:
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
             bays = []

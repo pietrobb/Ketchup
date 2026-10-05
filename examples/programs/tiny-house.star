@@ -41,6 +41,8 @@ def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None):
 # Spojovací materiál (BB-TECHNIK Banská Bystrica). Všetko je poskladané na sebe;
 # nosné spoje sú len tam, kde prvok inak nemá na čom ležať (výmeny pri otvoroch).
 # Ostatné spoje držia prvky proti posunu a nadvihnutiu.
+# Únosnosť strmeňa nemáme z tabuľky výrobcu, preto sú jeho spoje v reporte „neoverené“
+# (CONNECTOR_RATINGS v knižnici). Drevo na drevo: arunda(stropnica, výmena, "50 B").
 HANGER = "strmeň vonkajší 80x120x2 typ A"
 RAFTER_TIE = "krokvová spojka 30x210 VORMANN"
 RIDGE_SCREW = "vrut tesársky 8x260/80 TX40 tanierová hlava"
@@ -468,7 +470,7 @@ def roof_frame(side, north):
             for rafter in rafters:
                 if contact(trimmer, rafter) != None:
                     joint(rafter, trimmer, kind = "hanger", fastener = HANGER, bearing = True,
-                          fasteners = [middle(trimmer, rafter)])
+                          fasteners = [middle(trimmer, rafter)], rating = connector_rating_of(HANGER))
     count = 0
     for k in range(len(RAFTERS) - 1):
         x0, x1 = max(RAFTERS[k] + RAFTER_W, WALL), min(RAFTERS[k + 1], L - WALL)
