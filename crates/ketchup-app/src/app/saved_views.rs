@@ -258,19 +258,19 @@ impl KetchupApp {
                 }
                 let typed = self.saved_view_name.clone();
                 let rename_enabled = self.can_rename_saved_view(id, &typed);
-                let rename = ui.add_enabled(rename_enabled, egui::Button::new("✎"));
-                name_widget(
-                    &rename,
+                let rename = icon_button(
+                    ui,
                     rename_enabled,
+                    "✏",
                     &self.catalog.format("saved-views-rename", &arguments),
                 );
                 if rename.clicked() && self.rename_saved_view(id, &typed) {
                     self.saved_view_name.clear();
                 }
-                let delete = ui.button("⌫");
-                name_widget(
-                    &delete,
+                let delete = icon_button(
+                    ui,
                     true,
+                    "🗑",
                     &self.catalog.format("saved-views-delete", &arguments),
                 );
                 if delete.clicked() {

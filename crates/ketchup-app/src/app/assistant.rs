@@ -3145,85 +3145,82 @@ impl KetchupApp {
                 }
                 let selected_occurrence_ids = self.selected_occurrence_ids();
                 let enabled = self.can_begin_tag_creation(Some(&selected_occurrence_ids));
-                let create_from_selection = ui.add_enabled(enabled, egui::Button::new("+"));
-                name_widget(
-                    &create_from_selection,
+                let create_from_selection = icon_button(
+                    ui,
                     enabled,
+                    "+",
                     &self.catalog.text("tags-create-from-selection"),
                 );
                 if create_from_selection.clicked() {
                     self.begin_tag_creation(Some(selected_occurrence_ids));
                 }
                 let show_enabled = self.can_set_all_tag_visibility(true);
-                let show_all = ui.add_enabled(show_enabled, egui::Button::new("◉"));
-                name_widget(&show_all, show_enabled, &self.catalog.text("tags-show-all"));
+                let show_all =
+                    icon_button(ui, show_enabled, "👁", &self.catalog.text("tags-show-all"));
                 if show_all.clicked() {
                     self.set_all_tag_visibility(true);
                 }
                 let hide_enabled = self.can_set_all_tag_visibility(false);
-                let hide_all = ui.add_enabled(hide_enabled, egui::Button::new("○"));
-                name_widget(&hide_all, hide_enabled, &self.catalog.text("tags-hide-all"));
+                let hide_all =
+                    icon_button(ui, hide_enabled, "○", &self.catalog.text("tags-hide-all"));
                 if hide_all.clicked() {
                     self.set_all_tag_visibility(false);
                 }
                 let invert_enabled = self.can_invert_tag_visibility();
-                let invert = ui.add_enabled(invert_enabled, egui::Button::new("◐"));
-                name_widget(
-                    &invert,
+                let invert = icon_button(
+                    ui,
                     invert_enabled,
+                    "🔃",
                     &self.catalog.text("tags-invert-visibility"),
                 );
                 if invert.clicked() {
                     self.invert_tag_visibility();
                 }
                 let isolate_selection_enabled = self.can_isolate_selected_tags();
-                let isolate_selection =
-                    ui.add_enabled(isolate_selection_enabled, egui::Button::new("◇"));
-                name_widget(
-                    &isolate_selection,
+                let isolate_selection = icon_button(
+                    ui,
                     isolate_selection_enabled,
+                    "🎯",
                     &self.catalog.text("tags-isolate-selection"),
                 );
                 if isolate_selection.clicked() {
                     self.isolate_selected_tags();
                 }
                 let hide_selection_enabled = self.can_hide_selected_tags();
-                let hide_selection = ui.add_enabled(hide_selection_enabled, egui::Button::new("◒"));
-                name_widget(
-                    &hide_selection,
+                let hide_selection = icon_button(
+                    ui,
                     hide_selection_enabled,
+                    "⊟",
                     &self.catalog.text("tags-hide-selection"),
                 );
                 if hide_selection.clicked() {
                     self.hide_selected_tags();
                 }
                 let show_selection_enabled = self.can_show_selected_tags();
-                let show_selection = ui.add_enabled(show_selection_enabled, egui::Button::new("◓"));
-                name_widget(
-                    &show_selection,
+                let show_selection = icon_button(
+                    ui,
                     show_selection_enabled,
+                    "⊞",
                     &self.catalog.text("tags-show-selection"),
                 );
                 if show_selection.clicked() {
                     self.show_selected_tags();
                 }
                 let invert_selection_enabled = self.can_invert_selected_tags();
-                let invert_selection =
-                    ui.add_enabled(invert_selection_enabled, egui::Button::new("◑"));
-                name_widget(
-                    &invert_selection,
+                let invert_selection = icon_button(
+                    ui,
                     invert_selection_enabled,
+                    "◑",
                     &self.catalog.text("tags-invert-selection"),
                 );
                 if invert_selection.clicked() {
                     self.invert_selected_tags();
                 }
                 let select_matching_enabled = self.can_select_matching_tags();
-                let select_matching =
-                    ui.add_enabled(select_matching_enabled, egui::Button::new("◆"));
-                name_widget(
-                    &select_matching,
+                let select_matching = icon_button(
+                    ui,
                     select_matching_enabled,
+                    "🔍",
                     &self.catalog.text("tags-select-matching"),
                 );
                 if select_matching.clicked() {
@@ -3232,22 +3229,20 @@ impl KetchupApp {
             });
             ui.horizontal_wrapped(|ui| {
                 let select_all_tagged_enabled = self.can_select_all_tagged_occurrences();
-                let select_all_tagged =
-                    ui.add_enabled(select_all_tagged_enabled, egui::Button::new("◈"));
-                name_widget(
-                    &select_all_tagged,
+                let select_all_tagged = icon_button(
+                    ui,
                     select_all_tagged_enabled,
+                    "☑",
                     &self.catalog.text("tags-select-all-tagged"),
                 );
                 if select_all_tagged.clicked() {
                     self.select_all_tagged_occurrences();
                 }
                 let select_untagged_enabled = self.can_select_untagged_occurrences();
-                let select_untagged =
-                    ui.add_enabled(select_untagged_enabled, egui::Button::new("○"));
-                name_widget(
-                    &select_untagged,
+                let select_untagged = icon_button(
+                    ui,
                     select_untagged_enabled,
+                    "☐",
                     &self.catalog.text("tags-select-untagged"),
                 );
                 if select_untagged.clicked() {
@@ -3288,8 +3283,7 @@ impl KetchupApp {
                         .catalog
                         .format("tags-isolate", &BTreeMap::from([("name", name.clone())]));
                     let isolate_enabled = self.can_isolate_tag(id);
-                    let isolate = ui.add_enabled(isolate_enabled, egui::Button::new("◎"));
-                    name_widget(&isolate, isolate_enabled, &isolate_label);
+                    let isolate = icon_button(ui, isolate_enabled, "◎", &isolate_label);
                     if isolate.clicked() {
                         self.isolate_tag(id);
                     }
@@ -3297,8 +3291,7 @@ impl KetchupApp {
                         .catalog
                         .format("tags-select", &BTreeMap::from([("name", name.clone())]));
                     let select_enabled = self.can_select_tag_occurrences(id, &active_scene);
-                    let select = ui.add_enabled(select_enabled, egui::Button::new("▣"));
-                    name_widget(&select, select_enabled, &select_label);
+                    let select = icon_button(ui, select_enabled, "▣", &select_label);
                     if select.clicked() {
                         self.select_tag_occurrences(id);
                     }
@@ -3306,8 +3299,7 @@ impl KetchupApp {
                         .catalog
                         .format("tags-clear", &BTreeMap::from([("name", name.clone())]));
                     let clear_enabled = self.can_clear_tag(id);
-                    let clear = ui.add_enabled(clear_enabled, egui::Button::new("×"));
-                    name_widget(&clear, clear_enabled, &clear_label);
+                    let clear = icon_button(ui, clear_enabled, "×", &clear_label);
                     if clear.clicked() {
                         self.begin_tag_clear(id);
                     }
@@ -3315,8 +3307,7 @@ impl KetchupApp {
                         .catalog
                         .format("tags-rename", &BTreeMap::from([("name", name.clone())]));
                     let rename_enabled = self.tag_rename_source_plan(id).is_some();
-                    let rename = ui.add_enabled(rename_enabled, egui::Button::new("✎"));
-                    name_widget(&rename, rename_enabled, &rename_label);
+                    let rename = icon_button(ui, rename_enabled, "✏", &rename_label);
                     if rename.clicked() {
                         self.begin_tag_rename(id);
                     }
@@ -3324,8 +3315,7 @@ impl KetchupApp {
                         .catalog
                         .format("tags-delete", &BTreeMap::from([("name", name.clone())]));
                     let delete_enabled = self.can_delete_tag(id);
-                    let delete = ui.add_enabled(delete_enabled, egui::Button::new("⌫"));
-                    name_widget(&delete, delete_enabled, &delete_label);
+                    let delete = icon_button(ui, delete_enabled, "🗑", &delete_label);
                     if delete.clicked() {
                         self.begin_tag_deletion(id);
                     }
@@ -3334,8 +3324,7 @@ impl KetchupApp {
                         &BTreeMap::from([("name", name.clone())]),
                     );
                     let remove_enabled = self.can_remove_selection_from_tag(id);
-                    let remove = ui.add_enabled(remove_enabled, egui::Button::new("−"));
-                    name_widget(&remove, remove_enabled, &remove_label);
+                    let remove = icon_button(ui, remove_enabled, "−", &remove_label);
                     if remove.clicked() {
                         self.remove_selection_from_tag(id);
                     }
@@ -3343,8 +3332,7 @@ impl KetchupApp {
                         .catalog
                         .format("tags-assign-selection", &BTreeMap::from([("name", name)]));
                     let assign_enabled = self.can_assign_selection_to_tag(id);
-                    let assign = ui.add_enabled(assign_enabled, egui::Button::new("+"));
-                    name_widget(&assign, assign_enabled, &assign_label);
+                    let assign = icon_button(ui, assign_enabled, "+", &assign_label);
                     if assign.clicked() {
                         self.assign_selection_to_tag(id);
                     }

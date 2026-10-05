@@ -9,6 +9,9 @@ mod document;
 mod drawing;
 mod exact;
 mod export;
+#[cfg(test)]
+#[path = "app/icon_button_tests.rs"]
+mod icon_button_tests;
 mod import;
 mod local_outliner;
 mod mirror;

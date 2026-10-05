@@ -1474,3 +1474,16 @@ pub(crate) fn shrink_to_icon(button: Rect, size: f32) -> Rect {
 pub(crate) fn name_widget(response: &egui::Response, enabled: bool, name: &str) {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
 }
+
+/// A button that shows only a glyph. `name` is its accessible name and its
+/// hover hint, shown also while the button is disabled.
+pub(crate) fn icon_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    glyph: &str,
+    name: &str,
+) -> egui::Response {
+    let response = ui.add_enabled(enabled, egui::Button::new(glyph));
+    name_widget(&response, enabled, name);
+    response.on_hover_text(name).on_disabled_hover_text(name)
+}
