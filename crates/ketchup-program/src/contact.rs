@@ -36,18 +36,45 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
     }
     contact_with_faces(a, b, &planar_faces(a), &planar_faces(b))
 }
+
+/// Every face patch `a` and `b` share (a birdsmouth seat and its plumb face),
+/// not only the largest.
+#[must_use]
+pub fn contacts(a: &Part, b: &Part) -> Vec<Contact> {
+    ContactFaces::default().contacts(a, b)
+}
 fn contact_with_faces(
     a: &Part,
     b: &Part,
     local_faces_a: &[FaceFrame],
     local_faces_b: &[FaceFrame],
 ) -> Option<Contact> {
+    contacts_with_faces(a, b, local_faces_a, local_faces_b)
+        .into_iter()
+        .fold(
+            None,
+            |best: Option<(f64, Contact)>, (area, found)| match best {
+                Some((previous, _)) if previous >= area => best,
+                _ => Some((area, found)),
+            },
+        )
+        .map(|(_, found)| found)
+}
+
+/// Every opposing planar face pair of `a` and `b` sharing positive area, with
+/// that area.
+fn contacts_with_faces(
+    a: &Part,
+    b: &Part,
+    local_faces_a: &[FaceFrame],
+    local_faces_b: &[FaceFrame],
+) -> Vec<(f64, Contact)> {
     let faces_b: Vec<_> = local_faces_b
         .iter()
         // The cached frames stay part-local.
         .map(|f| b.world_face(f))
         .collect();
-    let mut best: Option<(f64, Contact)> = None;
+    let mut found: Vec<(f64, Contact)> = Vec::new();
     for local_a in local_faces_a {
         let face_a = a.world_face(local_a);
         for face_b in &faces_b {
@@ -83,10 +110,7 @@ fn contact_with_faces(
                 },
             );
             let longest = (max[0] - min[0]).max(max[1] - min[1]);
-            if longest <= TOLERANCE_MM
-                || area <= TOLERANCE_MM * longest
-                || best.as_ref().is_some_and(|(previous, _)| *previous >= area)
-            {
+            if longest <= TOLERANCE_MM || area <= TOLERANCE_MM * longest {
                 continue;
             }
             let axis = (0..3)
@@ -106,7 +130,7 @@ fn contact_with_faces(
                     )
                 },
             );
-            best = Some((
+            found.push((
                 area,
                 Contact {
                     axis,
@@ -124,7 +148,7 @@ fn contact_with_faces(
             ));
         }
     }
-    best.map(|(_, found)| found)
+    found
 }
 
 #[derive(Default)]
@@ -132,14 +156,21 @@ pub(crate) struct ContactFaces<'a> {
     faces: std::collections::BTreeMap<&'a str, Vec<FaceFrame>>,
 }
 impl<'a> ContactFaces<'a> {
-    pub fn contact(&mut self, a: &'a Part, b: &'a Part) -> Option<Contact> {
+    fn cache(&mut self, a: &'a Part, b: &'a Part) -> bool {
         if a.obb().separation(&b.obb()) > TOLERANCE_MM {
-            return None;
+            return false;
         }
         for part in [a, b] {
             self.faces
                 .entry(&part.name)
                 .or_insert_with(|| planar_faces(part));
+        }
+        true
+    }
+
+    pub fn contact(&mut self, a: &'a Part, b: &'a Part) -> Option<Contact> {
+        if !self.cache(a, b) {
+            return None;
         }
         contact_with_faces(
             a,
@@ -147,6 +178,22 @@ impl<'a> ContactFaces<'a> {
             &self.faces[a.name.as_str()],
             &self.faces[b.name.as_str()],
         )
+    }
+
+    /// Every face patch the parts share, not only the largest.
+    pub fn contacts(&mut self, a: &'a Part, b: &'a Part) -> Vec<Contact> {
+        if !self.cache(a, b) {
+            return Vec::new();
+        }
+        contacts_with_faces(
+            a,
+            b,
+            &self.faces[a.name.as_str()],
+            &self.faces[b.name.as_str()],
+        )
+        .into_iter()
+        .map(|(_, found)| found)
+        .collect()
     }
 }
 fn planar_faces(part: &Part) -> Vec<FaceFrame> {

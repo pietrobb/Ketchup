@@ -1541,6 +1541,10 @@ pub struct Joint {
     /// Largest gap between the parts that still counts as connected (shelf
     /// pins, clearance fits). Zero means the parts must touch.
     pub max_gap_mm: f64,
+    /// The connector carries one part's weight onto the other (a joist
+    /// hanger, structural screws), so the load path may hang on it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bearing: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1600,6 +1604,9 @@ pub struct ProgramModel {
     /// Spaces parts must stay out of (`keep_clear()`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub free_spaces: Vec<crate::clearance::FreeSpace>,
+    /// Members that must pass their weight down (`load_path()`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub load_paths: Vec<crate::load_path::LoadPath>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

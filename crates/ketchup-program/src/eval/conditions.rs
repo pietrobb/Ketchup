@@ -79,4 +79,48 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         model.free_spaces.push(space);
         Ok(NoneType)
     }
+
+    /// Declares load-bearing members: every part (with one of the tags `only`,
+    /// when given; not one of `ignore`) must pass its weight down to the floor
+    /// or an anchor. A member that is not carried is a `member_not_carried` error.
+    fn load_path<'v>(
+        #[starlark(require = named)] only: Option<Value<'v>>,
+        #[starlark(require = named)] carriers: Option<Value<'v>>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        #[starlark(require = named)] ignore: Option<Value<'v>>,
+        #[starlark(require = named)] hint: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let ignore = given(ignore)
+            .map(|value| {
+                items(value, heap, "load_path ignore")?
+                    .into_iter()
+                    .map(|part| part_name(part, heap))
+                    .collect::<anyhow::Result<BTreeSet<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let path = crate::load_path::LoadPath {
+            name: text(name, "load_path name")?.unwrap_or_else(|| "load path".to_owned()),
+            only_tags: given(only)
+                .map(|value| tag_names(value, heap))
+                .transpose()?
+                .unwrap_or_default(),
+            carrier_tags: given(carriers)
+                .map(|value| tag_names(value, heap))
+                .transpose()?
+                .unwrap_or_default(),
+            ignore,
+            hint: text(hint, "load_path hint")?.unwrap_or_else(|| {
+                "Rest the member from above on a carried member (a beam, plate, post or \
+                 wall below it, under both ends of a beam), or connect it with \
+                 joint(..., bearing=True) for a connector that carries it (a joist hanger, \
+                 structural screws)."
+                    .to_owned()
+            }),
+        };
+        state(eval)?.model.borrow_mut().load_paths.push(path);
+        Ok(NoneType)
+    }
 }

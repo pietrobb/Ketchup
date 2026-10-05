@@ -271,6 +271,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] max_gap: Option<Value<'v>>,
         #[starlark(require = named)] motion: Option<Value<'v>>,
         #[starlark(require = named)] position: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] bearing: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
@@ -280,9 +281,10 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         record_source(eval, &state, &[&a, &b]);
         let mut model = state.model.borrow_mut();
         if let Some(motion) = given(motion) {
-            if [fasteners, fastener, volume, max_gap, links]
-                .into_iter()
-                .any(|v| given(v).is_some())
+            if bearing
+                || [fasteners, fastener, volume, max_gap, links]
+                    .into_iter()
+                    .any(|v| given(v).is_some())
             {
                 anyhow::bail!(
                     "joint {name:?}: motion cannot also specify physical fasteners, links, volume or max_gap; declare physical joints separately"
@@ -347,6 +349,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             fasteners_mm: fasteners,
             fastener: text(fastener, "fastener")?,
             max_gap_mm: max_gap,
+            bearing,
         });
         Ok(NoneType)
     }

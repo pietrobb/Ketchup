@@ -637,6 +637,7 @@ pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
     joints(model, exact, &mut issues, &mut faces);
     crate::connectivity::issues(model, exact, &mut issues);
     support(model, exact, &mut issues, &mut faces);
+    crate::load_path::issues(model, &mut issues, &mut faces);
     crate::expect::check(model, exact, &mut issues);
     issues.sort_by_key(|issue| issue.severity);
     issues

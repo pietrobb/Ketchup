@@ -810,6 +810,17 @@ def boss(part, face, profile, height, name = "boss"):
 #     fastener names are counted in the report's hardware list. The parts
 #     must touch, or stay within max_gap mm (a door on hinges across its
 #     reveal: joint(door, side, kind="hinge", max_gap=3)).
+#     bearing=True: the joint carries a's weight into b (a hanger, a joist hanger,
+#     a dovetail): the load path counts it as a support at the fasteners (or the
+#     contact). Without it a joint only holds a part in place and carries nothing.
+#
+#   load_path(only=None, carriers=[], name=, ignore=[], hint=)
+#     Every member (part with one of the tags `only`; every part without) must pass
+#     its weight down: it stands on the floor or is anchored, or its centre of mass
+#     lies in plan over the faces where it rests from above on carried parts (or
+#     over the fasteners of bearing joints). Touching from the side carries nothing;
+#     a beam on one end only is not carried. Besides members only parts on the floor
+#     and parts tagged `carriers` (a floor deck) carry. Error: member_not_carried.
 #   dowels(a, b, dowel="8x35", count=, margin=50, spacing=250, clearance=1.5, rest=6, offset=0)
 #     drills matching holes into two touching parts and records the joint.
 #     offset is signed mm along the selected row (positive towards increasing contact u/v).
@@ -1279,7 +1290,7 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #@topic buildup: Layered build-ups: framed walls, floors and roofs
 #
 #   buildup(name, origin, along, up, length, layers, height=None, top=None,
-#           openings=[], tags=[])  -> group of every piece
+#           openings=[], tags=[], anchor=None)  -> group of every piece
 #     A flat panel built of layers: a timber-frame wall, floor, ceiling or roof. Its
 #     plane is spanned from world point `origin` by `along` (u, the length) and `up`
 #     (v, the height); layers stack from the inside face outward along along x up.
@@ -1294,6 +1305,11 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     between the studs; "infill_color", "infill_tags"): a bottom plate, a top plate
 #     following the outline, studs at `spacing`, a stud on each side of every opening
 #     with a header above and a sill under it, and infill in every bay.
+#     In a wall a header rests on the studs beside the opening and a sill on a cripple
+#     under each end. In a floor or roof, a framed layer's "hanger" (fastener name)
+#     hangs the headers on the joists beside the opening and the cut joists on the
+#     headers with bearing joints. anchor={"to": part, "fastener": name, "spacing": 1000,
+#     "edge": 300} anchors every bottom plate to `to` (a slab) with at least two anchors.
 #     openings: [(u, v, width, height), ...] in panel coordinates, apart along u.
 #     Pieces are "<name>/<layer>", "<name>/<layer>/stud 3", ... with `tags` plus their
 #     layer's tags. Only extrusions, no booleans: every piece is rebuilt from the numbers.
@@ -1353,7 +1369,7 @@ def _column(points, drops, a, b, bottom, blocks):
     """Pieces of the column u = a..b from v = bottom to the top, around the blocked
     v ranges [(low, high), ...] (high None: up to the top)."""
     pieces = []
-    for low, high in sorted(blocks):
+    for low, high in sorted(blocks, key = lambda block: block[0]):
         if low - bottom >= 1:
             pieces.append(_rect(a, bottom, b, low))
         if high == None:
@@ -1373,7 +1389,8 @@ def _spans(length, cuts):
         spans.append((cursor, length))
     return spans
 
-def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = []):
+def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = [],
+            anchor = None):
     """A panel built of layers: sheets, and framed layers with plates, studs and infill.
     See the topic text above for the arguments."""
     along = vec_scale(along, 1.0 / vec_length(along))
@@ -1382,6 +1399,11 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         fail("buildup(%s): up must not run along `along`" % name)
     up = vec_scale(up, 1.0 / vec_length(up))
     out = _cross(along, up)
+    # A standing panel (a wall): v is height, so headers and sills can rest on studs.
+    upright = abs(up[2]) > 0.7
+
+    def at(u, v, o):
+        return vec_add(vec_add(origin, vec_scale(along, u)), vec_add(vec_scale(up, v), vec_scale(out, o)))
     if length <= 0:
         fail("buildup(%s): length must be positive, got %s" % (name, length))
     holes = [tuple([float(x) for x in o]) for o in openings]
@@ -1398,7 +1420,9 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     def piece(label, poly, at, thickness, material, color, piece_tags):
         part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in poly], distance = thickness,
                        material = material, color = color, tags = piece_tags)
-        pieces.append(place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along))
+        placed = place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along)
+        pieces.append(placed)
+        return placed
 
     def covering(a, b):
         return [o for o in holes if o[0] <= a + 0.001 and b <= o[0] + o[2] + 0.001]
@@ -1454,7 +1478,12 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         bottom = _spans(length, [(o[0], o[0] + o[2]) for o in holes if o[1] < 0.001])
         for k in range(len(bottom)):
             a, b = bottom[k]
-            piece("%s/bottom plate%s" % (label, "" if len(bottom) == 1 else " %d" % (k + 1)), _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags)
+            plate = piece("%s/bottom plate%s" % (label, "" if len(bottom) == 1 else " %d" % (k + 1)), _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags)
+            if anchor != None:
+                edge = min(anchor.get("edge", 300), (b - a) / 4.0)
+                count = max(2, int((b - a - 2 * edge) / anchor.get("spacing", 1000) + 0.999) + 1)
+                joint(plate, anchor["to"], kind = "anchor", fastener = anchor["fastener"],
+                      fasteners = [at(u, stud / 2.0, offset + thickness / 2.0) for u in spread(a + edge, b - edge, count)])
         plates = []
         for a, b in _spans(length, [(holes[i][0], holes[i][0] + holes[i][2]) for i in range(len(holes)) if through[i]]):
             for i in range(len(points) - 1):
@@ -1477,24 +1506,77 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                         kings.append(side)
                 elif side > 0.001 and side + stud < length - 0.001:
                     fail("buildup(%s): opening at u = %s needs room for a stud beside it" % (name, fmt_mm(ou)))
+        # In a wall a sill rests on a cripple under each of its ends.
+        cripples = []
+        for ou, ov, ow, oh in holes:
+            if upright and ov >= 2 * stud and ow >= 2 * stud:
+                cripples += [ou, ou + ow - stud]
         regular = [k * spacing for k in range(int((length - stud) / spacing) + 1) if length - stud - k * spacing >= stud]
         regular.append(length - stud)
-        studs = kings + [u for u in regular if not [s for s in kings if abs(s - u) < stud]
-                         and not [o for o in holes if (u < o[0] and o[0] < u + stud) or (u < o[0] + o[2] and o[0] + o[2] < u + stud)]]
+        studs = kings + cripples + [u for u in regular if not [s for s in kings + cripples if abs(s - u) < stud]
+                                    and not [o for o in holes if (u < o[0] and o[0] < u + stud) or (u < o[0] + o[2] and o[0] + o[2] < u + stud)]]
         studs = sorted({u: 0 for u in studs}.keys())
+        # Headers and sills reach the studs beside the opening, also a stud shared
+        # with another opening a little off its side. In a wall a header runs over
+        # those studs and rests on them.
+        def king(side):
+            near = [s for s in kings if abs(s - side) < stud - 0.001]
+            return near[0] if near else None
+
+        def shared(s):
+            return len([o for o in holes if king(o[0] - stud) == s or king(o[0] + o[2]) == s]) > 1
+
+        # Two headers over one shared stud each rest on half of it.
+        def beam_span(ou, ow, over):
+            left, right = king(ou - stud), king(ou + ow)
+            if not over:
+                return (ou if left == None else left + stud), (ou + ow if right == None else right)
+            a = ou if left == None else left + (stud / 2.0 if shared(left) else 0.0)
+            b = ou + ow if right == None else right + (stud / 2.0 if shared(right) else stud)
+            return a, b
+
+        spans = []
+        sills = []
+        for k in range(len(holes)):
+            ou, ov, ow, oh = holes[k]
+            if ov >= 2 * stud:
+                a, b = beam_span(ou, ow, False)
+                sills.append((a, b, ov - stud, ov))
+            else:
+                sills.append(None)
+            if zones[k][3] == None:
+                spans.append(None)
+                continue
+            a, b = beam_span(ou, ow, upright)
+            spans.append((a, b, ov + oh, ov + oh + stud))
         count = 0
+        members = []
         for u in studs:
             # Also a shared stud reaching into the next opening stops at its sill and header.
             blocks = [(z[2], z[3]) for z in zones if z[0] < u + stud - 0.001 and u < z[1] - 0.001]
+            blocks += [(s[2], s[3]) for s in spans if s != None and s[0] < u + stud - 0.001 and u < s[1] - 0.001]
             for poly in _column(points, drops, u, u + stud, stud, blocks):
                 count += 1
-                piece("%s/stud %d" % (label, count), poly, offset, thickness, material, color, layer_tags)
+                members.append(piece("%s/stud %d" % (label, count), poly, offset, thickness, material, color, layer_tags))
+        beams = []
         for k in range(len(holes)):
             ou, ov, ow, oh = holes[k]
-            if zones[k][3] != None:
-                piece("%s/header %d" % (label, k + 1), _rect(ou, ov + oh, ou + ow, ov + oh + stud), offset, thickness, material, color, layer_tags)
-            if ov >= 2 * stud:
-                piece("%s/sill %d" % (label, k + 1), _rect(ou, ov - stud, ou + ow, ov), offset, thickness, material, color, layer_tags)
+            if spans[k] != None:
+                a, b, low, high = spans[k]
+                beams.append(piece("%s/header %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags))
+            if sills[k] != None:
+                a, b, low, high = sills[k]
+                beams.append(piece("%s/sill %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags))
+        # In a floor or roof the headers hang on hangers from the joists beside the
+        # opening, and the joists cut short by the opening hang on the headers.
+        hanger = layer.get("hanger")
+        if hanger != None and not upright:
+            for beam in beams:
+                for other in members:
+                    touch = contact(beam, other)
+                    if touch != None:
+                        joint(other, beam, kind = "hanger", fastener = hanger, bearing = True,
+                              fasteners = [vec_scale(vec_add(touch.min, touch.max), 0.5)])
         if layer.get("infill") != None:
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
             bays = []
@@ -1503,6 +1585,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 if b - a < 1:
                     continue
                 blocks = [(z[2], z[3]) for z in zones if z[0] < b - 0.001 and a < z[1] - 0.001]
+                blocks += [(s[2], s[3]) for s in spans + sills if s != None and s[0] < b - 0.001 and a < s[1] - 0.001]
                 bays += _column(points, drops, a, b, stud, blocks)
             for k in range(len(bays)):
                 piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags)

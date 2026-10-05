@@ -21,6 +21,7 @@ pub mod expect;
 mod face_at;
 pub mod faces;
 pub mod frame;
+pub mod load_path;
 pub mod model;
 pub mod motion;
 mod opposing_holes;

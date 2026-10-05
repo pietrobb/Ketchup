@@ -30,10 +30,22 @@ FACADE_C = (120, 95, 70)
 def layer(name, thickness, material, color, tags):
     return {"name": name, "thickness": thickness, "material": material, "color": color, "tags": tags}
 
-def framed(name, thickness, material, spacing, tags, stud = 60):
-    return {"name": name, "thickness": thickness, "material": material, "color": TIMBER_C, "tags": tags,
-            "spacing": spacing, "stud": stud, "infill": "minerálna vlna", "infill_color": WOOL_C,
-            "infill_tags": ["izolácia"]}
+def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None):
+    layer = {"name": name, "thickness": thickness, "material": material, "color": TIMBER_C, "tags": tags,
+             "spacing": spacing, "stud": stud, "infill": "minerálna vlna", "infill_color": WOOL_C,
+             "infill_tags": ["izolácia"]}
+    if hanger != None:
+        layer["hanger"] = hanger
+    return layer
+
+# Spojovací materiál (BB-TECHNIK Banská Bystrica). Všetko je poskladané na sebe;
+# nosné spoje sú len tam, kde prvok inak nemá na čom ležať (výmeny pri otvoroch).
+# Ostatné spoje držia prvky proti posunu a nadvihnutiu.
+HANGER = "strmeň vonkajší 80x120x2 typ A"
+RAFTER_TIE = "krokvová spojka 30x210 VORMANN"
+RIDGE_SCREW = "vrut tesársky 8x260/80 TX40 tanierová hlava"
+SILL_ANCHOR = "kotva do betónu M12"
+POST_BASE = "kotevná pätka stĺpika"
 
 # Skladby od interiéru von (strop: od spodku nahor). Hrúbky dávajú aj rozmery konceptu.
 SYSTEMS = [
@@ -47,7 +59,7 @@ SYSTEMS = [
                  layer("debnenie", 22, "OSB 3", OSB_C, ["OSB"]),
                  layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
-                  framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80),
+                  framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
                   layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB"])],
     },
     {
@@ -60,7 +72,7 @@ SYSTEMS = [
                  layer("debnenie", 22, "OSB 3", OSB_C, ["OSB"]),
                  layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
-                  framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80),
+                  framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
                   layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB"])],
     },
 ]
@@ -85,6 +97,9 @@ ridge = eave + B / 2.0 * tan     # spodok strechy v hrebeni
 lift = ROOF_T / math.cos(a)      # zvislá hrúbka strešného plášťa
 
 alternatives(["koncept", "konštrukcia"])
+# Nosné prvky musia preniesť svoju tiaž až na základ: ležať zhora na nesenom prvku
+# (trám pod oboma koncami) alebo visieť na nosnom spoji (joint(..., bearing = True)).
+load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB"], name = "nosná konštrukcia")
 
 # --- základ a terasa (spoločné pre koncept aj konštrukciu) ---
 box("základ/doska", (L, B, SLAB), material = "betón", color = SLAB_C)
@@ -244,9 +259,10 @@ KROV = T + ["krokvy"]
 cos_a = math.cos(a)
 sin_a = math.sin(a)
 
-# Krov: krokvy ležia hore na hrebeňovej väznici (zvislý rez krokvy dosadá celou
-# plochou na bok väznice, zošikmený vrch väznice nesie debnenie) a dole sú osedlané
-# na pomúrnici na nadmurovke. Väznica prechádza kapsami v štítoch až do presahu.
+# Krov je poskladaný na sebe: krokvy sú hore osedlané na plochom vrchu hrebeňovej
+# väznice a v hrebeni sa stretnú zvislým rezom, dole sú osedlané na pomúrnici.
+# Väznica aj pomúrnica prechádzajú kapsami v štítoch až do presahu, takže nesú aj
+# krajné krokvy v presahu. Kapsy majú pod oboma koncami stĺpik.
 ROOF_LAYERS = system["roof"]
 G = ROOF_LAYERS[0]["thickness"]       # podhľad pod krokvami
 RAFTER = ROOF_LAYERS[1]
@@ -257,6 +273,7 @@ FACADE = WALL_LAYERS[-1]["thickness"]
 STUDS = WALL_LAYERS[2]["thickness"]
 PLATE_H = 100                         # výška pomúrnice
 RIDGE_W = 160                         # šírka hrebeňovej väznice
+RIDGE_H = 280                         # výška hrebeňovej väznice
 
 def roof_z(d, o):
     """Výška roviny strešného plášťa vo výške o kolmo nad jeho spodkom, d vodorovne
@@ -267,8 +284,9 @@ seat = min(STUDS, R / 3.0 / tan)      # osedlanie najviac do tretiny výšky kro
 plate_top = roof_z(FACADE + seat, G)
 plate_bottom = plate_top - PLATE_H
 d_ridge = B / 2.0 - RIDGE_W / 2.0     # bok väznice
-apex = roof_z(B / 2.0, G + R)         # vrch väznice pod debnením
-ridge_bottom = apex - 20 * int((apex - roof_z(d_ridge, 0) + 40) / 20.0 + 0.999)
+apex = roof_z(B / 2.0, G + R)         # hrebeň krokiev pod debnením
+ridge_top = roof_z(B / 2.0, G)        # vrch väznice, na ňom sú krokvy osedlané
+ridge_bottom = ridge_top - RIDGE_H
 
 # Platformová drevostavba: steny prízemia končia hornou pásnicou, na nej leží strop
 # (stropnice s obvodovým vencom a OSB) a na jeho podlahe stoja nadmurovky a štíty
@@ -300,6 +318,11 @@ def gable_top(base):
 def ridge_pocket(u0, base):
     return (B / 2.0 - RIDGE_W / 2.0 - u0, ridge_bottom - base, RIDGE_W, apex - ridge_bottom + 200)
 
+def plate_pockets(u0, base, length):
+    """Kapsy pre obe pomúrnice v štíte, ktorého u ide od u0 po u0 + length naprieč domom."""
+    return [(d - u0, plate_bottom - base, STUDS, apex - plate_bottom)
+            for d in (FACADE, length + 2 * u0 - FACADE - STUDS)]
+
 GROUND = deck - SLAB
 SIDES = [
     # stena, prízemie, podkrovie, (začiatok, smer), dĺžka, otvory od
@@ -310,14 +333,16 @@ SIDES = [
 ]
 for side, ground, upper, (x, y), along, length, start, reverse in SIDES:
     buildup("konštrukcia/" + ground, (x, y, SLAB), along, (0, 0, 1), length, INNER, height = GROUND,
-            openings = openings_of(side, start, reverse, SLAB, deck), tags = T)
+            openings = openings_of(side, start, reverse, SLAB, deck), tags = T,
+            anchor = {"to": "základ/doska", "fastener": SILL_ANCHOR, "spacing": 1000})
     attic_openings = openings_of(side, start, reverse, attic)
     if side in ("south", "north"):
         buildup("konštrukcia/" + upper, (x, y, attic), along, (0, 0, 1), length, INNER, top = knee_top,
                 openings = attic_openings, tags = T)
     else:
         buildup("konštrukcia/" + upper, (x, y, attic), along, (0, 0, 1), length, INNER, top = gable_top(attic),
-                openings = attic_openings + [ridge_pocket(FACADE, attic)], tags = T)
+                openings = attic_openings + [ridge_pocket(FACADE, attic)] + plate_pockets(FACADE, attic, length),
+                tags = T)
 
 FACADE_LAYERS = WALL_LAYERS[-1:]
 eave_line = roof_z(0, G) - SLAB
@@ -330,7 +355,7 @@ for side, name, (x, y), along, start, reverse in (("west", "západ", (FACADE, B)
                                                   ("east", "východ", (L - FACADE, 0), (0, 1, 0), 0, False)):
     buildup("konštrukcia/fasáda %s" % name, (x, y, SLAB), along, (0, 0, 1), B, FACADE_LAYERS,
             top = [(0, eave_line), (B / 2.0, roof_z(B / 2.0, G) - SLAB), (B, eave_line)],
-            openings = openings_of(side, start, reverse) + [ridge_pocket(0, SLAB)], tags = T)
+            openings = openings_of(side, start, reverse) + [ridge_pocket(0, SLAB)] + plate_pockets(0, SLAB, B), tags = T)
 
 # Strop: stropnice ležia na hornej pásnici stien prízemia, obvodový veniec (krajné
 # stropnice a čelné fošne) stojí na jej vonkajšej časti. Podhľad je len v interiéri.
@@ -341,9 +366,10 @@ POST = 80
 stair_posts = [(name, x - POST, y) for name, x in (("západ", stair_x), ("východ", stair_end))
                for y in (hole_y[0] - POST, hole_y[1])]
 for name, x, y in stair_posts:
-    box("konštrukcia/strop/stĺpik pod výmenou %s %s" % ("juh" if y < hole_y[0] else "sever", name),
-        (2 * POST, POST, deck - SLAB), at = (x, y, SLAB), material = "KVH C24", color = TIMBER_C,
-        tags = T + ["stĺpiky"])
+    post = box("konštrukcia/strop/stĺpik pod výmenou %s %s" % ("juh" if y < hole_y[0] else "sever", name),
+               (2 * POST, POST, deck - SLAB), at = (x, y, SLAB), material = "KVH C24", color = TIMBER_C,
+               tags = T + ["stĺpiky"])
+    joint(post, "základ/doska", kind = "anchor", fastener = POST_BASE, fasteners = [(x + POST, y + POST / 2.0, SLAB)])
 buildup("konštrukcia/podhľad prízemia", (WALL, WALL, ceiling), (1, 0, 0), (0, 1, 0), L - 2 * WALL, FLOOR_LAYERS[:1],
         height = B - 2 * WALL, openings = floor_holes(WALL, WALL) +
         [(x - WALL, y - WALL, 2 * POST, POST) for _, x, y in stair_posts], tags = T)
@@ -369,7 +395,8 @@ def slab_between(d0, d1, o0, o1):
 
 def rafter_outline(start, end, seated):
     """Krokva od pätky na odkvape (start None, rez kolmo na sklon) alebo od zvislého
-    rezu v start po zvislý rez v end, osedlaná na pomúrnici, ak ju prekrýva."""
+    rezu v start po zvislý rez v end, osedlaná na pomúrnici, ak ju prekrýva. Krokva
+    končiaca pri väznici je na nej osedlaná a končí zvislým rezom v hrebeni."""
     if start == None:
         bottom = [(-EAVE_OVER - G * sin_a, low + G * cos_a)]
         top = [(-EAVE_OVER - (G + R) * sin_a, low + (G + R) * cos_a)]
@@ -378,6 +405,8 @@ def rafter_outline(start, end, seated):
         top = [(start, roof_z(start, G + R))]
     if seated:
         bottom += [(FACADE, roof_z(FACADE, G)), (FACADE, plate_top), (FACADE + seat, plate_top)]
+    if abs(end - d_ridge) < 0.001:
+        return bottom + [(d_ridge, roof_z(d_ridge, G)), (d_ridge, ridge_top), (B / 2.0, ridge_top), (B / 2.0, apex)] + top
     return bottom + [(end, roof_z(end, G)), (end, roof_z(end, G + R))] + top
 
 # Krokvy: krajné v presahu štítov, nad každým štítom a medzi štítmi rovnomerne
@@ -394,24 +423,52 @@ cut = [x for x in RAFTERS if x < hole_x[1] and hole_x[0] < x + RAFTER_W]
 trim_x = (max([x + RAFTER_W for x in RAFTERS if x + RAFTER_W <= hole_x[0]]),
           min([x for x in RAFTERS if x >= hole_x[1]]))
 
+ridge_beam = along_x("konštrukcia/hrebeňová väznica",
+                     [[d_ridge, ridge_bottom], [B - d_ridge, ridge_bottom], [B - d_ridge, ridge_top], [d_ridge, ridge_top]],
+                     -GABLE_OVER, L + GABLE_OVER, "BSH GL24h", TIMBER_C, KROV)
+
+def middle(a, b):
+    """Stred plochy, ktorou sa a a b dotýkajú."""
+    touch = contact(a, b)
+    if touch == None:
+        fail("%s sa nedotýka %s" % (part_info(a).name, part_info(b).name))
+    return vec_scale(vec_add(touch.min, touch.max), 0.5)
+
 def roof_frame(side, north):
     name = "konštrukcia/strecha %s" % side
+    plate = box("konštrukcia/pomúrnica %s" % side, (ROOF_LENGTH, STUDS, PLATE_H),
+                at = (-GABLE_OVER, B - FACADE - STUDS if north else FACADE, plate_bottom),
+                material = RAFTER["material"], color = TIMBER_C, tags = KROV)
+    rafters = []
     for k in range(len(RAFTERS)):
         x = RAFTERS[k]
-        seated = WALL <= x and x + RAFTER_W <= L - WALL
         if not north and x in cut:
-            pieces = [rafter_outline(None, hole_d[0] - RAFTER_W, seated),
+            pieces = [rafter_outline(None, hole_d[0] - RAFTER_W, True),
                       rafter_outline(hole_d[1] + RAFTER_W, d_ridge, False)]
         else:
-            pieces = [rafter_outline(None, d_ridge, seated)]
+            pieces = [rafter_outline(None, d_ridge, True)]
         for j in range(len(pieces)):
             label = "krokva %d" % (k + 1) if len(pieces) == 1 else "krokva %d%s" % (k + 1, "ab"[j])
-            along_x("%s/%s" % (name, label), on_side(pieces[j], north), x, x + RAFTER_W,
-                    RAFTER["material"], TIMBER_C, KROV)
+            rafter = along_x("%s/%s" % (name, label), on_side(pieces[j], north), x, x + RAFTER_W,
+                             RAFTER["material"], TIMBER_C, KROV)
+            rafters.append(rafter)
+            if j == 0:
+                # Krokvové spojky z oboch strán držia krokvu na pomúrnici proti posunu a nadvihnutiu.
+                m = middle(rafter, plate)
+                for sign, hand in ((-1, "ľavá"), (1, "pravá")):
+                    joint(rafter, plate, kind = "krokvová spojka " + hand, fastener = RAFTER_TIE + " " + hand,
+                          fasteners = [(m[0] + sign * RAFTER_W / 2.0, m[1], m[2])])
+            if j == len(pieces) - 1:
+                joint(rafter, ridge_beam, kind = "vrut", fastener = RIDGE_SCREW, fasteners = [middle(rafter, ridge_beam)])
     if not north:
         for j, (d0, d1) in enumerate([(hole_d[0] - RAFTER_W, hole_d[0]), (hole_d[1], hole_d[1] + RAFTER_W)]):
-            along_x("%s/výmena %s" % (name, ("dolná", "horná")[j]), on_side(slab_between(d0, d1, G, G + R), north),
-                    trim_x[0], trim_x[1], RAFTER["material"], TIMBER_C, KROV)
+            trimmer = along_x("%s/výmena %s" % (name, ("dolná", "horná")[j]), on_side(slab_between(d0, d1, G, G + R), north),
+                              trim_x[0], trim_x[1], RAFTER["material"], TIMBER_C, KROV)
+            # Výmena visí v strmeňoch na susedných krokvách a nesie prerušené krokvy.
+            for rafter in rafters:
+                if contact(trimmer, rafter) != None:
+                    joint(rafter, trimmer, kind = "hanger", fastener = HANGER, bearing = True,
+                          fasteners = [middle(trimmer, rafter)])
     count = 0
     for k in range(len(RAFTERS) - 1):
         x0, x1 = max(RAFTERS[k] + RAFTER_W, WALL), min(RAFTERS[k + 1], L - WALL)
@@ -424,17 +481,9 @@ def roof_frame(side, north):
             count += 1
             along_x("%s/izolácia %d" % (name, count), on_side(slab_between(d0, d1, G, G + R), north), x0, x1,
                     RAFTER["infill"], RAFTER["infill_color"], T + RAFTER["infill_tags"])
-    box("konštrukcia/pomúrnica %s" % side, (L - 2 * WALL, STUDS, PLATE_H),
-        at = (WALL, B - FACADE - STUDS if north else FACADE, plate_bottom),
-        material = RAFTER["material"], color = TIMBER_C, tags = KROV)
 
 roof_frame("južná", False)
 roof_frame("severná", True)
-
-along_x("konštrukcia/hrebeňová väznica",
-        [[d_ridge, ridge_bottom], [B - d_ridge, ridge_bottom], [B - d_ridge, roof_z(d_ridge, G + R)],
-         [B / 2.0, apex], [d_ridge, roof_z(d_ridge, G + R)]],
-        -GABLE_OVER, L + GABLE_OVER, "BSH GL24h", TIMBER_C, KROV)
 
 # Plášť: podhľad pod krokvami len v interiéri, debnenie a krytina na krokvách.
 # Vrstva v je po spáde; debnenie a krytina končia vnútornou plochou v rovine hrebeňa.

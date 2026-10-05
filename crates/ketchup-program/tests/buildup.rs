@@ -234,33 +234,56 @@ fn contact_area(relations: &[Relation], a: &str, b: &str) -> Option<f64> {
         .and_then(|relation| relation.area_mm2)
 }
 
+/// Area of the patch where `a` rests from above on `b` (a's face looking down).
+fn seat_area(model: &ProgramModel, a: &str, b: &str) -> Option<f64> {
+    let (a, b) = (model.part(a)?, model.part(b)?);
+    ketchup_program::contact::contacts(a, b)
+        .into_iter()
+        .filter(|contact| contact.normal[2] < -0.999)
+        .map(|contact| contact.size_mm[0] * contact.size_mm[1])
+        .reduce(f64::max)
+}
+
 #[test]
-fn the_house_rafters_bear_on_a_ridge_beam_that_sits_in_the_gables() {
+fn the_house_rafters_are_seated_on_a_ridge_beam_and_wall_plates_that_reach_the_overhangs() {
     const BEAM: &str = "konštrukcia/hrebeňová väznica";
-    for (system, rafter_depth, pitch) in [(0.0, 180.0, 40.0_f64), (1.0, 220.0, 50.0)] {
+    for (system, pitch) in [(0.0, 40.0_f64), (1.0, 50.0)] {
         let overrides = [("system", system), ("roof_pitch", pitch)]
             .iter()
             .map(|(name, value)| ((*name).to_owned(), *value))
             .collect::<BTreeMap<_, _>>();
         let (evaluated, report) =
             run("tiny-house.star", HOUSE, &overrides).unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(errors(&evaluated.model), Vec::<String>::new());
-        let rafters = named(&evaluated.model, "konštrukcia/strecha")
-            .into_iter()
-            .filter(|name| name.contains("/krokva "))
-            .filter(|name| !name.ends_with('a'))
-            .collect::<Vec<_>>();
-        assert!(rafters.len() >= 18, "{rafters:?}");
-        // The plumb cut of every rafter that reaches the ridge bears on the beam
-        // with its whole face, not along an edge.
-        let plumb_face = 80.0 * rafter_depth / pitch.to_radians().cos();
-        for rafter in &rafters {
-            let area = contact_area(&report.relations, rafter, BEAM)
-                .unwrap_or_else(|| panic!("{rafter} does not bear on the ridge beam"));
-            assert!(
-                (area - plumb_face).abs() < 0.01 * plumb_face,
-                "{rafter}: {area} mm² instead of {plumb_face}"
-            );
+        let model = &evaluated.model;
+        assert_eq!(errors(model), Vec::<String>::new());
+        for side in ["južná", "severná"] {
+            let rafters = named(model, &format!("konštrukcia/strecha {side}/krokva "));
+            assert!(rafters.len() >= 9, "{rafters:?}");
+            let plate = format!("konštrukcia/pomúrnica {side}");
+            for rafter in &rafters {
+                // Half the beam width, 80 mm, under every rafter that reaches the
+                // ridge, even when its plumb face there is the larger contact.
+                if !rafter.ends_with('a') {
+                    let seat = seat_area(model, rafter, BEAM)
+                        .unwrap_or_else(|| panic!("{rafter} is not seated on the ridge beam"));
+                    assert!((seat - 80.0 * 80.0).abs() < 1.0, "{rafter}: {seat} mm²");
+                }
+                // Also the rafters over the gables and in the overhangs.
+                if !rafter.ends_with('b') {
+                    assert!(
+                        seat_area(model, rafter, &plate).is_some_and(|area| area > 1000.0),
+                        "{rafter} is not seated on {plate}"
+                    );
+                }
+            }
+        }
+        for joint in ["krokvová spojka ľavá", "krokvová spojka pravá", "vrut"] {
+            let count = model
+                .joints
+                .iter()
+                .filter(|item| item.kind == joint && !item.bearing)
+                .count();
+            assert!(count >= 18, "{count} x {joint}");
         }
         for gable in ["západ", "východ"] {
             let prefix = format!("konštrukcia/štít {gable}/stĺpiky/sill ");
@@ -339,6 +362,20 @@ fn the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() 
                     .any(|joist| contact_area(&report.relations, joist, &post).is_some());
                 assert!(trimmer, "no joist beside the opening rests on {post}");
             }
+        }
+        // Every header and sill of a floor opening hangs in a bearing hanger on the
+        // joists at both its ends, and carries the joists the opening cuts short.
+        for beam in named(model, "konštrukcia/strop/stropnice/")
+            .into_iter()
+            .filter(|name| name.contains("/header ") || name.contains("/sill "))
+        {
+            let hangers = model
+                .joints
+                .iter()
+                .filter(|joint| joint.kind == "hanger" && joint.bearing)
+                .filter(|joint| joint.parts[1] == beam)
+                .count();
+            assert!(hangers >= 3, "{beam} hangs in {hangers} hangers");
         }
         assert!(model.part("komín/izolovaný komín").is_some());
         assert!(model.part("komín/teleso").is_none());
