@@ -369,13 +369,16 @@ fn the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() 
             .into_iter()
             .filter(|name| name.contains("/header ") || name.contains("/sill "))
         {
-            let hangers = model
-                .joints
-                .iter()
-                .filter(|joint| joint.kind == "hanger" && joint.bearing)
-                .filter(|joint| joint.parts[1] == beam)
-                .count();
-            assert!(hangers >= 3, "{beam} hangs in {hangers} hangers");
+            let hangers = |end: usize| {
+                model
+                    .joints
+                    .iter()
+                    .filter(|joint| joint.kind == "hanger" && joint.bearing)
+                    .filter(|joint| joint.parts[end] == beam)
+                    .count()
+            };
+            assert_eq!(hangers(0), 2, "{beam} hangs on the joists at its ends");
+            assert!(hangers(1) >= 1, "{beam} carries {} joists", hangers(1));
         }
         assert!(model.part("komín/izolovaný komín").is_some());
         assert!(model.part("komín/teleso").is_none());

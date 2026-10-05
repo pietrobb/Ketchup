@@ -23,6 +23,7 @@ pub mod faces;
 pub mod frame;
 pub mod joint_check;
 pub mod load_path;
+pub mod loads;
 pub mod model;
 pub mod motion;
 mod opposing_holes;
@@ -67,6 +68,9 @@ pub struct Report {
     /// Every bearing joint with its rating, or why it is not verified.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub joints: Vec<joint_check::JointCheck>,
+    /// Characteristic loads on every load-path member, when the program declares them.
+    #[serde(skip_serializing_if = "loads::LoadReport::is_empty")]
+    pub loads: loads::LoadReport,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
 }
@@ -108,6 +112,7 @@ pub fn run(
         .iter()
         .filter(|issue| issue.severity == Severity::Error)
         .count();
+    let loads = loads::loads(&evaluated.model);
     let report = Report {
         ok: errors == 0,
         errors,
@@ -116,7 +121,8 @@ pub fn run(
         issues,
         params: evaluated.model.params.clone(),
         bom: bom(&evaluated.model),
-        joints: joint_check::joint_checks(&evaluated.model),
+        joints: joint_check::joint_checks(&evaluated.model, &loads),
+        loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
     };

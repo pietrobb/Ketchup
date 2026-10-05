@@ -1623,6 +1623,14 @@ pub struct ProgramModel {
     /// Members that must pass their weight down (`load_path()`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub load_paths: Vec<crate::load_path::LoadPath>,
+    /// Weights of materials (`material_weight()`), by material name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub material_weights: BTreeMap<String, crate::loads::MaterialWeight>,
+    /// Tags of the parts whose own weight loads the members (`weight_scope()`).
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub weight_scope: BTreeSet<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub area_loads: Vec<crate::loads::AreaLoad>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

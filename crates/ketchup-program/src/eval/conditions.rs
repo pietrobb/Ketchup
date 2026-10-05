@@ -123,4 +123,93 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         state(eval)?.model.borrow_mut().load_paths.push(path);
         Ok(NoneType)
     }
+
+    /// How heavy a material is: kg per m³ of a part, or kg per m² of its
+    /// largest face (a roofing layer modelled as one slab), with a source.
+    fn material_weight<'v>(
+        #[starlark(require = pos)] material: &str,
+        #[starlark(require = named)] source: &str,
+        #[starlark(require = named)] kg_m3: Option<Value<'v>>,
+        #[starlark(require = named)] kg_m2: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let positive = |value: Option<Value<'v>>, what: &str| {
+            given(value)
+                .map(|value| {
+                    let number = number(value, what)?;
+                    if !number.is_finite() || number <= 0.0 {
+                        anyhow::bail!("material_weight({material:?}): {what} must be positive");
+                    }
+                    Ok(number)
+                })
+                .transpose()
+        };
+        let weight = crate::loads::MaterialWeight {
+            kg_m3: positive(kg_m3, "kg_m3")?,
+            kg_m2: positive(kg_m2, "kg_m2")?,
+            source: source.trim().to_owned(),
+        };
+        if weight.kg_m3.is_some() == weight.kg_m2.is_some() {
+            anyhow::bail!("material_weight({material:?}): give exactly one of kg_m3 and kg_m2");
+        }
+        if weight.source.is_empty() {
+            anyhow::bail!("material_weight({material:?}): name the source of the weight");
+        }
+        state(eval)?
+            .model
+            .borrow_mut()
+            .material_weights
+            .insert(material.to_owned(), weight);
+        Ok(NoneType)
+    }
+
+    /// Parts with one of these tags load the members with their own weight.
+    fn weight_scope<'v>(
+        #[starlark(require = pos)] tags: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let tags = tag_names(tags, eval.heap())?;
+        state(eval)?.model.borrow_mut().weight_scope.extend(tags);
+        Ok(NoneType)
+    }
+
+    /// A uniform load in kN/m² on the upward face of the parts tagged `on`
+    /// (per plan area when `projected`). kn_m2=None declares a load whose
+    /// value is not known: the members under it stay not verified.
+    fn area_load<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] kind: &str,
+        #[starlark(require = named)] kn_m2: Option<Value<'v>>,
+        #[starlark(require = named)] on: Value<'v>,
+        #[starlark(require = named, default = true)] projected: bool,
+        #[starlark(require = named)] source: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        if !crate::loads::LOAD_KINDS.contains(&kind) {
+            anyhow::bail!(
+                "area_load({name:?}): kind must be one of {:?}, got {kind:?}",
+                crate::loads::LOAD_KINDS
+            );
+        }
+        let kn_m2 = given(kn_m2)
+            .map(|value| number(value, "kn_m2"))
+            .transpose()?;
+        if kn_m2.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            anyhow::bail!("area_load({name:?}): kn_m2 must not be negative");
+        }
+        let load = crate::loads::AreaLoad {
+            name: name.to_owned(),
+            kind: kind.to_owned(),
+            kn_m2,
+            on: tag_names(on, heap)?,
+            projected,
+            source: text(source, "area_load source")?.unwrap_or_default(),
+        };
+        if load.kn_m2.is_some() && load.source.trim().is_empty() {
+            anyhow::bail!("area_load({name:?}): name the source of the value");
+        }
+        state(eval)?.model.borrow_mut().area_loads.push(load);
+        Ok(NoneType)
+    }
 }

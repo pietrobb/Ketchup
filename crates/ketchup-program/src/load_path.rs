@@ -28,7 +28,7 @@ pub struct LoadPath {
 }
 
 impl LoadPath {
-    fn member(&self, part: &Part) -> bool {
+    pub(crate) fn member(&self, part: &Part) -> bool {
         !self.ignore.contains(&part.name)
             && (self.only_tags.is_empty() || !part.tags.is_disjoint(&self.only_tags))
     }
@@ -46,7 +46,7 @@ struct Bearing {
 
 /// Centre of the part's volume: the profile centroid of a straight-sided
 /// extrusion, otherwise the centre of its box. Cuts are not deducted.
-fn centre_of_mass(part: &Part) -> [f64; 3] {
+pub(crate) fn centre_of_mass(part: &Part) -> [f64; 3] {
     if let ProgramPartBody::Extrusion {
         segments,
         distance_mm,
@@ -143,7 +143,7 @@ fn corners((min, max): ([f64; 3], [f64; 3])) -> Vec<[f64; 3]> {
         .collect()
 }
 
-fn on_floor(part: &Part, floor: f64) -> bool {
+pub(crate) fn on_floor(part: &Part, floor: f64) -> bool {
     let (min, max) = part.world_bounds();
     if part.booleans().next().is_none() {
         (min[2] - floor).abs() <= TOLERANCE_MM

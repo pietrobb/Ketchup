@@ -1641,7 +1641,10 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 for other in members:
                     touch = contact(beam, other)
                     if touch != None:
-                        joint(other, beam, kind = "hanger", fastener = hanger, bearing = True,
+                        # The beam's end against the joist's side: the joist carries the beam
+                        # (a header); the joist's end against the beam: the beam carries it.
+                        carried, carrier = (beam, other) if abs(_dot(touch.normal, along)) > 0.7 else (other, beam)
+                        joint(carried, carrier, kind = "hanger", fastener = hanger, bearing = True,
                               fasteners = [vec_scale(vec_add(touch.min, touch.max), 0.5)],
                               rating = connector_rating_of(hanger))
         if layer.get("infill") != None:
@@ -1658,6 +1661,68 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 piece("%s/infill %d" % (label, k + 1), bays[k], offset, thickness, layer["infill"], layer.get("infill_color"), fill_tags)
         offset += thickness
     return group(name, pieces)
+
+#@topic loads: Self weight, imposed and snow loads on load-path members
+#
+#   self_weight(scope, weights=MATERIAL_WEIGHTS)
+#     parts tagged one of `scope` load the members with their weight: material ->
+#     {"kg_m3" or "kg_m2" (of the largest face, a layer modelled as one slab), "source"}.
+#     A part in scope whose material has no weight makes the members under it incomplete.
+#   area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)
+#     kN/m² on the broad face of every flat or sloped (<= 60 degrees) slab tagged `on`,
+#     per plan area when projected. kind: "permanent", "imposed", "roof" (maintenance)
+#     or "snow". kn_m2=None: a load whose value is not known (members stay incomplete).
+#   IMPOSED_LOADS[category] -> (kN/m², source): "A" floors of dwellings, "H" roofs.
+#   snow_load(sk, pitch, exposure=1.0, thermal=1.0) -> mu1 * Ce * Ct * sk in kN/m², or None
+#     when sk is None or 0 (the site's characteristic snow load on the ground, from the
+#     national annex map, is not given).
+#   The report's loads.members lists every load_path() member: its length and axis, the
+#   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
+#   along the member: own weight, area loads, parts it carries) and what it passes to
+#   each support (reactions, with the bearing joint). A beam shares its load among its
+#   supports by the lever rule, over more supports as simple spans between them; other
+#   parts share theirs by contact area. Missing inputs are listed, never guessed.
+#   Example:
+#     load_path(only = ["joists"], carriers = ["deck"])
+#     self_weight(["construction"])
+#     area_load("living", kind = "imposed", kn_m2 = IMPOSED_LOADS["A"][0], on = ["deck"],
+#               source = IMPOSED_LOADS["A"][1])
+
+MATERIAL_WEIGHTS = {
+    "KVH C24": {"kg_m3": 420, "source": "EN 338: C24, mean density 420 kg/m3"},
+    "C24": {"kg_m3": 420, "source": "EN 338: C24, mean density 420 kg/m3"},
+    "BSH GL24h": {"kg_m3": 420, "source": "EN 14080: GL24h, mean density 420 kg/m3"},
+    "GL24h": {"kg_m3": 420, "source": "EN 14080: GL24h, mean density 420 kg/m3"},
+    "OSB 3": {"kg_m3": 700, "source": "EN 1991-1-1 table A.3: OSB 7.0 kN/m3"},
+    "sadrokartón": {"kg_m3": 800, "source": "estimate: 12.5 mm gypsum board up to 10 kg/m2 (makers state 8.5-10)"},
+    "minerálna vlna": {"kg_m3": 50, "source": "estimate: upper end of frame insulation (glass wool 15-30, stone wool 30-50 kg/m3)"},
+    "drevovláknitá doska": {"kg_m3": 270, "source": "estimate: upper end of wood fibre facade boards (about 230-270 kg/m3)"},
+    "plechová krytina": {"kg_m2": 25, "source": "estimate: sheet metal roofing with battens and counter battens, at most 25 kg/m2"},
+}
+
+def self_weight(scope, weights = None):
+    """Parts tagged one of `scope` load the members with their weight; see the topic text."""
+    for material, weight in (MATERIAL_WEIGHTS if weights == None else weights).items():
+        material_weight(material, kg_m3 = weight.get("kg_m3"), kg_m2 = weight.get("kg_m2"), source = weight["source"])
+    weight_scope(scope)
+
+IMPOSED_LOADS = {
+    "A": (2.0, "EN 1991-1-1 table 6.2, category A floors: 1.5-2.0 kN/m2, upper value; the national annex may differ"),
+    "H": (0.4, "EN 1991-1-1 table 6.10, category H roofs: recommended 0.4 kN/m2; the national annex may differ"),
+}
+
+def snow_load(sk, pitch, exposure = 1.0, thermal = 1.0):
+    """Snow on a pitched roof, kN/m2 of plan: mu1(pitch) * Ce * Ct * sk (EN 1991-1-3
+    5.2(3) and table 5.2); None when sk is None or 0, i.e. not given."""
+    if sk == None or sk <= 0:
+        return None
+    if pitch <= 30:
+        mu = 0.8
+    elif pitch < 60:
+        mu = 0.8 * (60 - pitch) / 30.0
+    else:
+        mu = 0.0
+    return mu * exposure * thermal * sk
 
 #@topic validation: Inputs for document validators
 #

@@ -62,7 +62,7 @@ SYSTEMS = [
                  layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                   framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
-                  layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB"])],
+                  layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB", "podlaha"])],
     },
     {
         "wall": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
@@ -75,7 +75,7 @@ SYSTEMS = [
                  layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                   framed("stropnice", 165, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
-                  layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB"])],
+                  layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB", "podlaha"])],
     },
 ]
 system = SYSTEMS[SYSTEM]
@@ -102,6 +102,18 @@ alternatives(["koncept", "konštrukcia"])
 # Nosné prvky musia preniesť svoju tiaž až na základ: ležať zhora na nesenom prvku
 # (trám pod oboma koncami) alebo visieť na nosnom spoji (joint(..., bearing = True)).
 load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB"], name = "nosná konštrukcia")
+
+# Zaťaženia: vlastná tiaž konštrukcie (hustoty z knižnice), úžitkové na podlahe podkrovia,
+# údržba strechy a sneh na krytine (na pôdorys). Sneh na zemi sk pre miesto stavby treba
+# odčítať z mapy STN EN 1991-1-3/NA; kým nie je zadaný (0), prvky pod strechou sú neúplné.
+SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m² podľa miesta stavby (0 = nezadané)")
+self_weight(["konštrukcia"])
+area_load("úžitkové podkrovie", kind = "imposed", kn_m2 = IMPOSED_LOADS["A"][0], on = ["podlaha"],
+          source = IMPOSED_LOADS["A"][1])
+area_load("údržba strechy", kind = "roof", kn_m2 = IMPOSED_LOADS["H"][0], on = ["krytina"],
+          source = IMPOSED_LOADS["H"][1])
+area_load("sneh", kind = "snow", kn_m2 = snow_load(SNOW_SK, PITCH), on = ["krytina"],
+          source = "EN 1991-1-3 5.2(3), tab. 5.2; sk = %s kN/m²" % SNOW_SK)
 
 # --- základ a terasa (spoločné pre koncept aj konštrukciu) ---
 box("základ/doska", (L, B, SLAB), material = "betón", color = SLAB_C)
@@ -467,9 +479,12 @@ def roof_frame(side, north):
             trimmer = along_x("%s/výmena %s" % (name, ("dolná", "horná")[j]), on_side(slab_between(d0, d1, G, G + R), north),
                               trim_x[0], trim_x[1], RAFTER["material"], TIMBER_C, KROV)
             # Výmena visí v strmeňoch na susedných krokvách a nesie prerušené krokvy.
+            # Koniec výmeny pri boku krokvy: krokva nesie výmenu; koniec krokvy pri výmene: výmena nesie krokvu.
             for rafter in rafters:
-                if contact(trimmer, rafter) != None:
-                    joint(rafter, trimmer, kind = "hanger", fastener = HANGER, bearing = True,
+                touch = contact(trimmer, rafter)
+                if touch != None:
+                    carried, carrier = (trimmer, rafter) if abs(touch.normal[0]) > 0.7 else (rafter, trimmer)
+                    joint(carried, carrier, kind = "hanger", fastener = HANGER, bearing = True,
                           fasteners = [middle(trimmer, rafter)], rating = connector_rating_of(HANGER))
     count = 0
     for k in range(len(RAFTERS) - 1):

@@ -100,9 +100,17 @@ fn every_bearing_joint_of_the_house_is_listed_with_its_rating_or_as_not_verified
     const HOUSE: &str = include_str!("../../../examples/programs/tiny-house.star");
     let report = report(HOUSE);
     assert!(report.joints.len() >= 20, "{}", report.joints.len());
-    // No maker's table for the hangers yet: every one says what it lacks.
+    // No maker's table for the hangers yet, nor the site's snow where the roof
+    // bears: every one says what it lacks.
+    let snow = "the load is incomplete: sneh (snow) has no value";
     for check in &report.joints {
         assert_eq!(check.status, "not_verified");
-        assert_eq!(check.missing, [NO_RATING, NO_LOAD], "{}", check.joint);
+        assert!(check.load_n.is_some(), "{}", check.joint);
+        assert_eq!(check.missing[0], NO_RATING, "{}", check.joint);
+        assert!(
+            check.missing[1..].iter().all(|reason| reason == snow),
+            "{:?}",
+            check.missing
+        );
     }
 }

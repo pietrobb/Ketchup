@@ -274,7 +274,7 @@ fn all_rows(app: &mut KetchupApp, bridge: &mut LiveBridge, section: ReportSectio
 #[test]
 fn the_joints_report_lists_every_bearing_joint_with_its_rating_or_what_it_lacks() {
     let (mut app, mut bridge) = setup();
-    let source = "h=box(\"h\", (120,2000,240), grounded=True)\nj=box(\"j\", (3000,60,200), at=(120,500,40))\nk=box(\"k\", (3000,60,200), at=(120,1000,40))\narunda(j, h, \"50 B\")\njoint(k, h, kind=\"hanger\", fastener=\"strmeň\", bearing=True)";
+    let source = "load_path(only=[\"f\"])\nself_weight([\"f\"])\nh=box(\"h\", (120,2000,240), grounded=True, material=\"C24\", tags=[\"f\"])\nj=box(\"j\", (3000,60,200), at=(120,500,40), material=\"C24\", tags=[\"f\"])\nk=box(\"k\", (3000,60,200), at=(120,1000,40), material=\"C24\", tags=[\"f\"])\nbox(\"w\", (100,2000,240), at=(3020,0,-200), grounded=True, tags=[\"f\"], material=\"C24\")\narunda(j, h, \"50 B\")\njoint(k, h, kind=\"hanger\", fastener=\"strmeň\", bearing=True)";
     bridge
         .execute(&mut app, apply_source(source), false)
         .unwrap();
@@ -283,7 +283,15 @@ fn the_joints_report_lists_every_bearing_joint_with_its_rating_or_what_it_lacks(
     assert_eq!(rows[0]["rating"]["basis"], "allowable");
     assert!(rows.iter().all(|row| row["status"] == "not_verified"));
     assert_eq!(rows[1]["rating"], Value::Null);
-    assert_eq!(rows[1]["missing"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        rows[1]["missing"],
+        json!(["no published rating with a source"])
+    );
+    assert!(rows[0]["load_n"]["permanent"].as_f64().unwrap() > 0.0);
+    let members = all_rows(&mut app, &mut bridge, ReportSection::Loads);
+    assert_eq!(members.len(), 4, "{members:?}");
+    let joist = members.iter().find(|row| row["part"] == "j").unwrap();
+    assert_eq!(joist["reactions"].as_array().unwrap().len(), 2);
 }
 
 #[test]
