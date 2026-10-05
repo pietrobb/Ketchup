@@ -79,7 +79,7 @@ pub fn tools() -> Value {
                 "offset": {"type": "integer", "minimum": 0, "description": "For report: default 0; follow next_offset until null at the same expected stamp and section."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "For report: default 50; frame budget may return fewer rows. basis=program_evaluation does not claim a native check."},
                 "detail": {"type": "string", "enum": ["concise", "implementation"], "description": "For docs: concise by default; implementation only on explicit request."},
-                "source": {"type": "string", "description": "For apply: the complete program text (at most ~256 KB)."},
+                "source": {"type": "string", "description": "For apply: the complete program text (at most ~8 MB)."},
                 "source_path": {"type": "string", "description": "For apply: absolute path of a .star file to send instead of source."},
                 "overrides": {"type": "object", "additionalProperties": {"type": "number"}, "description": "For apply: parameter values by name, e.g. {\"width\": 900}."},
                 "file_name": {"type": "string", "description": "For apply: program file name for a new program."},

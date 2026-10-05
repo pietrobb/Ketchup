@@ -43,7 +43,7 @@ impl Client {
             request,
         })
         .unwrap();
-        assert!(bytes.len() <= MAX_FRAME_BYTES);
+        assert!(bytes.len() <= MAX_REQUEST_FRAME_BYTES);
         self.stream
             .write_all(&(bytes.len() as u32).to_be_bytes())
             .unwrap();
@@ -57,7 +57,7 @@ impl Client {
             let mut header = [0; 4];
             reader.read_exact(&mut header).unwrap();
             let length = u32::from_be_bytes(header) as usize;
-            assert!(length <= MAX_FRAME_BYTES);
+            assert!(length <= MAX_RESPONSE_FRAME_BYTES);
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             tx.send(serde_json::from_slice::<Response>(&body).unwrap())
@@ -514,7 +514,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
             .all(|occurrence| occurrence.color() == Some([10, 20, 30]))
     );
     let encoded = serde_json::to_vec(&stepped).unwrap();
-    assert!(encoded.len() < MAX_FRAME_BYTES);
+    assert!(encoded.len() < MAX_RESPONSE_FRAME_BYTES);
     assert!(
         !String::from_utf8(encoded)
             .unwrap()
@@ -729,7 +729,7 @@ fn auth_bounds_disconnect_and_default_disabled() {
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     oversized
-        .write_all(&((MAX_FRAME_BYTES + 1) as u32).to_be_bytes())
+        .write_all(&((MAX_REQUEST_FRAME_BYTES + 1) as u32).to_be_bytes())
         .unwrap();
     assert!(matches!(oversized.read(&mut byte), Ok(0) | Err(_)));
     shell.app_mut().disable_live_bridge();

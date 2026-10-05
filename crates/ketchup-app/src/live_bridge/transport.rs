@@ -225,7 +225,7 @@ fn read_frame(
     let deadline = pre_auth_deadline.unwrap_or_else(|| Instant::now() + IO_DEADLINE);
     read_until(stream, &mut header[1..], Some(deadline), stop)?;
     let length = u32::from_be_bytes(header) as usize;
-    if length == 0 || length > MAX_FRAME_BYTES {
+    if length == 0 || length > MAX_REQUEST_FRAME_BYTES {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut bytes = vec![0; length];
@@ -257,17 +257,19 @@ fn write_frame_until(
 }
 
 fn write_response(stream: &mut TcpStream, response: Response) -> io::Result<()> {
-    let limit = if response
-        .result
-        .as_ref()
-        .and_then(|result| result.get("scope"))
-        .and_then(Value::as_str)
-        == Some("cad_viewport")
-    {
-        MAX_IMAGE_FRAME_BYTES
-    } else {
-        MAX_FRAME_BYTES
-    };
+    let result = response.result.as_ref();
+    let limit =
+        if result.and_then(|r| r.get("scope")).and_then(Value::as_str) == Some("cad_viewport") {
+            MAX_IMAGE_FRAME_BYTES
+        } else if result
+            .and_then(|r| r.get("source"))
+            .is_some_and(Value::is_string)
+        {
+            // Any program the window accepted must be readable back whole.
+            MAX_REQUEST_FRAME_BYTES
+        } else {
+            MAX_RESPONSE_FRAME_BYTES
+        };
     let mut bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
     if bytes.len() > limit {
         bytes = serde_json::to_vec(&Response::error(response.id, "response_limit"))
@@ -471,6 +473,48 @@ mod tests {
         let mut response = vec![0; u32::from_be_bytes(header) as usize];
         stream.read_exact(&mut response).unwrap();
         serde_json::from_slice(&response).unwrap()
+    }
+
+    #[test]
+    fn requests_above_the_reply_budget_are_read_and_whole_program_sources_are_returned() {
+        let token = "a".repeat(64);
+        let bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
+        let mut stream = TcpStream::connect(bridge.address).unwrap();
+        let method = "x".repeat(MAX_RESPONSE_FRAME_BYTES * 2);
+        let answer = exchange(
+            &mut stream,
+            &json!({"version":1,"id":9,"token":token,"request":{"method":method}}),
+        );
+        assert_eq!(answer["id"], 9);
+        assert_eq!(answer["error"], "invalid_params");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let read = |client: &mut TcpStream| {
+            let mut header = [0; 4];
+            client.read_exact(&mut header).unwrap();
+            let mut body = vec![0; u32::from_be_bytes(header) as usize];
+            client.read_exact(&mut body).unwrap();
+            serde_json::from_slice::<Value>(&body).unwrap()
+        };
+        let source = "#".repeat(MAX_RESPONSE_FRAME_BYTES * 2);
+        let ok = |result: Value| Response {
+            version: 1,
+            id: 1,
+            ok: true,
+            stamp: None,
+            result: Some(result),
+            error: None,
+        };
+        write_response(
+            &mut server,
+            ok(json!({"file_name": "big.star", "source": source})),
+        )
+        .unwrap();
+        assert_eq!(read(&mut client)["result"]["source"], source.as_str());
+        write_response(&mut server, ok(json!({"rows": source}))).unwrap();
+        assert_eq!(read(&mut client)["error"], "response_limit");
     }
 
     #[test]

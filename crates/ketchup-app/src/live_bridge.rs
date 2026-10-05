@@ -75,7 +75,11 @@ mod program_validation_summary;
 mod tests;
 mod transport;
 mod validator_catalog;
-pub const MAX_FRAME_BYTES: usize = 256 * 1024;
+/// Incoming frames: large enough for whole programs, bounded so a bogus
+/// length header cannot make the window allocate gigabytes.
+pub const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
+/// Replies stay small; large reports and lists are paged for the AI context.
+pub const MAX_RESPONSE_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_IMAGE_FRAME_BYTES: usize = 12 * 1024 * 1024;
 pub const MIN_IMAGE_SIDE_PX: u32 = 512;
 pub const MAX_IMAGE_SIDE_PX: u32 = 1600;
@@ -2175,7 +2179,7 @@ impl LiveBridge {
                 "selected_context":Self::selected_context(app),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
-                "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
+                "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
                 "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),

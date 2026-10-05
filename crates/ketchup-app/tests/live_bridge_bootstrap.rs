@@ -255,7 +255,7 @@ fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request
         let mut header = [0; 4];
         reader.read_exact(&mut header).unwrap();
         let length = u32::from_be_bytes(header) as usize;
-        assert!(length <= ketchup_app::live_bridge::MAX_FRAME_BYTES);
+        assert!(length <= ketchup_app::live_bridge::MAX_RESPONSE_FRAME_BYTES);
         let mut bytes = vec![0; length];
         reader.read_exact(&mut bytes).unwrap();
         tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
