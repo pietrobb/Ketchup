@@ -152,6 +152,8 @@ fn response_wait(request: &Request) -> Duration {
         | Request::PatchProgram { .. }
         | Request::ValidateProgram { .. }
         | Request::MeasureFaces { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
+        // The user confirms the open in the window, then a large document loads.
+        Request::Open { .. } => ketchup_mcp::OPEN_RESPONSE_WAIT,
         _ => DEFAULT_RESPONSE_WAIT,
     }
 }
@@ -281,10 +283,56 @@ fn write_response(stream: &mut TcpStream, response: Response) -> io::Result<()> 
     })
 }
 
-struct CancelOnDrop(Arc<AtomicBool>);
+/// Revokes the request in flight when its connection ends without an answer.
+struct CancelOnDrop(Option<Arc<AtomicBool>>);
+impl CancelOnDrop {
+    fn answered(&mut self) {
+        self.0 = None;
+    }
+}
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        if let Some(cancelled) = &self.0 {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+
+enum Awaited {
+    Answer(Response),
+    /// The UI thread did not answer before the deadline (a long load or
+    /// evaluation, or a dialog waiting for the user).
+    TimedOut,
+    /// The client closed or pipelined, the bridge stopped, or the UI dropped the request.
+    Ended,
+}
+
+fn await_response(
+    stream: &TcpStream,
+    receiver: &mpsc::Receiver<Response>,
+    deadline: Instant,
+    stop: &AtomicBool,
+) -> io::Result<Awaited> {
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(Awaited::Ended);
+        }
+        if Instant::now() >= deadline {
+            return Ok(Awaited::TimedOut);
+        }
+        let mut byte = [0];
+        match stream.peek(&mut byte) {
+            // EOF revokes queued authority. Positive bytes are forbidden
+            // pipelining, not a reason to leave a queued mutation alive.
+            Ok(_) => return Ok(Awaited::Ended),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e),
+        }
+        match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(response) => return Ok(Awaited::Answer(response)),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(Awaited::Ended),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
 }
 
@@ -298,8 +346,6 @@ fn serve(
     authenticated_session: &AtomicBool,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let _cancel = CancelOnDrop(Arc::clone(&cancelled));
     let mut session_authenticated = false;
     while !stop.load(Ordering::Acquire) {
         let bytes = read_frame(&mut stream, session_authenticated, stop)?;
@@ -343,6 +389,7 @@ fn serve(
         let disconnect = matches!(envelope.request, Request::Disconnect {});
         let response_wait = response_wait(&envelope.request);
         let (reply, receiver) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
         let queued = Queued {
             session,
             id: envelope.id,
@@ -358,28 +405,24 @@ fn serve(
             )?;
             return Ok(());
         }
+        let mut in_flight = CancelOnDrop(Some(cancelled));
         context.request_repaint();
-        let deadline = Instant::now() + response_wait;
         stream.set_nonblocking(true)?;
-        let response = loop {
-            if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
-                return Ok(());
-            }
-            let mut byte = [0];
-            match stream.peek(&mut byte) {
-                // EOF revokes queued authority. Positive bytes are forbidden
-                // pipelining, not a reason to leave a queued mutation alive.
-                Ok(_) => return Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(e),
-            }
-            match receiver.recv_timeout(Duration::from_millis(10)) {
-                Ok(response) => break response,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-            }
-        };
+        let awaited = await_response(&stream, &receiver, Instant::now() + response_wait, stop)?;
         stream.set_nonblocking(false)?;
+        let response = match awaited {
+            Awaited::Answer(response) => {
+                in_flight.answered();
+                response
+            }
+            // Answer instead of dropping the connection, so the client keeps
+            // its attachment; the request is revoked unless it already ran.
+            Awaited::TimedOut => {
+                drop(in_flight);
+                Response::error(envelope.id, "response_timeout")
+            }
+            Awaited::Ended => return Ok(()),
+        };
         write_response(&mut stream, response)?;
         if disconnect {
             return Ok(());
@@ -547,6 +590,54 @@ mod tests {
             .expect("the well-formed request reaches the UI queue");
         assert_eq!(queued.id, 8);
         assert!(matches!(queued.request, Request::Status { .. }));
+    }
+
+    #[test]
+    fn a_ui_thread_that_does_not_answer_times_out_instead_of_ending_the_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let stop = AtomicBool::new(false);
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let deadline = Instant::now() + Duration::from_millis(50);
+        assert!(matches!(
+            await_response(&server, &receiver, deadline, &stop).unwrap(),
+            Awaited::TimedOut
+        ));
+
+        reply.try_send(Response::error(3, "busy")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        assert!(matches!(
+            await_response(&server, &receiver, deadline, &stop).unwrap(),
+            Awaited::Answer(Response { id: 3, .. })
+        ));
+
+        drop(client);
+        assert!(matches!(
+            await_response(&server, &receiver, deadline, &stop).unwrap(),
+            Awaited::Ended
+        ));
+    }
+
+    #[test]
+    fn only_an_unanswered_request_is_revoked() {
+        let answered = Arc::new(AtomicBool::new(false));
+        let mut guard = CancelOnDrop(Some(Arc::clone(&answered)));
+        guard.answered();
+        drop(guard);
+        assert!(!answered.load(Ordering::Acquire));
+        let abandoned = Arc::new(AtomicBool::new(false));
+        drop(CancelOnDrop(Some(Arc::clone(&abandoned))));
+        assert!(abandoned.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn open_waits_for_the_user_and_a_large_document() {
+        let open: Request =
+            serde_json::from_value(json!({"method": "open", "path": "C:\\house.ketchup"})).unwrap();
+        assert_eq!(response_wait(&open), ketchup_mcp::OPEN_RESPONSE_WAIT);
+        assert!(response_wait(&open) > DEFAULT_RESPONSE_WAIT);
     }
 
     #[test]

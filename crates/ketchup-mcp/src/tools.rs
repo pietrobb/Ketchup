@@ -20,6 +20,7 @@ const DEFAULT_WAIT: Duration = Duration::from_secs(35);
 /// The host owns the job budget; allow delivery after its response deadline.
 const APPLY_PROGRAM_WAIT: Duration =
     crate::PROGRAM_RESPONSE_WAIT.saturating_add(Duration::from_secs(5));
+const OPEN_WAIT: Duration = crate::OPEN_RESPONSE_WAIT.saturating_add(Duration::from_secs(5));
 /// On top of apply_and_verify's own `timeout_ms`; exceeds the window's 15 s publish margin.
 const APPLY_AND_VERIFY_MARGIN: Duration = Duration::from_secs(20);
 const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
@@ -159,7 +160,12 @@ impl Tools {
             "file" => {
                 let action =
                     take_action(&mut args, &["save", "save_as", "open", "export_drawings"])?;
-                self.send(&action, args, DEFAULT_WAIT)
+                let wait = if action == "open" {
+                    OPEN_WAIT
+                } else {
+                    DEFAULT_WAIT
+                };
+                self.send(&action, args, wait)
             }
             "view" => self.view(args),
             "batch" => self.batch(args),
@@ -481,7 +487,10 @@ impl Tools {
 
     fn attach(&mut self, window: Window) -> Result<(), ToolError> {
         let failed = |error: std::io::Error| {
-            let hint = if error.kind() == std::io::ErrorKind::PermissionDenied {
+            let hint = if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+            ) {
                 ""
             } else {
                 "; it may have closed. Call windows."

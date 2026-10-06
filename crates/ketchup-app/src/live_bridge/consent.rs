@@ -65,8 +65,14 @@ pub(crate) struct PendingConsent {
 }
 
 enum ConsentDecision {
-    Allow { address: SocketAddr, token: String },
+    Allow {
+        address: SocketAddr,
+        token: String,
+    },
     Reject,
+    /// The window cannot answer now (an earlier attach is pending, or the UI
+    /// is held by a long load or a dialog); the credential itself was valid.
+    Busy,
 }
 
 #[derive(Deserialize)]
@@ -515,7 +521,7 @@ fn serve(
                 &mut stream,
                 &nonce,
                 instance_id,
-                ConsentDecision::Reject,
+                ConsentDecision::Busy,
                 stop,
             );
         }
@@ -523,12 +529,25 @@ fn serve(
         stream.set_nonblocking(true)?;
         let decision = wait_for_decision(&stream, &receiver, stop);
         context.request_repaint();
-        let decision = decision.inspect_err(|_| {
+        let release_late_grant = || {
             // The window granted access to a requester that already left: free it.
             if matches!(receiver.try_recv(), Ok(ConsentDecision::Allow { .. })) {
                 let _ = delivery_sender.send(false);
             }
-        })?;
+        };
+        let decision = match decision {
+            // The UI was held too long: answer instead of hanging up, so the
+            // client can tell a busy window from a wrong credential.
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                release_late_grant();
+                ConsentDecision::Busy
+            }
+            Err(error) => {
+                release_late_grant();
+                return Err(error);
+            }
+            Ok(decision) => decision,
+        };
         stream.set_nonblocking(false)?;
         let allowed = matches!(decision, ConsentDecision::Allow { .. });
         let result = write_response(&mut stream, &nonce, instance_id, decision, stop);
@@ -665,10 +684,14 @@ fn write_response(
             live_bridge_address: Some(address.to_string()),
             token: Some(token),
         },
-        ConsentDecision::Reject => AttachResponse {
+        ConsentDecision::Reject | ConsentDecision::Busy => AttachResponse {
             version: 1,
             nonce,
-            status: "rejected",
+            status: if matches!(decision, ConsentDecision::Busy) {
+                "busy"
+            } else {
+                "rejected"
+            },
             instance_id,
             live_bridge_address: None,
             token: None,
@@ -778,6 +801,54 @@ mod tests {
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["status"], "available");
         drop(pending);
+    }
+
+    #[test]
+    fn attach_while_the_window_holds_an_earlier_attach_is_answered_busy_not_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = start(
+            egui::Context::default(),
+            directory.path(),
+            "Untitled".to_owned(),
+            true,
+        )
+        .unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let attach = |nonce: &str| {
+            let mut stream = TcpStream::connect(broker.address).unwrap();
+            writeln!(stream, "{}", serde_json::json!({"version":1,"action":"attach","nonce":nonce,"bootstrap":registry["bootstrap"]})).unwrap();
+            stream
+        };
+        // The UI thread (held by a dialog or a long load) takes neither request:
+        // one waits in the window's queue, the other must be answered at once.
+        let mut streams = [attach(&"3".repeat(64)), attach(&"4".repeat(64))];
+        for stream in &streams {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut response = Vec::new();
+        'answered: while Instant::now() < deadline {
+            for stream in &mut streams {
+                let mut buffer = [0; 512];
+                match stream.read(&mut buffer) {
+                    Ok(count) if count > 0 => {
+                        response.extend_from_slice(&buffer[..count]);
+                        if response.ends_with(b"\n") {
+                            break 'answered;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(response["status"], "busy");
+        assert!(response.get("token").is_none());
     }
 
     #[test]

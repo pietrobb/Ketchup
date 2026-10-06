@@ -147,6 +147,12 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
         ATTACH_TIMEOUT,
         Some(bootstrap),
     )?;
+    if reply["status"] == "busy" {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "the window is busy: it is still loading or evaluating, or a dialog in the window is waiting for the user; attach again once it is free",
+        ));
+    }
     if reply["status"] != "allowed" {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

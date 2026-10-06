@@ -423,6 +423,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Narrow the request (smaller limit, fewer targets or a smaller image) and send it again.",
     ),
     entry(
+        "response_timeout",
+        Io,
+        "window",
+        "The window did not answer in time: it is still loading or evaluating, or a dialog in the window is waiting for the user. The request was revoked unless it had already started.",
+        "The connection stays open: read inspect action=status (it answers once the window is free) before sending the request again.",
+    ),
+    entry(
         "save_path_required",
         Validation,
         "save",
