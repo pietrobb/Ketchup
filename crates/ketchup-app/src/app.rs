@@ -13,6 +13,9 @@ mod export;
 #[path = "app/icon_button_tests.rs"]
 mod icon_button_tests;
 mod import;
+#[cfg(test)]
+#[path = "app/interactive_house_tests.rs"]
+mod interactive_house_tests;
 mod local_outliner;
 mod mirror;
 mod patterns;

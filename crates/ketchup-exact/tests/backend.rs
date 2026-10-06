@@ -174,6 +174,80 @@ fn planar_box_face_offsets_expand_and_contract_exact_volume() {
     );
 }
 
+fn quarter_cubic_ellipse(radius_x: f64, radius_y: f64) -> PlanarProfileLoop {
+    // 4/3 (sqrt(2) - 1) puts each quarter cubic through the arc's midpoint.
+    let k = 4.0 / 3.0 * (2.0_f64.sqrt() - 1.0);
+    let ends = [
+        [radius_x, 0.0],
+        [0.0, radius_y],
+        [-radius_x, 0.0],
+        [0.0, -radius_y],
+    ];
+    let tangents = [
+        [0.0, radius_y],
+        [-radius_x, 0.0],
+        [0.0, -radius_y],
+        [radius_x, 0.0],
+    ];
+    PlanarProfileLoop::Segments(
+        (0..4)
+            .map(|index| {
+                let next = (index + 1) % 4;
+                PlanarProfileSegment::CubicBezier {
+                    start_mm: ends[index],
+                    control_1_mm: [
+                        ends[index][0] + k * tangents[index][0],
+                        ends[index][1] + k * tangents[index][1],
+                    ],
+                    control_2_mm: [
+                        ends[next][0] - k * tangents[next][0],
+                        ends[next][1] - k * tangents[next][1],
+                    ],
+                    end_mm: ends[next],
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The planar face whose outward offset by `distance` raises the top of the body.
+fn top_face_ordinal(backend: &ExactBackend, body: &ketchup_exact::ExactBody, height: f64) -> u32 {
+    (0..body.topology.face_count)
+        .find(|ordinal| {
+            backend
+                .offset_body_face(body, *ordinal, 1.0)
+                .is_ok_and(|output| {
+                    (output.body.topology.bounds_mm.max.z - height - 1.0).abs() < 1e-6
+                })
+        })
+        .expect("an extrusion has a planar top cap")
+}
+
+#[test]
+fn face_offset_of_a_curved_extrusion_cap_keeps_each_side_one_smooth_face() {
+    let backend = ExactBackend::new();
+    let PlanarProfileLoop::Segments(ellipse) = quarter_cubic_ellipse(40.0, 20.0) else {
+        unreachable!()
+    };
+    let base = backend.extrude_mixed_profile(&ellipse, 30.0).unwrap();
+    let top = top_face_ordinal(&backend, &base.body, 30.0);
+    for distance in [12.0, -12.0] {
+        let offset = backend.offset_body_face(&base.body, top, distance).unwrap();
+        assert_valid(&offset);
+        assert_close(offset.body.topology.bounds_mm.max.z, 30.0 + distance);
+        let expected_volume = base.body.topology.volume_mm3 * (30.0 + distance) / 30.0;
+        assert!(
+            (offset.body.topology.volume_mm3 - expected_volume).abs() < expected_volume * 1e-6,
+            "{} != {expected_volume}",
+            offset.body.topology.volume_mm3
+        );
+        assert_eq!(
+            offset.body.topology.face_count, base.body.topology.face_count,
+            "offsetting the cap by {distance} mm left a seam on the curved sides"
+        );
+    }
+}
+
 #[test]
 fn maximum_length_may_end_exactly_at_positive_coordinate_limit() {
     let output = ExactBackend::new()

@@ -120,8 +120,10 @@ pub(super) fn describe(
     let program = app.document.current_rule_program()?;
     let name = part_name(snapshot, instance_path)?;
     let occurrence = snapshot.resolve_instance_path(instance_path).ok()?;
-    let (evaluated, _) =
-        ketchup_program::run(&program.file_name, &program.source, &program.overrides).ok()?;
+    // Only the parts' geometry is read; the report would take seconds on a
+    // large model.
+    let evaluated =
+        ketchup_program::evaluate(&program.file_name, &program.source, &program.overrides).ok()?;
     let part = evaluated.model.part(&name)?;
     let package = app
         .exact

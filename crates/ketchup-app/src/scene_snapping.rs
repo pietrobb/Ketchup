@@ -502,16 +502,22 @@ impl KetchupApp {
             })
             .map(|(reference, _, center)| (&reference.instance_path, *center))
             .collect();
+        // Collected once: asking the snap points for every edge of a large
+        // scene took seconds.
+        let concentric: BTreeSet<&SelectionId> = geometry
+            .points
+            .iter()
+            .filter(|(candidate, kind, center)| {
+                *kind == SnapKind::Center
+                    && centers.iter().any(|(path, selected_center)| {
+                        **path == candidate.instance_path
+                            && (*center - *selected_center).length() <= APPROXIMATION
+                    })
+            })
+            .map(|(candidate, _, _)| candidate)
+            .collect();
         let highlighted = |reference: &SelectionId| {
-            selected.contains(&reference)
-                || geometry.points.iter().any(|(candidate, kind, center)| {
-                    *kind == SnapKind::Center
-                        && candidate == reference
-                        && centers.iter().any(|(path, selected_center)| {
-                            **path == reference.instance_path
-                                && (*center - *selected_center).length() <= APPROXIMATION
-                        })
-                })
+            selected.contains(&reference) || concentric.contains(reference)
         };
         let mut paths: Vec<Vec<Vec3>> = geometry
             .edges

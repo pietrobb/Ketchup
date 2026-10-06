@@ -12,31 +12,39 @@ const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star"
 /// One frame of the drag or of the held button. In release a frame takes about
 /// 20-60 ms; before the fixes every drag step re-planned the house, or looked
 /// up the picked face among all faces of the house, for 0.6-1 s.
-const FRAME_BUDGET: Duration =
+pub(super) const FRAME_BUDGET: Duration =
     Duration::from_millis(if cfg!(debug_assertions) { 3_000 } else { 400 });
 
 /// The frame of the release, which publishes the edited house program. It took
 /// about 1.7 s while the program report (issues, relations, loads) was listed
 /// twice and thrown away; without it about 0.4 s.
-const RELEASE_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) {
+pub(super) const RELEASE_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) {
     10_000
 } else {
     1_000
 });
 
 /// From release to the committed part.
-const COMMIT_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) {
+pub(super) const COMMIT_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) {
     20_000
 } else {
     5_000
 });
 
-const START: Vec3 = Vec3::new(-2500.0, -2500.0, 0.0);
-const END: Vec3 = Vec3::new(-1500.0, -1800.0, 0.0);
-const PULL_STEP_MM: f64 = 60.0;
-const PULL_STEPS: usize = 7;
+pub(super) const START: Vec3 = Vec3::new(-2500.0, -2500.0, 0.0);
+pub(super) const END: Vec3 = Vec3::new(-1500.0, -1800.0, 0.0);
+pub(super) const PULL_STEP_MM: f64 = 60.0;
+pub(super) const PULL_STEPS: usize = 7;
 
-fn settle(harness: &mut Harness<'_, KetchupApp>) {
+/// The house tests measure frame times, so they take turns: run side by side,
+/// each would also time the others' 750-part evaluations.
+pub(super) fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(super) fn settle(harness: &mut Harness<'_, KetchupApp>) {
     let started = Instant::now();
     loop {
         harness.step();
@@ -52,19 +60,23 @@ fn settle(harness: &mut Harness<'_, KetchupApp>) {
     }
 }
 
-fn event(harness: &mut Harness<'_, KetchupApp>, event: egui::Event) -> Duration {
+pub(super) fn event(harness: &mut Harness<'_, KetchupApp>, event: egui::Event) -> Duration {
     harness.input_mut().events.push(event);
     let started = Instant::now();
     harness.step();
     started.elapsed()
 }
 
-fn move_to(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> (Pos2, Duration) {
+pub(super) fn move_to(harness: &mut Harness<'_, KetchupApp>, world: Vec3) -> (Pos2, Duration) {
     let screen = harness.state().viewport_position(world).unwrap();
     (screen, event(harness, egui::Event::PointerMoved(screen)))
 }
 
-fn button(harness: &mut Harness<'_, KetchupApp>, screen: Pos2, pressed: bool) -> Duration {
+pub(super) fn button(
+    harness: &mut Harness<'_, KetchupApp>,
+    screen: Pos2,
+    pressed: bool,
+) -> Duration {
     event(
         harness,
         egui::Event::PointerButton {
@@ -76,13 +88,13 @@ fn button(harness: &mut Harness<'_, KetchupApp>, screen: Pos2, pressed: bool) ->
     )
 }
 
-fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
+pub(super) fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
     let (screen, _) = move_to(harness, world);
     button(harness, screen, true);
     button(harness, screen, false);
 }
 
-fn house() -> KetchupApp {
+pub(super) fn house() -> KetchupApp {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
@@ -98,7 +110,7 @@ fn house() -> KetchupApp {
 
 /// Hiding one part by hand is an edit outside the program, so the house parts
 /// stay but no program owns the document any more.
-fn detach(app: &mut KetchupApp) {
+pub(super) fn detach(app: &mut KetchupApp) {
     let first = app.document.current().occurrences().next().unwrap().id();
     app.apply_batch_with_work_recovery(&CommandBatch::new(vec![
         CanonicalCommand::SetOccurrenceVisibility {
@@ -110,7 +122,7 @@ fn detach(app: &mut KetchupApp) {
     assert!(app.document.current_rule_program().is_none());
 }
 
-fn harness(mut app: KetchupApp) -> Harness<'static, KetchupApp> {
+pub(super) fn harness(mut app: KetchupApp) -> Harness<'static, KetchupApp> {
     let worker = ketchup_application::evaluation::exact_worker_candidates()
         .into_iter()
         .find(|path| path.is_file())
@@ -125,7 +137,7 @@ fn harness(mut app: KetchupApp) -> Harness<'static, KetchupApp> {
     harness
 }
 
-fn draw(harness: &mut Harness<'_, KetchupApp>, ellipse: bool) {
+pub(super) fn draw(harness: &mut Harness<'_, KetchupApp>, ellipse: bool) {
     harness.state_mut().dispatch_command(if ellipse {
         AppCommand::Ellipse
     } else {
@@ -152,7 +164,7 @@ fn draw(harness: &mut Harness<'_, KetchupApp>, ellipse: bool) {
 
 /// Drags the face under `at` up by `PULL_STEPS * PULL_STEP_MM` and checks that
 /// no frame of the drag, the held button or the release is slow.
-fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
+pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
     harness.state_mut().dispatch_command(AppCommand::PushPull);
     harness.step();
     move_to(harness, at + Vec3::new(5.0, 5.0, 0.0));
@@ -202,6 +214,7 @@ fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
 }
 
 fn pull_shape_beside_house(ellipse: bool) {
+    let _turn = one_at_a_time();
     let mut harness = harness(house());
     draw(&mut harness, ellipse);
     pull(
@@ -233,6 +246,7 @@ fn pulling_an_ellipse_beside_the_house_stays_interactive() {
 /// The second pull grabs the top of the first one. The extrusion grows to
 /// twice the pulled height; no face offset with a seam is fused on top.
 fn pull_top_of_pulled_ellipse(detach_before_drawing: bool) {
+    let _turn = one_at_a_time();
     let mut app = house();
     if detach_before_drawing {
         detach(&mut app);

@@ -57,6 +57,7 @@ impl TransformPlan {
 
         let (commands, preview_overrides) = match &request.target {
             TransformTarget::Occurrences(paths) => {
+                let scene = snapshot.scene_query();
                 let mut commands = Vec::with_capacity(paths.len());
                 let mut preview_overrides = BTreeMap::new();
                 for path in paths {
@@ -71,9 +72,8 @@ impl TransformPlan {
                         id: occurrence.id(),
                         transform,
                     });
-                    let scene_occurrence = snapshot
-                        .scene_query()
-                        .into_iter()
+                    let scene_occurrence = scene
+                        .iter()
                         .find(|candidate| candidate.instance_path == *path)?;
                     preview_overrides.insert(
                         path.clone(),

@@ -1,5 +1,13 @@
 #include "native_common.hxx"
 
+#include <BRepTools_ReShape.hxx>
+#include <Geom2d_Curve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <GeomProjLib.hxx>
+#include <Geom_ElementarySurface.hxx>
+#include <TopAbs.hxx>
+#include <TopoDS_Iterator.hxx>
+
 namespace ketchup::exact {
 
 std::unique_ptr<NativeOperationResult> shell_body_native(
@@ -263,6 +271,134 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
   });
 }
 
+namespace {
+
+// Rebuilds `side` on the surface of `neighbour` when every sample of `side` lies on
+// that surface. The rebuilt face keeps the boundary and outward sense of `side`.
+bool rebuild_on_neighbour_surface(
+    const TopoDS_Face& side,
+    const TopoDS_Face& neighbour,
+    TopoDS_Face& rebuilt) {
+  constexpr double kCoincidence = 1.0e-6;
+  TopLoc_Location target_location;
+  const occ::handle<Geom_Surface>& target = BRep_Tool::Surface(neighbour, target_location);
+  if (target.IsNull() || target->IsKind(STANDARD_TYPE(Geom_ElementarySurface))) {
+    // OCCT already unifies elementary surfaces by geometry.
+    return false;
+  }
+  const occ::handle<Geom_Surface> located_target = BRep_Tool::Surface(neighbour);
+  BRepAdaptor_Surface side_surface(side, false);
+  double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+  BRepTools::UVBounds(side, u0, u1, v0, v1);
+  double same_sense = 0.0;
+  for (int i = 0; i <= 2; ++i) {
+    for (int j = 0; j <= 2; ++j) {
+      const double u = u0 + (u1 - u0) * i * 0.5;
+      const double v = v0 + (v1 - v0) * j * 0.5;
+      gp_Pnt point;
+      gp_Vec du, dv;
+      side_surface.D1(u, v, point, du, dv);
+      GeomAPI_ProjectPointOnSurf projection(point, located_target);
+      if (!projection.IsDone() || projection.NbPoints() == 0
+          || projection.LowerDistance() > kCoincidence) {
+        return false;
+      }
+      double tu = 0.0, tv = 0.0;
+      projection.LowerDistanceParameters(tu, tv);
+      gp_Pnt target_point;
+      gp_Vec tdu, tdv;
+      located_target->D1(tu, tv, target_point, tdu, tdv);
+      same_sense += du.Crossed(dv).Normalized().Dot(tdu.Crossed(tdv).Normalized());
+    }
+  }
+  if (std::abs(same_sense) < 8.0) {
+    return false;
+  }
+  const bool forward_sense = same_sense > 0.0;
+
+  BRep_Builder builder;
+  builder.MakeFace(rebuilt, target, target_location, BRep_Tool::Tolerance(side));
+  TopoDS_Face forward_side = side;
+  forward_side.Orientation(TopAbs_FORWARD);
+  const gp_Trsf to_target_frame = target_location.Transformation().Inverted();
+  struct PendingCurve {
+    TopoDS_Edge edge;
+    occ::handle<Geom2d_Curve> pcurve;
+  };
+  std::vector<PendingCurve> pending;
+  for (TopoDS_Iterator wires(forward_side); wires.More(); wires.Next()) {
+    if (wires.Value().ShapeType() != TopAbs_WIRE) return false;
+    const TopoDS_Wire wire = TopoDS::Wire(wires.Value());
+    for (TopExp_Explorer edges(wire, TopAbs_EDGE); edges.More(); edges.Next()) {
+      const TopoDS_Edge edge = TopoDS::Edge(edges.Current());
+      if (BRep_Tool::IsClosed(edge, forward_side) || BRep_Tool::Degenerated(edge)) {
+        return false;
+      }
+      double first = 0.0, last = 0.0;
+      const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last);
+      if (curve.IsNull()) return false;
+      const occ::handle<Geom_Curve> local =
+          occ::down_cast<Geom_Curve>(curve->Transformed(to_target_frame));
+      const occ::handle<Geom2d_Curve> pcurve =
+          GeomProjLib::Curve2d(local, first, last, target);
+      if (pcurve.IsNull()) return false;
+      pending.push_back(PendingCurve{edge, pcurve});
+    }
+    builder.Add(rebuilt, forward_sense ? wire : TopoDS::Wire(wire.Reversed()));
+  }
+  for (const PendingCurve& curve : pending) {
+    builder.UpdateEdge(curve.edge, curve.pcurve, rebuilt, BRep_Tool::Tolerance(curve.edge));
+  }
+  BRepLib::SameParameter(rebuilt, kCoincidence);
+  rebuilt.Orientation(forward_sense ? side.Orientation() : TopAbs::Reverse(side.Orientation()));
+  return true;
+}
+
+// Puts each side face of a face-offset prism on the surface of the body face it
+// continues, so the boolean can merge them into one face instead of leaving a seam
+// where OCCT cannot prove two swept surfaces equal. Returns the prism unchanged when
+// nothing continues a body face or the rebuilt prism is not a valid solid.
+TopoDS_Shape share_continued_side_surfaces(
+    const TopoDS_Shape& prism,
+    const TopoDS_Shape& body,
+    const TopoDS_Face& offset_face) {
+  TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+  TopExp::MapShapesAndAncestors(body, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+  std::vector<TopoDS_Face> neighbours;
+  for (TopExp_Explorer edges(offset_face, TopAbs_EDGE); edges.More(); edges.Next()) {
+    if (!edge_faces.Contains(edges.Current())) continue;
+    for (NCollection_List<TopoDS_Shape>::Iterator faces(edge_faces.FindFromKey(edges.Current()));
+         faces.More(); faces.Next()) {
+      const TopoDS_Face neighbour = TopoDS::Face(faces.Value());
+      const bool known = std::any_of(neighbours.begin(), neighbours.end(),
+          [&](const TopoDS_Face& face) { return face.IsSame(neighbour); });
+      if (!neighbour.IsSame(offset_face) && !known) neighbours.push_back(neighbour);
+    }
+  }
+  occ::handle<BRepTools_ReShape> reshape = new BRepTools_ReShape();
+  bool changed = false;
+  for (TopExp_Explorer faces(prism, TopAbs_FACE); faces.More(); faces.Next()) {
+    const TopoDS_Face side = TopoDS::Face(faces.Current());
+    for (const TopoDS_Face& neighbour : neighbours) {
+      TopoDS_Face rebuilt;
+      if (rebuild_on_neighbour_surface(side, neighbour, rebuilt)) {
+        reshape->Replace(side, rebuilt);
+        changed = true;
+        break;
+      }
+    }
+  }
+  if (!changed) return prism;
+  const TopoDS_Shape shared = reshape->Apply(prism);
+  if (shared.IsNull() || !BRepCheck_Analyzer(shared).IsValid()
+      || count_subshapes(shared, TopAbs_SOLID) != 1) {
+    return prism;
+  }
+  return shared;
+}
+
+}  // namespace
+
 std::unique_ptr<NativeOperationResult> offset_body_face_native(
     const NativeOperationResult& body,
     std::uint32_t face_ordinal,
@@ -285,9 +421,11 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
     if (!prism.IsDone() || prism.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT face offset prism did not complete");
     }
+    const TopoDS_Shape tool =
+        share_continued_side_surfaces(prism.Shape(), body.impl().shape, face);
     const std::string source_id = "generated-result/face/" + std::to_string(face_ordinal);
     if (distance > 0.0) {
-      BRepAlgoAPI_Fuse operation(body.impl().shape, prism.Shape());
+      BRepAlgoAPI_Fuse operation(body.impl().shape, tool);
       operation.Build();
       if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT outward face offset did not complete");
@@ -304,7 +442,7 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
       }
       return success_result(result, std::move(history));
     }
-    BRepAlgoAPI_Cut operation(body.impl().shape, prism.Shape());
+    BRepAlgoAPI_Cut operation(body.impl().shape, tool);
     operation.Build();
     if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT inward face offset did not complete");

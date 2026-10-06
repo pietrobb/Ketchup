@@ -2450,26 +2450,28 @@ impl KetchupApp {
             && !self.view.contains(ViewFlag::Monochrome)
             && !self.view.contains(ViewFlag::HiddenLine);
         let scene_plan = if use_wgpu_scene {
-            let preview_active = !move_transform_overrides.is_empty();
-            if preview_active
-                || self.render.plan.as_ref().is_none_or(|plan| {
-                    !plan.is_same_revision(&snapshot)
-                        || !plan.matches_exact_results(&snapshot, &self.exact.results)
-                })
-            {
-                let plan = Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
-                    &snapshot,
-                    &self.exact.results,
-                    &mut self.render.cache,
-                    &move_transform_overrides,
-                ));
-                if !preview_active {
-                    self.render.plan = Some(Arc::clone(&plan));
-                }
+            let plan = match self.render.plan.as_ref() {
                 Some(plan)
+                    if plan.is_same_revision(&snapshot)
+                        && plan.matches_exact_results(&snapshot, &self.exact.results) =>
+                {
+                    Arc::clone(plan)
+                }
+                _ => {
+                    let plan = Arc::new(InstancedRenderPlan::from_snapshot(
+                        &snapshot,
+                        &self.exact.results,
+                        &mut self.render.cache,
+                    ));
+                    self.render.plan = Some(Arc::clone(&plan));
+                    plan
+                }
+            };
+            Some(if move_transform_overrides.is_empty() {
+                plan
             } else {
-                self.render.plan.clone()
-            }
+                Arc::new(plan.with_transform_overrides(&move_transform_overrides))
+            })
         } else {
             None
         };

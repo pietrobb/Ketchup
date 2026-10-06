@@ -110,6 +110,13 @@ pub struct InstancedRenderPlan {
     source_digest: String,
     exact_contents_stamp: u64,
     batches: Vec<RenderBatch>,
+    /// The instance path of every instance, parallel to `batches`.
+    instance_paths: Arc<Vec<Vec<InstancePath>>>,
+}
+
+fn next_plan_id() -> u64 {
+    static NEXT_PLAN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT_PLAN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl InstancedRenderPlan {
@@ -117,20 +124,6 @@ impl InstancedRenderPlan {
         snapshot: &Snapshot,
         exact_results: &ExactResultRegistry,
         cache: &mut DerivedRenderCache,
-    ) -> Self {
-        Self::from_snapshot_with_transform_overrides(
-            snapshot,
-            exact_results,
-            cache,
-            &BTreeMap::new(),
-        )
-    }
-
-    pub fn from_snapshot_with_transform_overrides(
-        snapshot: &Snapshot,
-        exact_results: &ExactResultRegistry,
-        cache: &mut DerivedRenderCache,
-        transform_overrides: &BTreeMap<InstancePath, Transform>,
     ) -> Self {
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
         let colors = snapshot
@@ -149,7 +142,8 @@ impl InstancedRenderPlan {
                 .or_default()
                 .push(package);
         }
-        let mut batches = BTreeMap::<(DefinitionId, String), RenderBatch>::new();
+        let mut batches =
+            BTreeMap::<(DefinitionId, String), (RenderBatch, Vec<InstancePath>)>::new();
         let mut definition_geometries =
             BTreeMap::<DefinitionId, Vec<(String, Arc<RenderGeometry>)>>::new();
         for occurrence in projection
@@ -188,40 +182,58 @@ impl InstancedRenderPlan {
             for (fingerprint, geometry) in geometries {
                 let key = (definition_id, fingerprint.clone());
                 let geometry = Arc::clone(geometry);
-                batches
-                    .entry(key)
-                    .or_insert_with(|| RenderBatch {
-                        definition_id,
-                        geometry,
-                        instances: Vec::new(),
-                    })
-                    .instances
-                    .push(RenderInstance {
-                        color: colors.get(&occurrence.instance_path).copied().flatten(),
-                        transform: transform_f32(
-                            transform_overrides
-                                .get(&occurrence.instance_path)
-                                .copied()
-                                .unwrap_or(occurrence.canonical_world_transform),
-                        ),
-                    });
+                let (batch, paths) = batches.entry(key).or_insert_with(|| {
+                    (
+                        RenderBatch {
+                            definition_id,
+                            geometry,
+                            instances: Vec::new(),
+                        },
+                        Vec::new(),
+                    )
+                });
+                batch.instances.push(RenderInstance {
+                    color: colors.get(&occurrence.instance_path).copied().flatten(),
+                    transform: transform_f32(occurrence.canonical_world_transform),
+                });
+                paths.push(occurrence.instance_path.clone());
             }
         }
-        let batches = batches.into_values().collect::<Vec<_>>();
+        let (batches, instance_paths): (Vec<_>, Vec<_>) = batches.into_values().unzip();
         cache.geometries.retain(|fingerprint, _| {
             batches
                 .iter()
                 .any(|batch| batch.geometry.fingerprint() == fingerprint)
         });
-        static NEXT_PLAN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
-            id: NEXT_PLAN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            id: next_plan_id(),
             document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
             exact_contents_stamp: exact_results.contents_stamp(),
             batches,
+            instance_paths: Arc::new(instance_paths),
         }
+    }
+
+    /// This plan with the instances at `transform_overrides` placed there, for
+    /// the live preview of a Move, Rotate or Scale. The geometry stays shared,
+    /// so a preview frame does not rebuild the meshes of the whole document.
+    #[must_use]
+    pub fn with_transform_overrides(
+        &self,
+        transform_overrides: &BTreeMap<InstancePath, Transform>,
+    ) -> Self {
+        let mut plan = self.clone();
+        plan.id = next_plan_id();
+        for (batch, paths) in plan.batches.iter_mut().zip(self.instance_paths.iter()) {
+            for (instance, path) in batch.instances.iter_mut().zip(paths) {
+                if let Some(transform) = transform_overrides.get(path) {
+                    instance.transform = transform_f32(*transform);
+                }
+            }
+        }
+        plan
     }
 
     #[must_use]

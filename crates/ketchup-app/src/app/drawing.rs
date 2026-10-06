@@ -2233,10 +2233,12 @@ impl KetchupApp {
                 .get::<EphemeralBoxPreview>()
                 .is_some_and(|preview| preview.plan.source.topological_reference.is_none())
             && self.push_pull_preview_definition() == Some(item.definition_id);
+        // Asked for every box of the scene: the cheap path test first, so the
+        // transform plan is only prepared for the boxes being moved.
         let move_preview = self.move_session().is_some_and(|(drag, _)| {
-            self.move_preview_is_current(drag)
-                && (drag.copy || drag.profile_target.is_none())
+            (drag.copy || drag.profile_target.is_none())
                 && self.move_drag_applies_to_path(drag, &item.instance_path)
+                && self.move_preview_is_current(drag)
         });
 
         let occurrence_preview = self.has_occurrence_operation_preview()
