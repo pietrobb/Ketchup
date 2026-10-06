@@ -1,4 +1,4 @@
-﻿//! The demo house (examples/programs/house-project.star, 1773 parts, 1731 timber members) has
+﻿//! The demo house (examples/programs/house-project.star, 1860 parts, 1818 timber members) has
 //! no overlap in the exact collision check: every joint is cut into the receiving
 //! member. Every timber member exports to BTLx as a stock box with its cuts.
 use ketchup_application::{DocumentSession, SessionSettings, verify_rule_program_all};
@@ -127,7 +127,7 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         .filter(|row| row.item_kind == GeneralBomItemKind::Timber)
         .map(|row| row.quantity)
         .sum::<usize>();
-    assert_eq!(timber, 1731);
+    assert_eq!(timber, 1818);
     // the house is larger than the unscoped collision scene (512 occurrences)
     assert_eq!(
         validation.report.state,
@@ -144,5 +144,5 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         )
         .unwrap();
     let xml = String::from_utf8(btlx).unwrap();
-    assert_eq!(xml.matches("<Part ").count(), 1731);
+    assert_eq!(xml.matches("<Part ").count(), 1818);
 }
