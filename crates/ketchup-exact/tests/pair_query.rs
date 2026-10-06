@@ -1,6 +1,6 @@
 use ketchup_exact::{
-    BoxSpec, CircleExtrudeSpec, ExactBackend, ExactBodyBooleanOperation, ExactPairRelation, Point3,
-    Size3,
+    BoxSpec, CircleExtrudeSpec, ExactBackend, ExactBodyBooleanOperation, ExactPairRelation,
+    PlanarProfileSegment, Point3, Size3,
 };
 
 #[test]
@@ -218,6 +218,45 @@ fn native_pair_detects_two_millimetre_gap_and_penetration_on_opposite_sides_of_c
                 assert_eq!(result.common_contact_area_mm2, 0.0, "{result:?}");
             }
         }
+    }
+}
+
+/// Extruded profile walls are surfaces of linear extrusion; the gap to a box
+/// over the sloped wall is the exact point-to-plane distance.
+#[test]
+fn native_pair_distance_from_a_sloped_extruded_wall_is_exact() {
+    let backend = ExactBackend::new();
+    let line = |start_mm, end_mm| PlanarProfileSegment::Line { start_mm, end_mm };
+    let wedge = backend
+        .extrude_mixed_profile(
+            &[
+                line([0.0, 0.0], [10.0, 0.0]),
+                line([10.0, 0.0], [0.0, 5.0]),
+                line([0.0, 5.0], [0.0, 0.0]),
+            ],
+            4.0,
+        )
+        .unwrap();
+    let block = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: 6.0,
+                y: 4.0,
+                z: 0.0,
+            },
+            size_mm: Size3 {
+                x: 2.0,
+                y: 2.0,
+                z: 4.0,
+            },
+        })
+        .unwrap();
+    // The block corner (6, 4) lies 0.4 / |(1/10, 1/5)| beyond x/10 + y/5 = 1.
+    let expected = 0.4 / 0.05_f64.sqrt();
+    for (left, right) in [(&wedge.body, &block.body), (&block.body, &wedge.body)] {
+        let result = backend.query_body_pair(left, right, 1e-7).unwrap();
+        assert_eq!(result.relation, ExactPairRelation::Separated, "{result:?}");
+        assert!((result.distance_mm - expected).abs() < 1e-7, "{result:?}");
     }
 }
 

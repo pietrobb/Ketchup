@@ -303,7 +303,9 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     // Segment index -> the wire's edge: the face and the prism are built on that
     // wire, so its edges are the ones the prism reports history for.
     const TopoDS_Edge profile_reference = profile_edges[reference_index];
-    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
+    // Canonical walls (planes, cylinders) let distance and contact queries use
+    // closed-form extrema instead of sampling surfaces of linear extrusion.
+    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, true);
     if (!operation.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile prism builder did not complete");
     }
@@ -457,7 +459,7 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar region face is invalid");
     }
     const TopoDS_Face profile = face_builder.Face();
-    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
+    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, true);
     if (!operation.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar region prism builder did not complete");
     }

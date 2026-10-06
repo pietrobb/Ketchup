@@ -479,8 +479,10 @@ NativePairQuery query_body_pair_native(
       result.status = STATUS_OK;
       return result;
     }
-    // The two-shape constructor already performs the distance computation.
-    BRepExtrema_DistShapeShape distance(left.impl().shape, right.impl().shape);
+    // The two-shape constructor already performs the distance computation. Only
+    // the minimum is wanted; the default also searches every face pair's maximum.
+    BRepExtrema_DistShapeShape distance(
+        left.impl().shape, right.impl().shape, Extrema_ExtFlag_MIN);
     if (!distance.IsDone() || distance.NbSolution() == 0 ||
         !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
       result.diagnostic = "OCCT pair volume or distance query failed";

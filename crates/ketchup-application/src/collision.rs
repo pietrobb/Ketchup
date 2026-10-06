@@ -7,6 +7,8 @@ mod hull;
 mod measurements;
 #[path = "collision_motion.rs"]
 mod motion;
+#[path = "collision_order.rs"]
+mod order;
 use crate::group_connectivity::validation_context as validation_context_with_groups;
 use crate::validation::AssistantValidationSelection;
 use crate::worker_pool::ExactWorkerUnavailable;
@@ -489,9 +491,17 @@ fn send_exact_pair_batches(
         return;
     }
     // Pair costs vary widely, so workers take small ranges from a shared queue
-    // instead of one fixed share each; a range keeps its left solids together.
+    // instead of one fixed share each; a range keeps neighbouring solids together.
+    let ranks = order::locality_ranks(
+        pairs
+            .iter()
+            .map(|pair| (pair.2.left_graph, pair.2.right_graph)),
+    );
     let mut ordered = pairs.to_vec();
-    ordered.sort_by_key(|pair| pair.2.left_graph);
+    ordered.sort_by_key(|pair| {
+        let (left, right) = (ranks[&pair.2.left_graph], ranks[&pair.2.right_graph]);
+        (left.min(right), left.max(right))
+    });
     let ranges = ordered
         .chunks(ordered.len().div_ceil(workers * RANGES_PER_WORKER))
         .collect::<Vec<_>>();
