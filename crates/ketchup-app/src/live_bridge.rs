@@ -1357,7 +1357,17 @@ impl LiveBridge {
             "pin_pair":if matches.len() == 1 {matches.into_iter().next()} else {None}})
     }
 
+    /// The selection an edit may be guarded by: root occurrences outside groups.
     fn selection(app: &KetchupApp) -> Result<Vec<u64>, &'static str> {
+        let ids = Self::viewed_selection(app)?;
+        Self::root_ids(app, &ids)?;
+        Ok(ids)
+    }
+
+    /// The selection the window shows and an image frames: visible root
+    /// occurrences, members of groups included (the `selection` action selects
+    /// them by ID, e.g. the studs of one wall).
+    pub(crate) fn viewed_selection(app: &KetchupApp) -> Result<Vec<u64>, &'static str> {
         if !app.selection.edit_context.is_empty()
             || app.selection.selected_group.is_some()
             || !app.selection.topological.is_empty()
@@ -1370,7 +1380,7 @@ impl LiveBridge {
             return Err("selection_limit");
         }
         let ids: Vec<_> = selected.iter().map(|id| id.0).collect();
-        Self::root_ids(app, &ids)?;
+        Self::visible_root_ids(app, &ids)?;
         Ok(ids)
     }
 
@@ -1393,9 +1403,16 @@ impl LiveBridge {
     fn visible_root_ids(app: &KetchupApp, ids: &[u64]) -> Result<(), &'static str> {
         let snapshot = app.document.current();
         for id in ids {
-            snapshot
+            let occurrence = snapshot
                 .occurrence(OccurrenceId(*id))
                 .ok_or("entity_not_found")?;
+            let tag_hidden = occurrence
+                .tags()
+                .iter()
+                .any(|tag| snapshot.tag(*tag).is_some_and(|tag| !tag.visible()));
+            if !occurrence.visible() || tag_hidden {
+                return Err("selection_hidden");
+            }
         }
         let selectable: BTreeSet<_> = app
             .active_scene_query()
@@ -2193,7 +2210,7 @@ impl LiveBridge {
                 json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
                 "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata","variable_size","selection_framing","detail_selection_framing"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen","framing_modes":["viewport","selection","detail_selection"],"default_framing":"viewport","min_side_px":MIN_IMAGE_SIDE_PX,"max_side_px":MAX_IMAGE_SIDE_PX,"default_side_px":512},
                 "busy":!self.busy_diagnostics(app, ui_busy).is_empty(),"busy_reasons":self.busy_diagnostics(app, ui_busy),"read_only":app.file.review_candidate.is_some(),
-                "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
+                "selection":Self::viewed_selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "selected_context":Self::selected_context(app),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),

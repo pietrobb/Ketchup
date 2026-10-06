@@ -31,6 +31,7 @@ fn definition_and_feature_catalogs_page_and_definition_detail_caps_feature_ids()
             classification_category_id: None,
             world_bounds_mm: None,
             cursor: None,
+            compact: false,
         };
         let mut ids = Vec::new();
         loop {

@@ -9,12 +9,16 @@ use ketchup_program::takeoff::{Takeoff, material_takeoff, takeoff_csv};
 impl KetchupApp {
     /// The visible program parts by program name, each with its published
     /// exact solid volume when there is one.
-    fn visible_takeoff_parts(&self, snapshot: &Snapshot) -> BTreeMap<String, Option<f64>> {
+    fn visible_takeoff_parts(
+        &self,
+        snapshot: &Snapshot,
+        counted: impl Fn(&InstancePath) -> bool,
+    ) -> BTreeMap<String, Option<f64>> {
         let exact = self.exact.results.render_by_definition(snapshot);
         snapshot
             .scene_query()
             .into_iter()
-            .filter(|part| part.visible)
+            .filter(|part| part.visible && counted(&part.instance_path))
             .filter_map(|part| {
                 let name =
                     ketchup_application::rule_program_part_name(snapshot, &part.instance_path)?;
@@ -72,11 +76,32 @@ impl KetchupApp {
                 .map(|model| {
                     Arc::new(material_takeoff(
                         model,
-                        &self.visible_takeoff_parts(&snapshot),
+                        &self.visible_takeoff_parts(&snapshot, |_| true),
                     ))
                 });
         }
         cached.takeoff.clone()
+    }
+
+    /// The material takeoff of the selected visible program parts: a summary
+    /// of one wall or one floor of a large model.
+    pub(crate) fn selected_material_takeoff(&self) -> Result<Takeoff, TakeoffError> {
+        self.material_takeoff()?;
+        let selected = self.selected_instance_paths();
+        let snapshot = self.document.current();
+        let counted = self.visible_takeoff_parts(&snapshot, |path| {
+            selected.iter().any(|selected| {
+                selected == path
+                    || (selected.steps().is_empty()
+                        && selected.root_occurrence() == path.root_occurrence())
+            })
+        });
+        let cache = self.takeoff.cache.borrow();
+        let model = cache
+            .as_ref()
+            .and_then(|cached| cached.model.as_ref().ok())
+            .ok_or(TakeoffError::NoProgram)?;
+        Ok(material_takeoff(model, &counted))
     }
 
     /// Writes the takeoff of the visible parts as semicolon-separated CSV.

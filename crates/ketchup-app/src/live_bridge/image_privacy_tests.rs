@@ -706,6 +706,7 @@ fn host_topology_detail_framing_crops_real_pixels_without_gui_selection() {
                     classification_category_id: None,
                     world_bounds_mm: None,
                     cursor: None,
+                    compact: false,
                 },
             )
             .unwrap();

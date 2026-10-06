@@ -37,6 +37,7 @@ const QUERY_FIELDS: &[&str] = &[
     "classification_category_id",
     "world_bounds_mm",
     "cursor",
+    "compact",
 ];
 /// Rejections after which this connection is no longer usable.
 const CONNECTION_ENDING_CODES: &[&str] = &[

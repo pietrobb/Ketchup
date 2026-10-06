@@ -8,7 +8,10 @@ use ketchup_assistant::sidecar::AssistantDistribution;
 use ketchup_model::persistence::{self, LoadOutcome};
 
 /// Reports why the launcher-requested live bridge could not start; never prints input.
+/// The launcher reads the reason from the readiness line on stdout.
 fn bootstrap_failed(reason: impl std::fmt::Display) -> ! {
+    let reason = reason.to_string();
+    println!("{}", serde_json::json!({"version": 1, "error": reason}));
     eprintln!("{reason}");
     std::process::exit(2);
 }

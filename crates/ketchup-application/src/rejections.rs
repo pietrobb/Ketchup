@@ -444,6 +444,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Re-read status and assert the current selection, or omit selection.",
     ),
     entry(
+        "selection_hidden",
+        Validation,
+        "occurrence_ids",
+        "An occurrence lies on a hidden layer (tag) or is hidden, so it cannot be selected.",
+        "Show its layer with view action=tag_visibility first, or leave it out.",
+    ),
+    entry(
         "selection_limit",
         Validation,
         "selection",

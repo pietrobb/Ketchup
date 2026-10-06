@@ -92,6 +92,11 @@ pub(crate) fn launched_window(
     if ready["version"] != 1 {
         return Err(invalid("unsupported child readiness version"));
     }
+    if let Some(reason) = ready["error"].as_str() {
+        return Err(io::Error::other(format!(
+            "the window did not start: {reason}"
+        )));
+    }
     let instance_id = ready["instance_id"]
         .as_str()
         .filter(|id| is_lower_hex(id, 32))

@@ -74,6 +74,11 @@ pub struct PageRequest {
     pub world_bounds_mm: Option<[[f64; 3]; 2]>,
     #[serde(default)]
     pub cursor: Option<String>,
+    /// Occurrence and instance rows carry only their identity, name,
+    /// effective visibility and hidden layers, so one page lists a whole wall
+    /// of a large model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compact: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -460,6 +465,7 @@ impl ModelQuery {
             classification_category_id: None,
             world_bounds_mm: None,
             cursor: None,
+            compact: false,
         };
         let after = if let Some(token) = &request.cursor {
             let cursor = self.decode(token)?;
@@ -634,6 +640,7 @@ impl ModelQuery {
             classification_category_id: request.classification_category_id,
             world_bounds_mm: request.world_bounds_mm,
             cursor: None,
+            compact: request.compact,
         };
         let after = if let Some(token) = &request.cursor {
             let cursor = self.decode(token)?;
@@ -701,6 +708,11 @@ impl ModelQuery {
                 continue;
             }
             let item = row(snapshot, request.kind, id).ok_or(QueryError::NotFound)?;
+            let item = if request.compact {
+                compact_row(item)
+            } else {
+                item
+            };
             let size = instance_item_size(&item)?;
             if bytes + size > PAGE_ITEM_BYTES {
                 more = true;
@@ -824,6 +836,11 @@ impl ModelQuery {
         for position in positions.iter().skip(start).take(request.limit) {
             let item = instance_row(snapshot, &projection.occurrences()[*position])
                 .ok_or(QueryError::NotFound)?;
+            let item = if request.compact {
+                compact_row(item)
+            } else {
+                item
+            };
             let size = instance_item_size(&item)?;
             if bytes + size > PAGE_ITEM_BYTES {
                 byte_limited = true;
@@ -2076,6 +2093,37 @@ fn instance_bounds(occurrence: &ProjectedOccurrence) -> Value {
             "profile_feature_id":occurrence.body.profile_feature_id.map(|id|id.0),
             "extrusion_feature_id":occurrence.body.extrusion_feature_id.map(|id|id.0)},
         "conservative":true,"geometry_evaluated":false})
+}
+
+/// The fields of a row that identify it: enough to select it or ask for its
+/// detail. Names become plain text. `visible` is what the viewport shows: the
+/// part's own flag and every layer (tag) on it; `hidden_tags` names the hidden
+/// layers, so the caller knows which one to show before selecting the part.
+fn compact_row(item: Value) -> Value {
+    const KEPT: &[&str] = &["id", "instance_path", "name", "occurrence_name", "visible"];
+    let hidden_tags: Vec<Value> = item["properties"]["tags"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|tag| tag["visible"] == false)
+        .filter_map(|tag| tag["name"].get("text").or(tag.get("name")).cloned())
+        .collect();
+    let Value::Object(fields) = item else {
+        return item;
+    };
+    let mut kept: serde_json::Map<String, Value> = fields
+        .into_iter()
+        .filter(|(key, _)| KEPT.contains(&key.as_str()))
+        .map(|(key, value)| match value.get("text") {
+            Some(text) if key.ends_with("name") => (key, text.clone()),
+            _ => (key, value),
+        })
+        .collect();
+    if !hidden_tags.is_empty() {
+        kept.insert("visible".into(), Value::Bool(false));
+        kept.insert("hidden_tags".into(), Value::Array(hidden_tags));
+    }
+    Value::Object(kept)
 }
 
 fn row(snapshot: &Snapshot, kind: EntityKind, id: u64) -> Option<Value> {

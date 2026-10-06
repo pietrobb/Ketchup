@@ -207,8 +207,62 @@ fn request(kind: EntityKind) -> PageRequest {
         classification_category_id: None,
         world_bounds_mm: None,
         cursor: None,
+        compact: false,
     }
 }
+#[test]
+fn compact_rows_carry_only_identity_name_and_visibility() {
+    let mut store = fixture(250, false);
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: TagId(7),
+                name: "Insulation".into(),
+                visible: false,
+            },
+            CanonicalCommand::SetOccurrenceTags {
+                id: OccurrenceId(2),
+                tags: [TagId(7)].into(),
+            },
+        ]))
+        .unwrap();
+    let snapshot = store.current();
+    let query = ModelQuery::default();
+    let mut compact = request(EntityKind::Occurrences);
+    compact.compact = true;
+    let page = query.page(&snapshot, &compact).unwrap();
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 100, "a full page fits: {page}");
+    assert_eq!(page["byte_limited"], false);
+    assert_eq!(
+        items[0],
+        json!({"id": 1, "name": "part-00001", "visible": true})
+    );
+    // A part on a hidden layer is not visible, and the row names that layer.
+    assert_eq!(
+        items[1],
+        json!({"id": 2, "name": "part-00002", "visible": false, "hidden_tags": ["Insulation"]})
+    );
+    // A compact cursor does not continue a full query.
+    let mut full = request(EntityKind::Occurrences);
+    full.cursor = page["next_cursor"].as_str().map(str::to_owned);
+    assert!(query.page(&snapshot, &full).is_err());
+    assert_eq!(collect(&query, &snapshot, compact).len(), 250);
+
+    let mut instances = request(EntityKind::Instances);
+    instances.compact = true;
+    let page = query.page(&snapshot, &instances).unwrap();
+    let mut keys: Vec<&str> = page["items"][0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["id", "instance_path", "occurrence_name", "visible"]);
+    assert_eq!(page["items"][0]["occurrence_name"], "part-00001");
+}
+
 fn bounded(value: &Value) {
     assert!(serde_json::to_vec(value).unwrap().len() < MAX_OUTPUT_BYTES);
 }

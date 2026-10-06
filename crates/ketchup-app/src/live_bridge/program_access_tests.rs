@@ -469,6 +469,55 @@ fn material_takeoff_report_counts_only_visible_layers_and_pages_completely() {
         .unwrap();
     assert_eq!(page["counted_parts"], 6);
     assert_eq!(page["excluded_parts"], 1);
+
+    let selection_page = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        let expected = app.live_bridge_stamp();
+        bridge.execute(
+            app,
+            Request::ProgramReport {
+                expected,
+                section: ReportSection::SelectionTakeoff,
+                offset: 0,
+                limit: 50,
+            },
+            false,
+        )
+    };
+    assert_eq!(
+        selection_page(&mut app, &mut bridge),
+        Err("invalid_params"),
+        "nothing selected"
+    );
+    let studs: Vec<u64> = app
+        .document
+        .current()
+        .scene_query()
+        .iter()
+        .filter(|part| {
+            ketchup_application::rule_program_part_name(
+                &app.document.current(),
+                &part.instance_path,
+            )
+            .is_some_and(|name| name.starts_with("stena/stĺpik"))
+        })
+        .map(|part| part.instance_path.root_occurrence().0)
+        .take(2)
+        .collect();
+    bridge
+        .execute(
+            &mut app,
+            Request::Selection {
+                expected: None,
+                occurrence_ids: studs,
+            },
+            false,
+        )
+        .unwrap();
+    let page = selection_page(&mut app, &mut bridge).unwrap();
+    assert_eq!(page["basis"], "selected_visible_program_parts");
+    assert_eq!(page["counted_parts"], 2, "{page}");
+    assert_eq!(page["rows"][0]["material"], "drevo");
+    assert_eq!(page["rows"][0]["count"], 2);
     assert_eq!(
         app.undo_step_count(),
         undo + 1,

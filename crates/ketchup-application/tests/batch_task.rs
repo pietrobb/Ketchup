@@ -20,6 +20,7 @@ fn request(kind: EntityKind) -> PageRequest {
         classification_category_id: None,
         world_bounds_mm: None,
         cursor: None,
+        compact: false,
     }
 }
 

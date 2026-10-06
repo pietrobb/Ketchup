@@ -830,6 +830,7 @@ fn real_worker_line_edge_resolves_the_same_shared_axis_as_direct_geometry() {
                 classification_category_id: None,
                 world_bounds_mm: None,
                 cursor: None,
+                compact: false,
             },
         )
         .unwrap();
@@ -959,6 +960,7 @@ fn circular_pattern_binds_exact_edge_axis_to_the_selected_world_instance() {
                 classification_category_id: None,
                 world_bounds_mm: None,
                 cursor: None,
+                compact: false,
             },
         )
         .unwrap();
@@ -1162,6 +1164,7 @@ fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation()
                 classification_category_id: None,
                 world_bounds_mm: None,
                 cursor: None,
+                compact: false,
             },
         )
         .unwrap();

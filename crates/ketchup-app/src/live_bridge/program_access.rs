@@ -17,6 +17,7 @@ pub enum ReportSection {
     Relations,
     Issues,
     MaterialTakeoff,
+    SelectionTakeoff,
     Joints,
     Loads,
     Members,
@@ -235,21 +236,39 @@ impl LiveBridge {
         limit: usize,
     ) -> Result<Value, &'static str> {
         Self::guard(app, &Some(expected.clone()))?;
-        if let ReportSection::MaterialTakeoff = section {
+        if let ReportSection::MaterialTakeoff | ReportSection::SelectionTakeoff = section {
             check_page_limit(limit)?;
-            let takeoff = app.material_takeoff().map_err(|reason| {
+            let selected = matches!(section, ReportSection::SelectionTakeoff);
+            if selected && app.selected_instance_paths().is_empty() {
+                return Err(invalid(
+                    "selection",
+                    "Nothing is selected.",
+                    "Select parts with view action=selection, or use material_takeoff for all visible parts.",
+                ));
+            }
+            let takeoff = if selected {
+                app.selected_material_takeoff().map(Arc::new)
+            } else {
+                app.material_takeoff()
+            }
+            .map_err(|reason| {
                 invalid(
                     "source",
                     app.takeoff_error_text(&reason),
                     "Apply a program; the takeoff counts the parts of a program-owned document.",
                 )
             })?;
+            let basis = if selected {
+                "selected_visible_program_parts"
+            } else {
+                "visible_program_parts"
+            };
             return page(
                 section,
                 &takeoff_rows(&takeoff),
                 offset,
                 limit,
-                json!({"basis": "visible_program_parts", "counted_parts": takeoff.counted_parts,
+                json!({"basis": basis, "counted_parts": takeoff.counted_parts,
                     "excluded_parts": takeoff.excluded_parts, "exact_volume_parts": takeoff.exact_volume_parts,
                     "hint": "Only visible parts count: parts on hidden layers (tags) are excluded. Sizes are blanks; volume_basis says whether volume is the exact solid's or the blank's."}),
             );
@@ -319,7 +338,7 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
             .collect(),
         ReportSection::Relations => report.relations.iter().map(|row| json!(row)).collect(),
         ReportSection::Issues => report.issues.iter().map(|row| json!(row)).collect(),
-        ReportSection::MaterialTakeoff => Vec::new(),
+        ReportSection::MaterialTakeoff | ReportSection::SelectionTakeoff => Vec::new(),
         ReportSection::Joints => report.joints.iter().map(|row| json!(row)).collect(),
         ReportSection::Loads => report.loads.members.iter().map(|row| json!(row)).collect(),
         ReportSection::Members => report.design.members.iter().map(|row| json!(row)).collect(),

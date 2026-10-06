@@ -242,6 +242,13 @@ fn concurrent_launch_readiness_is_bound_to_each_private_stream_not_registration_
         (b, "B".into(), 2222)
     );
     assert!(crate::discovery::launched_window(&b"{}\n"[..], "missing".into()).is_err());
+    let failed = br#"{"version":1,"error":"live bridge bootstrap failed: the requested document is open in another Kecup window"}
+"#;
+    let error = crate::discovery::launched_window(&failed[..], "in use".into()).unwrap_err();
+    assert!(
+        error.to_string().contains("open in another Kecup window"),
+        "{error}"
+    );
     assert!(crate::discovery::launched_window(&vec![b'x'; 513][..], "oversize".into()).is_err());
 }
 

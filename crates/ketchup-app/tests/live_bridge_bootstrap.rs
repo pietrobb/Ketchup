@@ -1263,12 +1263,16 @@ fn native_invalid_bootstrap_exits_without_window_or_credential_output() {
     }
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let reason = "live bridge bootstrap failed: the launcher line needs version 1 and a token \
+                  of 64 lowercase hex digits";
+    // The launcher reads the reason as its readiness line; no credential is in it.
+    let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
-        stderr.trim(),
-        "live bridge bootstrap failed: the launcher line needs version 1 and a token of 64 \
-         lowercase hex digits"
+        serde_json::from_str::<serde_json::Value>(stdout.trim()).unwrap(),
+        serde_json::json!({"version": 1, "error": reason})
     );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.trim(), reason);
     assert!(!stderr.contains(&TOKEN[..8]));
+    assert!(!stdout.contains(&TOKEN[..8]));
 }

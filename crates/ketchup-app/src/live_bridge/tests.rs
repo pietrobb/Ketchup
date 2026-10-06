@@ -1815,6 +1815,7 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
                     classification_category_id: None,
                     world_bounds_mm: None,
                     cursor: None,
+                    compact: false,
                 },
             },
             false,
@@ -2168,9 +2169,15 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
                     },
                     false
                 ),
-                Err("unsupported_selection_scope")
+                Err("selection_hidden")
             );
         }
+        // A grouped child is out of scope; a hidden one says it is hidden.
+        let rejection = if ids.contains(&2) {
+            "unsupported_selection_scope"
+        } else {
+            "selection_hidden"
+        };
         let selector = AssistantCadEntitySelector::Occurrences {
             occurrence_ids: ids,
         };
@@ -2217,7 +2224,7 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
                     },
                     false
                 ),
-                Err("unsupported_selection_scope")
+                Err(rejection)
             );
         }
         assert_eq!(app.live_bridge_stamp(), stamp);
@@ -2234,6 +2241,24 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
     );
     assert_eq!(
         bridge.execute(&mut app, commit, false),
+        Err("unsupported_selection_scope")
+    );
+    // Selecting a grouped child by ID is for looking at it: status and images
+    // see it, edits guarded by the selection still refuse it.
+    let stamp = app.live_bridge_stamp();
+    bridge
+        .execute(
+            &mut app,
+            Request::Selection {
+                expected: Some(stamp),
+                occurrence_ids: vec![2],
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(LiveBridge::viewed_selection(&app), Ok(vec![2]));
+    assert_eq!(
+        LiveBridge::selection(&app),
         Err("unsupported_selection_scope")
     );
 }

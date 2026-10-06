@@ -88,7 +88,7 @@ impl VisualState {
             stamp: app.live_bridge_stamp(),
             camera: app.camera_view_state(),
             distance: app.camera.distance_mm,
-            selection: LiveBridge::selection(app)?,
+            selection: LiveBridge::viewed_selection(app)?,
             primary: app.selection.primary.clone(),
             exact: app.exact.results.contents_stamp(),
             topology: app.exact.topology_results.contents_stamp(),

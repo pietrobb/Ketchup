@@ -49,6 +49,8 @@ pub enum BootstrapError {
     AlreadyEnabled,
     /// The requested document could not be opened.
     DocumentNotOpened,
+    /// Another Kečup window holds the requested document open.
+    DocumentInUse,
     /// The loopback bridge could not start.
     BridgeStart(io::ErrorKind),
     /// Writing the readiness line failed.
@@ -86,6 +88,10 @@ impl fmt::Display for BootstrapError {
             Self::Cancelled => f.write_str("cancelled before the launcher line was complete"),
             Self::AlreadyEnabled => f.write_str("this window already runs a live bridge"),
             Self::DocumentNotOpened => f.write_str("the requested document could not be opened"),
+            Self::DocumentInUse => f.write_str(
+                "the requested document is open in another Kečup window; connect to that \
+                 window or open a copy of the file",
+            ),
             Self::BridgeStart(kind) => write!(f, "the loopback bridge could not start ({kind})"),
             Self::Readiness(kind) => write!(f, "writing the readiness line failed ({kind})"),
             Self::Worker(kind) => write!(f, "the bootstrap worker could not start ({kind})"),
@@ -210,7 +216,15 @@ impl PendingBootstrap {
         if let Some(path) = self.document_path
             && !app.open_document_path(&path)
         {
-            return Err(BootstrapError::DocumentNotOpened);
+            let in_use = matches!(
+                ketchup_model::persistence::WorkRecoveryLock::acquire(&path),
+                Err(ketchup_model::persistence::FilePersistenceError::ExternalConflict)
+            );
+            return Err(if in_use {
+                BootstrapError::DocumentInUse
+            } else {
+                BootstrapError::DocumentNotOpened
+            });
         }
         let bridge = transport::start_with_token(context.clone(), self.token)
             .map_err(|error| BootstrapError::BridgeStart(error.kind()))?;

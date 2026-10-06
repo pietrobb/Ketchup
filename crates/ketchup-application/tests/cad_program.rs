@@ -4146,6 +4146,7 @@ fn bound_pin_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
                 classification_category_id: None,
                 world_bounds_mm: None,
                 cursor: None,
+                compact: false,
             },
         )
         .unwrap();
