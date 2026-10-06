@@ -2983,9 +2983,19 @@ fn graph_manufacturing_operations(
         return Some(operations);
     }
 
+    // Every later node removes material from the result so far: a profile cut,
+    // or a Boolean cut by an extruded prism tool that may be rigidly placed.
     let mut previous = stock;
-    let mut profile_cut_chain = true;
-    for node in graph.nodes.iter().skip(1) {
+    let mut index = 1;
+    while let Some(node) = graph.nodes.get(index) {
+        if let ExactBRepOperation::Extrude { .. } = node.operation {
+            let (operation, terminal) = boolean_prism_cut(row, source, graph, previous, index)?;
+            operations.push(operation);
+            index = graph.nodes.iter().position(|node| node.id == terminal.id)? + 1;
+            previous = terminal;
+            continue;
+        }
+        index += 1;
         let ExactBRepOperation::ProfileCut {
             target,
             profile,
@@ -2994,8 +3004,7 @@ fn graph_manufacturing_operations(
             ..
         } = node.operation
         else {
-            profile_cut_chain = false;
-            break;
+            return None;
         };
         if target != previous.id {
             return None;
@@ -3033,13 +3042,20 @@ fn graph_manufacturing_operations(
         });
         previous = node;
     }
-    if profile_cut_chain {
-        return Some(operations);
-    }
+    Some(operations)
+}
 
-    let [target, tool, terminal] = graph.nodes.as_slice() else {
-        return None;
-    };
+/// The Boolean cut whose prism tool starts at `graph.nodes[index]`: the tool
+/// extrusion, optionally one rigid placement of it, then the cut of `previous`.
+/// Returns the operation and the cut node.
+fn boolean_prism_cut<'graph>(
+    row: &GeneralBomRow,
+    source: &ketchup_model::exact_product::ExactResultKey,
+    graph: &'graph ExactBRepGraph,
+    previous: &ExactBRepNode,
+    index: usize,
+) -> Option<(GeneralManufacturingOperation, &'graph ExactBRepNode)> {
+    let tool = graph.nodes.get(index)?;
     let ExactBRepOperation::Extrude {
         profile: tool_profile,
         interval: tool_interval,
@@ -3047,6 +3063,20 @@ fn graph_manufacturing_operations(
     } = tool.operation
     else {
         return None;
+    };
+    let placement = graph
+        .nodes
+        .get(index + 1)
+        .and_then(|node| match node.operation {
+            ExactBRepOperation::RigidTransform {
+                target,
+                matrix_bits,
+            } if target == tool.id => Some((node, matrix_bits.map(f64::from_bits))),
+            _ => None,
+        });
+    let (placed_tool, terminal) = match placement {
+        Some((node, _)) => (node, graph.nodes.get(index + 2)?),
+        None => (tool, graph.nodes.get(index + 1)?),
     };
     let ExactBRepOperation::Boolean {
         operation: ExactBRepBooleanOperation::Cut,
@@ -3057,15 +3087,20 @@ fn graph_manufacturing_operations(
     else {
         return None;
     };
-    if boolean_target != target.id || boolean_tool != tool.id || target.id == tool.id {
+    if boolean_target != previous.id || boolean_tool != placed_tool.id {
         return None;
     }
+    let profile = graph.profiles.get(tool_profile.0 as usize)?;
     // A circular Boolean tool does not carry drilling intent (including holes
     // after other operations or on non-cuboid bodies). Do not infer a machine bore.
-    if circular_profile(&graph.profiles.get(tool_profile.0 as usize)?.geometry).is_some() {
+    if circular_profile(&profile.geometry).is_some() {
         return None;
     }
-    operations.push(GeneralManufacturingOperation {
+    let mut machining = profile_cut_geometry(profile, tool_interval, false)?;
+    if let Some((_, matrix)) = placement {
+        machining = placed_profile_cut(machining, matrix)?;
+    }
+    let operation = GeneralManufacturingOperation {
         stable_operation_id: format!(
             "definition-{}/feature-{}/{}",
             row.definition_id.0,
@@ -3076,19 +3111,63 @@ fn graph_manufacturing_operations(
         producer_feature_id: FeatureId(terminal.source_feature_id),
         kind: GeneralManufacturingKind::BooleanCut,
         semantic_inputs: vec![
-            FeatureId(target.source_feature_id),
+            FeatureId(previous.source_feature_id),
             FeatureId(tool.source_feature_id),
         ],
         frame: "definition-local",
         bounds: row.dimensions,
-        machining: profile_cut_geometry(
-            graph.profiles.get(tool_profile.0 as usize)?,
-            tool_interval,
-            false,
-        )?,
+        machining,
         source: source.clone(),
-    });
-    Some(operations)
+    };
+    Some((operation, terminal))
+}
+
+/// A profile cut moved by a rigid row-major 4x4 `matrix`: its frame turns and
+/// moves with the tool, the profile and its interval stay as they are.
+fn placed_profile_cut(
+    machining: GeneralMachiningGeometry,
+    matrix: [f64; 16],
+) -> Option<GeneralMachiningGeometry> {
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    } = machining
+    else {
+        return None;
+    };
+    if matrix[12..] != [0.0, 0.0, 0.0, 1.0] || matrix.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let turn = |vector: [f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|row| {
+            (0..3)
+                .map(|column| matrix[row * 4 + column] * vector[column])
+                .sum()
+        })
+    };
+    let moved = turn(frame.origin_mm);
+    let frame = GeneralMachiningFrame {
+        origin_mm: std::array::from_fn(|row| moved[row] + matrix[row * 4 + 3]),
+        x_axis: turn(frame.x_axis),
+        y_axis: turn(frame.y_axis),
+        normal: turn(frame.normal),
+    };
+    let close = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
+    let rigid = close(dot(frame.x_axis, frame.x_axis), 1.0)
+        && close(dot(frame.y_axis, frame.y_axis), 1.0)
+        && close(dot(frame.x_axis, frame.y_axis), 0.0)
+        && cross(frame.x_axis, frame.y_axis)
+            .into_iter()
+            .zip(frame.normal)
+            .all(|(actual, expected)| close(actual, expected));
+    rigid.then_some(GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    })
 }
 
 fn timber_stock_geometry(

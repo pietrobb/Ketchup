@@ -41,6 +41,7 @@ mod rule_program_split_union;
 mod rule_program_support;
 mod rule_program_threads;
 mod rule_program_through;
+mod timber_btlx_program;
 mod validation_selection;
 mod workflow_trace;
 

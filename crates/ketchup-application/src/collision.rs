@@ -258,26 +258,34 @@ pub fn fabrication_collision_validation_with_worker(
             pair[0].instance_path().clone(),
         ));
     }
-    let mut cases =
-        Vec::with_capacity(participants.len() * participants.len().saturating_sub(1) / 2);
-    for left in 0..participants.len() {
-        for right in left + 1..participants.len() {
-            cases.push(
-                GeneralClearanceCase::new(
-                    participants[left].clone(),
-                    participants[right].clone(),
-                    0.0,
-                )
-                .map_err(FabricationCollisionError::InvalidClearance)?,
-            );
-        }
-    }
+    // The cases only bind the participant set to the report: the native check
+    // below covers every pair with a participant, not just the listed ones. A
+    // chain names each participant with n - 1 cases; all n² pairs would be
+    // gigabytes for a house of 1800 members.
+    let cases = participants
+        .windows(2)
+        .map(|pair| {
+            GeneralClearanceCase::new(pair[0].clone(), pair[1].clone(), 0.0)
+                .map_err(FabricationCollisionError::InvalidClearance)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
+    // Scoped to the participants' occurrences: each is checked against every
+    // visible body, and the scope admits whole houses (the unscoped scene stops
+    // at 512 occurrences). Without participants the whole model is checked.
+    let scope = (!participants.is_empty()).then(|| {
+        CollisionScope::bind(
+            snapshot,
+            participants
+                .iter()
+                .map(|participant| participant.instance_path().root_occurrence()),
+        )
+    });
     let collision = collision_report(
         snapshot,
         &AssistantValidationSelection::only(&["collision"]),
         Some((container, worker_path, timeout)),
-        None,
+        scope.as_ref(),
         None,
         None,
         None,

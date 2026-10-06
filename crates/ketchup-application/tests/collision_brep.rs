@@ -138,7 +138,9 @@ fn fabrication_collision_is_complete_order_independent_and_native() {
         Duration::from_secs(120),
     )
     .unwrap();
-    assert_eq!(validation.cases.len(), 3);
+    // The cases chain the participants (1-2, 2-3); the penetrating pair 1-3 is
+    // not among them and is still found, because the native check covers all pairs.
+    assert_eq!(validation.cases.len(), 2);
     assert_eq!(validation.report.state, ValidationState::Failed);
     assert_eq!(validation.report.diagnostics.len(), 1);
     assert_eq!(validation.report.diagnostics[0].code, "collision.detected");
