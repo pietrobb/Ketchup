@@ -1,4 +1,4 @@
-﻿//! The demo house (examples/programs/house-project.star, 1776 parts, 1731 timber members) has
+﻿//! The demo house (examples/programs/house-project.star, 1773 parts, 1731 timber members) has
 //! no overlap in the exact collision check: every joint is cut into the receiving
 //! member. Every timber member exports to BTLx as a stock box with its cuts.
 use ketchup_application::{DocumentSession, SessionSettings, verify_rule_program_all};

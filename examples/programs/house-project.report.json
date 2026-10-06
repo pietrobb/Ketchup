@@ -13867,19 +13867,6 @@
     {
       "parts": [
         "Prízemie · prahy 022",
-        "Kuchyňa 005"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · prahy 022",
         "Kuchyňa 006"
       ],
       "kind": "gap",
@@ -23413,19 +23400,6 @@
     {
       "parts": [
         "Prízemie · stĺpiky 122",
-        "Kuchyňa 005"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 122",
         "Kuchyňa 006"
       ],
       "kind": "gap",
@@ -23478,19 +23452,6 @@
     {
       "parts": [
         "Prízemie · stĺpiky 122",
-        "Kuchyňa 010"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 122",
         "Kuchyňa 011"
       ],
       "kind": "gap",
@@ -23518,19 +23479,6 @@
       "parts": [
         "Prízemie · stĺpiky 122",
         "Kuchyňa 013"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 122",
-        "Kuchyňa 014"
       ],
       "kind": "gap",
       "gap_mm": 12.4,
@@ -28051,19 +27999,6 @@
     {
       "parts": [
         "Prízemie · priečky 046",
-        "Kuchyňa 005"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · priečky 046",
         "Kuchyňa 007"
       ],
       "kind": "gap",
@@ -28386,19 +28321,6 @@
     },
     {
       "parts": [
-        "Prízemie · priečky 160",
-        "Kuchyňa 010"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
         "Prízemie · priečky 172",
         "Kuchyňa 002"
       ],
@@ -28621,19 +28543,6 @@
       "direction": [
         0.0,
         -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · priečky 270",
-        "Kuchyňa 010"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
         0.0
       ]
     },
@@ -32985,19 +32894,6 @@
         0.0,
         0.0,
         1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · väznice 020",
-        "Kuchyňa 014"
-      ],
-      "kind": "gap",
-      "gap_mm": 12.4,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
       ]
     },
     {
@@ -40035,23 +39931,6 @@
     },
     {
       "parts": [
-        "Prízemie · stropné trámy 066",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 171.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
         "Prízemie · stropné trámy 067",
         "Prízemie · stropné trámy 068"
       ],
@@ -40193,23 +40072,6 @@
         0.0,
         0.0,
         1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stropné trámy 068",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1250.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
       ]
     },
     {
@@ -40380,23 +40242,6 @@
     },
     {
       "parts": [
-        "Prízemie · stropné trámy 070",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1250.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
         "Prízemie · stropné trámy 071",
         "Prízemie · stropné trámy 072"
       ],
@@ -40508,23 +40353,6 @@
         0.0,
         0.0,
         1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stropné trámy 072",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1251.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
       ]
     },
     {
@@ -40657,23 +40485,6 @@
         0.0,
         0.0,
         1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stropné trámy 074",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1250.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
       ]
     },
     {
@@ -40849,23 +40660,6 @@
     },
     {
       "parts": [
-        "Prízemie · stropné trámy 077",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1250.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
         "Prízemie · stropné trámy 078",
         "Prízemie · stropné trámy 106"
       ],
@@ -40951,23 +40745,6 @@
     },
     {
       "parts": [
-        "Prízemie · stropné trámy 079",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1250.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
         "Prízemie · stropné trámy 080",
         "Prízemie · stropné trámy 106"
       ],
@@ -41049,23 +40826,6 @@
         0.0,
         0.0,
         1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stropné trámy 081",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1250.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
       ]
     },
     {
@@ -41202,23 +40962,6 @@
         0.0,
         0.0,
         1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stropné trámy 083",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y+"
-      ],
-      "area_mm2": 1079.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
       ]
     },
     {
@@ -81114,19 +80857,6 @@
     {
       "parts": [
         "Kuchyňa 004",
-        "Kuchyňa 005"
-      ],
-      "kind": "gap",
-      "gap_mm": 19.9,
-      "direction": [
-        0.0,
-        1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 004",
         "Kuchyňa 006"
       ],
       "kind": "contact",
@@ -81143,86 +80873,6 @@
     },
     {
       "parts": [
-        "Kuchyňa 005",
-        "Kuchyňa 006"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "y-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 005",
-        "Kuchyňa 007"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "y-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 005",
-        "Kuchyňa 008"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "y-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 005",
-        "Kuchyňa 009"
-      ],
-      "kind": "touch",
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 005",
-        "Kuchyňa 010"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y-"
-      ],
-      "area_mm2": 31250.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
         "Kuchyňa 008",
         "Kuchyňa 009"
       ],
@@ -81232,98 +80882,6 @@
         "x-"
       ],
       "area_mm2": 175824.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 008",
-        "Kuchyňa 010"
-      ],
-      "kind": "touch",
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 009",
-        "Kuchyňa 010"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y-",
-        "x-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 010",
-        "Kuchyňa 011"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "y-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 010",
-        "Kuchyňa 012"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "y-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 010",
-        "Kuchyňa 013"
-      ],
-      "kind": "touch",
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 010",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "y-"
-      ],
-      "area_mm2": 31250.0,
       "direction": [
         0.0,
         0.0,
@@ -81345,52 +80903,6 @@
         0.0,
         0.0,
         1.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 012",
-        "Kuchyňa 014"
-      ],
-      "kind": "touch",
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 013",
-        "Kuchyňa 014"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y-",
-        "x-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        1.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Kuchyňa 014",
-        "Kuchyňa 015"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "y-"
-      ],
-      "area_mm2": 112500.0,
-      "direction": [
-        0.0,
-        -1.0,
-        0.0
       ]
     },
     {
@@ -87246,31 +86758,6 @@
       {
         "material": "drevo",
         "dimensions_mm": [
-          2500.0,
-          499.0,
-          12.5
-        ],
-        "count": 1,
-        "parts": [
-          "Kuchyňa 014"
-        ]
-      },
-      {
-        "material": "drevo",
-        "dimensions_mm": [
-          2500.0,
-          1250.0,
-          12.5
-        ],
-        "count": 2,
-        "parts": [
-          "Kuchyňa 005",
-          "Kuchyňa 010"
-        ]
-      },
-      {
-        "material": "drevo",
-        "dimensions_mm": [
           2930.4,
           60.0,
           45.0
@@ -87328,7 +86815,7 @@
     ],
     "hardware": [],
     "machining": [],
-    "total_parts": 1776
+    "total_parts": 1773
   },
   "log": [],
   "unused_overrides": []
