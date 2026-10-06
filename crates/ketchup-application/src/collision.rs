@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
@@ -63,7 +63,8 @@ const MAX_SCOPED_COLLISION_OCCURRENCES: usize = 10_000;
 const MAX_SCOPED_COLLISION_BODIES: usize = 10_000;
 const MAX_SCOPED_COLLISION_CANDIDATES: usize = 10_000;
 const MAX_COLLISION_GRAPH_BYTES: usize = 64 * 1024 * 1024;
-const MAX_COLLISION_UNIQUE_GRAPHS: usize = 512;
+// Pair batches send at most MAX_EXACT_PAIR_GRAPHS graphs each; this bounds the whole check.
+const MAX_COLLISION_UNIQUE_GRAPHS: usize = 10_000;
 const MAX_COLLISION_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// An occurrence scope bound to one immutable canonical snapshot. Reusing it
@@ -449,7 +450,20 @@ fn receive_pair_batch(
     }
 }
 
-/// Independent graph ranges use two isolated workers; small checks keep one.
+const MAX_PAIR_WORKERS: usize = 12;
+const RANGES_PER_WORKER: usize = 6;
+
+/// Isolated workers for `left_graphs` distinct left solids: one per eight of
+/// them, so process startup never dominates, and at most one per two cores.
+fn pair_worker_count(left_graphs: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(2, usize::from);
+    (cores / 2)
+        .clamp(2, MAX_PAIR_WORKERS)
+        .min(left_graphs / 8)
+        .max(1)
+}
+
+/// Independent graph ranges use several isolated workers; small checks keep one.
 /// Results are forwarded in range order, regardless of worker completion order.
 fn send_exact_pair_batches(
     path: Option<&Path>,
@@ -461,8 +475,8 @@ fn send_exact_pair_batches(
     tx: &mpsc::Sender<ExactPairBatch>,
 ) {
     let left_graphs: BTreeSet<_> = pairs.iter().map(|pair| pair.2.left_graph).collect();
-    // Amortize a second process only when graph construction dominates startup.
-    if left_graphs.len() < 16 {
+    let workers = pair_worker_count(left_graphs.len());
+    if workers == 1 {
         send_serial_pair_batches(
             path,
             pairs,
@@ -474,40 +488,69 @@ fn send_exact_pair_batches(
         );
         return;
     }
-    let pivot = *left_graphs
-        .iter()
-        .nth(left_graphs.len() / 2)
-        .expect("nonempty graph ranges");
-    let (first, second): (Vec<_>, Vec<_>) = pairs
-        .iter()
-        .cloned()
-        .partition(|pair| pair.2.left_graph < pivot);
+    // Pair costs vary widely, so workers take small ranges from a shared queue
+    // instead of one fixed share each; a range keeps its left solids together.
+    let mut ordered = pairs.to_vec();
+    ordered.sort_by_key(|pair| pair.2.left_graph);
+    let ranges = ordered
+        .chunks(ordered.len().div_ceil(workers * RANGES_PER_WORKER))
+        .collect::<Vec<_>>();
+    let (senders, receivers): (Vec<_>, Vec<_>) = ranges.iter().map(|_| mpsc::channel()).unzip();
+    // A range nobody claims, because every worker stopped, must not block forwarding.
+    let senders = std::sync::Mutex::new(senders.into_iter().map(Some).collect::<Vec<_>>());
+    let next = AtomicUsize::new(0);
+    let running = AtomicUsize::new(workers);
     std::thread::scope(|scope| {
-        let (second_tx, second_rx) = mpsc::channel();
-        scope.spawn(move || {
-            send_serial_pair_batches(
-                path,
-                &second,
-                graphs,
-                sources,
-                contact_tolerance_mm,
-                cancelled,
-                &second_tx,
-            )
-        });
-        send_serial_pair_batches(
-            path,
-            &first,
-            graphs,
-            sources,
-            contact_tolerance_mm,
-            cancelled,
-            tx,
-        );
-        for result in second_rx {
-            if tx.send(result).is_err() {
-                cancelled.store(true, Ordering::Release);
-                break;
+        for _ in 0..workers {
+            scope.spawn(|| {
+                let claim = || {
+                    let index = next.fetch_add(1, Ordering::AcqRel);
+                    let sender = senders.lock().ok()?.get_mut(index)?.take()?;
+                    Some((ranges[index], sender))
+                };
+                if let Some((range, range_tx)) = claim() {
+                    match crate::worker_pool::checkout(path, cancelled) {
+                        Ok(mut supervisor) => {
+                            let mut current = Some((range, range_tx));
+                            while let Some((range, range_tx)) = current.take() {
+                                if !send_pair_range(
+                                    &mut supervisor,
+                                    range,
+                                    graphs,
+                                    sources,
+                                    contact_tolerance_mm,
+                                    cancelled,
+                                    &range_tx,
+                                ) {
+                                    break;
+                                }
+                                current = claim();
+                                if current.is_none() {
+                                    // Every claimed range succeeded: the worker is reusable.
+                                    supervisor.release();
+                                    break;
+                                }
+                            }
+                        }
+                        Err(unavailable) => {
+                            let _ = range_tx
+                                .send(Err(ExactPairFailure::WorkerUnavailable(unavailable)));
+                        }
+                    }
+                }
+                if running.fetch_sub(1, Ordering::AcqRel) == 1
+                    && let Ok(mut senders) = senders.lock()
+                {
+                    senders.clear();
+                }
+            });
+        }
+        for range_rx in receivers {
+            for result in range_rx {
+                if tx.send(result).is_err() {
+                    cancelled.store(true, Ordering::Release);
+                    return;
+                }
             }
         }
     });
@@ -536,6 +579,30 @@ fn send_serial_pair_batches(
             return;
         }
     };
+    if send_pair_range(
+        &mut supervisor,
+        pairs,
+        graphs,
+        sources,
+        contact_tolerance_mm,
+        cancelled,
+        tx,
+    ) {
+        supervisor.release();
+    }
+}
+
+/// Sends every answered batch of `pairs` to `tx`; false when a failure (also
+/// sent) or a closed receiver stopped it.
+fn send_pair_range(
+    supervisor: &mut crate::worker_pool::PooledExactWorker,
+    pairs: &[(usize, usize, ExactPairCandidate)],
+    graphs: &[ExactBRepGraph],
+    sources: &BTreeMap<String, Vec<u8>>,
+    contact_tolerance_mm: f64,
+    cancelled: &AtomicBool,
+    tx: &mpsc::Sender<ExactPairBatch>,
+) -> bool {
     let mut offset = 0;
     while offset < pairs.len() {
         let mut end = offset;
@@ -570,7 +637,7 @@ fn send_serial_pair_batches(
                     .collect::<Vec<_>>();
                 if tx.send(Ok(entries)).is_err() {
                     cancelled.store(true, Ordering::Release);
-                    return;
+                    return false;
                 }
             }
             Ok(results) => {
@@ -583,18 +650,18 @@ fn send_serial_pair_batches(
                 {
                     cancelled.store(true, Ordering::Release);
                 }
-                return;
+                return false;
             }
             Err(cause) => {
                 if tx.send(Err(ExactPairFailure::Batch { cause })).is_err() {
                     cancelled.store(true, Ordering::Release);
                 }
-                return;
+                return false;
             }
         }
         offset = end;
     }
-    supervisor.release();
+    true
 }
 
 /// One answered batch of candidate pairs, or why the check stopped.

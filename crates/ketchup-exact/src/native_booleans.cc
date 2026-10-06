@@ -376,7 +376,8 @@ NativePairQuery query_body_pair_native(
     struct ContactFace {
       TopoDS_Shape shape;
       Bnd_Box bounds;
-      gp_Dir normal;
+      gp_Pln plane;
+      double tolerance;
       bool planar;
     };
     // With a slab, only planar faces perpendicular to its axis and lying inside
@@ -386,9 +387,22 @@ NativePairQuery query_body_pair_native(
       for (TopExp_Explorer face(shape, TopAbs_FACE); face.More(); face.Next()) {
         Bnd_Box bounds;
         BRepBndLib::AddOptimal(face.Current(), bounds, false, true);
-        BRepAdaptor_Surface surface(TopoDS::Face(face.Current()));
-        const bool planar = surface.GetType() == GeomAbs_Plane;
-        const gp_Dir normal = planar ? surface.Plane().Axis().Direction() : gp_Dir(0, 0, 1);
+        const TopoDS_Face& topo_face = TopoDS::Face(face.Current());
+        BRepAdaptor_Surface surface(topo_face);
+        bool planar = surface.GetType() == GeomAbs_Plane;
+        gp_Pln plane = planar ? surface.Plane() : gp_Pln();
+        double tolerance = BRep_Tool::Tolerance(topo_face);
+        if (!planar) {
+          // Extruded straight profile edges are flat SurfaceOfExtrusion faces;
+          // their fitted plane deviates by at most the fitting tolerance.
+          const GeomLib_IsPlanarSurface flat(BRep_Tool::Surface(topo_face), tolerances().linear_mm);
+          if (flat.IsPlanar()) {
+            planar = true;
+            plane = flat.Plan();
+            tolerance += tolerances().linear_mm;
+          }
+        }
+        const gp_Dir normal = plane.Axis().Direction();
         if (slab_axis >= 0) {
           const gp_Dir axis(slab_axis == 0 ? 1.0 : 0.0, slab_axis == 1 ? 1.0 : 0.0,
                             slab_axis == 2 ? 1.0 : 0.0);
@@ -406,7 +420,7 @@ NativePairQuery query_body_pair_native(
             continue;
           }
         }
-        faces.push_back({face.Current(), bounds, normal, planar});
+        faces.push_back({face.Current(), bounds, plane, tolerance, planar});
       }
       return faces;
     };
@@ -419,9 +433,16 @@ NativePairQuery query_body_pair_native(
       for (const auto& left_face : left_faces) {
         for (const auto& right_face : right_faces) {
           if (left_face.bounds.IsVoid() || right_face.bounds.IsVoid() ||
-              left_face.bounds.IsOut(right_face.bounds) ||
-              (left_face.planar && right_face.planar &&
-               std::abs(left_face.normal.Dot(right_face.normal)) < 1.0 - tolerances().rounding)) {
+              left_face.bounds.IsOut(right_face.bounds)) {
+            continue;
+          }
+          // Planar faces share area only when they lie in one plane: parallel
+          // and no further apart than their tolerances and the contact tolerance.
+          if (left_face.planar && right_face.planar &&
+              (std::abs(left_face.plane.Axis().Direction().Dot(right_face.plane.Axis().Direction())) <
+                   1.0 - tolerances().rounding ||
+               right_face.plane.Distance(left_face.plane.Location()) >
+                   left_face.tolerance + right_face.tolerance + tolerances().linear_mm)) {
             continue;
           }
           BRepAlgoAPI_Common face_common(left_face.shape, right_face.shape);
@@ -446,18 +467,17 @@ NativePairQuery query_body_pair_native(
       }
       return true;
     };
-    // Positive shared face area already proves zero distance.
-    if (slab_axis >= 0) {
-      if (!measure_contact_area()) {
-        return result;
-      }
-      if (contact_area > 0.0) {
-        result.common_volume_mm3 = 0.0;
-        result.common_contact_area_mm2 = contact_area;
-        result.distance_mm = 0.0;
-        result.status = STATUS_OK;
-        return result;
-      }
+    // Positive shared face area already proves zero distance, so the distance
+    // query runs only for solids that share no face area.
+    if (!measure_contact_area()) {
+      return result;
+    }
+    if (contact_area > 0.0) {
+      result.common_volume_mm3 = 0.0;
+      result.common_contact_area_mm2 = contact_area;
+      result.distance_mm = 0.0;
+      result.status = STATUS_OK;
+      return result;
     }
     // The two-shape constructor already performs the distance computation.
     BRepExtrema_DistShapeShape distance(left.impl().shape, right.impl().shape);
@@ -466,15 +486,9 @@ NativePairQuery query_body_pair_native(
       result.diagnostic = "OCCT pair volume or distance query failed";
       return result;
     }
-    // Touching within the contact tolerance still shares face area.
-    if (distance.Value() <= tolerances().linear_mm && slab_axis < 0 && !measure_contact_area()) {
-      return result;
-    }
     result.common_volume_mm3 = volume;
-    result.common_contact_area_mm2 = contact_area;
-    // Zero-volume common results still require the exact distance query;
-    // positive shared face area proves zero distance, as in the slab path.
-    result.distance_mm = contact_area > 0.0 ? 0.0 : distance.Value();
+    result.common_contact_area_mm2 = 0.0;
+    result.distance_mm = distance.Value();
     result.status = STATUS_OK;
   } catch (const Standard_Failure& failure) {
     result.status = STATUS_BACKEND_EXCEPTION;

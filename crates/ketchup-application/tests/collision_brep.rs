@@ -276,7 +276,7 @@ fn scoped_collision_rejects_all_distant_pairs_across_ten_thousand_occurrences() 
 }
 
 #[test]
-fn scoped_collision_caps_unique_graph_preparation() {
+fn scoped_collision_prepares_more_solids_than_one_worker_batch() {
     let mut document = DocumentStore::new();
     let commands = (1..=513)
         .flat_map(|id| {
@@ -315,14 +315,14 @@ fn scoped_collision_caps_unique_graph_preparation() {
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
     let scope = CollisionScope::bind(&document.current(), [OccurrenceId(1)]);
 
+    // Batches bound the graphs one worker request carries; the whole check may
+    // prepare more distinct solids than one batch holds.
     let report = exact_scope(&document, &scope);
-    assert_eq!(report["state"], "not_evaluated", "{report}");
-    assert_eq!(report["complete"], false, "{report}");
-    assert_eq!(
-        report["not_evaluated"][0]["reason"], "exact_graph_count_resource_limit",
-        "{report}"
-    );
-    assert_eq!(report["not_evaluated"][0]["limit"], 512, "{report}");
+    assert_eq!(report["state"], "passed", "{report}");
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["checked_pair_count"], 512, "{report}");
+    assert_eq!(report["resource_limits"]["max_graphs_per_batch"], 512);
+    assert_eq!(report["resource_limits"]["max_unique_graphs"], 10_000);
 }
 
 #[test]

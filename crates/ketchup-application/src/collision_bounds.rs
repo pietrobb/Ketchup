@@ -12,26 +12,52 @@ pub(super) struct Bounds([[f64; 3]; 2]);
 // and propagate accumulated error through every affine transform.
 const ROUNDING: f64 = 64.0 * f64::EPSILON;
 
-fn lines_scale(segments: &[ExactBRepPlanarSegment]) -> Option<f64> {
+/// Largest coordinate magnitude a boundary can reach (line ends, the full
+/// circle of an arc, the control polygon that contains a cubic) and the
+/// radius mismatch of its arcs, which their producer bounds do not include.
+fn segments_scale(segments: &[ExactBRepPlanarSegment]) -> Option<(f64, f64)> {
     let mut scale: f64 = 1.0;
+    let mut slack: f64 = 0.0;
     for segment in segments {
-        let ExactBRepPlanarSegment::Line {
-            start_bits,
-            end_bits,
-        } = segment
-        else {
-            return None;
+        let reach = match segment {
+            ExactBRepPlanarSegment::Line {
+                start_bits,
+                end_bits,
+            } => [start_bits, end_bits]
+                .into_iter()
+                .flatten()
+                .map(|bits| f64::from_bits(*bits).abs())
+                .fold(0.0, f64::max),
+            ExactBRepPlanarSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                ..
+            } => {
+                let [start, end, center] =
+                    [start_bits, end_bits, center_bits].map(|bits| bits.map(f64::from_bits));
+                let start_radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                let end_radius = (end[0] - center[0]).hypot(end[1] - center[1]);
+                slack = slack.max((start_radius - end_radius).abs());
+                circle_scale(*center_bits, start_radius.max(end_radius).to_bits())
+            }
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits,
+                control_1_bits,
+                control_2_bits,
+                end_bits,
+            } => [start_bits, control_1_bits, control_2_bits, end_bits]
+                .into_iter()
+                .flatten()
+                .map(|bits| f64::from_bits(*bits).abs())
+                .fold(0.0, f64::max),
         };
-        for value in start_bits
-            .iter()
-            .chain(end_bits)
-            .copied()
-            .map(f64::from_bits)
-        {
-            scale = scale.max(value.abs());
+        if !reach.is_finite() || !slack.is_finite() {
+            return None;
         }
+        scale = scale.max(reach);
     }
-    Some(scale)
+    Some((scale, slack))
 }
 
 fn circle_scale(center: [u64; 2], radius: u64) -> f64 {
@@ -43,26 +69,26 @@ fn circle_scale(center: [u64; 2], radius: u64) -> f64 {
         + f64::from_bits(radius).abs()
 }
 
-fn loop_scale(boundary: &ExactBRepPlanarLoop) -> Option<f64> {
+fn loop_scale(boundary: &ExactBRepPlanarLoop) -> Option<(f64, f64)> {
     match boundary {
-        ExactBRepPlanarLoop::Boundary { segments } => lines_scale(segments),
+        ExactBRepPlanarLoop::Boundary { segments } => segments_scale(segments),
         ExactBRepPlanarLoop::Circle {
             center_bits,
             radius_bits,
-        } => Some(circle_scale(*center_bits, *radius_bits)),
+        } => Some((circle_scale(*center_bits, *radius_bits), 0.0)),
     }
 }
 
-fn profile_scale(geometry: &ExactBRepPlanarGeometry) -> Option<f64> {
+fn profile_scale(geometry: &ExactBRepPlanarGeometry) -> Option<(f64, f64)> {
     match geometry {
         ExactBRepPlanarGeometry::Boundary {
             closed: true,
             segments,
-        } => lines_scale(segments),
+        } => segments_scale(segments),
         ExactBRepPlanarGeometry::Circle {
             center_bits,
             radius_bits,
-        } => Some(circle_scale(*center_bits, *radius_bits)),
+        } => Some((circle_scale(*center_bits, *radius_bits), 0.0)),
         ExactBRepPlanarGeometry::Region { outer, holes } => {
             let scale = loop_scale(outer)?;
             for hole in holes {
@@ -125,7 +151,7 @@ pub(super) fn certified_bounds(graph: &ExactBRepGraph) -> Option<Bounds> {
             } => {
                 let [origin, x_axis, y_axis, _] =
                     graph.profiles[profile.0 as usize].frame().to_vectors();
-                let scale = scales[profile.0 as usize];
+                let (scale, slack) = scales[profile.0 as usize];
                 let distance = interval.start_mm().abs().max(interval.end_mm().abs());
                 let magnitude = (0..3)
                     .map(|axis| {
@@ -135,7 +161,9 @@ pub(super) fn certified_bounds(graph: &ExactBRepGraph) -> Option<Bounds> {
                     })
                     .fold(1.0, f64::max)
                     * (1.0 + ROUNDING);
-                (magnitude, ROUNDING * magnitude)
+                // The frame axes are unit vectors, so a radius mismatch moves
+                // the solid by at most that much along each axis.
+                (magnitude, ROUNDING * magnitude + 2.0 * slack)
             }
             ExactBRepOperation::ProfileCut { target, .. } => errors[target.0 as usize],
             ExactBRepOperation::Boolean { target, tool, .. } => {
@@ -322,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn unrecognized_profile_curves_fall_back_but_circles_are_supported() {
+    fn splines_fall_back_but_circles_arcs_and_cubics_are_supported() {
         assert!(
             profile_scale(&ExactBRepPlanarGeometry::Circle {
                 center_bits: [0; 2],
@@ -330,18 +358,42 @@ mod tests {
             })
             .is_some()
         );
-        assert!(
-            profile_scale(&ExactBRepPlanarGeometry::Boundary {
-                closed: true,
-                segments: vec![ExactBRepPlanarSegment::CircularArc {
-                    start_bits: [0; 2],
-                    end_bits: [0; 2],
-                    center_bits: [0; 2],
-                    clockwise: false
-                }]
-            })
-            .is_none()
-        );
+        let bits = |point: [f64; 2]| point.map(f64::to_bits);
+        // A half arc around (100, 0) still reaches the whole circle of radius 50.
+        let (scale, slack) = profile_scale(&ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments: vec![
+                ExactBRepPlanarSegment::CircularArc {
+                    start_bits: bits([150.0, 0.0]),
+                    end_bits: bits([50.0, 0.0]),
+                    center_bits: bits([100.0, 0.0]),
+                    clockwise: false,
+                },
+                ExactBRepPlanarSegment::Line {
+                    start_bits: bits([50.0, 0.0]),
+                    end_bits: bits([150.0, 0.0]),
+                },
+            ],
+        })
+        .unwrap();
+        assert!(scale >= 150.0 && slack == 0.0, "{scale} {slack}");
+        let (scale, _) = profile_scale(&ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments: vec![
+                ExactBRepPlanarSegment::CubicBezier {
+                    start_bits: bits([0.0, 0.0]),
+                    control_1_bits: bits([0.0, -300.0]),
+                    control_2_bits: bits([10.0, 0.0]),
+                    end_bits: bits([10.0, 0.0]),
+                },
+                ExactBRepPlanarSegment::Line {
+                    start_bits: bits([10.0, 0.0]),
+                    end_bits: bits([0.0, 0.0]),
+                },
+            ],
+        })
+        .unwrap();
+        assert!(scale >= 300.0, "{scale}");
         assert!(
             profile_scale(&ExactBRepPlanarGeometry::Spline {
                 control_point_bits: vec![]

@@ -11,6 +11,7 @@ mod contact_joints;
 mod document_session;
 mod evaluation_deadline;
 mod group_connectivity;
+mod house_collision;
 mod mesh_conversion;
 mod model_query;
 mod model_query_catalogs;

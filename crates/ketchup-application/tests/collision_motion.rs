@@ -102,7 +102,7 @@ fn scene(snapshot: &Snapshot) -> Vec<ketchup_model::document::SceneOccurrence> {
 fn unsupported_envelope_stays_incomplete_despite_clear_native_samples() {
     let _turn = crate::integration_support::file_turn();
     let (_, pair) = pair(
-        "extrude('moving',distance=2,profile=round_corners([[0,0],[20,0],[20,20],[0,20]],3))\nbox('obstacle',(2,2,2),at=(100,0,0))",
+        "revolve('moving',profile=[(0,0),(10,0),(10,2),(0,2)],axis=[(0,0),(0,1)])\nbox('obstacle',(2,2,2),at=(100,0,0))",
         "moving",
         "obstacle",
         slide(),
