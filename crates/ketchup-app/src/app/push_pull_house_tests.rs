@@ -1,6 +1,8 @@
 //! Drawing a rectangle or an ellipse beside the timber-frame house and pulling
 //! it up stays interactive: no frame of the drag re-plans the whole house, and
-//! the release turns the shape into a part of the house program.
+//! the release turns the shape into a part of the house program. Once the house
+//! no longer owns the document, pulling the top of the pulled shape again
+//! lengthens its extrusion, also without a slow frame.
 use crate::*;
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
@@ -8,8 +10,8 @@ use std::time::{Duration, Instant};
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
 
 /// One frame of the drag or of the held button. In release a frame takes about
-/// 20-50 ms; before the fix every drag step and every held frame re-planned the
-/// house for about a second.
+/// 20-60 ms; before the fixes every drag step re-planned the house, or looked
+/// up the picked face among all faces of the house, for 0.6-1 s.
 const FRAME_BUDGET: Duration =
     Duration::from_millis(if cfg!(debug_assertions) { 3_000 } else { 400 });
 
@@ -28,6 +30,11 @@ const COMMIT_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) 
 } else {
     5_000
 });
+
+const START: Vec3 = Vec3::new(-2500.0, -2500.0, 0.0);
+const END: Vec3 = Vec3::new(-1500.0, -1800.0, 0.0);
+const PULL_STEP_MM: f64 = 60.0;
+const PULL_STEPS: usize = 7;
 
 fn settle(harness: &mut Harness<'_, KetchupApp>) {
     let started = Instant::now();
@@ -75,11 +82,7 @@ fn click(harness: &mut Harness<'_, KetchupApp>, world: Vec3) {
     button(harness, screen, false);
 }
 
-fn pull_shape_beside_house(ellipse: bool) {
-    let worker = ketchup_application::evaluation::exact_worker_candidates()
-        .into_iter()
-        .find(|path| path.is_file())
-        .expect("build ketchup-exact-worker alongside the app tests");
+fn house() -> KetchupApp {
     let mut app = KetchupApp::new();
     app.apply_program_source(
         ketchup_model::document::RuleProgramSource {
@@ -90,6 +93,28 @@ fn pull_shape_beside_house(ellipse: bool) {
         true,
     )
     .unwrap();
+    app
+}
+
+/// Hiding one part by hand is an edit outside the program, so the house parts
+/// stay but no program owns the document any more.
+fn detach(app: &mut KetchupApp) {
+    let first = app.document.current().occurrences().next().unwrap().id();
+    app.apply_batch_with_work_recovery(&CommandBatch::new(vec![
+        CanonicalCommand::SetOccurrenceVisibility {
+            id: first,
+            visible: false,
+        },
+    ]))
+    .unwrap();
+    assert!(app.document.current_rule_program().is_none());
+}
+
+fn harness(mut app: KetchupApp) -> Harness<'static, KetchupApp> {
+    let worker = ketchup_application::evaluation::exact_worker_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("build ketchup-exact-worker alongside the app tests");
     app.headless_force_exact_worker_path(&worker);
     app.enable_headless_instanced_scene();
     let mut harness = Harness::builder()
@@ -97,11 +122,10 @@ fn pull_shape_beside_house(ellipse: bool) {
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     settle(&mut harness);
+    harness
+}
 
-    let (start, end) = (
-        Vec3::new(-2500.0, -2500.0, 0.0),
-        Vec3::new(-1500.0, -1800.0, 0.0),
-    );
+fn draw(harness: &mut Harness<'_, KetchupApp>, ellipse: bool) {
     harness.state_mut().dispatch_command(if ellipse {
         AppCommand::Ellipse
     } else {
@@ -109,52 +133,57 @@ fn pull_shape_beside_house(ellipse: bool) {
     });
     harness.step();
     let revision = harness.state().document_revision();
-    click(&mut harness, start);
+    click(harness, START);
     for step in 1..=3 {
-        move_to(&mut harness, start + (end - start) * (step as f64 / 4.0));
+        move_to(harness, START + (END - START) * (step as f64 / 4.0));
     }
-    click(&mut harness, end);
+    click(harness, END);
     if ellipse {
         // The second radius.
-        click(&mut harness, Vec3::new(end.x, start.y - 300.0, 0.0));
+        click(harness, Vec3::new(END.x, START.y - 300.0, 0.0));
     }
     assert_ne!(
         harness.state().document_revision(),
         revision,
         "no shape was drawn"
     );
-    settle(&mut harness);
+    settle(harness);
+}
 
+/// Drags the face under `at` up by `PULL_STEPS * PULL_STEP_MM` and checks that
+/// no frame of the drag, the held button or the release is slow.
+fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
     harness.state_mut().dispatch_command(AppCommand::PushPull);
     harness.step();
-    let center = if ellipse { start } else { (start + end) * 0.5 };
-    move_to(&mut harness, center + Vec3::new(5.0, 5.0, 0.0));
-    let (screen, _) = move_to(&mut harness, center);
-    button(&mut harness, screen, true);
+    move_to(harness, at + Vec3::new(5.0, 5.0, 0.0));
+    let (screen, _) = move_to(harness, at);
+    button(harness, screen, true);
     let revision = harness.state().document_revision();
     let mut frames = Vec::new();
     let mut last = screen;
-    for step in 1..=7 {
+    for step in 1..=PULL_STEPS {
         let (screen, took) = move_to(
-            &mut harness,
-            center + Vec3::new(0.0, 0.0, 60.0 * step as f64),
+            harness,
+            at + Vec3::new(0.0, 0.0, PULL_STEP_MM * step as f64),
         );
         frames.push(took);
         last = screen;
-    }
-    // The button is still held: the app repaints with nothing changed.
-    for _ in 0..4 {
-        let started = Instant::now();
-        harness.step();
-        frames.push(started.elapsed());
     }
     let slowest = frames.iter().max().copied().unwrap_or_default();
     assert!(
         slowest < FRAME_BUDGET,
         "slowest Push/Pull frame {slowest:?}: {frames:?}"
     );
+    // The button is still held. A loaded machine may finish the exact
+    // evaluation now, and that frame publishes it like the release does.
+    for _ in 0..4 {
+        let started = Instant::now();
+        harness.step();
+        let took = started.elapsed();
+        assert!(took < RELEASE_BUDGET, "a held frame took {took:?}");
+    }
 
-    let release = button(&mut harness, last, false);
+    let release = button(harness, last, false);
     assert!(
         release < RELEASE_BUDGET,
         "the release froze the window for {release:?}"
@@ -169,6 +198,16 @@ fn pull_shape_beside_house(ellipse: bool) {
         harness.step();
         std::thread::sleep(Duration::from_millis(5));
     }
+    settle(harness);
+}
+
+fn pull_shape_beside_house(ellipse: bool) {
+    let mut harness = harness(house());
+    draw(&mut harness, ellipse);
+    pull(
+        &mut harness,
+        if ellipse { START } else { (START + END) * 0.5 },
+    );
     let app = harness.state();
     let program = app
         .document
@@ -189,4 +228,62 @@ fn pulling_a_rectangle_beside_the_house_stays_interactive() {
 #[test]
 fn pulling_an_ellipse_beside_the_house_stays_interactive() {
     pull_shape_beside_house(true);
+}
+
+/// The second pull grabs the top of the first one. The extrusion grows to
+/// twice the pulled height; no face offset with a seam is fused on top.
+fn pull_top_of_pulled_ellipse(detach_before_drawing: bool) {
+    let mut app = house();
+    if detach_before_drawing {
+        detach(&mut app);
+    }
+    let mut harness = harness(app);
+    draw(&mut harness, true);
+    pull(&mut harness, START);
+    if !detach_before_drawing {
+        detach(harness.state_mut());
+        settle(&mut harness);
+    }
+    let height = PULL_STEP_MM * PULL_STEPS as f64;
+    pull(&mut harness, START + Vec3::new(0.0, 0.0, height));
+
+    let snapshot = harness.state().document.current();
+    let shape = snapshot
+        .definitions()
+        .find(|definition| {
+            definition.name() == "shape 1" || definition.name().starts_with("Ellipse")
+        })
+        .expect("the pulled ellipse");
+    let kinds = shape
+        .feature_ids()
+        .iter()
+        .map(|id| snapshot.feature(*id).unwrap().kind())
+        .collect::<Vec<_>>();
+    assert!(
+        !kinds
+            .iter()
+            .any(|kind| matches!(kind, FeatureKind::FaceOffset { .. })),
+        "{kinds:?}"
+    );
+    let Some(FeatureKind::Pad(PadSpec {
+        extent: FeatureExtent::Blind(extent),
+        ..
+    })) = kinds.last()
+    else {
+        panic!("{kinds:?}");
+    };
+    assert!(
+        (extent.millimetres() - 2.0 * height).abs() < 1.0,
+        "{kinds:?}"
+    );
+}
+
+#[test]
+fn pulling_the_top_of_an_ellipse_drawn_after_the_house_was_detached_lengthens_it() {
+    pull_top_of_pulled_ellipse(true);
+}
+
+#[test]
+fn pulling_the_top_of_a_house_ellipse_after_detaching_lengthens_it() {
+    pull_top_of_pulled_ellipse(false);
 }

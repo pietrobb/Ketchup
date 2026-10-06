@@ -1253,10 +1253,16 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         assert_eq!(shell.app().undo_step_count(), before_cap_offset.1 + 1);
         assert_eq!(shell.app().exact_render_body_count(), 2);
         assert!(shell.app().exact_render_triangle_count() > 12);
+        // The cap of an extrusion lengthens the extrusion itself, no face
+        // offset with a seam on top.
         let changed = shell.app().document_snapshot();
+        assert!(!changed.features().any(|feature| {
+            feature.definition_id() == closed_definition_id
+                && matches!(feature.kind(), FeatureKind::FaceOffset { .. })
+        }));
         assert!(changed.features().any(|feature| {
             feature.definition_id() == closed_definition_id
-                && matches!(feature.kind(), FeatureKind::FaceOffset { distance: offset, .. } if (offset.millimetres() - distance).abs() < 1.0e-9)
+                && matches!(feature.kind(), FeatureKind::Pad(PadSpec { extent: FeatureExtent::Blind(extent), .. }) if (extent.millimetres() - (8.0 + distance)).abs() < 1.0e-9)
         }));
         shell.click_menu_command("menu-edit", AppCommand::Undo);
         assert_eq!(shell.app().canonical_digest(), pushed_digest);

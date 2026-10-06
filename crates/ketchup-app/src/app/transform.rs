@@ -3034,6 +3034,27 @@ pub(crate) fn push_pull_batch(
             && reference.definition_id == selection.definition_id
             && reference.kind == TopologicalElementKind::Face
         {
+            // Pulling the end cap of an extrusion lengthens the extrusion: one
+            // smooth body instead of a second prism fused on with a seam.
+            if let FeatureKind::Pad(PadSpec {
+                direction: FeatureDirection::AlongNormal | FeatureDirection::OppositeNormal,
+                extent: FeatureExtent::Blind(extent),
+                operation: PadOperation::NewBody,
+                ..
+            }) = producer.kind()
+                && reference.producer_element_id == ExactFaceRole::Top.semantic_role()
+            {
+                let length = extent.millimetres() + distance_mm;
+                if length <= 0.01 {
+                    return None;
+                }
+                return Some(CommandBatch::new(vec![
+                    CanonicalCommand::SetFeatureDimension {
+                        id: reference.producer_feature_id,
+                        dimension: Dimension::new(length.to_string(), length).ok()?,
+                    },
+                ]));
+            }
             let id = FeatureId(
                 snapshot
                     .features()
