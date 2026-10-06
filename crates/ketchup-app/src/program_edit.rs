@@ -37,20 +37,14 @@ fn session_error(error: WorkRecoveryMutationError<SessionError>) -> RuleProgramA
 
 impl KetchupApp {
     /// Evaluates `source` and publishes only what changed, keeping every
-    /// unchanged part's identity. A document no program owns is replaced only
+    /// unchanged part's identity. The program report is not computed here:
+    /// on a large model it takes far longer than the edit. A document no program owns is replaced only
     /// when it is empty, or when `replace` is set and nothing is unsaved.
     pub(crate) fn apply_program_source(
         &mut self,
         source: RuleProgramSource,
         replace: bool,
-    ) -> Result<
-        (
-            ProgramEdit,
-            ketchup_program::Report,
-            ketchup_program::ProgramModel,
-        ),
-        RuleProgramApplyError,
-    > {
+    ) -> Result<(ProgramEdit, ketchup_program::Evaluated), RuleProgramApplyError> {
         self.apply_program_source_with(source, replace, Vec::new())
     }
 
@@ -62,14 +56,7 @@ impl KetchupApp {
         source: RuleProgramSource,
         replace: bool,
         also: Vec<CanonicalCommand>,
-    ) -> Result<
-        (
-            ProgramEdit,
-            ketchup_program::Report,
-            ketchup_program::ProgramModel,
-        ),
-        RuleProgramApplyError,
-    > {
+    ) -> Result<(ProgramEdit, ketchup_program::Evaluated), RuleProgramApplyError> {
         let plan = ketchup_application::plan_rule_program(&self.document, &source)?;
         self.publish_program_plan(source, replace, also, plan)
     }
@@ -80,14 +67,7 @@ impl KetchupApp {
         replace: bool,
         also: Vec<CanonicalCommand>,
         plan: ketchup_application::RuleProgramPlan,
-    ) -> Result<
-        (
-            ProgramEdit,
-            ketchup_program::Report,
-            ketchup_program::ProgramModel,
-        ),
-        RuleProgramApplyError,
-    > {
+    ) -> Result<(ProgramEdit, ketchup_program::Evaluated), RuleProgramApplyError> {
         let change = match plan.change {
             RuleProgramChange::Unchanged | RuleProgramChange::SourceOnly if !also.is_empty() => {
                 RuleProgramChange::Incremental(CommandBatch::new(Vec::new()))
@@ -101,7 +81,7 @@ impl KetchupApp {
         };
         let (edit, batch) = match change {
             RuleProgramChange::Unchanged => {
-                return Ok((ProgramEdit::Unchanged, plan.report, plan.evaluated.model));
+                return Ok((ProgramEdit::Unchanged, plan.evaluated));
             }
             RuleProgramChange::SourceOnly => {
                 self.complete_mutation_with_work_recovery(|document| {
@@ -111,7 +91,7 @@ impl KetchupApp {
                 })
                 .map_err(session_error)?;
                 self.finish_program_edit();
-                return Ok((ProgramEdit::SourceOnly, plan.report, plan.evaluated.model));
+                return Ok((ProgramEdit::SourceOnly, plan.evaluated));
             }
             RuleProgramChange::Incremental(batch) => {
                 let mut commands = batch.commands().to_vec();
@@ -152,7 +132,7 @@ impl KetchupApp {
         if edit == ProgramEdit::Created {
             self.camera.zoom_fit_pending = true;
         }
-        Ok((edit, plan.report, plan.evaluated.model))
+        Ok((edit, plan.evaluated))
     }
 
     /// A fillet or chamfer on edges picked on a program-owned part is written

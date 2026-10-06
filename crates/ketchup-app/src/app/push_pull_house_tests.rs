@@ -13,6 +13,15 @@ const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star"
 const FRAME_BUDGET: Duration =
     Duration::from_millis(if cfg!(debug_assertions) { 3_000 } else { 400 });
 
+/// The frame of the release, which publishes the edited house program. It took
+/// about 1.7 s while the program report (issues, relations, loads) was listed
+/// twice and thrown away; without it about 0.4 s.
+const RELEASE_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) {
+    10_000
+} else {
+    1_000
+});
+
 /// From release to the committed part.
 const COMMIT_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) {
     20_000
@@ -145,7 +154,11 @@ fn pull_shape_beside_house(ellipse: bool) {
         "slowest Push/Pull frame {slowest:?}: {frames:?}"
     );
 
-    button(&mut harness, last, false);
+    let release = button(&mut harness, last, false);
+    assert!(
+        release < RELEASE_BUDGET,
+        "the release froze the window for {release:?}"
+    );
     let released = Instant::now();
     while harness.state().document_revision() == revision {
         assert!(

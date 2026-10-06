@@ -17,9 +17,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
         let context = egui::Context::default();
         let source = source();
         let original = app.live_bridge_stamp();
-        let plan =
-            ketchup_application::plan_rule_program(&app.document.fork_for_planning(), &source)
-                .unwrap();
+        let plan = plan_with_report(&app.document.fork_for_planning(), &source).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let (reply, response) = mpsc::sync_channel(1);
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -95,8 +93,7 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
     stream.shutdown(Shutdown::Write).unwrap();
     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
     assert!(cancelled.load(Ordering::Acquire));
-    let plan =
-        ketchup_application::plan_rule_program(&app.document.fork_for_planning(), &source).unwrap();
+    let plan = plan_with_report(&app.document.fork_for_planning(), &source).unwrap();
     sender.send(Ok(plan)).unwrap();
     bridge.poll_program_check_job(&mut app, &context);
     assert!(bridge.program_check_job.is_none());

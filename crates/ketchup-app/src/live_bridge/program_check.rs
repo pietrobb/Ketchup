@@ -12,6 +12,16 @@ use ketchup_application::{RuleProgramApplyError, RuleProgramPlan};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
 
+/// Plans the program and lists its report, both off the UI thread when queued.
+fn plan_with_report(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
+    let plan = ketchup_application::plan_rule_program(document, source)?;
+    let report = plan.report();
+    Ok((plan, report))
+}
+
 pub(super) const PROGRAM_EXACT_TIMEOUT: Duration = Duration::from_secs(20);
 const PROGRAM_EXACT_GRACE: Duration = Duration::from_secs(5);
 
@@ -60,7 +70,7 @@ pub(super) struct ProgramPlanJob {
     source: RuleProgramSource,
     replace: bool,
     before: Stamp,
-    receiver: mpsc::Receiver<Result<RuleProgramPlan, RuleProgramApplyError>>,
+    receiver: mpsc::Receiver<Result<(RuleProgramPlan, Report), RuleProgramApplyError>>,
 }
 
 pub(super) struct ExactCheckJob {
@@ -126,9 +136,8 @@ impl LiveBridge {
     ) -> Result<AppliedProgram, &'static str> {
         let (source, replace) = Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
-        let plan = ketchup_application::plan_rule_program(&app.document, &source)
-            .map_err(program_failure)?;
-        self.publish_program(app, source, replace, plan, &before, cancelled)
+        let planned = plan_with_report(&app.document, &source).map_err(program_failure)?;
+        self.publish_program(app, source, replace, planned, &before, cancelled)
     }
 
     fn publish_program(
@@ -136,7 +145,7 @@ impl LiveBridge {
         app: &mut KetchupApp,
         source: RuleProgramSource,
         replace: bool,
-        plan: RuleProgramPlan,
+        (plan, report): (RuleProgramPlan, Report),
         before_stamp: &Stamp,
         cancelled: &AtomicBool,
     ) -> Result<AppliedProgram, &'static str> {
@@ -149,9 +158,10 @@ impl LiveBridge {
                 .map_or("", |program| program.source.as_str()),
             &source.source,
         );
-        let (edit, report, model) = app
+        let (edit, evaluated) = app
             .publish_program_plan(source, replace, Vec::new(), plan)
             .map_err(program_failure)?;
+        let model = evaluated.model;
         self.pending = None;
         let stamp = app.live_bridge_stamp();
         if stamp.document_id != before_stamp.document_id {
@@ -213,7 +223,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
-                let result = ketchup_application::plan_rule_program(&document, &worker_source);
+                let result = plan_with_report(&document, &worker_source);
                 let _ = sender.try_send(result);
                 repaint.request_repaint();
             });

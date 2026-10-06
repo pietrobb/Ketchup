@@ -76,7 +76,7 @@ pub fn rewrite_rule_program_push_pull(
             message: "Push/Pull distance must be finite and non-zero".to_owned(),
         });
     }
-    let (evaluated, _) = evaluate(source)?;
+    let evaluated = evaluate(source)?;
     let part = evaluated
         .model
         .part(part_name)
@@ -128,7 +128,7 @@ pub fn rewrite_rule_program_push_pull(
             probe_source
                 .overrides
                 .insert(parameter.name.clone(), probed);
-            let Ok((probe, _)) = evaluate(&probe_source) else {
+            let Ok(probe) = evaluate(&probe_source) else {
                 continue; // A speculative parameter step may cross a valid program branch.
             };
             let Some(probe_value) = controlled_value(&probe.model) else {
@@ -150,7 +150,7 @@ pub fn rewrite_rule_program_push_pull(
         rewritten.overrides.insert(parameter.clone(), *value);
         // A finite-difference probe is only a proposal, not a linearity contract.
         // Never publish a successful evaluation that moved the face by another amount.
-        if let Ok((candidate, _)) = evaluate(&rewritten)
+        if let Ok(candidate) = evaluate(&rewritten)
             && let (Some(before), Some(after)) = (baseline, controlled_value(&candidate.model))
             && (after - before - distance_mm).abs() <= ACCUMULATED_ROUNDING
         {
@@ -188,8 +188,16 @@ pub enum RuleProgramChange {
 
 pub struct RuleProgramPlan {
     pub evaluated: ketchup_program::Evaluated,
-    pub report: Report,
     pub change: RuleProgramChange,
+}
+
+impl RuleProgramPlan {
+    /// Issues, relations and bill of materials of the planned program. On a large model
+    /// this costs far more than planning, so only callers that answer with it compute it.
+    #[must_use]
+    pub fn report(&self) -> Report {
+        ketchup_program::report(&self.evaluated)
+    }
 }
 
 /// Plans how `source` updates `document`. This is the one reconciliation path shared by the
@@ -202,11 +210,11 @@ pub fn plan_rule_program(
     document: &DocumentStore,
     source: &RuleProgramSource,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
-    let (evaluated, report) = evaluate(source)?;
+    let evaluated = evaluate(source)?;
     let change = match document.current_rule_program() {
         Some(current) if current == source => RuleProgramChange::Unchanged,
         Some(current) => {
-            let (old, _) = evaluate(current)?;
+            let old = evaluate(current)?;
             let reference = evaluated.reference_model();
             let mut baseline = document.fork_for_planning();
             let mut commands =
@@ -243,11 +251,7 @@ pub fn plan_rule_program(
         }
         None => RuleProgramChange::Replacement,
     };
-    Ok(RuleProgramPlan {
-        evaluated,
-        report,
-        change,
-    })
+    Ok(RuleProgramPlan { evaluated, change })
 }
 
 impl DocumentSession {
@@ -259,11 +263,9 @@ impl DocumentSession {
         source: RuleProgramSource,
         allow_replacement: bool,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
-        let RuleProgramPlan {
-            evaluated,
-            report,
-            change,
-        } = plan_rule_program(self.document_store(), &source)?;
+        let plan = plan_rule_program(self.document_store(), &source)?;
+        let report = plan.report();
+        let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
             RuleProgramChange::Unchanged => self.snapshot(),
             RuleProgramChange::SourceOnly => self.replace_rule_program_source(source)?,
@@ -510,13 +512,13 @@ fn replacement_batch(
 
 fn evaluate(
     source: &RuleProgramSource,
-) -> Result<(ketchup_program::Evaluated, Report), RuleProgramApplyError> {
-    ketchup_program::run(&source.file_name, &source.source, &source.overrides).map_err(|error| {
-        RuleProgramApplyError::Program {
+) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
+    ketchup_program::evaluate(&source.file_name, &source.source, &source.overrides).map_err(
+        |error| RuleProgramApplyError::Program {
             code: error.code.to_owned(),
             message: error.message,
-        }
-    })
+        },
+    )
 }
 
 fn append_removed_parts(
@@ -876,7 +878,8 @@ mod tests {
         let with_apron = program(format!("{TABLE}{APRON}"), &[]);
         let plan = plan_rule_program(session.document_store(), &with_apron).unwrap();
         assert!(matches!(plan.change, RuleProgramChange::Incremental(_)));
-        assert!(plan.report.ok, "{:?}", plan.report.issues);
+        let report = plan.report();
+        assert!(report.ok, "{:?}", report.issues);
         let added = session.apply_rule_program(with_apron, false).unwrap();
         assert!(!added.replaced_document);
         let after_add = ids(&added.snapshot);
@@ -934,7 +937,7 @@ mod tests {
         let first = session
             .apply_rule_program(profile_source(program, "splay", 100.0), false)
             .unwrap();
-        let (evaluated, _) = evaluate(&profile_source(program, "splay", 100.0)).unwrap();
+        let evaluated = evaluate(&profile_source(program, "splay", 100.0)).unwrap();
         let occurrence = first.snapshot.occurrences().next().unwrap();
         let occurrence_id = occurrence.id();
         assert_eq!(
@@ -945,7 +948,7 @@ mod tests {
         let retilted = session
             .apply_rule_program(profile_source(program, "splay", 150.0), false)
             .unwrap();
-        let (evaluated, _) = evaluate(&profile_source(program, "splay", 150.0)).unwrap();
+        let evaluated = evaluate(&profile_source(program, "splay", 150.0)).unwrap();
         let occurrence = retilted.snapshot.occurrences().next().unwrap();
         assert!(!retilted.replaced_document);
         assert_eq!(occurrence.id(), occurrence_id);
@@ -1183,7 +1186,7 @@ mod tests {
                 "push_pull(\"board\", face=\"end\", distance=-3, name=\"GUI Push/Pull 1\")"
             )
         );
-        let (evaluated, _) = evaluate(&appended).unwrap();
+        let evaluated = evaluate(&appended).unwrap();
         assert_eq!(
             evaluated
                 .model

@@ -111,13 +111,22 @@ pub fn run(
     overrides: &BTreeMap<String, f64>,
 ) -> Result<(Evaluated, Report), ProgramError> {
     let evaluated = evaluate(file_name, source, overrides)?;
+    let report = report(&evaluated);
+    Ok((evaluated, report))
+}
+
+/// Validates and lists an evaluated program. On a large model this takes far
+/// longer than the evaluation itself, so callers that only publish geometry
+/// skip it.
+#[must_use]
+pub fn report(evaluated: &Evaluated) -> Report {
     let issues = validate(&evaluated.model);
     let errors = issues
         .iter()
         .filter(|issue| issue.severity == Severity::Error)
         .count();
     let loads = loads::loads(&evaluated.model);
-    let report = Report {
+    Report {
         ok: errors == 0,
         errors,
         warnings: issues.len() - errors,
@@ -130,6 +139,5 @@ pub fn run(
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
-    };
-    Ok((evaluated, report))
+    }
 }
