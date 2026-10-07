@@ -37,6 +37,25 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
     contact_with_faces(a, b, &planar_faces(a), &planar_faces(b))
 }
 
+/// `contact`, with each part's faces (`Part::face_frames`) from `faces`.
+pub(crate) fn contact_of_frames(
+    a: &Part,
+    b: &Part,
+    faces: impl Fn(&Part) -> std::rc::Rc<Vec<FaceFrame>>,
+) -> Option<Contact> {
+    if a.obb().separation(&b.obb()) > TOLERANCE_MM {
+        return None;
+    }
+    let planar = |part| -> Vec<FaceFrame> {
+        faces(part)
+            .iter()
+            .filter(|face| face.kind == FaceKind::Planar)
+            .cloned()
+            .collect()
+    };
+    contact_with_faces(a, b, &planar(a), &planar(b))
+}
+
 /// Every face patch `a` and `b` share (a birdsmouth seat and its plumb face),
 /// not only the largest.
 #[must_use]

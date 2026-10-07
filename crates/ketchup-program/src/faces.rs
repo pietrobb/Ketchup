@@ -575,7 +575,21 @@ impl Part {
     }
     fn face_frames_with_boundaries(&self, boundaries: bool) -> Vec<FaceFrame> {
         let mut faces = self.body_face_frames();
-        for operation in &self.operations {
+        self.apply_face_operations(&mut faces, &self.operations, boundaries);
+        faces
+    }
+
+    /// Applies `operations` of this part, in order, to its faces after the
+    /// operations before them. Uses only the part's body and placement besides
+    /// `faces`, so continuing from the faces of a prefix of the operations
+    /// gives exactly the faces of all of them.
+    pub(crate) fn apply_face_operations(
+        &self,
+        faces: &mut Vec<FaceFrame>,
+        operations: &[ProgramOperation],
+        boundaries: bool,
+    ) {
+        for operation in operations {
             match operation {
                 ProgramOperation::FaceOffset(offset) => {
                     let mut moved = Vec::new();
@@ -595,14 +609,14 @@ impl Part {
                     let mut reflection = frame::IDENTITY;
                     reflection[mirror.axis][mirror.axis] = -1.0;
                     let shift = scaled(unit(mirror.axis), 2.0 * mirror.center_mm);
-                    for face in &mut faces {
+                    for face in faces.iter_mut() {
                         *face = face.placed(&reflection, shift, true);
                     }
                 }
                 ProgramOperation::Boolean(boolean) => {
                     let tool = &boolean.tool;
                     if boundaries && boolean.kind == ProgramBooleanKind::Subtract {
-                        self.trim_faces(&mut faces, tool);
+                        self.trim_faces(faces, tool);
                     }
                     let rotation =
                         frame::multiply(&frame::transposed(&self.rotation), &tool.rotation);
@@ -647,10 +661,10 @@ impl Part {
                     faces.extend(inner);
                 }
                 ProgramOperation::Hole(hole) if boundaries => {
-                    self.trim_faces(&mut faces, &self.hole_tool(hole).tool)
+                    self.trim_faces(faces, &self.hole_tool(hole).tool)
                 }
                 ProgramOperation::Pocket(pocket) if boundaries => {
-                    self.trim_faces(&mut faces, &self.pocket_tool(pocket).tool)
+                    self.trim_faces(faces, &self.pocket_tool(pocket).tool)
                 }
                 ProgramOperation::Cut(_)
                 | ProgramOperation::Finish(_)
@@ -658,7 +672,6 @@ impl Part {
                 | ProgramOperation::Pocket(_) => {}
             }
         }
-        faces
     }
 
     fn trim_faces(&self, faces: &mut [FaceFrame], tool: &Part) {

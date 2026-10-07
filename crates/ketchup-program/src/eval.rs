@@ -66,6 +66,7 @@ struct State {
     model: RefCell<ProgramModel>,
     log: RefCell<Vec<String>>,
     part_sources: RefCell<BTreeMap<String, BTreeSet<SourceLines>>>,
+    faces: face_cache::FaceCache,
 }
 
 /// An inclusive, 1-based line range of the user's program.
@@ -578,6 +579,33 @@ fn part_value<'v>(part: &Part, heap: &'v Heap) -> Value<'v> {
         ("x", triple(frame::axis(&part.rotation, 0))),
         ("y", triple(frame::axis(&part.rotation, 1))),
         ("z", triple(frame::axis(&part.rotation, 2))),
+    ]))
+}
+
+/// A contact as the program value contact() returns.
+fn contact_value<'v>(contact: &crate::contact::Contact, heap: &'v Heap) -> Value<'v> {
+    let point = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
+    heap.alloc(AllocStruct([
+        ("axis", heap.alloc(["x", "y", "z"][contact.axis])),
+        ("face_a", heap.alloc(contact.face_a.as_str())),
+        ("face_b", heap.alloc(contact.face_b.as_str())),
+        ("min", point(contact.min_mm)),
+        ("max", point(contact.max_mm)),
+        ("normal", point(contact.normal)),
+        ("u", point(contact.u)),
+        ("v", point(contact.v)),
+        ("origin", point(contact.origin_mm)),
+        ("size", heap.alloc((contact.size_mm[0], contact.size_mm[1]))),
+        (
+            "points",
+            heap.alloc(
+                contact
+                    .points_mm
+                    .iter()
+                    .map(|p| point(*p))
+                    .collect::<Vec<_>>(),
+            ),
+        ),
     ]))
 }
 
@@ -1352,6 +1380,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
 mod assemblies;
 mod conditions;
 mod continuity;
+mod face_cache;
 mod joints;
 mod machining;
 mod support;
@@ -1844,8 +1873,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         let model = state.model.borrow();
         let part = known_part(&model, &part_name)?;
-        let face = part
-            .face_frame(name)
+        let face = state
+            .faces
+            .face_frame(part, name)
             .map_err(|error| anyhow::anyhow!("face({part_name:?}, {name:?}): {error}"))?;
         Ok(face_value(part, &face, heap))
     }
@@ -1861,7 +1891,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let model = state.model.borrow();
         let part = known_part(&model, &part_name)?;
         Ok(heap.alloc(
-            part.face_frames()
+            state
+                .faces
+                .face_frames(part)
                 .iter()
                 .map(|face| face_value(part, face, heap))
                 .collect::<Vec<_>>(),
@@ -2116,32 +2148,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let part_b = model
             .part(&b)
             .ok_or_else(|| anyhow::anyhow!("unknown part {b:?}"))?;
-        let point = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
-        Ok(match crate::contact::contact(part_a, part_b) {
-            None => Value::new_none(),
-            Some(contact) => heap.alloc(AllocStruct([
-                ("axis", heap.alloc(["x", "y", "z"][contact.axis])),
-                ("face_a", heap.alloc(contact.face_a.as_str())),
-                ("face_b", heap.alloc(contact.face_b.as_str())),
-                ("min", point(contact.min_mm)),
-                ("max", point(contact.max_mm)),
-                ("normal", point(contact.normal)),
-                ("u", point(contact.u)),
-                ("v", point(contact.v)),
-                ("origin", point(contact.origin_mm)),
-                ("size", heap.alloc((contact.size_mm[0], contact.size_mm[1]))),
-                (
-                    "points",
-                    heap.alloc(
-                        contact
-                            .points_mm
-                            .iter()
-                            .map(|p| point(*p))
-                            .collect::<Vec<_>>(),
-                    ),
-                ),
-            ])),
-        })
+        let faces = |part: &Part| state.faces.face_frames(part);
+        Ok(crate::contact::contact_of_frames(part_a, part_b, faces)
+            .map_or_else(Value::new_none, |contact| contact_value(&contact, heap)))
     }
 
     /// States a condition on the final model: `Σ coefficient · measure`

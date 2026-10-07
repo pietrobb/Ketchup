@@ -1181,7 +1181,10 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
         "t = extrude(\"t\", profile = [(0, 0), (100, 0), (0, 100)], distance = 20)\n";
     let mut wire = Wire::new();
     // Machined parts require native verification even without boolean cuts.
-    let boards = wire.call(apply(TABLE, true)).result.unwrap();
+    let boards = wire
+        .call_within(apply(TABLE, true), Duration::from_secs(60))
+        .result
+        .unwrap();
     assert_eq!(boards["geometry_evaluated"], true, "{boards}");
     assert_eq!(
         (

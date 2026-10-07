@@ -122,7 +122,7 @@ pub fn boolean(a: &Rings, b: &Rings, subtract: bool) -> Rings {
             p,
         ) != subtract)
     };
-    let mut boundary: Vec<(Point, Point)> = Vec::new();
+    let mut boundary = Boundary::default();
     let candidates = edge_candidates(&source);
     for (index, &(p, q)) in source.iter().enumerate() {
         let d = sub(q, p);
@@ -168,10 +168,7 @@ pub fn boolean(a: &Rings, b: &Rings, subtract: bool) -> Rings {
                 continue;
             }
             let edge = if left { (start, end) } else { (end, start) };
-            if !boundary
-                .iter()
-                .any(|&(x, y)| near(x, edge.0) && near(y, edge.1))
-            {
+            if boundary.first_from(edge.0, |y| near(y, edge.1)).is_none() {
                 boundary.push(edge);
             }
         }
@@ -181,7 +178,7 @@ pub fn boolean(a: &Rings, b: &Rings, subtract: bool) -> Rings {
         let mut ring = vec![start];
         while !near(end, start) {
             ring.push(end);
-            let Some(index) = boundary.iter().position(|(p, _)| near(*p, end)) else {
+            let Some(index) = boundary.first_from(end, |_| true) else {
                 break;
             };
             end = boundary.remove(index).1;
@@ -204,6 +201,71 @@ pub fn boolean(a: &Rings, b: &Rings, subtract: bool) -> Rings {
         }
     }
     rings
+}
+
+/// Directed boundary edges indexed by start point on an `EPS` grid, so
+/// looking up an edge starting near a point does not scan every edge. Removed
+/// edges keep their slot: indices stay in insertion order, and the lowest
+/// matching index is the one a linear scan of the remaining edges finds first.
+#[derive(Default)]
+struct Boundary {
+    edges: Vec<Option<(Point, Point)>>,
+    cells: std::collections::HashMap<[i64; 2], Vec<usize>>,
+}
+
+impl Boundary {
+    #[allow(clippy::cast_possible_truncation)] // Model coordinates are far below i64 range in EPS units.
+    fn cell(p: Point) -> [i64; 2] {
+        p.map(|value| (value / EPS).floor() as i64)
+    }
+
+    fn push(&mut self, edge: (Point, Point)) {
+        self.cells
+            .entry(Self::cell(edge.0))
+            .or_default()
+            .push(self.edges.len());
+        self.edges.push(Some(edge));
+    }
+
+    /// Lowest remaining edge starting within `EPS` of `start` whose end passes `end`.
+    fn first_from(&self, start: Point, end: impl Fn(Point) -> bool) -> Option<usize> {
+        let [x, y] = Self::cell(start);
+        let mut first: Option<usize> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for &index in self.cells.get(&[x + dx, y + dy]).into_iter().flatten() {
+                    if first.is_some_and(|found| found <= index) {
+                        continue;
+                    }
+                    if let Some((p, q)) = self.edges[index]
+                        && near(p, start)
+                        && end(q)
+                    {
+                        first = Some(index);
+                    }
+                }
+            }
+        }
+        first
+    }
+
+    fn remove(&mut self, index: usize) -> (Point, Point) {
+        let edge = self.edges[index].take().expect("a remaining boundary edge");
+        if let Some(indices) = self.cells.get_mut(&Self::cell(edge.0)) {
+            indices.retain(|&other| other != index);
+        }
+        edge
+    }
+
+    fn pop(&mut self) -> Option<(Point, Point)> {
+        while let Some(slot) = self.edges.last() {
+            if slot.is_some() {
+                return Some(self.remove(self.edges.len() - 1));
+            }
+            self.edges.pop();
+        }
+        None
+    }
 }
 
 pub fn area(rings: &Rings) -> f64 {

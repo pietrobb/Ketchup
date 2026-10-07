@@ -334,7 +334,18 @@ impl Shell {
 
     /// Run frames until the shell stops asking for a repaint.
     pub fn settle(&mut self) {
-        self.harness.run();
+        self.run_idle();
+    }
+
+    /// Like `Harness::run`, but a shell still repainting for background work (an exact
+    /// preview being evaluated on a loaded machine) gets until [`WAIT_DEADLINE`] instead
+    /// of a fixed frame count.
+    fn run_idle(&mut self) {
+        let deadline = std::time::Instant::now() + WAIT_DEADLINE;
+        while let Err(error) = self.harness.try_run() {
+            assert!(std::time::Instant::now() < deadline, "{error}");
+            std::thread::sleep(WAIT_POLL);
+        }
     }
 
     /// Poll `done` (which drives frames with `step` or `settle` and checks the condition)
@@ -490,7 +501,7 @@ impl Shell {
         self.harness
             .get_by_role_and_label(Role::Button, &label)
             .focus();
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Move keyboard focus to a labeled text input through AccessKit.
@@ -498,7 +509,7 @@ impl Shell {
         self.harness
             .get_by_role_and_label(Role::TextInput, label)
             .focus();
-        self.harness.run();
+        self.run_idle();
     }
 
     pub fn focus_text_input_once(&mut self, label: &str) {
@@ -512,7 +523,7 @@ impl Shell {
         self.harness
             .get_by_role_and_label(Role::ComboBox, label)
             .focus();
-        self.harness.run();
+        self.run_idle();
     }
 
     pub fn has_role_and_label(&self, role: Role, label: &str) -> bool {
@@ -617,7 +628,7 @@ impl Shell {
             node.click();
         }
         self.open_menu = None;
-        self.harness.run();
+        self.run_idle();
         if let Some(menu) = open_menu
             && !enabled
             && egui::Popup::is_any_open(&self.harness.ctx)
@@ -639,7 +650,7 @@ impl Shell {
         self.harness
             .get_by_role_and_label(role, label)
             .click_accesskit();
-        self.harness.run();
+        self.run_idle();
     }
 
     pub fn click_button_label(&mut self, label: &str) {
@@ -647,7 +658,7 @@ impl Shell {
         self.harness
             .get_by_role_and_label(Role::Button, label)
             .click_accesskit();
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Open a menu of the menu bar, identified by its localization key.
@@ -676,7 +687,7 @@ impl Shell {
         self.harness
             .get_by_role_and_label(Role::Button, label)
             .click();
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Double-click the outliner row whose accessible name is `label`.
@@ -740,7 +751,7 @@ impl Shell {
         self.advance(CLICK_STEP);
         self.button(position, modifiers, false);
         self.harness.input_mut().modifiers = Modifiers::NONE;
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Press and release the secondary button at `position` to open a viewport menu.
@@ -756,7 +767,7 @@ impl Shell {
             });
             self.advance(CLICK_STEP);
         }
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Press and release twice at `position`, close enough in time to read as a
@@ -770,7 +781,7 @@ impl Shell {
             self.button(position, Modifiers::NONE, false);
             self.advance(CLICK_STEP);
         }
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Press or release the synthetic primary button without completing the gesture.
@@ -797,7 +808,7 @@ impl Shell {
         }
         self.button(to, modifiers, false);
         self.harness.input_mut().modifiers = Modifiers::NONE;
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Drag from `from` to `to`, calling `observe` after every single frame of
@@ -872,19 +883,19 @@ impl Shell {
     /// Hold or release keyboard modifiers for one rendered interaction state.
     pub fn set_modifiers(&mut self, modifiers: Modifiers) {
         self.harness.input_mut().modifiers = modifiers;
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Send the native event emitted by egui-winit for Ctrl+C.
     pub fn native_copy(&mut self) {
         self.event(egui::Event::Copy);
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Send the native event emitted by egui-winit for Ctrl+V.
     pub fn native_paste(&mut self) {
         self.event(egui::Event::Paste("Ketchup object selection".to_owned()));
-        self.harness.run();
+        self.run_idle();
     }
 
     /// Send a key press and release with no modifiers.
@@ -896,7 +907,7 @@ impl Shell {
     /// Type text into whatever widget currently has keyboard focus.
     pub fn type_text(&mut self, text: &str) {
         self.event(egui::Event::Text(text.to_owned()));
-        self.harness.run();
+        self.run_idle();
     }
 
     pub fn type_text_once(&mut self, text: &str) {

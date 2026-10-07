@@ -1366,6 +1366,7 @@ fn fs_depth(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @
     // An edge line is up to 1.5 px from the edge it draws, where an adjacent face
     // already lies deeper by its depth slope; two pixels of slope plus a rounding
     // margin keep the edge in front of its own faces but behind any other surface.
+    // not a tolerance: f32 depth rounding margin of the edge pass.
     let slack = 2.0 * fwidth(input.view_depth) + max(abs(input.view_depth) * 4e-6, 1e-3);
     atomicMax(&pixel_depths[index + 1u], depth_priority(input.view_depth + slack));
     return vec4<f32>(0.0);
@@ -1421,6 +1422,7 @@ fn vs_edge(input: EdgeInput) -> EdgeOutput {
     var clip_end = camera.world_to_clip * world_end;
     var output: EdgeOutput;
     // In perspective, keep only the part of the segment in front of the eye.
+    // not a tolerance: clip-space w below which a point is behind the eye.
     let near = 1e-6;
     if clip_start.w < near && clip_end.w < near {
         output.clip_position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
@@ -1438,6 +1440,7 @@ fn vs_edge(input: EdgeInput) -> EdgeOutput {
     let pixels = vec2<f32>(camera.viewport_size) * 0.5;
     let delta = clip_end.xy / clip_end.w * pixels - clip_start.xy / clip_start.w * pixels;
     let span = length(delta);
+    // not a tolerance: a segment shorter than this many pixels has no direction.
     let direction = select(vec2<f32>(1.0, 0.0), delta / span, span > 1e-6);
     let normal = vec2<f32>(-direction.y, direction.x);
     let along = input.corner.x;

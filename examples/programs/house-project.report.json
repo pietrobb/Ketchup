@@ -25153,20 +25153,6 @@
     {
       "parts": [
         "Prízemie · stĺpiky 146",
-        "Prízemie · priečky 292"
-      ],
-      "kind": "overlap",
-      "depth_mm": 15.0,
-      "status": "removed",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 146",
         "Prízemie · preklady 011"
       ],
       "kind": "contact",
@@ -25549,20 +25535,6 @@
       "parts": [
         "Prízemie · stĺpiky 151",
         "Prízemie · priečky 064"
-      ],
-      "kind": "overlap",
-      "depth_mm": 15.0,
-      "status": "removed",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 151",
-        "Prízemie · priečky 292"
       ],
       "kind": "overlap",
       "depth_mm": 15.0,
@@ -88173,11 +88145,10 @@
           160.0,
           60.0
         ],
-        "count": 3,
+        "count": 2,
         "parts": [
           "Prízemie · priečky 064",
-          "Prízemie · priečky 113",
-          "Prízemie · priečky 292"
+          "Prízemie · priečky 113"
         ]
       },
       {
@@ -91304,7 +91275,7 @@
     ],
     "hardware": [],
     "machining": [],
-    "total_parts": 1855
+    "total_parts": 1854
   },
   "log": [],
   "unused_overrides": []

@@ -6995,8 +6995,10 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
 
     let orbit_frames = Instant::now();
     shell.orbit_drag(pointer, egui::Vec2::new(3.0, -2.0), 20);
+    // About 0.5 s alone and up to 1 s beside the parallel suite; the regression this
+    // guards (a digest per frame) cost over 100 ms a frame, more than 2 s here.
     assert!(
-        orbit_frames.elapsed() < Duration::from_secs(1),
+        orbit_frames.elapsed() < Duration::from_millis(1500),
         "twenty orbit frames of a 480-occurrence exact scene took {:?}",
         orbit_frames.elapsed()
     );
