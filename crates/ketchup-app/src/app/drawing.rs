@@ -3132,6 +3132,7 @@ impl KetchupApp {
             }
         } else if cycle_overlap {
             self.cycle_hover_overlap();
+            self.hover.alt_choice = cycle_with_alt;
         } else if confirm && self.active_tool == ActiveTool::Spline {
             self.complete_spline();
         } else if confirm && (self.has_preview() || self.has_drawn_shape_preview()) {

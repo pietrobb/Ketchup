@@ -29,7 +29,10 @@ mod project_drawings_tests;
 #[cfg(test)]
 #[path = "app/push_pull_house_tests.rs"]
 mod push_pull_house_tests;
-mod saved_views;
+pub(crate) mod saved_views;
+#[cfg(test)]
+#[path = "app/scene_tabs_tests.rs"]
+mod scene_tabs_tests;
 mod section;
 mod selection;
 mod shell;

@@ -82,6 +82,10 @@ impl FaceWorkflowUiState {
         self.xray_preview = active;
     }
 
+    pub(super) const fn alt_pick_through_held(&self) -> bool {
+        self.alt_pick_through_held
+    }
+
     pub(super) fn update_alt_pick_through(&mut self, held: bool) -> bool {
         let pressed = held && !self.alt_pick_through_held;
         self.alt_pick_through_held = held;

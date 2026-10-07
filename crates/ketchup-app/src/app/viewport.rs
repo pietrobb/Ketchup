@@ -133,6 +133,16 @@ impl KetchupApp {
         })
     }
 
+    /// Whether holding Alt turns the whole scene translucent. Translucency is
+    /// painted face by face on the CPU, which a house of thousands of parts
+    /// cannot do every frame; there the GPU scene stays and only the chosen
+    /// target is highlighted on top of it.
+    pub(crate) fn alt_xray_paints_translucent(&self) -> bool {
+        const TRANSLUCENT_TRIANGLE_LIMIT: usize = 20_000;
+        self.face_workflow.xray_preview()
+            && self.instanced_scene_triangle_count() <= TRANSLUCENT_TRIANGLE_LIMIT
+    }
+
     pub(crate) fn exact_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
         ExactInteractionProjection::from_snapshot(
             snapshot,
@@ -1679,6 +1689,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn viewport(&mut self, ui: &mut egui::Ui) {
+        self.show_scene_tabs(ui);
         let preserve_hover = self.show_edit_context_bar(ui);
         self.refresh_camera_distance();
         let desired = ui.available_size().max(Vec2::new(320.0, 280.0));
@@ -1728,8 +1739,15 @@ impl KetchupApp {
             self.viewport_primary_press(ui, &response, pointer);
         }
         self.viewport_tool_drags(ui, &response);
+        let camera_before = self.camera_view_state();
         self.viewport_camera_drag(ui, &response, camera_dragging);
         self.viewport_release_and_hover(ui, &response, primary_release);
+        if self.camera_view_state() != camera_before {
+            // The hover above was picked with the old camera; without another
+            // frame a wheel zoom would leave a part highlighted that is no
+            // longer under the pointer.
+            ui.ctx().request_repaint();
+        }
         let scene = self.project_viewport_scene(response.rect, camera_dragging);
         self.paint_viewport_scene(ui, &response, &painter, scene);
     }
@@ -2445,7 +2463,7 @@ impl KetchupApp {
         let use_wgpu_scene = self.push_pull.face_offset_evaluation.is_none()
             && self.render.wgpu_target_format.is_some()
             && !self.has_occurrence_operation_preview()
-            && !(self.view.contains(ViewFlag::Xray) || self.face_workflow.xray_preview())
+            && !(self.view.contains(ViewFlag::Xray) || self.alt_xray_paints_translucent())
             && !self.view.contains(ViewFlag::Wireframe)
             && !self.view.contains(ViewFlag::Monochrome)
             && !self.view.contains(ViewFlag::HiddenLine);
@@ -3989,7 +4007,10 @@ impl KetchupApp {
         if pointer_moved {
             // A deliberate non-front choice stays attached to that face while
             // the moving pointer still intersects it; leaving it resets to front.
-            self.hover.overlap_index = if self.hover.overlap_index == 0 {
+            // A choice made with Alt lasts only while Alt is held.
+            self.hover.overlap_index = if self.hover.overlap_index == 0
+                || (self.hover.alt_choice && !self.face_workflow.alt_pick_through_held())
+            {
                 0
             } else {
                 self.hover
@@ -4028,6 +4049,9 @@ impl KetchupApp {
             if current.is_none() {
                 self.face_workflow.set_xray_preview(false);
             }
+        }
+        if self.hover.overlap_index == 0 {
+            self.hover.alt_choice = false;
         }
         self.hover.snap = pointer.and_then(|pointer| {
             if self.uses_drawing_plane() {

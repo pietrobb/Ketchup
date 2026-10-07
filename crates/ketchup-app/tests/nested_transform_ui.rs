@@ -166,8 +166,10 @@ fn world(shell: &Shell, id: u64) -> Transform {
 }
 
 fn assert_transform(actual: Transform, expected: Transform) {
+    // A free-space target is unprojected from an f32 screen position, which
+    // carries about 1e-6 mm of error at these distances.
     for (a, e) in actual.matrix().iter().zip(expected.matrix()) {
-        assert!((a - e).abs() < 1.0e-6, "{actual:?} != {expected:?}");
+        assert!((a - e).abs() < 1.0e-5, "{actual:?} != {expected:?}");
     }
 }
 

@@ -497,6 +497,49 @@ mod tests {
     }
 
     #[test]
+    fn an_alt_choice_ends_when_the_pointer_moves_after_alt_is_released() {
+        let mut app = KetchupApp::new();
+        app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        let context = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        let _ = context.run(input(), |context| app.ui(context));
+        let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(pointer));
+        let _ = context.run(raw, |context| app.ui(context));
+        let front = app.hover.target.clone();
+        assert!(front.is_some());
+
+        let mut raw = input();
+        raw.modifiers.alt = true;
+        let _ = context.run(raw, |context| app.ui(context));
+        assert_ne!(app.hover.target, front, "Alt chooses the part behind");
+        let mut raw = input();
+        raw.modifiers.alt = true;
+        raw.events
+            .push(egui::Event::PointerMoved(pointer + Vec2::new(1.0, 1.0)));
+        let _ = context.run(raw, |context| app.ui(context));
+        assert_ne!(app.hover.overlap_index, 0, "moving with Alt held keeps it");
+
+        let _ = context.run(input(), |context| app.ui(context));
+        assert_ne!(
+            app.hover.overlap_index, 0,
+            "released Alt keeps the choice for a click on the spot"
+        );
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(pointer));
+        let _ = context.run(raw, |context| app.ui(context));
+        assert_eq!(app.hover.overlap_index, 0);
+        assert_eq!(
+            app.hover.target, front,
+            "moving on picks the front part again"
+        );
+    }
+
+    #[test]
     fn clicked_selection_stays_visible_while_the_pointer_keeps_moving() {
         let mut app = KetchupApp::new();
         app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);

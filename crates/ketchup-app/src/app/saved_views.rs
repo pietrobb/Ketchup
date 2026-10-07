@@ -5,6 +5,17 @@
 use crate::*;
 use ketchup_model::document::{SavedCamera, SavedView, SavedViewId};
 
+/// What the saved-view controls remember between frames.
+#[derive(Default)]
+pub(crate) struct SavedViewsUi {
+    /// The name typed for saving or renaming a saved view.
+    pub(crate) name: String,
+    /// The scene shown last, highlighted in the scene tabs above the viewport.
+    pub(crate) active: Option<SavedViewId>,
+    /// The scene tab being renamed in place, and its edited name.
+    pub(crate) renaming: Option<(SavedViewId, String)>,
+}
+
 /// The stable name of a display switch, e.g. "xray" or "wireframe".
 fn flag_name(flag: ViewFlag) -> &'static str {
     CommandRegistry::spec(AppCommand::View(flag))
@@ -95,8 +106,11 @@ impl KetchupApp {
                 .map(SavedViewId)?,
         };
         let view = self.capture_view(id, name);
-        self.commit_saved_view(view, "digest-saved-view-saved")
-            .then_some(id)
+        let saved = self.commit_saved_view(view, "digest-saved-view-saved");
+        if saved {
+            self.saved_views_ui.active = Some(id);
+        }
+        saved.then_some(id)
     }
 
     /// Replace a view's camera, display switches and hidden tags with what is shown now.
@@ -152,6 +166,9 @@ impl KetchupApp {
         {
             return false;
         }
+        if self.saved_views_ui.active == Some(id) {
+            self.saved_views_ui.active = None;
+        }
         self.digest = self.catalog.format(
             "digest-saved-view-deleted",
             &BTreeMap::from([("name", name)]),
@@ -200,12 +217,118 @@ impl KetchupApp {
             self.view.set(flag, view.style.contains(flag_name(flag)));
         }
         self.section = view.section;
+        self.saved_views_ui.active = Some(id);
         self.refresh_camera_distance();
         self.remember_camera_change(before);
         self.digest = self.catalog.format(
             "digest-saved-view-activated",
             &BTreeMap::from([("name", view.name)]),
         );
+        true
+    }
+
+    /// "Scene N" with the first N not taken by another view.
+    fn next_scene_name(&self) -> String {
+        (self.saved_views().len() + 1..)
+            .map(|number| {
+                self.catalog.format(
+                    "scenes-default-name",
+                    &BTreeMap::from([("number", number.to_string())]),
+                )
+            })
+            .find(|name| self.saved_view_id(name).is_none())
+            .expect("an unused scene number")
+    }
+
+    /// The scene tabs above the viewport: one click shows a saved view, "+" saves
+    /// what is shown now as a new scene, a right click updates, renames or deletes.
+    pub(crate) fn show_scene_tabs(&mut self, ui: &mut egui::Ui) {
+        // A fixed whole-point height: text heights round differently at each
+        // display scale, and the viewport below must keep the same shape.
+        const HEIGHT: f32 = 24.0;
+        let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+        ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), HEIGHT), layout, |ui| {
+            ui.set_min_height(HEIGHT);
+            ui.label(egui::RichText::new(self.catalog.text("scenes")).weak());
+            for (id, name) in self.saved_views() {
+                let arguments = BTreeMap::from([("name", name.clone())]);
+                if self.scene_rename_field(ui, id, &name) {
+                    continue;
+                }
+                let tab =
+                    ui.selectable_label(self.saved_views_ui.active == Some(id), name.as_str());
+                name_widget(&tab, true, &self.catalog.format("scenes-tab", &arguments));
+                if tab.double_clicked() {
+                    self.saved_views_ui.renaming = Some((id, name.clone()));
+                } else if tab.clicked() {
+                    self.activate_saved_view(id);
+                }
+                tab.context_menu(|ui| {
+                    if ui
+                        .button(self.catalog.format("saved-views-update", &arguments))
+                        .clicked()
+                    {
+                        self.update_saved_view(id);
+                        ui.close();
+                    }
+                    if ui.button(self.catalog.text("scenes-rename")).clicked() {
+                        self.saved_views_ui.renaming = Some((id, name.clone()));
+                        ui.close();
+                    }
+                    if ui
+                        .button(self.catalog.format("saved-views-delete", &arguments))
+                        .clicked()
+                    {
+                        self.delete_saved_view(id);
+                        ui.close();
+                    }
+                });
+            }
+            let add = ui.button("+");
+            name_widget(&add, true, &self.catalog.text("scenes-add"));
+            if add.clicked() {
+                let name = self.next_scene_name();
+                self.save_view(&name);
+            }
+        });
+    }
+
+    /// The in-place name field of a scene tab being renamed, prefilled with its
+    /// current name. Enter or clicking away keeps the new name, Escape keeps the
+    /// old one. Returns whether `id` is being renamed (and so drew no tab).
+    fn scene_rename_field(&mut self, ui: &mut egui::Ui, id: SavedViewId, name: &str) -> bool {
+        let Some((_, typed)) = self
+            .saved_views_ui
+            .renaming
+            .as_mut()
+            .filter(|(renaming, _)| *renaming == id)
+        else {
+            return false;
+        };
+        let field = ui.add(
+            egui::TextEdit::singleline(typed)
+                .hint_text(name)
+                .desired_width(140.0),
+        );
+        field.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::TextEdit,
+                true,
+                self.catalog.text("scenes-rename"),
+            )
+        });
+        if !field.has_focus() && !field.lost_focus() {
+            field.request_focus();
+        }
+        if field.lost_focus() {
+            let typed = typed.clone();
+            self.saved_views_ui.renaming = None;
+            if !ui.input(|input| input.key_pressed(egui::Key::Escape))
+                && self.can_rename_saved_view(id, &typed)
+            {
+                self.rename_saved_view(id, &typed);
+            }
+        }
         true
     }
 
@@ -217,21 +340,21 @@ impl KetchupApp {
         let save_label = self.catalog.text("saved-views-save");
         ui.horizontal(|ui| {
             let field = ui.add(
-                egui::TextEdit::singleline(&mut self.saved_view_name)
+                egui::TextEdit::singleline(&mut self.saved_views_ui.name)
                     .hint_text(name_label.as_str())
                     .desired_width(120.0),
             );
             field.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &name_label)
             });
-            let enabled = !self.saved_view_name.trim().is_empty();
+            let enabled = !self.saved_views_ui.name.trim().is_empty();
             if ui
                 .add_enabled(enabled, egui::Button::new(save_label))
                 .clicked()
             {
-                let name = self.saved_view_name.clone();
+                let name = self.saved_views_ui.name.clone();
                 if self.save_view(&name).is_some() {
-                    self.saved_view_name.clear();
+                    self.saved_views_ui.name.clear();
                 }
             }
         });
@@ -256,7 +379,7 @@ impl KetchupApp {
                 if update.clicked() {
                     self.update_saved_view(id);
                 }
-                let typed = self.saved_view_name.clone();
+                let typed = self.saved_views_ui.name.clone();
                 let rename_enabled = self.can_rename_saved_view(id, &typed);
                 let rename = icon_button(
                     ui,
@@ -265,7 +388,7 @@ impl KetchupApp {
                     &self.catalog.format("saved-views-rename", &arguments),
                 );
                 if rename.clicked() && self.rename_saved_view(id, &typed) {
-                    self.saved_view_name.clear();
+                    self.saved_views_ui.name.clear();
                 }
                 let delete = icon_button(
                     ui,

@@ -4309,8 +4309,8 @@ pub struct KetchupApp {
     theme: ThemeKind,
     camera: app_state::CameraState,
     view: ViewSettings,
-    /// The name typed for saving or renaming a saved view.
-    saved_view_name: String,
+    /// The typed name and the last shown scene of the saved views.
+    saved_views_ui: app::saved_views::SavedViewsUi,
     /// The section plane cutting the viewport open; display only, never the model.
     section: Option<SectionPlane>,
     selection: SelectionState,

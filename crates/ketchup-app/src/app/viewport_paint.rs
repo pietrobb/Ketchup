@@ -410,7 +410,8 @@ impl KetchupApp {
             } else {
                 face.color
             };
-            let color = if self.view.contains(ViewFlag::Xray) || self.face_workflow.xray_preview() {
+            let color = if self.view.contains(ViewFlag::Xray) || self.alt_xray_paints_translucent()
+            {
                 Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 72)
             } else {
                 color

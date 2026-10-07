@@ -119,6 +119,9 @@ pub(crate) struct HoverState {
     pub(crate) pick: Option<PickResult>,
     pub(crate) snap: Option<SnapResult>,
     pub(crate) overlap_index: usize,
+    /// The non-front choice was made with Alt: it lasts while Alt is held or
+    /// the pointer stays put, so a stray Alt never leaves a hidden part chosen.
+    pub(crate) alt_choice: bool,
     pub(crate) pointer: Option<Pos2>,
     pub(crate) projection_cache: RefCell<Option<InteractionProjectionCache>>,
 }

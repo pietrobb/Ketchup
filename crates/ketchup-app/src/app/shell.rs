@@ -143,6 +143,7 @@ impl KetchupApp {
                 pick: None,
                 snap: None,
                 overlap_index: 0,
+                alt_choice: false,
                 pointer: None,
                 projection_cache: RefCell::new(None),
             },
@@ -158,7 +159,7 @@ impl KetchupApp {
             },
             takeoff: app_state::TakeoffState::default(),
             drawings: app_state::DrawingsState::default(),
-            saved_view_name: String::new(),
+            saved_views_ui: Default::default(),
             section: None,
             digest,
             assistant: app_state::AssistantState {

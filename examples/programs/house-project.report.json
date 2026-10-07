@@ -17284,7 +17284,7 @@
     {
       "parts": [
         "Prízemie · stĺpiky 051",
-        "Prízemie · priečky 062"
+        "Prízemie · priečky 113"
       ],
       "kind": "contact",
       "faces": [
@@ -17620,7 +17620,7 @@
     {
       "parts": [
         "Prízemie · stĺpiky 056",
-        "Prízemie · priečky 062"
+        "Prízemie · priečky 113"
       ],
       "kind": "contact",
       "faces": [
@@ -18579,8 +18579,12 @@
         "Prízemie · stĺpiky 069",
         "Prízemie · priečky 064"
       ],
-      "kind": "gap",
-      "gap_mm": 0.4,
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "x-"
+      ],
+      "area_mm2": 12800.0,
       "direction": [
         0.0,
         0.0,
@@ -19397,8 +19401,12 @@
         "Prízemie · stĺpiky 080",
         "Prízemie · priečky 064"
       ],
-      "kind": "gap",
-      "gap_mm": 0.4,
+      "kind": "contact",
+      "faces": [
+        "z+",
+        "x-"
+      ],
+      "area_mm2": 12800.0,
       "direction": [
         0.0,
         0.0,
@@ -24808,45 +24816,11 @@
     {
       "parts": [
         "Prízemie · stĺpiky 140",
-        "Prízemie · stĺpiky 182"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x+",
-        "x-"
-      ],
-      "area_mm2": 20960.0,
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 140",
-        "Prízemie · priečky 062"
+        "Prízemie · priečky 113"
       ],
       "kind": "overlap",
       "depth_mm": 15.0,
       "status": "removed",
-      "direction": [
-        1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 140",
-        "Prízemie · priečky 113"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x+",
-        "z-"
-      ],
-      "area_mm2": 9600.0,
       "direction": [
         1.0,
         0.0,
@@ -24979,45 +24953,11 @@
     {
       "parts": [
         "Prízemie · stĺpiky 143",
-        "Prízemie · stĺpiky 185"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "x+"
-      ],
-      "area_mm2": 20960.0,
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 143",
-        "Prízemie · priečky 062"
+        "Prízemie · priečky 113"
       ],
       "kind": "overlap",
       "depth_mm": 15.0,
       "status": "removed",
-      "direction": [
-        -1.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 143",
-        "Prízemie · priečky 113"
-      ],
-      "kind": "contact",
-      "faces": [
-        "x-",
-        "z+"
-      ],
-      "area_mm2": 9600.0,
       "direction": [
         -1.0,
         0.0,
@@ -27794,142 +27734,6 @@
         1.0,
         0.0,
         0.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 182",
-        "Prízemie · priečky 062"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "x+"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 182",
-        "Prízemie · priečky 113"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y-",
-        "x-"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 183",
-        "Prízemie · priečky 062"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "x+"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 183",
-        "Prízemie · priečky 113"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y-",
-        "x-"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 184",
-        "Prízemie · priečky 062"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "x+"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 184",
-        "Prízemie · priečky 113"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y-",
-        "x-"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 185",
-        "Prízemie · priečky 062"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y+",
-        "x+"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        -1.0
-      ]
-    },
-    {
-      "parts": [
-        "Prízemie · stĺpiky 185",
-        "Prízemie · priečky 113"
-      ],
-      "kind": "contact",
-      "faces": [
-        "y-",
-        "x-"
-      ],
-      "area_mm2": 12800.0,
-      "direction": [
-        0.0,
-        0.0,
-        1.0
       ]
     },
     {
@@ -85538,21 +85342,6 @@
         "material": "C24",
         "dimensions_mm": [
           160.0,
-          131.0,
-          80.0
-        ],
-        "count": 4,
-        "parts": [
-          "Prízemie · stĺpiky 182",
-          "Prízemie · stĺpiky 183",
-          "Prízemie · stĺpiky 184",
-          "Prízemie · stĺpiky 185"
-        ]
-      },
-      {
-        "material": "C24",
-        "dimensions_mm": [
-          160.0,
           136.4,
           75.0
         ],
@@ -87688,12 +87477,10 @@
           160.0,
           80.0
         ],
-        "count": 19,
+        "count": 17,
         "parts": [
           "Prízemie · stĺpiky 011",
           "Prízemie · stĺpiky 012",
-          "Prízemie · stĺpiky 069",
-          "Prízemie · stĺpiky 080",
           "Prízemie · stĺpiky 132",
           "Prízemie · stĺpiky 133",
           "Prízemie · stĺpiky 141",
@@ -87709,19 +87496,6 @@
           "Poschodie · stĺpiky 192",
           "Poschodie · stĺpiky 193",
           "Poschodie · stĺpiky 194"
-        ]
-      },
-      {
-        "material": "C24",
-        "dimensions_mm": [
-          829.0,
-          160.0,
-          80.0
-        ],
-        "count": 2,
-        "parts": [
-          "Prízemie · stĺpiky 051",
-          "Prízemie · stĺpiky 056"
         ]
       },
       {
@@ -87866,6 +87640,21 @@
         "parts": [
           "Prízemie · priečky 063",
           "Prízemie · priečky 290"
+        ]
+      },
+      {
+        "material": "C24",
+        "dimensions_mm": [
+          1020.0,
+          160.0,
+          80.0
+        ],
+        "count": 4,
+        "parts": [
+          "Prízemie · stĺpiky 051",
+          "Prízemie · stĺpiky 056",
+          "Prízemie · stĺpiky 069",
+          "Prízemie · stĺpiky 080"
         ]
       },
       {
@@ -88380,26 +88169,14 @@
       {
         "material": "C24",
         "dimensions_mm": [
-          1800.0,
-          160.0,
-          60.0
-        ],
-        "count": 1,
-        "parts": [
-          "Prízemie · priečky 113"
-        ]
-      },
-      {
-        "material": "C24",
-        "dimensions_mm": [
           1830.0,
           160.0,
           60.0
         ],
         "count": 3,
         "parts": [
-          "Prízemie · priečky 062",
           "Prízemie · priečky 064",
+          "Prízemie · priečky 113",
           "Prízemie · priečky 292"
         ]
       },
@@ -91527,7 +91304,7 @@
     ],
     "hardware": [],
     "machining": [],
-    "total_parts": 1860
+    "total_parts": 1855
   },
   "log": [],
   "unused_overrides": []

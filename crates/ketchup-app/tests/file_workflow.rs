@@ -4722,10 +4722,27 @@ fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again()
         "an imported STEP body must stay painted across a rotation"
     );
 
-    // The body turned about its own centre, so it is still under the same point
-    // and a second rotation must be able to start there.
+    // The pivot is the surface point under the cursor, not the body's centre, so
+    // the body may have moved: aim at where it is painted now. A second rotation
+    // must be able to start there. The render bounds are the body's own, placed
+    // by its occurrence transform (the identity before the first turn).
+    let snapshot = shell.app().document_snapshot();
+    let occurrence = snapshot.occurrences().next().unwrap().id();
+    let placed = snapshot
+        .world_transform_for_occurrence(occurrence)
+        .unwrap()
+        .transform_point([centre.x, centre.y, centre.z]);
+    let centre = Vec3::new(placed[0], placed[1], placed[2]);
+    let interaction_point = centre + Vec3::new(span * 0.17, span * 0.09, 0.0);
     let viewport = shell.viewport_rect();
     let interaction_screen = shell.app().project_to_screen(interaction_point, viewport);
+    let pivot = shell.app().project_to_screen(centre, viewport);
+    let from = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(span * 0.4, 0.0, 0.0), viewport);
+    let to = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(0.0, span * 0.4, 0.0), viewport);
     wait_for_hovered_pick(&mut shell, interaction_screen);
     shell.click_at(interaction_screen);
     assert!(

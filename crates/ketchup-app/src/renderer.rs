@@ -47,6 +47,7 @@ impl DerivedRenderCache {
             fingerprint: source.fingerprint,
             vertices: source.vertices,
             indices: source.indices,
+            edge_vertices: source.edge_vertices,
         });
         self.geometries.insert(fingerprint, Arc::clone(&geometry));
         self.misses += 1;
@@ -65,8 +66,15 @@ pub struct RenderInstance {
 struct RenderVertex {
     position: [f32; 3],
     normal: [f32; 3],
-    barycentric: [f32; 3],
-    edge_mask: [f32; 3],
+}
+
+/// One corner of the screen-space quad that draws a feature edge: both segment
+/// ends, and where along (0 or 1) and to which side (-1 or 1) this corner lies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EdgeVertex {
+    start: [f32; 3],
+    end: [f32; 3],
+    corner: [f32; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +82,7 @@ pub struct RenderGeometry {
     fingerprint: String,
     vertices: Vec<RenderVertex>,
     indices: Vec<u32>,
+    edge_vertices: Vec<EdgeVertex>,
 }
 
 impl RenderGeometry {
@@ -298,6 +307,7 @@ struct GeometrySource {
     fingerprint: String,
     vertices: Vec<RenderVertex>,
     indices: Vec<u32>,
+    edge_vertices: Vec<EdgeVertex>,
 }
 
 pub(crate) type PlanarProfileMesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);
@@ -561,31 +571,57 @@ fn build_render_geometry<G: Copy + Ord>(
     for ((triangle, face_group), face_normal) in
         triangles.iter().zip(face_groups).zip(&face_normals)
     {
-        let edge_mask = [
-            feature_edges.contains(&ordered_edge(triangle[1], triangle[2])) as u8 as f32,
-            feature_edges.contains(&ordered_edge(triangle[2], triangle[0])) as u8 as f32,
-            feature_edges.contains(&ordered_edge(triangle[0], triangle[1])) as u8 as f32,
-        ];
-        for (corner, index) in triangle.iter().enumerate() {
+        for index in triangle {
             let normal = face_group
                 .and_then(|group| grouped_vertex_normals.get(&(*index, group)).copied())
                 .map_or(*face_normal, normalize);
-            let mut barycentric = [0.0; 3];
-            barycentric[corner] = 1.0;
             vertices.push(RenderVertex {
                 position: positions[*index as usize],
                 normal,
-                barycentric,
-                edge_mask,
             });
         }
     }
     let indices = (0..vertices.len() as u32).collect::<Vec<_>>();
+    let edge_vertices = edge_quads(positions, &feature_edges);
     GeometrySource {
-        fingerprint: geometry_fingerprint(kind, &vertices, &indices),
+        fingerprint: geometry_fingerprint(kind, &vertices, &indices, &edge_vertices),
         vertices,
         indices,
+        edge_vertices,
     }
+}
+
+/// Each feature edge as its own screen-space quad (two triangles). Edges are drawn
+/// as lines rather than inside the face triangles: a face triangulation is a fan of
+/// thin slivers along notched outlines, and a line confined to the triangle owning
+/// the edge came out dotted wherever the sliver narrowed below a pixel. Faces mesh
+/// separately, so the edge two faces share appears twice and is drawn once.
+fn edge_quads(positions: &[[f32; 3]], feature_edges: &BTreeSet<[u32; 2]>) -> Vec<EdgeVertex> {
+    let mut segments = BTreeSet::new();
+    for [first, second] in feature_edges {
+        let ends = [positions[*first as usize], positions[*second as usize]];
+        let [start, end] = ends.map(|point| point.map(f32::to_bits));
+        match start.cmp(&end) {
+            std::cmp::Ordering::Less => segments.insert([start, end]),
+            std::cmp::Ordering::Greater => segments.insert([end, start]),
+            std::cmp::Ordering::Equal => false,
+        };
+    }
+    segments
+        .into_iter()
+        .flat_map(|segment| {
+            let [start, end] = segment.map(|point| point.map(f32::from_bits));
+            [
+                [0.0, -1.0],
+                [1.0, -1.0],
+                [1.0, 1.0],
+                [0.0, -1.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
+            ]
+            .map(|corner| EdgeVertex { start, end, corner })
+        })
+        .collect()
 }
 
 fn ordered_edge(first: u32, second: u32) -> [u32; 2] {
@@ -616,26 +652,30 @@ fn unit(vector: [f64; 3]) -> [f32; 3] {
         .map(|value| value as f32)
 }
 
-fn geometry_fingerprint(kind: &str, vertices: &[RenderVertex], indices: &[u32]) -> String {
-    let mut fingerprint =
-        String::with_capacity(kind.len() + vertices.len() * 108 + indices.len() * 9);
+fn geometry_fingerprint(
+    kind: &str,
+    vertices: &[RenderVertex],
+    indices: &[u32],
+    edge_vertices: &[EdgeVertex],
+) -> String {
+    use std::fmt::Write as _;
+    let mut fingerprint = String::with_capacity(
+        kind.len() + vertices.len() * 54 + indices.len() * 9 + edge_vertices.len() / 6 * 54,
+    );
     fingerprint.push_str(kind);
     for vertex in vertices {
-        for values in [
-            vertex.position,
-            vertex.normal,
-            vertex.barycentric,
-            vertex.edge_mask,
-        ] {
-            for value in values {
-                use std::fmt::Write as _;
-                let _ = write!(fingerprint, ":{:08x}", value.to_bits());
-            }
+        for value in vertex.position.into_iter().chain(vertex.normal) {
+            let _ = write!(fingerprint, ":{:08x}", value.to_bits());
         }
     }
     for index in indices {
-        use std::fmt::Write as _;
         let _ = write!(fingerprint, ":{index:08x}");
+    }
+    fingerprint.push_str(":edges");
+    for edge in edge_vertices.iter().step_by(6) {
+        for value in edge.start.into_iter().chain(edge.end) {
+            let _ = write!(fingerprint, ":{:08x}", value.to_bits());
+        }
     }
     fingerprint
 }
@@ -658,6 +698,8 @@ struct GpuGeometry {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    edge_buffer: Option<wgpu::Buffer>,
+    edge_vertex_count: u32,
 }
 
 struct PreparedBatch {
@@ -679,6 +721,7 @@ pub struct GpuFrameDescriptor {
 pub struct GpuInstancedRenderer {
     depth_pipeline: wgpu::RenderPipeline,
     color_pipeline: wgpu::RenderPipeline,
+    edge_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     scene_bind_group: wgpu::BindGroup,
     scene_bind_group_layout: wgpu::BindGroupLayout,
@@ -800,22 +843,34 @@ impl GpuInstancedRenderer {
             bind_group_layouts: &[&scene_bind_group_layout],
             push_constant_ranges: &[],
         });
-        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3];
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        let edge_attributes =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
         let instance_attributes = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
-        let create_pipeline = |label: &'static str, fragment_entry: &'static str, write_mask| {
+        let surface_layout = wgpu::VertexBufferLayout {
+            array_stride: 24,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &vertex_attributes,
+        };
+        let edge_layout = wgpu::VertexBufferLayout {
+            array_stride: 32,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &edge_attributes,
+        };
+        let create_pipeline = |label: &'static str,
+                               vertex_entry: &'static str,
+                               vertex_layout: wgpu::VertexBufferLayout<'_>,
+                               fragment_entry: &'static str,
+                               write_mask| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some("vs_main"),
+                    entry_point: Some(vertex_entry),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers: &[
-                        wgpu::VertexBufferLayout {
-                            array_stride: 48,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &vertex_attributes,
-                        },
+                        vertex_layout,
                         wgpu::VertexBufferLayout {
                             array_stride: 80,
                             step_mode: wgpu::VertexStepMode::Instance,
@@ -843,12 +898,23 @@ impl GpuInstancedRenderer {
         };
         let depth_pipeline = create_pipeline(
             "Ketchup scene depth pipeline",
+            "vs_main",
+            surface_layout.clone(),
             "fs_depth",
             wgpu::ColorWrites::empty(),
         );
         let color_pipeline = create_pipeline(
             "Ketchup scene color pipeline",
+            "vs_main",
+            surface_layout,
             "fs_main",
+            wgpu::ColorWrites::ALL,
+        );
+        let edge_pipeline = create_pipeline(
+            "Ketchup scene edge pipeline",
+            "vs_edge",
+            edge_layout,
+            "fs_edge",
             wgpu::ColorWrites::ALL,
         );
         let depth_target_size = [1, 1];
@@ -856,6 +922,7 @@ impl GpuInstancedRenderer {
         Self {
             depth_pipeline,
             color_pipeline,
+            edge_pipeline,
             camera_buffer,
             scene_bind_group,
             scene_bind_group_layout,
@@ -881,8 +948,10 @@ impl GpuInstancedRenderer {
         frame: GpuFrameDescriptor,
     ) {
         let framebuffer_size = frame.framebuffer_size.map(|value| value.max(1));
+        // Two depths per pixel: the exact nearest surface, and the same pushed back by
+        // its slope, against which the edge lines are tested.
         let required_depth_bytes =
-            u64::from(framebuffer_size[0]) * u64::from(framebuffer_size[1]) * 4;
+            u64::from(framebuffer_size[0]) * u64::from(framebuffer_size[1]) * 8;
         if required_depth_bytes > self.depth_capacity {
             self.depth_buffer = create_depth_buffer(device, required_depth_bytes);
             self.scene_bind_group = create_scene_bind_group(
@@ -901,12 +970,17 @@ impl GpuInstancedRenderer {
         let mut camera_uniform = f32_bytes(&frame.world_to_clip);
         camera_uniform.extend(f32_bytes(&frame.view_depth));
         camera_uniform.extend(f32_bytes(&frame.section));
-        camera_uniform.extend(u32_bytes(&[framebuffer_size[0], framebuffer_size[1], 0, 0]));
+        let viewport = frame.viewport;
+        camera_uniform.extend(u32_bytes(&[
+            framebuffer_size[0],
+            framebuffer_size[1],
+            viewport[2].max(1),
+            viewport[3].max(1),
+        ]));
         queue.write_buffer(&self.camera_buffer, 0, &camera_uniform);
         if self.prepared_plan != Some(plan.id) {
             self.upload_plan(device, plan);
         }
-        let viewport = frame.viewport;
         if viewport[2] > 0 && viewport[3] > 0 {
             let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Ketchup scene depth preparation"),
@@ -957,12 +1031,22 @@ impl GpuInstancedRenderer {
                     contents: &u32_bytes(&batch.geometry.indices),
                     usage: wgpu::BufferUsages::INDEX,
                 });
+                let edges = &batch.geometry.edge_vertices;
+                let edge_buffer = (!edges.is_empty()).then(|| {
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Ketchup derived geometry edges"),
+                        contents: &edge_vertex_bytes(edges),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+                });
                 self.geometries.insert(
                     fingerprint.clone(),
                     GpuGeometry {
                         vertex_buffer,
                         index_buffer,
                         index_count: batch.geometry.indices.len() as u32,
+                        edge_buffer,
+                        edge_vertex_count: edges.len() as u32,
                     },
                 );
                 self.stats.geometry_uploads += 1;
@@ -1006,10 +1090,27 @@ impl GpuInstancedRenderer {
         }
     }
 
+    /// Faces, then their edge lines over them.
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_bind_group(0, &self.scene_bind_group, &[]);
+        pass.set_pipeline(&self.color_pipeline);
+        self.draw_batches(pass);
+        let Some(instance_buffer) = &self.instance_buffer else {
+            return;
+        };
+        pass.set_pipeline(&self.edge_pipeline);
+        pass.set_vertex_buffer(1, instance_buffer.slice(..));
+        for prepared in &self.prepared {
+            let geometry = &self.geometries[&prepared.fingerprint];
+            if let Some(edge_buffer) = &geometry.edge_buffer {
+                pass.set_vertex_buffer(0, edge_buffer.slice(..));
+                pass.draw(0..geometry.edge_vertex_count, prepared.instances.clone());
+            }
+        }
+    }
+
     pub fn paint(&mut self, render_pass: &mut wgpu::RenderPass<'_>) {
-        render_pass.set_bind_group(0, &self.scene_bind_group, &[]);
-        render_pass.set_pipeline(&self.color_pipeline);
-        self.draw_batches(render_pass);
+        self.draw_scene(render_pass);
         if self.instance_buffer.is_some() {
             for prepared in &self.prepared {
                 self.stats.draw_calls += 1;
@@ -1104,9 +1205,7 @@ impl CallbackTrait for ScenePaintCallback {
         callback_resources: &CallbackResources,
     ) {
         if let Some(renderer) = callback_resources.get::<GpuInstancedRenderer>() {
-            render_pass.set_bind_group(0, &renderer.scene_bind_group, &[]);
-            render_pass.set_pipeline(&renderer.color_pipeline);
-            renderer.draw_batches(render_pass);
+            renderer.draw_scene(render_pass);
         }
     }
 }
@@ -1114,15 +1213,20 @@ impl CallbackTrait for ScenePaintCallback {
 fn vertex_bytes(vertices: &[RenderVertex]) -> Vec<u8> {
     vertices
         .iter()
+        .flat_map(|vertex| [vertex.position, vertex.normal].into_iter().flatten())
+        .flat_map(f32::to_ne_bytes)
+        .collect()
+}
+
+fn edge_vertex_bytes(vertices: &[EdgeVertex]) -> Vec<u8> {
+    vertices
+        .iter()
         .flat_map(|vertex| {
-            [
-                vertex.position,
-                vertex.normal,
-                vertex.barycentric,
-                vertex.edge_mask,
-            ]
-            .into_iter()
-            .flatten()
+            vertex
+                .start
+                .into_iter()
+                .chain(vertex.end)
+                .chain(vertex.corner)
         })
         .flat_map(f32::to_ne_bytes)
         .collect()
@@ -1179,20 +1283,20 @@ struct Camera {
     view_depth: vec4<f32>,
     section: vec4<f32>,
     framebuffer_size: vec2<u32>,
-    padding: vec2<u32>,
+    viewport_size: vec2<u32>,
 };
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
 
+// Two entries per pixel: [2i] the nearest surface depth, [2i + 1] the nearest
+// surface depth pushed back by its slope, for the edge lines.
 @group(0) @binding(1)
 var<storage, read_write> pixel_depths: array<atomic<u32>>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) barycentric: vec3<f32>,
-    @location(3) edge_mask: vec3<f32>,
     @location(4) model_0: vec4<f32>,
     @location(5) model_1: vec4<f32>,
     @location(6) model_2: vec4<f32>,
@@ -1203,11 +1307,9 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
-    @location(1) barycentric: vec3<f32>,
-    @location(2) @interpolate(flat) edge_mask: vec3<f32>,
-    @location(3) view_depth: f32,
-    @location(4) @interpolate(flat) color: vec4<f32>,
-    @location(5) world_position: vec3<f32>,
+    @location(1) view_depth: f32,
+    @location(2) @interpolate(flat) color: vec4<f32>,
+    @location(3) world_position: vec3<f32>,
 };
 
 @vertex
@@ -1217,8 +1319,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.clip_position = camera.world_to_clip * world_position;
     output.world_normal = normalize((model * vec4<f32>(input.normal, 0.0)).xyz);
-    output.barycentric = input.barycentric;
-    output.edge_mask = input.edge_mask;
     output.color = input.color;
     output.view_depth = dot(camera.view_depth, world_position);
     output.world_position = world_position.xyz;
@@ -1229,17 +1329,21 @@ fn section_open() -> bool {
     return dot(camera.section.xyz, camera.section.xyz) > 0.5;
 }
 
+fn cut_away(world_position: vec3<f32>) -> bool {
+    return section_open() && dot(camera.section.xyz, world_position) > camera.section.w;
+}
+
 // Cut away by the section plane, or a back face that only an open cut shows.
 fn hidden(input: VertexOutput, front_facing: bool) -> bool {
     if !section_open() {
         return !front_facing;
     }
-    return dot(camera.section.xyz, input.world_position) > camera.section.w;
+    return cut_away(input.world_position);
 }
 
-fn pixel_depth_index(input: VertexOutput) -> u32 {
-    let pixel = vec2<u32>(input.clip_position.xy);
-    return pixel.y * camera.framebuffer_size.x + pixel.x;
+fn pixel_depth_index(clip_position: vec4<f32>) -> u32 {
+    let pixel = vec2<u32>(clip_position.xy);
+    return 2u * (pixel.y * camera.framebuffer_size.x + pixel.x);
 }
 
 fn depth_priority(view_depth: f32) -> u32 {
@@ -1257,7 +1361,13 @@ fn fs_depth(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @
     if hidden(input, front_facing) {
         discard;
     }
-    atomicMax(&pixel_depths[pixel_depth_index(input)], depth_priority(input.view_depth));
+    let index = pixel_depth_index(input.clip_position);
+    atomicMax(&pixel_depths[index], depth_priority(input.view_depth));
+    // An edge line is up to 1.5 px from the edge it draws, where an adjacent face
+    // already lies deeper by its depth slope; two pixels of slope plus a rounding
+    // margin keep the edge in front of its own faces but behind any other surface.
+    let slack = 2.0 * fwidth(input.view_depth) + max(abs(input.view_depth) * 4e-6, 1e-3);
+    atomicMax(&pixel_depths[index + 1u], depth_priority(input.view_depth + slack));
     return vec4<f32>(0.0);
 }
 
@@ -1266,7 +1376,7 @@ fn fs_main(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @l
     if hidden(input, front_facing) {
         discard;
     }
-    let depth = atomicLoad(&pixel_depths[pixel_depth_index(input)]);
+    let depth = atomicLoad(&pixel_depths[pixel_depth_index(input.clip_position)]);
     if depth_priority(input.view_depth) != depth {
         discard;
     }
@@ -1277,17 +1387,90 @@ fn fs_main(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @l
     let light_direction = normalize(vec3<f32>(-0.35, -0.45, 0.82));
     let diffuse = 0.62 + 0.38 * max(dot(normalize(input.world_normal), light_direction), 0.0);
     let face_color = mix(vec3<f32>(0.36, 0.42, 0.50) * diffuse, input.color.rgb, input.color.a);
-    let derivative = max(fwidth(input.barycentric), vec3<f32>(0.0001));
-    let edge_distance = input.barycentric / derivative;
-    let masked_distance = select(
-        vec3<f32>(1000000.0),
-        edge_distance,
-        input.edge_mask > vec3<f32>(0.5),
-    );
-    let nearest_edge = min(masked_distance.x, min(masked_distance.y, masked_distance.z));
-    let edge_alpha = 1.0 - smoothstep(0.8, 1.5, nearest_edge);
-    let edge_color = vec3<f32>(0.71, 0.75, 0.81);
-    return vec4<f32>(mix(face_color, edge_color, edge_alpha), 1.0);
+    return vec4<f32>(face_color, 1.0);
+}
+
+struct EdgeInput {
+    @location(0) start: vec3<f32>,
+    @location(1) end: vec3<f32>,
+    @location(2) corner: vec2<f32>,
+    @location(4) model_0: vec4<f32>,
+    @location(5) model_1: vec4<f32>,
+    @location(6) model_2: vec4<f32>,
+    @location(7) model_3: vec4<f32>,
+};
+
+struct EdgeOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world_position: vec3<f32>,
+    @location(1) view_depth: f32,
+    // Pixels along the segment from its start, and across it from its centre line.
+    @location(2) @interpolate(linear) line: vec2<f32>,
+    @location(3) @interpolate(flat) length: f32,
+};
+
+// Half the quad width in pixels: the line core plus its anti-aliased rim.
+const EDGE_REACH: f32 = 1.5;
+
+@vertex
+fn vs_edge(input: EdgeInput) -> EdgeOutput {
+    let model = mat4x4<f32>(input.model_0, input.model_1, input.model_2, input.model_3);
+    var world_start = model * vec4<f32>(input.start, 1.0);
+    var world_end = model * vec4<f32>(input.end, 1.0);
+    var clip_start = camera.world_to_clip * world_start;
+    var clip_end = camera.world_to_clip * world_end;
+    var output: EdgeOutput;
+    // In perspective, keep only the part of the segment in front of the eye.
+    let near = 1e-6;
+    if clip_start.w < near && clip_end.w < near {
+        output.clip_position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+        return output;
+    }
+    if clip_start.w < near {
+        let t = (near - clip_start.w) / (clip_end.w - clip_start.w);
+        clip_start = mix(clip_start, clip_end, t);
+        world_start = mix(world_start, world_end, t);
+    } else if clip_end.w < near {
+        let t = (near - clip_end.w) / (clip_start.w - clip_end.w);
+        clip_end = mix(clip_end, clip_start, t);
+        world_end = mix(world_end, world_start, t);
+    }
+    let pixels = vec2<f32>(camera.viewport_size) * 0.5;
+    let delta = clip_end.xy / clip_end.w * pixels - clip_start.xy / clip_start.w * pixels;
+    let span = length(delta);
+    let direction = select(vec2<f32>(1.0, 0.0), delta / span, span > 1e-6);
+    let normal = vec2<f32>(-direction.y, direction.x);
+    let along = input.corner.x;
+    let across = input.corner.y * EDGE_REACH;
+    let outward = 2.0 * along - 1.0;
+    let clip = mix(clip_start, clip_end, along);
+    let offset = (direction * outward * EDGE_REACH + normal * across) / pixels;
+    let world = mix(world_start, world_end, along);
+    output.clip_position = vec4<f32>(clip.xy + offset * clip.w, clip.zw);
+    output.world_position = world.xyz;
+    output.view_depth = dot(camera.view_depth, world);
+    output.line = vec2<f32>(along * span + outward * EDGE_REACH, across);
+    output.length = span;
+    return output;
+}
+
+@fragment
+fn fs_edge(input: EdgeOutput) -> @location(0) vec4<f32> {
+    if cut_away(input.world_position) {
+        discard;
+    }
+    // Behind the nearest surface (beyond the slack of its own slope): hidden.
+    let surface = atomicLoad(&pixel_depths[pixel_depth_index(input.clip_position) + 1u]);
+    if depth_priority(input.view_depth) < surface {
+        discard;
+    }
+    let past_end = max(max(-input.line.x, input.line.x - input.length), 0.0);
+    let distance = length(vec2<f32>(past_end, input.line.y));
+    let alpha = 1.0 - smoothstep(0.8, EDGE_REACH, distance);
+    if alpha <= 0.0 {
+        discard;
+    }
+    return vec4<f32>(0.71, 0.75, 0.81, alpha);
 }
 "#;
 
