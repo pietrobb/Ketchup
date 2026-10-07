@@ -13,11 +13,16 @@ use crate::contact::ContactFaces;
 use crate::eval::TOLERANCE_MM;
 use crate::load_path::{centre_of_mass, on_floor};
 use crate::model::{Part, ProgramModel, ProgramPartBody};
+use ketchup_geometry::linalg::{self, cross, dot, length};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const LOAD_KINDS: [&str; 4] = ["permanent", "imposed", "roof", "snow"];
 const GRAVITY: f64 = 9.81;
+/// not a tolerance: unit conversion, mm³ to m³.
+const M3_PER_MM3: f64 = 1e-9;
+/// not a tolerance: unit conversion, mm² to m².
+const M2_PER_MM2: f64 = 1e-6;
 /// A contact face looking at least this much downward lets the part rest on the other.
 const RESTS_ON: f64 = -0.5;
 
@@ -118,20 +123,13 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|i| a[i] - b[i])
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 /// Area of a planar polygon in space.
 fn polygon_area(points: &[[f64; 3]]) -> f64 {
     let mut sum = [0.0; 3];
     for (index, a) in points.iter().enumerate() {
-        let b = points[(index + 1) % points.len()];
-        sum[0] += a[1] * b[2] - a[2] * b[1];
-        sum[1] += a[2] * b[0] - a[0] * b[2];
-        sum[2] += a[0] * b[1] - a[1] * b[0];
+        sum = linalg::add(sum, cross(*a, points[(index + 1) % points.len()]));
     }
-    dot(sum, sum).sqrt() / 2.0
+    length(sum) / 2.0
 }
 
 /// Area of a straight-sided extrusion's profile.
@@ -180,7 +178,7 @@ fn volume_m3(part: &Part) -> f64 {
         (ProgramPartBody::Extrusion { distance_mm, .. }, Some(area)) => area * distance_mm,
         _ => size.iter().product(),
     };
-    mm3 * 1e-9
+    mm3 * M3_PER_MM3
 }
 
 /// Largest face of a slab-like part, m².
@@ -189,7 +187,7 @@ fn slab_area_m2(part: &Part) -> f64 {
     let thin = (0..3)
         .min_by(|a, b| size[*a].total_cmp(&size[*b]))
         .unwrap_or(2);
-    face_area_mm2(part, thin) * 1e-6
+    face_area_mm2(part, thin) * M2_PER_MM2
 }
 
 /// The broad face of a slab lying flat or sloped up to 60 degrees, m²; per
@@ -203,7 +201,7 @@ fn upward_area_m2(part: &Part, projected: bool) -> f64 {
     if up < 0.5 {
         return 0.0;
     }
-    face_area_mm2(part, axis) * 1e-6 * if projected { up } else { 1.0 }
+    face_area_mm2(part, axis) * M2_PER_MM2 * if projected { up } else { 1.0 }
 }
 
 /// A member's longest axis: positions from 0 at one end to `length` at the other.

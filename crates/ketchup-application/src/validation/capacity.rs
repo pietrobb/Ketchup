@@ -1,5 +1,6 @@
 //! Qualification of declared capacities, not a strength model derived from geometry.
 use ketchup_model::document::{OccurrenceId, Snapshot};
+use ketchup_model::tolerance::ROUNDING;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -125,7 +126,7 @@ pub(super) fn qualify(
     if unit
         .iter()
         .zip(direction)
-        .any(|(a, b)| (a - b).abs() > 1e-9)
+        .any(|(a, b)| (a - b).abs() > ROUNDING)
     {
         return Err(
             json!({"reason": "uncovered_load_direction", "load_direction_world": direction, "capacity_direction_world": unit}),

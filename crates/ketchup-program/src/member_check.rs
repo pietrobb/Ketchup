@@ -8,6 +8,8 @@
 
 use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
 use crate::model::{Part, ProgramModel, ProgramPartBody, ProgramProfileSegment};
+use ketchup_geometry::linalg::{dot, length};
+use ketchup_tolerance::ROUNDING;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -252,12 +254,8 @@ fn combinations(
     (uls, sls)
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 fn horizontal(v: [f64; 3]) -> f64 {
-    (v[0] * v[0] + v[1] * v[1]).sqrt()
+    length([v[0], v[1], 0.0])
 }
 
 /// Total length of the profile's cuts by the line local[long] = u.
@@ -385,7 +383,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     // one of them; the ends (cut to a slope, seated) stay out, twice the width deep.
     let mut corners: Vec<f64> = segments.iter().map(|s| s.start_mm[long]).collect();
     corners.sort_by(f64::total_cmp);
-    corners.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    corners.dedup_by(|a, b| (*a - *b).abs() < ROUNDING);
     let reach = 2.0 * thickest / along;
     let thinnest = corners
         .windows(2)
@@ -424,7 +422,7 @@ fn left_of(pieces: &[Piece], x: f64) -> (f64, f64) {
     let mut force = 0.0;
     let mut moment = 0.0;
     for &(a, b, f) in pieces {
-        if b - a <= 1e-9 {
+        if b - a <= ROUNDING {
             if a < x {
                 force += f;
                 moment += f * (x - a);
@@ -449,7 +447,7 @@ fn clipped(patches: &[(f64, f64, f64)], p: f64, q: f64, ends: (bool, bool)) -> V
     patches
         .iter()
         .filter_map(|&(a, b, f)| {
-            if b - a <= 1e-9 {
+            if b - a <= ROUNDING {
                 let inside = (a > p + 0.5 || (ends.0 && a >= p - 0.5))
                     && (a < q - 0.5 || (ends.1 && a <= q + 0.5));
                 inside.then_some((a.clamp(p, q), a.clamp(p, q), f))

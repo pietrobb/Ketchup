@@ -73,7 +73,10 @@ fn check_access(
     let mut pairs = Vec::new();
     let mut reasons = unavailable.to_vec();
     for obstacle in obstacles {
-        if pairs.len() >= 128 || started.elapsed() >= timeout || cancelled.load(Ordering::Acquire) {
+        if pairs.len() >= MAX_PROGRAM_CHECK_PAIRS
+            || started.elapsed() >= timeout
+            || cancelled.load(Ordering::Acquire)
+        {
             reasons.push(json!({"reason": "tool_access_work_limit_or_cancellation"}));
             break;
         }
@@ -131,9 +134,8 @@ pub fn verify_rule_program_tool_access(
         "assumptions": ["Envelope geometry is at its working pose; motion axis and pivot use program-world coordinates.",
             "Positive clearance is required throughout the approach including both endpoints; cutting and engagement are not evaluated.",
             "Include the complete relevant tool and holder in the envelope. Other parts stay at their current poses."]});
-    if model.tool_access.is_empty() || model.tool_access.len() > 128 {
-        report["not_evaluated"] =
-            json!([{"reason": "missing_or_excessive_tool_access_declarations", "limit": 128}]);
+    if model.tool_access.is_empty() || model.tool_access.len() > MAX_PROGRAM_DECLARATIONS {
+        report["not_evaluated"] = json!([{"reason": "missing_or_excessive_tool_access_declarations", "limit": MAX_PROGRAM_DECLARATIONS}]);
         return report;
     }
     let (obstacles, unavailable) = motion_program::bodies(snapshot, &BTreeSet::new(), &cancelled);

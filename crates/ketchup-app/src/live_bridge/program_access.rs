@@ -34,9 +34,12 @@ pub(super) fn invalid(target: &str, reason: impl Into<String>, hint: &str) -> &'
     "invalid_params"
 }
 
+/// Most source edits one patch carries; the tool schema states the same bound.
+const PATCH_EDITS: usize = 100;
+
 /// Resolve every edit against the original text, never against another edit's output.
 fn patched(source: &str, edits: &[SourceEdit]) -> Result<String, &'static str> {
-    if edits.is_empty() || edits.len() > 100 {
+    if edits.is_empty() || edits.len() > PATCH_EDITS {
         return Err(invalid(
             "edits",
             "Expected 1 to 100 source edits.",

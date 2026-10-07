@@ -41,6 +41,9 @@ impl LiveBridge {
     }
 }
 
+/// Longest drawing target path, in bytes.
+const PATH_BYTES: usize = 4096;
+
 fn export(
     app: &mut KetchupApp,
     path: &str,
@@ -48,7 +51,7 @@ fn export(
     title_block: BTreeMap<TitleField, String>,
 ) -> Result<Value, &'static str> {
     let target = Path::new(path);
-    if path.len() > 4096
+    if path.len() > PATH_BYTES
         || path.contains('\0')
         || !target.is_absolute()
         || !target

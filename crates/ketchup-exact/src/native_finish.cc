@@ -279,7 +279,7 @@ bool rebuild_on_neighbour_surface(
     const TopoDS_Face& side,
     const TopoDS_Face& neighbour,
     TopoDS_Face& rebuilt) {
-  constexpr double kCoincidence = 1.0e-6;
+  const double kCoincidence = tolerances().approximation;
   TopLoc_Location target_location;
   const occ::handle<Geom_Surface>& target = BRep_Tool::Surface(neighbour, target_location);
   if (target.IsNull() || target->IsKind(STANDARD_TYPE(Geom_ElementarySurface))) {

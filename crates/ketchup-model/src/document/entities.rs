@@ -1990,7 +1990,7 @@ impl SectionPlane {
             point_mm,
             normal: normal.map(|value| value / length),
         };
-        (length > 1e-9 && section.is_valid()).then_some(section)
+        (length > crate::tolerance::ROUNDING && section.is_valid()).then_some(section)
     }
 
     #[must_use]
@@ -2005,7 +2005,7 @@ impl SectionPlane {
             .iter()
             .chain(&self.normal)
             .all(|value| value.is_finite())
-            && (length - 1.0).abs() < 1e-6
+            && (length - 1.0).abs() < crate::tolerance::APPROXIMATION
     }
 
     /// Positive on the hidden side, in millimetres.

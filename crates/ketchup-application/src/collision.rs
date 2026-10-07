@@ -68,6 +68,10 @@ const MAX_COLLISION_GRAPH_BYTES: usize = 64 * 1024 * 1024;
 // Pair batches send at most MAX_EXACT_PAIR_GRAPHS graphs each; this bounds the whole check.
 const MAX_COLLISION_UNIQUE_GRAPHS: usize = 10_000;
 const MAX_COLLISION_SOURCE_BYTES: usize = 64 * 1024 * 1024;
+// Program checks: most declared assembly steps or tool approaches checked, and most
+// pairs one motion or tool-access check evaluates before it reports a work limit.
+const MAX_PROGRAM_DECLARATIONS: usize = 128;
+const MAX_PROGRAM_CHECK_PAIRS: usize = 128;
 
 /// An occurrence scope bound to one immutable canonical snapshot. Reusing it
 /// after any mutation, Undo/Redo, or document replacement fails closed.

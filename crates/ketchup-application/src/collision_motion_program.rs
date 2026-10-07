@@ -201,7 +201,7 @@ pub(super) fn verify_motion_in_scene(
     let mut failed = false;
     'pairs: for left in &movers {
         for right in &obstacles {
-            if pairs.len() >= 128
+            if pairs.len() >= MAX_PROGRAM_CHECK_PAIRS
                 || started.elapsed() >= timeout
                 || cancelled.load(Ordering::Acquire)
             {
@@ -246,9 +246,12 @@ pub(super) fn verify_motion_in_scene(
     report
 }
 
+/// Most pairs a report lists in full, failed and incomplete pairs first.
+const REPORTED_PAIRS: usize = 16;
+
 pub(super) fn summarize_pairs(report: &mut Value, mut pairs: Vec<Value>) {
     report["pairs_total"] = json!(pairs.len());
-    report["pairs_truncated"] = json!(pairs.len() > 16);
+    report["pairs_truncated"] = json!(pairs.len() > REPORTED_PAIRS);
     pairs.sort_by_key(|p| {
         if p["state"] == "failed" {
             0
@@ -258,7 +261,7 @@ pub(super) fn summarize_pairs(report: &mut Value, mut pairs: Vec<Value>) {
             2
         }
     });
-    pairs.truncate(16);
+    pairs.truncate(REPORTED_PAIRS);
     for pair in &mut pairs {
         for field in ["verified_intervals", "unresolved_intervals", "issues"] {
             if let Some(items) = pair[field].as_array_mut() {

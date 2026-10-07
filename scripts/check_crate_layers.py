@@ -87,7 +87,7 @@ LONG_TESTS = {
     "crates/ketchup-app/tests/assistant_workflows.rs::integrated_finishing_chain_rebuilds_exactly_through_headless_assistant": 333,
     "crates/ketchup-app/tests/capstone_chain.rs::empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence": 305,
     "crates/ketchup-app/tests/capstone_chain.rs::the_manual_capstone_runs_end_to_end_through_the_designed_shell": 346,
-    "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 446,
+    "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 419,
     "crates/ketchup-app/tests/file_workflow.rs::file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen": 471,
     "crates/ketchup-app/tests/file_workflow.rs::file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen": 421,
     "crates/ketchup-app/tests/instanced_rendering.rs::garden_studio_hardware_gpu_camera_frames": 345,

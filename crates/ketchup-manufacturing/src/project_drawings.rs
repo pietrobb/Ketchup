@@ -15,6 +15,7 @@ use crate::title_block::{
     SheetFormat, TITLE_BLOCK_MM, TitleBlock, TitleField, draw_frame_and_title_block, drawing_area,
 };
 use ketchup_geometry::linalg::{Vec3, cross, dot, normalize_within, sub};
+use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -131,7 +132,7 @@ fn lerp(a: Point, b: Point, t: f64) -> Point {
 }
 
 fn unit_normal([a, b, c]: &[Point; 3]) -> Option<Point> {
-    normalize_within(cross(sub(*b, *a), sub(*c, *a)), 1e-12)
+    normalize_within(cross(sub(*b, *a), sub(*c, *a)), NEGLIGIBLE)
 }
 
 /// A vertex position on a 0.01 mm grid, for matching shared edges.
@@ -253,7 +254,7 @@ fn depth_slabs(frame: &ViewFrame, points: Vec<Point>) -> Vec<Vec<Point>> {
 fn segment_slabs(frame: &ViewFrame, [a, b]: [Point; 2]) -> Vec<[Point; 2]> {
     let (da, db) = (dot(a, frame.depth), dot(b, frame.depth));
     let mut cuts = vec![0.0];
-    if (db - da).abs() > 1e-9 {
+    if (db - da).abs() > ROUNDING {
         cuts.extend(slab_bounds(da.min(db), da.max(db)).map(|bound| (bound - da) / (db - da)));
     }
     cuts.push(1.0);
@@ -405,7 +406,7 @@ fn draw_view(
             };
             // A face turned away is hidden by the solid's own near faces, unless
             // the cut has opened the solid; the cut face is filled over it then.
-            if frame.cut.is_none() && dot(normal, frame.depth) > 1e-9 {
+            if frame.cut.is_none() && dot(normal, frame.depth) > ROUNDING {
                 continue;
             }
             let kept = clip_polygon(&frame, triangle);
@@ -418,6 +419,7 @@ fn draw_view(
                     .iter()
                     .map(|point| frame.project(*point))
                     .collect::<Vec<_>>();
+                // not a tolerance: a sliver under 0.001 mm² of model area draws nothing visible.
                 if polygon_area(&projected).abs() < 1e-3 {
                     continue;
                 }

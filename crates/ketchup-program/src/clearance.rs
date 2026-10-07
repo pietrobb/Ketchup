@@ -11,6 +11,7 @@ use crate::model::{
 use crate::validate::{
     Issue, Severity, booleans_leave_overlap, is_box, needs_exact_shapes, overlap,
 };
+use ketchup_tolerance::APPROXIMATION;
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -73,7 +74,7 @@ fn reaches_in(zone: &Part, part: &Part) -> Option<bool> {
         },
     );
     let volume = |lo: [f64; 3], hi: [f64; 3]| (0..3).map(|i| hi[i] - lo[i]).product::<f64>();
-    if (volume(lo, hi) - volume(min, max)).abs() > 1e-6 * volume(min, max) {
+    if (volume(lo, hi) - volume(min, max)).abs() > APPROXIMATION * volume(min, max) {
         return None;
     }
     if hi[2].min(*distance_mm) - lo[2].max(0.0) <= TOLERANCE_MM {

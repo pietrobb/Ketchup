@@ -11,6 +11,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 
+/// Most declared distance measurements a report lists in full.
+const REPORTED_MEASUREMENTS: usize = 40;
+
 fn count(report: &Report, kind: &str) -> usize {
     report
         .issues
@@ -90,9 +93,9 @@ pub fn apply_exact_pairs(
         "cleared": unverified_before.saturating_sub(unresolved + collisions.saturating_sub(collisions_before)),
         "unresolved": unresolved,
         "unverified_groups": unverified_groups,
-        "measurements": &measurements[..measurements.len().min(40)],
+        "measurements": &measurements[..measurements.len().min(REPORTED_MEASUREMENTS)],
         "measurements_total": measurements.len(),
-        "measurements_truncated": measurements.len() > 40,
+        "measurements_truncated": measurements.len() > REPORTED_MEASUREMENTS,
         "distance_measurements_state": if measurements.is_empty() { "not_requested" } else if measurements.iter().all(|m| m["state"] == "verified") { "verified" } else { "incomplete" },
         "exact_pair_count": facts.len(),
         "checked_pair_count": exact["checked_pair_count"],

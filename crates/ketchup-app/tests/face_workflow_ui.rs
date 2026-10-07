@@ -213,6 +213,15 @@ fn arc_count(segments: &[ExactBRepPlanarSegment]) -> usize {
         .count()
 }
 
+/// Step frames until `done` holds; `what` names the awaited result on timeout.
+fn wait_for(shell: &mut Shell, what: &str, mut done: impl FnMut(&Shell) -> bool) {
+    let reached = shell.wait_until(|shell| {
+        shell.step();
+        done(shell)
+    });
+    assert!(reached, "{what} timed out: {}", shell.app().action_digest());
+}
+
 #[test]
 fn localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_box() {
     let directory = tempfile::tempdir().unwrap();
@@ -1068,16 +1077,9 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("8");
     shell.press_key(Key::Enter);
-    let first_push_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while shell.app().document_revision() == before_push.0 {
-        assert!(
-            std::time::Instant::now() < first_push_deadline,
-            "initial triangle Push/Pull exact result timed out: {}",
-            shell.app().action_digest()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        shell.step();
-    }
+    wait_for(&mut shell, "initial triangle Push/Pull", |shell| {
+        shell.app().document_revision() != before_push.0
+    });
     assert_eq!(shell.app().document_revision(), before_push.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before_push.2 + 1);
     let pushed_snapshot = shell.app().document_snapshot();
@@ -1108,16 +1110,9 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
             if segments.len() == 3
     ));
     let pushed_digest = shell.app().canonical_digest();
-    let exact_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while shell.app().exact_render_body_count() < 2 {
-        assert!(
-            std::time::Instant::now() < exact_deadline,
-            "triangle extrusion exact result timed out: {}",
-            shell.app().action_digest()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        shell.step();
-    }
+    wait_for(&mut shell, "triangle extrusion exact result", |shell| {
+        shell.app().exact_render_body_count() >= 2
+    });
     let (side, drag_target) = closed_segments
         .iter()
         .find_map(|segment| {
@@ -1166,16 +1161,9 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         saw_side_preview,
         "side drag must publish a reviewed preview"
     );
-    let offset_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while shell.app().document_revision() == before_side_offset {
-        assert!(
-            std::time::Instant::now() < offset_deadline,
-            "triangular-prism side Push/Pull timed out: {}",
-            shell.app().action_digest()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        shell.step();
-    }
+    wait_for(&mut shell, "triangular-prism side Push/Pull", |shell| {
+        shell.app().document_revision() != before_side_offset
+    });
     assert_eq!(shell.app().document_revision(), before_side_offset + 1);
     assert!(shell.app().document_snapshot().features().any(|feature| {
         feature.definition_id() == closed_definition_id
@@ -1192,16 +1180,11 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     assert!(shell.app().preview_action_digest().is_some());
     let before_click_offset = shell.app().document_revision();
     shell.click_at(drag_target);
-    let click_offset_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while shell.app().document_revision() == before_click_offset {
-        assert!(
-            std::time::Instant::now() < click_offset_deadline,
-            "triangular-prism click-click side Push/Pull timed out: {}",
-            shell.app().action_digest()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        shell.step();
-    }
+    wait_for(
+        &mut shell,
+        "triangular-prism click-click side Push/Pull",
+        |shell| shell.app().document_revision() != before_click_offset,
+    );
     assert!(shell.app().document_snapshot().features().any(|feature| {
         feature.definition_id() == closed_definition_id
             && matches!(feature.kind(), FeatureKind::FaceOffset { .. })
@@ -1240,16 +1223,9 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
             shell.app().undo_step_count(),
         );
         shell.app_mut().confirm_preview();
-        let cap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while shell.app().document_revision() == before_cap_offset.0 {
-            assert!(
-                std::time::Instant::now() < cap_deadline,
-                "triangular-prism cap Push/Pull timed out: {}",
-                shell.app().action_digest()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            shell.step();
-        }
+        wait_for(&mut shell, "triangular-prism cap Push/Pull", |shell| {
+            shell.app().document_revision() != before_cap_offset.0
+        });
         assert_eq!(shell.app().undo_step_count(), before_cap_offset.1 + 1);
         assert_eq!(shell.app().exact_render_body_count(), 2);
         assert!(shell.app().exact_render_triangle_count() > 12);

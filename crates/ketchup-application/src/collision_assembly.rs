@@ -6,8 +6,8 @@ fn ordered_members(model: &ProgramModel) -> Result<Vec<BTreeSet<String>>, Value>
     if model.assembly_steps.is_empty() {
         return Err(json!({"reason": "missing_assembly_order_and_paths"}));
     }
-    if model.assembly_steps.len() > 128 {
-        return Err(json!({"reason": "assembly_step_limit", "limit": 128}));
+    if model.assembly_steps.len() > MAX_PROGRAM_DECLARATIONS {
+        return Err(json!({"reason": "assembly_step_limit", "limit": MAX_PROGRAM_DECLARATIONS}));
     }
     let mut inserted = BTreeSet::new();
     let mut members = Vec::new();

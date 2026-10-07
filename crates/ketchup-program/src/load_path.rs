@@ -9,6 +9,8 @@ use crate::contact::ContactFaces;
 use crate::eval::TOLERANCE_MM;
 use crate::model::{Part, ProgramModel, ProgramPartBody};
 use crate::validate::{Issue, Severity};
+use ketchup_geometry::linalg::cross2;
+use ketchup_tolerance::ROUNDING;
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -70,21 +72,21 @@ pub(crate) fn centre_of_mass(part: &Part) -> [f64; 3] {
     part.to_world(std::array::from_fn(|axis| (min[axis] + max[axis]) / 2.0))
 }
 
-fn cross(o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+/// Positive when o → a → b turns counter-clockwise.
+fn turn(o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    cross2([a[0] - o[0], a[1] - o[1]], [b[0] - o[0], b[1] - o[1]])
 }
 
 /// Convex hull, counter-clockwise, of points in plan.
 fn hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-    points.dedup_by(|a, b| (a[0] - b[0]).abs() <= 1e-9 && (a[1] - b[1]).abs() <= 1e-9);
+    points.dedup_by(|a, b| (a[0] - b[0]).abs() <= ROUNDING && (a[1] - b[1]).abs() <= ROUNDING);
     if points.len() < 3 {
         return points;
     }
     let mut lower: Vec<[f64; 2]> = Vec::new();
     for &point in &points {
-        while lower.len() >= 2
-            && cross(lower[lower.len() - 2], lower[lower.len() - 1], point) <= 0.0
+        while lower.len() >= 2 && turn(lower[lower.len() - 2], lower[lower.len() - 1], point) <= 0.0
         {
             lower.pop();
         }
@@ -92,8 +94,7 @@ fn hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     }
     let mut upper: Vec<[f64; 2]> = Vec::new();
     for &point in points.iter().rev() {
-        while upper.len() >= 2
-            && cross(upper[upper.len() - 2], upper[upper.len() - 1], point) <= 0.0
+        while upper.len() >= 2 && turn(upper[upper.len() - 2], upper[upper.len() - 1], point) <= 0.0
         {
             upper.pop();
         }
@@ -124,7 +125,7 @@ fn over(p: [f64; 2], points: &[[f64; 3]]) -> bool {
         1 => segment_distance(p, hull[0], hull[0]) <= TOLERANCE_MM,
         2 => segment_distance(p, hull[0], hull[1]) <= TOLERANCE_MM,
         count => {
-            (0..count).all(|i| cross(hull[i], hull[(i + 1) % count], p) >= 0.0)
+            (0..count).all(|i| turn(hull[i], hull[(i + 1) % count], p) >= 0.0)
                 || (0..count)
                     .any(|i| segment_distance(p, hull[i], hull[(i + 1) % count]) <= TOLERANCE_MM)
         }
