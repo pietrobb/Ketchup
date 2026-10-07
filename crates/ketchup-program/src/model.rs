@@ -1633,7 +1633,7 @@ pub struct ProgramModel {
     pub area_loads: Vec<crate::loads::AreaLoad>,
     /// Strength classes of timber materials (`timber_strength()`), by material name.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub timber: BTreeMap<String, crate::member_check::TimberClass>,
+    pub strength_classes: BTreeMap<String, crate::member_check::TimberClass>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

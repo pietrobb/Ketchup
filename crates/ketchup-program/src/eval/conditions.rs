@@ -113,8 +113,8 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 .unwrap_or_default(),
             ignore,
             hint: text(hint, "load_path hint")?.unwrap_or_else(|| {
-                "Rest the member from above on a carried member (a beam, plate, post or \
-                 wall below it, under both ends of a beam), or connect it with \
+                "Rest the member from above on a carried member below it (a post, wall, \
+                 plate, or a horizontal member under both of its ends), or connect it with \
                  joint(..., bearing=True) for a connector that carries it (a joist hanger, \
                  structural screws)."
                     .to_owned()
@@ -258,7 +258,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         state(eval)?
             .model
             .borrow_mut()
-            .timber
+            .strength_classes
             .insert(material.to_owned(), class);
         Ok(NoneType)
     }

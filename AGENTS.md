@@ -19,6 +19,8 @@ Plan and rationale: `docs/plan-upratovania-2026-09-24.md`, `docs/analyza-fundame
   balloon letters, capsule, nightstand, …); evaluators that support one shape; hand-written meshes
   for specific shape combinations; features with a fixed point count; modules written for one test.
 - Format exporters (STEP, BTLx, HOMAG, DXF, …) are allowed. A format is not a product.
+- Validators against a design standard (EN 1995-1-1, …) are allowed. They only read finished parts
+  and create no geometry; a standard is not a product.
 - If a generic operation is missing, **extend the generic operation**. Do not add a special case
   next to it.
 

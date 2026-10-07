@@ -31,6 +31,16 @@ OLD_FORMAT_READERS = {
     "crates/ketchup-model/src/persistence/legacy.rs",
     "crates/ketchup-model/src/persistence/snapshot_codec.rs",
 }
+# Validators against a design standard (EN 1995-1-1 for timber members) only read finished parts
+# and create no geometry; a standard is not a product. Their files, and lines that name the
+# standard or its program-language inputs, are the second exception.
+STANDARD_VALIDATORS = {
+    "crates/ketchup-program/src/load_path.rs",
+    "crates/ketchup-program/src/loads.rs",
+    "crates/ketchup-program/src/member_check.rs",
+}
+STANDARD_VALIDATOR_LINE = re.compile(r"^.*(?:EN 1995|timber_strength|timber_design|TimberClass).*$",
+                                     re.MULTILINE)
 WORDS = [
     "bottle", "teapot", "balloon_text", "balloon_glyph", "gable_roof", "staircase",
     "oriented_beam", "hettich", "quadro", "nightstand", "capsule", "d_profile",
@@ -52,9 +62,9 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
         for path in sorted(root.glob(pattern)):
             relative = path.relative_to(root)
             if (EXCLUDED_PARTS & set(relative.parts[:-1]) or path.stem.endswith("tests")
-                    or relative.as_posix() in OLD_FORMAT_READERS):
+                    or relative.as_posix() in OLD_FORMAT_READERS | STANDARD_VALIDATORS):
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = STANDARD_VALIDATOR_LINE.sub("", path.read_text(encoding="utf-8", errors="replace"))
             if path.suffix == ".rs":
                 text = TEST_MODULE.sub("", text)
             for match in PATTERN.finditer(text):

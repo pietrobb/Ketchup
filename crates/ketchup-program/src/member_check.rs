@@ -923,7 +923,7 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
 /// Every load-path member checked as a timber beam or column.
 #[must_use]
 pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
-    if loads.is_empty() || model.timber.is_empty() {
+    if loads.is_empty() || model.strength_classes.is_empty() {
         return DesignReport::default();
     }
     let mut members: Vec<MemberCheck> = Vec::new();
@@ -933,7 +933,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
     for load in &loads.members {
         let part = model.part(&load.part);
         let material = part.and_then(|p| p.material.clone()).unwrap_or_default();
-        let class = model.timber.get(&material);
+        let class = model.strength_classes.get(&material);
         let mut missing = load.missing.clone();
         let shape = part.map_or_else(|| Err("the part is not found"), |p| shape(p, load.axis));
         let role = match &shape {
