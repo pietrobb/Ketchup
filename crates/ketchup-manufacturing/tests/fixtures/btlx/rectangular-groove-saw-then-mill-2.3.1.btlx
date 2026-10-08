@@ -2,7 +2,7 @@
 <BTLx xmlns="https://www.design2machine.com" Version="2.3.1" Language="en">
   <Project Name="Ketchup">
     <Parts>
-      <Part Count="2" Length="1000" Width="100" Height="50" SingleMemberNumber="1" Designation="definition-40" Material="ketchup.material.timber.unspecified.v1">
+      <Part Count="2" Length="1000" Width="100" Height="50" SingleMemberNumber="1" Designation="Timber with rectangular profile cut" Material="ketchup.material.timber.unspecified.v1">
         <UserReferencePlanes>
           <UserReferencePlane ID="100">
             <Position>

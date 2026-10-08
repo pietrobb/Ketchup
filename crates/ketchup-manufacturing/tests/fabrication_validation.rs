@@ -75,6 +75,9 @@ const PURCHASED_ITEM_CATEGORY: ClassificationCategoryId = ClassificationCategory
 const MATERIAL_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(940);
 const STEEL_MATERIAL_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(941);
 const BEARING_MATERIAL_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(942);
+const C24_MATERIAL_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(943);
+/// A material name with characters that SVG text must escape.
+const BEARING_6202_2RS: &str = "bearing 6202 <2RS> & seal";
 
 #[test]
 fn format_99_validator_roles_load_under_their_function_names() {
@@ -627,6 +630,38 @@ fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner()
 }
 
 #[test]
+fn btlx_names_the_part_and_carries_its_timber_grade() {
+    // The operator matches a BTLx part to the model by its name, and the
+    // strength class travels with it instead of an unspecified-timber constant.
+    let mut document = circular_drill_document_at([20.0, 15.0]);
+    document
+        .apply_batch(&CommandBatch::new(
+            std::iter::once(CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![(C24_MATERIAL_CATEGORY, "C24 & S10".to_owned())],
+            })
+            .chain([GRAPH_LEFT, GRAPH_RIGHT].map(|occurrence_id| {
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id,
+                    dimension_id: MATERIAL_DIMENSION,
+                    category_id: Some(C24_MATERIAL_CATEGORY),
+                }
+            }))
+            .collect(),
+        ))
+        .unwrap();
+    let (snapshot, projection) =
+        exact_graph_document_fabrication_projection(document, "cr7-timber-grade", GRAPH_BOOLEAN);
+    assert_eq!(projection.bom.rows[0].material_key, "C24 & S10");
+    let xml = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert!(
+        xml.contains("Designation=\"Timber with circular drilling\" Material=\"C24 &amp; S10\""),
+        "{xml}"
+    );
+}
+
+#[test]
 fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     assert_eq!(BTLX_2_3_1_VERSION, "2.3.1");
     assert_eq!(
@@ -1101,10 +1136,7 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
                         STEEL_MATERIAL_CATEGORY,
                         "ketchup.material.steel.s355.v1".to_owned(),
                     ),
-                    (
-                        BEARING_MATERIAL_CATEGORY,
-                        "ketchup.material.bearing.6202.v1".to_owned(),
-                    ),
+                    (BEARING_MATERIAL_CATEGORY, BEARING_6202_2RS.to_owned()),
                 ],
             },
             CanonicalCommand::SetOccurrenceClassification {
@@ -1179,10 +1211,7 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
         projection.bom.rows[1].item_kind,
         GeneralBomItemKind::Purchased
     );
-    assert_eq!(
-        projection.bom.rows[1].material_key,
-        "ketchup.material.bearing.6202.v1"
-    );
+    assert_eq!(projection.bom.rows[1].material_key, BEARING_6202_2RS);
     assert_eq!(projection.bom.rows[1].quantity, 2);
     assert!(
         projection.bom.rows[1]
@@ -1210,8 +1239,9 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
         "position: 1, quantity: 2, kind: manufactured, material: ketchup.material.steel.s355.v1"
     ));
     assert!(drawing.contains(
-        "position: 2, quantity: 2, kind: purchased, material: ketchup.material.bearing.6202.v1"
+        "position: 2, quantity: 2, kind: purchased, material: bearing 6202 &lt;2RS&gt; &amp; seal"
     ));
+    assert!(!drawing.contains("<2RS>"), "{drawing}");
     for (row, drawing) in projection
         .bom
         .rows

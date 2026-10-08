@@ -479,7 +479,14 @@ fn draw_view(
         cuts,
         min,
         max,
-        cut_at_mm: frame.cut.map(f64::abs),
+        // `cut` is measured along the depth direction, which is ±1 on the
+        // world axis the plane is normal to: divide to get that coordinate.
+        cut_at_mm: frame.cut.map(|cut| {
+            let axis = (0..3)
+                .max_by(|&a, &b| frame.depth[a].abs().total_cmp(&frame.depth[b].abs()))
+                .unwrap_or(2);
+            cut / frame.depth[axis]
+        }),
     }
 }
 
@@ -898,6 +905,34 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_cut_below_the_origin_reports_its_height_with_its_sign() {
+        // The room lowered by 1 m: its walls stand from -800 to 1700.
+        let lowered = room()
+            .into_iter()
+            .map(|mut solid| {
+                for corner in solid.triangles.iter_mut().flatten() {
+                    corner[2] -= 1000.0;
+                }
+                solid
+            })
+            .collect::<Vec<_>>();
+        let sheet = project_sheet(
+            &lowered,
+            &ProjectSheetOptions {
+                plan_cut_z_mm: Some(-300.0),
+                ..ProjectSheetOptions::default()
+            },
+        )
+        .unwrap();
+        let plan = sheet
+            .views
+            .iter()
+            .find(|summary| summary.view == ProjectView::Plan)
+            .unwrap();
+        assert_eq!(plan.cut_at_mm, Some(-300.0));
+    }
+
+    #[test]
     fn plan_and_sections_fill_the_parts_the_plane_cuts() {
         let sheet = sheet(Some(1200.0));
         let cut = |view| {
@@ -910,6 +945,11 @@ mod tests {
         let plan = cut(ProjectView::Plan);
         assert_eq!(plan.cut_solids, 4, "the four walls, not the floor");
         assert_eq!(plan.cut_at_mm, Some(1200.0));
+        assert_eq!(
+            cut(ProjectView::LongitudinalSection).cut_at_mm,
+            Some(1500.0),
+            "the room's middle across"
+        );
         assert_eq!(plan.extent_mm, [6000.0, 3000.0]);
         // Along the 6 m length: floor plus the two end walls; across: floor and side walls.
         assert_eq!(cut(ProjectView::LongitudinalSection).cut_solids, 3);

@@ -831,7 +831,7 @@ impl GeneralFabricationProjection {
                 drawing.position,
                 drawing.quantity,
                 drawing.item_kind.token(),
-                drawing.material_key
+                xml_escape(&drawing.material_key)
             ));
             y += 30.0;
             for view in &drawing.views {
@@ -1241,7 +1241,6 @@ impl GeneralFabricationProjection {
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
                 if stock.kind != GeneralManufacturingKind::Stock
                     || !stock.semantic_inputs.is_empty()
-                    || row.material_key != TIMBER_MATERIAL_V1
                     || row.quantity == 0
                     || row.quantity != row.instances.len()
                 {
@@ -1287,9 +1286,14 @@ impl GeneralFabricationProjection {
                     .flatten()
                     .collect::<Vec<_>>();
                 output.push_str(&format!(
-                    "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"{}\n",
-                    row.definition_id.0,
-                    TIMBER_MATERIAL_V1,
+                    "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"{}\" Material=\"{}\"{}\n",
+                    // The part's name, so the operator finds the member in the model.
+                    xml_escape(&if part.is_empty() {
+                        format!("definition-{}", row.definition_id.0)
+                    } else {
+                        part.to_owned()
+                    }),
+                    xml_escape(&row.material_key),
                     if processings.is_empty() { "/>" } else { ">" }
                 ));
                 if processings.is_empty() {
@@ -2522,22 +2526,25 @@ fn bom_occurrence_metadata(
             PURCHASED_ITEM_ROLE_V1 => GeneralBomItemKind::Purchased,
             _ => continue,
         };
-        let material_key = if item_kind == GeneralBomItemKind::Timber {
-            TIMBER_MATERIAL_V1.to_owned()
-        } else if let Some(material_dimension) = material_dimension {
-            snapshot
-                .occurrence_classification(occurrence.id(), material_dimension.id())
-                .map(|category_id| {
-                    material_dimension
-                        .category(category_id)
-                        .map(|category| category.name().to_owned())
-                        .ok_or(GeneralFabricationError::InvalidBomMetadata)
-                })
-                .transpose()?
-                .unwrap_or_else(|| UNSPECIFIED_MATERIAL_V1.to_owned())
-        } else {
-            UNSPECIFIED_MATERIAL_V1.to_owned()
-        };
+        let classified = material_dimension
+            .and_then(|material_dimension| {
+                snapshot
+                    .occurrence_classification(occurrence.id(), material_dimension.id())
+                    .map(|category_id| {
+                        material_dimension
+                            .category(category_id)
+                            .map(|category| category.name().to_owned())
+                            .ok_or(GeneralFabricationError::InvalidBomMetadata)
+                    })
+            })
+            .transpose()?;
+        let material_key = classified.unwrap_or_else(|| {
+            if item_kind == GeneralBomItemKind::Timber {
+                TIMBER_MATERIAL_V1.to_owned()
+            } else {
+                UNSPECIFIED_MATERIAL_V1.to_owned()
+            }
+        });
         if !manufacturing_export_token_is_safe(&material_key) {
             return Err(GeneralFabricationError::InvalidBomMetadata);
         }
