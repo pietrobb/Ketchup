@@ -166,14 +166,14 @@ mod tests {
         let target = directory.path().join("sheet.pdf");
         std::fs::write(&target, b"user file").unwrap();
         let mut app = KetchupApp::new();
-        let before = app.stored_sheet_settings();
+        let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
         assert_eq!(
             export(&mut app, target.to_str().unwrap(), Some("A1"), title),
             Err("drawings_target_exists")
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
-        assert_eq!(app.stored_sheet_settings(), before);
+        assert_eq!(app.stored_sheet_settings().unwrap(), before);
         assert!(!app.drawings.unsaved);
     }
 
@@ -182,12 +182,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("sheet.pdf");
         let mut app = KetchupApp::new();
-        let before = app.stored_sheet_settings();
+        let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
         // The empty document has no exact solid to draw.
         assert!(export(&mut app, target.to_str().unwrap(), Some("A1"), title).is_err());
         assert!(!target.exists());
-        assert_eq!(app.stored_sheet_settings(), before);
+        assert_eq!(app.stored_sheet_settings().unwrap(), before);
         assert!(!app.drawings.unsaved);
     }
 

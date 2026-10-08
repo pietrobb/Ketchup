@@ -26,7 +26,7 @@ pub(crate) enum ProjectDrawingsError {
     NotEvaluated(Vec<String>),
     /// The title block and format stored in the document do not read; they
     /// are left as they are rather than replaced by the defaults.
-    SettingsUnreadable(String),
+    SettingsUnreadable(serde_json::Error),
     Write(std::io::Error),
 }
 
@@ -166,7 +166,7 @@ impl KetchupApp {
     /// The sheet settings kept in the document, as stored (the defaults when
     /// none are); stored settings that do not read are an error, never
     /// quietly the defaults.
-    pub(crate) fn stored_sheet_settings(&self) -> Result<SheetSettings, String> {
+    pub(crate) fn stored_sheet_settings(&self) -> Result<SheetSettings, serde_json::Error> {
         self.file
             .container_data
             .extensions()
@@ -175,7 +175,7 @@ impl KetchupApp {
             })
             .map_or_else(
                 || Ok(SheetSettings::default()),
-                |entry| serde_json::from_slice(entry.bytes()).map_err(|error| error.to_string()),
+                |entry| serde_json::from_slice(entry.bytes()),
             )
     }
 
@@ -206,7 +206,7 @@ impl KetchupApp {
         settings.title_block.retain(|field, value| {
             !value.trim().is_empty() && TitleField::EDITABLE.contains(field)
         });
-        if self.stored_sheet_settings().as_ref() == Ok(&settings) {
+        if self.stored_sheet_settings().ok().as_ref() == Some(&settings) {
             return;
         }
         let Ok(bytes) = serde_json::to_vec(&settings) else {
@@ -293,7 +293,7 @@ impl KetchupApp {
             ),
             ProjectDrawingsError::SettingsUnreadable(reason) => self.catalog.format(
                 "drawings-settings-unreadable",
-                &BTreeMap::from([("reason", reason.clone())]),
+                &BTreeMap::from([("reason", reason.to_string())]),
             ),
             ProjectDrawingsError::Write(error) => error.to_string(),
         }
@@ -376,7 +376,7 @@ impl KetchupApp {
                         ui.visuals().warn_fg_color,
                         self.catalog.format(
                             "drawings-settings-unreadable-edit",
-                            &BTreeMap::from([("reason", reason)]),
+                            &BTreeMap::from([("reason", reason.to_string())]),
                         ),
                     );
                 }

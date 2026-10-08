@@ -397,7 +397,11 @@ NativePairQuery query_body_pair_native(
         BRepAdaptor_Surface surface(topo_face);
         bool planar = surface.GetType() == GeomAbs_Plane;
         gp_Pln plane = planar ? surface.Plane() : gp_Pln();
-        double tolerance = BRep_Tool::Tolerance(topo_face);
+        // How far the face may lie from `plane`: zero for a true plane, the fitting
+        // tolerance for a fitted one. The face's own BRep tolerance is not used: an
+        // imported or repaired face can carry a hundredth of a millimetre, and parallel
+        // faces that far apart are a gap to measure, not a contact.
+        double tolerance = 0.0;
         if (!planar) {
           // Extruded straight profile edges are flat SurfaceOfExtrusion faces;
           // their fitted plane deviates by at most the fitting tolerance.
@@ -443,7 +447,7 @@ NativePairQuery query_body_pair_native(
             continue;
           }
           // Planar faces share area only when they lie in one plane: parallel
-          // and no further apart than their tolerances and the contact tolerance.
+          // and no further apart than their plane fit and the contact tolerance.
           if (left_face.planar && right_face.planar &&
               (std::abs(left_face.plane.Axis().Direction().Dot(right_face.plane.Axis().Direction())) <
                    1.0 - tolerances().rounding ||

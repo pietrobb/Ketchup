@@ -221,6 +221,103 @@ fn native_pair_detects_two_millimetre_gap_and_penetration_on_opposite_sides_of_c
     }
 }
 
+/// A STEP or IGES file may declare a loose precision (here 1e-2 mm). A face
+/// 0.005 mm away is inside that precision but not in contact: the gap is
+/// measured, not reported as touching at 0 mm. A face that really lies on the
+/// support still touches with its full area.
+#[test]
+fn native_pair_measures_a_gap_inside_a_loose_imported_precision() {
+    let backend = ExactBackend::new();
+    let support = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            size_mm: Size3 {
+                x: 10.0,
+                y: 10.0,
+                z: 1.0,
+            },
+        })
+        .unwrap();
+    let load = |z| {
+        backend
+            .make_box(BoxSpec {
+                origin_mm: Point3 { x: 2.0, y: 3.0, z },
+                size_mm: Size3 {
+                    x: 2.0,
+                    y: 4.0,
+                    z: 4.0,
+                },
+            })
+            .unwrap()
+            .body
+    };
+    // Exports `body`, loosens the file's declared precision to 1e-2 mm and imports it.
+    let loose = |body: &ketchup_exact::ExactBody, format: &str| {
+        let path = std::env::temp_dir().join(format!(
+            "ketchup-loose-precision-{}.{format}",
+            std::process::id()
+        ));
+        let path = path.to_str().unwrap();
+        let (declared, loosened) = if format == "step" {
+            backend.export_step(body, path).unwrap();
+            (
+                "UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07)",
+                "UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-02)",
+            )
+        } else {
+            backend.export_iges(body, path).unwrap();
+            // The resolution field of the IGES global section (same width).
+            (",1E-07,", ",1E-02,")
+        };
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains(declared), "{format} declares {declared}");
+        std::fs::write(path, text.replacen(declared, loosened, 1)).unwrap();
+        let imported = if format == "step" {
+            backend.import_step(path)
+        } else {
+            backend.import_iges(path)
+        }
+        .unwrap()
+        .body;
+        let _ = std::fs::remove_file(path);
+        imported
+    };
+    for format in ["step", "iges"] {
+        let gap = loose(&load(1.005), format);
+        let touching = loose(&load(1.0), format);
+        for (left, right) in [(&support.body, &gap), (&gap, &support.body)] {
+            let result = backend.query_body_pair(left, right, 1e-7).unwrap();
+            assert_eq!(
+                result.relation,
+                ExactPairRelation::Separated,
+                "{format} {result:?}"
+            );
+            assert_eq!(result.common_contact_area_mm2, 0.0, "{format} {result:?}");
+            assert!(
+                (result.distance_mm - 0.005).abs() < 1e-6,
+                "{format} {result:?}"
+            );
+        }
+        for (left, right) in [(&support.body, &touching), (&touching, &support.body)] {
+            let result = backend.query_body_pair(left, right, 1e-7).unwrap();
+            assert_eq!(
+                result.relation,
+                ExactPairRelation::Touching,
+                "{format} {result:?}"
+            );
+            assert!(
+                (result.common_contact_area_mm2 - 8.0).abs() < 1e-6,
+                "{format} {result:?}"
+            );
+            assert_eq!(result.distance_mm, 0.0, "{format} {result:?}");
+        }
+    }
+}
+
 /// Pair queries share cached bodies, so no query may alter its inputs: every
 /// pair gives the same answer whatever was queried before it.
 #[test]
