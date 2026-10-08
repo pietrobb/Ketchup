@@ -12,6 +12,7 @@ use crate::document::{
 };
 use crate::graph::SlotResolution;
 
+pub(crate) mod history_chunks;
 mod legacy;
 mod work_recovery;
 #[cfg(feature = "testing")]
@@ -27,7 +28,7 @@ const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 const CONTAINER_SCHEMA: u16 = 1;
 const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
-const HISTORY_SCHEMA: u16 = 3;
+const HISTORY_SCHEMA: u16 = 4;
 const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
 const WORK_RECOVERY_SCHEMA: u16 = 1;
 /// Most revisions a native file's history may hold. Files written before the shared
@@ -202,6 +203,9 @@ pub struct LoadAudit {
     pub feature_parameter_freshness: Vec<FeatureParameterFreshnessAudit>,
     pub unknown_extensions: Vec<ExtensionAudit>,
     pub recovered_from_backup: bool,
+    /// Why the saved Undo history was not restored; the document opened with only its
+    /// current revision.
+    pub history_discarded: Option<String>,
 }
 
 pub struct ReviewCandidate {
@@ -432,6 +436,7 @@ fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot
     let encoded = Arc::new(crate::document::EncodedSnapshot {
         sha256: crate::graph::sha256_bytes(&bytes),
         bytes,
+        chunks: std::sync::OnceLock::new(),
     });
     let _ = cache.set((snapshot.revision_id(), Arc::clone(&encoded)));
     encoded
@@ -485,11 +490,16 @@ fn write_revision_origin(bytes: &mut Vec<u8>, origin: RevisionOrigin) {
     }
 }
 
-fn append_revision_history_record(
+/// The revision's rule program is the one of the revision before it (format 4).
+const HISTORY_RULE_PROGRAM_AS_PREVIOUS: u8 = 2;
+
+/// `previous` is the revision written before this one in a format-4 history, whose
+/// rule program this one may name instead of storing it again.
+fn write_revision_metadata(
     bytes: &mut Vec<u8>,
     revision: &Revision,
+    previous: Option<&Revision>,
 ) -> Result<(), PersistenceError> {
-    let snapshot = encoded_snapshot(revision.snapshot());
     push_u64(bytes, revision.id());
     push_string(bytes, revision.batch_digest());
     write_revision_origin(bytes, revision.origin());
@@ -499,7 +509,11 @@ fn append_revision_history_record(
     } else {
         push_u8(bytes, 0);
     }
-    if let Some(source) = revision.rule_program() {
+    if revision.rule_program().is_some()
+        && previous.is_some_and(|previous| previous.rule_program() == revision.rule_program())
+    {
+        push_u8(bytes, HISTORY_RULE_PROGRAM_AS_PREVIOUS);
+    } else if let Some(source) = revision.rule_program() {
         push_u8(bytes, 1);
         let encoded = serde_json::to_vec(source).map_err(|error| {
             PersistenceError::InvalidPayload(format!("revision rule program: {error}"))
@@ -512,48 +526,131 @@ fn append_revision_history_record(
     } else {
         push_u8(bytes, 0);
     }
-    push_u64(bytes, snapshot.bytes.len() as u64);
-    bytes.extend_from_slice(&snapshot.sha256);
-    bytes.extend_from_slice(&snapshot.bytes);
-    if bytes.len() > MAX_SIDECAR_BYTES {
-        return Err(PersistenceError::ResourceLimit);
-    }
     Ok(())
 }
 
-fn encode_revision_history(document: &DocumentStore) -> Result<Vec<u8>, PersistenceError> {
-    let count = u32::try_from(document.revision_count())
+/// A history revision whose snapshot is the container's `document.bin`.
+const HISTORY_SNAPSHOT_IS_DOCUMENT: u8 = 0;
+/// A history revision whose snapshot is a list of the history's chunks.
+const HISTORY_SNAPSHOT_IN_CHUNKS: u8 = 1;
+/// A history chunk stored in the history itself.
+const HISTORY_CHUNK_INLINE: u8 = 0;
+/// A history chunk that is a byte range of `document.bin`.
+const HISTORY_CHUNK_IN_DOCUMENT: u8 = 1;
+
+/// Format 4: the distinct chunks of all revision snapshots once (those the current
+/// snapshot has as ranges of `document.bin`), then every revision with its snapshot
+/// as chunk numbers; the current revision names `document.bin`.
+fn encode_history(
+    revisions: &[&Revision],
+    cursor: usize,
+    next_revision_id: u64,
+    document_bin: &crate::document::EncodedSnapshot,
+) -> Result<Vec<u8>, PersistenceError> {
+    let count = u32::try_from(revisions.len())
         .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
-    if count == 0 || count > FILE_HISTORY_REVISIONS {
+    if count == 0 || count > FILE_HISTORY_REVISIONS || cursor >= revisions.len() {
         return Err(PersistenceError::ResourceLimit);
     }
-    let cursor = u32::try_from(document.history_cursor())
-        .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
-    let mut bytes = Vec::new();
+    let mut chunk_numbers = BTreeMap::<[u8; 32], u32>::new();
+    let mut chunk_table = Vec::new();
+    for chunk in document_bin
+        .chunks
+        .get_or_init(|| history_chunks::chunks(&document_bin.bytes))
+    {
+        let next = chunk_numbers.len() as u32;
+        chunk_numbers.entry(chunk.sha256).or_insert_with(|| {
+            push_u8(&mut chunk_table, HISTORY_CHUNK_IN_DOCUMENT);
+            push_u32(&mut chunk_table, chunk.range.start as u32);
+            push_u32(&mut chunk_table, chunk.range.len() as u32);
+            next
+        });
+    }
+    let mut records = Vec::new();
+    for (index, revision) in revisions.iter().enumerate() {
+        let previous = index.checked_sub(1).map(|previous| revisions[previous]);
+        write_revision_metadata(&mut records, revision, previous)?;
+        if index == cursor {
+            push_u8(&mut records, HISTORY_SNAPSHOT_IS_DOCUMENT);
+            continue;
+        }
+        let snapshot = encoded_snapshot(revision.snapshot());
+        let chunks = snapshot
+            .chunks
+            .get_or_init(|| history_chunks::chunks(&snapshot.bytes));
+        push_u8(&mut records, HISTORY_SNAPSHOT_IN_CHUNKS);
+        push_u64(&mut records, snapshot.bytes.len() as u64);
+        records.extend_from_slice(&snapshot.sha256);
+        push_u32(&mut records, chunks.len() as u32);
+        for chunk in chunks {
+            let next = chunk_numbers.len() as u32;
+            let number = *chunk_numbers.entry(chunk.sha256).or_insert_with(|| {
+                let bytes = &snapshot.bytes[chunk.range.clone()];
+                push_u8(&mut chunk_table, HISTORY_CHUNK_INLINE);
+                push_u32(&mut chunk_table, bytes.len() as u32);
+                chunk_table.extend_from_slice(bytes);
+                next
+            });
+            push_u32(&mut records, number);
+        }
+        check_entry_size("history.bin", chunk_table.len() + records.len())?;
+    }
+    let mut bytes = Vec::with_capacity(chunk_table.len() + records.len() + 32);
     bytes.extend_from_slice(HISTORY_MAGIC);
     push_u16(&mut bytes, HISTORY_SCHEMA);
     push_u32(&mut bytes, count);
-    push_u32(&mut bytes, cursor);
-    push_u64(&mut bytes, document.next_revision_id());
-    for revision in document.revision_history() {
-        append_revision_history_record(&mut bytes, revision)?;
-    }
+    push_u32(&mut bytes, cursor as u32);
+    push_u64(&mut bytes, next_revision_id);
+    push_u32(&mut bytes, chunk_numbers.len() as u32);
+    bytes.extend_from_slice(&chunk_table);
+    bytes.extend_from_slice(&records);
+    check_entry_size("history.bin", bytes.len())?;
     Ok(bytes)
 }
 
-fn encode_current_revision_history(document: &DocumentStore) -> Result<Vec<u8>, PersistenceError> {
+fn encode_revision_history(
+    document: &DocumentStore,
+    document_bin: &crate::document::EncodedSnapshot,
+) -> Result<Vec<u8>, PersistenceError> {
+    encode_history(
+        &document.revision_history().collect::<Vec<_>>(),
+        document.history_cursor(),
+        document.next_revision_id(),
+        document_bin,
+    )
+}
+
+fn encode_current_revision_history(
+    document: &DocumentStore,
+    document_bin: &crate::document::EncodedSnapshot,
+) -> Result<Vec<u8>, PersistenceError> {
     let revision = document
         .revision_history()
         .nth(document.history_cursor())
         .ok_or(PersistenceError::InvalidRevisionHistory)?;
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(HISTORY_MAGIC);
-    push_u16(&mut bytes, HISTORY_SCHEMA);
-    push_u32(&mut bytes, 1);
-    push_u32(&mut bytes, 0);
-    push_u64(&mut bytes, document.next_revision_id());
-    append_revision_history_record(&mut bytes, revision)?;
-    Ok(bytes)
+    encode_history(&[revision], 0, document.next_revision_id(), document_bin)
+}
+
+/// Largest entry a container holds under `path`. Saving and opening check the same
+/// limit, so a file that saves also opens.
+fn container_entry_limit(path: &str) -> usize {
+    if path == "document.bin" {
+        MAX_SNAPSHOT_BYTES
+    } else {
+        MAX_SIDECAR_BYTES
+    }
+}
+
+fn check_entry_size(path: &str, bytes: usize) -> Result<(), PersistenceError> {
+    let limit = container_entry_limit(path);
+    if bytes > limit {
+        return Err(PersistenceError::TooLarge {
+            entry: path.to_owned(),
+            bytes: bytes as u64,
+            limit: limit as u64,
+        });
+    }
+    Ok(())
 }
 
 pub fn save_container(
@@ -561,7 +658,7 @@ pub fn save_container(
     container_data: &ContainerData,
 ) -> Result<Vec<u8>, PersistenceError> {
     save_container_entries(
-        snapshot,
+        &encoded_snapshot(snapshot),
         container_data,
         imported_source_blob_hashes(snapshot),
         None,
@@ -577,11 +674,12 @@ pub fn save_document_store(
     for revision in document.revision_history() {
         imported_sources.extend(imported_source_blob_hashes(revision.snapshot()));
     }
+    let document_bin = encoded_snapshot(&snapshot);
     save_container_entries(
-        &snapshot,
+        &document_bin,
         container_data,
         imported_sources,
-        Some(encode_revision_history(document)?),
+        Some(encode_revision_history(document, &document_bin)?),
     )
 }
 
@@ -590,16 +688,29 @@ pub fn save_document_store_current_snapshot(
     container_data: &ContainerData,
 ) -> Result<Vec<u8>, PersistenceError> {
     let snapshot = document.current();
+    let document_bin = encoded_snapshot(&snapshot);
     save_container_entries(
-        &snapshot,
+        &document_bin,
         container_data,
         imported_source_blob_hashes(&snapshot),
-        Some(encode_current_revision_history(document)?),
+        Some(encode_current_revision_history(document, &document_bin)?),
     )
 }
 
+/// The current revision of `document` saved with `history` as its `history.bin`.
+#[cfg(feature = "testing")]
+pub(crate) fn save_with_history_entry(document: &DocumentStore, history: Vec<u8>) -> Vec<u8> {
+    save_container_entries(
+        &encoded_snapshot(&document.current()),
+        &ContainerData::default(),
+        BTreeSet::new(),
+        Some(history),
+    )
+    .expect("a test document fits the container")
+}
+
 fn save_container_entries(
-    snapshot: &Snapshot,
+    document_bin: &crate::document::EncodedSnapshot,
     container_data: &ContainerData,
     imported_sources: BTreeSet<String>,
     revision_history: Option<Vec<u8>>,
@@ -607,7 +718,7 @@ fn save_container_entries(
     let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
     entries.insert(
         "document.bin".to_owned(),
-        (true, encoded_snapshot(snapshot).bytes.clone()),
+        (true, document_bin.bytes.clone()),
     );
     if let Some(revision_history) = revision_history {
         entries.insert("history.bin".to_owned(), (true, revision_history));
@@ -645,16 +756,18 @@ fn save_container_entries(
     push_u32(&mut encoded, entries.len() as u32);
     for (path, (required, bytes)) in entries {
         validate_container_path(&path)?;
-        if bytes.len() > MAX_SIDECAR_BYTES && path != "document.bin" {
-            return Err(PersistenceError::ResourceLimit);
-        }
+        check_entry_size(&path, bytes.len())?;
         push_string(&mut encoded, &path);
         push_u8(&mut encoded, u8::from(required));
         push_u64(&mut encoded, bytes.len() as u64);
         encoded.extend_from_slice(&crate::graph::sha256_bytes(&bytes));
         encoded.extend_from_slice(&bytes);
         if encoded.len() > MAX_CONTAINER_BYTES {
-            return Err(PersistenceError::ResourceLimit);
+            return Err(PersistenceError::TooLarge {
+                entry: "the document file".to_owned(),
+                bytes: encoded.len() as u64,
+                limit: MAX_CONTAINER_BYTES as u64,
+            });
         }
     }
     Ok(encoded)
@@ -1086,7 +1199,7 @@ fn save_work_recovery_document_store_with_container_after_compare(
     after_compare();
     let payload = match save_document_store(document, container_data) {
         Ok(payload) => payload,
-        Err(PersistenceError::ResourceLimit) => {
+        Err(PersistenceError::ResourceLimit | PersistenceError::TooLarge { .. }) => {
             save_document_store_current_snapshot(document, container_data)
                 .map_err(FilePersistenceError::Format)?
         }
@@ -1376,9 +1489,7 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let required = reader.boolean()?;
         let length = usize::try_from(reader.u64()?)
             .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-        if length > MAX_SIDECAR_BYTES && path != "document.bin" {
-            return Err(PersistenceError::ResourceLimit);
-        }
+        check_entry_size(&path, length)?;
         let checksum: [u8; 32] = reader
             .take(32)?
             .try_into()
@@ -1440,10 +1551,23 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     };
     let mut outcome = load_document(&document, container_data, &mut BTreeMap::new())?;
     if let Some(revision_history) = revision_history {
-        let restored =
-            decode_revision_history(&revision_history, &outcome, &history_container_data)?;
-        if let LoadOutcome::Editable { document, .. } = &mut outcome {
-            *document = restored;
+        // The current revision was verified on its own; a history that no longer
+        // decodes (a writer that changed the snapshot form without a new format, a
+        // damaged entry) costs the Undo steps, not the document.
+        let restored = decode_revision_history(
+            &revision_history,
+            &document,
+            &outcome,
+            &history_container_data,
+        );
+        match (&mut outcome, restored) {
+            (LoadOutcome::Editable { document, .. }, Ok(restored)) => *document = restored,
+            (LoadOutcome::Editable { audit, .. }, Err(error)) => {
+                audit.history_discarded = Some(error.to_string());
+            }
+            (LoadOutcome::ReviewOnly(_), restored) => {
+                restored?;
+            }
         }
     }
     Ok(outcome)
@@ -1473,6 +1597,7 @@ fn read_revision_origin(reader: &mut Reader<'_>) -> Result<RevisionOrigin, Persi
 
 fn decode_revision_history(
     bytes: &[u8],
+    document_bytes: &[u8],
     expected_current: &LoadOutcome,
     container_data: &ContainerData,
 ) -> Result<DocumentStore, PersistenceError> {
@@ -1484,7 +1609,7 @@ fn decode_revision_history(
         return Err(PersistenceError::InvalidHistoryMagic);
     }
     let schema = reader.u16()?;
-    if schema != 1 && schema != 2 && schema != HISTORY_SCHEMA {
+    if !(1..=HISTORY_SCHEMA).contains(&schema) {
         return Err(PersistenceError::UnsupportedHistorySchema(schema));
     }
     let count = reader.count_with_limit(FILE_HISTORY_REVISIONS)? as usize;
@@ -1493,13 +1618,32 @@ fn decode_revision_history(
     if count == 0 || cursor >= count {
         return Err(PersistenceError::InvalidRevisionHistory);
     }
+    let mut chunks = Vec::new();
+    if schema >= 4 {
+        let chunk_count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
+        chunks.reserve(chunk_count as usize);
+        for _ in 0..chunk_count {
+            let chunk = match reader.u8()? {
+                HISTORY_CHUNK_INLINE => {
+                    let length = reader.u32()? as usize;
+                    reader.take(length)?
+                }
+                HISTORY_CHUNK_IN_DOCUMENT => {
+                    let start = reader.u32()? as usize;
+                    let length = reader.u32()? as usize;
+                    document_bytes
+                        .get(start..start + length)
+                        .ok_or(PersistenceError::InvalidRevisionHistory)?
+                }
+                _ => return Err(PersistenceError::InvalidRevisionHistory),
+            };
+            chunks.push(chunk);
+        }
+    }
 
-    let mut revisions = Vec::with_capacity(count);
+    let mut records = Vec::with_capacity(count);
     let mut previous_revision_id = None;
-    let mut document_id = None;
     let mut checkpoint_names = BTreeSet::new();
-    let mut migrated_digests = BTreeMap::new();
-    let mut current_source_digest = None;
     for index in 0..count {
         let revision_id = reader.u64()?;
         if previous_revision_id.is_some_and(|previous| revision_id <= previous) {
@@ -1553,6 +1697,12 @@ fn decode_revision_history(
                     }
                     Some(source)
                 }
+                HISTORY_RULE_PROGRAM_AS_PREVIOUS if schema >= 4 => Some(
+                    records
+                        .last()
+                        .and_then(|previous: &HistoryRecord<'_>| previous.rule_program.clone())
+                        .ok_or(PersistenceError::InvalidRevisionHistory)?,
+                ),
                 _ => return Err(PersistenceError::InvalidRevisionHistory),
             }
         } else {
@@ -1578,50 +1728,75 @@ fn decode_revision_history(
         {
             return Err(PersistenceError::InvalidRevisionHistory);
         }
-        let length = usize::try_from(reader.u64()?)
-            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-        if length > MAX_SNAPSHOT_BYTES {
-            return Err(PersistenceError::ResourceLimit);
-        }
-        let checksum: [u8; 32] = reader
-            .take(32)?
-            .try_into()
-            .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
-        let encoded_snapshot = reader.take(length)?;
-        if crate::graph::sha256_bytes(encoded_snapshot) != checksum {
-            return Err(PersistenceError::HistoryChecksumMismatch);
-        }
-        let loaded = load_document(
-            encoded_snapshot,
-            container_data.clone(),
-            &mut migrated_digests,
+        let encoded_snapshot = read_history_snapshot(
+            &mut reader,
+            schema,
+            &chunks,
+            (index == cursor).then_some(document_bytes),
         )?;
-        let source_schema = loaded.source_schema();
-        if index == cursor {
-            current_source_digest = Some(loaded.audit().source_canonical_digest.clone());
-        }
-        // A snapshot that loads only for review cannot be a revision to return to.
-        let Ok(store) = loaded.into_editable() else {
-            return Err(PersistenceError::InvalidRevisionHistory);
-        };
-        let snapshot = store.current();
-        if snapshot.revision_id() != revision_id
-            || (source_schema == CURRENT_SCHEMA
-                && !snapshot_encoding::matches(&snapshot, encoded_snapshot)?)
-        {
-            return Err(PersistenceError::InvalidRevisionHistory);
-        }
-        if document_id.is_some_and(|id| id != snapshot.document_id()) {
-            return Err(PersistenceError::InvalidRevisionHistory);
-        }
-        document_id = Some(snapshot.document_id());
         previous_revision_id = Some(revision_id);
-        revisions.push((snapshot, batch_digest, origin, checkpoint, rule_program));
+        records.push(HistoryRecord {
+            revision_id,
+            batch_digest,
+            origin,
+            checkpoint,
+            rule_program,
+            encoded_snapshot,
+        });
     }
     if !reader.is_finished()
         || previous_revision_id.is_none_or(|revision_id| next_revision_id <= revision_id)
     {
         return Err(PersistenceError::InvalidRevisionHistory);
+    }
+
+    let snapshots = if schema >= 4 {
+        // Every revision a format-4 history holds was written in the current format,
+        // so each loads on its own: on all cores, as a house revision takes ~0.4 s.
+        // The current revision is document.bin, which is already loaded.
+        let expected_snapshot = expected_current.snapshot();
+        let expected_digest = expected_current.audit().source_canonical_digest.clone();
+        load_in_parallel(&records, |index, record| {
+            if index == cursor {
+                return Ok((expected_snapshot.clone(), expected_digest.clone()));
+            }
+            load_history_snapshot(
+                &record.encoded_snapshot,
+                container_data,
+                &mut BTreeMap::new(),
+            )
+        })?
+    } else {
+        // Older histories can hold legacy formats whose migrated digests chain.
+        let mut migrated_digests = BTreeMap::new();
+        records
+            .iter()
+            .map(|record| {
+                load_history_snapshot(
+                    &record.encoded_snapshot,
+                    container_data,
+                    &mut migrated_digests,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let current_source_digest = Some(snapshots[cursor].1.clone());
+    let mut revisions = Vec::with_capacity(count);
+    let mut document_id = None;
+    for (record, (snapshot, _)) in records.into_iter().zip(snapshots) {
+        if snapshot.revision_id() != record.revision_id
+            || document_id.is_some_and(|id| id != snapshot.document_id())
+        {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        document_id = Some(snapshot.document_id());
+        revisions.push((
+            snapshot,
+            record.batch_digest,
+            record.origin,
+            record.checkpoint,
+            record.rule_program,
+        ));
     }
     // The revision a history names as current is the saved document. Both were written by
     // one version, so they agree on the digest that version computed.
@@ -1631,13 +1806,158 @@ fn decode_revision_history(
         || current.revision_id() != expected_snapshot.revision_id()
         || current_source_digest.as_deref()
             != Some(expected_current.audit().source_canonical_digest.as_str())
-        || (expected_current.source_schema() == CURRENT_SCHEMA
+        || (schema < 4
+            && expected_current.source_schema() == CURRENT_SCHEMA
             && save(current) != save(&expected_snapshot))
     {
         return Err(PersistenceError::InvalidRevisionHistory);
     }
     DocumentStore::from_revision_history(revisions, cursor, next_revision_id)
         .map_err(PersistenceError::InvalidCanonicalData)
+}
+
+struct HistoryRecord<'a> {
+    revision_id: u64,
+    batch_digest: String,
+    origin: RevisionOrigin,
+    checkpoint: Option<String>,
+    rule_program: Option<crate::document::RuleProgramSource>,
+    encoded_snapshot: std::borrow::Cow<'a, [u8]>,
+}
+
+/// One history revision as an editable snapshot with the source digest it was
+/// loaded with. A current-format revision keeps the bytes it was read from as its
+/// encoding, so the next save does not encode it again.
+fn load_history_snapshot(
+    encoded: &[u8],
+    container_data: &ContainerData,
+    migrated_digests: &mut BTreeMap<String, String>,
+) -> Result<(Snapshot, String), PersistenceError> {
+    let loaded = load_document(encoded, container_data.clone(), migrated_digests)?;
+    let source_schema = loaded.source_schema();
+    let source_digest = loaded.audit().source_canonical_digest.clone();
+    // A snapshot that loads only for review cannot be a revision to return to.
+    let Ok(store) = loaded.into_editable() else {
+        return Err(PersistenceError::InvalidRevisionHistory);
+    };
+    let snapshot = store.current();
+    if source_schema == CURRENT_SCHEMA {
+        match snapshot_encoding::compare(&snapshot, encoded)? {
+            snapshot_encoding::Encoding::Canonical(canonical) => {
+                let _ = snapshot.product().exact_graphs.encoded.set((
+                    snapshot.revision_id(),
+                    Arc::new(crate::document::EncodedSnapshot {
+                        sha256: crate::graph::sha256_bytes(&canonical),
+                        bytes: canonical,
+                        chunks: std::sync::OnceLock::new(),
+                    }),
+                ));
+            }
+            snapshot_encoding::Encoding::Equivalent => {}
+            snapshot_encoding::Encoding::Different => {
+                return Err(PersistenceError::InvalidRevisionHistory);
+            }
+        }
+    }
+    Ok((snapshot, source_digest))
+}
+
+/// `load` of every record, spread over the available cores, in record order.
+fn load_in_parallel<T: Send>(
+    records: &[HistoryRecord<'_>],
+    load: impl Fn(usize, &HistoryRecord<'_>) -> Result<T, PersistenceError> + Sync,
+) -> Result<Vec<T>, PersistenceError> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(records.len())
+        .max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut loaded = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut loaded = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(record) = records.get(index) else {
+                            return loaded;
+                        };
+                        let result = load(index, record);
+                        let failed = result.is_err();
+                        loaded.push((index, result));
+                        if failed {
+                            next.store(records.len(), std::sync::atomic::Ordering::Relaxed);
+                            return loaded;
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("a history load thread panicked"))
+            .collect::<Vec<_>>()
+    });
+    loaded.sort_by_key(|(index, _)| *index);
+    if let Some(error) = loaded.iter().position(|(_, result)| result.is_err()) {
+        return Err(loaded.swap_remove(error).1.err().expect("an error"));
+    }
+    if loaded.len() != records.len() {
+        return Err(PersistenceError::InvalidRevisionHistory);
+    }
+    Ok(loaded
+        .into_iter()
+        .map(|(_, result)| result.expect("checked"))
+        .collect())
+}
+
+/// The encoded snapshot of one history revision: stored whole before format 4, as
+/// chunk numbers from format 4, or as `document.bin` for the current revision.
+fn read_history_snapshot<'a>(
+    reader: &mut Reader<'a>,
+    schema: u16,
+    chunks: &[&[u8]],
+    document_bytes: Option<&'a [u8]>,
+) -> Result<std::borrow::Cow<'a, [u8]>, PersistenceError> {
+    if schema >= 4 {
+        match reader.u8()? {
+            HISTORY_SNAPSHOT_IS_DOCUMENT => {
+                return document_bytes
+                    .map(std::borrow::Cow::Borrowed)
+                    .ok_or(PersistenceError::InvalidRevisionHistory);
+            }
+            HISTORY_SNAPSHOT_IN_CHUNKS => {}
+            _ => return Err(PersistenceError::InvalidRevisionHistory),
+        }
+    }
+    let length = usize::try_from(reader.u64()?)
+        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+    if length > MAX_SNAPSHOT_BYTES {
+        return Err(PersistenceError::ResourceLimit);
+    }
+    let checksum: [u8; 32] = reader
+        .take(32)?
+        .try_into()
+        .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+    let encoded = if schema >= 4 {
+        let mut encoded = Vec::with_capacity(length);
+        for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+            let chunk = chunks
+                .get(reader.u32()? as usize)
+                .ok_or(PersistenceError::InvalidRevisionHistory)?;
+            if encoded.len() + chunk.len() > length {
+                return Err(PersistenceError::InvalidRevisionHistory);
+            }
+            encoded.extend_from_slice(chunk);
+        }
+        std::borrow::Cow::Owned(encoded)
+    } else {
+        std::borrow::Cow::Borrowed(reader.take(length)?)
+    };
+    if encoded.len() != length || crate::graph::sha256_bytes(&encoded) != checksum {
+        return Err(PersistenceError::HistoryChecksumMismatch);
+    }
+    Ok(encoded)
 }
 
 fn load_document(
@@ -1721,6 +2041,7 @@ fn load_document(
             })
             .collect(),
         recovered_from_backup: false,
+        history_discarded: None,
     };
     let loaded_snapshot = document.current();
     let imported_sources = loaded_snapshot
@@ -1898,6 +2219,12 @@ pub enum PersistenceError {
     ChecksumMismatch,
     InvalidPayload(String),
     ResourceLimit,
+    /// A container entry, or the whole file, is larger than a document may be.
+    TooLarge {
+        entry: String,
+        bytes: u64,
+        limit: u64,
+    },
     LegacyFeatureRequiresMigration {
         feature_id: FeatureId,
         kind: LegacyFeatureKind,
@@ -1967,6 +2294,19 @@ impl fmt::Display for PersistenceError {
                 write!(formatter, "document payload is invalid: {reason}")
             }
             Self::ResourceLimit => formatter.write_str("document exceeds a resource limit"),
+            Self::TooLarge {
+                entry,
+                bytes,
+                limit,
+            } => {
+                let megabytes = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+                write!(
+                    formatter,
+                    "{entry} would be at least {:.1} MB ({bytes} bytes); the limit is {:.1} MB",
+                    megabytes(*bytes),
+                    megabytes(*limit)
+                )
+            }
             Self::LegacyFeatureRequiresMigration { feature_id, kind } => {
                 let kind = match kind {
                     LegacyFeatureKind::RoleStringShell => "role-string Shell",

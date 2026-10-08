@@ -153,6 +153,13 @@ pub fn rewrite_saved_snapshot(saved: &[u8], edit: impl FnOnce(&mut ciborium::Val
     crate::persistence::snapshot_codec::rewrite(saved, edit)
 }
 
+/// The current revision of `document` saved as a native container whose `history.bin`
+/// is `history`, so a test can hand the loader an Undo history no writer produced.
+#[must_use]
+pub fn save_with_history_entry(document: &DocumentStore, history: Vec<u8>) -> Vec<u8> {
+    crate::persistence::save_with_history_entry(document, history)
+}
+
 /// Returns the entry of a CBOR map by text key or integer key.
 ///
 /// # Panics

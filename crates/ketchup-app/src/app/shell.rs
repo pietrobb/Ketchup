@@ -1086,6 +1086,13 @@ impl KetchupApp {
                 "status-selected",
                 &BTreeMap::from([("count", self.selection_count().to_string())]),
             )];
+            let hidden = self.hidden_selected_count();
+            if hidden > 0 {
+                context.push(self.catalog.format(
+                    "status-selected-hidden",
+                    &BTreeMap::from([("count", hidden.to_string())]),
+                ));
+            }
             if let Some(edit_context) = self.selection.edit_context.last() {
                 let (key, id) = match edit_context {
                     EditContext::Group(id) => ("status-editing-group", id.0),

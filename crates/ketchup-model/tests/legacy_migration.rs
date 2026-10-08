@@ -76,6 +76,12 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
         let loaded = persistence::load(&bytes)
             .unwrap_or_else(|error| panic!("{} does not open: {error}", path.display()));
         let source_schema = loaded.source_schema();
+        assert_eq!(
+            loaded.audit().history_discarded,
+            None,
+            "{} lost its Undo history",
+            path.display()
+        );
         let snapshot = loaded.snapshot();
         let editable = loaded.is_editable();
         if loaded.audit().source_canonical_digest == snapshot.canonical_digest() {

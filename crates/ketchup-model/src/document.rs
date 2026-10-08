@@ -117,6 +117,7 @@ mod feature_validation;
 mod group_conversion;
 mod instance_path;
 mod parameters;
+mod part_references;
 mod persistent_dimension;
 mod planar_face;
 mod product_validation;
@@ -228,6 +229,8 @@ pub(crate) struct ExactGraphCache {
 pub(crate) struct EncodedSnapshot {
     pub(crate) bytes: Vec<u8>,
     pub(crate) sha256: [u8; 32],
+    /// Content-defined chunks of `bytes`, made on the first history save.
+    pub(crate) chunks: OnceLock<Vec<crate::persistence::history_chunks::Chunk>>,
 }
 type ExactGraphsByProducer = BTreeMap<(u64, DefinitionId, FeatureId), Option<Arc<ExactBRepGraph>>>;
 

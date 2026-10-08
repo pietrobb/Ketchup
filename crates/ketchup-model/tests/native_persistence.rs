@@ -6,7 +6,7 @@ use ketchup_model::document::{
     SlotResolution, SlotSegment, Transform,
 };
 use ketchup_model::persistence::LegacyFeatureKind;
-use ketchup_model::persistence::{self, LoadDisposition, PersistenceError};
+use ketchup_model::persistence::{self, LoadDisposition, LoadOutcome, PersistenceError};
 use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
 use ketchup_model::testing::with_document_id;
 use ketchup_model::tolerance::TolerancePolicy;
@@ -104,6 +104,19 @@ fn load_error(bytes: &[u8]) -> PersistenceError {
         Ok(_) => panic!("invalid document loaded"),
         Err(error) => error,
     }
+}
+
+/// Opens a file whose history is damaged: the current revision stays editable,
+/// Undo is empty and the returned reason says why the history was dropped.
+fn discarded_history(bytes: &[u8]) -> String {
+    let Ok(LoadOutcome::Editable {
+        document, audit, ..
+    }) = persistence::load(bytes)
+    else {
+        panic!("a damaged history must not stop the current revision from opening")
+    };
+    assert_eq!(document.revision_count(), 1);
+    audit.history_discarded.expect("discard reason")
 }
 
 fn container_entry_offsets(bytes: &[u8], target: &str) -> (usize, usize, usize) {
@@ -847,7 +860,7 @@ fn revision_history_round_trips_with_cursor_and_monotonic_branching() {
 }
 
 #[test]
-fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
+fn multi_version_history_golden_migrates_losslessly_and_drops_corrupt_history() {
     let mut store = graph_document();
     for value in ["5", "8"] {
         store
@@ -911,14 +924,18 @@ fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
         expected_digests
     );
 
+    // A format-4 history holds the earlier revisions as chunks; each one's first
+    // chunk starts with its snapshot envelope, now in the current format.
     let upgraded = persistence::save_document_store(&reopened, &container_data).unwrap();
-    for (snapshot_offset, _) in history_snapshot_offsets(&upgraded) {
+    let (_, history_offset, history_len) = container_entry_offsets(&upgraded, "history.bin");
+    let history = &upgraded[history_offset..history_offset + history_len];
+    let envelopes = (0..history.len() - 12)
+        .filter(|&offset| history[offset..].starts_with(b"KETCHUPDOC"))
+        .collect::<Vec<_>>();
+    assert_eq!(envelopes.len(), expected_revision_ids.len() - 1);
+    for offset in envelopes {
         assert_eq!(
-            u16::from_le_bytes(
-                upgraded[snapshot_offset + 10..snapshot_offset + 12]
-                    .try_into()
-                    .unwrap()
-            ),
+            u16::from_le_bytes(history[offset + 10..offset + 12].try_into().unwrap()),
             persistence::CURRENT_SCHEMA
         );
     }
@@ -929,6 +946,13 @@ fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
         .unwrap();
     assert_eq!(round_trip.history_cursor(), expected_cursor);
     assert_eq!(round_trip.next_revision_id(), expected_next_revision_id);
+    assert_eq!(
+        round_trip
+            .revision_history()
+            .map(|revision| revision.snapshot().canonical_digest())
+            .collect::<Vec<_>>(),
+        expected_digests
+    );
     assert_eq!(
         persistence::save_document_store(&round_trip, &container_data).unwrap(),
         upgraded
@@ -946,8 +970,8 @@ fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
         history_len,
     );
     assert_eq!(
-        load_error(&history_checksum_corrupt),
-        PersistenceError::HistoryChecksumMismatch
+        discarded_history(&history_checksum_corrupt),
+        PersistenceError::HistoryChecksumMismatch.to_string()
     );
 
     let mut envelope_checksum_corrupt = golden;
@@ -966,8 +990,8 @@ fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
         history_len,
     );
     assert_eq!(
-        load_error(&envelope_checksum_corrupt),
-        PersistenceError::ChecksumMismatch
+        discarded_history(&envelope_checksum_corrupt),
+        PersistenceError::ChecksumMismatch.to_string()
     );
 }
 
@@ -983,18 +1007,31 @@ fn oversized_history_document() -> DocumentStore {
         .collect();
     let mut store = DocumentStore::new();
     store.apply_batch(&CommandBatch::new(commands)).unwrap();
+    // A history stores the bytes revisions share once, so each revision brings
+    // 256 KiB nothing else has: 200 of them outgrow the 32 MiB history.
     for index in 0..limits::UNDO_REVISIONS as u64 {
-        let value = 10_000 + index;
         store
             .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::SetEvaluatorDimension {
+                CanonicalCommand::RenameEvaluatorNode {
                     id: NodeId(1),
-                    dimension: Dimension::new(value.to_string(), value as f64).unwrap(),
+                    name: unique_text(index, 256 * 1024),
                 },
             ]))
             .unwrap();
     }
     store
+}
+
+fn unique_text(seed: u64, len: usize) -> String {
+    let mut state = seed.wrapping_add(1);
+    (0..len)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            char::from(b"0123456789abcdef"[(state >> 60) as usize])
+        })
+        .collect()
 }
 
 #[test]
@@ -1037,16 +1074,54 @@ fn manual_history_keeps_the_shared_undo_limit_and_saves_in_full() {
 }
 
 #[test]
+fn work_recovery_of_a_history_beyond_the_file_limit_keeps_the_current_revision() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("large.ketchup");
+    let container_data = persistence::ContainerData::default();
+    persistence::save_atomic_document_store_with_container(
+        &path,
+        &graph_document(),
+        &container_data,
+    )
+    .unwrap();
+    let base_identity = persistence::read_native_document_identity(&path).unwrap();
+    let store = oversized_history_document();
+    assert!(matches!(
+        persistence::save_document_store(&store, &container_data),
+        Err(PersistenceError::TooLarge { .. })
+    ));
+
+    // Every edit writes a checkpoint; one too large for its history must not
+    // refuse the edit.
+    persistence::save_work_recovery_document_store_with_container(
+        &path,
+        &store,
+        &container_data,
+        base_identity,
+    )
+    .unwrap();
+    let recovered = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(
+        recovered.source_path(),
+        persistence::work_recovery_path(&path)
+    );
+    assert_eq!(
+        recovered.outcome().snapshot().canonical_digest(),
+        store.current().canonical_digest()
+    );
+}
+
+#[test]
 fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
     let store = oversized_history_document();
     let current = store.current();
     let expected_next_revision_id = store.next_revision_id();
     let original_revision_count = store.revision_count();
     assert_eq!(original_revision_count, limits::UNDO_REVISIONS + 1);
-    assert_eq!(
+    assert!(matches!(
         persistence::save_document_store(&store, &persistence::ContainerData::default()),
-        Err(PersistenceError::ResourceLimit)
-    );
+        Err(PersistenceError::TooLarge { entry, .. }) if entry == "history.bin"
+    ));
 
     let first = persistence::save_document_store_current_snapshot(
         &store,
@@ -1098,23 +1173,29 @@ fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
 }
 
 #[test]
-fn revision_history_rejects_corruption_and_incompatible_schema_inside_valid_container() {
+fn corrupt_or_incompatible_revision_history_opens_only_the_current_revision() {
     let store = graph_document();
     let encoded =
         persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
     let (checksum_offset, history_offset, history_len) =
         container_entry_offsets(&encoded, "history.bin");
 
+    // An earlier revision's first chunk starts with its snapshot envelope.
     let mut corrupt = encoded.clone();
-    *corrupt.last_mut().unwrap() ^= 0xff;
+    let earlier_snapshot = history_offset
+        + corrupt[history_offset..history_offset + history_len]
+            .windows(b"KETCHUPDOC".len())
+            .position(|window| window == b"KETCHUPDOC")
+            .unwrap();
+    corrupt[earlier_snapshot + 20] ^= 0xff;
     rehash_container_entry(&mut corrupt, checksum_offset, history_offset, history_len);
     assert_eq!(
-        load_error(&corrupt),
-        PersistenceError::HistoryChecksumMismatch
+        discarded_history(&corrupt),
+        PersistenceError::HistoryChecksumMismatch.to_string()
     );
 
     let mut incompatible = encoded;
-    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&4_u16.to_le_bytes());
+    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&5_u16.to_le_bytes());
     rehash_container_entry(
         &mut incompatible,
         checksum_offset,
@@ -1122,8 +1203,8 @@ fn revision_history_rejects_corruption_and_incompatible_schema_inside_valid_cont
         history_len,
     );
     assert_eq!(
-        load_error(&incompatible),
-        PersistenceError::UnsupportedHistorySchema(4)
+        discarded_history(&incompatible),
+        PersistenceError::UnsupportedHistorySchema(5).to_string()
     );
 }
 

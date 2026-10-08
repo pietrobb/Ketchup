@@ -287,6 +287,9 @@ impl KetchupApp {
             AuthoritativeDependency::OccurrenceCollections(id) => {
                 Some(("assistant-entity-occurrence-collections", id.0))
             }
+            AuthoritativeDependency::PartReferencesThrough(id) => {
+                Some(("assistant-entity-part-references-through", id.0))
+            }
             AuthoritativeDependency::Group(id) => Some(("assistant-entity-group", id.0)),
             AuthoritativeDependency::GroupChildren(id) => {
                 Some(("assistant-entity-group-children", id.0))

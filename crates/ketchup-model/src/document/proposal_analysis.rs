@@ -817,6 +817,7 @@ fn add_structure_command_dependencies(
         }
         CanonicalCommand::RepointOccurrence { id, definition_id } => {
             dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+            dependencies.insert(AuthoritativeDependency::OccurrenceCollections(*id));
             dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
         }
         CanonicalCommand::SetOccurrenceParent { id, parent } => {
@@ -857,6 +858,21 @@ fn add_local_edit_dependencies(
     dependencies: &mut BTreeSet<AuthoritativeDependency>,
 ) {
     let none = BTreeSet::new();
+    if let CanonicalCommand::RepointLocalOccurrence { key, .. }
+    | CanonicalCommand::SetLocalOccurrenceParent { key, .. }
+    | CanonicalCommand::DeleteLocalOccurrence { key } = command
+    {
+        dependencies.insert(AuthoritativeDependency::PartReferencesThrough(
+            key.definition_id,
+        ));
+    }
+    if let CanonicalCommand::SetLocalGroupParent { key, .. }
+    | CanonicalCommand::DeleteLocalGroup { key } = command
+    {
+        dependencies.insert(AuthoritativeDependency::PartReferencesThrough(
+            key.definition_id,
+        ));
+    }
     let (key, target, parent, tags) = match command {
         CanonicalCommand::CreateLocalOccurrence {
             key,
@@ -961,6 +977,30 @@ fn add_direct_member_dependencies(
             ));
         }
     }
+}
+
+/// Converting a group moves its occurrences, so every collection that names them by path
+/// depends on the conversion (MD-2).
+fn add_group_conversion_dependencies(
+    snapshot: &Snapshot,
+    plan: &ConvertGroupPlan,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    dependencies.insert(AuthoritativeDependency::GroupSubtree(plan.group_id));
+    dependencies.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
+    dependencies.insert(AuthoritativeDependency::Occurrence(plan.new_occurrence_id));
+    dependencies.extend(
+        snapshot
+            .product
+            .occurrences
+            .values()
+            .filter(|occurrence| {
+                occurrence.parent.is_some_and(|parent| {
+                    group_is_descendant(&snapshot.product, plan.group_id, parent)
+                })
+            })
+            .map(|occurrence| AuthoritativeDependency::OccurrenceCollections(occurrence.id)),
+    );
 }
 
 pub(super) fn authoritative_dependencies(
@@ -1628,9 +1668,7 @@ pub(super) fn authoritative_dependencies(
                 );
             }
             CanonicalCommand::ConvertGroupToComponent(plan) => {
-                dependencies.insert(AuthoritativeDependency::GroupSubtree(plan.group_id));
-                dependencies.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
-                dependencies.insert(AuthoritativeDependency::Occurrence(plan.new_occurrence_id));
+                add_group_conversion_dependencies(snapshot, plan, &mut dependencies);
             }
             CanonicalCommand::ApplySolidTool(plan) => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(

@@ -881,7 +881,7 @@ impl KetchupApp {
 
         if occurrence_ids.is_empty()
             || occurrence_ids.iter().any(|id| {
-                snapshot.occurrence(*id).is_none()
+                snapshot.occurrence_effectively_visible(*id) != Some(true)
                     || snapshot
                         .collections()
                         .any(|collection| collection.occurrence_ids().any(|member| member == *id))
@@ -964,6 +964,13 @@ impl KetchupApp {
 
     pub fn delete_selected(&mut self) -> bool {
         let Some(plan) = self.delete_selection_source_plan() else {
+            let hidden = self.hidden_selected_count();
+            if hidden > 0 {
+                self.digest = self.catalog.format(
+                    "digest-delete-hidden-selected",
+                    &BTreeMap::from([("count", hidden.to_string())]),
+                );
+            }
             return false;
         };
         self.apply_delete_selection_source_plan(plan)
@@ -974,34 +981,18 @@ impl KetchupApp {
         self.selection.primary.clone()
     }
 
-    /// Drops the selected parts that `before` showed and the current document
-    /// hides (a layer, a scene, Undo): Delete after switching to a scene that
-    /// hides the roof must not remove rafters nobody sees.
-    pub(crate) fn deselect_newly_hidden(&mut self, before: &Snapshot) {
-        if self.selection.occurrences.is_empty() && self.selection.primary.is_none() {
-            return;
-        }
+    /// How many selected parts the current document does not show (a layer, a
+    /// scene, Hide). They stay selected so Unhide and Show selection reach them,
+    /// but Delete and Cut refuse: nobody removes parts they cannot see.
+    pub(crate) fn hidden_selected_count(&self) -> usize {
         let snapshot = self.document.current();
-        let hidden = |path: &InstancePath| {
-            let root = path.root_occurrence();
-            before.occurrence_effectively_visible(root) == Some(true)
-                && snapshot.occurrence_effectively_visible(root) == Some(false)
-        };
-        let selected = self.selection.occurrences.len();
-        self.selection.occurrences.retain(|path| !hidden(path));
-        let primary_hidden = self
-            .selection
-            .primary
-            .as_ref()
-            .is_some_and(|selection| hidden(&selection.instance_path));
-        if primary_hidden {
-            self.selection.primary = None;
-            self.selection.topological.clear();
-        }
-        if primary_hidden || self.selection.occurrences.len() != selected {
-            // The group is no longer selected whole.
-            self.selection.selected_group = None;
-        }
+        self.selected_instance_paths()
+            .iter()
+            .map(InstancePath::root_occurrence)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|id| snapshot.occurrence_effectively_visible(*id) == Some(false))
+            .count()
     }
 
     pub(crate) fn reconcile_selection(&mut self) {

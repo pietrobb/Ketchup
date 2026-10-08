@@ -177,8 +177,11 @@ impl StableDigest {
                     .collect::<Vec<_>>();
                 self.value(&(groups, occurrences));
             }
+            D::PartReferencesThrough(id) => {
+                self.value(&part_references::prunable_references_through(product, *id));
+            }
             D::OccurrenceCollections(id) => self.value(&(
-                product.grounded_occurrences.contains(id),
+                part_references::prunable_references_to(product, *id),
                 product
                     .collections
                     .values()

@@ -1,9 +1,16 @@
 //! Native snapshot encoding.
 //!
 //! The product model has one serde definition; this module stores it as CBOR behind the
-//! `KETCHUPDOC` magic, a format number and a SHA-256 checksum of the payload. New fields
-//! declare `#[serde(default)]` and need no new format number. A new number is needed only
-//! when an existing field changes name or meaning; its conversion then goes into [`decode`].
+//! `KETCHUPDOC` magic, a format number and a SHA-256 checksum of the payload.
+//!
+//! Schema policy: the saved serde form of [`ProductModel`] is the format. A history
+//! revision must encode back to the same CBOR, so any change to that form needs a new
+//! [`SNAPSHOT_FORMAT`], its conversion in [`decode`] and a golden file of the previous
+//! format: a renamed, moved or reinterpreted field, a changed default, and a new field
+//! that is written when it has its default. The one change without a new number is a
+//! new field with both `#[serde(default)]` and a `skip_serializing_if` for that default,
+//! because files without it encode back unchanged. `tests/format_golden.rs` fails on
+//! any other change.
 
 use super::sheet_metal_v1::{SheetMetalV1, bend_path, flange_path};
 use super::{MAGIC, PersistenceError};

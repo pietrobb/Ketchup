@@ -173,6 +173,46 @@ fn lossless_open_replaces_the_document_preserves_history_and_clears_review() {
 }
 
 #[test]
+fn a_file_whose_history_does_not_decode_opens_without_undo_and_says_so() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("damaged-history.ketchup");
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    assert!(app.copy_selected(Vec3::new(150.0, 25.0, 0.0)));
+    let expected = app.document.current();
+    std::fs::write(
+        &path,
+        ketchup_model::testing::save_with_history_entry(&app.document, b"KETCHUPHST\x09".to_vec()),
+    )
+    .unwrap();
+
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_from(&path), "{}", reopened.digest);
+    assert_eq!(
+        reopened.document.current().canonical_digest(),
+        expected.canonical_digest()
+    );
+    assert_eq!(reopened.document.visible_undo_steps(), 0);
+    assert!(!reopened.is_dirty());
+    let warning = reopened.catalog.text("digest-opened-without-history");
+    let prefix = warning.split('{').next().unwrap();
+    assert!(reopened.digest.starts_with(prefix), "{}", reopened.digest);
+    assert!(reopened.digest.contains("damaged-history.ketchup"));
+
+    reopened.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    assert!(reopened.move_selected(Vec3::new(10.0, 0.0, 0.0)));
+    assert!(reopened.save_document_to(&path));
+    let ketchup_model::persistence::LoadOutcome::Editable {
+        document, audit, ..
+    } = ketchup_model::persistence::load_file(&path).unwrap()
+    else {
+        panic!("editable document")
+    };
+    assert_eq!(audit.history_discarded, None);
+    assert_eq!(document.visible_undo_steps(), 1);
+}
+
+#[test]
 fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("composed.ketchup");

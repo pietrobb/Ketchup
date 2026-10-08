@@ -605,6 +605,8 @@ pub enum AuthoritativeDependency {
     GroupChildren(GroupId),
     GroupSubtree(GroupId),
     OccurrenceCollections(OccurrenceId),
+    /// Prunable part references whose nested path goes through this definition.
+    PartReferencesThrough(DefinitionId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

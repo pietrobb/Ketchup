@@ -1,10 +1,18 @@
 //! History compares complete CBOR values, not definite versus indefinite map lengths.
 use super::{MAGIC, PersistenceError, Snapshot, snapshot_codec};
 
-pub(super) fn matches(snapshot: &Snapshot, bytes: &[u8]) -> Result<bool, PersistenceError> {
+pub(super) enum Encoding {
+    /// The bytes are what this version writes for the snapshot.
+    Canonical(Vec<u8>),
+    /// The same CBOR values with another map-length encoding.
+    Equivalent,
+    Different,
+}
+
+pub(super) fn compare(snapshot: &Snapshot, bytes: &[u8]) -> Result<Encoding, PersistenceError> {
     let canonical = snapshot_codec::encode(snapshot);
     if canonical == bytes {
-        return Ok(true);
+        return Ok(Encoding::Canonical(canonical));
     }
     // The caller has already checked the snapshot envelope and payload checksum.
     let offset = MAGIC.len() + 2 + 32;
@@ -13,7 +21,11 @@ pub(super) fn matches(snapshot: &Snapshot, bytes: &[u8]) -> Result<bool, Persist
         .map_err(|error| PersistenceError::InvalidPayload(error.to_string()))?;
     let expected: ciborium::Value = ciborium::from_reader(&canonical[offset..])
         .expect("a newly encoded snapshot contains CBOR");
-    Ok(payload.is_empty() && stored == expected)
+    Ok(if payload.is_empty() && stored == expected {
+        Encoding::Equivalent
+    } else {
+        Encoding::Different
+    })
 }
 
 #[cfg(test)]
@@ -42,18 +54,27 @@ mod tests {
         bytes
     }
 
+    /// A file whose history an older writer wrote in format 3, every revision whole,
+    /// with `snapshot` as the bytes of the current revision.
     fn with_history_snapshot(document: &DocumentStore, snapshot: &[u8]) -> Vec<u8> {
-        let mut history = encode_revision_history(document).unwrap();
-        let canonical = save(&document.current());
-        let start = history
-            .windows(canonical.len())
-            .position(|bytes| bytes == canonical)
-            .unwrap();
-        history[start - 40..start - 32].copy_from_slice(&(snapshot.len() as u64).to_le_bytes());
-        history[start - 32..start].copy_from_slice(&crate::graph::sha256_bytes(snapshot));
-        history.splice(start..start + canonical.len(), snapshot.iter().copied());
+        let mut history = HISTORY_MAGIC.to_vec();
+        push_u16(&mut history, 3);
+        push_u32(&mut history, document.revision_count() as u32);
+        push_u32(&mut history, document.history_cursor() as u32);
+        push_u64(&mut history, document.next_revision_id());
+        for (index, revision) in document.revision_history().enumerate() {
+            write_revision_metadata(&mut history, revision, None).unwrap();
+            let bytes = if index == document.history_cursor() {
+                snapshot.to_vec()
+            } else {
+                save(revision.snapshot())
+            };
+            push_u64(&mut history, bytes.len() as u64);
+            history.extend_from_slice(&crate::graph::sha256_bytes(&bytes));
+            history.extend_from_slice(&bytes);
+        }
         save_container_entries(
-            &document.current(),
+            &encoded_snapshot(&document.current()),
             &ContainerData::default(),
             BTreeSet::new(),
             Some(history),
@@ -82,9 +103,26 @@ mod tests {
         assert_eq!(load(&saved).unwrap().snapshot().floor_z_mm(), Some(250.));
     }
 
+    /// The document opens with only its current revision and names why.
+    fn opens_without_history(bytes: &[u8], reason: &str) {
+        let LoadOutcome::Editable {
+            document, audit, ..
+        } = load(bytes).unwrap()
+        else {
+            panic!("editable document")
+        };
+        assert_eq!(document.revision_count(), 1);
+        assert_eq!(audit.history_discarded.as_deref(), Some(reason));
+    }
+
     #[test]
-    fn history_still_rejects_unknown_fields_trailing_payload_and_bad_checksum() {
-        let document = DocumentStore::new();
+    fn history_with_unknown_fields_trailing_payload_or_bad_checksum_is_discarded() {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetFloorHeight {
+                z_mm: Some(250.),
+            }]))
+            .unwrap();
         let old = indefinite_snapshot(&document.current());
         let offset = MAGIC.len() + 2 + 32;
         let mut value: ciborium::Value = ciborium::from_reader(&old[offset..]).unwrap();
@@ -98,16 +136,16 @@ mod tests {
             let mut changed = old[..MAGIC.len() + 2].to_vec();
             changed.extend_from_slice(&crate::graph::sha256_bytes(&payload));
             changed.extend_from_slice(&payload);
-            assert!(matches!(
-                load(&with_history_snapshot(&document, &changed)),
-                Err(PersistenceError::InvalidRevisionHistory)
-            ));
+            opens_without_history(
+                &with_history_snapshot(&document, &changed),
+                "revision history is invalid",
+            );
         }
         let mut corrupt = old;
         corrupt[offset] ^= 1;
-        assert!(matches!(
-            load(&with_history_snapshot(&document, &corrupt)),
-            Err(PersistenceError::ChecksumMismatch)
-        ));
+        opens_without_history(
+            &with_history_snapshot(&document, &corrupt),
+            &PersistenceError::ChecksumMismatch.to_string(),
+        );
     }
 }

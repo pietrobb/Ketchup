@@ -256,6 +256,7 @@ impl KetchupApp {
                     requested_path: path.to_owned(),
                     source_path: effective_path,
                 });
+                let history_discarded = outcome.audit().history_discarded.clone();
                 let Ok((mut document, container_data)) = outcome.into_editable_with_container()
                 else {
                     unreachable!("editable load outcome must contain an editable document");
@@ -291,6 +292,11 @@ impl KetchupApp {
                             ("source", recovery.source_path.display().to_string()),
                             ("requested", recovery.requested_path.display().to_string()),
                         ]),
+                    );
+                } else if let Some(reason) = history_discarded {
+                    self.digest = self.catalog.format(
+                        "digest-opened-without-history",
+                        &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
                     );
                 } else {
                     self.digest = self.catalog.format(
@@ -564,7 +570,10 @@ impl KetchupApp {
             &self.file.container_data,
         ) {
             Ok(bytes) => (bytes, false),
-            Err(ketchup_model::persistence::PersistenceError::ResourceLimit) => {
+            Err(
+                ketchup_model::persistence::PersistenceError::ResourceLimit
+                | ketchup_model::persistence::PersistenceError::TooLarge { .. },
+            ) => {
                 let bytes = match ketchup_model::persistence::save_document_store_current_snapshot(
                     &self.document,
                     &self.file.container_data,

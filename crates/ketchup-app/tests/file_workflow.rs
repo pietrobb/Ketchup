@@ -2058,49 +2058,111 @@ fn save_as_requires_explicit_consent_before_preserving_current_revision_without_
         ))
         .unwrap();
     let container = ketchup_model::persistence::ContainerData::default();
-    let mut fitting = None;
-    for value in 10_000..10_000 + ketchup_model::tolerance::limits::UNDO_REVISIONS as u64 {
-        match ketchup_model::persistence::save_document_store(&document, &container) {
-            Ok(bytes) => fitting = Some(bytes),
-            Err(ketchup_model::persistence::PersistenceError::ResourceLimit) => break,
-            Err(error) => panic!("unexpected save error {error:?}"),
-        }
+    let save = |document: &DocumentStore| match ketchup_model::persistence::save_document_store(
+        document, &container,
+    ) {
+        Ok(bytes) => Some(bytes),
+        Err(ketchup_model::persistence::PersistenceError::TooLarge { .. }) => None,
+        Err(error) => panic!("unexpected save error {error:?}"),
+    };
+    // A history stores shared bytes once, so every revision brings a name
+    // nothing else has.
+    let rename = |document: &mut DocumentStore, seed: u64, len: usize| {
+        let mut state = seed;
+        let name = (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                char::from(b"0123456789abcdef"[(state >> 60) as usize])
+            })
+            .collect();
         document
             .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::SetEvaluatorDimension {
+                CanonicalCommand::RenameEvaluatorNode {
                     id: NodeId(1),
-                    dimension: Dimension::new(value.to_string(), value as f64).unwrap(),
+                    name,
                 },
             ]))
             .unwrap();
+    };
+    let mut fitting = None;
+    let mut last_seed = 0;
+    for seed in 1..=ketchup_model::tolerance::limits::UNDO_REVISIONS as u64 {
+        let Some(bytes) = save(&document) else {
+            break;
+        };
+        fitting = Some((bytes, document.visible_undo_steps()));
+        rename(&mut document, seed, 256 * 1024);
+        last_seed = seed;
     }
     assert!(
-        ketchup_model::persistence::save_document_store(&document, &container).is_err(),
+        save(&document).is_none(),
         "the history must outgrow a native file within the Undo limit"
     );
-    std::fs::write(&boundary, fitting.unwrap()).unwrap();
+    // The last revision takes up the room left to within 1 KiB, so any edit of
+    // the opened file outgrows it (a new revision lists all its chunks).
+    assert!(document.undo().is_some());
+    let (mut fits, mut outgrows) = (1, 256 * 1024);
+    while outgrows - fits > 1024 {
+        let len = usize::midpoint(fits, outgrows);
+        rename(&mut document, last_seed, len);
+        match save(&document) {
+            Some(bytes) => {
+                fits = len;
+                fitting = Some((bytes, document.visible_undo_steps()));
+            }
+            None => outgrows = len,
+        }
+        assert!(document.undo().is_some());
+    }
+    let (fitting, fitting_undo_steps) = fitting.unwrap();
+    std::fs::write(&boundary, fitting).unwrap();
 
-    let script = ScriptedFileDialogs::new()
+    // An edit costs a few KiB of history; the room left is under 1 KiB of name
+    // plus one revision, so a few boxes outgrow it.
+    const BOXES: usize = 16;
+    let mut script = ScriptedFileDialogs::new()
         .queue_open(&boundary)
-        .queue_open(&saved)
-        .queue_save(&saved)
-        .queue_save(&saved)
+        .queue_open(&saved);
+    for _ in 0..BOXES + 1 {
+        script = script.queue_save(&saved);
+    }
+    let script = script
         .queue_history_truncation_approval(false)
         .queue_history_truncation_approval(true);
     let mut shell = Shell::with_dialogs(script.clone());
     shell.click_menu_command("menu-file", AppCommand::Open);
-    assert_eq!(
-        shell.app().undo_step_count(),
-        document.visible_undo_steps() - 1
-    );
-    assert!(shell.app_mut().create_box());
-    shell.settle();
-    let expected_digest = shell.app().canonical_digest();
-    let expected_revision = shell.app().document_revision();
-    let expected_undo_steps = shell.app().undo_step_count();
+    assert_eq!(shell.app().undo_step_count(), fitting_undo_steps);
+    let mut boxes = 0;
+    let (expected_digest, expected_revision, expected_undo_steps, previous_save) = loop {
+        assert!(boxes < BOXES, "{BOXES} boxes never outgrew the file");
+        assert!(
+            shell.app_mut().create_box(),
+            "box {boxes}: {}",
+            shell.app().action_digest()
+        );
+        boxes += 1;
+        shell.settle();
+        let expected = (
+            shell.app().canonical_digest(),
+            shell.app().document_revision(),
+            shell.app().undo_step_count(),
+            std::fs::read(&saved).ok(),
+        );
+        shell.click_menu_command("menu-file", AppCommand::SaveAs);
+        if !script.history_truncation_prompts().is_empty() {
+            break expected;
+        }
+        assert!(saved.is_file(), "a history that fits saves whole");
+        assert!(!shell.app().is_dirty());
+    };
 
-    shell.click_menu_command("menu-file", AppCommand::SaveAs);
-    assert!(!saved.exists());
+    assert_eq!(
+        std::fs::read(&saved).ok(),
+        previous_save,
+        "a refused Save As writes nothing"
+    );
     assert!(shell.app().is_dirty());
     assert_eq!(shell.app().canonical_digest(), expected_digest);
     assert_eq!(shell.app().undo_step_count(), expected_undo_steps);

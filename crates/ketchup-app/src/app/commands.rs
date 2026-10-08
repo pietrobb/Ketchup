@@ -517,12 +517,10 @@ impl KetchupApp {
         publish: impl FnOnce(&mut Self, P),
     ) -> Result<T, WorkRecoveryMutationError<E>> {
         self.exact.mutation_readiness = MutationReadiness::Pending;
-        let before = self.document.current();
         let result = self.mutate_document_with_work_recovery(mutate);
         match result {
             Ok(((value, publication), publication_error)) => {
                 publish(self, publication);
-                self.deselect_newly_hidden(&before);
                 self.forget_scene_no_longer_shown();
                 let snapshot = self.document.current();
                 self.rebind_exact_results(&snapshot);
