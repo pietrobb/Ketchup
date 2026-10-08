@@ -230,6 +230,23 @@ impl KetchupApp {
         true
     }
 
+    /// The scene tab stays highlighted only while the layers show what the
+    /// scene saved: after Undo or a layer switch no tab claims the display.
+    pub(crate) fn forget_scene_no_longer_shown(&mut self) {
+        let Some(id) = self.saved_views_ui.active else {
+            return;
+        };
+        let snapshot = self.document.current();
+        let shown = snapshot.saved_view(id).is_some_and(|view| {
+            snapshot
+                .tags()
+                .all(|tag| tag.visible() != view.hidden_tags.contains(&tag.id()))
+        });
+        if !shown {
+            self.saved_views_ui.active = None;
+        }
+    }
+
     /// "Scene N" with the first N not taken by another view.
     fn next_scene_name(&self) -> String {
         (self.saved_views().len() + 1..)
@@ -304,8 +321,7 @@ impl KetchupApp {
                     }
                 });
             }
-            let add = ui.button("+");
-            name_widget(&add, true, &self.catalog.text("scenes-add"));
+            let add = icon_button(ui, true, "+", &self.catalog.text("scenes-add"));
             if add.clicked() {
                 let name = self.next_scene_name();
                 self.save_view(&name);
@@ -394,10 +410,10 @@ impl KetchupApp {
                 if activate.clicked() {
                     self.activate_saved_view(id);
                 }
-                let update = ui.button("↻");
-                name_widget(
-                    &update,
+                let update = icon_button(
+                    ui,
                     true,
+                    "↻",
                     &self.catalog.format("saved-views-update", &arguments),
                 );
                 if update.clicked() {

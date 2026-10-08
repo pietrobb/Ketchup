@@ -219,8 +219,7 @@ impl KetchupApp {
                     changed = true;
                 }
             }
-            let flip = ui.button("⇅");
-            name_widget(&flip, true, &self.catalog.text("section-flip"));
+            let flip = icon_button(ui, true, "↕", &self.catalog.text("section-flip"));
             if flip.clicked() {
                 normal = normal.map(|value| -value);
                 offset = -offset;

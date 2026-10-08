@@ -66,12 +66,44 @@ fn every_icon_button_glyph_exists_in_the_ui_font() {
     );
 }
 
-/// Hovering an icon-only layer button shows what it does, also when the
-/// button is disabled.
+/// A button that shows only a symbol ("+", "↻") goes through `icon_button`,
+/// which gives it a hover hint; a bare `ui.button` leaves the user guessing.
+#[test]
+fn no_symbol_only_button_bypasses_icon_button() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut bare = Vec::new();
+    let mut pending = vec![dir];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for call in text.split("ui.button(\"").skip(1) {
+                let label = call.split('"').next().unwrap_or_default();
+                if !label.is_empty() && !label.chars().any(char::is_alphanumeric) {
+                    bare.push(format!("{}: {label}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        bare.is_empty(),
+        "symbol-only buttons without a hint: {bare:?}"
+    );
+}
+
+/// Hovering an icon-only button shows what it does, also when the button is
+/// disabled.
 #[test]
 fn layer_icon_buttons_explain_themselves_on_hover() {
     let mut harness = harness();
-    for key in ["tags-hide-all", "tags-select-untagged"] {
+    for key in ["tags-hide-all", "tags-select-untagged", "scenes-add"] {
         let name = harness.state().catalog.text(key);
         harness.get_by_role_and_label(Role::Button, &name).hover();
         harness.run_steps(60);

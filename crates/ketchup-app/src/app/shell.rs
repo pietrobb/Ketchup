@@ -236,6 +236,7 @@ impl KetchupApp {
             render: app_state::RenderState {
                 cache: DerivedRenderCache::default(),
                 plan: None,
+                moved_plan: None,
                 overlay_edge_cache: RefCell::new(BTreeMap::new()),
                 wgpu_target_format: None,
                 wgpu_device: None,
@@ -1158,6 +1159,8 @@ impl KetchupApp {
         self.poll_mesh_conversion(context);
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
+        } else {
+            self.program_evaluations.forget();
         }
         if let Some(tool) = self.value_input_awaits_program
             && !self.program_is_planning()

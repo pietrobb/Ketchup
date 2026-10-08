@@ -523,6 +523,7 @@ impl KetchupApp {
             Ok(((value, publication), publication_error)) => {
                 publish(self, publication);
                 self.deselect_newly_hidden(&before);
+                self.forget_scene_no_longer_shown();
                 let snapshot = self.document.current();
                 self.rebind_exact_results(&snapshot);
                 self.exact.mutation_readiness = MutationReadiness::Ready;

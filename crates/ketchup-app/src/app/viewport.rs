@@ -2488,7 +2488,8 @@ impl KetchupApp {
             Some(if move_transform_overrides.is_empty() {
                 plan
             } else {
-                Arc::new(plan.with_transform_overrides(&move_transform_overrides))
+                self.render
+                    .moved_plan(&plan, move_transform_overrides.clone())
             })
         } else {
             None

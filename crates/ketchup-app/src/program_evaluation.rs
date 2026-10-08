@@ -87,6 +87,20 @@ impl ProgramEvaluations {
         evaluation
     }
 
+    /// Lets go of the kept evaluation and of the one being made, once the
+    /// window shows a document without a program (New, Open of a manual
+    /// model): a house evaluation is not held for a program nobody shows.
+    pub(crate) fn forget(&self) {
+        self.ready.borrow_mut().take();
+        self.pending.borrow_mut().take();
+    }
+
+    /// Whether an evaluation is kept or being made.
+    #[cfg(test)]
+    pub(crate) fn holds_any(&self) -> bool {
+        self.ready.borrow().is_some() || self.pending.borrow().is_some()
+    }
+
     /// Makes `source` pending until the test sends its evaluation, as after an
     /// Open or Undo of a program that takes long to evaluate. A tool that
     /// waited for it would hang the test.

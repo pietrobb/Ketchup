@@ -359,25 +359,27 @@ pub(crate) enum DrawnShapeRefusal {
     ProgramFails(String),
 }
 
-impl std::fmt::Display for DrawnShapeRefusal {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl DrawnShapeRefusal {
+    /// The refusal in the user's language; its code is the catalog key.
+    pub(crate) fn rejection(&self, catalog: &LocaleCatalog) -> Rejection {
         match self {
-            Self::CurveOnProgramPart => formatter.write_str(
-                "a drawn curve cannot be pushed into a program part yet; draw it with lines and arcs",
+            Self::CurveOnProgramPart => catalog.refusal("error-drawn-shape-curve"),
+            Self::ToolLength { length_mm } => catalog.refusal_with(
+                "error-drawn-shape-tool-length",
+                &BTreeMap::from([("length", format_height(*length_mm))]),
             ),
-            Self::ToolLength { length_mm } => write!(formatter, "cannot make a {length_mm} mm tool"),
-            Self::NotBuildable { part } => {
-                write!(formatter, "the drawn shape cannot be cut into part {part} yet")
-            }
-            Self::ProgramPlanning => formatter.write_str("the program is still being evaluated"),
-            Self::ProgramFails(reason) => {
-                write!(formatter, "the program does not evaluate: {reason}")
-            }
+            Self::NotBuildable { part } => catalog.refusal_with(
+                "error-drawn-shape-not-buildable",
+                &BTreeMap::from([("part", part.clone())]),
+            ),
+            Self::ProgramPlanning => catalog.refusal("status-program-planning"),
+            Self::ProgramFails(reason) => catalog.refusal_with(
+                "error-drawn-shape-program-fails",
+                &BTreeMap::from([("reason", reason.clone())]),
+            ),
         }
     }
 }
-
-impl std::error::Error for DrawnShapeRefusal {}
 
 impl KetchupApp {
     /// Commits a batch that only adds a drawn shape. A program that owns the
@@ -842,7 +844,7 @@ impl KetchupApp {
             Err(error) => {
                 self.clear_push_pull_preview();
                 self.status_key = "error-preview-stale";
-                self.digest = error.to_string();
+                self.digest = error.rejection(&self.catalog).reason_text().to_owned();
                 return Some(false);
             }
         };

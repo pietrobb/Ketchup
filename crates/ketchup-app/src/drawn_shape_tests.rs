@@ -312,6 +312,27 @@ fn a_shape_off_every_face_is_left_to_the_other_push_pull_paths() {
     }
 }
 
+/// A refused drawn shape speaks the user's language and names the rule it
+/// breaks, with the part or reason it concerns.
+#[test]
+fn a_refused_drawn_shape_is_told_in_the_users_language() {
+    use crate::drawn_shape::DrawnShapeRefusal;
+    let slovak = LocaleCatalog::slovak();
+    let not_buildable = DrawnShapeRefusal::NotBuildable {
+        part: "stena".into(),
+    }
+    .rejection(&slovak);
+    assert_eq!(not_buildable.code(), "error-drawn-shape-not-buildable");
+    assert_eq!(
+        not_buildable.reason_text(),
+        "Nakreslený tvar zatiaľ nemožno vyrezať do dielu stena"
+    );
+    let fails = DrawnShapeRefusal::ProgramFails("riadok 3".into()).rejection(&slovak);
+    assert_eq!(fails.reason_text(), "Program sa nedá vyhodnotiť: riadok 3");
+    let curve = DrawnShapeRefusal::CurveOnProgramPart.rejection(&slovak);
+    assert!(curve.reason_text().starts_with("Nakreslenú krivku"));
+}
+
 #[test]
 fn a_new_distance_replaces_the_preview_and_a_failed_one_clears_it() {
     let mut app = KetchupApp::new();

@@ -19,6 +19,30 @@ fn new_document_starts_empty_without_an_inactive_tool_preview() {
     assert_eq!(app.active_tool, ActiveTool::Select);
 }
 
+/// After New the window keeps no evaluation of the program it showed before.
+#[test]
+fn a_new_document_lets_go_of_the_old_program_evaluation() {
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            file_name: "dom.star".into(),
+            source: "box(\"stena\", (3000, 160, 2500))\n".into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1200.0, 800.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run_steps(2);
+    assert!(harness.state().program_evaluations.holds_any());
+
+    harness.state_mut().new_document();
+    harness.run_steps(2);
+    assert!(!harness.state().program_evaluations.holds_any());
+}
+
 #[test]
 fn creating_a_second_box_has_stable_identity_and_undo_redo_visibility() {
     let mut app = KetchupApp::new();

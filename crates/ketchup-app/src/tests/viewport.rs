@@ -735,6 +735,43 @@ fn perspective_ground_axes_share_the_projected_world_origin() {
     }
 }
 
+/// A Move preview frame whose placement did not change paints the plan the
+/// GPU already holds instead of a fresh copy that is uploaded again.
+#[test]
+fn a_resting_move_preview_keeps_the_uploaded_plan() {
+    let mut app = KetchupApp::new();
+    let snapshot = app.document.current();
+    let part = snapshot.occurrences().next().unwrap().id();
+    let plan = Arc::new(InstancedRenderPlan::from_snapshot(
+        &snapshot,
+        &app.exact.results,
+        &mut app.render.cache,
+    ));
+    let at = |x| {
+        BTreeMap::from([(
+            InstancePath::root(part),
+            Transform::from_translation(x, 0.0, 0.0).unwrap(),
+        )])
+    };
+    let first = app.render.moved_plan(&plan, at(100.0));
+    let resting = app.render.moved_plan(&plan, at(100.0));
+    assert!(Arc::ptr_eq(&first, &resting));
+    assert_eq!(first.batches()[0].instances[0].transform[3], 100.0);
+
+    let moved = app.render.moved_plan(&plan, at(250.0));
+    assert!(!Arc::ptr_eq(&first, &moved));
+    assert_eq!(moved.batches()[0].instances[0].transform[3], 250.0);
+    let rebuilt = Arc::new(InstancedRenderPlan::from_snapshot(
+        &snapshot,
+        &app.exact.results,
+        &mut app.render.cache,
+    ));
+    assert!(!Arc::ptr_eq(
+        &moved,
+        &app.render.moved_plan(&rebuilt, at(250.0))
+    ));
+}
+
 #[test]
 fn gpu_scene_is_painted_after_the_ground_grid() {
     let mut app = KetchupApp::new();

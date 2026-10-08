@@ -252,8 +252,38 @@ pub(crate) struct TopologyByDefinition {
 pub(crate) struct RenderState {
     pub(crate) cache: DerivedRenderCache,
     pub(crate) plan: Option<Arc<InstancedRenderPlan>>,
+    /// The last Move/Rotate/Scale preview plan: its base plan, the placements
+    /// it shows and the plan itself.
+    pub(crate) moved_plan: Option<MovedPlan>,
     pub(crate) overlay_edge_cache: RefCell<BTreeMap<DefinitionId, OverlayEdges>>,
     pub(crate) wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
     pub(crate) wgpu_device: Option<eframe::wgpu::Device>,
     pub(crate) wgpu_queue: Option<eframe::wgpu::Queue>,
+}
+
+pub(crate) type MovedPlan = (
+    Arc<InstancedRenderPlan>,
+    BTreeMap<InstancePath, Transform>,
+    Arc<InstancedRenderPlan>,
+);
+
+impl RenderState {
+    /// `plan` with a Move/Rotate/Scale preview's instances placed. A frame
+    /// whose placements did not change (the camera turned, the pointer
+    /// rested) gets the same plan back, so the GPU keeps its upload.
+    pub(crate) fn moved_plan(
+        &mut self,
+        plan: &Arc<InstancedRenderPlan>,
+        overrides: BTreeMap<InstancePath, Transform>,
+    ) -> Arc<InstancedRenderPlan> {
+        if let Some((base, placed, moved)) = &self.moved_plan
+            && Arc::ptr_eq(base, plan)
+            && *placed == overrides
+        {
+            return Arc::clone(moved);
+        }
+        let moved = Arc::new(plan.with_transform_overrides(&overrides));
+        self.moved_plan = Some((Arc::clone(plan), overrides, Arc::clone(&moved)));
+        moved
+    }
 }
