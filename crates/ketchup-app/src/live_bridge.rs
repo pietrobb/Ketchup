@@ -673,6 +673,7 @@ fn statics_summary(report: &ketchup_program::Report) -> Value {
         "members": (!report.design.is_empty()).then(|| report.design.summary()),
         "bearing_joints": report.joints.len(),
         "bearing_joints_not_verified": joints_not_verified,
+        "unassigned_loads": &report.loads.unassigned,
     })
 }
 

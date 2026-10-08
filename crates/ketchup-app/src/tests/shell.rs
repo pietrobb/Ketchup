@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// Steps the shell until `done` holds, polling between frames, and fails after
+/// `budget` naming `what` and the status line. Unit tests wait on background
+/// work (exact evaluation, a commit) here instead of sleeping themselves.
+pub(crate) fn step_until(
+    harness: &mut Harness<'_, KetchupApp>,
+    budget: Duration,
+    what: &str,
+    mut done: impl FnMut(&KetchupApp) -> bool,
+) {
+    let started = Instant::now();
+    while !done(harness.state()) {
+        assert!(
+            started.elapsed() < budget,
+            "{what}: {}",
+            harness.state().digest
+        );
+        harness.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn review_only_open_preserves_the_active_document_and_its_history() {
     let directory = tempfile::tempdir().unwrap();
@@ -281,15 +302,16 @@ fn opening_program_document_evaluates_and_frames_actual_scene() {
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline
-        && (harness.state().exact.results.len() != 5
-            || harness.state().instanced_scene_triangle_count() == 0
-            || harness.state().camera.zoom_fit_pending)
-    {
-        harness.step();
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    step_until(
+        &mut harness,
+        Duration::from_secs(30),
+        "the opened table never painted",
+        |app| {
+            app.exact.results.len() == 5
+                && app.instanced_scene_triangle_count() > 0
+                && !app.camera.zoom_fit_pending
+        },
+    );
 
     let app = harness.state();
     assert_eq!(app.exact.results.len(), 5, "all table bodies must evaluate");

@@ -11,13 +11,6 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
         .any(|issue| issue.kind.ends_with("_unverified"));
     let distances = exact.map(|value| &value["distance_measurements_state"]);
     let distance_incomplete = distances.is_some_and(|value| value == "incomplete");
-    let state = if report.errors > 0 {
-        "failed"
-    } else if !exact_complete || unverified || distance_incomplete {
-        "incomplete"
-    } else {
-        "passed"
-    };
     let required_exact_distances = !ketchup_program::exact::measured_pairs(model).is_empty();
     let dimensions = if model.expectations.is_empty() {
         "not_requested"
@@ -41,6 +34,7 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
         .map(|part| part.finished_holes().count())
         .sum::<usize>();
     let mut not_assessed = vec!["assembly_access", "machine_specific_export"];
+    let mut load_state = None;
     let load_capacity = if report.design.is_empty() {
         not_assessed.insert(0, "load_capacity");
         Value::Null
@@ -51,20 +45,35 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             .iter()
             .filter(|joint| joint.status == "not_verified")
             .count();
+        let unassigned = report.loads.unassigned.len();
         let state = if members.fail > 0 {
             "failed"
-        } else if members.not_verified > 0 || joints_open > 0 {
+        } else if members.not_verified > 0 || joints_open > 0 || unassigned > 0 {
             "incomplete"
         } else {
             "passed"
         };
+        load_state = Some(state);
         json!({
             "state": state,
             "method": "ec5_member_check_computed_not_authorized_design",
             "scope": "load_path_members_and_bearing_joints",
             "members": members.members, "fail": members.fail, "not_verified": members.not_verified,
-            "bearing_joints_not_verified": joints_open
+            "bearing_joints_not_verified": joints_open,
+            "unassigned_loads": unassigned
         })
+    };
+    // A requested load check is part of the verdict: an overloaded member fails it.
+    let state = if report.errors > 0 || load_state == Some("failed") {
+        "failed"
+    } else if !exact_complete
+        || unverified
+        || distance_incomplete
+        || load_state == Some("incomplete")
+    {
+        "incomplete"
+    } else {
+        "passed"
     };
     json!({
         "load_capacity": load_capacity,
@@ -118,5 +127,53 @@ mod tests {
             partial["joints_and_holes"]["exact_manufacturing_verification"],
             "not_evaluated"
         );
+    }
+
+    #[test]
+    fn an_overloaded_member_fails_the_whole_summary() {
+        let source = "load_path(only = ['frame'], carriers = ['deck'])
+area_load('live', kind = 'imposed', kn_m2 = 2.0, on = ['deck'], source = 'test')
+timber_design({'C24': 'C24'})
+box('post a', (100, 60, 2000), material = 'C24', grounded = True)
+box('post b', (100, 60, 2000), at = (3900, 0, 0), material = 'C24', grounded = True)
+box('beam', (4000, 60, 100), at = (0, 0, 2000), material = 'C24', tags = ['frame'])
+box('deck', (4000, 600, 20), at = (0, -270, 2100), material = 'OSB', tags = ['deck'])";
+        let (evaluated, report) =
+            ketchup_program::run("weak.star", source, &BTreeMap::new()).unwrap();
+        assert_eq!(report.errors, 0, "{:?}", report.issues);
+        let exact = json!({"state":"verified", "distance_measurements_state":"complete"});
+        let summary = summary(&report, &evaluated.model, Some(&exact));
+        assert_eq!(summary["load_capacity"]["state"], "failed");
+        assert_eq!(summary["state"], "failed");
+    }
+
+    #[test]
+    fn a_load_that_reaches_no_member_leaves_the_load_check_incomplete() {
+        // The cover lies on laths that are neither members nor carriers: its
+        // load reaches nothing, though the beam itself passes.
+        let source = "load_path(only = ['frame'])
+self_weight(['frame'])
+area_load('live', kind = 'imposed', kn_m2 = 2.0, on = ['cover'], source = 'test')
+timber_design({'C24': 'C24'})
+box('post a', (100, 100, 2000), material = 'C24', grounded = True)
+box('post b', (100, 100, 2000), at = (3900, 0, 0), material = 'C24', grounded = True)
+box('beam', (4000, 100, 200), at = (0, 0, 2000), material = 'C24', tags = ['frame'])
+box('lath 1', (50, 600, 30), at = (500, -250, 2200), material = 'C24')
+box('lath 2', (50, 600, 30), at = (3400, -250, 2200), material = 'C24')
+box('cover', (4000, 600, 10), at = (0, -250, 2230), material = 'OSB', tags = ['cover'])";
+        let (evaluated, report) =
+            ketchup_program::run("lost.star", source, &BTreeMap::new()).unwrap();
+        assert_eq!(report.errors, 0, "{:?}", report.issues);
+        assert_eq!(
+            report.loads.unassigned.keys().collect::<Vec<_>>(),
+            ["cover"]
+        );
+        let exact = json!({"state":"verified", "distance_measurements_state":"complete"});
+        let summary = summary(&report, &evaluated.model, Some(&exact));
+        assert_eq!(summary["load_capacity"]["not_verified"], 0);
+        assert_eq!(summary["load_capacity"]["fail"], 0);
+        assert_eq!(summary["load_capacity"]["unassigned_loads"], 1);
+        assert_eq!(summary["load_capacity"]["state"], "incomplete");
+        assert_eq!(summary["state"], "incomplete");
     }
 }

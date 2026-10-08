@@ -13,6 +13,7 @@ pub mod cad;
 pub mod clearance;
 mod connectivity;
 pub mod contact;
+mod continuous_span;
 pub mod document;
 pub mod eval;
 pub mod exact;

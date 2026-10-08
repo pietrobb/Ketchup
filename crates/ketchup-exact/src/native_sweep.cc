@@ -180,7 +180,9 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
     for (std::size_t left = 0; left < path_edges.size(); ++left) {
       for (std::size_t right = left + 1; right < path_edges.size(); ++right) {
         if (path_edge_bounds[left].IsOut(path_edge_bounds[right])) continue;
-        BRepExtrema_DistShapeShape distance(path_edges[left], path_edges[right]);
+        BRepExtrema_DistShapeShape distance;
+        distance.LoadS1(path_edges[left]);
+        distance.LoadS2(path_edges[right]);
         distance.Perform();
         if (!distance.IsDone()) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path intersection check failed");
@@ -510,7 +512,9 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
     }
     for (std::size_t left = 0; left < path_edges.size(); ++left) {
       for (std::size_t right = left + 1; right < path_edges.size(); ++right) {
-        BRepExtrema_DistShapeShape distance(path_edges[left], path_edges[right]);
+        BRepExtrema_DistShapeShape distance;
+        distance.LoadS1(path_edges[left]);
+        distance.LoadS2(path_edges[right]);
         distance.Perform();
         if (!distance.IsDone()) {
           return error_result(

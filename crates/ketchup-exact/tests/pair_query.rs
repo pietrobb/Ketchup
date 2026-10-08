@@ -221,6 +221,78 @@ fn native_pair_detects_two_millimetre_gap_and_penetration_on_opposite_sides_of_c
     }
 }
 
+/// Pair queries share cached bodies, so no query may alter its inputs: every
+/// pair gives the same answer whatever was queried before it.
+#[test]
+fn native_pair_results_do_not_depend_on_query_order() {
+    let backend = ExactBackend::new();
+    let block = |x, y, z, sx, sy, sz| {
+        backend
+            .make_box(BoxSpec {
+                origin_mm: Point3 { x, y, z },
+                size_mm: Size3 {
+                    x: sx,
+                    y: sy,
+                    z: sz,
+                },
+            })
+            .unwrap()
+    };
+    let drill = backend
+        .extrude_circle(CircleExtrudeSpec {
+            center_mm: [5.0, 5.0],
+            radius_mm: 1.0,
+            height_mm: 1.0,
+        })
+        .unwrap();
+    let panel = block(0.0, 0.0, 0.0, 10.0, 10.0, 1.0);
+    let drilled = backend
+        .boolean_bodies(&panel.body, &drill.body, ExactBodyBooleanOperation::Cut)
+        .unwrap();
+    let bodies = [
+        drilled,
+        block(0.0, 0.0, -1.0, 10.0, 10.0, 1.0),
+        block(2.0, 3.0, 1.0, 2.0, 4.0, 4.0),
+        block(2.0, 3.0, 3.0, 2.0, 4.0, 4.0),
+        block(4.5, 4.5, -0.5, 1.0, 1.0, 3.0),
+        block(10.0, 0.0, 0.0, 5.0, 10.0, 1.0),
+    ];
+    let pairs = (0..bodies.len())
+        .flat_map(|left| (0..bodies.len()).map(move |right| (left, right)))
+        .filter(|(left, right)| left != right)
+        .collect::<Vec<_>>();
+    let query = |order: &[(usize, usize)]| {
+        let mut results = order
+            .iter()
+            .map(|&(left, right)| {
+                let result = backend
+                    .query_body_pair(&bodies[left].body, &bodies[right].body, 1e-7)
+                    .unwrap();
+                (
+                    (left, right),
+                    format!(
+                        "{:?} {} {} {}",
+                        result.relation,
+                        result.common_volume_mm3,
+                        result.common_contact_area_mm2,
+                        result.distance_mm
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        results.sort();
+        results
+    };
+    let forward = query(&pairs);
+    let mut reversed = pairs.clone();
+    reversed.reverse();
+    assert_eq!(query(&reversed), forward);
+    let mut interleaved = pairs.clone();
+    interleaved.sort_by_key(|&(left, right)| ((left * 7 + right * 3) % 11, left, right));
+    assert_eq!(query(&interleaved), forward);
+    assert_eq!(query(&pairs), forward);
+}
+
 /// Extruded profile walls are surfaces of linear extrusion; the gap to a box
 /// over the sloped wall is the exact point-to-plane distance.
 #[test]

@@ -78,7 +78,8 @@ std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
     };
     const auto fuse = [](const TopoDS_Shape& left, const TopoDS_Shape& right) {
       if (left.IsNull() || right.IsNull()) return TopoDS_Shape{};
-      BRepAlgoAPI_Fuse operation(left, right);
+      BRepAlgoAPI_Fuse operation;
+      configure_boolean(operation, left, right);
       operation.Build();
       if (!operation.IsDone() || operation.HasErrors()) return TopoDS_Shape{};
       operation.SimplifyResult(true, true);

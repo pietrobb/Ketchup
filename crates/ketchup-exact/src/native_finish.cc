@@ -110,7 +110,8 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
         }
         outer = &outward_offset.Shape();
       }
-      BRepAlgoAPI_Cut cut(*outer, *inner);
+      BRepAlgoAPI_Cut cut;
+      configure_boolean(cut, *outer, *inner);
       cut.Build();
       if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()
           || !BRepCheck_Analyzer(cut.Shape()).IsValid()
@@ -218,7 +219,8 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
         || !build_thick(outward, thickness * 0.5)) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT symmetric body shell halves did not complete");
     }
-    BRepAlgoAPI_Fuse fusion(inward.Shape(), outward.Shape());
+    BRepAlgoAPI_Fuse fusion;
+    configure_boolean(fusion, inward.Shape(), outward.Shape());
     fusion.Build();
     if (!fusion.IsDone() || fusion.HasErrors() || fusion.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT symmetric body shell fuse did not complete");
@@ -425,7 +427,8 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
         share_continued_side_surfaces(prism.Shape(), body.impl().shape, face);
     const std::string source_id = "generated-result/face/" + std::to_string(face_ordinal);
     if (distance > 0.0) {
-      BRepAlgoAPI_Fuse operation(body.impl().shape, tool);
+      BRepAlgoAPI_Fuse operation;
+      configure_boolean(operation, body.impl().shape, tool);
       operation.Build();
       if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT outward face offset did not complete");
@@ -442,7 +445,8 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
       }
       return success_result(result, std::move(history));
     }
-    BRepAlgoAPI_Cut operation(body.impl().shape, tool);
+    BRepAlgoAPI_Cut operation;
+    configure_boolean(operation, body.impl().shape, tool);
     operation.Build();
     if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT inward face offset did not complete");

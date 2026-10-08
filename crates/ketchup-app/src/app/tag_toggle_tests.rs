@@ -1,5 +1,6 @@
 //! Turning a layer of the timber-frame house on or off through its dock checkbox
 //! repaints at once: the exact solids are reused, not evaluated or published again.
+use crate::tests::shell::step_until;
 use crate::*;
 use eframe::egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
@@ -52,19 +53,13 @@ fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
         .with_size(Vec2::new(1600.0, 1200.0))
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-    let started = Instant::now();
-    loop {
-        harness.run_steps(1);
-        let app = harness.state();
-        if app.exact.task.is_none() && app.exact.source.is_some() {
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(300),
-            "exact house never finished"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    harness.run_steps(1);
+    step_until(
+        &mut harness,
+        Duration::from_secs(300),
+        "exact house never finished",
+        |app| app.exact.task.is_none() && app.exact.source.is_some(),
+    );
     harness.run_steps(2);
     let results = harness.state().exact.results.len();
     assert!(results > 300, "{results} exact bodies");

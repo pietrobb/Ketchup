@@ -92,6 +92,62 @@ fn a_simply_supported_beam_matches_the_hand_calculation() {
 }
 
 #[test]
+fn a_beam_continuous_over_a_middle_post_takes_five_eighths_shear_there() {
+    // 6000 mm beam on post centres 50, 3000, 5950 mm: two spans of 2950 mm.
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+for x in (0, 2950, 5900):
+    box(\"post %d\" % x, (100, 100, 2000), at = (x, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (6000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (6000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+",
+        &[],
+    );
+    let beam = member(&report, "beam");
+    let (q, l) = (1.2, 2950.0);
+    // Over the middle post: M = -q L² / 8, V = 0.625 q L (a simple span: 0.5 q L).
+    let moment = 1.5 * q * l * l / 8.0;
+    close(
+        utilization(beam, "bending"),
+        moment / (100.0 * 200.0 * 200.0 / 6.0) / (0.8 * 24.0 / 1.3),
+    );
+    let shear = 1.5 * 0.625 * q * l;
+    close(
+        utilization(beam, "shear"),
+        1.5 * shear / (0.67 * 100.0 * 200.0) / (0.8 * 4.0 / 1.3),
+    );
+}
+
+#[test]
+fn bearings_closer_than_the_beam_is_deep_hold_it_as_one() {
+    // A post 20 mm before a long sill, behind a 1 m overhang of a 200 mm deep
+    // beam: the overhang's moment is no lever pair over the 70 mm from the
+    // post centre to the sill (that would be about 0.6 in shear).
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+box(\"post a\", (100, 100, 2000), at = (1000, 0, 0), material = \"C24\", grounded = True)
+box(\"sill\", (1880, 100, 2000), at = (1120, 0, 0), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (4000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+",
+        &[],
+    );
+    let beam = member(&report, "beam");
+    assert!(
+        beam.checks.iter().all(|check| check.at != "span 1050-1120 mm"),
+        "{:?}",
+        beam.checks
+    );
+    assert!(utilization(beam, "shear") < 0.2, "{:?}", beam.checks);
+    assert_eq!(beam.status, "pass");
+}
+
+#[test]
 fn an_undersized_beam_fails_and_a_beam_without_a_strength_class_is_not_verified() {
     let weak = report(&beam("C24", 60.0, 100.0), &[]);
     let beam = member(&weak, "beam");
@@ -154,6 +210,39 @@ fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_the_net_section(
     assert_eq!(notched_at, "net section 7000 mm² at a notch");
     // Short: kc is near 1, so the net 50 x 140 section is what decides.
     assert!(notched > plain * 1.1, "{notched} {plain}");
+}
+
+#[test]
+fn a_beam_across_both_legs_of_one_sill_is_checked_over_the_span_between_them() {
+    // One U-shaped sill part, legs 100 mm wide at both ends of a 45 x 145 beam:
+    // two bearings 3900 mm apart, not one 4000 mm bed.
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+extrude(\"sill\", profile = [(0, 0), (4000, 0), (4000, 600), (3900, 600), (3900, 100), (100, 100),
+        (100, 600), (0, 600)], distance = 100, material = \"C24\", grounded = True)
+box(\"beam\", (4000, 45, 145), at = (0, 300, 100), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (4000, 600, 20), at = (0, 22.5, 245), material = \"OSB\", tags = [\"deck\"])
+",
+        &[],
+    );
+    let loads = report
+        .loads
+        .members
+        .iter()
+        .find(|member| member.part == "beam")
+        .expect("loads on the beam");
+    assert_eq!(loads.reactions.len(), 2, "{:?}", loads.reactions);
+    let beam = member(&report, "beam");
+    // q = 1.2 N/mm over 3900 mm; kh = (150 / 145)^0.2.
+    let moment = 1.5 * 1.2 * 3900f64.powi(2) / 8.0;
+    let strength = 0.8 * 24.0 / 1.3 * (150.0f64 / 145.0).powf(0.2);
+    close(
+        utilization(beam, "bending"),
+        moment / (45.0 * 145.0 * 145.0 / 6.0) / strength,
+    );
+    assert_eq!(beam.status, "fail");
 }
 
 #[test]

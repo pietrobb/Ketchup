@@ -215,8 +215,8 @@ std::unique_ptr<NativeOperationResult> trim_surface_native(
         || target.impl().summary.face_count == 0 || cutter.impl().summary.face_count == 0) {
       return error_result(STATUS_INVALID_PARAMETER, "Surface trim requires valid non-solid target and cutter surfaces");
     }
-    BRepAlgoAPI_Common operation(target.impl().shape, cutter.impl().shape);
-    operation.SetNonDestructive(true);
+    BRepAlgoAPI_Common operation;
+    configure_boolean(operation, target.impl().shape, cutter.impl().shape);
     operation.Build();
     if (!operation.IsDone() || operation.HasErrors() || operation.HasWarnings()
         || operation.Shape().IsNull()) {
@@ -495,7 +495,8 @@ std::unique_ptr<NativeOperationResult> thicken_surface_native(
           STATUS_INVALID_SHAPE,
           "OCCT symmetric surface thicken half was not an orientable positive-volume solid");
     }
-    BRepAlgoAPI_Fuse fusion(inward_solid, outward_solid);
+    BRepAlgoAPI_Fuse fusion;
+    configure_boolean(fusion, inward_solid, outward_solid);
     fusion.Build();
     if (!fusion.IsDone() || fusion.HasErrors() || fusion.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT symmetric surface thicken fuse failed");

@@ -2096,6 +2096,7 @@ impl SelectionState {
                     .iter()
                     .find_map(|path| self.exact_references.get(path).cloned());
             }
+            self.selected_group = None;
             return;
         }
         if !additive {

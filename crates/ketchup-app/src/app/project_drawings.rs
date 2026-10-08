@@ -231,7 +231,17 @@ impl KetchupApp {
             author: field(TitleField::Author),
             subject: field(TitleField::Stage),
         };
-        std::fs::write(path, sheet.pdf(&info)).map_err(ProjectDrawingsError::Write)?;
+        // Through a temporary file and a rename: a failed write never leaves a
+        // half-written sheet, and a link at `path` is replaced, not followed.
+        let publish = || {
+            let expected = crate::export_bundle::export_target_sha256(path)?;
+            crate::export_bundle::write_export_artifact_if_unchanged(
+                path,
+                &sheet.pdf(&info),
+                expected.as_deref(),
+            )
+        };
+        publish().map_err(|error| ProjectDrawingsError::Write(std::io::Error::other(error)))?;
         Ok(sheet)
     }
 

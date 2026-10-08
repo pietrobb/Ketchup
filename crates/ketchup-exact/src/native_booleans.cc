@@ -107,7 +107,8 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
     if (!half_space_builder.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT plane trim half-space did not complete");
     }
-    BRepAlgoAPI_Common operation(body.impl().shape, half_space_builder.Solid());
+    BRepAlgoAPI_Common operation;
+    configure_boolean(operation, body.impl().shape, half_space_builder.Solid());
     operation.Build();
     if (!operation.IsDone() || operation.HasErrors()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT plane trim did not complete");
@@ -152,7 +153,8 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
       return success_result(result, std::move(history), solids >= 2);
     };
     if (operation_kind == 0) {
-      BRepAlgoAPI_Cut operation(target.impl().shape, tool.impl().shape);
+      BRepAlgoAPI_Cut operation;
+      configure_boolean(operation, target.impl().shape, tool.impl().shape);
       operation.Build();
       if (!operation.IsDone() || operation.HasErrors()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT body cut did not complete");
@@ -163,7 +165,8 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
       return finish(result, std::move(history));
     }
     if (operation_kind == 1) {
-      BRepAlgoAPI_Fuse operation(target.impl().shape, tool.impl().shape);
+      BRepAlgoAPI_Fuse operation;
+      configure_boolean(operation, target.impl().shape, tool.impl().shape);
       operation.Build();
       if (operation.IsDone() && !operation.HasErrors()) {
         operation.SimplifyResult(true, true);
@@ -178,7 +181,8 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
       return finish(result, std::move(history));
     }
     if (operation_kind == 2) {
-      BRepAlgoAPI_Common operation(target.impl().shape, tool.impl().shape);
+      BRepAlgoAPI_Common operation;
+      configure_boolean(operation, target.impl().shape, tool.impl().shape);
       operation.Build();
       if (!operation.IsDone() || operation.HasErrors()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT body intersection did not complete");
@@ -250,7 +254,9 @@ NativePairQuery query_face_pair_native(
       result.diagnostic = "Face query requires valid face ordinals and rigid placements";
       return result;
     }
-    BRepExtrema_DistShapeShape distance(a, b);
+    BRepExtrema_DistShapeShape distance;
+    distance.LoadS1(a);
+    distance.LoadS2(b);
     distance.Perform();
     if (!distance.IsDone() || distance.NbSolution() < 1
         || !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
@@ -445,8 +451,8 @@ NativePairQuery query_body_pair_native(
                    left_face.tolerance + right_face.tolerance + tolerances().linear_mm)) {
             continue;
           }
-          BRepAlgoAPI_Common face_common(left_face.shape, right_face.shape);
-          face_common.SetNonDestructive(true);
+          BRepAlgoAPI_Common face_common;
+          configure_boolean(face_common, left_face.shape, right_face.shape);
           face_common.Build();
           if (!face_common.IsDone() || face_common.HasErrors()) {
             result.diagnostic = "OCCT pair face-contact query failed";

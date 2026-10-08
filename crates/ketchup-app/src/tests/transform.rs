@@ -146,6 +146,46 @@ fn move_drag_keeps_the_existing_multi_selection_for_preview_and_commit() {
 }
 
 #[test]
+fn shift_deselecting_a_group_member_moves_only_the_parts_still_selected() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    assert!(app.group_selected());
+    assert!(app.selection.selected_group.is_some());
+    let first = SelectionId {
+        definition_id: INITIAL_BOX_DEFINITION,
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    };
+    app.selection.select_exact(first, true);
+    assert_eq!(app.selection.selected_group, None);
+    let before = app
+        .active_boxes()
+        .iter()
+        .map(|item| (item.instance_path.clone(), item.origin_mm))
+        .collect::<Vec<_>>();
+
+    assert!(app.move_selected(Vec3::new(10.0, 0.0, 0.0)));
+    for (path, origin) in before {
+        let moved = app
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == path)
+            .expect("both parts remain");
+        let expected = if path == InstancePath::root(OccurrenceId(1)) {
+            origin
+        } else {
+            origin + Vec3::new(10.0, 0.0, 0.0)
+        };
+        assert_eq!(moved.origin_mm, expected, "{path:?}");
+    }
+}
+
+#[test]
 fn move_rotate_delete_are_independent_undoable_scene_operations() {
     let mut app = KetchupApp::new();
     let selected = SelectionId {

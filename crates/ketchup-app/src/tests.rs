@@ -372,6 +372,6 @@ mod drawing;
 mod exact_modeling;
 mod interchange;
 mod organization;
-mod shell;
+pub(crate) mod shell;
 mod transform;
 mod viewport;

@@ -153,7 +153,7 @@ pub fn tools() -> Value {
     title_block fields and format given here are kept in the document (an empty string clears a field), scale and format cells are filled in by the sheet. Hidden layers are left out.",
             "inputSchema": {"type": "object", "required": ["action"], "properties": {
                 "action": {"type": "string", "enum": ["save", "save_as", "open", "export_drawings"]},
-                "path": {"type": "string", "description": "For save_as and open; for export_drawings an absolute path ending in .pdf."},
+                "path": {"type": "string", "description": "For save_as and open; for export_drawings a new local absolute path ending in .pdf (an existing file is never replaced)."},
                 "format": {"type": "string", "enum": ["auto", "A3", "A2", "A1", "A0"], "description": "For export_drawings: sheet format; auto picks the smallest sheet that holds the views at 1:50 or finer. Omit to keep the document's format."},
                 "title_block": {"type": "object", "description": "For export_drawings: title block values to keep in the document.", "additionalProperties": false, "properties": {
                     "project": {"type": "string"}, "location": {"type": "string"}, "client": {"type": "string"},

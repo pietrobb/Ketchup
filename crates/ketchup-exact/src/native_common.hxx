@@ -250,6 +250,20 @@ std::unique_ptr<NativeOperationResult> guarded(Operation&& operation) noexcept {
   }
 }
 
+// The two-shape BRepAlgoAPI constructors already run a full Build() in the
+// default destructive mode, which may grow tolerances of the (cached, shared)
+// inputs; a later Build() then repeats the work on altered inputs. Start from
+// an empty operation instead, configure it here and Build() it exactly once.
+template <typename Operation>
+void configure_boolean(Operation& operation, const TopoDS_Shape& argument, const TopoDS_Shape& tool) {
+  NCollection_List<TopoDS_Shape> arguments, tools;
+  arguments.Append(argument);
+  tools.Append(tool);
+  operation.SetArguments(arguments);
+  operation.SetTools(tools);
+  operation.SetNonDestructive(true);
+}
+
 template <typename Operation>
 void append_propagated_history(
     std::vector<HistoryRecord>& history,

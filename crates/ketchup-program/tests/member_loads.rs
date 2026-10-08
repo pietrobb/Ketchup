@@ -112,6 +112,142 @@ box(\"weight\", (100, 80, 100), at = (200, 0, 1220), material = \"steel\", tags 
 }
 
 #[test]
+fn a_deck_shares_its_area_load_by_the_strip_each_joist_is_nearest_to() {
+    // Joists 80 mm wide at y = 0 (edge), 500 and 1520 (edge) under a 3000 x 1600
+    // deck with 2 kN/m²: the strips end halfway between them, at 290 and 1050.
+    let report = report(
+        "load_path(only = [\"frame\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"floor\"], source = \"test\")
+for y in (0, 500, 1520):
+    box(\"post a %d\" % y, (100, 80, 1000), at = (0, y, 0), material = \"C24\", grounded = True)
+    box(\"post b %d\" % y, (100, 80, 1000), at = (2900, y, 0), material = \"C24\", grounded = True)
+    box(\"joist %d\" % y, (3000, 80, 200), at = (0, y, 1000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (3000, 1600, 20), at = (0, 0, 1200), material = \"OSB\", tags = [\"floor\"])\n",
+        &[],
+    );
+    for (joist, strip_mm) in [
+        ("joist 0", 290.0),
+        ("joist 500", 760.0),
+        ("joist 1520", 550.0),
+    ] {
+        let expected = 2000.0 * 3.0 * strip_mm / 1000.0;
+        let actual = member(&report, joist).loads_n["imposed"];
+        assert!(
+            (actual - expected).abs() <= expected * 0.03,
+            "{joist}: {actual} N, expected {expected} N"
+        );
+    }
+}
+
+#[test]
+fn a_beam_over_three_posts_is_continuous_and_its_middle_post_takes_five_quarters() {
+    // 6000 mm beam, post centres 50, 3000 and 5950 mm, 1.2 N/mm from the deck.
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+for x in (0, 2950, 5900):
+    box(\"post %d\" % x, (100, 100, 2000), at = (x, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (6000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (6000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])\n",
+        &[],
+    );
+    let beam = member(&report, "beam");
+    let reaction = |part: &str| {
+        beam.reactions
+            .iter()
+            .find(|reaction| reaction.part == part)
+            .unwrap_or_else(|| panic!("{:?}", beam.reactions))
+            .loads_n["imposed"]
+    };
+    let middle = 1.25 * 1.2 * 2950.0;
+    assert!(
+        (reaction("post 2950") - middle).abs() <= middle * 0.01,
+        "{}",
+        reaction("post 2950")
+    );
+    close(
+        reaction("post 0") + reaction("post 2950") + reaction("post 5900"),
+        1.2 * 6000.0,
+    );
+}
+
+#[test]
+fn a_load_on_an_overhang_lifts_the_far_end_off_its_post_and_says_so() {
+    // Posts at 50 and 3000 mm, a steel block centred 4500 mm along the beam.
+    let report = report(
+        "load_path(only = [\"frame\"])
+material_weight(\"steel\", kg_m3 = 7850, source = \"test\")
+weight_scope([\"heavy\"])
+box(\"post a\", (100, 100, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"post b\", (100, 100, 2000), at = (2950, 0, 0), material = \"C24\", tags = [\"frame\"])
+box(\"beam\", (4600, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"block\", (100, 100, 100), at = (4450, 0, 2200), material = \"steel\", tags = [\"heavy\"])\n",
+        &[],
+    );
+    // Held at both posts, post a would have to pull down by 1500 / 2950 of
+    // the block; resting, the beam lets go of it and tips over post b.
+    let weight = 0.001 * 7850.0 * 9.81;
+    let beam = member(&report, "beam");
+    let reaction = |part: &str| {
+        beam.reactions
+            .iter()
+            .find(|reaction| reaction.part == part)
+            .unwrap_or_else(|| panic!("{:?}", beam.reactions))
+    };
+    assert!(reaction("post a").lifted_off);
+    assert!(!reaction("post b").lifted_off);
+    close(reaction("post b").loads_n["permanent"], weight);
+    assert_eq!(
+        beam.missing,
+        [
+            "it lifts off post a and tips over its last support (EQU 0.9 G + 1.5 Q): no joint holds it down"
+        ]
+    );
+    assert_eq!(
+        member(&report, "post a")
+            .loads_n
+            .get("permanent")
+            .copied()
+            .unwrap_or(0.0),
+        0.0
+    );
+    // Screwed to post a, the beam stays on it: the screw pulls it down.
+    let held = report_with_screw();
+    let beam = member(&held, "beam");
+    let screw = beam
+        .reactions
+        .iter()
+        .find(|reaction| reaction.part == "post a")
+        .unwrap();
+    assert!(!screw.lifted_off);
+    close(screw.loads_n["permanent"], -weight * 1500.0 / 2950.0);
+    assert_eq!(beam.missing, Vec::<String>::new());
+    // The pull is not passed down as relief: post a carries nothing of the block.
+    assert_eq!(
+        member(&held, "post a")
+            .loads_n
+            .get("permanent")
+            .copied()
+            .unwrap_or(0.0),
+        0.0
+    );
+}
+
+fn report_with_screw() -> Report {
+    report(
+        "load_path(only = [\"frame\"])
+material_weight(\"steel\", kg_m3 = 7850, source = \"test\")
+weight_scope([\"heavy\"])
+a = box(\"post a\", (100, 100, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"post b\", (100, 100, 2000), at = (2950, 0, 0), material = \"C24\", tags = [\"frame\"])
+b = box(\"beam\", (4600, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"block\", (100, 100, 100), at = (4450, 0, 2200), material = \"steel\", tags = [\"heavy\"])
+joint(b, a, kind = \"screw\", fastener = \"screw 8 x 200\", fasteners = [(50, 50, 2100)])\n",
+        &[],
+    )
+}
+
+#[test]
 fn unknown_weights_and_loads_are_listed_with_the_members_they_reach() {
     let source = format!(
         "{BEAM}box(\"crate\", (300, 100, 50), at = (600, 0, 2200), material = \"mystery\", tags = [\"construction\"])

@@ -370,14 +370,17 @@ std::unique_ptr<NativeOperationResult> named_boolean_native(
       return success_result(result, std::move(history));
     };
     if (operation_kind == 0) {
-      BRepAlgoAPI_Cut operation(target.impl().shape, tool.impl().shape);
+      BRepAlgoAPI_Cut operation;
+      configure_boolean(operation, target.impl().shape, tool.impl().shape);
       return collect(operation);
     }
     if (operation_kind == 2) {
-      BRepAlgoAPI_Common operation(target.impl().shape, tool.impl().shape);
+      BRepAlgoAPI_Common operation;
+      configure_boolean(operation, target.impl().shape, tool.impl().shape);
       return collect(operation);
     }
-    BRepAlgoAPI_Fuse operation(target.impl().shape, tool.impl().shape);
+    BRepAlgoAPI_Fuse operation;
+    configure_boolean(operation, target.impl().shape, tool.impl().shape);
     return collect(operation);
   });
 }
@@ -452,10 +455,12 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
       return success_result(result, std::move(history));
     };
     if (distance > 0.0) {
-      BRepAlgoAPI_Fuse operation(body.impl().shape, prism.Shape());
+      BRepAlgoAPI_Fuse operation;
+      configure_boolean(operation, body.impl().shape, prism.Shape());
       return collect(operation);
     }
-    BRepAlgoAPI_Cut operation(body.impl().shape, prism.Shape());
+    BRepAlgoAPI_Cut operation;
+    configure_boolean(operation, body.impl().shape, prism.Shape());
     return collect(operation);
   });
 }

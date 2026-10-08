@@ -44,6 +44,18 @@ impl LiveBridge {
 /// Longest drawing target path, in bytes.
 const PATH_BYTES: usize = 4096;
 
+/// A path on a local drive: not a network share or device (`\\server\…`,
+/// `\\?\…`, `\\.\…`) and no alternate data stream (`file.pdf:stream`).
+fn local_file_path(path: &str) -> bool {
+    if cfg!(windows) {
+        let unc = path.starts_with(r"\\") || path.starts_with("//");
+        let stream = path.char_indices().any(|(index, c)| c == ':' && index != 1);
+        !unc && !stream
+    } else {
+        true
+    }
+}
+
 fn export(
     app: &mut KetchupApp,
     path: &str,
@@ -54,13 +66,23 @@ fn export(
     if path.len() > PATH_BYTES
         || path.contains('\0')
         || !target.is_absolute()
+        || !local_file_path(path)
         || !target
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
     {
         return Err(failure(
             "invalid_path",
-            "The drawings are written to an absolute path ending in .pdf.",
+            "The drawings are written to a local absolute path ending in .pdf (no network share, device or stream).",
+            json!({"path": path}),
+        ));
+    }
+    // No one confirms an overwrite on this path, so an existing file (or link)
+    // is never replaced; the window's own export asks before replacing.
+    if std::fs::symlink_metadata(target).is_ok() {
+        return Err(failure(
+            "drawings_target_exists",
+            "A file already exists at this path; export the drawings to a new file name.",
             json!({"path": path}),
         ));
     }
@@ -85,18 +107,23 @@ fn export(
             json!({}),
         ));
     }
-    let mut settings = app.stored_sheet_settings();
+    let previous = app.stored_sheet_settings();
+    let previously_unsaved = app.drawings.unsaved;
+    let mut settings = previous.clone();
     if let Some(format) = format {
         settings.format = format;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
-    let sheet = app
-        .write_project_drawings(target)
-        .map_err(|error| match error {
+    // The settings stay in the document only with the sheet they were written on.
+    let sheet = app.write_project_drawings(target).map_err(|error| {
+        app.store_sheet_settings(previous);
+        app.drawings.unsaved = previously_unsaved;
+        match error {
             ProjectDrawingsError::Drawing(_) => "drawings_unavailable",
             ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
-        })?;
+        }
+    })?;
     let settings = app.sheet_settings();
     Ok(json!({
         "exported": true,
@@ -109,4 +136,55 @@ fn export(
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_existing_file_is_never_replaced_and_its_settings_are_not_kept() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("sheet.pdf");
+        std::fs::write(&target, b"user file").unwrap();
+        let mut app = KetchupApp::new();
+        let before = app.stored_sheet_settings();
+        let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
+        assert_eq!(
+            export(&mut app, target.to_str().unwrap(), Some("A1"), title),
+            Err("drawings_target_exists")
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"user file");
+        assert_eq!(app.stored_sheet_settings(), before);
+        assert!(!app.drawings.unsaved);
+    }
+
+    #[test]
+    fn a_failed_export_does_not_keep_its_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("sheet.pdf");
+        let mut app = KetchupApp::new();
+        let before = app.stored_sheet_settings();
+        let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
+        // The empty document has no exact solid to draw.
+        assert!(export(&mut app, target.to_str().unwrap(), Some("A1"), title).is_err());
+        assert!(!target.exists());
+        assert_eq!(app.stored_sheet_settings(), before);
+        assert!(!app.drawings.unsaved);
+    }
+
+    #[test]
+    fn network_shares_devices_and_streams_are_not_local_files() {
+        assert!(local_file_path(r"C:\work\sheet.pdf"));
+        if cfg!(windows) {
+            for path in [
+                r"\\server\share\sheet.pdf",
+                r"\\?\C:\sheet.pdf",
+                r"\\.\pipe\sheet.pdf",
+                r"C:\work\sheet.pdf:hidden.pdf",
+            ] {
+                assert!(!local_file_path(path), "{path}");
+            }
+        }
+    }
 }

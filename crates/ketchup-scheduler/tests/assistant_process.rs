@@ -120,6 +120,7 @@ fn python() -> &'static str {
     }
 }
 
+#[cfg(windows)]
 fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut path = path.as_os_str().to_owned();
     path.push(suffix);
@@ -128,6 +129,7 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 /// Lets a surviving mock descendant perform its side effect, then gives it
 /// ample time to do so. A terminated descendant never observes the release.
+#[cfg(windows)]
 fn release_descendant(sentinel: &Path) {
     fs::write(path_with_suffix(sentinel, ".release"), "1").unwrap();
     std::thread::sleep(Duration::from_secs(1));

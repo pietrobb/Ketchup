@@ -2,6 +2,7 @@
 //! 750-part timber-frame house stays interactive: no pointer frame and no
 //! release re-scans the whole house.
 use super::push_pull_house_tests::*;
+use crate::tests::shell::step_until;
 use crate::*;
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
@@ -42,16 +43,12 @@ fn assert_release(what: &str, release: Duration) {
 }
 
 fn wait_for_commit(harness: &mut Harness<'_, KetchupApp>, revision: u64, what: &str) {
-    let released = Instant::now();
-    while harness.state().document_revision() == revision {
-        assert!(
-            released.elapsed() < COMMIT_BUDGET,
-            "{what} never committed: {}",
-            harness.state().digest
-        );
-        harness.step();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    step_until(
+        harness,
+        COMMIT_BUDGET,
+        &format!("{what} never committed"),
+        |app| app.document_revision() != revision,
+    );
     settle(harness);
 }
 

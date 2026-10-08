@@ -3,6 +3,7 @@
 //! the release turns the shape into a part of the house program. Once the house
 //! no longer owns the document, pulling the top of the pulled shape again
 //! lengthens its extrusion, also without a slow frame.
+use crate::tests::shell::step_until;
 use crate::*;
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
@@ -45,19 +46,13 @@ pub(super) fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub(super) fn settle(harness: &mut Harness<'_, KetchupApp>) {
-    let started = Instant::now();
-    loop {
-        harness.step();
-        let app = harness.state();
-        if app.exact.task.is_none() && app.push_pull.face_offset_evaluation.is_none() {
-            return;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(600),
-            "exact evaluation never settled"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    harness.step();
+    step_until(
+        harness,
+        Duration::from_secs(600),
+        "exact evaluation never settled",
+        |app| app.exact.task.is_none() && app.push_pull.face_offset_evaluation.is_none(),
+    );
 }
 
 pub(super) fn event(harness: &mut Harness<'_, KetchupApp>, event: egui::Event) -> Duration {
@@ -200,16 +195,9 @@ pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
         release < RELEASE_BUDGET,
         "the release froze the window for {release:?}"
     );
-    let released = Instant::now();
-    while harness.state().document_revision() == revision {
-        assert!(
-            released.elapsed() < COMMIT_BUDGET,
-            "{}",
-            harness.state().digest
-        );
-        harness.step();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    step_until(harness, COMMIT_BUDGET, "never committed", |app| {
+        app.document_revision() != revision
+    });
     settle(harness);
 }
 

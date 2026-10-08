@@ -341,11 +341,15 @@ impl Shell {
     /// preview being evaluated on a loaded machine) gets until [`WAIT_DEADLINE`] instead
     /// of a fixed frame count.
     fn run_idle(&mut self) {
-        let deadline = std::time::Instant::now() + WAIT_DEADLINE;
-        while let Err(error) = self.harness.try_run() {
-            assert!(std::time::Instant::now() < deadline, "{error}");
-            std::thread::sleep(WAIT_POLL);
-        }
+        let mut last_error = String::new();
+        let idle = self.wait_until(|shell| match shell.harness.try_run() {
+            Ok(_) => true,
+            Err(error) => {
+                last_error = error.to_string();
+                false
+            }
+        });
+        assert!(idle, "{last_error}");
     }
 
     /// Poll `done` (which drives frames with `step` or `settle` and checks the condition)

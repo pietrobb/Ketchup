@@ -1,10 +1,11 @@
 //! Project drawings of the timber-frame house: the sheet carries the floor plan,
 //! both sections and four elevations with a title block, follows the visible
 //! layers and is written as PDF.
+use crate::tests::shell::step_until;
 use crate::*;
 use ketchup_manufacturing::project_drawings::{ProjectSheet, ProjectView};
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
 
@@ -36,15 +37,12 @@ fn the_house_sheet_has_plan_sections_and_elevations_of_the_visible_layers() {
     let mut harness = egui_kittest::Harness::builder()
         .with_size(Vec2::new(1600.0, 1200.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-    let started = Instant::now();
-    while harness.state().exact.task.is_some() || harness.state().exact.source.is_none() {
-        assert!(
-            started.elapsed() < Duration::from_secs(300),
-            "exact house never finished"
-        );
-        harness.run_steps(1);
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    step_until(
+        &mut harness,
+        Duration::from_secs(300),
+        "exact house never finished",
+        |app| app.exact.task.is_none() && app.exact.source.is_some(),
+    );
 
     let concept = harness.state().project_drawings().unwrap();
     assert_eq!(concept.views.len(), ProjectView::ALL.len());

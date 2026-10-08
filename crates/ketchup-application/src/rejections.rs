@@ -129,6 +129,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Send the cursor with the unchanged query that returned it, or drop the cursor.",
     ),
     entry(
+        "drawings_target_exists",
+        Request,
+        "path",
+        "A file already exists at the drawing path; it is never replaced without the user's confirmation.",
+        "Export to a new file name, or let the user export from the window, which asks before replacing.",
+    ),
+    entry(
         "drawings_unavailable",
         Validation,
         "document",

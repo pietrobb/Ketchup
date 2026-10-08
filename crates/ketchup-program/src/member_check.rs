@@ -6,6 +6,7 @@
 //! whose inputs are incomplete reports its utilization from the known loads
 //! as `not_verified`, never as passing.
 
+use crate::continuous_span;
 use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
 use crate::model::{Part, ProgramModel, ProgramPartBody, ProgramProfileSegment};
 use ketchup_geometry::linalg::{dot, length};
@@ -139,7 +140,7 @@ pub const BASIS: [&str; 8] = [
     "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, the reaction at half the bearing length from the notch",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
-    "deflection: simple spans between supports and cantilevers as the loads are passed down, w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
+    "moments, shear and deflection: spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
 ];
 
@@ -478,11 +479,15 @@ struct Segment {
     deflections: Vec<Vec<f64>>,
 }
 
+/// `end_moments`: per load kind, the moments over the supports at p and q of
+/// a span continuous over them (hogging negative; along the member, without
+/// `lever`); cantilevers ignore them.
 fn segment(
     p: f64,
     q: f64,
     kind: Kind,
     per_kind: &[Vec<(f64, f64, f64)>],
+    end_moments: &[[f64; 2]],
     lever: f64,
     arc: f64,
 ) -> Segment {
@@ -497,7 +502,7 @@ fn segment(
     let mut moments = Vec::new();
     let mut shears = Vec::new();
     let mut deflections = Vec::new();
-    for patches in per_kind {
+    for (patches, [m_p, m_q]) in per_kind.iter().zip(end_moments) {
         let pieces = clipped(patches, p, q, ends);
         let total: f64 = pieces.iter().map(|piece| piece.2).sum();
         let (m, v): (Vec<f64>, [f64; 2]) = match kind {
@@ -506,10 +511,11 @@ fn segment(
                 let r_left: f64 = pieces
                     .iter()
                     .map(|&(a, b, f)| f * (q - (a + b) / 2.0) / l)
-                    .sum();
+                    .sum::<f64>()
+                    + (m_q - m_p) / l;
                 let m = xs
                     .iter()
-                    .map(|&x| (r_left * (x - p) - left_of(&pieces, x).1) * lever)
+                    .map(|&x| (m_p + r_left * (x - p) - left_of(&pieces, x).1) * lever)
                     .collect();
                 (m, [r_left, total - r_left])
             }
@@ -618,7 +624,7 @@ fn beam_checks(
     design: &Design,
     uls: &[Combination],
     sls: &[(Combination, Loads)],
-) -> Vec<Check> {
+) -> (Vec<Check>, bool) {
     let class = design.class;
     let lever = horizontal(load.axis);
     let cos_t = horizontal(shape.grain);
@@ -638,54 +644,94 @@ fn beam_checks(
                 .collect()
         })
         .collect();
-    // A short bearing zone supports the member at its middle, a long one along it.
+    // Bearings closer than the member is deep hold it as one: over so short a
+    // gap the load goes straight from one to the other, it does not bend.
     let zones = zones(load);
-    let merged: Vec<(f64, f64)> = zones
+    let mut bearings: Vec<(f64, f64)> = Vec::new();
+    for zone in &zones {
+        match bearings.last_mut() {
+            Some(last) if (zone.lo - last.1) * shape.arc < shape.h => last.1 = last.1.max(zone.hi),
+            _ => bearings.push((zone.lo, zone.hi)),
+        }
+    }
+    // A short bearing supports the member at its middle, a long one along it.
+    let merged: Vec<(f64, f64)> = bearings
         .iter()
-        .map(|zone| {
-            if (zone.hi - zone.lo) * shape.arc > BED_MM {
-                (zone.lo, zone.hi)
+        .map(|&(lo, hi)| {
+            if (hi - lo) * shape.arc > BED_MM {
+                (lo, hi)
             } else {
-                let middle = (zone.lo + zone.hi) / 2.0;
+                let middle = (lo + hi) / 2.0;
                 (middle, middle)
             }
         })
         .collect();
+    // The member is continuous over its supports: a long bearing holds it at
+    // both of its ends, with no span checked between them.
+    let mut supports: Vec<f64> = Vec::new();
+    let mut bedded: Vec<bool> = Vec::new();
+    for &(lo, hi) in &merged {
+        if !supports.is_empty() {
+            bedded.push(false);
+        }
+        supports.push(lo);
+        if hi > lo {
+            bedded.push(true);
+            supports.push(hi);
+        }
+    }
+    let support_moments: Vec<Vec<f64>> = if supports.is_empty() {
+        Vec::new()
+    } else {
+        per_kind
+            .iter()
+            .map(|pieces| continuous_span::solve(&supports, &bedded, pieces).moments)
+            .collect()
+    };
+    let no_moments = vec![[0.0; 2]; per_kind.len()];
     let mut segments = Vec::new();
-    if let (Some(first), Some(last)) = (merged.first(), merged.last()) {
-        if first.0 > 1.0 {
+    if let (Some(first), Some(last)) = (supports.first(), supports.last()) {
+        if *first > 1.0 {
             segments.push(segment(
                 0.0,
-                first.0,
+                *first,
                 Kind::LeftCantilever,
                 &per_kind,
+                &no_moments,
                 lever,
                 shape.arc,
             ));
         }
-        for pair in merged.windows(2) {
-            if pair[1].0 - pair[0].1 > 1.0 {
+        for (j, pair) in supports.windows(2).enumerate() {
+            if !bedded[j] && pair[1] - pair[0] > 1.0 {
+                let ends: Vec<[f64; 2]> = support_moments
+                    .iter()
+                    .map(|moments| [moments[j], moments[j + 1]])
+                    .collect();
                 segments.push(segment(
-                    pair[0].1,
-                    pair[1].0,
+                    pair[0],
+                    pair[1],
                     Kind::Span,
                     &per_kind,
+                    &ends,
                     lever,
                     shape.arc,
                 ));
             }
         }
-        if load.length_mm - last.1 > 1.0 {
+        if load.length_mm - last > 1.0 {
             segments.push(segment(
-                last.1,
+                *last,
                 load.length_mm,
                 Kind::RightCantilever,
                 &per_kind,
+                &no_moments,
                 lever,
                 shape.arc,
             ));
         }
     }
+    let spans_checked = bearings.len() < 2 || segments.iter().any(|seg| seg.kind == Kind::Span);
     let (b, h) = (shape.b, shape.h);
     let w_section = shape.modulus;
     let ei = class.e0_mean * shape.inertia;
@@ -812,7 +858,7 @@ fn beam_checks(
     }
     checks.extend(notch.0);
     checks.extend(bearing.0);
-    checks
+    (checks, spans_checked)
 }
 
 /// Reactions of a member whose bearings touch or overlap, along its load frame.
@@ -856,8 +902,11 @@ impl Zone {
     }
 }
 
+/// Bearing zones of the supports the member stays on.
 fn zones(load: &MemberLoad) -> Vec<Zone> {
-    let mut order: Vec<usize> = (0..load.reactions.len()).collect();
+    let mut order: Vec<usize> = (0..load.reactions.len())
+        .filter(|r| !load.reactions[*r].lifted_off)
+        .collect();
     let span = |r: usize| {
         let reaction = &load.reactions[r];
         (
@@ -980,7 +1029,13 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         } else if role == "column" {
             check.checks.push(column_check(load, shape, &design, &uls));
         } else {
-            check.checks = beam_checks(load, shape, &design, &uls, &sls);
+            let (checks, spans_checked) = beam_checks(load, shape, &design, &uls, &sls);
+            check.checks = checks;
+            // Separate bearings always leave a span; without one, bending,
+            // shear and deflection were never checked.
+            if !spans_checked {
+                missing.push("no span between its separate bearings was checked".to_owned());
+            }
             beams.insert(load.part.clone(), (class.clone(), design.gamma_m));
         }
         for reaction in load

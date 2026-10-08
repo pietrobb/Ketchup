@@ -1370,6 +1370,53 @@ fn homag_production_rejects_reflected_blind_drilling() {
     }
 }
 #[test]
+fn btlx_rejects_a_mirrored_copy_that_would_reuse_its_original_machining() {
+    for axis in 0..3 {
+        for inherited in [false, true] {
+            let mut linear = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+            linear[axis * 4] = -1.0;
+            let (snapshot, projection) = transformed_production_fixture(linear, inherited);
+            assert_eq!(
+                projection.btlx_2_3_1_export(&snapshot),
+                Err(GeneralFabricationError::MirroredInstance),
+                "axis={axis}, inherited={inherited}"
+            );
+        }
+    }
+    let (snapshot, projection) =
+        transformed_production_fixture([0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0], false);
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert!(btlx.contains("Count=\"2\""), "{btlx}");
+}
+#[test]
+fn production_projection_refuses_to_leave_out_hidden_parts() {
+    let mut document = circular_drill_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: GRAPH_RIGHT,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let registry = ExactResultRegistry::accept(
+        &snapshot,
+        [Arc::new(ExactBodyPackage::from(graph_package_for(
+            &snapshot,
+            "m17-circular-drill-result",
+            GRAPH_BOOLEAN,
+        )))],
+    )
+    .unwrap();
+    let tolerance = TolerancePolicy::default();
+    let report = general_report(&snapshot, &[], tolerance);
+    assert_eq!(
+        project_general_fabrication(&snapshot, &registry, &[], &report, tolerance),
+        Err(GeneralFabricationError::HiddenProductionParts { count: 1 })
+    );
+}
+#[test]
 fn production_preserves_proper_rotations_and_translations() {
     for linear in [
         [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],

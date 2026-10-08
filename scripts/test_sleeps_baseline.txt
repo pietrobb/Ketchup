@@ -14,7 +14,7 @@ crates/ketchup-app/tests/assistant_workflows.rs 19
 crates/ketchup-app/tests/body_ui.rs 1
 crates/ketchup-app/tests/capstone_chain.rs 1
 crates/ketchup-app/tests/exact_house_xray.rs 1
-crates/ketchup-app/tests/face_workflow_ui.rs 8
+crates/ketchup-app/tests/face_workflow_ui.rs 3
 crates/ketchup-app/tests/file_workflow.rs 13
 crates/ketchup-app/tests/gravity_support_panel.rs 1
 crates/ketchup-app/tests/harness/mod.rs 2
