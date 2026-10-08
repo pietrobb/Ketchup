@@ -139,7 +139,9 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     );
     let beam = member(&report, "beam");
     assert!(
-        beam.checks.iter().all(|check| check.at != "span 1050-1120 mm"),
+        beam.checks
+            .iter()
+            .all(|check| check.at != "span 1050-1120 mm"),
         "{:?}",
         beam.checks
     );

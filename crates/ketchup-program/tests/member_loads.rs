@@ -282,7 +282,12 @@ arunda(j, h, \"50 B\")\n",
     let half = 3.0 * 0.06 * 0.2 * 420.0 * 9.81 * 2950.0 / 3000.0 / 2.0;
     close(check.load_n.as_ref().expect("load")["permanent"], half);
     assert_eq!(check.missing, Vec::<String>::new());
-    assert_eq!(check.status, "not_verified");
+    // Arunda's allowable 240 kg against the characteristic load.
+    close(
+        check.utilization.expect("rated and loaded"),
+        (half / (240.0 * 9.81) * 1000.0).round() / 1000.0,
+    );
+    assert_eq!(check.status, "pass");
 }
 
 #[test]

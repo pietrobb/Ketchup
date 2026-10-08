@@ -255,6 +255,29 @@ fn combinations(
     (uls, sls)
 }
 
+/// gamma_M of connections (EN 1995-1-1 table 2.3).
+pub(crate) const GAMMA_M_CONNECTION: f64 = 1.3;
+
+/// kmod (table 3.1) of a service class and load-duration class.
+pub(crate) fn kmod(service_class: u8, duration: usize) -> f64 {
+    KMOD[usize::from(service_class == 3)][duration]
+}
+
+/// `loads` in every ultimate combination (6.10): design value, load-duration
+/// class and label.
+pub(crate) fn ultimate(loads: &Loads) -> Vec<(f64, usize, String)> {
+    let present: Vec<&'static str> = LOAD_KINDS[1..]
+        .iter()
+        .copied()
+        .filter(|kind| loads.get(*kind).is_some_and(|v| *v != 0.0))
+        .collect();
+    combinations(&present, 0.0)
+        .0
+        .into_iter()
+        .map(|c| (factor(&c.factors, loads), c.duration, c.label))
+        .collect()
+}
+
 fn horizontal(v: [f64; 3]) -> f64 {
     length([v[0], v[1], 0.0])
 }
@@ -610,7 +633,7 @@ struct Design<'a> {
 
 impl Design<'_> {
     fn kmod(&self, duration: usize) -> f64 {
-        KMOD[usize::from(self.class.service_class == 3)][duration]
+        kmod(self.class.service_class, duration)
     }
 
     fn strength(&self, characteristic: f64, duration: usize) -> f64 {
@@ -1085,23 +1108,75 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         if let Some(extra) = bearing_on.remove(&member.part) {
             member.checks.extend(extra);
         }
-        for check in &mut member.checks {
-            check.utilization = round3(check.utilization);
-        }
-        let governing = member
-            .checks
-            .iter()
-            .max_by(|a, b| a.utilization.total_cmp(&b.utilization));
-        member.utilization = governing.map(|c| c.utilization);
-        member.governing = governing.map(|c| c.name.to_owned());
-        member.status = match member.utilization {
-            Some(u) if u > 1.0 => "fail",
-            Some(_) if member.missing.is_empty() => "pass",
-            _ => "not_verified",
-        };
+        settle(member);
     }
     DesignReport {
         basis: BASIS.to_vec(),
         members,
+    }
+}
+
+/// Governing check and status of a member from its checks. A check that is
+/// not a number leaves the member unverified unless another one fails it.
+fn settle(member: &mut MemberCheck) {
+    for check in &mut member.checks {
+        check.utilization = round3(check.utilization);
+    }
+    if member.checks.iter().any(|c| c.utilization.is_nan()) {
+        member
+            .missing
+            .push("a utilization is not a number".to_owned());
+    }
+    let governing = member
+        .checks
+        .iter()
+        .filter(|c| !c.utilization.is_nan())
+        .max_by(|a, b| a.utilization.total_cmp(&b.utilization));
+    member.utilization = governing.map(|c| c.utilization);
+    member.governing = governing.map(|c| c.name.to_owned());
+    member.status = match member.utilization {
+        Some(u) if u > 1.0 => "fail",
+        Some(_) if member.missing.is_empty() => "pass",
+        _ => "not_verified",
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settled(utilizations: &[f64]) -> MemberCheck {
+        let mut member = MemberCheck {
+            part: "beam".to_owned(),
+            role: "beam",
+            strength_class: None,
+            section_mm: None,
+            utilization: None,
+            governing: None,
+            checks: ["bending", "shear"]
+                .iter()
+                .zip(utilizations)
+                .map(|(name, utilization)| Check {
+                    name,
+                    utilization: *utilization,
+                    combination: String::new(),
+                    at: String::new(),
+                })
+                .collect(),
+            status: "not_verified",
+            missing: Vec::new(),
+        };
+        settle(&mut member);
+        member
+    }
+
+    #[test]
+    fn a_utilization_that_is_not_a_number_never_passes_and_never_hides_a_failure() {
+        let unknown = settled(&[f64::NAN, 0.5]);
+        assert_eq!(unknown.status, "not_verified");
+        assert_eq!(unknown.utilization, Some(0.5));
+        assert_eq!(unknown.missing, ["a utilization is not a number"]);
+        assert_eq!(settled(&[f64::NAN, 1.2]).status, "fail");
+        assert_eq!(settled(&[0.4, 0.5]).status, "pass");
     }
 }

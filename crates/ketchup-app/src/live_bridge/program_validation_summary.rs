@@ -45,8 +45,13 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             .iter()
             .filter(|joint| joint.status == "not_verified")
             .count();
+        let joints_failed = report
+            .joints
+            .iter()
+            .filter(|joint| joint.status == "fail")
+            .count();
         let unassigned = report.loads.unassigned.len();
-        let state = if members.fail > 0 {
+        let state = if members.fail > 0 || joints_failed > 0 {
             "failed"
         } else if members.not_verified > 0 || joints_open > 0 || unassigned > 0 {
             "incomplete"
@@ -60,6 +65,7 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             "scope": "load_path_members_and_bearing_joints",
             "members": members.members, "fail": members.fail, "not_verified": members.not_verified,
             "bearing_joints_not_verified": joints_open,
+            "bearing_joints_failed": joints_failed,
             "unassigned_loads": unassigned
         })
     };
@@ -175,5 +181,36 @@ box('cover', (4000, 600, 10), at = (0, -250, 2230), material = 'OSB', tags = ['c
         assert_eq!(summary["load_capacity"]["unassigned_loads"], 1);
         assert_eq!(summary["load_capacity"]["state"], "incomplete");
         assert_eq!(summary["state"], "incomplete");
+    }
+
+    #[test]
+    fn an_overloaded_hanger_fails_the_load_check_and_a_strong_one_passes_it() {
+        // A joist on a hanger at the header and a post at its far end.
+        let source = |rating_n: u32| {
+            format!(
+                "load_path(only = ['frame'], carriers = ['deck'])
+area_load('live', kind = 'imposed', kn_m2 = 2.0, on = ['deck'], source = 'test')
+timber_design({{'C24': 'C24'}})
+header = box('header', (120, 2000, 240), material = 'C24', grounded = True)
+joist = box('joist', (3000, 60, 200), at = (120, 500, 40), material = 'C24', tags = ['frame'])
+box('post', (100, 60, 240), at = (3020, 500, -200), material = 'C24', grounded = True)
+box('deck', (3000, 600, 20), at = (120, 230, 240), material = 'OSB', tags = ['deck'])
+joint(joist, header, kind = 'hanger', bearing = True,
+      rating = connector_rating(load_n = {rating_n}, basis = 'design', source = 'ETA-00/0000'))"
+            )
+        };
+        let exact = json!({"state":"verified", "distance_measurements_state":"complete"});
+        let state = |rating_n: u32| {
+            let (evaluated, report) =
+                ketchup_program::run("hanger.star", &source(rating_n), &BTreeMap::new()).unwrap();
+            assert_eq!(report.errors, 0, "{:?}", report.issues);
+            let summary = summary(&report, &evaluated.model, Some(&exact));
+            (
+                summary["load_capacity"]["state"].clone(),
+                summary["load_capacity"]["bearing_joints_failed"].clone(),
+            )
+        };
+        assert_eq!(state(500), (json!("failed"), json!(1)));
+        assert_eq!(state(50_000), (json!("passed"), json!(0)));
     }
 }
