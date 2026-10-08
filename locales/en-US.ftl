@@ -61,6 +61,7 @@ status-recovery = Recovery copy — Save As required
 error-migrate-document = Migration was not confirmed: { $reason }
 digest-migrated-document = Confirmed migration saved as { $path }; source preserved
 status-preview = Preview — confirm or cancel
+status-program-planning = Planning… the program is being evaluated
 status-undo = Last change undone
 status-redo = Last change restored
 status-box-created = Box created and selected

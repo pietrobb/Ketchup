@@ -251,6 +251,53 @@ fn push_pull_preview_fails_closed_after_the_source_revision_changes() {
 }
 
 #[test]
+fn pulling_a_face_writes_the_length_a_person_would_not_float_noise() {
+    let mut app = KetchupApp::new();
+    let extent = |app: &KetchupApp| {
+        app.document
+            .current()
+            .features()
+            .find_map(|feature| match feature.kind() {
+                FeatureKind::Pad(PadSpec {
+                    extent: FeatureExtent::Blind(extent),
+                    ..
+                }) => Some(extent.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let start = extent(&app).millimetres();
+    // 120.1 + 13.2 is 133.29999999999998 in floating point.
+    for distance in [120.1 - start, 13.2] {
+        select_initial_top_face(&mut app);
+        app.set_push_pull_distance_input(distance.to_string());
+        assert!(app.start_preview(), "{}", app.digest);
+        assert!(app.confirm_preview(), "{}", app.digest);
+    }
+    let extent = extent(&app);
+    assert_eq!(
+        (extent.source_token(), extent.millimetres()),
+        ("133.3", 133.3)
+    );
+}
+
+#[test]
+fn the_preview_check_holds_frame_after_frame_and_drops_when_the_selection_moves_on() {
+    let mut app = KetchupApp::new();
+    select_initial_top_face(&mut app);
+    app.set_push_pull_distance_input("5");
+    assert!(app.start_preview());
+    for _ in 0..3 {
+        assert!(app.has_preview());
+    }
+
+    app.selection.selected_group = Some(ketchup_model::document::GroupId(7));
+    assert!(!app.has_preview());
+    app.selection.selected_group = None;
+    assert!(app.has_preview());
+}
+
+#[test]
 fn rectangle_drag_preview_preserves_signed_bounds_until_release() {
     let mut app = KetchupApp::new();
     app.new_document();

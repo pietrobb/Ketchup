@@ -2343,6 +2343,8 @@ impl KetchupApp {
     }
 
     pub fn confirm_assistant_general_finish(&mut self) -> bool {
+        // The assistant's step answers in the same call.
+        self.wait_for_program_evaluation();
         self.confirm_general_finish_preview()
     }
 
@@ -3260,7 +3262,9 @@ impl KetchupApp {
                     self.dispatch_command(AppCommand::MakeUnique);
                 }
             });
-            let scene = self.document.current().scene_query();
+            // One scene query a frame for the counts and the layer rows.
+            let snapshot = self.document.current();
+            let scene = snapshot.scene_query();
             let hidden = scene.iter().filter(|item| !item.visible).count();
             ui.label(self.catalog.format(
                 "tags-visibility",
@@ -3269,7 +3273,7 @@ impl KetchupApp {
                     ("total", scene.len().to_string()),
                 ]),
             ));
-            let active_scene = self.active_scene_query();
+            let active_scene = self.active_scene_from(&snapshot, Some(&scene));
             for (id, name, mut visible, count) in self.tag_rows() {
                 let label = self.catalog.format(
                     "tags-row",

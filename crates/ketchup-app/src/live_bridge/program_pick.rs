@@ -120,8 +120,9 @@ pub(super) fn describe(
     let program = app.document.current_rule_program()?;
     let name = part_name(snapshot, instance_path)?;
     let occurrence = snapshot.resolve_instance_path(instance_path).ok()?;
-    // Only the parts' geometry is read, from the window's kept evaluation.
-    let evaluated = app.program_evaluations.get(program).ok()?;
+    // Only the parts' geometry is read, from the window's kept evaluation. A
+    // bridge request waits for it; Fillet/Chamfer asks only once it is ready.
+    let evaluated = app.program_evaluations.get_blocking(program).ok()?;
     let part = evaluated.model.part(&name)?;
     let package = app
         .exact

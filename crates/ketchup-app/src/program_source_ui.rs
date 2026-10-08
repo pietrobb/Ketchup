@@ -1,4 +1,5 @@
 use super::*;
+use crate::program_evaluation::Lookup;
 use ketchup_application::SourceLines;
 use ketchup_model::document::RuleProgramSource;
 
@@ -50,17 +51,23 @@ impl KetchupApp {
             .default_open(true)
             .show(ui, |ui| {
                 let id = ui.id().with("program-source-view");
-                let mut view = ui
+                let kept = ui
                     .data_mut(|data| data.get_temp::<ProgramSourceView>(id))
-                    .filter(|view| &view.source == program)
-                    .unwrap_or_else(|| ProgramSourceView {
-                        source: program.clone(),
-                        parts: self
-                            .program_evaluations
-                            .get(program)
-                            .map(|evaluated| evaluated.part_sources.clone()),
-                        scrolled_to: None,
-                    });
+                    .filter(|view| &view.source == program);
+                let mut view = match kept {
+                    Some(view) => view,
+                    None => match self.program_evaluations.try_get(program) {
+                        Lookup::Pending => {
+                            ui.weak(self.catalog.text("status-program-planning"));
+                            return;
+                        }
+                        Lookup::Ready(evaluation) => ProgramSourceView {
+                            source: program.clone(),
+                            parts: evaluation.map(|evaluated| evaluated.part_sources.clone()),
+                            scrolled_to: None,
+                        },
+                    },
+                };
                 match &view.parts {
                     Err(error) => {
                         ui.label(self.catalog.format(

@@ -233,6 +233,8 @@ pub(crate) struct TakeoffCache {
 #[derive(Clone, Debug)]
 pub(crate) enum TakeoffError {
     NoProgram,
+    /// The program is still being evaluated in the background.
+    Planning,
     Program(ketchup_program::ProgramError),
     Write(Arc<std::io::Error>),
 }

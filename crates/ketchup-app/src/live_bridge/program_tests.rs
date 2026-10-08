@@ -1148,7 +1148,7 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     };
     let undo_steps = app.undo_step_count();
     assert!(app.prepare_assistant_general_finish(
-        locator,
+        locator.clone(),
         ketchup_application::topology::GeneralFinishKind::Fillet,
         5.0
     ));
@@ -1186,6 +1186,35 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     assert!(
         edges.iter().all(|edge| edge["edge"].is_array()),
         "{edges:?}"
+    );
+    assert_eq!(app.program_evaluations.on_ui_thread(), 0);
+
+    // A Fillet typed while the program is still being evaluated (a house
+    // takes a second after Open or Undo) says it is planning instead of
+    // freezing the window, and is written once the evaluation arrives.
+    let program = app.document.current_rule_program().unwrap().clone();
+    let held = app.program_evaluations.hold(&program);
+    assert!(app.prepare_assistant_general_finish(
+        locator,
+        ketchup_application::topology::GeneralFinishKind::Fillet,
+        5.0
+    ));
+    assert!(!app.apply_value_input());
+    assert_eq!(app.status_key, "status-program-planning");
+    assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
+    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
+
+    held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
+        .unwrap();
+    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    let program = app.document.current_rule_program().unwrap().source.clone();
+    assert!(
+        program[BLOCK.len()..]
+            .trim()
+            .starts_with("fillet(\"block\""),
+        "{program}: {}",
+        app.digest
     );
     assert_eq!(app.program_evaluations.on_ui_thread(), 0);
 }

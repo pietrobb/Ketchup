@@ -186,7 +186,10 @@ fn push_pull_negative_profile_target_and_invalid_solid_extent() {
     assert!(app.update_push_pull_gesture(&drag, Pos2::ZERO));
     assert!(app.confirm_push_pull_preview());
     let (origin, size) = app.occurrence_box_geometry(1).unwrap();
-    assert!((origin.z - 13.123456789).abs() < 1e-10);
+    assert!(
+        (origin.z - 13.123456789).abs() < 1e-10,
+        "{origin:?} {size:?}"
+    );
     assert!((origin.z + size.z - 40.0).abs() < 1e-10);
     let stale_digest = app.canonical_digest();
     assert!(!app.update_push_pull_gesture(&drag, Pos2::ZERO));

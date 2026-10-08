@@ -59,6 +59,18 @@ fn switching_to_a_scene_that_hides_the_roof_drops_the_rafter_from_the_selection(
 }
 
 #[test]
+fn the_layer_rows_reuse_the_scene_the_counts_were_taken_from() {
+    let (mut app, _, wall, roof) = house();
+    assert!(app.set_tag_visibility(roof, false));
+    let snapshot = app.document.current();
+    let scene = snapshot.scene_query();
+    let rows = app.active_scene_from(&snapshot, Some(&scene));
+    assert_eq!(rows, app.active_scene_query());
+    let paths = rows.iter().map(|row| row.instance_path.clone());
+    assert_eq!(paths.collect::<Vec<_>>(), [InstancePath::root(wall)]);
+}
+
+#[test]
 fn hiding_a_layer_or_undoing_its_display_deselects_only_what_it_hides() {
     let (mut app, rafter, wall, roof) = house();
     app.select_from_outliner(InstancePath::root(rafter), false);

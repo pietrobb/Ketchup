@@ -538,6 +538,14 @@ impl KetchupApp {
         }
     }
 
+    /// A typed value refused because the program is still being evaluated is
+    /// applied by the frame that finds the evaluation ready.
+    fn await_program_if_planning(&mut self) {
+        if self.status_key == "status-program-planning" {
+            self.value_input_awaits_program = Some(self.active_tool);
+        }
+    }
+
     pub(crate) fn apply_value_input(&mut self) -> bool {
         if self.gesture.sketch.armed && self.gesture.sketch.start.is_some() {
             return match self.active_tool {
@@ -619,7 +627,10 @@ impl KetchupApp {
             self.active_tool,
             ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer
         ) {
-            return self.refresh_general_finish_preview() && self.confirm_general_finish_preview();
+            let applied =
+                self.refresh_general_finish_preview() && self.confirm_general_finish_preview();
+            self.await_program_if_planning();
+            return applied;
         }
         if self.active_tool == ActiveTool::PushPull {
             let selection = self.selection.primary.clone();
@@ -660,6 +671,7 @@ impl KetchupApp {
                 );
                 return true;
             }
+            self.await_program_if_planning();
         }
         if self.active_tool == ActiveTool::Move {
             let value = self.value_box.input.trim();

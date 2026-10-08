@@ -61,6 +61,7 @@ status-recovery = Obnovená kópia — vyžaduje Uložiť ako
 error-migrate-document = Migrácia nebola potvrdená: { $reason }
 digest-migrated-document = Potvrdená migrácia uložená ako { $path }; zdroj zostal zachovaný
 status-preview = Náhľad — potvrďte alebo zrušte
+status-program-planning = Plánujem… program sa vyhodnocuje
 status-undo = Posledná zmena bola vrátená
 status-redo = Posledná zmena bola obnovená
 status-box-created = Kváder bol vytvorený a vybraný

@@ -1252,7 +1252,8 @@ impl KetchupApp {
             return self.derive_planar_preview(source, principal, distance_expression, distance_mm);
         }
         let current_extent_mm = face_extent(&source.target_box, Some(&source.target.element))?;
-        let new_extent_mm = current_extent_mm + distance_mm;
+        let new_extent = computed_length(current_extent_mm + distance_mm)?;
+        let new_extent_mm = new_extent.millimetres();
         let preview_box =
             resize_box_from_face(&source.target_box, &source.target.element, new_extent_mm)
                 .or_else(|| {
@@ -1278,7 +1279,7 @@ impl KetchupApp {
             source.topological_reference.as_ref(),
             distance_mm,
             new_extent_mm,
-            new_extent_mm.to_string(),
+            new_extent.source_token().to_owned(),
         )?;
         let proposal = if principal == ProposalPrincipal::ManualClient {
             self.prepare_manual_push_pull_proposal(batch.clone())
@@ -3004,6 +3005,23 @@ fn rotate_transform_90(
     Ok(transform.compose(local_rotation))
 }
 
+/// A length the tool computed (`120.1 + 13.2`) as the decimal a person would
+/// write (`133.3`): the shortest token of at most nine decimals that differs
+/// from it only by float noise (a relative 1e-12), with that value, so the
+/// noise never reaches the history or the document while a snapped
+/// `26.876543211` stays exact.
+pub(crate) fn computed_length(mm: f64) -> Option<Dimension> {
+    let noise = 1e-12 * mm.abs().max(1.0);
+    (0..=9)
+        .find_map(|places| {
+            let token = format!("{mm:.places$}");
+            let value = token.parse::<f64>().ok()?;
+            ((value - mm).abs() <= noise).then_some((token, value))
+        })
+        .and_then(|(token, value)| Dimension::new(token, value).ok())
+        .or_else(|| Dimension::new(mm.to_string(), mm).ok())
+}
+
 pub(crate) fn push_pull_batch(
     snapshot: &Snapshot,
     selection: &SelectionId,
@@ -3044,14 +3062,14 @@ pub(crate) fn push_pull_batch(
             }) = producer.kind()
                 && reference.producer_element_id == ExactFaceRole::Top.semantic_role()
             {
-                let length = extent.millimetres() + distance_mm;
-                if length <= 0.01 {
+                let length = computed_length(extent.millimetres() + distance_mm)?;
+                if length.millimetres() <= 0.01 {
                     return None;
                 }
                 return Some(CommandBatch::new(vec![
                     CanonicalCommand::SetFeatureDimension {
                         id: reference.producer_feature_id,
-                        dimension: Dimension::new(length.to_string(), length).ok()?,
+                        dimension: length,
                     },
                 ]));
             }

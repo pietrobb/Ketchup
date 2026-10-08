@@ -52,10 +52,14 @@ impl KetchupApp {
                 && cached.program.2 == program.overrides
         });
         if !same_program {
-            let model = self
-                .program_evaluations
-                .get(program)
-                .map(|evaluated| Arc::new(evaluated.model.clone()));
+            // The window asks every frame; it says it is planning until the
+            // program's background evaluation is ready.
+            let crate::program_evaluation::Lookup::Ready(evaluation) =
+                self.program_evaluations.try_get(program)
+            else {
+                return Err(TakeoffError::Planning);
+            };
+            let model = evaluation.map(|evaluated| Arc::new(evaluated.model.clone()));
             *cache = Some(TakeoffCache {
                 program: (
                     program.file_name.clone(),
@@ -168,6 +172,7 @@ impl KetchupApp {
     pub(crate) fn takeoff_error_text(&self, error: &TakeoffError) -> String {
         match error {
             TakeoffError::NoProgram => self.catalog.text("takeoff-no-program"),
+            TakeoffError::Planning => self.catalog.text("status-program-planning"),
             TakeoffError::Program(error) => error.to_string(),
             TakeoffError::Write(error) => error.to_string(),
         }

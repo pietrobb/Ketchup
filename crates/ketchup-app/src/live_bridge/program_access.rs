@@ -200,9 +200,10 @@ impl LiveBridge {
             .iter()
             .filter_map(|path| ketchup_application::rule_program_part_name(&snapshot, path))
             .collect();
+        // A bridge request answers in the same call.
         let evaluated = app
             .program_evaluations
-            .get(program)
+            .get_blocking(program)
             .map_err(|error| failed_because("program_rejected", error))?;
         let sources = &evaluated.part_sources;
         let lines: Vec<_> = program.source.split_inclusive('\n').collect();
@@ -252,6 +253,8 @@ impl LiveBridge {
                     "Select parts with view action=selection, or use material_takeoff for all visible parts.",
                 ));
             }
+            // A bridge request answers in the same call.
+            app.wait_for_program_evaluation();
             let takeoff = if selected {
                 app.selected_material_takeoff().map(Arc::new)
             } else {

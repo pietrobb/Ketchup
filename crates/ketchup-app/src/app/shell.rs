@@ -98,6 +98,7 @@ impl KetchupApp {
                 preview_check: std::cell::RefCell::new(None),
             },
             program_evaluations: Default::default(),
+            value_input_awaits_program: None,
             solid_tools: app_state::SolidToolInputs {
                 target: None,
                 revolve: None,
@@ -422,12 +423,28 @@ impl KetchupApp {
         &self,
         snapshot: &Snapshot,
     ) -> Vec<SceneOccurrence> {
+        self.active_scene_from(snapshot, None)
+    }
+
+    /// [`Self::active_scene_query_for_snapshot`] reusing `scene`, the whole
+    /// `snapshot.scene_query()` a caller already has, outside an edit context.
+    pub(crate) fn active_scene_from(
+        &self,
+        snapshot: &Snapshot,
+        scene: Option<&[SceneOccurrence]>,
+    ) -> Vec<SceneOccurrence> {
         let Some(context) = self.selection.edit_context.last() else {
-            return snapshot
-                .scene_query()
-                .into_iter()
-                .filter(|occurrence| occurrence.visible && occurrence.instance_path.is_root())
-                .collect();
+            let visible_root = |occurrence: &SceneOccurrence| {
+                occurrence.visible && occurrence.instance_path.is_root()
+            };
+            return match scene {
+                Some(scene) => scene.iter().filter(|o| visible_root(o)).cloned().collect(),
+                None => snapshot
+                    .scene_query()
+                    .into_iter()
+                    .filter(visible_root)
+                    .collect(),
+            };
         };
         let context = match context {
             EditContext::Group(group_id) => SceneQueryContext::Group(*group_id),
@@ -1141,6 +1158,14 @@ impl KetchupApp {
         self.poll_mesh_conversion(context);
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
+        }
+        if let Some(tool) = self.value_input_awaits_program
+            && !self.program_is_planning()
+        {
+            self.value_input_awaits_program = None;
+            if tool == self.active_tool {
+                self.apply_value_input();
+            }
         }
         self.refresh_exact_products(context);
         let palette = self.palette();

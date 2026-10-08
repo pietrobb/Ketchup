@@ -7,6 +7,7 @@
 //! copy of a component changes, while pulling out leaves a part of its own.
 //! The drawn shape is used up in the same Undo step.
 use super::*;
+use crate::program_evaluation::Lookup;
 use ketchup_geometry::linalg::{cross, dot, sub};
 use ketchup_model::document::{Occurrence, RuleProgramSource};
 use ketchup_model::tolerance::{APPROXIMATION, ROUNDING};
@@ -352,6 +353,10 @@ pub(crate) enum DrawnShapeRefusal {
     ToolLength { length_mm: f64 },
     /// The exact evaluator cannot build the cut into this part.
     NotBuildable { part: String },
+    /// The document's program is still being evaluated in the background.
+    ProgramPlanning,
+    /// The document's program does not evaluate.
+    ProgramFails(String),
 }
 
 impl std::fmt::Display for DrawnShapeRefusal {
@@ -363,6 +368,10 @@ impl std::fmt::Display for DrawnShapeRefusal {
             Self::ToolLength { length_mm } => write!(formatter, "cannot make a {length_mm} mm tool"),
             Self::NotBuildable { part } => {
                 write!(formatter, "the drawn shape cannot be cut into part {part} yet")
+            }
+            Self::ProgramPlanning => formatter.write_str("the program is still being evaluated"),
+            Self::ProgramFails(reason) => {
+                write!(formatter, "the program does not evaluate: {reason}")
             }
         }
     }
@@ -407,7 +416,16 @@ impl KetchupApp {
         let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
         let segments = drawn_loop(&snapshot, occurrence.definition_id())?;
         if let Some(program) = self.document.current_rule_program().filter(|_| !correcting) {
-            let evaluated = self.evaluated_program(program)?;
+            // A Push/Pull drag asks on every pointer move and a house program
+            // takes a second: until the background evaluation is ready the
+            // tool says it is planning, and a failing program says why.
+            let evaluated = match self.program_evaluations.try_get(program) {
+                Lookup::Pending => return Some(Err(DrawnShapeRefusal::ProgramPlanning)),
+                Lookup::Ready(Err(error)) => {
+                    return Some(Err(DrawnShapeRefusal::ProgramFails(error.to_string())));
+                }
+                Lookup::Ready(Ok(evaluated)) => evaluated,
+            };
             if evaluated.part_sources.contains_key(occurrence.name()) {
                 return None;
             }
@@ -437,15 +455,6 @@ impl KetchupApp {
                 });
         }
         self.definition_shape_edit(&snapshot, occurrence, &segments, distance_mm)
-    }
-
-    /// `program` as the window's evaluation service has it: a Push/Pull drag
-    /// asks on every pointer move, and a house program takes a second.
-    fn evaluated_program(
-        &self,
-        program: &RuleProgramSource,
-    ) -> Option<std::sync::Arc<ketchup_program::Evaluated>> {
-        self.program_evaluations.get(program).ok()
     }
 
     /// The program line a Push/Pull on a face of a program part writes, or
@@ -822,6 +831,14 @@ impl KetchupApp {
     ) -> Option<bool> {
         let edit = match self.drawn_shape_edit(selection, distance_mm)? {
             Ok(edit) => edit,
+            Err(DrawnShapeRefusal::ProgramPlanning) => {
+                // The held drag asks again every frame and the finished
+                // evaluation repaints the window.
+                self.clear_push_pull_preview();
+                self.status_key = "status-program-planning";
+                self.digest = self.catalog.text("status-program-planning");
+                return Some(false);
+            }
             Err(error) => {
                 self.clear_push_pull_preview();
                 self.status_key = "error-preview-stale";

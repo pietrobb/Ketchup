@@ -368,6 +368,31 @@ def direct_program_evaluations(root):
     ]
 
 
+# Waiting for the evaluation is for answers owed in the same call only; a tool
+# driven by the pointer or a key that waits freezes the window for a whole
+# house evaluation after Open or Undo. Tools use try_get and show planning.
+WAITING_FOR_EVALUATION = re.compile(r"\bget_blocking\(")
+MAY_WAIT_FOR_EVALUATION = {
+    PROGRAM_EVALUATION_SERVICE,
+    "crates/ketchup-app/src/program_edit.rs",
+    "crates/ketchup-app/src/live_bridge/program_access.rs",
+    "crates/ketchup-app/src/live_bridge/program_pick.rs",
+}
+
+
+def waiting_program_evaluations(root):
+    return [
+        f"{path.relative_to(root).as_posix()}:{number}: a UI tool asks "
+        "program_evaluations.try_get and shows planning; get_blocking is for "
+        "same-call answers (live bridge, built-in assistant)"
+        for path in sorted((root / "crates/ketchup-app/src").glob("**/*.rs"))
+        if path.relative_to(root).as_posix() not in MAY_WAIT_FOR_EVALUATION
+        and not is_test_module(path.relative_to(root))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if WAITING_FOR_EVALUATION.search(line)
+    ]
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
@@ -377,6 +402,7 @@ def main():
     problems += milestone_named_tests(test_files(root))
     problems += hand_written_linear_algebra(linear_algebra_counts(root))
     problems += direct_program_evaluations(root)
+    problems += waiting_program_evaluations(root)
     model = (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
     problems += named_program_bodies(model)
     problems += operations_beside_operations(model)

@@ -14,6 +14,9 @@ pub(crate) struct SavedViewsUi {
     pub(crate) active: Option<SavedViewId>,
     /// The scene tab being renamed in place, and its edited name.
     pub(crate) renaming: Option<(SavedViewId, String)>,
+    /// A tab clicked once at this input time: it is shown when no second
+    /// click (rename) follows within the double-click delay.
+    pub(crate) pending_activation: Option<(SavedViewId, f64)>,
 }
 
 /// The stable name of a display switch, e.g. "xray" or "wireframe".
@@ -246,6 +249,16 @@ impl KetchupApp {
         // A fixed whole-point height: text heights round differently at each
         // display scale, and the viewport below must keep the same shape.
         const HEIGHT: f32 = 24.0;
+        let now = ui.input(|input| input.time);
+        let double_click_delay = ui
+            .ctx()
+            .options(|options| options.input_options.max_double_click_delay);
+        if let Some((id, clicked_at)) = self.saved_views_ui.pending_activation
+            && now - clicked_at >= double_click_delay
+        {
+            self.saved_views_ui.pending_activation = None;
+            self.activate_saved_view(id);
+        }
         let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
         ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), HEIGHT), layout, |ui| {
             ui.set_min_height(HEIGHT);
@@ -258,10 +271,17 @@ impl KetchupApp {
                 let tab =
                     ui.selectable_label(self.saved_views_ui.active == Some(id), name.as_str());
                 name_widget(&tab, true, &self.catalog.format("scenes-tab", &arguments));
+                // A double click renames without first showing the scene
+                // (camera and an Undo step), so a click waits for the delay.
                 if tab.double_clicked() {
+                    self.saved_views_ui.pending_activation = None;
                     self.saved_views_ui.renaming = Some((id, name.clone()));
                 } else if tab.clicked() {
-                    self.activate_saved_view(id);
+                    self.saved_views_ui.pending_activation = Some((id, now));
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f64(
+                            double_click_delay,
+                        ));
                 }
                 tab.context_menu(|ui| {
                     if ui
@@ -320,13 +340,17 @@ impl KetchupApp {
         if !field.has_focus() && !field.lost_focus() {
             field.request_focus();
         }
+        // Escape never reaches here: `handle_shortcuts` cancels the rename.
         if field.lost_focus() {
-            let typed = typed.clone();
+            let typed = typed.trim().to_owned();
             self.saved_views_ui.renaming = None;
-            if !ui.input(|input| input.key_pressed(egui::Key::Escape))
-                && self.can_rename_saved_view(id, &typed)
-            {
+            if self.can_rename_saved_view(id, &typed) {
                 self.rename_saved_view(id, &typed);
+            } else if typed != name && self.saved_view_id(&typed).is_some() {
+                self.digest = self.catalog.format(
+                    "digest-saved-view-name-taken",
+                    &BTreeMap::from([("name", typed)]),
+                );
             }
         }
         true

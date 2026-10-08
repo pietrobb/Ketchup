@@ -1,6 +1,7 @@
 //! Publishes a whole Starlark program into the open window as one Undo step,
 //! through the same reconciliation path as the headless session.
 use super::*;
+use crate::program_evaluation::Lookup;
 use ketchup_application::{RuleProgramApplyError, RuleProgramChange, SessionError};
 use ketchup_model::document::RuleProgramSource;
 
@@ -162,9 +163,17 @@ impl KetchupApp {
         }
         // A program that no longer evaluates says why, instead of every picked
         // edge looking unnamed or the part looking unowned.
-        let evaluated = match self.program_evaluations.get(&program) {
-            Ok(evaluated) => evaluated,
-            Err(error) => {
+        let evaluated = match self.program_evaluations.try_get(&program) {
+            Lookup::Pending => {
+                return Some(Err(Rejection::new(
+                    "program.planning",
+                    RejectionPhase::Validation,
+                )
+                .target(occurrence.name().to_owned())
+                .reason(self.catalog.text("status-program-planning"))));
+            }
+            Lookup::Ready(Ok(evaluated)) => evaluated,
+            Lookup::Ready(Err(error)) => {
                 return Some(Err(Rejection::new(
                     "program.evaluation",
                     RejectionPhase::Validation,
@@ -217,6 +226,22 @@ impl KetchupApp {
         )
     }
 
+    /// True while the document's program is being evaluated in the background,
+    /// so a tool that needs it says it is planning instead of waiting.
+    pub(crate) fn program_is_planning(&self) -> bool {
+        self.document.current_rule_program().is_some_and(|program| {
+            matches!(self.program_evaluations.try_get(program), Lookup::Pending)
+        })
+    }
+
+    /// Waits for the document's program evaluation. Only for answers owed in
+    /// the same call: a live-bridge request or the built-in assistant.
+    pub(crate) fn wait_for_program_evaluation(&self) {
+        if let Some(program) = self.document.current_rule_program() {
+            let _ = self.program_evaluations.get_blocking(program);
+        }
+    }
+
     fn finish_program_edit(&mut self) {
         self.invalidate_pending_import_reviews();
         self.clear_ephemeral_edit_state();
@@ -229,7 +254,8 @@ impl KetchupApp {
     pub(crate) fn program_source_view(&self) -> Option<serde_json::Value> {
         let program = self.document.current_rule_program()?;
         let snapshot = self.document.current();
-        let (parts, error) = match self.program_evaluations.get(program) {
+        // The bridge's `program read` answers in the same call.
+        let (parts, error) = match self.program_evaluations.get_blocking(program) {
             Ok(evaluated) => (evaluated.part_sources.clone(), None),
             Err(error) => (Default::default(), Some(error)),
         };

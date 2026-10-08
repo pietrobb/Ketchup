@@ -1024,6 +1024,13 @@ impl KetchupApp {
             self.status_key = "error-preview-stale";
             return false;
         }
+        // Naming the picked edges needs the program evaluated; the preview
+        // stays and the commit runs again once it is ready.
+        if self.program_is_planning() {
+            self.status_key = "status-program-planning";
+            self.digest = self.catalog.text("status-program-planning");
+            return false;
+        }
         let Some(preview) = self.tool_preview.remove::<GeneralFinishPreview>() else {
             return false;
         };
@@ -1969,16 +1976,20 @@ impl KetchupApp {
             return false;
         }
         let snapshot = self.document.current();
-        let key = self.preview_check_key(&snapshot, preview);
+        // Called several times a frame: compare in place, build a key only on a miss.
         let cached = self
             .push_pull
             .preview_check
             .borrow()
             .as_ref()
-            .and_then(|(cached, digest)| (*cached == key).then(|| digest.clone()));
+            .and_then(|(cached, digest)| {
+                self.preview_check_is(cached, &snapshot, preview)
+                    .then(|| digest.clone())
+            });
         let digest = match cached {
             Some(digest) => digest,
             None => {
+                let key = self.preview_check_key(&snapshot, preview);
                 let digest = self
                     .derive_push_pull_preview_plan(
                         &preview.plan.source,
@@ -2006,6 +2017,42 @@ impl KetchupApp {
                         && proposal.command_digest() == digest
                 })
         })
+    }
+
+    /// `key == self.preview_check_key(snapshot, preview)` without cloning.
+    fn preview_check_is(
+        &self,
+        key: &PreviewCheckKey,
+        snapshot: &Snapshot,
+        preview: &EphemeralBoxPreview,
+    ) -> bool {
+        // Exhaustive, so a field added to the key cannot be left out here.
+        let PreviewCheckKey {
+            document_id,
+            revision_id,
+            canonical_digest,
+            planning,
+            exact_results_stamps,
+            primary,
+            selected_group,
+            edit_context,
+            topological,
+            preview: key_preview,
+        } = key;
+        *document_id == snapshot.document_id()
+            && *revision_id == snapshot.revision_id()
+            && *exact_results_stamps
+                == (
+                    self.exact.results.contents_stamp(),
+                    self.exact.topology_results.contents_stamp(),
+                )
+            && *primary == self.selection.primary
+            && *selected_group == self.selection.selected_group
+            && *edit_context == self.selection.edit_context
+            && *topological == self.selection.topological
+            && key_preview == preview
+            && *planning == self.push_pull_planning_plan()
+            && *canonical_digest == snapshot.canonical_digest()
     }
 
     pub(crate) fn preview_check_key(
@@ -2971,6 +3018,14 @@ impl KetchupApp {
     }
 
     pub(crate) fn handle_shortcuts(&mut self, context: &egui::Context) {
+        // Escape in a scene name field keeps the old name; the field, drawn
+        // later in this frame, would otherwise save what was typed.
+        if self.saved_views_ui.renaming.is_some()
+            && context
+                .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.saved_views_ui.renaming = None;
+        }
         let command_modifier = context.input(|input| input.modifiers.command);
         let command_chord = context.input(|input| {
             input.events.iter().any(|event| {

@@ -47,7 +47,16 @@ fn harness(app: KetchupApp) -> egui_kittest::Harness<'static, KetchupApp> {
         .with_size(Vec2::new(1600.0, 1000.0))
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-    harness.run_steps(3);
+    // The opened program is evaluated in the background; until then the
+    // panel says it is planning.
+    harness.run_steps(1);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the opened program was never evaluated",
+        |app| !app.program_is_planning(),
+    );
+    harness.run_steps(2);
     harness
 }
 

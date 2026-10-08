@@ -231,6 +231,74 @@ fn pulling_an_ellipse_beside_the_house_stays_interactive() {
     pull_shape_beside_house(true);
 }
 
+/// Right after Open or Undo the house program is still being evaluated. A drag
+/// of a drawn shape says it is planning instead of waiting for the evaluation
+/// (a waiting frame would hang here, the evaluation is held), and the pull
+/// finishes once the evaluation arrives.
+#[test]
+fn pulling_a_shape_while_the_house_is_being_evaluated_plans_without_waiting() {
+    let _turn = one_at_a_time();
+    let mut harness = harness(house());
+    draw(&mut harness, false);
+    let program = harness
+        .state()
+        .document
+        .current_rule_program()
+        .unwrap()
+        .clone();
+    let held = harness.state().program_evaluations.hold(&program);
+
+    let at = (START + END) * 0.5;
+    harness.state_mut().dispatch_command(AppCommand::PushPull);
+    harness.step();
+    move_to(&mut harness, at + Vec3::new(5.0, 5.0, 0.0));
+    let (screen, _) = move_to(&mut harness, at);
+    button(&mut harness, screen, true);
+    let revision = harness.state().document_revision();
+    // The press selects; the drag plans from the next pointer moves on.
+    let mut last = screen;
+    let mut planning_frames = 0;
+    for step in 1..=PULL_STEPS {
+        let (screen, took) = move_to(
+            &mut harness,
+            at + Vec3::new(0.0, 0.0, PULL_STEP_MM * step as f64),
+        );
+        last = screen;
+        assert!(took < FRAME_BUDGET, "drag frame {step} took {took:?}");
+        assert!(!harness.state().has_drawn_shape_preview());
+        if harness.state().status_key == "status-program-planning" {
+            planning_frames += 1;
+        }
+    }
+    assert!(
+        planning_frames >= 2,
+        "{planning_frames} planning frames: {}",
+        harness.state().digest
+    );
+
+    held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
+        .unwrap();
+    step_until(
+        &mut harness,
+        FRAME_BUDGET * 4,
+        "no preview after the evaluation",
+        |app| app.has_drawn_shape_preview(),
+    );
+    button(&mut harness, last, false);
+    step_until(&mut harness, COMMIT_BUDGET, "never committed", |app| {
+        app.document_revision() != revision
+    });
+    let app = harness.state();
+    assert!(
+        app.document
+            .current_rule_program()
+            .is_some_and(|program| program.source.contains("place(extrude(\"shape 1\"")),
+        "{}",
+        app.digest
+    );
+    assert_eq!(app.program_evaluations.on_ui_thread(), 0);
+}
+
 /// The second pull grabs the top of the first one. The extrusion grows to
 /// twice the pulled height; no face offset with a seam is fused on top.
 fn pull_top_of_pulled_ellipse(detach_before_drawing: bool) {
