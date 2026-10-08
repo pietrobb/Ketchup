@@ -48,6 +48,10 @@ mod workflow_trace;
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;
 
+#[path = "../../ketchup-manufacturing/tests/support/btlx_blank.rs"]
+#[allow(dead_code)] // the strict in-blank check serves the exact goldens only
+mod btlx_blank;
+
 #[test]
 fn every_test_file_is_registered() {
     integration_support::assert_every_test_file_is_registered(

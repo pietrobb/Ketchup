@@ -127,7 +127,20 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         .filter(|row| row.item_kind == GeneralBomItemKind::Timber)
         .map(|row| row.quantity)
         .sum::<usize>();
-    assert_eq!(timber, 1813);
+    // The program's own count of timber members, not a number kept by hand.
+    let members = ketchup_program::evaluate("house-project.star", HOUSE, &Default::default())
+        .unwrap()
+        .model
+        .parts
+        .iter()
+        .filter(|part| {
+            part.attributes
+                .get("classification:ketchup.fabrication-role.v1")
+                .is_some_and(|role| role == "fabrication.timber-member.v1")
+        })
+        .count();
+    assert!(members > 1800, "{members}");
+    assert_eq!(timber, members);
     // the house is larger than the unscoped collision scene (512 occurrences)
     assert_eq!(
         validation.report.state,
@@ -144,5 +157,21 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         )
         .unwrap();
     let xml = String::from_utf8(btlx).unwrap();
-    assert_eq!(xml.matches("<Part ").count(), 1813);
+    let pieces = xml
+        .split("<Part ")
+        .skip(1)
+        .map(|part| {
+            let part = format!(" {part}");
+            let start = part.find(" Count=\"").unwrap() + 8;
+            part[start..start + part[start..].find('"').unwrap()]
+                .parse::<usize>()
+                .unwrap()
+        })
+        .sum::<usize>();
+    assert_eq!(pieces, members);
+    // The imported cutters run 1-2 mm past the members (výrez 13 starts at
+    // y = -1 and is 422 deep in a 420 beam), so the house is checked for
+    // processings that cut their own blank; the strict in-blank frame check
+    // runs on the exact goldens of ketchup-manufacturing.
+    crate::btlx_blank::assert_btlx_machining_cuts_its_blank(&xml, "house-project");
 }

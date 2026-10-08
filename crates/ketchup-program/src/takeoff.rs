@@ -79,13 +79,25 @@ pub struct Takeoff {
 }
 
 /// The part's category: its `category` attribute, else the first segment of
-/// its name (`strecha/krokva 3` → `strecha`).
+/// a path name (`strecha/krokva 3` → `strecha`), else the name without its
+/// trailing number (`Základy · pätky 001` → `Základy · pätky`, `Box #2` → `Box`).
 #[must_use]
 pub fn category(part: &Part) -> &str {
-    part.attributes.get("category").map_or_else(
-        || part.name.split('/').next().unwrap_or(&part.name),
-        String::as_str,
-    )
+    if let Some(category) = part.attributes.get("category") {
+        return category;
+    }
+    if let Some((first, _)) = part.name.split_once('/') {
+        return first;
+    }
+    let unnumbered = part
+        .name
+        .trim_end_matches(|c: char| c.is_ascii_digit() || c == '#');
+    let base = unnumbered.trim_end();
+    if unnumbered.len() < part.name.len() && base.len() < unnumbered.len() && !base.is_empty() {
+        base
+    } else {
+        &part.name
+    }
 }
 
 #[derive(Default)]
@@ -305,6 +317,31 @@ box("strecha/krokva", (60, 4000, 180), at = (0, 0, 3000), material = "drevo")
             .find(|total| total.material == "OSB")
             .unwrap();
         assert_eq!((osb.area_m2, osb.volume_m3), (3.0, 0.045));
+    }
+
+    #[test]
+    fn a_name_without_a_path_is_grouped_without_its_trailing_number() {
+        let model = crate::evaluate(
+            "numbered.star",
+            r#"
+box("Prah 001", (60, 140, 2500), material = "drevo")
+box("Prah 002", (60, 140, 2500), at = (600, 0, 0), material = "drevo")
+box("Box-1 #3", (100, 100, 100), at = (0, 600, 0), material = "drevo")
+box("Stĺpik2", (100, 100, 100), at = (600, 600, 0), material = "drevo")
+"#,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .model;
+        let categories = model.parts.iter().map(category).collect::<Vec<_>>();
+        assert_eq!(categories, ["Prah", "Prah", "Box-1", "Stĺpik2"]);
+        let takeoff = material_takeoff_of_all(&model);
+        let sills = takeoff
+            .rows
+            .iter()
+            .find(|row| row.category == "Prah")
+            .unwrap();
+        assert_eq!((sills.count, sills.length_m), (2, 5.0));
     }
 
     #[test]

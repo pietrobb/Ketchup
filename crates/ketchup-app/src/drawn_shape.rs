@@ -918,4 +918,4 @@ impl KetchupApp {
 
 #[cfg(test)]
 #[path = "drawn_shape_tests.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -107,7 +107,15 @@ fn export(
             json!({}),
         ));
     }
-    let previous = app.stored_sheet_settings();
+    let previous = app.stored_sheet_settings().map_err(|reason| {
+        failure(
+            "drawings_unavailable",
+            format!(
+                "The sheet settings stored in the document do not read ({reason}); they are kept as they are. The user can fill in the title block again in the window."
+            ),
+            json!({}),
+        )
+    })?;
     let previously_unsaved = app.drawings.unsaved;
     let mut settings = previous.clone();
     if let Some(format) = format {
@@ -121,6 +129,16 @@ fn export(
         app.drawings.unsaved = previously_unsaved;
         match error {
             ProjectDrawingsError::Drawing(_) => "drawings_unavailable",
+            ProjectDrawingsError::NotEvaluated(parts) => failure(
+                "drawings_unavailable",
+                format!(
+                    "{} visible parts have no exact solid, so the sheet would leave them out: {}. Fix or hide them, wait for the exact evaluation, then export again.",
+                    parts.len(),
+                    crate::app::project_drawings::missing_parts_list(&parts)
+                ),
+                json!({"parts_without_exact_solid": parts}),
+            ),
+            ProjectDrawingsError::SettingsUnreadable(_) => "drawings_unavailable",
             ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
         }
     })?;
@@ -171,6 +189,44 @@ mod tests {
         assert!(!target.exists());
         assert_eq!(app.stored_sheet_settings(), before);
         assert!(!app.drawings.unsaved);
+    }
+
+    #[test]
+    fn unreadable_stored_settings_are_kept_and_stop_the_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("sheet.pdf");
+        let mut app = KetchupApp::new();
+        let corrupt = b"{\"title_block\": {\"client\": \"J\xc3\xa1n\"".to_vec();
+        app.file.container_data.set_extension(
+            ketchup_model::persistence::ExtensionEntry::new(
+                "org.ketchup.drawings",
+                "sheet-v1.json",
+                false,
+                corrupt.clone(),
+            )
+            .unwrap(),
+        );
+        let stored = |app: &KetchupApp| {
+            app.file
+                .container_data
+                .extensions()
+                .find(|entry| entry.path() == "sheet-v1.json")
+                .map(|entry| entry.bytes().to_vec())
+        };
+        assert!(app.stored_sheet_settings().is_err());
+        let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
+        assert!(export(&mut app, target.to_str().unwrap(), Some("A1"), title).is_err());
+        assert_eq!(
+            stored(&app),
+            Some(corrupt.clone()),
+            "the stored settings are kept"
+        );
+        assert!(!target.exists());
+
+        let error = app.write_project_drawings(&target).unwrap_err();
+        assert!(matches!(error, ProjectDrawingsError::SettingsUnreadable(_)));
+        assert!(!target.exists());
+        assert_eq!(stored(&app), Some(corrupt));
     }
 
     #[test]

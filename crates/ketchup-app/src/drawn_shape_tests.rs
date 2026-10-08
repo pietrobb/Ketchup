@@ -7,7 +7,7 @@ use std::time::Duration;
 const SIZE: [f64; 3] = [100.0, 60.0, 40.0];
 const VOLUME: f64 = SIZE[0] * SIZE[1] * SIZE[2];
 
-fn evaluate_exact(app: &mut KetchupApp) {
+pub(crate) fn evaluate_exact(app: &mut KetchupApp) {
     let worker = exact_worker_candidates()
         .into_iter()
         .find(|path| path.is_file())

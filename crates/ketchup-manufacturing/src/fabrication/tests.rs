@@ -164,6 +164,37 @@ fn a_profile_centred_on_its_axis_is_machined_from_its_minimum_corner() {
 }
 
 #[test]
+fn a_boolean_tool_opening_only_the_far_face_is_machined_from_that_face() {
+    let cube = [[0.0; 3], [10.0; 3]];
+    let tool = |start_mm, end_mm| GeneralMachiningGeometry::ProfileCut {
+        frame: identity_machining_frame(),
+        segments: vec![GeneralMachiningSegment::Line {
+            start_mm: [8.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        start_mm,
+        end_mm,
+    };
+    // From z = 5 to 15 on a 10 mm cube: a 5 mm deep cut from the top face.
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        start_mm,
+        end_mm,
+        ..
+    } = within_stock(tool(5.0, 15.0), cube).unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(frame.normal, [0.0, 0.0, -1.0]);
+    assert_eq!(frame.origin_mm[2] + frame.normal[2] * start_mm, 10.0);
+    assert_eq!(end_mm - start_mm, 5.0);
+    // Through from both sides: clipped to the cube, entered at its start.
+    assert_eq!(within_stock(tool(-5.0, 15.0), cube), Some(tool(0.0, 10.0)));
+    // A tool beside the cube removes nothing there.
+    assert_eq!(within_stock(tool(12.0, 20.0), cube), None);
+}
+
+#[test]
 fn woodwop_frame_of_an_odd_axis_order_stays_right_handed() {
     // A cabinet side 19 x 400 x 600: machine X, Y, Z = definition z, y, x,
     // an odd permutation, so machine Y must run from the far edge.

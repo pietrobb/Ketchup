@@ -21,7 +21,28 @@ const SHEET_SETTINGS_PATH: &str = "sheet-v1.json";
 #[derive(Debug)]
 pub(crate) enum ProjectDrawingsError {
     Drawing(ProjectDrawingError),
+    /// Visible parts with no current exact solid, by name: the sheet would
+    /// leave them out.
+    NotEvaluated(Vec<String>),
+    /// The title block and format stored in the document do not read; they
+    /// are left as they are rather than replaced by the defaults.
+    SettingsUnreadable(String),
     Write(std::io::Error),
+}
+
+/// The first few names of parts left out of the sheet, then how many more.
+pub(crate) fn missing_parts_list(parts: &[String]) -> String {
+    const SHOWN: usize = 5;
+    let mut list = parts
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if parts.len() > SHOWN {
+        list.push_str(&format!(" … (+{})", parts.len() - SHOWN));
+    }
+    list
 }
 
 /// Today's date as d. m. yyyy (UTC).
@@ -48,15 +69,61 @@ fn today() -> String {
 }
 
 impl KetchupApp {
-    /// Every visible occurrence with a published exact solid, in world millimetres.
-    fn visible_drawing_solids(&self, snapshot: &Snapshot) -> Vec<DrawingSolid> {
-        let exact = self.exact.results.render_by_definition(snapshot);
-        snapshot
-            .scene_query()
+    /// Every visible body of every visible occurrence as its exact solid, in
+    /// world millimetres; a visible part with a body but no current exact solid
+    /// is an error naming it, never a sheet that silently leaves it out.
+    pub(crate) fn visible_drawing_solids(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<DrawingSolid>, ProjectDrawingsError> {
+        let exact = self
+            .exact
+            .results
+            .body_values(snapshot)
+            .unwrap_or_default()
             .into_iter()
-            .filter(|occurrence| occurrence.visible)
-            .filter_map(|occurrence| {
-                let package = exact.get(&occurrence.definition_id)?;
+            .map(|(key, package)| ((key.definition_id, key.body_id), package))
+            .collect::<BTreeMap<_, _>>();
+        let mut missing = Vec::new();
+        let mut drawn = Vec::new();
+        for occurrence in snapshot.scene_query() {
+            let Some(definition) = snapshot
+                .definition(occurrence.definition_id)
+                .filter(|_| occurrence.visible)
+            else {
+                continue;
+            };
+            let terminal_bodies = ketchup_model::exact_product::exact_body_terminal_features(
+                snapshot,
+                occurrence.definition_id,
+            )
+            .map(|terminals| terminals.into_keys().collect::<Vec<_>>())
+            .unwrap_or_default();
+            let mut packages = Vec::new();
+            for body_id in terminal_bodies {
+                if !definition.body(body_id).is_some_and(|body| body.visible()) {
+                    continue;
+                }
+                match exact.get(&(occurrence.definition_id, body_id)) {
+                    Some(package) => packages.push(*package),
+                    None => {
+                        missing.push(occurrence.occurrence_name.clone());
+                        break;
+                    }
+                }
+            }
+            drawn.extend(
+                packages
+                    .into_iter()
+                    .map(|package| (occurrence.clone(), package)),
+            );
+        }
+        if !missing.is_empty() {
+            return Err(ProjectDrawingsError::NotEvaluated(missing));
+        }
+        Ok(drawn
+            .into_iter()
+            .map(|(occurrence, package)| {
                 let vertices = package.vertices();
                 let world = |index: u32| {
                     let vertex = vertices.get(usize::try_from(index).ok()?)?;
@@ -70,13 +137,13 @@ impl KetchupApp {
                         Some([world(a)?, world(b)?, world(c)?])
                     })
                     .collect();
-                Some(DrawingSolid {
-                    name: occurrence.occurrence_name.clone(),
+                DrawingSolid {
+                    name: occurrence.occurrence_name,
                     color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
                     triangles,
-                })
+                }
             })
-            .collect()
+            .collect())
     }
 
     /// The document name: its file name, else the program's.
@@ -96,22 +163,27 @@ impl KetchupApp {
             )
     }
 
-    /// The sheet settings kept in the document, as stored.
-    pub(crate) fn stored_sheet_settings(&self) -> SheetSettings {
+    /// The sheet settings kept in the document, as stored (the defaults when
+    /// none are); stored settings that do not read are an error, never
+    /// quietly the defaults.
+    pub(crate) fn stored_sheet_settings(&self) -> Result<SheetSettings, String> {
         self.file
             .container_data
             .extensions()
             .find(|entry| {
                 entry.namespace() == SHEET_NAMESPACE && entry.path() == SHEET_SETTINGS_PATH
             })
-            .and_then(|entry| serde_json::from_slice(entry.bytes()).ok())
-            .unwrap_or_default()
+            .map_or_else(
+                || Ok(SheetSettings::default()),
+                |entry| serde_json::from_slice(entry.bytes()).map_err(|error| error.to_string()),
+            )
     }
 
     /// The stored settings with the project, sheet title and date filled in
-    /// where the user left them empty.
+    /// where the user left them empty; unreadable stored settings show as the
+    /// defaults (the export refuses them, see `project_drawings`).
     pub(crate) fn sheet_settings(&self) -> SheetSettings {
-        let mut settings = self.stored_sheet_settings();
+        let mut settings = self.stored_sheet_settings().unwrap_or_default();
         let defaults = [
             (TitleField::Project, self.drawing_document_name()),
             (
@@ -134,7 +206,7 @@ impl KetchupApp {
         settings.title_block.retain(|field, value| {
             !value.trim().is_empty() && TitleField::EDITABLE.contains(field)
         });
-        if settings == self.stored_sheet_settings() {
+        if self.stored_sheet_settings().as_ref() == Ok(&settings) {
             return;
         }
         let Ok(bytes) = serde_json::to_vec(&settings) else {
@@ -166,10 +238,13 @@ impl KetchupApp {
     }
 
     /// The sheet of the visible exact solids with the document's title block.
-    pub(crate) fn project_drawings(&self) -> Result<ProjectSheet, ProjectDrawingError> {
+    pub(crate) fn project_drawings(&self) -> Result<ProjectSheet, ProjectDrawingsError> {
+        self.stored_sheet_settings()
+            .map_err(ProjectDrawingsError::SettingsUnreadable)?;
         let snapshot = self.document.current();
-        let solids = self.visible_drawing_solids(&snapshot);
-        let cut = default_plan_cut_z(&solids).ok_or(ProjectDrawingError::Empty)?;
+        let solids = self.visible_drawing_solids(&snapshot)?;
+        let cut = default_plan_cut_z(&solids)
+            .ok_or(ProjectDrawingsError::Drawing(ProjectDrawingError::Empty))?;
         let view_titles = ProjectView::ALL
             .into_iter()
             .map(|view| {
@@ -201,6 +276,7 @@ impl KetchupApp {
                 title_block: settings.title_block,
             },
         )
+        .map_err(ProjectDrawingsError::Drawing)
     }
 
     pub(crate) fn project_drawings_error_text(&self, error: &ProjectDrawingsError) -> String {
@@ -208,6 +284,17 @@ impl KetchupApp {
             ProjectDrawingsError::Drawing(ProjectDrawingError::Empty) => {
                 self.catalog.text("drawings-unavailable")
             }
+            ProjectDrawingsError::NotEvaluated(parts) => self.catalog.format(
+                "drawings-parts-not-evaluated",
+                &BTreeMap::from([
+                    ("count", parts.len().to_string()),
+                    ("parts", missing_parts_list(parts)),
+                ]),
+            ),
+            ProjectDrawingsError::SettingsUnreadable(reason) => self.catalog.format(
+                "drawings-settings-unreadable",
+                &BTreeMap::from([("reason", reason.clone())]),
+            ),
             ProjectDrawingsError::Write(error) => error.to_string(),
         }
     }
@@ -217,9 +304,7 @@ impl KetchupApp {
         &self,
         path: &Path,
     ) -> Result<ProjectSheet, ProjectDrawingsError> {
-        let sheet = self
-            .project_drawings()
-            .map_err(ProjectDrawingsError::Drawing)?;
+        let sheet = self.project_drawings()?;
         let block = &self.sheet_settings().title_block;
         let field = |field| block.get(&field).cloned().unwrap_or_default();
         let info = PdfInfo {
@@ -286,6 +371,15 @@ impl KetchupApp {
             .default_width(460.0)
             .show(context, |ui| {
                 ui.label(self.catalog.text("drawings-window-hint"));
+                if let Err(reason) = self.stored_sheet_settings() {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        self.catalog.format(
+                            "drawings-settings-unreadable-edit",
+                            &BTreeMap::from([("reason", reason)]),
+                        ),
+                    );
+                }
                 egui::Grid::new("project-drawings-title-block")
                     .num_columns(2)
                     .show(ui, |ui| {

@@ -532,7 +532,10 @@ fn view_frames(min: Point, max: Point, plan_cut_z: f64) -> [(ProjectView, ViewFr
     ]
 }
 
-const PLAN_CUT_ABOVE_LOWEST_MM: f64 = 1200.0;
+const PLAN_CUT_ABOVE_FLOOR_MM: f64 = 1200.0;
+/// Share of the largest horizontal level a level needs to be the floor (not a
+/// tolerance: a ratio of areas).
+const FLOOR_SHARE_OF_LARGEST_LEVEL: f64 = 0.5;
 /// Room around a view for its dimensions and title, in page millimetres.
 const VIEW_PAD_MM: f64 = 22.0;
 const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
@@ -714,12 +717,45 @@ fn bounds(solids: &[DrawingSolid]) -> Option<(Point, Point)> {
         .then_some((min, max))
 }
 
-/// The usual plan cut: 1.2 m above the lowest point (about a metre above a
-/// floor on its slab), or the middle of a model lower than 2.4 m.
+/// The floor: the lowest upward-facing horizontal level that carries at least
+/// half of the area of the largest such level, so small tops below a large
+/// deck do not count as the floor.
+fn floor_z(solids: &[DrawingSolid]) -> Option<f64> {
+    let mut levels = BTreeMap::<i64, f64>::new();
+    for solid in solids {
+        let outward = if winds_inward(solid) { -1.0 } else { 1.0 };
+        for triangle in &solid.triangles {
+            let [a, b, c] = triangle;
+            let Some(normal) = unit_normal(triangle) else {
+                continue;
+            };
+            if normal[2] * outward < 1.0 - ROUNDING {
+                continue;
+            }
+            let area = cross(sub(*b, *a), sub(*c, *a))[2].abs() / 2.0;
+            #[allow(clippy::cast_possible_truncation)]
+            let level = ((a[2] + b[2] + c[2]) / 3.0).round() as i64;
+            *levels.entry(level).or_default() += area;
+        }
+    }
+    let largest = levels.values().copied().fold(0.0, f64::max);
+    #[allow(clippy::cast_precision_loss)]
+    levels
+        .into_iter()
+        .find(|(_, area)| *area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
+        .map(|(level, _)| level as f64)
+}
+
+/// The usual plan cut: 1.2 m above the floor, or the middle of a model with
+/// no floor that far below its top.
 #[must_use]
 pub fn default_plan_cut_z(solids: &[DrawingSolid]) -> Option<f64> {
-    bounds(solids)
-        .map(|(min, max)| (min[2] + PLAN_CUT_ABOVE_LOWEST_MM).min(f64::midpoint(min[2], max[2])))
+    let (min, max) = bounds(solids)?;
+    let above_floor = floor_z(solids).map(|floor| floor + PLAN_CUT_ABOVE_FLOOR_MM);
+    Some(match above_floor {
+        Some(cut) if cut < max[2] => cut,
+        _ => f64::midpoint(min[2], max[2]),
+    })
 }
 
 /// Draws the project sheet of `solids`.
@@ -908,6 +944,34 @@ mod tests {
         assert_eq!(sheet.page.size_mm, SheetFormat::A2.size_mm());
         let pdf = sheet.pdf(&PdfInfo::default());
         assert!(pdf.starts_with(b"%PDF-"));
+    }
+
+    #[test]
+    fn the_default_plan_cut_is_measured_from_the_floor_not_from_the_footings() {
+        // The room on four footings reaching 1312 mm below the slab.
+        let mut house = room()
+            .into_iter()
+            .map(|mut solid| {
+                for triangle in &mut solid.triangles {
+                    for point in triangle {
+                        point[2] += 1312.0;
+                    }
+                }
+                solid
+            })
+            .collect::<Vec<_>>();
+        for (x, y) in [(0.0, 0.0), (5400.0, 0.0), (0.0, 2400.0), (5400.0, 2400.0)] {
+            house.push(cuboid(
+                "footing",
+                [x, y, 0.0],
+                [x + 600.0, y + 600.0, 1312.0],
+            ));
+        }
+        // Slab top at 1512: the cut is 1.2 m above it, through the walls only.
+        assert_eq!(default_plan_cut_z(&house), Some(2712.0));
+        // A model with no floor below head height is cut through its middle.
+        let table = [cuboid("top", [0.0; 3], [1600.0, 800.0, 40.0])];
+        assert_eq!(default_plan_cut_z(&table), Some(20.0));
     }
 
     #[test]

@@ -267,6 +267,23 @@ pub enum GeneralFabricationError {
     },
     /// A mirrored instance cannot share the machining of its definition.
     MirroredInstance,
+    /// The machine file cannot describe this part's stock or machining.
+    PartExportBlocked {
+        part: String,
+    },
+}
+
+impl GeneralFabricationError {
+    /// Names `part` in a blocked export, so the user knows what to check.
+    #[must_use]
+    pub fn at_part(self, part: &str) -> Self {
+        match self {
+            Self::ExportBlocked => Self::PartExportBlocked {
+                part: part.to_owned(),
+            },
+            other => other,
+        }
+    }
 }
 
 impl fmt::Display for GeneralFabricationError {
@@ -316,6 +333,10 @@ impl fmt::Display for GeneralFabricationError {
             ),
             Self::MirroredInstance => formatter.write_str(
                 "a mirrored copy cannot reuse the machining of its original; make the mirrored part its own definition",
+            ),
+            Self::PartExportBlocked { part } => write!(
+                formatter,
+                "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes or reaches outside the stock, or its exact result is stale; check this part's cuts or evaluate the model again",
             ),
         }
     }
@@ -1062,83 +1083,91 @@ impl GeneralFabricationProjection {
             .iter()
             .filter(|row| row.item_kind != GeneralBomItemKind::Purchased)
         {
-            let GeneralBodySource::Exact(row_source) = &row.source else {
-                return Err(GeneralFabricationError::ExportBlocked);
-            };
-            let matching = self
-                .manufacturing
-                .operations
-                .iter()
-                .filter(|operation| {
-                    operation.definition_id == row.definition_id && operation.source == *row_source
-                })
-                .collect::<Vec<_>>();
-            let [stock, machining @ ..] = matching.as_slice() else {
-                return Err(GeneralFabricationError::ExportBlocked);
-            };
-            if stock.kind != GeneralManufacturingKind::Stock
-                || !stock.semantic_inputs.is_empty()
-                || machining.iter().any(|operation| {
-                    !matches!(
-                        operation.kind,
-                        GeneralManufacturingKind::CircularDrill
-                            | GeneralManufacturingKind::ProfileCut
-                    )
-                })
-            {
-                return Err(GeneralFabricationError::ExportBlocked);
-            }
-            let stock_frame = woodwop_stock_frame(&stock.machining)
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
-            for instance_path in &row.instances {
-                let resolved = snapshot
-                    .resolve_instance_path(instance_path)
-                    .map_err(GeneralFabricationError::UnresolvedInstance)?;
-                if resolved.definition_id != row.definition_id
-                    || !is_production_transform(resolved.world_transform)
+            let part = snapshot
+                .definition(row.definition_id)
+                .map_or("", |definition| definition.name());
+            let mut write_part = || -> Result<(), GeneralFabricationError> {
+                let GeneralBodySource::Exact(row_source) = &row.source else {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                };
+                let matching = self
+                    .manufacturing
+                    .operations
+                    .iter()
+                    .filter(|operation| {
+                        operation.definition_id == row.definition_id
+                            && operation.source == *row_source
+                    })
+                    .collect::<Vec<_>>();
+                let [stock, machining @ ..] = matching.as_slice() else {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                };
+                if stock.kind != GeneralManufacturingKind::Stock
+                    || !stock.semantic_inputs.is_empty()
+                    || machining.iter().any(|operation| {
+                        !matches!(
+                            operation.kind,
+                            GeneralManufacturingKind::CircularDrill
+                                | GeneralManufacturingKind::ProfileCut
+                        )
+                    })
                 {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
-                let instance_holes = holes
-                    .iter()
-                    .filter(|hole| hole.instance_path == *instance_path)
-                    .collect::<Vec<_>>();
-                if machining.is_empty() && instance_holes.is_empty() {
-                    continue;
-                }
-                let mut macros = machining
-                    .iter()
-                    .map(|operation| match operation.kind {
-                        GeneralManufacturingKind::CircularDrill => {
-                            woodwop_drilling_macro(&operation.machining, stock_frame)
-                        }
-                        GeneralManufacturingKind::ProfileCut => {
-                            options.vertical_pocket_tool_number.and_then(|tool| {
-                                woodwop_vertical_pocket_macro(
-                                    &operation.machining,
-                                    stock_frame,
-                                    tool,
-                                )
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>()
+                let stock_frame = woodwop_stock_frame(&stock.machining)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
-                macros.extend(
-                    instance_holes
-                        .into_iter()
-                        .map(|hole| woodwop_pin_macro(hole, stock_frame))
+                for instance_path in &row.instances {
+                    let resolved = snapshot
+                        .resolve_instance_path(instance_path)
+                        .map_err(GeneralFabricationError::UnresolvedInstance)?;
+                    if resolved.definition_id != row.definition_id
+                        || !is_production_transform(resolved.world_transform)
+                    {
+                        return Err(GeneralFabricationError::ExportBlocked);
+                    }
+                    let instance_holes = holes
+                        .iter()
+                        .filter(|hole| hole.instance_path == *instance_path)
+                        .collect::<Vec<_>>();
+                    if machining.is_empty() && instance_holes.is_empty() {
+                        continue;
+                    }
+                    let mut macros = machining
+                        .iter()
+                        .map(|operation| match operation.kind {
+                            GeneralManufacturingKind::CircularDrill => {
+                                woodwop_drilling_macro(&operation.machining, stock_frame)
+                            }
+                            GeneralManufacturingKind::ProfileCut => {
+                                options.vertical_pocket_tool_number.and_then(|tool| {
+                                    woodwop_vertical_pocket_macro(
+                                        &operation.machining,
+                                        stock_frame,
+                                        tool,
+                                    )
+                                })
+                            }
+                            _ => None,
+                        })
                         .collect::<Option<Vec<_>>>()
-                        .ok_or(GeneralFabricationError::ExportBlocked)?,
-                );
-                if !program_paths.insert(instance_path.clone()) {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                        .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    macros.extend(
+                        instance_holes
+                            .into_iter()
+                            .map(|hole| woodwop_pin_macro(hole, stock_frame))
+                            .collect::<Option<Vec<_>>>()
+                            .ok_or(GeneralFabricationError::ExportBlocked)?,
+                    );
+                    if !program_paths.insert(instance_path.clone()) {
+                        return Err(GeneralFabricationError::ExportBlocked);
+                    }
+                    let mpr =
+                        woodwop_mpr_output(stock_frame, &macros, HOMAG_BHX_PRODUCTION_PACKAGE_V1)?;
+                    programs.push((instance_path.clone(), mpr));
                 }
-                let mpr =
-                    woodwop_mpr_output(stock_frame, &macros, HOMAG_BHX_PRODUCTION_PACKAGE_V1)?;
-                programs.push((instance_path.clone(), mpr));
-            }
+                Ok(())
+            };
+            write_part().map_err(|error| error.at_part(part))?;
         }
         if programs.is_empty() {
             return Err(GeneralFabricationError::NoSupportedGeometry);
@@ -1188,118 +1217,123 @@ impl GeneralFabricationProjection {
             .filter(|row| row.item_kind == GeneralBomItemKind::Timber)
             .enumerate()
         {
-            let GeneralBodySource::Exact(row_source) = &row.source else {
-                return Err(GeneralFabricationError::ExportBlocked);
-            };
-            let matching = self
-                .manufacturing
-                .operations
-                .iter()
-                .filter(|operation| {
-                    operation.definition_id == row.definition_id && operation.source == *row_source
-                })
-                .collect::<Vec<_>>();
-            let Some((stock, machining)) = matching.split_first() else {
-                return Err(GeneralFabricationError::ExportBlocked);
-            };
-            matched_operation_count = matched_operation_count
-                .checked_add(matching.len())
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
-            if stock.kind != GeneralManufacturingKind::Stock
-                || !stock.semantic_inputs.is_empty()
-                || row.material_key != TIMBER_MATERIAL_V1
-                || row.quantity == 0
-                || row.quantity != row.instances.len()
-            {
-                return Err(GeneralFabricationError::ExportBlocked);
-            }
-            // One BTLx part carries one set of processings for all `Count` copies,
-            // so a mirrored copy would be machined as its original.
-            for instance_path in &row.instances {
-                let resolved = snapshot
-                    .resolve_instance_path(instance_path)
-                    .map_err(GeneralFabricationError::UnresolvedInstance)?;
-                if resolved.definition_id != row.definition_id {
-                    return Err(GeneralFabricationError::ExportBlocked);
-                }
-                if !is_production_transform(resolved.world_transform) {
-                    return Err(if is_rigid_transform(resolved.world_transform) {
-                        GeneralFabricationError::MirroredInstance
-                    } else {
-                        GeneralFabricationError::ExportBlocked
-                    });
-                }
-            }
-            let Some((count, single_member_number)) =
-                btlx_component_identifiers(row.quantity, index)
-            else {
-                return Err(GeneralFabricationError::ExportBlocked);
-            };
-            let Some(blank) = rectangular_timber_stock(&stock.machining) else {
-                return Err(GeneralFabricationError::ExportBlocked);
-            };
-            let [width_mm, height_mm, length_mm] = blank.extents_mm;
             let part = snapshot
                 .definition(row.definition_id)
                 .map_or("", |definition| definition.name());
-            let length = format_btlx_positive_number(length_mm)
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
-            let width = format_btlx_positive_number(width_mm)
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
-            let height = format_btlx_positive_number(height_mm)
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
-            let processings = machining
-                .iter()
-                .map(|operation| btlx_processings(operation, options, blank, part))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-            output.push_str(&format!(
-                "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"{}\n",
-                row.definition_id.0,
-                TIMBER_MATERIAL_V1,
-                if processings.is_empty() { "/>" } else { ">" }
-            ));
-            if processings.is_empty() {
-                continue;
-            }
-            output.push_str("        <UserReferencePlanes>\n");
-            let first_reference_plane_id = next_reference_plane_id;
-            for processing in &processings {
-                let reference_plane_id = next_reference_plane_id;
-                next_reference_plane_id = next_reference_plane_id
-                    .checked_add(1)
+            let mut write_part = || -> Result<(), GeneralFabricationError> {
+                let GeneralBodySource::Exact(row_source) = &row.source else {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                };
+                let matching = self
+                    .manufacturing
+                    .operations
+                    .iter()
+                    .filter(|operation| {
+                        operation.definition_id == row.definition_id
+                            && operation.source == *row_source
+                    })
+                    .collect::<Vec<_>>();
+                let Some((stock, machining)) = matching.split_first() else {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                };
+                matched_operation_count = matched_operation_count
+                    .checked_add(matching.len())
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
-                let (reference_point_mm, x_vector, y_vector) = processing.reference_plane();
+                if stock.kind != GeneralManufacturingKind::Stock
+                    || !stock.semantic_inputs.is_empty()
+                    || row.material_key != TIMBER_MATERIAL_V1
+                    || row.quantity == 0
+                    || row.quantity != row.instances.len()
+                {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                }
+                // One BTLx part carries one set of processings for all `Count` copies,
+                // so a mirrored copy would be machined as its original.
+                for instance_path in &row.instances {
+                    let resolved = snapshot
+                        .resolve_instance_path(instance_path)
+                        .map_err(GeneralFabricationError::UnresolvedInstance)?;
+                    if resolved.definition_id != row.definition_id {
+                        return Err(GeneralFabricationError::ExportBlocked);
+                    }
+                    if !is_production_transform(resolved.world_transform) {
+                        return Err(if is_rigid_transform(resolved.world_transform) {
+                            GeneralFabricationError::MirroredInstance
+                        } else {
+                            GeneralFabricationError::ExportBlocked
+                        });
+                    }
+                }
+                let Some((count, single_member_number)) =
+                    btlx_component_identifiers(row.quantity, index)
+                else {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                };
+                let Some(blank) = rectangular_timber_stock(&stock.machining) else {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                };
+                let [width_mm, height_mm, length_mm] = blank.extents_mm;
+                let length = format_btlx_positive_number(length_mm)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let width = format_btlx_positive_number(width_mm)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let height = format_btlx_positive_number(height_mm)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let processings = machining
+                    .iter()
+                    .map(|operation| btlx_processings(operation, options, blank, part))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
                 output.push_str(&format!(
-                    "          <UserReferencePlane ID=\"{reference_plane_id}\">\n            <Position>\n              <ReferencePoint X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <XVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <YVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n            </Position>\n          </UserReferencePlane>\n",
-                    format_number(reference_point_mm[0]),
-                    format_number(reference_point_mm[1]),
-                    format_number(reference_point_mm[2]),
-                    format_number(x_vector[0]),
-                    format_number(x_vector[1]),
-                    format_number(x_vector[2]),
-                    format_number(y_vector[0]),
-                    format_number(y_vector[1]),
-                    format_number(y_vector[2])
+                    "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"{}\n",
+                    row.definition_id.0,
+                    TIMBER_MATERIAL_V1,
+                    if processings.is_empty() { "/>" } else { ">" }
                 ));
-            }
-            output.push_str("        </UserReferencePlanes>\n        <Processings>\n");
-            for (processing_index, processing) in processings.iter().enumerate() {
-                let reference_plane_id = first_reference_plane_id
-                    .checked_add(
-                        u32::try_from(processing_index)
-                            .map_err(|_: TryFromIntError| GeneralFabricationError::ExportBlocked)?,
-                    )
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
-                let process_id = next_process_id;
-                next_process_id = next_process_id
-                    .checked_add(1)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
-                output.push_str(&processing.xml(process_id, reference_plane_id));
-            }
-            output.push_str("        </Processings>\n      </Part>\n");
+                if processings.is_empty() {
+                    return Ok(());
+                }
+                output.push_str("        <UserReferencePlanes>\n");
+                let first_reference_plane_id = next_reference_plane_id;
+                for processing in &processings {
+                    let reference_plane_id = next_reference_plane_id;
+                    next_reference_plane_id = next_reference_plane_id
+                        .checked_add(1)
+                        .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    let (reference_point_mm, x_vector, y_vector) = processing.reference_plane();
+                    output.push_str(&format!(
+                        "          <UserReferencePlane ID=\"{reference_plane_id}\">\n            <Position>\n              <ReferencePoint X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <XVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <YVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n            </Position>\n          </UserReferencePlane>\n",
+                        format_number(reference_point_mm[0]),
+                        format_number(reference_point_mm[1]),
+                        format_number(reference_point_mm[2]),
+                        format_number(x_vector[0]),
+                        format_number(x_vector[1]),
+                        format_number(x_vector[2]),
+                        format_number(y_vector[0]),
+                        format_number(y_vector[1]),
+                        format_number(y_vector[2])
+                    ));
+                }
+                output.push_str("        </UserReferencePlanes>\n        <Processings>\n");
+                for (processing_index, processing) in processings.iter().enumerate() {
+                    let reference_plane_id =
+                        first_reference_plane_id
+                            .checked_add(u32::try_from(processing_index).map_err(
+                                |_: TryFromIntError| GeneralFabricationError::ExportBlocked,
+                            )?)
+                            .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    let process_id = next_process_id;
+                    next_process_id = next_process_id
+                        .checked_add(1)
+                        .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    output.push_str(&processing.xml(process_id, reference_plane_id));
+                }
+                output.push_str("        </Processings>\n      </Part>\n");
+                Ok(())
+            };
+            write_part().map_err(|error| error.at_part(part))?;
         }
         if matched_operation_count != self.manufacturing.operations.len() {
             return Err(GeneralFabricationError::ExportBlocked);
@@ -3088,7 +3122,8 @@ fn graph_manufacturing_operations(
     let mut index = 1;
     while let Some(node) = graph.nodes.get(index) {
         if let ExactBRepOperation::Extrude { .. } = node.operation {
-            let (operation, terminal) = boolean_prism_cut(row, source, graph, previous, index)?;
+            let (operation, terminal) =
+                boolean_prism_cut(row, source, graph, stock, previous, index)?;
             operations.push(operation);
             index = graph.nodes.iter().position(|node| node.id == terminal.id)? + 1;
             previous = terminal;
@@ -3151,6 +3186,7 @@ fn boolean_prism_cut<'graph>(
     row: &GeneralBomRow,
     source: &ketchup_model::exact_product::ExactResultKey,
     graph: &'graph ExactBRepGraph,
+    stock: &ExactBRepNode,
     previous: &ExactBRepNode,
     index: usize,
 ) -> Option<(GeneralManufacturingOperation, &'graph ExactBRepNode)> {
@@ -3199,6 +3235,7 @@ fn boolean_prism_cut<'graph>(
     if let Some((_, matrix)) = placement {
         machining = placed_profile_cut(machining, matrix)?;
     }
+    let machining = within_stock(machining, graph.node_bounds_mm(stock.id).ok().flatten()?)?;
     let operation = GeneralManufacturingOperation {
         stable_operation_id: format!(
             "definition-{}/feature-{}/{}",
@@ -3406,10 +3443,23 @@ fn blind_cut_enters_at_end(
     profile: &ExactBRepProfile,
     interval: ExactBRepLinearInterval,
 ) -> Option<bool> {
-    let [minimum, maximum] = graph.node_bounds_mm(stock.id).ok().flatten()?;
-    let origin = profile.frame().origin.to_array();
-    let direction = interval.direction();
-    let (low, high) = (0..8)
+    let (low, high) = extent_along(
+        graph.node_bounds_mm(stock.id).ok().flatten()?,
+        profile.frame().origin.to_array(),
+        interval.direction(),
+    );
+    let tolerance = ROUNDING;
+    Some((interval.end_mm() - high).abs() <= tolerance && interval.start_mm() > low + tolerance)
+}
+
+/// The range a box `[minimum, maximum]` covers along `direction`, measured
+/// from `origin`.
+fn extent_along(
+    [minimum, maximum]: [[f64; 3]; 2],
+    origin: [f64; 3],
+    direction: [f64; 3],
+) -> (f64, f64) {
+    (0..8)
         .map(|corner| {
             (0..3)
                 .map(|axis| {
@@ -3424,9 +3474,42 @@ fn blind_cut_enters_at_end(
         })
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), along| {
             (low.min(along), high.max(along))
-        });
-    let tolerance = ROUNDING;
-    Some((interval.end_mm() - high).abs() <= tolerance && interval.start_mm() > low + tolerance)
+        })
+}
+
+/// A Boolean tool may reach past the stock. The cut is machined only where the
+/// stock is (its interval clipped to the stock along the normal), and a cut
+/// that opens only on the far face is described from that face, like a blind
+/// profile cut. None when nothing of the tool lies in the stock.
+fn within_stock(
+    machining: GeneralMachiningGeometry,
+    [minimum, maximum]: [[f64; 3]; 2],
+) -> Option<GeneralMachiningGeometry> {
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    } = machining
+    else {
+        return Some(machining);
+    };
+    let (low, high) = extent_along([minimum, maximum], frame.origin_mm, frame.normal);
+    let (start_mm, end_mm) = (start_mm.max(low), end_mm.min(high));
+    if end_mm - start_mm <= ROUNDING {
+        return None;
+    }
+    let clipped = GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    };
+    Some(if start_mm > low + ROUNDING && end_mm >= high - ROUNDING {
+        entering_from_end(clipped)
+    } else {
+        clipped
+    })
 }
 
 /// The same cut described from its other end: the frame turns around (normal

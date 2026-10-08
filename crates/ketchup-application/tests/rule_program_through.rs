@@ -292,7 +292,12 @@ fn blind_depth_btlx_export_stays_fail_closed_after_detach_and_reopen() {
                 assert!(xml.contains("<Drilling "), "{xml}");
                 assert!(xml.contains("<Depth>12</Depth>"), "{xml}");
             } else {
-                assert_eq!(output, Err(GeneralFabricationError::ExportBlocked));
+                assert_eq!(
+                    output,
+                    Err(GeneralFabricationError::PartExportBlocked {
+                        part: "stock".to_owned()
+                    })
+                );
             }
         }
     }

@@ -1,3 +1,6 @@
+use crate::btlx_blank::{
+    assert_btlx_machining_cuts_its_blank, assert_btlx_machining_lies_in_its_blank,
+};
 use ketchup_geometry::prismatic::Aabb;
 use ketchup_manufacturing::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
@@ -614,6 +617,13 @@ fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner()
         std::panic::catch_unwind(|| assert_btlx_machining_lies_in_its_blank(&outward, "outward"))
             .is_err()
     );
+    // The looser check of the imported house still sees an outward hole: it
+    // removes nothing from this member.
+    assert_btlx_machining_cuts_its_blank(&xml, "centred");
+    assert!(
+        std::panic::catch_unwind(|| assert_btlx_machining_cuts_its_blank(&outward, "outward"))
+            .is_err()
+    );
 }
 
 #[test]
@@ -766,6 +776,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
             .btlx_2_3_1_export(&boolean_cut_snapshot)
             .unwrap(),
         include_bytes!("fixtures/btlx/boolean-cut-2.3.1.btlx")
+    );
+}
+
+#[test]
+fn a_boolean_tool_longer_than_the_stock_is_machined_only_through_the_stock() {
+    // The same 10 mm cut as boolean-cut-2.3.1.btlx, by a tool 15 mm long: the
+    // contour is 10 mm deep, not 15 mm past the end of the part.
+    let (snapshot, projection) = exact_graph_document_fabrication_projection(
+        graph_boolean_document_with_tool_length(BooleanOperation::Cut, "15"),
+        "cr7-overshooting-boolean-cut",
+        GRAPH_BOOLEAN,
+    );
+    assert_btlx_golden(
+        &projection.btlx_2_3_1_export(&snapshot).unwrap(),
+        "boolean-cut-2.3.1.btlx",
     );
 }
 
@@ -1408,7 +1433,8 @@ fn homag_production_rejects_reflected_blind_drilling() {
             assert!(
                 matches!(
                     projection.woodwop_mpr_4_0_production_package(&snapshot, Default::default()),
-                    Err(GeneralFabricationError::ExportBlocked)
+                    Err(GeneralFabricationError::PartExportBlocked { part })
+                        if part == "Timber with circular drilling"
                 ),
                 "axis={axis}, inherited={inherited}"
             );
@@ -1782,7 +1808,7 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
         assert!(drawing.contains("through-all (Boolean cutter interval, not machine depth)"));
         assert_eq!(
             projection.btlx_2_3_1_export(&snapshot),
-            Err(GeneralFabricationError::ExportBlocked)
+            blocked_at("Timber with circular drilling")
         );
         assert_eq!(
             projection.woodwop_mpr_4_0_drill_export(&snapshot),
@@ -1790,7 +1816,8 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
         );
         assert!(matches!(
             projection.woodwop_mpr_4_0_production_package(&snapshot, Default::default()),
-            Err(GeneralFabricationError::ExportBlocked)
+            Err(GeneralFabricationError::PartExportBlocked { part })
+                if part == "Timber with circular drilling"
         ));
         let mut tampered = projection;
         let GeneralMachiningGeometry::CircularDrill { through, .. } =
@@ -1804,6 +1831,13 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
             Err(GeneralFabricationError::ExportBlocked)
         );
     }
+}
+
+/// A machine-file export blocked by the named part.
+fn blocked_at<T>(part: &str) -> Result<T, GeneralFabricationError> {
+    Err(GeneralFabricationError::PartExportBlocked {
+        part: part.to_owned(),
+    })
 }
 
 #[test]
@@ -1860,7 +1894,7 @@ fn blind_drilling_at_or_beyond_stock_depth_cannot_export_after_reopen() {
             if depth == "50" {
                 assert_btlx_golden(&export.unwrap(), "circular-drilling-2.3.1.btlx");
             } else {
-                assert_eq!(export, Err(GeneralFabricationError::ExportBlocked));
+                assert_eq!(export, blocked_at("Timber with circular drilling"));
             }
         }
     }
@@ -2625,6 +2659,15 @@ fn irregular_profile_cut_document() -> DocumentStore {
 }
 
 fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
+    graph_boolean_document_with_tool_length(operation, "10")
+}
+
+/// A 10 mm cube and a 2 x 10 mm prism tool on its x = 8..10 edge, extruded
+/// from the same base plane by `tool_length_mm`.
+fn graph_boolean_document_with_tool_length(
+    operation: BooleanOperation,
+    tool_length_mm: &str,
+) -> DocumentStore {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -2659,7 +2702,7 @@ fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
                 name: "Tool extrusion".to_owned(),
                 kind: FeatureKind::extrusion(
                     GRAPH_TOOL_PROFILE,
-                    Dimension::from_decimal("10").unwrap(),
+                    Dimension::from_decimal(tool_length_mm).unwrap(),
                 ),
             },
             CanonicalCommand::CreateFeature {
@@ -2915,81 +2958,4 @@ fn assert_btlx_golden(actual: &[u8], name: &str) {
         std::fs::write(&path, actual).unwrap();
     }
     assert_eq!(actual, std::fs::read(&path).unwrap().as_slice(), "{name}");
-}
-
-/// Every point of every processing, at its reference plane and at its depth
-/// along XVector x YVector (into the material, docs/btlx-conventions.md), lies
-/// in the part's blank [0, Length] x [0, Width] x [0, Height].
-fn assert_btlx_machining_lies_in_its_blank(xml: &str, name: &str) {
-    fn attribute(element: &str, key: &str) -> f64 {
-        let start = element.find(&format!(" {key}=\"")).unwrap() + key.len() + 3;
-        let end = start + element[start..].find('"').unwrap();
-        element[start..end].parse().unwrap()
-    }
-    fn element<'a>(xml: &'a str, tag: &str) -> &'a str {
-        let start = xml.find(&format!("<{tag} ")).unwrap();
-        &xml[start..start + xml[start..].find('>').unwrap()]
-    }
-    fn point(xml: &str, tag: &str) -> [f64; 3] {
-        let element = element(xml, tag);
-        ["X", "Y", "Z"].map(|key| attribute(element, key))
-    }
-    fn text(xml: &str, tag: &str) -> f64 {
-        let start = xml.find(&format!("<{tag}>")).unwrap() + tag.len() + 2;
-        xml[start..start + xml[start..].find('<').unwrap()]
-            .parse()
-            .unwrap()
-    }
-    for part in xml.split("<Part ").skip(1) {
-        let extents = ["Length", "Width", "Height"].map(|key| attribute(part, key));
-        let planes = part
-            .split("<UserReferencePlane ")
-            .skip(1)
-            .map(|plane| {
-                let origin = point(plane, "ReferencePoint");
-                let x = point(plane, "XVector");
-                let y = point(plane, "YVector");
-                let normal = ketchup_geometry::linalg::cross(x, y);
-                (
-                    attribute(&format!(" {plane}"), "ID"),
-                    [origin, x, y, normal],
-                )
-            })
-            .collect::<Vec<_>>();
-        let processings = part.split("ReferencePlaneID=").skip(1).collect::<Vec<_>>();
-        for processing in &processings {
-            let id: f64 = processing[1..processing[1..].find('"').unwrap() + 1]
-                .parse()
-                .unwrap();
-            let [origin, x, y, normal] = planes.iter().find(|plane| plane.0 == id).unwrap().1;
-            let (local, depth) = if processing.contains("<StartX>") {
-                (
-                    vec![[text(processing, "StartX"), text(processing, "StartY")]],
-                    text(processing, "Depth"),
-                )
-            } else {
-                let contour = element(processing, "Contour");
-                let points = ["<StartPoint ", "<EndPoint "]
-                    .into_iter()
-                    .flat_map(|tag| processing.match_indices(tag))
-                    .map(|(at, _)| {
-                        let element = &processing[at..at + processing[at..].find('>').unwrap()];
-                        [attribute(element, "X"), attribute(element, "Y")]
-                    })
-                    .collect();
-                (points, attribute(contour, "Depth"))
-            };
-            for [u, v] in local {
-                for along in [0.0, depth] {
-                    let at: [f64; 3] = std::array::from_fn(|axis| {
-                        origin[axis] + x[axis] * u + y[axis] * v + normal[axis] * along
-                    });
-                    assert!(
-                        (0..3).all(|axis| (-1e-6..=extents[axis] + 1e-6).contains(&at[axis])),
-                        "{name}: processing on plane {id} reaches {at:?} outside the blank {extents:?}"
-                    );
-                }
-            }
-        }
-    }
 }
