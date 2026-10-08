@@ -594,6 +594,57 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
     assert_eq!(bridge.observed, Some(approved.live_bridge_stamp()));
 }
 
+/// `\\?\C:\…` reaches a local file through the device namespace, as
+/// `\\server\share\…` reaches a remote one. Such a path is refused before it is
+/// even looked up, so no network request leaves before the user is asked; the
+/// local file proves the refusal comes before `is_file`, not from it.
+#[cfg(windows)]
+#[test]
+fn open_and_save_as_refuse_network_and_device_paths_before_touching_them() {
+    let directory = tempfile::tempdir().unwrap();
+    let existing = directory.path().join("live-open.ketchup");
+    let mut source = KetchupApp::new();
+    assert!(source.create_box());
+    assert!(source.save_document_to(&existing));
+    let device = |path: &std::path::Path| format!(r"\\?\{}", path.display());
+    assert!(std::path::Path::new(&device(&existing)).is_file());
+
+    let dialogs = ScriptedFileDialogs::new().always_discard();
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let expected = app.live_bridge_stamp();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::Open {
+                expected: Some(expected),
+                path: device(&existing),
+            },
+            false,
+        ),
+        Err("invalid_path")
+    );
+    assert_eq!(probe.discard_prompts(), 0);
+    assert!(app.document_path().is_none());
+
+    let target = directory.path().join("live-save-as.ketchup");
+    let expected = app.live_bridge_stamp();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::SaveAs {
+                expected: Some(expected),
+                path: device(&target),
+            },
+            false,
+        ),
+        Err("invalid_path")
+    );
+    assert!(!target.exists());
+    assert!(probe.high_risk_prompts().is_empty());
+}
+
 fn proposal(app: &mut KetchupApp, bridge: &mut LiveBridge) -> Request {
     let expected = app.live_bridge_stamp();
     let selection = LiveBridge::selection(app).unwrap();

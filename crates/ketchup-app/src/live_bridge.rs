@@ -2468,11 +2468,7 @@ impl LiveBridge {
             Request::SaveAs { expected, path } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                if path.is_empty()
-                    || path.len() > 4096
-                    || path.contains('\0')
-                    || !Path::new(&path).is_absolute()
-                {
+                if !drawings::local_absolute_path(&path) {
                     return Err("invalid_path");
                 }
                 if !app
@@ -2488,12 +2484,9 @@ impl LiveBridge {
             Request::Open { expected, path } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                if path.is_empty()
-                    || path.len() > 4096
-                    || path.contains('\0')
-                    || !Path::new(&path).is_absolute()
-                    || !Path::new(&path).is_file()
-                {
+                // The local check comes first: `is_file` on a network path
+                // would already authenticate to its server.
+                if !drawings::local_absolute_path(&path) || !Path::new(&path).is_file() {
                     return Err("invalid_path");
                 }
                 if !app.confirm_live_open_path(Path::new(&path)) {

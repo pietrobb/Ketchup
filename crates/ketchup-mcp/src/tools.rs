@@ -16,16 +16,30 @@ use std::{
     time::Duration,
 };
 
-const DEFAULT_WAIT: Duration = Duration::from_secs(35);
-/// The host owns the job budget; allow delivery after its response deadline.
-const APPLY_PROGRAM_WAIT: Duration =
-    crate::PROGRAM_RESPONSE_WAIT.saturating_add(Duration::from_secs(5));
-const OPEN_WAIT: Duration = crate::OPEN_RESPONSE_WAIT.saturating_add(Duration::from_secs(5));
-/// On top of apply_and_verify's own `timeout_ms`; exceeds the window's 15 s publish margin.
-const APPLY_AND_VERIFY_MARGIN: Duration = Duration::from_secs(20);
+/// The window owns every response deadline; the client waits this much longer
+/// so a timeout answer from the window still arrives.
+const DELIVERY_MARGIN: Duration = Duration::from_secs(5);
+const DEFAULT_WAIT: Duration = crate::DEFAULT_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
+const APPLY_PROGRAM_WAIT: Duration = crate::PROGRAM_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
+const OPEN_WAIT: Duration = crate::OPEN_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
 const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
+
+/// How long the client waits for a verified edit of `timeout_ms`.
+fn apply_and_verify_wait(timeout_ms: u64) -> Duration {
+    crate::apply_and_verify_response_wait(timeout_ms) + DELIVERY_MARGIN
+}
 const IMAGE_PROTOCOL_VERSION: u32 = 4;
 const WINDOW_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A window started with a document opens it before it reports ready, so it
+/// gets as long as `open` gives the same document in a running window.
+fn window_start_wait(document: Option<&str>) -> Duration {
+    if document.is_some() {
+        OPEN_WAIT
+    } else {
+        WINDOW_START_TIMEOUT
+    }
+}
 
 /// Fields of a model query that the bridge nests under `query`.
 const QUERY_FIELDS: &[&str] = &[
@@ -265,7 +279,7 @@ impl Tools {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_APPLY_AND_VERIFY_MS);
         let wait = if action == "apply_and_verify" {
-            Duration::from_millis(timeout_ms) + APPLY_AND_VERIFY_MARGIN
+            apply_and_verify_wait(timeout_ms)
         } else {
             DEFAULT_WAIT
         };
@@ -442,7 +456,7 @@ impl Tools {
         let token = discovery::nonce().map_err(failed)?;
         let staged = stage::window_executable(&executable).map_err(failed)?;
         let mut child = spawn_window(&staged, document).map_err(failed)?;
-        let launched = launch_connection(&mut child, token, document.unwrap_or("Untitled"));
+        let launched = launch_connection(&mut child, token, document);
         let (window, connection) = match launched {
             Ok(launched) => launched,
             Err(error) => {
@@ -580,7 +594,7 @@ impl Tools {
 fn launch_connection(
     child: &mut std::process::Child,
     token: String,
-    document: &str,
+    document: Option<&str>,
 ) -> io::Result<(Window, Connection)> {
     let mut input = child
         .stdin
@@ -592,7 +606,8 @@ fn launch_connection(
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("missing child stdout"))?;
-    let document = document.to_owned();
+    let wait = window_start_wait(document);
+    let document = document.unwrap_or("Untitled").to_owned();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("ketchup-child-readiness".into())
@@ -603,7 +618,7 @@ fn launch_connection(
             let _ = io::copy(&mut output, &mut io::sink());
         })?;
     let (window, address) = receive
-        .recv_timeout(WINDOW_START_TIMEOUT)
+        .recv_timeout(wait)
         .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))??;
     Ok((window, Connection::open(address, token)?))
 }
@@ -765,4 +780,32 @@ fn no_more(args: &Map<String, Value>) -> Result<(), ToolError> {
         "invalid_arguments",
         format!("Unexpected arguments: {}", names.join(", ")),
     ))
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    /// The window answers every request by its own deadline, so the client must
+    /// still be listening then; otherwise a slow but answered edit looks lost.
+    #[test]
+    fn the_client_waits_longer_than_the_window_for_every_request() {
+        for timeout_ms in [1, 1_000, 9_999, 15_000, 60_000, 120_000] {
+            assert!(
+                apply_and_verify_wait(timeout_ms)
+                    > crate::apply_and_verify_response_wait(timeout_ms),
+                "apply_and_verify with timeout_ms {timeout_ms}"
+            );
+        }
+        assert!(DEFAULT_WAIT > crate::DEFAULT_RESPONSE_WAIT);
+        assert!(APPLY_PROGRAM_WAIT > crate::PROGRAM_RESPONSE_WAIT);
+        assert!(OPEN_WAIT > crate::OPEN_RESPONSE_WAIT);
+    }
+
+    /// A window started with a document loads it before it reports ready.
+    #[test]
+    fn a_window_started_with_a_document_gets_as_long_as_opening_it() {
+        assert!(window_start_wait(Some("C:/house.ketchup")) >= OPEN_WAIT);
+        assert!(window_start_wait(None) >= WINDOW_START_TIMEOUT);
+    }
 }

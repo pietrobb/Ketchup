@@ -309,4 +309,85 @@ mod tests {
         assert!(!planted.exists());
         assert_eq!(fs::read_to_string(&staged).unwrap(), "app v1");
     }
+
+    /// `scripts\ketchup-mcp-server.cmd` in a scratch checkout whose "builds"
+    /// are `where.exe` with a marker appended: the script really starts it,
+    /// it rejects `--mcp` and exits, and what the script staged stays. Plain
+    /// bytes as the executable would make Windows show a modal "16-bit
+    /// application" dialog instead.
+    #[cfg(windows)]
+    #[test]
+    fn the_server_script_stages_a_rebuild_of_the_same_size_and_minute_and_repairs_a_tampered_copy()
+    {
+        let checkout = tempfile::tempdir().unwrap();
+        let scripts = checkout.path().join("scripts");
+        let release = checkout.path().join("target").join("release");
+        let servers = checkout.path().join("target").join("mcp-server");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::create_dir_all(&release).unwrap();
+        let script = scripts.join("ketchup-mcp-server.cmd");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ketchup-mcp-server.cmd"),
+            &script,
+        )
+        .unwrap();
+        let run = || {
+            std::process::Command::new("cmd")
+                .arg("/C")
+                .arg(&script)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+        };
+        let staged = || -> Vec<(Vec<u8>, Vec<u8>)> {
+            fs::read_dir(&servers)
+                .unwrap()
+                .map(|entry| {
+                    let dir = entry.unwrap().path();
+                    (
+                        fs::read(dir.join("ketchup-app.exe")).unwrap(),
+                        fs::read(dir.join("occt.dll")).unwrap(),
+                    )
+                })
+                .collect()
+        };
+        let located = std::process::Command::new("where")
+            .arg("where.exe")
+            .output()
+            .unwrap();
+        let located = String::from_utf8(located.stdout).unwrap();
+        let program = fs::read(located.lines().next().unwrap().trim()).unwrap();
+        let build = |marker: &[u8]| [program.as_slice(), marker].concat();
+        let exe = release.join("ketchup-app.exe");
+        fs::write(&exe, build(b"one")).unwrap();
+        fs::write(release.join("occt.dll"), "library one").unwrap();
+        run();
+        assert_eq!(staged(), [(build(b"one"), b"library one".to_vec())]);
+
+        // A rebuild of the same size within the same minute is a new build.
+        let modified = fs::metadata(&exe).unwrap().modified().unwrap();
+        fs::write(&exe, build(b"two")).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&exe)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        run();
+        assert_eq!(staged(), [(build(b"two"), b"library one".to_vec())]);
+
+        // A staged copy that no longer matches the build is never started as is.
+        let copy = fs::read_dir(&servers)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::write(copy.join("ketchup-app.exe"), build(b"XXX")).unwrap();
+        fs::write(copy.join("occt.dll"), "library XXX").unwrap();
+        run();
+        assert_eq!(staged(), [(build(b"two"), b"library one".to_vec())]);
+    }
 }

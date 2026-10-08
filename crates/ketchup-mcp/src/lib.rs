@@ -26,3 +26,14 @@ pub use server::serve_stdio;
 pub const PROGRAM_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 /// Opening asks the user in the window first, then loads a possibly large document.
 pub const OPEN_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Every request the window answers within this, whatever the request.
+pub const DEFAULT_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the window waits for a verified edit of `timeout_ms`: the job
+/// itself, plus queueing and publishing on the UI thread, never below the
+/// default wait. The MCP client waits a delivery margin longer than this.
+#[must_use]
+pub fn apply_and_verify_response_wait(timeout_ms: u64) -> std::time::Duration {
+    (std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(15))
+        .max(DEFAULT_RESPONSE_WAIT)
+}

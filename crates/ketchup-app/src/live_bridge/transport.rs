@@ -137,18 +137,16 @@ struct RawEnvelope {
     request: Box<serde_json::value::RawValue>,
 }
 
-const DEFAULT_RESPONSE_WAIT: Duration = Duration::from_secs(30);
-/// Queueing and publishing on the UI thread come on top of the job deadline.
-const APPLY_AND_VERIFY_RESPONSE_MARGIN: Duration = Duration::from_secs(15);
+use ketchup_mcp::DEFAULT_RESPONSE_WAIT;
 
 /// How long the connection waits for the UI thread's answer. A verified edit
 /// may legitimately run up to its own `timeout_ms`, so the connection must not
 /// give up (and cancel it) before the job's deadline does.
 fn response_wait(request: &Request) -> Duration {
     match request {
-        Request::ApplyAndVerify { timeout_ms, .. } => (Duration::from_millis(*timeout_ms)
-            + APPLY_AND_VERIFY_RESPONSE_MARGIN)
-            .max(DEFAULT_RESPONSE_WAIT),
+        Request::ApplyAndVerify { timeout_ms, .. } => {
+            ketchup_mcp::apply_and_verify_response_wait(*timeout_ms)
+        }
         Request::ApplyProgram { .. }
         | Request::PatchProgram { .. }
         | Request::ValidateProgram { .. }
@@ -325,7 +323,10 @@ fn await_response(
             return Ok(Awaited::Ended);
         }
         if Instant::now() >= deadline {
-            return Ok(Awaited::TimedOut);
+            // An answer that came in during the last wait is still an answer.
+            return Ok(receiver
+                .try_recv()
+                .map_or(Awaited::TimedOut, Awaited::Answer));
         }
         let mut byte = [0];
         match stream.peek(&mut byte) {
@@ -672,6 +673,22 @@ mod tests {
         assert!(matches!(
             await_response(&server, &receiver, deadline, &stop).unwrap(),
             Awaited::Ended
+        ));
+    }
+
+    #[test]
+    fn an_answer_that_arrives_at_the_deadline_is_delivered_not_timed_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let stop = AtomicBool::new(false);
+        let (reply, receiver) = mpsc::sync_channel(1);
+        reply.try_send(Response::error(4, "busy")).unwrap();
+        let deadline = Instant::now();
+        assert!(matches!(
+            await_response(&server, &receiver, deadline, &stop).unwrap(),
+            Awaited::Answer(Response { id: 4, .. })
         ));
     }
 

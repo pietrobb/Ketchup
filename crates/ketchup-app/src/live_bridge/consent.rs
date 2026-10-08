@@ -62,6 +62,9 @@ struct DiscoveryState {
 
 pub(crate) struct PendingConsent {
     decision: mpsc::SyncSender<ConsentDecision>,
+    /// Set once the requester stopped waiting. The window holds the lock from
+    /// the check to the grant, so it never acts on a request nobody waits for.
+    abandoned: Arc<Mutex<bool>>,
 }
 
 enum ConsentDecision {
@@ -193,6 +196,18 @@ impl KetchupApp {
         let Ok(request) = broker.requests.try_recv() else {
             return;
         };
+        self.answer_live_consent(context, request);
+    }
+
+    fn answer_live_consent(&mut self, context: &egui::Context, request: PendingConsent) {
+        let abandoned = Arc::clone(&request.abandoned);
+        let Ok(abandoned) = abandoned.lock() else {
+            return;
+        };
+        if *abandoned {
+            // Nobody waits for this grant: the current client keeps the window.
+            return;
+        }
         if self.live.consent_attached {
             // The previous client may be gone or forgotten without disconnecting;
             // a new local attach takes over with a fresh credential.
@@ -516,7 +531,12 @@ fn serve(
             );
         }
         let (decision, receiver) = mpsc::sync_channel(1);
-        if sender.try_send(PendingConsent { decision }).is_err() {
+        let abandoned = Arc::new(Mutex::new(false));
+        let pending = PendingConsent {
+            decision,
+            abandoned: Arc::clone(&abandoned),
+        };
+        if sender.try_send(pending).is_err() {
             return write_response(
                 &mut stream,
                 &nonce,
@@ -530,6 +550,10 @@ fn serve(
         let decision = wait_for_decision(&stream, &receiver, stop);
         context.request_repaint();
         let release_late_grant = || {
+            // After this the window drops the request instead of answering it.
+            if let Ok(mut abandoned) = abandoned.lock() {
+                *abandoned = true;
+            }
             // The window granted access to a requester that already left: free it.
             if matches!(receiver.try_recv(), Ok(ConsentDecision::Allow { .. })) {
                 let _ = delivery_sender.send(false);
@@ -849,6 +873,64 @@ mod tests {
         let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
         assert_eq!(response["status"], "busy");
         assert!(response.get("token").is_none());
+    }
+
+    #[test]
+    fn an_abandoned_attach_request_leaves_the_current_client_connected() {
+        let directory = tempfile::tempdir().unwrap();
+        let context = egui::Context::default();
+        let mut app = KetchupApp::new();
+        app.enable_live_consent_broker_in(&context, directory.path())
+            .unwrap();
+        let broker = app.live.consent_broker.as_ref().unwrap();
+        let address = broker.address;
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let attach = |nonce: &str| {
+            let mut stream = TcpStream::connect(address).unwrap();
+            writeln!(stream, "{}", serde_json::json!({"version":1,"action":"attach","nonce":nonce,"bootstrap":registry["bootstrap"]})).unwrap();
+            stream
+        };
+        let take_request = |app: &KetchupApp| {
+            app.live
+                .consent_broker
+                .as_ref()
+                .unwrap()
+                .requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("attach was not received")
+        };
+
+        let _current = attach(&"5".repeat(64));
+        let request = take_request(&app);
+        app.answer_live_consent(&context, request);
+        assert!(app.live_consent_attached());
+        let current = app.live_bridge_credentials().unwrap();
+
+        // A second requester leaves before the window gets a frame to answer.
+        let gone = attach(&"6".repeat(64));
+        let request = take_request(&app);
+        gone.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(gone);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !*request.abandoned.lock().unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "the broker never saw the requester leave"
+            );
+            std::thread::yield_now();
+        }
+        app.answer_live_consent(&context, request);
+
+        assert!(app.live_consent_attached());
+        let still = app.live_bridge_credentials().unwrap();
+        assert_eq!(
+            (still.address, still.token),
+            (current.address, current.token),
+            "the current client must keep its connection and token"
+        );
     }
 
     #[test]

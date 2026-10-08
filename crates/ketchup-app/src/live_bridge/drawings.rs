@@ -56,6 +56,17 @@ fn local_file_path(path: &str) -> bool {
     }
 }
 
+/// The one path policy of the protocol for `open`, `save_as` and drawings:
+/// absolute, bounded and local. It reads nothing from the file system, so a
+/// network path is refused before any request reaches its server.
+pub(super) fn local_absolute_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= PATH_BYTES
+        && !path.contains('\0')
+        && Path::new(path).is_absolute()
+        && local_file_path(path)
+}
+
 fn export(
     app: &mut KetchupApp,
     path: &str,
@@ -63,10 +74,7 @@ fn export(
     title_block: BTreeMap<TitleField, String>,
 ) -> Result<Value, &'static str> {
     let target = Path::new(path);
-    if path.len() > PATH_BYTES
-        || path.contains('\0')
-        || !target.is_absolute()
-        || !local_file_path(path)
+    if !local_absolute_path(path)
         || !target
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
