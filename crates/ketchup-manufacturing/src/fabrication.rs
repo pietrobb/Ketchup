@@ -256,7 +256,10 @@ pub enum GeneralFabricationError {
     ExportBlocked,
     UnresolvedInstance(CanonicalError),
     PinJoint(PinJointError),
-    BtlxProfileRequestUnsupported,
+    /// The chosen BTLx profile strategy cannot cut a contour of this part.
+    BtlxProfileRequestUnsupported {
+        part: String,
+    },
     /// Production parts on hidden layers or hidden themselves would silently
     /// be missing from the machine file.
     HiddenProductionParts {
@@ -303,8 +306,9 @@ impl fmt::Display for GeneralFabricationError {
             Self::ExportBlocked => formatter.write_str(
                 "fabrication export is incomplete, stale, invalid, or lacks manufacturing semantics",
             ),
-            Self::BtlxProfileRequestUnsupported => formatter.write_str(
-                "the requested BTLx profile processing strategy cannot represent this contour",
+            Self::BtlxProfileRequestUnsupported { part } => write!(
+                formatter,
+                "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling takes only rectangular line contours with at most 32 intermediate cuts; choose the portable FreeContour strategy for this part",
             ),
             Self::HiddenProductionParts { count } => write!(
                 formatter,
@@ -1235,6 +1239,9 @@ impl GeneralFabricationProjection {
                 return Err(GeneralFabricationError::ExportBlocked);
             };
             let [width_mm, height_mm, length_mm] = blank.extents_mm;
+            let part = snapshot
+                .definition(row.definition_id)
+                .map_or("", |definition| definition.name());
             let length = format_btlx_positive_number(length_mm)
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let width = format_btlx_positive_number(width_mm)
@@ -1243,7 +1250,7 @@ impl GeneralFabricationProjection {
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let processings = machining
                 .iter()
-                .map(|operation| btlx_processings(operation, options, blank))
+                .map(|operation| btlx_processings(operation, options, blank, part))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .flatten()
@@ -1459,6 +1466,7 @@ fn btlx_processings(
     operation: &GeneralManufacturingOperation,
     options: BtlxExportOptions,
     blank: StockBlank,
+    part: &str,
 ) -> Result<Vec<BtlxProcessing>, GeneralFabricationError> {
     match operation.kind {
         GeneralManufacturingKind::CircularDrill => btlx_drilling(&operation.machining, blank)
@@ -1481,7 +1489,11 @@ fn btlx_processings(
                         &contour,
                         intermediate_saw_cuts,
                     )
-                    .ok_or(GeneralFabricationError::BtlxProfileRequestUnsupported)?;
+                    .ok_or_else(|| {
+                        GeneralFabricationError::BtlxProfileRequestUnsupported {
+                            part: part.to_owned(),
+                        }
+                    })?;
                     let mut processings = saw_contours
                         .into_iter()
                         .map(BtlxProcessing::SawContour)

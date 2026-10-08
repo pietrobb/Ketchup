@@ -695,7 +695,9 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
                     },
             },
         ),
-        Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
+        Err(GeneralFabricationError::BtlxProfileRequestUnsupported {
+            part: "Timber with rectangular profile cut".to_owned(),
+        })
     );
 
     let (arc_cut_snapshot, arc_cut) = arc_profile_cut_fabrication_projection();
@@ -703,7 +705,9 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     assert_btlx_golden(&arc_cut_export, "arc-profile-cut-2.3.1.btlx");
     assert_eq!(
         arc_cut.btlx_2_3_1_export_with_options(&arc_cut_snapshot, BtlxExportOptions::default()),
-        Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
+        Err(GeneralFabricationError::BtlxProfileRequestUnsupported {
+            part: "Timber with arc profile cut".to_owned(),
+        })
     );
     let (irregular_cut_snapshot, irregular_cut) = irregular_profile_cut_fabrication_projection();
     let irregular_cut_export = irregular_cut
@@ -716,10 +720,16 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
             .btlx_2_3_1_export(&irregular_cut_snapshot)
             .unwrap()
     );
-    assert_eq!(
-        irregular_cut
-            .btlx_2_3_1_export_with_options(&irregular_cut_snapshot, BtlxExportOptions::default(),),
-        Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
+    // The default edge saw-then-mill strategy cannot cut an irregular contour
+    // (like a bevelled rafter end); the message names the part and the way out.
+    let message = irregular_cut
+        .btlx_2_3_1_export_with_options(&irregular_cut_snapshot, BtlxExportOptions::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("part \"Timber with irregular profile cut\"")
+            && message.contains("choose the portable FreeContour strategy"),
+        "{message}"
     );
 
     let mut tampered = projection;
