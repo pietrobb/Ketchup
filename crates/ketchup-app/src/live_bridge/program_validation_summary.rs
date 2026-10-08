@@ -63,6 +63,8 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             "state": state,
             "method": "ec5_member_check_computed_not_authorized_design",
             "scope": "load_path_members_and_bearing_joints",
+            "loads_considered": "gravity_only",
+            "not_checked": ketchup_program::member_check::NOT_CHECKED,
             "members": members.members, "fail": members.fail, "not_verified": members.not_verified,
             "bearing_joints_not_verified": joints_open,
             "bearing_joints_failed": joints_failed,
@@ -210,6 +212,24 @@ joint(joist, header, kind = 'hanger', bearing = True,
                 summary["load_capacity"]["bearing_joints_failed"].clone(),
             )
         };
+        // A pass covers vertical loads only, and says so.
+        let (evaluated, report) =
+            ketchup_program::run("hanger.star", &source(50_000), &BTreeMap::new()).unwrap();
+        let passed = summary(&report, &evaluated.model, Some(&exact));
+        assert_eq!(passed["load_capacity"]["loads_considered"], "gravity_only");
+        assert_eq!(
+            passed["load_capacity"]["not_checked"],
+            json!([
+                "wind",
+                "horizontal_stability",
+                "bending_with_axial_force_6.23_6.24"
+            ])
+        );
+        assert!(
+            report.design.basis[0].contains("wind"),
+            "{:?}",
+            report.design.basis
+        );
         assert_eq!(state(500), (json!("failed"), json!(1)));
         assert_eq!(state(50_000), (json!("passed"), json!(0)));
     }

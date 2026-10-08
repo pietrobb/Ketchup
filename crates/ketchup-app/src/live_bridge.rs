@@ -674,6 +674,8 @@ fn statics_summary(report: &ketchup_program::Report) -> Value {
         "bearing_joints": report.joints.len(),
         "bearing_joints_not_verified": joints_not_verified,
         "unassigned_loads": &report.loads.unassigned,
+        "loads_considered": "gravity_only",
+        "not_checked": ketchup_program::member_check::NOT_CHECKED,
     })
 }
 

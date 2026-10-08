@@ -133,7 +133,15 @@ pub struct DesignSummary {
     pub failing: Vec<String>,
 }
 
-pub const BASIS: [&str; 8] = [
+/// What the check leaves out: a pass covers vertical (gravity) loads only.
+pub const NOT_CHECKED: [&str; 3] = [
+    "wind",
+    "horizontal_stability",
+    "bending_with_axial_force_6.23_6.24",
+];
+
+pub const BASIS: [&str; 9] = [
+    "scope: vertical (gravity) loads only, permanent, imposed, roof and snow; wind, horizontal stability (bracing, racking) and bending combined with axial force (EN 1995-1-1 6.2.3, 6.2.4, 6.3.2 (6.23, 6.24)) are not checked",
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2, gamma_M 1.3 solid / 1.25 glulam (table 2.3)",
