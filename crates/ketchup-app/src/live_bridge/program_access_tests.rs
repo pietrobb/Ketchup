@@ -281,7 +281,10 @@ fn the_joints_report_lists_every_bearing_joint_with_its_rating_or_what_it_lacks(
     let rows = all_rows(&mut app, &mut bridge, ReportSection::Joints);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(rows[0]["rating"]["basis"], "allowable");
-    assert!(rows.iter().all(|row| row["status"] == "not_verified"));
+    // The rated Arunda joint compares its load with the allowable rating; the
+    // unrated hanger cannot be verified.
+    assert_eq!(rows[0]["status"], "pass", "{:?}", rows[0]);
+    assert_eq!(rows[1]["status"], "not_verified");
     assert_eq!(rows[1]["rating"], Value::Null);
     assert_eq!(
         rows[1]["missing"],

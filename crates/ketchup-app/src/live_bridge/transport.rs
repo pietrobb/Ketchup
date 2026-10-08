@@ -133,7 +133,8 @@ struct RawEnvelope {
     version: u32,
     id: u64,
     token: String,
-    request: Value,
+    /// Kept as text: a stranger's body never becomes a JSON tree.
+    request: Box<serde_json::value::RawValue>,
 }
 
 const DEFAULT_RESPONSE_WAIT: Duration = Duration::from_secs(30);
@@ -227,7 +228,13 @@ fn read_frame(
     let deadline = pre_auth_deadline.unwrap_or_else(|| Instant::now() + IO_DEADLINE);
     read_until(stream, &mut header[1..], Some(deadline), stop)?;
     let length = u32::from_be_bytes(header) as usize;
-    if length == 0 || length > MAX_REQUEST_FRAME_BYTES {
+    // Before its token is checked a connection gets only a small frame.
+    let limit = if session_authenticated {
+        MAX_REQUEST_FRAME_BYTES
+    } else {
+        ketchup_mcp::MAX_UNAUTHENTICATED_REQUEST_BYTES
+    };
+    if length == 0 || length > limit {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut bytes = vec![0; length];
@@ -371,7 +378,7 @@ fn serve(
         authenticated_session.store(true, Ordering::Release);
         // A malformed request body from an authenticated client is a fixable
         // argument mistake, not a reason to drop the connection.
-        let envelope = match serde_json::from_value::<Request>(envelope.request) {
+        let envelope = match serde_json::from_str::<Request>(envelope.request.get()) {
             Ok(request) => Envelope {
                 version: envelope.version,
                 id: envelope.id,
@@ -518,11 +525,59 @@ mod tests {
         serde_json::from_slice(&response).unwrap()
     }
 
+    /// Authenticates `stream` with a small request the transport answers itself.
+    fn authenticate(stream: &mut TcpStream, token: &str) {
+        let answer = exchange(
+            stream,
+            &json!({"version":1,"id":1,"token":token,"request":{"method":"no_such_method"}}),
+        );
+        assert_eq!(answer["error"], "invalid_params");
+    }
+
+    #[test]
+    fn a_stranger_cannot_send_a_large_frame_before_it_authenticates() {
+        // Before the token is checked the window reads only a small frame, so
+        // another local process cannot make it parse megabytes per connection.
+        let token = "a".repeat(64);
+        let bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
+        let large = json!({
+            "version": 1,
+            "id": 2,
+            "token": token,
+            "request": {"method": "x".repeat(ketchup_mcp::MAX_UNAUTHENTICATED_REQUEST_BYTES)},
+        });
+        let send = |stream: &mut TcpStream| {
+            let body = serde_json::to_vec(&large).unwrap();
+            stream
+                .write_all(&(body.len() as u32).to_be_bytes())
+                .unwrap();
+            let _ = stream.write_all(&body);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut header = [0; 4];
+            stream.read_exact(&mut header).is_ok()
+        };
+        let mut stranger = TcpStream::connect(bridge.address).unwrap();
+        assert!(
+            !send(&mut stranger),
+            "the large first frame is not answered"
+        );
+
+        let mut client = TcpStream::connect(bridge.address).unwrap();
+        authenticate(&mut client, &token);
+        assert!(
+            send(&mut client),
+            "after authentication it is read and answered"
+        );
+    }
+
     #[test]
     fn requests_above_the_reply_budget_are_read_and_whole_program_sources_are_returned() {
         let token = "a".repeat(64);
         let bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
         let mut stream = TcpStream::connect(bridge.address).unwrap();
+        authenticate(&mut stream, &token);
         let method = "x".repeat(MAX_RESPONSE_FRAME_BYTES * 2);
         let answer = exchange(
             &mut stream,

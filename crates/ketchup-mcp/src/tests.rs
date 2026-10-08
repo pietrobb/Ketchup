@@ -202,6 +202,36 @@ fn escaped_source_envelope_is_refused_before_send_and_connection_remains_usable(
 }
 
 #[test]
+fn a_large_first_program_is_applied_after_a_small_status_authenticates_the_connection() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let source = format!(
+        "box(\"a\", (10, 10, 10))\n{}\n",
+        "#".repeat(crate::MAX_UNAUTHENTICATED_REQUEST_BYTES * 2)
+    );
+    for _ in 0..2 {
+        let result = call(
+            &mut tools,
+            "program",
+            json!({"action":"apply", "source":source}),
+        );
+        assert_eq!(result["isError"], false, "{result}");
+    }
+    assert_eq!(received.recv().unwrap(), json!({"method":"status"}));
+    for _ in 0..2 {
+        assert_eq!(
+            received.recv().unwrap(),
+            json!({"method":"apply_program", "source":source})
+        );
+    }
+    assert!(
+        received.try_recv().is_err(),
+        "an authenticated connection sends no further status"
+    );
+}
+
+#[test]
 fn concurrent_launch_readiness_is_bound_to_each_private_stream_not_registration_order() {
     let first = TcpListener::bind("127.0.0.1:0").unwrap();
     let second = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -292,11 +322,19 @@ fn stand_in_window(root: &Path) -> mpsc::Receiver<Value> {
     let (sender, received) = mpsc::channel();
     std::thread::spawn(move || {
         let (mut stream, _) = bridge.accept().unwrap();
+        let mut authenticated = false;
         loop {
             let mut header = [0_u8; 4];
             if stream.read_exact(&mut header).is_err() {
                 return;
             }
+            // Like the window: a large frame before authentication ends the connection.
+            if !authenticated
+                && u32::from_be_bytes(header) as usize > crate::MAX_UNAUTHENTICATED_REQUEST_BYTES
+            {
+                return;
+            }
+            authenticated = true;
             let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
             stream.read_exact(&mut body).unwrap();
             let envelope: Value = serde_json::from_slice(&body).unwrap();

@@ -12,6 +12,10 @@ use std::{
 
 /// The window rejects larger requests (`live_bridge::MAX_REQUEST_FRAME_BYTES`).
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+/// Until a connection has authenticated, the window reads no longer frame:
+/// a stranger cannot make it parse megabytes. A larger first request is
+/// preceded by a small `status` that authenticates the connection.
+pub const MAX_UNAUTHENTICATED_REQUEST_BYTES: usize = 64 * 1024;
 /// Images are the largest replies (`live_bridge::MAX_IMAGE_FRAME_BYTES`).
 const MAX_REPLY_BYTES: usize = 12 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -21,6 +25,8 @@ pub struct Connection {
     stream: TcpStream,
     token: String,
     last_id: u64,
+    /// The window has answered a request on this connection.
+    authenticated: bool,
 }
 
 pub enum Reply {
@@ -53,18 +59,25 @@ impl Connection {
             stream,
             token,
             last_id: 0,
+            authenticated: false,
         })
     }
 
     /// Sends `request` (an object with `method`) and waits up to `wait` for the reply.
     pub fn request(&mut self, request: Value, wait: Duration) -> Result<Reply, BridgeError> {
-        let id = self.last_id + 1;
-        let body = json!({"version": 1, "id": id, "token": self.token, "request": request})
-            .to_string()
-            .into_bytes();
+        let mut body = self.envelope(&request);
         if body.len() > MAX_REQUEST_BYTES {
             return Err(BridgeError::TooLarge { bytes: body.len() });
         }
+        if !self.authenticated && body.len() > MAX_UNAUTHENTICATED_REQUEST_BYTES {
+            if let rejected @ Reply::Rejected { .. } =
+                self.request(json!({"method": "status"}), wait)?
+            {
+                return Ok(rejected);
+            }
+            body = self.envelope(&request);
+        }
+        let id = self.last_id + 1;
         self.last_id = id;
         let mut frame = (body.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(&body);
@@ -78,6 +91,9 @@ impl Connection {
                 "reply to another request",
             )));
         }
+        // Any reply but `unauthorized` (which ends the connection) means the
+        // window accepted the token.
+        self.authenticated = reply["error"] != "unauthorized";
         let result = reply.get("result").cloned().unwrap_or(Value::Null);
         if reply["ok"] == true {
             let stamp = reply.get("stamp").cloned().unwrap_or(Value::Null);
@@ -85,6 +101,13 @@ impl Connection {
         }
         let code = reply["error"].as_str().unwrap_or("rejected").to_owned();
         Ok(Reply::Rejected { code, result })
+    }
+
+    /// The framed body of the next request.
+    fn envelope(&self, request: &Value) -> Vec<u8> {
+        json!({"version": 1, "id": self.last_id + 1, "token": self.token, "request": request})
+            .to_string()
+            .into_bytes()
     }
 
     fn read_reply(&mut self, wait: Duration) -> io::Result<Value> {
