@@ -13,7 +13,7 @@
 use crate::contact::ContactFaces;
 use crate::continuous_span::{self, Piece};
 use crate::eval::TOLERANCE_MM;
-use crate::load_path::{centre_of_mass, on_floor};
+use crate::load_path::{joint_points, on_floor};
 use crate::model::{Part, ProgramModel, ProgramPartBody};
 use ketchup_geometry::linalg::{self, cross, dot, length};
 use serde::Serialize;
@@ -783,14 +783,7 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
         let (Some(a), Some(b)) = (index(&joint.parts[0]), index(&joint.parts[1])) else {
             continue;
         };
-        let points = if joint.fasteners_mm.is_empty() {
-            faces.contact(&parts[a], &parts[b]).map_or_else(
-                || vec![centre_of_mass(&parts[a])],
-                |contact| contact.points_mm,
-            )
-        } else {
-            joint.fasteners_mm.clone()
-        };
+        let points = joint_points(joint, &mut faces, &parts[a], &parts[b]);
         rests[a].push(Support {
             supporter: b,
             points,

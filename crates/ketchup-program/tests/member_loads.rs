@@ -291,6 +291,31 @@ arunda(j, h, \"50 B\")\n",
 }
 
 #[test]
+fn a_hanger_across_a_small_gap_carries_the_end_of_the_joist_not_its_middle() {
+    // As above, the joist 2 mm off the header: the hanger holds it where the
+    // two overlap, at its end, so it still shares the span with the wall.
+    let report = report(
+        "load_path(only = [\"frame\"])
+self_weight([\"frame\"])
+h = box(\"header\", (120, 2000, 240), material = \"C24\", grounded = True, tags = [\"frame\"])
+j = box(\"joist\", (3000, 60, 200), at = (122, 500, 40), material = \"C24\", tags = [\"frame\"])
+box(\"wall\", (100, 2000, 240), at = (3022, 0, -200), material = \"C24\", grounded = True, tags = [\"frame\"])
+joint(j, h, kind = \"hanger\", bearing = True, max_gap = 3)\n",
+        &[],
+    );
+    assert_eq!(report.errors, 0, "{:?}", report.issues);
+    let [check] = report.joints.as_slice() else {
+        panic!("{:?}", report.joints);
+    };
+    let half = 3.0 * 0.06 * 0.2 * 420.0 * 9.81 * 2950.0 / 3000.0 / 2.0;
+    let carried = check.load_n.as_ref().expect("load")["permanent"];
+    assert!(
+        (carried - half).abs() <= half * 0.02,
+        "{carried} N, expected {half} N"
+    );
+}
+
+#[test]
 fn every_member_of_the_house_carries_its_loads_once_the_site_snow_is_given() {
     let without = report(HOUSE, &[]);
     let with = report(HOUSE, &[("snow_sk", 1.0)]);

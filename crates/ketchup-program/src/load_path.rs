@@ -7,7 +7,7 @@
 
 use crate::contact::ContactFaces;
 use crate::eval::TOLERANCE_MM;
-use crate::model::{Part, ProgramModel, ProgramPartBody};
+use crate::model::{Joint, Part, ProgramModel, ProgramPartBody};
 use crate::validate::{Issue, Severity};
 use ketchup_geometry::linalg::cross2;
 use ketchup_tolerance::ROUNDING;
@@ -132,6 +132,30 @@ fn over(p: [f64; 2], points: &[[f64; 3]]) -> bool {
     }
 }
 
+/// Where a bearing joint passes its load: at its fasteners, else on the
+/// contact of its parts, else over the overlap of their boxes (a hanger
+/// across a small gap). Shared by the load path and the load transfer.
+pub(crate) fn joint_points<'a>(
+    joint: &Joint,
+    faces: &mut ContactFaces<'a>,
+    carried: &'a Part,
+    carrier: &'a Part,
+) -> Vec<[f64; 3]> {
+    if !joint.fasteners_mm.is_empty() {
+        return joint.fasteners_mm.clone();
+    }
+    faces.contact(carried, carrier).map_or_else(
+        || {
+            let (a, b) = (carried.world_bounds(), carrier.world_bounds());
+            corners((
+                std::array::from_fn(|axis| a.0[axis].max(b.0[axis])),
+                std::array::from_fn(|axis| a.1[axis].min(b.1[axis])),
+            ))
+        },
+        |contact| contact.points_mm,
+    )
+}
+
 fn corners((min, max): ([f64; 3], [f64; 3])) -> Vec<[f64; 3]> {
     (0..4)
         .map(|corner: usize| {
@@ -212,20 +236,7 @@ pub(crate) fn issues<'a>(
         let (Some(left), Some(right)) = (index(&joint.parts[0]), index(&joint.parts[1])) else {
             continue;
         };
-        let points = if joint.fasteners_mm.is_empty() {
-            match faces.contact(&parts[left], &parts[right]) {
-                Some(contact) => contact.points_mm,
-                None => {
-                    let (a, b) = (bounds[left], bounds[right]);
-                    corners((
-                        std::array::from_fn(|axis| a.0[axis].max(b.0[axis])),
-                        std::array::from_fn(|axis| a.1[axis].min(b.1[axis])),
-                    ))
-                }
-            }
-        } else {
-            joint.fasteners_mm.clone()
-        };
+        let points = joint_points(joint, faces, &parts[left], &parts[right]);
         bearings[left].push(Bearing {
             supporter: right,
             points: points.clone(),
