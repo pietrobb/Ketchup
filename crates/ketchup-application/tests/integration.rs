@@ -49,7 +49,7 @@ mod workflow_trace;
 mod integration_support;
 
 #[path = "../../ketchup-manufacturing/tests/support/btlx_blank.rs"]
-#[allow(dead_code)] // the strict in-blank check serves the exact goldens only
+#[allow(dead_code)] // the in-blank assertions serve the exact goldens only
 mod btlx_blank;
 
 #[test]

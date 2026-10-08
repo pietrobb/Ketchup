@@ -1,5 +1,6 @@
 use crate::btlx_blank::{
-    assert_btlx_machining_cuts_its_blank, assert_btlx_machining_lies_in_its_blank,
+    HOUSE_CUTTER_MARGIN_MM, assert_btlx_machining_lies_in_its_blank,
+    assert_btlx_machining_lies_in_its_blank_within, btlx_machining_overshoots,
 };
 use ketchup_geometry::prismatic::Aabb;
 use ketchup_manufacturing::fabrication::{
@@ -620,13 +621,50 @@ fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner()
         std::panic::catch_unwind(|| assert_btlx_machining_lies_in_its_blank(&outward, "outward"))
             .is_err()
     );
-    // The looser check of the imported house still sees an outward hole: it
-    // removes nothing from this member.
-    assert_btlx_machining_cuts_its_blank(&xml, "centred");
+    // The house check with its cutter margin still sees the outward hole.
     assert!(
-        std::panic::catch_unwind(|| assert_btlx_machining_cuts_its_blank(&outward, "outward"))
-            .is_err()
+        std::panic::catch_unwind(|| assert_btlx_machining_lies_in_its_blank_within(
+            &outward,
+            "outward",
+            HOUSE_CUTTER_MARGIN_MM
+        ))
+        .is_err()
     );
+}
+
+#[test]
+fn the_house_blank_check_catches_a_processing_half_a_member_out_of_its_frame() {
+    // The through cut runs 1 mm past both end faces. Its frame moved by half
+    // the length (a corner placed at the member's centre, MF-2) still
+    // overlaps the blank, yet leaves it by 500 mm; mirrored across the width
+    // it leaves the blank by 30 mm.
+    let xml = std::str::from_utf8(include_bytes!(
+        "fixtures/btlx/rectangular-through-cut-2.3.1.btlx"
+    ))
+    .unwrap();
+    assert_btlx_machining_lies_in_its_blank_within(xml, "through cut", HOUSE_CUTTER_MARGIN_MM);
+    let overshoots = btlx_machining_overshoots(xml);
+    assert_eq!(overshoots.len(), 1);
+    assert!((overshoots[0].2 - 1.0).abs() < 1e-9, "{overshoots:?}");
+    for (name, from, to) in [
+        (
+            "half a length",
+            "<ReferencePoint X=\"-1\"",
+            "<ReferencePoint X=\"-501\"",
+        ),
+        (
+            "mirrored width",
+            "<XVector X=\"0\" Y=\"1\"",
+            "<XVector X=\"0\" Y=\"-1\"",
+        ),
+    ] {
+        let shifted = xml.replace(from, to);
+        assert_ne!(shifted, xml, "{name}");
+        let caught = std::panic::catch_unwind(|| {
+            assert_btlx_machining_lies_in_its_blank_within(&shifted, name, HOUSE_CUTTER_MARGIN_MM)
+        });
+        assert!(caught.is_err(), "{name} passes the house blank check");
+    }
 }
 
 #[test]

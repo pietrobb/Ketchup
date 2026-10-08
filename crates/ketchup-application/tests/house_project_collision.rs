@@ -1,4 +1,4 @@
-﻿//! The demo house (examples/programs/house-project.star, 1855 parts, 1813 timber members) has
+//! The demo house (examples/programs/house-project.star, 1855 parts, 1813 timber members) has
 //! no overlap in the exact collision check: every joint is cut into the receiving
 //! member. Every timber member exports to BTLx as a stock box with its cuts.
 use ketchup_application::{DocumentSession, SessionSettings, verify_rule_program_all};
@@ -169,9 +169,30 @@ fn the_demo_house_exports_every_timber_member_to_btlx() {
         })
         .sum::<usize>();
     assert_eq!(pieces, members);
-    // The imported cutters run 1-2 mm past the members (výrez 13 starts at
-    // y = -1 and is 422 deep in a 420 beam), so the house is checked for
-    // processings that cut their own blank; the strict in-blank frame check
-    // runs on the exact goldens of ketchup-manufacturing.
-    crate::btlx_blank::assert_btlx_machining_cuts_its_blank(&xml, "house-project");
+    // Every processing lies in its blank up to the air of a through cut. A
+    // cutter that is a neighbouring member's whole section (a clamp against
+    // a sloped rafter, a horizontal beam notch in a rafter) is not clipped to
+    // the member it cuts and reaches further out; each of those is pinned
+    // with its overshoot. A processing in a wrong frame leaves the blank by a
+    // large part of a member dimension or changes a pinned overshoot.
+    let pinned = crate::btlx_blank::btlx_machining_overshoots(&xml)
+        .into_iter()
+        .filter(|(_, _, overshoot)| *overshoot > crate::btlx_blank::HOUSE_CUTTER_MARGIN_MM)
+        .map(|(designation, ordinal, overshoot)| {
+            format!("{designation}\t{ordinal}\t{overshoot:.1}\n")
+        })
+        .collect::<String>();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/house-project-btlx-overshoots.tsv");
+    if ketchup_test_env::update_golden() {
+        std::fs::write(&path, &pinned).unwrap();
+    }
+    assert_eq!(
+        pinned,
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "processings reaching more than {} mm out of their blank",
+        crate::btlx_blank::HOUSE_CUTTER_MARGIN_MM
+    );
 }
