@@ -52,9 +52,10 @@ impl KetchupApp {
                 && cached.program.2 == program.overrides
         });
         if !same_program {
-            let model =
-                ketchup_program::evaluate(&program.file_name, &program.source, &program.overrides)
-                    .map(|evaluated| Arc::new(evaluated.model));
+            let model = self
+                .program_evaluations
+                .get(program)
+                .map(|evaluated| Arc::new(evaluated.model.clone()));
             *cache = Some(TakeoffCache {
                 program: (
                     program.file_name.clone(),

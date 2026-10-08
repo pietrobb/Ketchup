@@ -2,7 +2,8 @@ use ketchup_application::validation::{
     CollisionScope, FabricationCollisionError, assistant_validation_context,
     assistant_validation_context_with_worker,
     assistant_validation_context_with_worker_cancellation,
-    fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
+    fabrication_collision_validation_with_worker,
+    local_validation_context_with_worker_cancellation, scoped_collision_report_with_worker,
 };
 use ketchup_application::{AssistantValidationSelection, DocumentSession, SessionSettings};
 use ketchup_model::{
@@ -377,7 +378,7 @@ fn full_validation_context_fails_closed_at_its_scene_projection_budget() {
     add(&mut document, 1, rectangle(), 0.0);
     document
         .apply_batch(&CommandBatch::new(
-            (2..=101)
+            (2..=4097)
                 .map(|id| CanonicalCommand::CreateOccurrence {
                     id: OccurrenceId(id),
                     definition_id: DefinitionId(1),
@@ -399,13 +400,16 @@ fn full_validation_context_fails_closed_at_its_scene_projection_budget() {
     assert_eq!(report["state"], "not_evaluated", "{report}");
     assert_eq!(report["complete"], false, "{report}");
     assert_eq!(report["visible_occurrence_count"], serde_json::Value::Null);
-    assert_eq!(report["visible_occurrence_count_at_least"], 101, "{report}");
+    assert_eq!(
+        report["visible_occurrence_count_at_least"], 4097,
+        "{report}"
+    );
     assert_eq!(
         report["validation_context_resource_limit"]["resource"], "Occurrences",
         "{report}"
     );
     assert_eq!(
-        report["validation_context_resource_limit"]["limit"], 100,
+        report["validation_context_resource_limit"]["limit"], 4096,
         "{report}"
     );
     assert!(
@@ -829,4 +833,157 @@ fn regression_all_validators_keep_known_collision_failed_when_others_unavailable
     assert_eq!(report["complete"], false);
     assert_eq!(report["issues"], report["collision"]["issues"]);
     assert_eq!(report["issues"][0]["code"], "collision.detected");
+}
+
+/// One 10 mm cube definition placed `count` times along x, `step` mm apart,
+/// with the occurrences from `hidden_from` on hidden.
+fn row_of_cubes(count: u64, step: f64, hidden_from: u64) -> DocumentStore {
+    let mut document = DocumentStore::new();
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: DefinitionId(1),
+            name: "Cube".into(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(1),
+            definition_id: DefinitionId(1),
+            name: "Profile".into(),
+            kind: FeatureKind::polygon(&rectangle()),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(2),
+            definition_id: DefinitionId(1),
+            name: "Solid".into(),
+            kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
+        },
+    ];
+    commands.extend((1..=count).map(|id| CanonicalCommand::CreateOccurrence {
+        id: OccurrenceId(id),
+        definition_id: DefinitionId(1),
+        name: format!("Cube {id}"),
+        transform: Transform::from_translation(step * (id - 1) as f64, 0.0, 0.0).unwrap(),
+        parent: None,
+        tags: Default::default(),
+        visible: id < hidden_from,
+    }));
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    document
+}
+
+#[test]
+fn hidden_parts_do_not_count_against_the_whole_model_collision_limit() {
+    // Two visible cubes overlap by 1 mm; 600 hidden ones sit on top of them.
+    let mut document = row_of_cubes(602, 9.0, 3);
+    let hidden_overlap = CommandBatch::new(
+        (3..=602)
+            .map(|id| CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(id),
+                transform: Transform::from_translation(0.0, 0.0, 0.0).unwrap(),
+            })
+            .collect(),
+    );
+    document.apply_batch(&hidden_overlap).unwrap();
+    let report = exact(&document);
+    assert_eq!(report["collision"]["state"], "failed", "{report}");
+    assert_eq!(report["collision"]["complete"], true, "{report}");
+    assert_eq!(report["collision"]["issue_count"], 1, "{report}");
+    assert_eq!(report["collision"]["visible_occurrence_count"], 2);
+}
+
+#[test]
+fn a_whole_model_past_the_small_scene_limit_is_still_checked() {
+    // 600 visible cubes 20 mm apart, and the last one moved into its neighbour.
+    let mut document = row_of_cubes(600, 20.0, u64::MAX);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(600),
+                transform: Transform::from_translation(20.0 * 598.0 + 5.0, 0.0, 0.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let report = exact(&document);
+    let collision = &report["collision"];
+    assert_eq!(collision["state"], "failed", "{report}");
+    assert_eq!(collision["complete"], true, "{collision}");
+    assert_eq!(collision["issue_count"], 1, "{collision}");
+    assert_eq!(collision["scope"]["mode"], "whole_visible_model");
+    assert_eq!(collision["total_pair_count"], 600 * 599 / 2);
+    assert_eq!(collision["checked_body_count"], 600);
+}
+
+#[test]
+fn gravity_takes_every_visible_part_and_ignores_hidden_ones() {
+    // 120 cubes standing on the floor and 30 hidden ones: past the old
+    // 100-occurrence scene bound that left gravity without participants.
+    let document = row_of_cubes(150, 20.0, 121);
+    let report = assistant_validation_context_with_worker(
+        &document.current(),
+        &ExactResultRegistry::default(),
+        &AssistantValidationSelection::only(&["collision", "gravity_support"]),
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+    );
+    let gravity = &report["gravity_support"];
+    assert_eq!(gravity["state"], "passed", "{gravity}");
+    assert_eq!(gravity["checked_occurrence_count"], 120, "{gravity}");
+    assert_eq!(report["complete"], true, "{report}");
+}
+
+#[test]
+fn an_edit_is_checked_over_the_parts_it_changed_and_their_neighbours() {
+    // Cubes 20 mm apart; 1 and 2 already overlap, then the edit moves cube 5
+    // into its unchanged neighbour 6.
+    let mut document = row_of_cubes(8, 20.0, u64::MAX);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(2),
+                transform: Transform::from_translation(5.0, 0.0, 0.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let before = document.current();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(5),
+                transform: Transform::from_translation(95.0, 0.0, 0.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let after = document.current();
+    let changed = CollisionScope::changed_parts(&before, &after, &Default::default()).unwrap();
+    let validate = |changed: Option<&CollisionScope>, selection: &AssistantValidationSelection| {
+        local_validation_context_with_worker_cancellation(
+            &after,
+            &ExactResultRegistry::default(),
+            selection,
+            &ContainerData::default(),
+            None,
+            Duration::from_secs(120),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            changed,
+        )
+    };
+    let local = validate(Some(&changed), &selection());
+    let collision = &local["collision"];
+    assert_eq!(collision["complete"], true, "{collision}");
+    assert_eq!(collision["scope"]["requested_occurrence_count"], 1);
+    assert_eq!(collision["issue_count"], 1, "{collision}");
+    let names = [
+        &collision["issues"][0]["left_name"],
+        &collision["issues"][0]["right_name"],
+    ];
+    assert_eq!(names, ["Cube 5", "Cube 6"], "{collision}");
+    // The whole model also finds the old overlap; so does gravity's whole-model pass.
+    assert_eq!(validate(None, &selection())["collision"]["issue_count"], 2);
+    let with_gravity = AssistantValidationSelection::only(&["collision", "gravity_support"]);
+    assert_eq!(
+        validate(Some(&changed), &with_gravity)["collision"]["issue_count"],
+        2
+    );
+    // Nothing visible changed: no scope.
+    assert!(CollisionScope::changed_parts(&after, &after, &Default::default()).is_none());
 }

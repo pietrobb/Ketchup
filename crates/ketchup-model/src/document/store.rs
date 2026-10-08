@@ -197,6 +197,38 @@ impl DocumentStore {
         }
     }
 
+    /// A store whose one revision is `snapshot`, sharing its product instead of
+    /// copying or re-reading it: what an exact evaluation of a preview
+    /// publishes into.
+    pub fn from_snapshot(snapshot: &Snapshot) -> Result<Self, CanonicalError> {
+        let next_revision_id = snapshot
+            .revision_id
+            .checked_add(1)
+            .ok_or(CanonicalError::RevisionExhausted)?;
+        let feature_states = FeatureDependencyGraph::from_product(&snapshot.product)?
+            .evaluation_states(&BTreeSet::new(), &BTreeSet::new());
+        let revision = Arc::new(Revision {
+            id: snapshot.revision_id,
+            snapshot: snapshot.clone(),
+            batch_digest: String::new(),
+            origin: RevisionOrigin::Initial,
+            checkpoint: None,
+            rule_program: None,
+            recomputed_nodes: BTreeSet::new(),
+            dirty_features: BTreeSet::new(),
+            feature_states,
+            evaluation: None,
+        });
+        Ok(Self {
+            revisions: vec![revision],
+            cursor: 0,
+            next_revision_id,
+            mutation_epoch: Self::fresh_mutation_epoch(),
+            evaluation_registry: BTreeMap::new(),
+            human_confirmation_policy: None,
+        })
+    }
+
     #[must_use]
     pub fn current_rule_program(&self) -> Option<&RuleProgramSource> {
         self.revisions[self.cursor].rule_program()

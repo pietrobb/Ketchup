@@ -55,7 +55,10 @@ impl KetchupApp {
                     .filter(|view| &view.source == program)
                     .unwrap_or_else(|| ProgramSourceView {
                         source: program.clone(),
-                        parts: ketchup_application::rule_program_part_sources(program),
+                        parts: self
+                            .program_evaluations
+                            .get(program)
+                            .map(|evaluated| evaluated.part_sources.clone()),
                         scrolled_to: None,
                     });
                 match &view.parts {

@@ -200,8 +200,11 @@ impl LiveBridge {
             .iter()
             .filter_map(|path| ketchup_application::rule_program_part_name(&snapshot, path))
             .collect();
-        let sources = ketchup_application::rule_program_part_sources(program)
+        let evaluated = app
+            .program_evaluations
+            .get(program)
             .map_err(|error| failed_because("program_rejected", error))?;
+        let sources = &evaluated.part_sources;
         let lines: Vec<_> = program.source.split_inclusive('\n').collect();
         let mut included = BTreeSet::new();
         let mut parts = Vec::new();

@@ -1153,6 +1153,9 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
         5.0
     ));
     assert!(app.confirm_assistant_general_finish(), "{}", app.digest);
+    // Naming every picked edge and the fillet's two faces reused the
+    // evaluation the apply made; none ran again on the UI thread.
+    assert_eq!(app.program_evaluations.on_ui_thread(), 0);
 
     // The program still owns the part and now says what was done by hand.
     let program = app.document.current_rule_program().unwrap().source.clone();
@@ -1173,6 +1176,61 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
         .execute(&mut app, Request::Undo { expected: None }, false)
         .unwrap();
     assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
+
+    // The undone program is evaluated by the next frame on a background
+    // thread; picking its edges does not evaluate it on the UI thread.
+    let context = egui::Context::default();
+    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    evaluate_exact(&mut app);
+    let edges = picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge);
+    assert!(
+        edges.iter().all(|edge| edge["edge"].is_array()),
+        "{edges:?}"
+    );
+    assert_eq!(app.program_evaluations.on_ui_thread(), 0);
+}
+
+#[test]
+fn a_fillet_on_a_program_that_no_longer_evaluates_says_why() {
+    let (mut app, mut bridge) = setup();
+    bridge
+        .execute(
+            &mut app,
+            apply("box(\"block\", (100, 60, 40))\n", true),
+            false,
+        )
+        .unwrap();
+    // The source no longer evaluates; the parts it made are still there.
+    let mut broken = app.document.current_rule_program().unwrap().clone();
+    broken.source.push_str("fail(\"the wall is gone\")\n");
+    app.document
+        .replace_rule_program_source(broken.clone())
+        .unwrap();
+    evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let occurrence = snapshot.occurrences().next().unwrap();
+    let locator = ketchup_interaction::exact_projection::TopologicalPickLocator {
+        instance_path: InstancePath::root(occurrence.id()),
+        producer_feature_id: app
+            .exact
+            .topology_results
+            .get_render(&snapshot, occurrence.definition_id())
+            .unwrap()
+            .producer_feature_id(),
+        kind: TopologicalElementKind::Edge,
+        ordinal: 0,
+    };
+    assert!(app.prepare_assistant_general_finish(
+        locator,
+        ketchup_application::topology::GeneralFinishKind::Fillet,
+        5.0
+    ));
+    let digest = app.canonical_digest();
+
+    assert!(!app.confirm_assistant_general_finish());
+    assert!(app.digest.contains("the wall is gone"), "{}", app.digest);
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.document.current_rule_program(), Some(&broken));
 }
 
 #[test]

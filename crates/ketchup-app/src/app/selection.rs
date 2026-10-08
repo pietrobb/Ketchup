@@ -974,6 +974,36 @@ impl KetchupApp {
         self.selection.primary.clone()
     }
 
+    /// Drops the selected parts that `before` showed and the current document
+    /// hides (a layer, a scene, Undo): Delete after switching to a scene that
+    /// hides the roof must not remove rafters nobody sees.
+    pub(crate) fn deselect_newly_hidden(&mut self, before: &Snapshot) {
+        if self.selection.occurrences.is_empty() && self.selection.primary.is_none() {
+            return;
+        }
+        let snapshot = self.document.current();
+        let hidden = |path: &InstancePath| {
+            let root = path.root_occurrence();
+            before.occurrence_effectively_visible(root) == Some(true)
+                && snapshot.occurrence_effectively_visible(root) == Some(false)
+        };
+        let selected = self.selection.occurrences.len();
+        self.selection.occurrences.retain(|path| !hidden(path));
+        let primary_hidden = self
+            .selection
+            .primary
+            .as_ref()
+            .is_some_and(|selection| hidden(&selection.instance_path));
+        if primary_hidden {
+            self.selection.primary = None;
+            self.selection.topological.clear();
+        }
+        if primary_hidden || self.selection.occurrences.len() != selected {
+            // The group is no longer selected whole.
+            self.selection.selected_group = None;
+        }
+    }
+
     pub(crate) fn reconcile_selection(&mut self) {
         let snapshot = self.document.current();
         self.selection

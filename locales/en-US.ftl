@@ -1498,6 +1498,7 @@ digest-circular-pattern-live = Circular pattern preview — { $count } total · 
 digest-circular-pattern-committed = Circular pattern committed exactly · shared definition untouched · 1 undo step
 digest-move-anchor-set = Move anchor set — click the destination, or drag from the object
 digest-push-pull-anchor-set = Push/Pull anchor set — move the pointer, then click to confirm
+digest-push-pull-exact-failed = Push/Pull: the exact evaluation failed, document unchanged: { $reason }
 digest-move-start-missed = Move must start on an occurrence — the current selection was preserved
 digest-rotate-live = Rotate { $angle }° about { $axis } · occurrence transform only
 digest-rotate-copy-live = Rotate copy { $angle }° about { $axis } · shared definition

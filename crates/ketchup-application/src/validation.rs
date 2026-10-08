@@ -19,6 +19,10 @@ use ketchup_model::validation::{
 use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
 pub const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
+/// Most visible parts the whole-model validators (gravity, tipping, rooms...)
+/// take part by part; hidden parts only count against the scene bound.
+const MAX_VALIDATION_PARTICIPANTS: usize = 4_096;
+const MAX_VALIDATION_SCENE_OCCURRENCES: usize = 10_000;
 const MAX_STRUCTURAL_SCOPE_OCCURRENCES: usize = 10_000;
 const MAX_STRUCTURAL_SCOPE_LOADS: usize = MAX_ASSISTANT_VALIDATION_ISSUES;
 const MAX_STRUCTURAL_SCOPE_ROLE_ASSIGNMENTS: usize = 10_000;
@@ -2823,12 +2827,12 @@ fn assistant_physical_occurrences(
         .map(|item| item.key().definition_id)
         .collect::<BTreeSet<_>>();
     match snapshot.scene_query_bounded(
-        MAX_ASSISTANT_VALIDATION_OCCURRENCES,
+        MAX_VALIDATION_SCENE_OCCURRENCES,
         limits::INSTANCE_PATH_STEPS,
         limits::REPORT_TEXT_BYTES,
     ) {
-        Ok(occurrences) => (
-            occurrences
+        Ok(occurrences) => {
+            let physical = occurrences
                 .into_iter()
                 .filter(|item| {
                     item.visible
@@ -2837,9 +2841,17 @@ fn assistant_physical_occurrences(
                                 .definition(item.definition_id)
                                 .is_some_and(|definition| definition.feature_ids().is_empty()))
                 })
-                .collect(),
-            None,
-        ),
+                .collect::<Vec<_>>();
+            if physical.len() > MAX_VALIDATION_PARTICIPANTS {
+                let exceeded = ketchup_model::document::SceneQueryBudgetExceeded {
+                    kind: ketchup_model::document::SceneQueryBudgetKind::Occurrences,
+                    limit: MAX_VALIDATION_PARTICIPANTS,
+                    observed_at_least: physical.len(),
+                };
+                return (Vec::new(), Some(exceeded));
+            }
+            (physical, None)
+        }
         Err(error) => (Vec::new(), Some(error)),
     }
 }
@@ -3335,7 +3347,8 @@ pub use crate::collision::{
     CollisionScope, FabricationCollisionError, FabricationCollisionValidation,
     assistant_validation_context, assistant_validation_context_with_worker,
     assistant_validation_context_with_worker_cancellation,
-    fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
+    fabrication_collision_validation_with_worker,
+    local_validation_context_with_worker_cancellation, scoped_collision_report_with_worker,
 };
 
 /// Connections through which a supported part carries another: verified
@@ -3564,15 +3577,12 @@ pub(crate) fn assistant_validation_context_base(
             "unavailable_occurrences": [],
         });
     }
-    let occurrence_limit_complete = scene_query_error.is_none()
-        && visible_occurrences.len() <= MAX_ASSISTANT_VALIDATION_OCCURRENCES;
+    let occurrence_limit_complete =
+        scene_query_error.is_none() && visible_occurrences.len() <= MAX_VALIDATION_PARTICIPANTS;
     let names = coverage::occurrence_names(&visible_occurrences);
     let mut participants = Vec::new();
     let mut unavailable = Vec::new();
-    for occurrence in visible_occurrences
-        .iter()
-        .take(MAX_ASSISTANT_VALIDATION_OCCURRENCES)
-    {
+    for occurrence in visible_occurrences.iter().take(MAX_VALIDATION_PARTICIPANTS) {
         match GeneralBodyParticipant::accept(
             snapshot,
             exact_results,

@@ -52,12 +52,12 @@ LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 756,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 672,
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 793,
-    "crates/ketchup-application/src/collision.rs::collision_report": 787,
+    "crates/ketchup-application/src/collision.rs::collision_report": 774,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
     "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1988,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
-    "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 637,
+    "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 634,
     "crates/ketchup-assistant/src/intent.rs::propose_intent": 968,
     "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 702,
     "crates/ketchup-model/src/document/feature_validation.rs::validate_feature_kind": 408,
@@ -347,6 +347,27 @@ def operations_beside_operations(source):
     ]
 
 
+# The window evaluates its program through one service that keeps the result
+# and warms it off the UI thread; a direct call evaluates a house program on the
+# UI thread again (once per picked edge, as Fillet naming did).
+PROGRAM_EVALUATION_SERVICE = "crates/ketchup-app/src/program_evaluation.rs"
+DIRECT_PROGRAM_EVALUATION = re.compile(
+    r"\bketchup_program::evaluate\(|\brule_program_part_sources\("
+)
+
+
+def direct_program_evaluations(root):
+    return [
+        f"{path.relative_to(root).as_posix()}:{number}: evaluate the program through "
+        "KetchupApp::program_evaluations, not directly on the UI thread"
+        for path in sorted((root / "crates/ketchup-app/src").glob("**/*.rs"))
+        if path.relative_to(root).as_posix() != PROGRAM_EVALUATION_SERVICE
+        and not is_test_module(path.relative_to(root))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if DIRECT_PROGRAM_EVALUATION.search(line)
+    ]
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     problems = violations(workspace_dependencies(root))
@@ -355,6 +376,7 @@ def main():
     problems += oversized_tests(long_tests(root))
     problems += milestone_named_tests(test_files(root))
     problems += hand_written_linear_algebra(linear_algebra_counts(root))
+    problems += direct_program_evaluations(root)
     model = (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")
     problems += named_program_bodies(model)
     problems += operations_beside_operations(model)

@@ -439,24 +439,13 @@ impl KetchupApp {
         self.definition_shape_edit(&snapshot, occurrence, &segments, distance_mm)
     }
 
-    /// `program` evaluated once per source and overrides: a Push/Pull drag
+    /// `program` as the window's evaluation service has it: a Push/Pull drag
     /// asks on every pointer move, and a house program takes a second.
     fn evaluated_program(
         &self,
         program: &RuleProgramSource,
-    ) -> Option<std::rc::Rc<ketchup_program::Evaluated>> {
-        if let Some((cached, evaluated)) = self.push_pull.program_evaluation.borrow().as_ref()
-            && cached == program
-        {
-            return evaluated.clone();
-        }
-        let evaluated =
-            ketchup_program::evaluate(&program.file_name, &program.source, &program.overrides)
-                .ok()
-                .map(std::rc::Rc::new);
-        *self.push_pull.program_evaluation.borrow_mut() =
-            Some((program.clone(), evaluated.clone()));
-        evaluated
+    ) -> Option<std::sync::Arc<ketchup_program::Evaluated>> {
+        self.program_evaluations.get(program).ok()
     }
 
     /// The program line a Push/Pull on a face of a program part writes, or

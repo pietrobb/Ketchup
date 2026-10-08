@@ -81,9 +81,11 @@ impl KetchupApp {
         };
         let (edit, batch) = match change {
             RuleProgramChange::Unchanged => {
+                self.program_evaluations.seed(&source, &plan.evaluated);
                 return Ok((ProgramEdit::Unchanged, plan.evaluated));
             }
             RuleProgramChange::SourceOnly => {
+                self.program_evaluations.seed(&source, &plan.evaluated);
                 self.complete_mutation_with_work_recovery(|document| {
                     document
                         .replace_rule_program_source(source)
@@ -115,6 +117,8 @@ impl KetchupApp {
                 (ProgramEdit::Created, batch)
             }
         };
+        // After any new_document(): it starts a fresh window state.
+        self.program_evaluations.seed(&source, &plan.evaluated);
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::rule_program())
@@ -153,10 +157,25 @@ impl KetchupApp {
         let primary = source.source_primary.as_ref()?;
         let snapshot = self.document.current();
         let occurrence = snapshot.occurrence(primary.instance_path.root_occurrence())?;
-        let owned = primary.instance_path.is_root()
-            && ketchup_application::rule_program_part_sources(&program)
-                .is_ok_and(|parts| parts.contains_key(occurrence.name()));
-        if !owned {
+        if !primary.instance_path.is_root() {
+            return None;
+        }
+        // A program that no longer evaluates says why, instead of every picked
+        // edge looking unnamed or the part looking unowned.
+        let evaluated = match self.program_evaluations.get(&program) {
+            Ok(evaluated) => evaluated,
+            Err(error) => {
+                return Some(Err(Rejection::new(
+                    "program.evaluation",
+                    RejectionPhase::Validation,
+                )
+                .target(occurrence.name().to_owned())
+                .reason(format!(
+                    "the program does not evaluate, so its edges cannot be named: {error}"
+                ))));
+            }
+        };
+        if !evaluated.part_sources.contains_key(occurrence.name()) {
             return None;
         }
         let mut edges = Vec::new();
@@ -210,8 +229,8 @@ impl KetchupApp {
     pub(crate) fn program_source_view(&self) -> Option<serde_json::Value> {
         let program = self.document.current_rule_program()?;
         let snapshot = self.document.current();
-        let (parts, error) = match ketchup_application::rule_program_part_sources(program) {
-            Ok(parts) => (parts, None),
+        let (parts, error) = match self.program_evaluations.get(program) {
+            Ok(evaluated) => (evaluated.part_sources.clone(), None),
             Err(error) => (Default::default(), Some(error)),
         };
         let scene = snapshot.scene_query();

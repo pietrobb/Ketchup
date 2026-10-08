@@ -98,6 +98,43 @@ impl CollisionScope {
         }
     }
 
+    /// The visible parts of `after` that `before` did not show the same way
+    /// (new, moved, shown again, or of a definition that changed or is in
+    /// `reshaped`), bound to `after`. Checked against every visible body they
+    /// cover the changed parts and their neighbours (AGENTS.md §3). `None`
+    /// when no visible part changed.
+    pub fn changed_parts(
+        before: &Snapshot,
+        after: &Snapshot,
+        reshaped: &BTreeSet<DefinitionId>,
+    ) -> Option<Self> {
+        let placed = before
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.visible)
+            .map(|occurrence| {
+                (
+                    occurrence.instance_path,
+                    (occurrence.definition_id, occurrence.transform),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let changed = after
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| {
+                occurrence.visible
+                    && (placed.get(&occurrence.instance_path)
+                        != Some(&(occurrence.definition_id, occurrence.transform))
+                        || reshaped.contains(&occurrence.definition_id)
+                        || before.definition(occurrence.definition_id)
+                            != after.definition(occurrence.definition_id))
+            })
+            .map(|occurrence| occurrence.instance_path.root_occurrence())
+            .collect::<BTreeSet<_>>();
+        (!changed.is_empty()).then(|| Self::bind(after, changed))
+    }
+
     fn is_current(&self, snapshot: &Snapshot) -> bool {
         self.document_id == snapshot.document_id().0
             && self.revision == snapshot.revision_id()
@@ -147,12 +184,43 @@ pub fn assistant_validation_context_with_worker_cancellation(
     timeout: Duration,
     cancellation: Arc<AtomicBool>,
 ) -> Value {
+    local_validation_context_with_worker_cancellation(
+        snapshot,
+        exact_results,
+        selection,
+        container,
+        worker_path,
+        timeout,
+        cancellation,
+        None,
+    )
+}
+
+/// The validation of an edit: collision runs over `changed` (see
+/// [`CollisionScope::changed_parts`]) and their neighbours. Gravity and group
+/// connectivity follow load and contact paths through the whole model, so a
+/// selection that asks for them checks the whole visible model.
+#[allow(clippy::too_many_arguments)]
+pub fn local_validation_context_with_worker_cancellation(
+    snapshot: &Snapshot,
+    exact_results: &ExactResultRegistry,
+    selection: &AssistantValidationSelection,
+    container: &ContainerData,
+    worker_path: Option<PathBuf>,
+    timeout: Duration,
+    cancellation: Arc<AtomicBool>,
+    changed: Option<&CollisionScope>,
+) -> Value {
+    let scope = changed.filter(|_| {
+        !selection.requested.contains("gravity_support")
+            && !selection.requested.contains("group_connectivity")
+    });
     let mut gravity_contacts = Vec::new();
     let collision = collision_report(
         snapshot,
         selection,
         Some((container, worker_path, timeout)),
-        None,
+        scope,
         Some(cancellation),
         Some(&mut gravity_contacts),
         None,
@@ -827,6 +895,36 @@ pub fn scoped_exact_pairs_with_worker(
 /// The bodies a definition ends in, each with the feature producing it.
 type TerminalBodies = Result<Vec<(BodyId, FeatureId)>, ExactProductError>;
 
+/// The visible occurrences. Hidden ones only count against the scene bound;
+/// the body limits of the collision check count visible ones. `None` (with the
+/// reason in `report`) when the scene is past its bound.
+fn visible_scene(snapshot: &Snapshot, report: &mut Value) -> Option<Vec<SceneOccurrence>> {
+    match snapshot.scene_query_bounded(
+        MAX_SCOPED_COLLISION_OCCURRENCES,
+        limits::INSTANCE_PATH_STEPS,
+        limits::REPORT_TEXT_BYTES,
+    ) {
+        Ok(occurrences) => Some(
+            occurrences
+                .into_iter()
+                .filter(|occurrence| occurrence.visible)
+                .collect(),
+        ),
+        Err(exceeded) => {
+            report["state"] = json!("not_evaluated");
+            report["visible_occurrence_count"] = Value::Null;
+            report["visible_occurrence_count_at_least"] = json!(exceeded.observed_at_least);
+            report["not_evaluated"] = json!([{
+                "reason": "collision_scene_resource_limit",
+                "resource": format!("{:?}", exceeded.kind),
+                "limit": exceeded.limit,
+                "observed_at_least": exceeded.observed_at_least,
+            }]);
+            None
+        }
+    }
+}
+
 fn collision_report(
     snapshot: &Snapshot,
     selection: &AssistantValidationSelection,
@@ -919,33 +1017,25 @@ fn collision_report(
             return report;
         }
     }
-    let scene_limit = if scope.is_some() {
-        MAX_SCOPED_COLLISION_OCCURRENCES
-    } else {
-        MAX_COLLISION_BODIES
+    let Some(visible) = visible_scene(snapshot, &mut report) else {
+        return report;
     };
-    let visible = match snapshot.scene_query_bounded(
-        scene_limit,
-        limits::INSTANCE_PATH_STEPS,
-        limits::REPORT_TEXT_BYTES,
-    ) {
-        Ok(occurrences) => occurrences
-            .into_iter()
-            .filter(|occurrence| occurrence.visible)
-            .collect::<Vec<_>>(),
-        Err(exceeded) => {
-            report["state"] = json!("not_evaluated");
-            report["visible_occurrence_count"] = Value::Null;
-            report["visible_occurrence_count_at_least"] = json!(exceeded.observed_at_least);
-            report["not_evaluated"] = json!([{
-                "reason": "collision_scene_resource_limit",
-                "resource": format!("{:?}", exceeded.kind),
-                "limit": exceeded.limit,
-                "observed_at_least": exceeded.observed_at_least,
-            }]);
-            return report;
-        }
-    };
+    // A whole model past the small-scene limit (a house) is checked by the
+    // spatially indexed scoped pass with every visible occurrence in scope.
+    let whole_model_scope = (scope.is_none() && visible.len() > MAX_COLLISION_BODIES).then(|| {
+        report["scope"] = json!({
+            "mode": "whole_visible_model",
+            "requested_occurrence_count": visible.len(),
+            "snapshot_bound": true,
+        });
+        CollisionScope::bind(
+            snapshot,
+            visible
+                .iter()
+                .map(|occurrence| occurrence.instance_path.root_occurrence()),
+        )
+    });
+    let scope = scope.or(whole_model_scope.as_ref());
     if cancellation
         .as_ref()
         .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
@@ -984,11 +1074,6 @@ fn collision_report(
         return report;
     }
     report["visible_occurrence_count"] = json!(visible.len());
-    if scope.is_none() && visible.len() > MAX_COLLISION_BODIES {
-        report["state"] = json!("not_evaluated");
-        report["not_evaluated"] = json!([{"reason": "collision_occurrence_resource_limit", "actual": visible.len(), "limit": MAX_COLLISION_BODIES}]);
-        return report;
-    }
     let mut bodies = Vec::new();
     let mut graphs = Vec::new();
     let mut graph_indices = BTreeMap::new();

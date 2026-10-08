@@ -1498,6 +1498,7 @@ digest-circular-pattern-live = Náhľad kruhového vzoru — spolu { $count } ·
 digest-circular-pattern-committed = Kruhový vzor presne potvrdený · zdieľaná definícia nezmenená · 1 krok späť
 digest-move-anchor-set = Kotva posunu nastavená — kliknite na cieľ alebo ťahajte z objektu
 digest-push-pull-anchor-set = Kotva Tlačiť/ťahať nastavená — pohnite kurzorom a potvrďte kliknutím
+digest-push-pull-exact-failed = Tlačiť/ťahať: presné vyhodnotenie zlyhalo, dokument je nezmenený: { $reason }
 digest-move-start-missed = Posun musí začať na výskyte — aktuálny výber zostal zachovaný
 digest-rotate-live = Otočenie o { $angle }° okolo { $axis } · iba transformácia výskytu
 digest-rotate-copy-live = Otočená kópia o { $angle }° okolo { $axis } · zdieľaná definícia

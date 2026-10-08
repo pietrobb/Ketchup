@@ -30,8 +30,17 @@ pub(super) struct FaceOffsetEvaluation {
     render: ExactResultRegistry,
     topology: ExactResultRegistry,
     ready: bool,
-    failed: bool,
+    /// Why the exact evaluation of the preview did not finish.
+    failure: Option<Rejection>,
     confirm_requested: bool,
+}
+
+/// The reason of a failed preview evaluation followed by its causes.
+pub(super) fn face_offset_failure_text(failure: &Rejection) -> String {
+    std::iter::once(failure.reason_text().to_owned())
+        .chain(failure.causes())
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 pub(super) fn face_ordinal(
@@ -468,13 +477,18 @@ impl KetchupApp {
         {
             return;
         }
-        let Some(document) =
-            ketchup_model::persistence::save_container(&snapshot, &self.file.container_data)
-                .ok()
-                .and_then(|bytes| ketchup_model::persistence::load(&bytes).ok())
-                .and_then(|loaded| loaded.into_editable().ok())
-        else {
-            return;
+        // The products publish into a store over the preview itself; the
+        // document is neither copied nor written and read back per distance.
+        let document = match DocumentStore::from_snapshot(&snapshot) {
+            Ok(document) => document,
+            Err(error) => {
+                self.report_face_offset_failure(
+                    &Rejection::new("push_pull.exact_evaluation", RejectionPhase::Evaluation)
+                        .reason("the preview cannot be evaluated")
+                        .caused_by(error),
+                );
+                return;
+            }
         };
         let Some(feature_id) = snapshot
             .definition(preview.plan.source.target.definition_id)
@@ -508,7 +522,7 @@ impl KetchupApp {
             render: ExactResultRegistry::default(),
             topology: ExactResultRegistry::default(),
             ready: false,
-            failed: false,
+            failure: None,
             confirm_requested: false,
         });
     }
@@ -551,25 +565,50 @@ impl KetchupApp {
                 return;
             }
             result => {
-                let report = result.ok().and_then(Result::ok).and_then(|products| {
-                    publish_exact_products(
-                        &mut evaluation.document,
-                        &mut evaluation.render,
-                        &mut evaluation.topology,
-                        task,
-                        products,
-                    )
-                    .ok()
-                });
-                evaluation.ready =
-                    report.is_some_and(|report| report.complete && report.topology_complete);
-                evaluation.failed = !evaluation.ready;
+                let failed = |reason: &str| {
+                    Rejection::new("push_pull.exact_evaluation", RejectionPhase::Evaluation)
+                        .reason(reason)
+                };
+                let report = result
+                    .map_err(|error| {
+                        failed("the exact evaluation stopped without an answer").caused_by(error)
+                    })
+                    .and_then(|products| {
+                        products
+                            .map_err(|error| failed("the exact evaluation failed").caused_by(error))
+                    })
+                    .and_then(|products| {
+                        publish_exact_products(
+                            &mut evaluation.document,
+                            &mut evaluation.render,
+                            &mut evaluation.topology,
+                            task,
+                            products,
+                        )
+                        .map_err(|error| {
+                            failed("the exact result could not be published").caused_by(error)
+                        })
+                    })
+                    .and_then(|report| {
+                        if report.complete && report.topology_complete {
+                            Ok(())
+                        } else {
+                            Err(failed(
+                                report
+                                    .not_evaluated
+                                    .as_deref()
+                                    .unwrap_or("the exact evaluation is incomplete"),
+                            ))
+                        }
+                    });
+                evaluation.ready = report.is_ok();
+                evaluation.failure = report.err();
                 evaluation.task = None;
             }
         }
         let confirm_requested = evaluation.confirm_requested;
         let confirm = confirm_requested && evaluation.ready;
-        let failed = evaluation.failed;
+        let failure = evaluation.failure.clone();
         if !self.face_offset_evaluation_is_current() {
             if confirm_requested {
                 self.push_pull.face_offset_evaluation = None;
@@ -578,12 +617,19 @@ impl KetchupApp {
             context.request_repaint();
             return;
         }
-        if failed {
-            self.digest = "Push/Pull: exact evaluation failed; document unchanged".to_owned();
+        if let Some(failure) = failure {
+            self.report_face_offset_failure(&failure);
         }
         if confirm {
             self.confirm_preview();
         }
+    }
+
+    fn report_face_offset_failure(&mut self, failure: &Rejection) {
+        self.digest = self.catalog.format(
+            "digest-push-pull-exact-failed",
+            &BTreeMap::from([("reason", face_offset_failure_text(failure))]),
+        );
     }
 
     fn face_offset_evaluation_is_current(&self) -> bool {
@@ -628,7 +674,7 @@ impl KetchupApp {
         self.push_pull
             .face_offset_evaluation
             .as_ref()
-            .is_some_and(|evaluation| evaluation.confirm_requested && !evaluation.failed)
+            .is_some_and(|evaluation| evaluation.confirm_requested && evaluation.failure.is_none())
     }
 
     pub(super) fn confirm_face_offset_preview(&mut self) -> bool {
@@ -650,7 +696,7 @@ impl KetchupApp {
             return false;
         };
         if !evaluation.ready {
-            evaluation.confirm_requested = !evaluation.failed;
+            evaluation.confirm_requested = evaluation.failure.is_none();
             return false;
         }
         let Some(proposal) = self.push_pull.smart_proposal.as_ref() else {

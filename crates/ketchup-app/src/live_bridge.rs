@@ -26,7 +26,8 @@ use ketchup_application::{
     },
     model_query::{EditContextRequest, EntityKind, ModelQuery, PageRequest},
     validation::{
-        AssistantValidationSelection, assistant_validation_context_with_worker_cancellation,
+        AssistantValidationSelection, CollisionScope,
+        local_validation_context_with_worker_cancellation,
     },
 };
 use ketchup_assistant::sidecar::{
@@ -1552,6 +1553,7 @@ impl LiveBridge {
 
     #[allow(clippy::too_many_arguments)]
     fn evaluate_apply_and_verify_candidate(
+        base: &Snapshot,
         candidate: &Snapshot,
         container_data: &ketchup_model::persistence::ContainerData,
         render: &ExactResultRegistry,
@@ -1617,7 +1619,15 @@ impl LiveBridge {
         if fault == Some(ApplyAndVerifyFault::Validation) {
             return Err("validation_failed");
         }
-        let validation = assistant_validation_context_with_worker_cancellation(
+        // Collision checks the parts the edit changed and their neighbours.
+        let changed = scope.and_then(|producers| {
+            let reshaped = producers
+                .iter()
+                .map(|producer| producer.definition_id)
+                .collect();
+            CollisionScope::changed_parts(base, candidate, &reshaped)
+        });
+        let validation = local_validation_context_with_worker_cancellation(
             candidate,
             &candidate_exact,
             validation_selection,
@@ -1625,6 +1635,7 @@ impl LiveBridge {
             worker_path,
             remaining,
             Arc::clone(&cancelled),
+            changed.as_ref(),
         );
         if started.elapsed() > deadline {
             cancelled.store(true, Ordering::Release);
@@ -1781,6 +1792,7 @@ impl LiveBridge {
         let render = app.exact.results.clone();
         let topology = app.exact.topology_results.clone();
         let worker_path = Self::worker_path(app);
+        let base = app.document.current();
         let candidate = plan.candidate.clone();
         let (started, timeout_ms) = (plan.started, plan.timeout_ms);
         let worker_cancelled = Arc::new(AtomicBool::new(false));
@@ -1793,6 +1805,7 @@ impl LiveBridge {
             .name("ketchup-live-apply-verify".into())
             .spawn(move || {
                 let result = Self::evaluate_apply_and_verify_candidate(
+                    &base,
                     &candidate,
                     &container_data,
                     &render,
@@ -1966,6 +1979,7 @@ impl LiveBridge {
                 "complete": validation["complete"],
                 "issue_count": validation["issue_count"],
                 "requested": validation["requested"],
+                "collision_scope": validation["collision"]["scope"],
                 "issues": issues,
                 "not_evaluated": validation["not_evaluated"],
             },
@@ -2005,6 +2019,7 @@ impl LiveBridge {
             fault,
         )?;
         let prepared = Self::evaluate_apply_and_verify_candidate(
+            &app.document.current(),
             &plan.candidate,
             &app.file.container_data,
             &app.exact.results,

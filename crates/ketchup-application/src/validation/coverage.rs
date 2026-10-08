@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 pub(super) fn occurrence_names(occurrences: &[SceneOccurrence]) -> BTreeMap<OccurrenceId, String> {
     occurrences
         .iter()
-        .take(super::MAX_ASSISTANT_VALIDATION_OCCURRENCES)
+        .take(super::MAX_VALIDATION_PARTICIPANTS)
         .filter(|item| item.instance_path.steps().is_empty())
         .map(|item| {
             (

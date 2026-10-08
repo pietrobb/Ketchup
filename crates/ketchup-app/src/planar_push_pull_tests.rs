@@ -1094,13 +1094,25 @@ fn failed_cancelled_or_stale_face_offset_never_changes_document() {
         app.poll_face_offset_evaluation(&context);
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(
+    // The digest names why, in the window's language, instead of a fixed
+    // English sentence.
+    let failure = face_offset_failure_text(
         app.push_pull
             .face_offset_evaluation
             .as_ref()
             .unwrap()
-            .failed
+            .failure
+            .as_ref()
+            .expect("a missing worker fails the evaluation"),
     );
+    assert_eq!(
+        app.digest,
+        app.catalog.format(
+            "digest-push-pull-exact-failed",
+            &BTreeMap::from([("reason", failure.clone())]),
+        )
+    );
+    assert!(app.digest.contains(&failure), "{}", app.digest);
     assert!(!app.confirm_preview());
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), steps);

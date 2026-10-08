@@ -175,6 +175,7 @@ mod native_document_inspection;
 mod occurrence_color_ui;
 mod planar_push_pull;
 mod program_edit;
+mod program_evaluation;
 mod program_source_ui;
 mod refusal;
 use ketchup_rejection::{Rejection, RejectionPhase};
@@ -4302,6 +4303,7 @@ pub struct KetchupApp {
     face_workflow: face_workflow_ui::FaceWorkflowUiState,
     feature_history: feature_history_ui::FeatureHistoryUiState,
     push_pull: app_state::PushPullState,
+    program_evaluations: program_evaluation::ProgramEvaluations,
     solid_tools: app_state::SolidToolInputs,
     helix_tool: helix_ui::HelixUiState,
     parameter: app_state::ParameterEditor,

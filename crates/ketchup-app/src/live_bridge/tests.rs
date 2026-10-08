@@ -745,6 +745,16 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
             .unwrap();
         crate::tests::install_initial_graph_result(app);
     };
+    // A move changes one part, so collision is scoped to it and its neighbours.
+    let moved = || AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::Transform {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![1],
+            },
+            translation_mm: [10.0, 0.0, 0.0],
+            rotation: None,
+        }],
+    };
     let contract = |value: &Value| {
         json!({
             "published": value["published"],
@@ -764,7 +774,7 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
     let assistant_before = assistant_app.live_bridge_stamp();
     let assistant_undo = assistant_app.undo_step_count();
     let assistant_result =
-        LiveBridge::apply_assistant_cad_program(&mut assistant_app, program()).unwrap();
+        LiveBridge::apply_assistant_cad_program(&mut assistant_app, moved()).unwrap();
 
     let (mut sdk_app, mut bridge) = setup();
     prepare(&mut sdk_app);
@@ -776,7 +786,7 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
             Request::ApplyAndVerify {
                 expected: Some(sdk_before.clone()),
                 selection: Some(vec![]),
-                program: program(),
+                program: moved(),
                 validators: Vec::new(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
                 strict: false,
@@ -789,6 +799,12 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
     assert_eq!(contract(&assistant_result), contract(&sdk_result));
     // Collision is the only check every edit pays for; gravity is on demand.
     assert_eq!(sdk_result["validation"]["requested"], json!(["collision"]));
+    // It covers the edited part and its neighbours, not the whole model.
+    for result in [&assistant_result, &sdk_result] {
+        let scope = &result["validation"]["collision_scope"];
+        assert_eq!(scope["mode"], "snapshot_bound_occurrences", "{result}");
+        assert_eq!(scope["requested_occurrence_count"], 1, "{result}");
+    }
     assert_eq!(
         assistant_app.live_bridge_stamp().revision,
         assistant_before.revision + 1

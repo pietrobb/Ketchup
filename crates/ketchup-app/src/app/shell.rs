@@ -96,8 +96,8 @@ impl KetchupApp {
                 smart_planning: None,
                 last: None,
                 preview_check: std::cell::RefCell::new(None),
-                program_evaluation: std::cell::RefCell::new(None),
             },
+            program_evaluations: Default::default(),
             solid_tools: app_state::SolidToolInputs {
                 target: None,
                 revolve: None,
@@ -1139,6 +1139,9 @@ impl KetchupApp {
         self.poll_live_bridge(context);
         self.poll_validator_panel(context);
         self.poll_mesh_conversion(context);
+        if let Some(program) = self.document.current_rule_program() {
+            self.program_evaluations.warm(program, context);
+        }
         self.refresh_exact_products(context);
         let palette = self.palette();
         apply_shell_style(context, palette);
