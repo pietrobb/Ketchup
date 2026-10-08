@@ -23,6 +23,13 @@ fn test_stock_geometry(dimensions: PieceDimensions) -> GeneralMachiningGeometry 
     }
 }
 
+fn blank_at_origin(extents_mm: [f64; 3]) -> StockBlank {
+    StockBlank {
+        corner_mm: [0.0; 3],
+        extents_mm,
+    }
+}
+
 #[test]
 fn btlx_numeric_values_follow_supported_xsd_ranges() {
     assert_eq!(btlx_component_identifiers(1, 0), Some((1, 1)));
@@ -54,8 +61,8 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
         height_mm: 1000.0,
     });
     assert_eq!(
-        rectangular_timber_stock_dimensions(&valid),
-        Some((1000.0, 100.0, 50.0))
+        rectangular_timber_stock(&valid),
+        Some(blank_at_origin([100.0, 50.0, 1000.0]))
     );
 
     let mut translated = valid.clone();
@@ -63,7 +70,7 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
         unreachable!()
     };
     *start_mm = [10.0, 0.0, 0.0];
-    assert_eq!(rectangular_timber_stock_dimensions(&translated), None);
+    assert_eq!(rectangular_timber_stock(&translated), None);
 
     let mut rotated = valid.clone();
     let GeneralMachiningGeometry::TimberStock { frame, .. } = &mut rotated else {
@@ -71,7 +78,7 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
     };
     frame.x_axis = [0.0, 1.0, 0.0];
     frame.y_axis = [-1.0, 0.0, 0.0];
-    assert_eq!(rectangular_timber_stock_dimensions(&rotated), None);
+    assert_eq!(rectangular_timber_stock(&rotated), None);
 
     let mut open = valid.clone();
     let GeneralMachiningGeometry::TimberStock { cross_section, .. } = &mut open else {
@@ -81,7 +88,7 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
         unreachable!()
     };
     *end_mm = [1.0, 0.0];
-    assert_eq!(rectangular_timber_stock_dimensions(&open), None);
+    assert_eq!(rectangular_timber_stock(&open), None);
 
     let mut diagonal = valid;
     let GeneralMachiningGeometry::TimberStock { cross_section, .. } = &mut diagonal else {
@@ -91,7 +98,69 @@ fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
         unreachable!()
     };
     *end_mm = [100.0, 1.0];
-    assert_eq!(rectangular_timber_stock_dimensions(&diagonal), None);
+    assert_eq!(rectangular_timber_stock(&diagonal), None);
+}
+
+#[test]
+fn a_profile_centred_on_its_axis_is_machined_from_its_minimum_corner() {
+    // A 60 x 140 x 2000 member with its profile centred on the definition axis,
+    // (-30, -70) .. (30, 70). Holes 30 mm deep into the top face (y = 70) and
+    // into the bottom face (y = -70), both 1000 mm along the member.
+    let points = [[-30.0, -70.0], [30.0, -70.0], [30.0, 70.0], [-30.0, 70.0]];
+    let stock = GeneralMachiningGeometry::TimberStock {
+        frame: identity_machining_frame(),
+        cross_section: (0..4)
+            .map(|i| GeneralMachiningSegment::Line {
+                start_mm: points[i],
+                end_mm: points[(i + 1) % 4],
+            })
+            .collect(),
+        start_mm: [0.0; 3],
+        length_axis: [0.0, 0.0, 1.0],
+        length_mm: 2000.0,
+        cross_section_width_mm: 60.0,
+        cross_section_height_mm: 140.0,
+    };
+    let blank = rectangular_timber_stock(&stock).unwrap();
+    let drill = |y: f64, normal_y: f64| GeneralMachiningGeometry::CircularDrill {
+        frame: GeneralMachiningFrame {
+            origin_mm: [0.0, y, 1000.0],
+            x_axis: [0.0, 0.0, 1.0],
+            y_axis: [normal_y, 0.0, 0.0],
+            normal: [0.0, normal_y, 0.0],
+        },
+        center_mm: [0.0, 0.0],
+        diameter_mm: 10.0,
+        through: false,
+        start_mm: 0.0,
+        end_mm: 30.0,
+    };
+    let (top, bottom) = (drill(70.0, -1.0), drill(-70.0, 1.0));
+
+    // BTLx part coordinates: X along the length, Y across the 60 mm width,
+    // Z up the 140 mm height, all from the blank's corner.
+    assert_eq!(
+        btlx_drilling(&top, blank).unwrap().reference_point_mm,
+        [1000.0, 30.0, 140.0]
+    );
+    assert_eq!(
+        btlx_drilling(&bottom, blank).unwrap().reference_point_mm,
+        [1000.0, 30.0, 0.0]
+    );
+
+    // woodWOP: machine X, Y, Z = definition z, y, x (odd order, so Y runs from
+    // the far edge). The top hole enters at machine Y = 0, the bottom one at 140.
+    let woodwop = woodwop_stock_frame(&stock).unwrap();
+    assert!(
+        woodwop_drilling_macro(&top, woodwop)
+            .unwrap()
+            .starts_with("<103 \\BohrHoriz\\\nXA=\"1000\"\nYA=\"0\"\nZA=\"30\"\nBM=\"YP\"\n")
+    );
+    assert!(
+        woodwop_drilling_macro(&bottom, woodwop)
+            .unwrap()
+            .starts_with("<103 \\BohrHoriz\\\nXA=\"1000\"\nYA=\"140\"\nZA=\"30\"\nBM=\"YM\"\n")
+    );
 }
 
 #[test]
@@ -341,7 +410,7 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
         start_mm: 10.0,
         end_mm: 60.0,
     };
-    let drilling = btlx_drilling(&valid, [100.0, 50.0, 1000.0]).unwrap();
+    let drilling = btlx_drilling(&valid, blank_at_origin([100.0, 50.0, 1000.0])).unwrap();
     assert_eq!(drilling.reference_point_mm, [10.0, 0.0, 0.0]);
     assert_eq!(drilling.x_vector, [0.0, 1.0, 0.0]);
     assert_eq!(drilling.y_vector, [0.0, 0.0, 1.0]);
@@ -363,7 +432,10 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
         unreachable!()
     };
     *end_mm = *start_mm;
-    assert_eq!(btlx_drilling(&zero_depth, [100.0, 50.0, 1000.0]), None);
+    assert_eq!(
+        btlx_drilling(&zero_depth, blank_at_origin([100.0, 50.0, 1000.0])),
+        None
+    );
 
     let mut invalid_diameter = valid.clone();
     let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } = &mut invalid_diameter else {
@@ -371,7 +443,7 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
     };
     *diameter_mm = 50_000.000_000_001;
     assert_eq!(
-        btlx_drilling(&invalid_diameter, [100.0, 50.0, 1000.0]),
+        btlx_drilling(&invalid_diameter, blank_at_origin([100.0, 50.0, 1000.0])),
         None
     );
 
@@ -380,14 +452,20 @@ fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
         unreachable!()
     };
     *center_mm = [100_000.000_000_001, 25.0];
-    assert_eq!(btlx_drilling(&invalid_center, [100.0, 50.0, 1000.0]), None);
+    assert_eq!(
+        btlx_drilling(&invalid_center, blank_at_origin([100.0, 50.0, 1000.0])),
+        None
+    );
 
     let mut invalid_frame = valid;
     let GeneralMachiningGeometry::CircularDrill { frame, .. } = &mut invalid_frame else {
         unreachable!()
     };
     frame.x_axis = [2.0, 0.0, 0.0];
-    assert_eq!(btlx_drilling(&invalid_frame, [100.0, 50.0, 1000.0]), None);
+    assert_eq!(
+        btlx_drilling(&invalid_frame, blank_at_origin([100.0, 50.0, 1000.0])),
+        None
+    );
 }
 
 #[test]
@@ -407,7 +485,7 @@ fn btlx_blind_depth_uses_entry_and_direction_in_stock_coordinates() {
         start_mm: 0.0,
         end_mm: 50.0,
     };
-    let dimensions = [100.0, 100.0, 18.0];
+    let dimensions = blank_at_origin([100.0, 100.0, 18.0]);
     assert_eq!(btlx_drilling(&drill, dimensions).unwrap().depth, "50");
     for depth in [100.0, 122.0] {
         let GeneralMachiningGeometry::CircularDrill { end_mm, .. } = &mut drill else {
@@ -462,7 +540,7 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         start_mm: 10.0,
         end_mm: 30.0,
     };
-    let contour = btlx_free_contour(&valid).unwrap();
+    let contour = btlx_free_contour(&valid, blank_at_origin([1000.0; 3])).unwrap();
     assert_eq!(contour.reference_point_mm, [10.0, 0.0, 0.0]);
     assert_eq!(contour.tool_position, "left");
     assert_eq!(contour.start_point, ["0".to_owned(), "0".to_owned()]);
@@ -480,7 +558,9 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         end_mm: 20.0,
     };
     assert_eq!(
-        btlx_free_contour(&clockwise).unwrap().tool_position,
+        btlx_free_contour(&clockwise, blank_at_origin([1000.0; 3]))
+            .unwrap()
+            .tool_position,
         "right"
     );
 
@@ -492,7 +572,7 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         unreachable!()
     };
     *end_mm = [1.0, 0.0];
-    assert_eq!(btlx_free_contour(&open), None);
+    assert_eq!(btlx_free_contour(&open, blank_at_origin([1000.0; 3])), None);
 
     let irregular = GeneralMachiningGeometry::ProfileCut {
         frame: identity_machining_frame(),
@@ -506,7 +586,13 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         start_mm: 0.0,
         end_mm: 20.0,
     };
-    assert_eq!(btlx_free_contour(&irregular).unwrap().segments.len(), 5);
+    assert_eq!(
+        btlx_free_contour(&irregular, blank_at_origin([1000.0; 3]))
+            .unwrap()
+            .segments
+            .len(),
+        5
+    );
 
     let arc_profile = GeneralMachiningGeometry::ProfileCut {
         frame: identity_machining_frame(),
@@ -525,7 +611,7 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         end_mm: 18.0,
     };
     assert!(matches!(
-        &btlx_free_contour(&arc_profile).unwrap().segments[1],
+        &btlx_free_contour(&arc_profile, blank_at_origin([1000.0; 3])).unwrap().segments[1],
         BtlxContourSegment::Arc {
             end_point,
             point_on_arc,
@@ -540,7 +626,10 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         unreachable!()
     };
     *center_mm = [31.0, 19.0];
-    assert_eq!(btlx_free_contour(&mismatched_arc_radius), None);
+    assert_eq!(
+        btlx_free_contour(&mismatched_arc_radius, blank_at_origin([1000.0; 3])),
+        None
+    );
 
     let self_intersecting = GeneralMachiningGeometry::ProfileCut {
         frame: identity_machining_frame(),
@@ -553,7 +642,10 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         start_mm: 0.0,
         end_mm: 20.0,
     };
-    assert_eq!(btlx_free_contour(&self_intersecting), None);
+    assert_eq!(
+        btlx_free_contour(&self_intersecting, blank_at_origin([1000.0; 3])),
+        None
+    );
 
     let collapsed_after_formatting = GeneralMachiningGeometry::ProfileCut {
         frame: identity_machining_frame(),
@@ -566,12 +658,18 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         start_mm: 0.0,
         end_mm: 20.0,
     };
-    assert_eq!(btlx_free_contour(&collapsed_after_formatting), None);
+    assert_eq!(
+        btlx_free_contour(&collapsed_after_formatting, blank_at_origin([1000.0; 3])),
+        None
+    );
 
     let mut excessive_depth = valid;
     let GeneralMachiningGeometry::ProfileCut { end_mm, .. } = &mut excessive_depth else {
         unreachable!()
     };
     *end_mm = 100_011.0;
-    assert_eq!(btlx_free_contour(&excessive_depth), None);
+    assert_eq!(
+        btlx_free_contour(&excessive_depth, blank_at_origin([1000.0; 3])),
+        None
+    );
 }

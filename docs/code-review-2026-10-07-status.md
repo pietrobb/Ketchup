@@ -36,6 +36,13 @@ Ručne prepočítané testy CR7-B: konzola a spojitý nosník (riešič aj kontr
 λrel 2,94, kc 0,108), kv (`a_beam_notched_over_its_bearing_is_checked_in_shear_with_kv`, h_ef 160/200,
 kv 0,636), doska na nerovnakých podperách (ST-1), spoj nad únosnosťou (ST-5).
 
+## CR7-C Výroba
+
+| nález | stav | oprava a test |
+|---|---|---|
+| MF-2 | opravené | Jeden rám polotovaru `StockBlank` (minimálny roh profilu a rozmery) pre BTLx (vŕtanie, voľný obrys, kontrola hĺbky) aj woodWOP; `production_job` berie ten istý roh z `profile_minimum`. Test `a_profile_centred_on_its_axis_is_machined_from_its_minimum_corner`: profil 60×140 so stredom na osi, otvor zhora má v BTLx referenčný bod `[1000, 30, 140]` (starý kód `[1000, 0, 70]`), otvor zdola `[1000, 30, 0]` (starý kód ho odmietol, vstup −70), woodWOP `YA` 0 a 140. |
+| MF-4 | opravené, **importér nepotvrdený** | Konvencia zapísaná v `docs/btlx-conventions.md`. Golden `centred-60x140-drilling-2.3.1.btlx` (prierez 60×140, profil mimo počiatku, otvor v nesymetrickom bode) v teste `btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner`. Každý BTLx golden prechádza `assert_btlx_machining_lies_in_its_blank`: každý bod opracovania na rovine aj v hĺbke leží v polotovare. Že kontrola zaberá, ukazuje ten istý test s normálou otočenou von. Potvrdenie v prehliadači alebo importéri BTLx potrebuje operátora alebo prístup k importéru. Postup je v dokumente. |
+
 Vedľajšia úprava kvôli ratchetu `check_crate_layers.py`: inline testy
 `fabrication.rs` sú presunuté do `fabrication/tests.rs` (súbor prekročil 5000
 riadkov), determinant v teste ide cez `linalg::Mat3`.

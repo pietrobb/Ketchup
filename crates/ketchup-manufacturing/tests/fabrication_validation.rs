@@ -581,6 +581,42 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
 }
 
 #[test]
+fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner() {
+    // Profile (-30, -70) .. (30, 70), 2000 mm long, a hole into the start face
+    // at (15, 40): 45 mm across the 60 mm width and 110 mm up the 140 mm
+    // height from the blank's corner. A swapped Width/Height, a profile not
+    // moved to its corner or an outward plane normal each change the golden or
+    // leave the blank.
+    let document = drilled_stock_document(
+        &[[-30.0, -70.0], [30.0, -70.0], [30.0, 70.0], [-30.0, 70.0]],
+        "2000",
+        [15.0, 40.0],
+    );
+    let (snapshot, projection) = exact_graph_document_fabrication_projection(
+        document,
+        "cr7-centred-60x140-drilling",
+        GRAPH_BOOLEAN,
+    );
+    let export = projection.btlx_2_3_1_export(&snapshot).unwrap();
+    assert_btlx_golden(&export, "centred-60x140-drilling-2.3.1.btlx");
+    let xml = String::from_utf8(export).unwrap();
+    assert!(
+        xml.contains("Length=\"2000\" Width=\"60\" Height=\"140\""),
+        "{xml}"
+    );
+    // With the plane normal pointing out of the material the hole leaves the
+    // blank, and the blank check says so.
+    let outward = xml.replace(
+        "<YVector X=\"0\" Y=\"0\" Z=\"-1\"/>",
+        "<YVector X=\"0\" Y=\"0\" Z=\"1\"/>",
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert_btlx_machining_lies_in_its_blank(&outward, "outward"))
+            .is_err()
+    );
+}
+
+#[test]
 fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     assert_eq!(BTLX_2_3_1_VERSION, "2.3.1");
     assert_eq!(
@@ -2314,6 +2350,16 @@ fn circular_drill_document() -> DocumentStore {
     circular_drill_document_at([50.0, 25.0])
 }
 fn circular_drill_document_at(center: [f64; 2]) -> DocumentStore {
+    drilled_stock_document(
+        &[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+        "1000",
+        center,
+    )
+}
+
+/// Timber stock of the given profile and length with one 10 mm hole, 50 mm
+/// deep, drilled into its start face at center.
+fn drilled_stock_document(stock: &[[f64; 2]], length_mm: &str, center: [f64; 2]) -> DocumentStore {
     let east = [center[0] + 5.0, center[1]];
     let north = [center[0], center[1] + 5.0];
     let west = [center[0] - 5.0, center[1]];
@@ -2334,16 +2380,16 @@ fn circular_drill_document_at(center: [f64; 2]) -> DocumentStore {
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BASE_PROFILE,
                 definition_id: GRAPH_DEFINITION,
-                name: "100 x 50 timber profile".to_owned(),
-                kind: FeatureKind::polygon(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]),
+                name: "timber profile".to_owned(),
+                kind: FeatureKind::polygon(stock),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BASE_BODY,
                 definition_id: GRAPH_DEFINITION,
-                name: "1000 mm timber stock".to_owned(),
+                name: "timber stock".to_owned(),
                 kind: FeatureKind::extrusion(
                     GRAPH_BASE_PROFILE,
-                    Dimension::from_decimal("1000").unwrap(),
+                    Dimension::from_decimal(length_mm).unwrap(),
                 ),
             },
             CanonicalCommand::CreateFeature {
@@ -2854,8 +2900,86 @@ fn assert_btlx_golden(actual: &[u8], name: &str) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/btlx")
         .join(name);
+    assert_btlx_machining_lies_in_its_blank(std::str::from_utf8(actual).unwrap(), name);
     if ketchup_test_env::update_golden() {
         std::fs::write(&path, actual).unwrap();
     }
     assert_eq!(actual, std::fs::read(&path).unwrap().as_slice(), "{name}");
+}
+
+/// Every point of every processing, at its reference plane and at its depth
+/// along XVector x YVector (into the material, docs/btlx-conventions.md), lies
+/// in the part's blank [0, Length] x [0, Width] x [0, Height].
+fn assert_btlx_machining_lies_in_its_blank(xml: &str, name: &str) {
+    fn attribute(element: &str, key: &str) -> f64 {
+        let start = element.find(&format!(" {key}=\"")).unwrap() + key.len() + 3;
+        let end = start + element[start..].find('"').unwrap();
+        element[start..end].parse().unwrap()
+    }
+    fn element<'a>(xml: &'a str, tag: &str) -> &'a str {
+        let start = xml.find(&format!("<{tag} ")).unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+    fn point(xml: &str, tag: &str) -> [f64; 3] {
+        let element = element(xml, tag);
+        ["X", "Y", "Z"].map(|key| attribute(element, key))
+    }
+    fn text(xml: &str, tag: &str) -> f64 {
+        let start = xml.find(&format!("<{tag}>")).unwrap() + tag.len() + 2;
+        xml[start..start + xml[start..].find('<').unwrap()]
+            .parse()
+            .unwrap()
+    }
+    for part in xml.split("<Part ").skip(1) {
+        let extents = ["Length", "Width", "Height"].map(|key| attribute(part, key));
+        let planes = part
+            .split("<UserReferencePlane ")
+            .skip(1)
+            .map(|plane| {
+                let origin = point(plane, "ReferencePoint");
+                let x = point(plane, "XVector");
+                let y = point(plane, "YVector");
+                let normal = ketchup_geometry::linalg::cross(x, y);
+                (
+                    attribute(&format!(" {plane}"), "ID"),
+                    [origin, x, y, normal],
+                )
+            })
+            .collect::<Vec<_>>();
+        let processings = part.split("ReferencePlaneID=").skip(1).collect::<Vec<_>>();
+        for processing in &processings {
+            let id: f64 = processing[1..processing[1..].find('"').unwrap() + 1]
+                .parse()
+                .unwrap();
+            let [origin, x, y, normal] = planes.iter().find(|plane| plane.0 == id).unwrap().1;
+            let (local, depth) = if processing.contains("<StartX>") {
+                (
+                    vec![[text(processing, "StartX"), text(processing, "StartY")]],
+                    text(processing, "Depth"),
+                )
+            } else {
+                let contour = element(processing, "Contour");
+                let points = ["<StartPoint ", "<EndPoint "]
+                    .into_iter()
+                    .flat_map(|tag| processing.match_indices(tag))
+                    .map(|(at, _)| {
+                        let element = &processing[at..at + processing[at..].find('>').unwrap()];
+                        [attribute(element, "X"), attribute(element, "Y")]
+                    })
+                    .collect();
+                (points, attribute(contour, "Depth"))
+            };
+            for [u, v] in local {
+                for along in [0.0, depth] {
+                    let at: [f64; 3] = std::array::from_fn(|axis| {
+                        origin[axis] + x[axis] * u + y[axis] * v + normal[axis] * along
+                    });
+                    assert!(
+                        (0..3).all(|axis| (-1e-6..=extents[axis] + 1e-6).contains(&at[axis])),
+                        "{name}: processing on plane {id} reaches {at:?} outside the blank {extents:?}"
+                    );
+                }
+            }
+        }
+    }
 }

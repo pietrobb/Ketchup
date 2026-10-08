@@ -145,19 +145,12 @@ impl GeneralFabricationProjection {
             });
             let dimensions_mm = order.map(|axis| stock_dimensions[axis]);
             let axes = [frame.x_axis, frame.y_axis, *length_axis];
-            let mut minimum = [f64::INFINITY; 2];
-            for segment in cross_section {
-                let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
-                    return Err(GeneralFabricationError::ExportBlocked);
-                };
-                for axis in 0..2 {
-                    minimum[axis] = minimum[axis].min(start_mm[axis]).min(end_mm[axis]);
-                }
-            }
+            let minimum =
+                profile_minimum(cross_section).ok_or(GeneralFabricationError::ExportBlocked)?;
             let origin_mm: [f64; 3] = std::array::from_fn(|axis| {
                 start_mm[axis] + frame.x_axis[axis] * minimum[0] + frame.y_axis[axis] * minimum[1]
             });
-            let stock_shape = if rectangular_stock_profile_dimensions(
+            let stock_shape = if rectangular_stock_profile(
                 cross_section,
                 *length_mm,
                 *cross_section_width_mm,

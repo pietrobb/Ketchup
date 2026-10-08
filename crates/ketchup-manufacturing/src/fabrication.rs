@@ -1231,11 +1231,10 @@ impl GeneralFabricationProjection {
             else {
                 return Err(GeneralFabricationError::ExportBlocked);
             };
-            let Some((length_mm, width_mm, height_mm)) =
-                rectangular_timber_stock_dimensions(&stock.machining)
-            else {
+            let Some(blank) = rectangular_timber_stock(&stock.machining) else {
                 return Err(GeneralFabricationError::ExportBlocked);
             };
+            let [width_mm, height_mm, length_mm] = blank.extents_mm;
             let length = format_btlx_positive_number(length_mm)
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let width = format_btlx_positive_number(width_mm)
@@ -1244,9 +1243,7 @@ impl GeneralFabricationProjection {
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let processings = machining
                 .iter()
-                .map(|operation| {
-                    btlx_processings(operation, options, [width_mm, height_mm, length_mm])
-                })
+                .map(|operation| btlx_processings(operation, options, blank))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .flatten()
@@ -1461,18 +1458,16 @@ struct BtlxFreeContour {
 fn btlx_processings(
     operation: &GeneralManufacturingOperation,
     options: BtlxExportOptions,
-    stock_dimensions_mm: [f64; 3],
+    blank: StockBlank,
 ) -> Result<Vec<BtlxProcessing>, GeneralFabricationError> {
     match operation.kind {
-        GeneralManufacturingKind::CircularDrill => {
-            btlx_drilling(&operation.machining, stock_dimensions_mm)
-                .map(|drilling| vec![BtlxProcessing::Drilling(drilling)])
-                .ok_or(GeneralFabricationError::ExportBlocked)
-        }
+        GeneralManufacturingKind::CircularDrill => btlx_drilling(&operation.machining, blank)
+            .map(|drilling| vec![BtlxProcessing::Drilling(drilling)])
+            .ok_or(GeneralFabricationError::ExportBlocked),
         GeneralManufacturingKind::ThroughCut
         | GeneralManufacturingKind::ProfileCut
         | GeneralManufacturingKind::BooleanCut => {
-            let contour = btlx_free_contour(&operation.machining)
+            let contour = btlx_free_contour(&operation.machining, blank)
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             match options.profile_processing_request {
                 BtlxProfileProcessingRequest::PortableFreeContour => {
@@ -1571,10 +1566,7 @@ fn btlx_edge_saw_contours(
     Some(result)
 }
 
-fn btlx_drilling(
-    geometry: &GeneralMachiningGeometry,
-    stock_dimensions_mm: [f64; 3],
-) -> Option<BtlxDrilling> {
+fn btlx_drilling(geometry: &GeneralMachiningGeometry, blank: StockBlank) -> Option<BtlxDrilling> {
     // Only depth-limited drilling is verified here. ThroughAll's padded Boolean
     // cutter interval must never become an authorized machine drilling depth.
     let GeneralMachiningGeometry::CircularDrill {
@@ -1599,12 +1591,15 @@ fn btlx_drilling(
     let depth_mm = end_mm - start_mm;
     // Check the directed distance to the stock exit, not its smallest dimension
     // or the occurrence's world bounds. This also covers offset/angled frames.
-    let tolerance = stock_dimensions_mm.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
-    for (axis, extent) in stock_dimensions_mm.into_iter().enumerate() {
-        let entry = frame.origin_mm[axis]
+    let tolerance = blank.extents_mm.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
+    let entry_point = blank.local(std::array::from_fn(|axis| {
+        frame.origin_mm[axis]
             + frame.x_axis[axis] * center_mm[0]
             + frame.y_axis[axis] * center_mm[1]
-            + frame.normal[axis] * start_mm;
+            + frame.normal[axis] * start_mm
+    }));
+    for (axis, extent) in blank.extents_mm.into_iter().enumerate() {
+        let entry = entry_point[axis];
         let end = entry + frame.normal[axis] * depth_mm;
         let tip_radius = diameter_mm / 2.0 * frame.x_axis[axis].hypot(frame.y_axis[axis]);
         if !extent.is_finite()
@@ -1621,9 +1616,9 @@ fn btlx_drilling(
             return None;
         }
     }
-    let reference_point_mm = btlx_part_coordinate(std::array::from_fn(|axis| {
+    let reference_point_mm = btlx_part_coordinate(blank.local(std::array::from_fn(|axis| {
         frame.origin_mm[axis] + frame.normal[axis] * start_mm
-    }));
+    })));
     Some(BtlxDrilling {
         reference_point_mm,
         x_vector: btlx_part_coordinate(frame.x_axis),
@@ -1688,7 +1683,10 @@ fn btlx_arc_points(
     )
 }
 
-fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeContour> {
+fn btlx_free_contour(
+    geometry: &GeneralMachiningGeometry,
+    blank: StockBlank,
+) -> Option<BtlxFreeContour> {
     let GeneralMachiningGeometry::ProfileCut {
         frame,
         segments,
@@ -1786,9 +1784,9 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
     }
     let depth_mm = end_mm - start_mm;
     Some(BtlxFreeContour {
-        reference_point_mm: btlx_part_coordinate(std::array::from_fn(|axis| {
+        reference_point_mm: btlx_part_coordinate(blank.local(std::array::from_fn(|axis| {
             frame.origin_mm[axis] + frame.normal[axis] * start_mm
-        })),
+        }))),
         x_vector: btlx_part_coordinate(frame.x_axis),
         y_vector: btlx_part_coordinate(frame.y_axis),
         tool_position: if signed_double_area > 0.0 {
@@ -1901,6 +1899,7 @@ fn machining_frame_is_right_handed(frame: &GeneralMachiningFrame) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct WoodwopStockFrame {
+    blank: StockBlank,
     definition_axes: [usize; 3],
     dimensions_mm: [f64; 3],
     /// An odd axis permutation is a reflection; measuring machine Y from the
@@ -1909,9 +1908,8 @@ struct WoodwopStockFrame {
 }
 
 fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopStockFrame> {
-    let (definition_z_mm, definition_x_mm, definition_y_mm) =
-        rectangular_timber_stock_dimensions(geometry)?;
-    let definition_dimensions = [definition_x_mm, definition_y_mm, definition_z_mm];
+    let blank = rectangular_timber_stock(geometry)?;
+    let definition_dimensions = blank.extents_mm;
     let mut definition_axes = [0, 1, 2];
     definition_axes.sort_by(|left, right| {
         definition_dimensions[*right]
@@ -1921,6 +1919,7 @@ fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopSto
     let [a, b, c] = definition_axes;
     let inversions = usize::from(a > b) + usize::from(a > c) + usize::from(b > c);
     Some(WoodwopStockFrame {
+        blank,
         definition_axes,
         dimensions_mm: definition_axes.map(|axis| definition_dimensions[axis]),
         reversed_y: inversions % 2 == 1,
@@ -1928,7 +1927,7 @@ fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopSto
 }
 
 fn woodwop_coordinate(definition_coordinate: [f64; 3], stock_frame: WoodwopStockFrame) -> [f64; 3] {
-    let mut point = woodwop_direction(definition_coordinate, stock_frame);
+    let mut point = woodwop_direction(stock_frame.blank.local(definition_coordinate), stock_frame);
     if stock_frame.reversed_y {
         point[1] += stock_frame.dimensions_mm[1];
     }
@@ -2316,9 +2315,37 @@ fn woodwop_vertical_pocket_macro(
     ))
 }
 
-fn rectangular_timber_stock_dimensions(
-    geometry: &GeneralMachiningGeometry,
-) -> Option<(f64, f64, f64)> {
+/// The blank of a rectangular stock in definition-local mm: its minimum
+/// corner and its extents along definition x, y (cross-section) and z (length).
+/// BTLx and woodWOP measure machining from this corner; production_job reports
+/// the same corner as its stock frame origin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StockBlank {
+    corner_mm: [f64; 3],
+    extents_mm: [f64; 3],
+}
+
+impl StockBlank {
+    fn local(self, definition_point: [f64; 3]) -> [f64; 3] {
+        std::array::from_fn(|axis| definition_point[axis] - self.corner_mm[axis])
+    }
+}
+
+/// Minimum corner of a cross-section made of lines, in profile coordinates.
+fn profile_minimum(cross_section: &[GeneralMachiningSegment]) -> Option<[f64; 2]> {
+    let mut minimum = [f64::INFINITY; 2];
+    for segment in cross_section {
+        let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
+            return None;
+        };
+        for axis in 0..2 {
+            minimum[axis] = minimum[axis].min(start_mm[axis]).min(end_mm[axis]);
+        }
+    }
+    Some(minimum)
+}
+
+fn rectangular_timber_stock(geometry: &GeneralMachiningGeometry) -> Option<StockBlank> {
     let GeneralMachiningGeometry::TimberStock {
         frame,
         cross_section,
@@ -2337,7 +2364,7 @@ fn rectangular_timber_stock_dimensions(
     {
         return None;
     }
-    rectangular_stock_profile_dimensions(
+    rectangular_stock_profile(
         cross_section,
         *length_mm,
         *cross_section_width_mm,
@@ -2345,12 +2372,12 @@ fn rectangular_timber_stock_dimensions(
     )
 }
 
-fn rectangular_stock_profile_dimensions(
+fn rectangular_stock_profile(
     cross_section: &[GeneralMachiningSegment],
     length_mm: f64,
     cross_section_width_mm: f64,
     cross_section_height_mm: f64,
-) -> Option<(f64, f64, f64)> {
+) -> Option<StockBlank> {
     if cross_section.len() != 4
         || [length_mm, cross_section_width_mm, cross_section_height_mm]
             .into_iter()
@@ -2382,16 +2409,7 @@ fn rectangular_stock_profile_dimensions(
         return None;
     }
 
-    let minimum = [
-        edges
-            .iter()
-            .flat_map(|(start, end)| [start[0], end[0]])
-            .fold(f64::INFINITY, f64::min),
-        edges
-            .iter()
-            .flat_map(|(start, end)| [start[1], end[1]])
-            .fold(f64::INFINITY, f64::min),
-    ];
+    let minimum = profile_minimum(cross_section)?;
     let maximum = [
         edges
             .iter()
@@ -2421,8 +2439,12 @@ fn rectangular_stock_profile_dimensions(
     }
     let width_mm = maximum[0] - minimum[0];
     let height_mm = maximum[1] - minimum[1];
-    (width_mm == cross_section_width_mm && height_mm == cross_section_height_mm)
-        .then_some((length_mm, width_mm, height_mm))
+    (width_mm == cross_section_width_mm && height_mm == cross_section_height_mm).then_some(
+        StockBlank {
+            corner_mm: [minimum[0], minimum[1], 0.0],
+            extents_mm: [width_mm, height_mm, length_mm],
+        },
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
