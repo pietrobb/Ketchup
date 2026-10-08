@@ -8,7 +8,7 @@ use ketchup_geometry::sketch::{
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
     EdgeFinishKind, EdgeRef, FaceRef, FeatureEvaluationState, FeatureId, FeatureKind, OccurrenceId,
-    ProposalCommitError, ProposalContext, Transform,
+    ProposalCommitError, ProposalContext, TagId, Transform,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
@@ -1192,6 +1192,32 @@ fn branched_feature_dag_recomputes_only_the_dirty_closure_and_keeps_unrelated_ex
     let remaining = carried.values().next().unwrap();
     assert_eq!(remaining.producer_feature_id(), PAD_B);
     assert!(remaining.is_current(&changed));
+}
+
+#[test]
+fn a_batch_that_keeps_every_feature_reuses_the_dependency_graph_and_dirties_nothing() {
+    let mut document = pad_document();
+    let before = document.current().feature_dependency_graph().unwrap();
+
+    let revision = document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateTag {
+            id: TagId(1),
+            name: "Layer".into(),
+            visible: false,
+        }]))
+        .unwrap();
+
+    assert!(revision.dirty_features().is_empty());
+    assert!(
+        revision
+            .feature_states()
+            .values()
+            .all(|state| *state == FeatureEvaluationState::Current)
+    );
+    assert!(Arc::ptr_eq(
+        &before,
+        &document.current().feature_dependency_graph().unwrap()
+    ));
 }
 
 #[test]

@@ -58,6 +58,7 @@ pub(super) fn profile_curves(
                 .map(|(start, end)| RegionCurve::Line {
                     start: *start,
                     end: *end,
+                    slack: 0.0,
                 }),
         ),
         SolvedSketchRegionProfile::Boundary(edges) => {
@@ -67,6 +68,7 @@ pub(super) fn profile_curves(
                         curves.push(RegionCurve::Line {
                             start: *start_mm,
                             end: *end_mm,
+                            slack: 0.0,
                         })
                     }
                     SolvedSketchRegionEdge::Arc {
@@ -85,14 +87,17 @@ pub(super) fn profile_curves(
                         control_1_mm,
                         control_2_mm,
                         end_mm,
-                    } => curves.extend(
-                        flatten_cubic([*start_mm, *control_1_mm, *control_2_mm, *end_mm])?
-                            .windows(2)
-                            .map(|pair| RegionCurve::Line {
+                    } => {
+                        let points = [*start_mm, *control_1_mm, *control_2_mm, *end_mm];
+                        let slack = cubic_flatten_tolerance(points);
+                        curves.extend(flatten_cubic(points)?.windows(2).map(|pair| {
+                            RegionCurve::Line {
                                 start: pair[0],
                                 end: pair[1],
-                            }),
-                    ),
+                                slack,
+                            }
+                        }));
+                    }
                 }
             }
         }
@@ -149,15 +154,22 @@ pub(super) fn curves_intersect(left: RegionCurve, right: RegionCurve) -> bool {
             RegionCurve::Line {
                 start: left_start,
                 end: left_end,
+                slack: left_slack,
             },
             RegionCurve::Line {
                 start: right_start,
                 end: right_end,
+                slack: right_slack,
             },
-        ) => line_segments_intersect(left_start, left_end, right_start, right_end),
-        (RegionCurve::Line { start, end }, RegionCurve::Arc(arc))
-        | (RegionCurve::Arc(arc), RegionCurve::Line { start, end }) => {
+        ) => line_segments_intersect(
+            [left_start, left_end],
+            [right_start, right_end],
+            left_slack + right_slack,
+        ),
+        (RegionCurve::Line { start, end, slack }, RegionCurve::Arc(arc))
+        | (RegionCurve::Arc(arc), RegionCurve::Line { start, end, slack }) => {
             line_arc_intersects(start, end, arc)
+                || (slack > 0.0 && line_within_slack_of_arc(start, end, arc, slack))
         }
         (RegionCurve::Arc(left), RegionCurve::Arc(right)) => arcs_intersect(left, right),
     }
@@ -167,17 +179,17 @@ pub(super) fn subtract2(left: [f64; 2], right: [f64; 2]) -> [f64; 2] {
     [left[0] - right[0], left[1] - right[1]]
 }
 
+/// Whether two segments cross or come within `slack` (plus rounding) of each other.
 pub(super) fn line_segments_intersect(
-    left_start: [f64; 2],
-    left_end: [f64; 2],
-    right_start: [f64; 2],
-    right_end: [f64; 2],
+    [left_start, left_end]: [[f64; 2]; 2],
+    [right_start, right_end]: [[f64; 2]; 2],
+    slack: f64,
 ) -> bool {
     let left = subtract2(left_end, left_start);
     let right = subtract2(right_end, right_start);
     let offset = subtract2(right_start, left_start);
     let denominator = cross2(left, right);
-    let near = 3.0 * CUBIC_FLATTEN_TOLERANCE_MM;
+    let near = 3.0 * CUBIC_FLATTEN_TOLERANCE_MM + slack;
     if denominator.abs() <= EPSILON_MM {
         if cross2(offset, left).abs() > EPSILON_MM {
             return point_segment_distance(left_start, right_start, right_end) <= near
@@ -265,6 +277,42 @@ pub(super) fn line_arc_intersects(start: [f64; 2], end: [f64; 2], arc: RegionArc
         })
 }
 
+/// Whether a piece of a flattened curve comes within `slack` of an arc it does
+/// not cross: near an arc end, or where the circle is nearest one of its points.
+fn line_within_slack_of_arc(start: [f64; 2], end: [f64; 2], arc: RegionArc, slack: f64) -> bool {
+    let near = 3.0 * CUBIC_FLATTEN_TOLERANCE_MM + slack;
+    if point_segment_distance(arc.start, start, end) <= near
+        || point_segment_distance(arc.end, start, end) <= near
+    {
+        return true;
+    }
+    let center = arc.center;
+    let radius = distance2(arc.start, center);
+    let direction = subtract2(end, start);
+    let squared = direction[0] * direction[0] + direction[1] * direction[1];
+    let along = if squared > 0.0 {
+        let offset = subtract2(center, start);
+        ((offset[0] * direction[0] + offset[1] * direction[1]) / squared).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let closest = [
+        start[0] + direction[0] * along,
+        start[1] + direction[1] * along,
+    ];
+    [start, end, closest].into_iter().any(|point| {
+        let distance = distance2(point, center);
+        if distance <= 0.0 {
+            return false;
+        }
+        let on_circle = [
+            center[0] + (point[0] - center[0]) * radius / distance,
+            center[1] + (point[1] - center[1]) * radius / distance,
+        ];
+        point_on_arc(on_circle, arc) && point_segment_distance(on_circle, start, end) <= near
+    })
+}
+
 pub(super) fn arcs_intersect(left: RegionArc, right: RegionArc) -> bool {
     let (left_start, left_center) = (left.start, left.center);
     let (right_start, right_center) = (right.start, right.center);
@@ -319,7 +367,7 @@ pub(super) fn point_in_profile(
     let mut winding = 0_i32;
     for curve in profile_curves(profile)? {
         match curve {
-            RegionCurve::Line { start, end } => {
+            RegionCurve::Line { start, end, .. } => {
                 if start[1] <= point[1]
                     && point[1] < end[1]
                     && cross2(subtract2(end, start), subtract2(point, start)) > 0.0
@@ -388,10 +436,15 @@ pub(super) fn point_line_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2
     }
 }
 
+/// How far a flattened cubic may stray from the curve. It is relative to the
+/// curve's size: an absolute micrometre fraction cuts a metre-sized curve into
+/// more pieces than the limit allows.
+pub(super) fn cubic_flatten_tolerance(points: [[f64; 2]; 4]) -> f64 {
+    CUBIC_FLATTEN_TOLERANCE_MM * cubic_control_polygon_length(points).max(1.0)
+}
+
 pub(super) fn flatten_cubic(points: [[f64; 2]; 4]) -> Result<Vec<[f64; 2]>, SketchError> {
-    // The tolerance is relative to the curve's size: an absolute micrometre
-    // fraction cuts a metre-sized curve into more pieces than the limit allows.
-    let tolerance = CUBIC_FLATTEN_TOLERANCE_MM * cubic_control_polygon_length(points).max(1.0);
+    let tolerance = cubic_flatten_tolerance(points);
     let mut output = vec![points[0]];
     let mut stack = vec![(points, 0_u8)];
     while let Some((curve, depth)) = stack.pop() {
@@ -433,10 +486,12 @@ pub(super) fn adjacent_curves_overlap(previous: RegionCurve, next: RegionCurve) 
         RegionCurve::Line {
             start: previous_start,
             end: joint,
+            ..
         },
         RegionCurve::Line {
             start: next_start,
             end: next_end,
+            ..
         },
     ) = (previous, next)
     else {
@@ -498,9 +553,9 @@ pub(super) fn validate_profile_topology(
 /// A box around a region curve (a whole circle's for an arc).
 pub(super) fn region_curve_bounds(curve: RegionCurve) -> [[f64; 2]; 2] {
     match curve {
-        RegionCurve::Line { start, end } => [
-            [start[0].min(end[0]), start[1].min(end[1])],
-            [start[0].max(end[0]), start[1].max(end[1])],
+        RegionCurve::Line { start, end, slack } => [
+            [start[0].min(end[0]) - slack, start[1].min(end[1]) - slack],
+            [start[0].max(end[0]) + slack, start[1].max(end[1]) + slack],
         ],
         RegionCurve::Arc(RegionArc { start, center, .. }) => {
             let radius = distance2(start, center);

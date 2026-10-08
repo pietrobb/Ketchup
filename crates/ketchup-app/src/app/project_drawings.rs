@@ -6,14 +6,18 @@
 
 use crate::*;
 use ketchup_manufacturing::project_drawings::{
-    DrawingSolid, ProjectDrawingError, ProjectSheet, ProjectSheetOptions, ProjectView,
+    DrawingSolid, ProjectDrawingError, ProjectSheet, ProjectSheetOptions, ProjectView, SCALES,
     default_plan_cut_z, project_sheet,
 };
 use ketchup_manufacturing::sheet_pdf::PdfInfo;
-use ketchup_manufacturing::title_block::{SheetFormat, SheetSettings, TitleField};
+use ketchup_manufacturing::title_block::{
+    DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetSettings, TitleField,
+};
 
 /// Colour of a solid with no colour of its own.
 const DEFAULT_SOLID_COLOR: [u8; 3] = [190, 190, 190];
+/// The highest plan cut the window offers: above a storey, a plan stops being a floor plan.
+const MAX_PLAN_CUT_ABOVE_FLOOR_MM: u32 = 10_000;
 const SHEET_NAMESPACE: &str = "org.ketchup.drawings";
 const SHEET_SETTINGS_PATH: &str = "sheet-v1.json";
 
@@ -243,7 +247,8 @@ impl KetchupApp {
             .map_err(ProjectDrawingsError::SettingsUnreadable)?;
         let snapshot = self.document.current();
         let solids = self.visible_drawing_solids(&snapshot)?;
-        let cut = default_plan_cut_z(&solids)
+        let settings = self.sheet_settings();
+        let cut = default_plan_cut_z(&solids, settings.plan_cut_above_floor_mm())
             .ok_or(ProjectDrawingsError::Drawing(ProjectDrawingError::Empty))?;
         let view_titles = ProjectView::ALL
             .into_iter()
@@ -265,13 +270,13 @@ impl KetchupApp {
                 (view, title)
             })
             .collect();
-        let settings = self.sheet_settings();
         project_sheet(
             &solids,
             &ProjectSheetOptions {
                 view_titles,
                 plan_cut_z_mm: Some(cut),
                 format: settings.format,
+                coarsest_scale: Some(settings.coarsest_scale()),
                 title_labels: self.title_labels(),
                 title_block: settings.title_block,
             },
@@ -384,9 +389,15 @@ impl KetchupApp {
                     .num_columns(2)
                     .show(ui, |ui| {
                         ui.label(self.catalog.text("drawings-format"));
+                        let coarsest = editing.coarsest_scale();
                         let name = |format: Option<SheetFormat>| {
                             format.map_or_else(
-                                || self.catalog.text("drawings-format-auto"),
+                                || {
+                                    self.catalog.format(
+                                        "drawings-format-auto",
+                                        &BTreeMap::from([("scale", coarsest.to_string())]),
+                                    )
+                                },
                                 |format| format.name().to_owned(),
                             )
                         };
@@ -399,6 +410,34 @@ impl KetchupApp {
                                     ui.selectable_value(&mut editing.format, format, name(format));
                                 }
                             });
+                        ui.end_row();
+                        ui.label(self.catalog.text("drawings-coarsest-scale"));
+                        let mut scale = coarsest;
+                        egui::ComboBox::from_id_salt("project-drawings-scale")
+                            .selected_text(format!("1:{scale}"))
+                            .show_ui(ui, |ui| {
+                                for option in SCALES {
+                                    ui.selectable_value(&mut scale, option, format!("1:{option}"));
+                                }
+                            });
+                        if scale != coarsest {
+                            editing.coarsest_scale = Some(scale);
+                        }
+                        ui.end_row();
+                        ui.label(self.catalog.text("drawings-plan-cut-height"));
+                        let mut height = editing
+                            .plan_cut_above_floor_mm
+                            .unwrap_or(DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM);
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut height)
+                                    .range(0..=MAX_PLAN_CUT_ABOVE_FLOOR_MM)
+                                    .suffix(" mm"),
+                            )
+                            .changed()
+                        {
+                            editing.plan_cut_above_floor_mm = Some(height);
+                        }
                         ui.end_row();
                         for field in TitleField::EDITABLE {
                             ui.label(self.catalog.text(&format!("title-field-{}", field.key())));

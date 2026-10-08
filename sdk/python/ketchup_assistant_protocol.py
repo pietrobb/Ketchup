@@ -9,6 +9,9 @@ from typing import Callable
 # BEGIN generated from crates/ketchup-assistant/src/protocol.rs; do not edit.
 # Regenerate: set KETCHUP_UPDATE_GOLDEN=1 and run cargo test -p ketchup-assistant --lib protocol
 PROTOCOL_VERSION = 3
+MAX_NAME_BYTES = 128
+MAX_TEXT_BYTES = 1024
+MAX_MODEL_BYTES = 128
 MAX_LINE_BYTES = 262144
 MAX_MESSAGE_CHARS = 32768
 PROJECT_MEMORY_SCHEMA = "ketchup.project-memory.v1"
@@ -424,7 +427,7 @@ class AssistantSidecarBase:
         if (
             not isinstance(model, str)
             or not model
-            or len(model) > 128
+            or len(model) > MAX_MODEL_BYTES
             or not all(
                 character.isascii() and (character.isalnum() or character in ".-_:")
                 for character in model
@@ -805,7 +808,7 @@ def _valid_cad_name(value: object) -> bool:
     return (
         isinstance(value, str)
         and bool(value.strip())
-        and len(value.encode("utf-8")) <= 128
+        and len(value.encode("utf-8")) <= MAX_NAME_BYTES
         and not any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
     )
 
@@ -1260,7 +1263,7 @@ def _validate_cad_edit_program(program: object) -> dict:
             if (
                 not isinstance(operation["name"], str)
                 or not operation["name"].strip()
-                or len(operation["name"].encode("utf-8")) > 128
+                or len(operation["name"].encode("utf-8")) > MAX_NAME_BYTES
             ):
                 raise ProtocolError("provider CAD sketch creation target is invalid")
             workplane = operation["workplane"]
@@ -1358,7 +1361,7 @@ def _validate_cad_edit_program(program: object) -> dict:
                 )
                 or not isinstance(name, str)
                 or not name.strip()
-                or len(name.encode("utf-8")) > 128
+                or len(name.encode("utf-8")) > MAX_NAME_BYTES
                 or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in name)
                 or not isinstance(feature, dict)
             ):
@@ -1822,7 +1825,7 @@ def _validate_cad_edit_program(program: object) -> dict:
                 or not 0 < feature_id <= MAX_U64
                 or not isinstance(parameter_path, str)
                 or not parameter_path.strip()
-                or len(parameter_path.encode("utf-8")) > 128
+                or len(parameter_path.encode("utf-8")) > MAX_NAME_BYTES
                 or any(not character.isprintable() for character in parameter_path)
                 or value_type not in {"length", "angle", "scalar"}
                 or not isinstance(value, (int, float))
@@ -1869,7 +1872,7 @@ def _validate_cad_edit_program(program: object) -> dict:
                        or not 0 < operation[key] <= MAX_U64 for key in positive_ids)
                 or not isinstance(operation["name"], str)
                 or not operation["name"].strip()
-                or len(operation["name"].encode("utf-8")) > 128
+                or len(operation["name"].encode("utf-8")) > MAX_NAME_BYTES
                 or operation["tool_kind"] not in {"flat_end_mill", "ball_end_mill", "drill"}
                 or operation["work_offset"] not in {"g54", "g55", "g56", "g57", "g58", "g59"}
                 or any(not isinstance(operation[key], (int, float)) or isinstance(operation[key], bool)
@@ -1893,7 +1896,7 @@ def _validate_cad_edit_program(program: object) -> dict:
                 or not 0 < operation["dimension_id"] <= MAX_U64
                 or not isinstance(operation["name"], str)
                 or not operation["name"].strip()
-                or len(operation["name"].encode("utf-8")) > 128
+                or len(operation["name"].encode("utf-8")) > MAX_NAME_BYTES
                 or not isinstance(categories, list)
                 or not 1 <= len(categories) <= MAX_CAD_EDIT_OPERATIONS
                 or any(
@@ -1904,7 +1907,8 @@ def _validate_cad_edit_program(program: object) -> dict:
                     or not 0 < category["id"] <= MAX_U64
                     or not isinstance(category["name"], str)
                     or not category["name"].strip()
-                    or len(category["name"].encode("utf-8")) > 128
+                    or len(category["name"].encode("utf-8")) > MAX_TEXT_BYTES
+                    or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in category["name"])
                     for category in categories
                 )
                 or len({category["id"] for category in categories}) != len(categories)
@@ -1920,7 +1924,7 @@ def _validate_cad_edit_program(program: object) -> dict:
                 or not 0 < operation["node_id"] <= MAX_U64
                 or not isinstance(operation["name"], str)
                 or not operation["name"].strip()
-                or len(operation["name"].encode("utf-8")) > 128
+                or len(operation["name"].encode("utf-8")) > MAX_NAME_BYTES
                 or not isinstance(value, (int, float))
                 or isinstance(value, bool)
                 or not math.isfinite(value)
@@ -1956,7 +1960,7 @@ def _validate_cad_edit_program(program: object) -> dict:
                 set(operation) != {"operation", "name", "instance_paths"}
                 or not isinstance(operation["name"], str)
                 or not operation["name"].strip()
-                or len(operation["name"].encode("utf-8")) > 128
+                or len(operation["name"].encode("utf-8")) > MAX_NAME_BYTES
                 or not isinstance(instance_paths, list)
                 or not 0 < len(instance_paths) <= 100
                 or any(not _valid_instance_path(path) for path in instance_paths)
@@ -2136,7 +2140,7 @@ def _validate_fea_review(request: object) -> dict:
     if any(not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= MAX_U64 for value in identifiers):
         raise ProtocolError("provider FEA review target is invalid")
     case_id = request["case_id"]
-    if not isinstance(case_id, str) or not case_id.strip() or len(case_id.encode("utf-8")) > 256:
+    if not isinstance(case_id, str) or not case_id.strip() or len(case_id.encode("utf-8")) > MAX_NAME_BYTES:
         raise ProtocolError("provider FEA review case is invalid")
     numeric = [request[name] for name in (
         "youngs_modulus_mpa", "poisson_ratio", "yield_strength_mpa",
@@ -2375,7 +2379,7 @@ def _parse_assistant_result(answer: str) -> dict:
             "subtract_boxes",
         }:
             raise ProtocolError("provider box contains missing or unknown fields")
-        if not isinstance(item["name"], str) or not item["name"].strip() or len(item["name"]) > 128:
+        if not isinstance(item["name"], str) or not item["name"].strip() or len(item["name"].encode("utf-8")) > MAX_NAME_BYTES:
             raise ProtocolError("provider box name is invalid")
         _validate_vector(item["size_mm"], "provider box size_mm", positive=True)
         _validate_vector(item["origin_mm"], "provider box origin_mm", positive=False)
@@ -2542,7 +2546,7 @@ def _bounded_occurrence_record(value: object) -> dict:
         or definition_id <= 0
         or not isinstance(name, str)
         or not name
-        or len(name.encode("utf-8")) > 1024
+        or len(name.encode("utf-8")) > MAX_TEXT_BYTES
         or not isinstance(value["visible"], bool)
         or not isinstance(value["copyable"], bool)
         or not _valid_instance_path(value["instance_path"])

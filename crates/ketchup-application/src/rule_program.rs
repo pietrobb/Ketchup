@@ -340,8 +340,10 @@ pub(crate) fn incremental_parts(
     let mut removals = Vec::new();
     append_removed_parts(&snapshot, old, new, &mut removals)?;
     let added = added_parts(old, new);
+    let new_parts = new.parts_by_name();
     if old.parts.iter().all(|before| {
-        new.part(&before.name)
+        new_parts
+            .get(before.name.as_str())
             .is_none_or(|after| program_feature_references_match(before, after))
     }) && let Some(mut commands) = feature_level_changes(&snapshot, old, new)
     {
@@ -364,8 +366,9 @@ fn feature_level_changes(
     new: &ProgramModel,
 ) -> Option<Vec<CanonicalCommand>> {
     let mut commands = Vec::new();
+    let new_parts = new.parts_by_name();
     for before in &old.parts {
-        let Some(after) = new.part(&before.name) else {
+        let Some(&after) = new_parts.get(before.name.as_str()) else {
             continue;
         };
         let mut comparable = after.clone();
@@ -416,8 +419,9 @@ fn part_replacements(
     new: &ProgramModel,
 ) -> Option<Vec<(OccurrenceId, ketchup_program::model::Part)>> {
     let mut replacements = Vec::new();
+    let new_parts = new.parts_by_name();
     for before in &old.parts {
-        let Some(after) = new.part(&before.name) else {
+        let Some(&after) = new_parts.get(before.name.as_str()) else {
             continue;
         };
         let mut comparable = after.clone();
@@ -527,10 +531,11 @@ fn append_removed_parts(
     after: &ProgramModel,
     commands: &mut Vec<CanonicalCommand>,
 ) -> Result<(), RuleProgramApplyError> {
+    let after_parts = after.parts_by_name();
     for removed in before
         .parts
         .iter()
-        .filter(|part| after.part(&part.name).is_none())
+        .filter(|part| !after_parts.contains_key(part.name.as_str()))
     {
         let occurrence = snapshot
             .occurrences()
@@ -547,10 +552,11 @@ fn append_removed_parts(
 }
 
 fn added_parts(before: &ProgramModel, after: &ProgramModel) -> Vec<ketchup_program::model::Part> {
+    let before_parts = before.parts_by_name();
     after
         .parts
         .iter()
-        .filter(|part| before.part(&part.name).is_none())
+        .filter(|part| !before_parts.contains_key(part.name.as_str()))
         .cloned()
         .collect()
 }

@@ -7,7 +7,15 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 
-const MAX_IDLE_WORKERS: usize = 2;
+/// Most exact workers one request runs side by side.
+const MAX_PARALLEL_WORKERS: usize = 12;
+
+/// Exact workers one request may run side by side here: one per two cores, at
+/// least two. The pool keeps as many idle, so a repeated check finds each warm.
+pub(crate) fn parallel_worker_limit() -> usize {
+    let cores = std::thread::available_parallelism().map_or(2, usize::from);
+    (cores / 2).clamp(2, MAX_PARALLEL_WORKERS)
+}
 static IDLE: Mutex<Vec<ExactWorkerSupervisor>> = Mutex::new(Vec::new());
 
 /// A checked-out worker. It returns to the pool only through `release`, so a
@@ -42,6 +50,13 @@ impl std::error::Error for ExactWorkerUnavailable {
             Self::Checkout { cause } => Some(cause),
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn idle_count() -> usize {
+    IDLE.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len()
 }
 
 pub fn checkout(
@@ -95,7 +110,7 @@ impl Drop for PooledExactWorker {
         };
         if self.reusable && worker.is_reusable() {
             let mut idle = IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if idle.len() < MAX_IDLE_WORKERS {
+            if idle.len() < parallel_worker_limit() {
                 idle.push(worker);
             }
         }

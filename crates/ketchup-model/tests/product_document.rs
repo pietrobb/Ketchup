@@ -14,9 +14,9 @@ use ketchup_model::document::{
     LocalOccurrenceId, LocalOccurrenceKey, LoftContinuity, LoftSection, MappingResolution, NodeId,
     OccurrenceId, ParameterPath, ParameterPathError, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput,
-    RuleProgramSource, SavedCamera, SavedView, SavedViewId, SceneQueryContext, SceneQueryError,
-    SectionPlane, SlotPath, SlotSegment, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
-    Transform, UnresolvedMappingReason, WorldEntityPath,
+    RuleProgramSource, SavedCamera, SavedView, SavedViewId, SavedViewProblem, SceneQueryContext,
+    SceneQueryError, SectionPlane, SlotPath, SlotSegment, Snapshot, SolidToolPlan,
+    SpatialPathSegment, TagHolder, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
@@ -2588,33 +2588,51 @@ fn saved_views_persist_follow_tag_deletion_and_keep_the_program() {
 
     // Another view may not take the same name, hide a tag that does not exist or cut
     // along a plane without a direction.
-    for invalid in [
-        SavedView {
-            id: SavedViewId(91),
-            name: "Flat cut".to_owned(),
-            section: Some(SectionPlane {
-                point_mm: [0.0; 3],
-                normal: [0.0; 3],
-            }),
-            ..view.clone()
-        },
-        SavedView {
-            id: SavedViewId(91),
-            ..view.clone()
-        },
-        SavedView {
-            id: SavedViewId(91),
-            name: "Ghost".to_owned(),
-            hidden_tags: [TagId(999)].into(),
-            ..view.clone()
-        },
+    for (invalid, problem) in [
+        (
+            SavedView {
+                id: SavedViewId(91),
+                name: "Flat cut".to_owned(),
+                section: Some(SectionPlane {
+                    point_mm: [0.0; 3],
+                    normal: [0.0; 3],
+                }),
+                ..view.clone()
+            },
+            SavedViewProblem::InvalidSection,
+        ),
+        (
+            SavedView {
+                id: SavedViewId(91),
+                ..view.clone()
+            },
+            SavedViewProblem::NameTaken(VIEW),
+        ),
+        (
+            SavedView {
+                id: SavedViewId(91),
+                name: "Ghost".to_owned(),
+                hidden_tags: [TagId(999)].into(),
+                ..view.clone()
+            },
+            SavedViewProblem::MissingTag(TagId(999)),
+        ),
     ] {
-        assert!(matches!(
-            document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertSavedView(
-                invalid
-            )])),
-            Err(CanonicalError::InvalidSavedView(SavedViewId(91)))
-        ));
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertSavedView(
+                invalid,
+            )]))
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            CanonicalError::InvalidSavedView {
+                id: SavedViewId(91),
+                problem: problem.clone(),
+            }
+        );
+        // The message names what is wrong, not only which view.
+        assert!(error.to_string().contains(&problem.to_string()), "{error}");
     }
 
     // Deleting a tag removes it from the views that hide it.
@@ -2791,7 +2809,11 @@ fn canonical_tags_drive_visibility_persist_and_roll_back_atomically() {
             }]))
             .err()
             .unwrap(),
-        CanonicalError::TagInUse(HIDDEN)
+        CanonicalError::TagInUse {
+            tag: HIDDEN,
+            holder: TagHolder::Occurrence(FIRST),
+            holders: 1,
+        }
     );
     assert_eq!(document.current().canonical_digest(), tagged);
 }

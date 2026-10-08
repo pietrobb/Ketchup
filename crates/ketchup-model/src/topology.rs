@@ -647,7 +647,7 @@ pub fn resolve_topological_reference<'a>(
     let matches = candidates
         .into_iter()
         // Identity first: checking the lineage hashes every candidate of the
-        // document otherwise, about 70 ms per lookup on a 750-part house.
+        // document otherwise, about 70 ms per lookup on a 750-part model.
         .filter(|candidate| {
             candidate.has_same_durable_identity(reference) && candidate.has_valid_lineage()
         })

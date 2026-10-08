@@ -72,6 +72,25 @@ def test_counts_board_and_frame_words_from_the_second_review(tmp_path):
     }
 
 
+def test_counts_building_words_as_whole_words_or_name_parts(tmp_path):
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "// the studs of a house, a joist, two rafters, the roof\n"
+        "struct RoofPlane; fn stair_width() {} const HOUSE_LIMIT: u8 = 1;\n"
+        "// a motion study, MotionStudyId, MOTION_STUDY, a household, a staircase\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs:stud": 1,
+        "crates/a/src/lib.rs:house": 2,
+        "crates/a/src/lib.rs:joist": 1,
+        "crates/a/src/lib.rs:rafter": 1,
+        "crates/a/src/lib.rs:roof": 2,
+        "crates/a/src/lib.rs:stair": 1,
+        "crates/a/src/lib.rs:staircase": 1,
+    }
+
+
 def test_core_and_application_crates_name_no_product_domain():
     assert [
         key

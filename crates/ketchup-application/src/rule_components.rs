@@ -213,11 +213,12 @@ fn reconcile_members(
 ) -> Result<Vec<CanonicalCommand>, RuleProgramApplyError> {
     let unsupported = || RuleProgramApplyError::IncrementalUnsupported;
     let snapshot = document.current();
+    let old_parts = old.parts_by_name();
     let added = new
         .components
         .iter()
         .flat_map(|component| &component.parts)
-        .filter(|part| old.part(&part.name).is_none() || rebuilt.contains(&part.name))
+        .filter(|part| !old_parts.contains_key(part.name.as_str()) || rebuilt.contains(&part.name))
         .cloned()
         .collect::<Vec<_>>();
     let planned =
@@ -402,6 +403,7 @@ pub(crate) fn incremental(
         .filter(|part| !new_copied.contains(&part.name) && !after_owners.contains_key(&part.name))
         .map(|part| &part.name)
         .collect::<BTreeSet<_>>();
+    let new_parts = new.parts_by_name();
     if old
         .components
         .iter()
@@ -416,7 +418,8 @@ pub(crate) fn incremental(
             .keys()
             .chain(before_roots.iter().copied())
             .any(|part| {
-                new.part(part).is_some() && before_owners.get(part) != after_owners.get(part)
+                new_parts.contains_key(part.as_str())
+                    && before_owners.get(part) != after_owners.get(part)
             })
     {
         return Err(unsupported());
@@ -424,13 +427,12 @@ pub(crate) fn incremental(
     let snapshot = document.current();
     let mut commands = Vec::new();
     let mut rebuilt = BTreeSet::new();
-    for before in old
-        .parts
-        .iter()
-        .filter(|part| before_owners.contains_key(&part.name) && new.part(&part.name).is_some())
-    {
-        let after = new
-            .part(&before.name)
+    for before in old.parts.iter().filter(|part| {
+        before_owners.contains_key(&part.name) && new_parts.contains_key(part.name.as_str())
+    }) {
+        let after = new_parts
+            .get(before.name.as_str())
+            .copied()
             .filter(|part| !new_copied.contains(&part.name))
             .ok_or_else(unsupported)?;
         let same_boolean_layout = before.booleans().eq(after.booleans())

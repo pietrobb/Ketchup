@@ -57,6 +57,14 @@ mod tests {
     /// A file whose history an older writer wrote in format 3, every revision whole,
     /// with `snapshot` as the bytes of the current revision.
     fn with_history_snapshot(document: &DocumentStore, snapshot: &[u8]) -> Vec<u8> {
+        with_history_snapshot_in(document, snapshot, &ContainerData::default())
+    }
+
+    fn with_history_snapshot_in(
+        document: &DocumentStore,
+        snapshot: &[u8],
+        container_data: &ContainerData,
+    ) -> Vec<u8> {
         let mut history = HISTORY_MAGIC.to_vec();
         push_u16(&mut history, 3);
         push_u32(&mut history, document.revision_count() as u32);
@@ -75,7 +83,7 @@ mod tests {
         }
         save_container_entries(
             &encoded_snapshot(&document.current()),
-            &ContainerData::default(),
+            container_data,
             BTreeSet::new(),
             Some(history),
         )
@@ -146,6 +154,37 @@ mod tests {
         opens_without_history(
             &with_history_snapshot(&document, &corrupt),
             &PersistenceError::ChecksumMismatch.to_string(),
+        );
+    }
+
+    #[test]
+    fn review_only_file_with_undecodable_history_still_opens_for_review() {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetFloorHeight {
+                z_mm: Some(250.),
+            }]))
+            .unwrap();
+        let mut newer_writer = ContainerData::default();
+        newer_writer
+            .insert_extension(
+                ExtensionEntry::new("com.vendor.required", "meaning.bin", true, vec![1]).unwrap(),
+            )
+            .unwrap();
+        let mut corrupt = save(&document.current());
+        corrupt[MAGIC.len() + 2 + 32] ^= 1;
+        let LoadOutcome::ReviewOnly(candidate) = load(&with_history_snapshot_in(
+            &document,
+            &corrupt,
+            &newer_writer,
+        ))
+        .unwrap() else {
+            panic!("review-only document")
+        };
+        assert_eq!(save(candidate.snapshot()), save(&document.current()));
+        assert_eq!(
+            candidate.audit.history_discarded.as_deref(),
+            Some(PersistenceError::ChecksumMismatch.to_string().as_str())
         );
     }
 }

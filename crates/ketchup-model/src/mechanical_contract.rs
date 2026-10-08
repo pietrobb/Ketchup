@@ -1064,11 +1064,8 @@ fn in_plane_axes(normal: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     } else {
         [0.0, 0.0, 1.0]
     };
-    let first = normalize(cross(normal, seed));
-    let second = normalize(cross(normal, first));
-    (first, second)
-}
-
-fn normalize(vector: [f64; 3]) -> [f64; 3] {
-    normalize_within(vector, 0.0).unwrap_or(vector)
+    let first = cross(normal, seed);
+    let first = normalize_within(first, 0.0).unwrap_or(first);
+    let second = cross(normal, first);
+    (first, normalize_within(second, 0.0).unwrap_or(second))
 }

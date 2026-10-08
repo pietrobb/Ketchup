@@ -96,6 +96,7 @@ def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
         "let d = x.map_err(|error| error.to_string())?;\n"
         "let e = x.map_err(move |e| e.to_string())?;\n"
         "let f = x.map_err(|error| Error::Io(error.to_string()))?;\n"
+        "Err(e) => Failure::Worker(e.to_string()), Some(error.to_string()), Label(name.to_string())\n"
         'Error::Dependency(format!("{a} needs {b}"))\n'
         'Unsupported( format!("x") )\n'
         'Some(format!("x")); Ok(format!("x")); Err(format!("x")); name(format!("x"))\n'
@@ -105,6 +106,7 @@ def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs string_result": 3,
         "crates/a/src/lib.rs stringified_cause": 2,
+        "crates/a/src/lib.rs stringified_variant": 2,
         "crates/a/src/lib.rs formatted_variant": 2,
         "crates/a/src/lib.rs unwrap": 1,
         "crates/a/src/lib.rs unreachable": 2,

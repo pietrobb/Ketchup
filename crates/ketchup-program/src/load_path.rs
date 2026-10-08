@@ -232,17 +232,15 @@ pub(crate) fn issues<'a>(
             }
         }
     }
+    // A bearing joint carries its first part into its second, as `loads` reads it.
     for joint in model.joints.iter().filter(|joint| joint.bearing) {
-        let (Some(left), Some(right)) = (index(&joint.parts[0]), index(&joint.parts[1])) else {
+        let (Some(carried), Some(carrier)) = (index(&joint.parts[0]), index(&joint.parts[1]))
+        else {
             continue;
         };
-        let points = joint_points(joint, faces, &parts[left], &parts[right]);
-        bearings[left].push(Bearing {
-            supporter: right,
-            points: points.clone(),
-        });
-        bearings[right].push(Bearing {
-            supporter: left,
+        let points = joint_points(joint, faces, &parts[carried], &parts[carrier]);
+        bearings[carried].push(Bearing {
+            supporter: carrier,
             points,
         });
     }

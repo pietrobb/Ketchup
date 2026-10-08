@@ -468,7 +468,7 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
             },
             false,
         ),
-        Err("save_rejected")
+        Err("save_declined")
     );
     assert!(app.is_dirty());
     assert!(app.file.path.is_none());
@@ -549,7 +549,7 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
             },
             false,
         ),
-        Err("open_rejected")
+        Err("discard_declined")
     );
     assert_eq!(probe.discard_prompts(), 1);
     assert!(refused.is_dirty());
@@ -592,6 +592,43 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
     assert!(!approved.is_dirty());
     assert!(bridge.pending.is_none());
     assert_eq!(bridge.observed, Some(approved.live_bridge_stamp()));
+}
+
+#[test]
+fn open_names_a_declined_path_apart_from_a_file_that_fails_to_load() {
+    let directory = tempfile::tempdir().unwrap();
+    let good = directory.path().join("good.ketchup");
+    let mut source = KetchupApp::new();
+    assert!(source.create_box());
+    assert!(source.save_document_to(&good));
+    let broken = directory.path().join("broken.ketchup");
+    std::fs::write(&broken, b"not a Kecup document").unwrap();
+
+    let mut app = KetchupApp::new().with_dialogs(Box::new(
+        ScriptedFileDialogs::new().queue_refused_high_risk(),
+    ));
+    app.live.consent_attached = true;
+    let before = app.document_snapshot().canonical_digest();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let open = |app: &KetchupApp, path: &Path| Request::Open {
+        expected: Some(app.live_bridge_stamp()),
+        path: path.to_string_lossy().into_owned(),
+    };
+
+    let request = open(&app, &good);
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("open_declined")
+    );
+    app.live.consent_attached = false;
+    let request = open(&app, &broken);
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("open_rejected")
+    );
+    assert!(app.digest.contains("broken.ketchup"), "{}", app.digest);
+    assert_eq!(app.document_snapshot().canonical_digest(), before);
+    assert!(app.document_path().is_none());
 }
 
 /// `\\?\C:\…` reaches a local file through the device namespace, as

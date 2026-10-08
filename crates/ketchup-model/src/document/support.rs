@@ -112,13 +112,13 @@ pub(super) fn validate_grounded_instances(
     product: &ProductModel,
     paths: &BTreeSet<InstancePath>,
 ) -> Result<(), CanonicalError> {
-    if paths
+    match paths
         .iter()
-        .any(|path| resolve_product_instance_path(product, path).is_none())
+        .find(|path| resolve_product_instance_path(product, path).is_none())
     {
-        return Err(CanonicalError::InvalidInstancePath);
+        Some(path) => Err(CanonicalError::GroundedPathNotFound(path.clone())),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 pub(super) fn apply_setting(

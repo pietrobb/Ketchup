@@ -1010,8 +1010,9 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
     let mut bearing_on: BTreeMap<String, Vec<Check>> = BTreeMap::new();
     let mut beams: BTreeMap<String, (TimberClass, f64)> = BTreeMap::new();
     let mut pending_bearings: Vec<(String, f64, Loads, String)> = Vec::new();
+    let parts = model.parts_by_name();
     for load in &loads.members {
-        let part = model.part(&load.part);
+        let part = parts.get(load.part.as_str()).copied();
         let material = part.and_then(|p| p.material.clone()).unwrap_or_default();
         let class = model.strength_classes.get(&material);
         let mut missing = load.missing.clone();

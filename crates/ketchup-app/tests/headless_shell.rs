@@ -4365,7 +4365,7 @@ fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable
 }
 
 #[test]
-fn tags_panel_delete_local_only_is_localized_present_disabled_and_fail_closed() {
+fn tags_panel_deletes_a_layer_held_only_inside_a_component_in_one_undo_step() {
     for catalog in [
         LocaleCatalog::english(),
         LocaleCatalog::slovak(),
@@ -4409,21 +4409,30 @@ fn tags_panel_delete_local_only_is_localized_present_disabled_and_fail_closed() 
             &BTreeMap::from([("name", "Local".to_owned())]),
         );
         assert!(shell.has_role_and_label(Role::Button, &local_delete));
-        let revision = shell.app().document_revision();
+        let holds_local_tag = |snapshot: &ketchup_model::document::Snapshot| {
+            snapshot
+                .local_occurrences()
+                .any(|occurrence| occurrence.tags().contains(&local_tag))
+        };
+        assert!(holds_local_tag(&shell.app().document_snapshot()));
         let digest = shell.app().canonical_digest();
         let undo_steps = shell.app().undo_step_count();
-        let action_digest = shell.app().action_digest().to_owned();
-        let selected_occurrences = shell.app().selected_occurrence_count();
         shell.click_role_and_label(Role::Button, &local_delete);
-        assert!(!shell.app().tag_deletion_visible());
-        assert_eq!(shell.app().document_revision(), revision);
-        assert_eq!(shell.app().canonical_digest(), digest);
-        assert_eq!(shell.app().undo_step_count(), undo_steps);
-        assert_eq!(shell.app().action_digest(), action_digest);
-        assert_eq!(
-            shell.app().selected_occurrence_count(),
-            selected_occurrences
+        assert!(shell.app().tag_deletion_visible());
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-delete-tag-confirm"),
         );
+        assert!(!shell.app().tag_deletion_visible());
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        let deleted = shell.app().document_snapshot();
+        assert!(deleted.tag(local_tag).is_none());
+        assert!(!holds_local_tag(&deleted));
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        let restored = shell.app().document_snapshot();
+        assert!(restored.tag(local_tag).is_some());
+        assert!(holds_local_tag(&restored));
+        assert_eq!(shell.app().canonical_digest(), digest);
 
         let missing_delete = shell.catalog().format(
             "tags-delete",

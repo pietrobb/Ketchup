@@ -205,16 +205,13 @@ mod tests {
         }
     }
 
-    /// Asks without waiting until the background evaluation is kept.
+    /// Asks without waiting, then waits on the background evaluation that
+    /// `try_get` found or started, so nothing is evaluated on this thread.
     fn settle(evaluations: &ProgramEvaluations, source: &RuleProgramSource) -> Evaluation {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        loop {
-            if let Some(evaluation) = ready(evaluations.try_get(source)) {
-                return evaluation;
-            }
-            assert!(Instant::now() < deadline, "the evaluation never finished");
-            std::thread::sleep(Duration::from_millis(5));
+        if let Some(evaluation) = ready(evaluations.try_get(source)) {
+            return evaluation;
         }
+        evaluations.get_blocking(source)
     }
 
     #[test]

@@ -870,7 +870,7 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
             path: path.to_string_lossy().into_owned(),
         },
     );
-    assert_eq!(refused.error.as_deref(), Some("open_rejected"));
+    assert_eq!(refused.error.as_deref(), Some("open_declined"));
     assert_eq!(shell.app().canonical_digest(), before_digest);
     assert!(shell.app().document_path().is_none());
     assert_eq!(probe.high_risk_prompts().len(), 1);

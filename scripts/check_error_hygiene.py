@@ -18,6 +18,8 @@ Two forms are counted in production source (crates/*/src, test modules and
   failure from another.
 - stringified_cause: `map_err(|e| e.to_string())` flattens a typed error into
   text, so the caller can no longer react to its kind.
+- stringified_variant: `Variant(error.to_string())` does the same inside an
+  error variant; carry the source error as a field instead.
 - formatted_variant: `Variant(format!(...))` puts the facts of an error into a
   sentence instead of fields (`Some`, `Ok` and `Err` are not error variants;
   `Err(format!)` is already a string_result).
@@ -65,6 +67,9 @@ SILENT_UNREACHABLE = re.compile(r"\bunreachable!\s*\(\s*\)")
 STRING_RESULT = re.compile(r"\b(?:Result|(?:Ok|Err)::)<(?:[^<>,]|<[^<>]*(?:<[^<>]*>[^<>]*)*>)+,\s*String\s*>")
 STRINGIFIED_CAUSE = re.compile(
     r"map_err\(\s*(?:move\s*)?\|\s*(\w+)\s*\|\s*\1\s*\.\s*to_string\(\)\s*\)")
+STRINGIFIED_VARIANT = re.compile(
+    r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*(?:e|err|error|\w+_err(?:or)?|source|cause)"
+    r"\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
 UNWRAP = re.compile(r"\.unwrap\(\)")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
@@ -88,6 +93,7 @@ def file_counts(text: str) -> dict[str, int]:
             "silent_unreachable": len(SILENT_UNREACHABLE.findall(text)),
             "string_result": len(STRING_RESULT.findall(text)),
             "stringified_cause": len(STRINGIFIED_CAUSE.findall(text)),
+            "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
             "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
             "unwrap": len(UNWRAP.findall(text))}
 

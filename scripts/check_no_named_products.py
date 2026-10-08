@@ -50,6 +50,20 @@ WORDS = [
 ]
 PATTERN = re.compile("(?<![A-Za-z])(?:" + "|".join(re.escape(word) for word in WORDS) + ")",
                      re.IGNORECASE)
+# Building words from the 2026-10-07 review. They are short enough to start generic words
+# (motion study, household, staircase), so they count only as a whole word or a
+# CamelCase/snake_case part, singular or plural.
+WHOLE_WORDS = ["stud", "rafter", "joist", "house", "roof", "stair"]
+WHOLE_WORD_PATTERN = re.compile("(?<![A-Za-z])(" + "|".join(WHOLE_WORDS) + ")(?:e?s)?", re.IGNORECASE)
+
+
+def whole_words(text: str):
+    """The building words that end where a word or a CamelCase/CONSTANT part ends."""
+    for match in WHOLE_WORD_PATTERN.finditer(text):
+        following = text[match.end():match.end() + 1]
+        if following.islower() or (match.group(0).isupper() and following.isalpha()):
+            continue
+        yield match.group(1).lower()
 # Named shape types that a general operation replaced (sheet metal bends on any polygon edge,
 # threads as any profile swept along a helix); they may not come back under any prefix.
 NAMED_SHAPE_TYPES = re.compile(r"SheetMetalEdge|MAX_SHEET_METAL_FLANGES|ThreadProfile|CreateThread"
@@ -69,6 +83,9 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
                 text = TEST_MODULE.sub("", text)
             for match in PATTERN.finditer(text):
                 key = f"{relative.as_posix()}:{match.group(0).lower()}"
+                counts[key] = counts.get(key, 0) + 1
+            for word in whole_words(text):
+                key = f"{relative.as_posix()}:{word}"
                 counts[key] = counts.get(key, 0) + 1
             for match in NAMED_SHAPE_TYPES.finditer(text):
                 key = f"{relative.as_posix()}:{match.group(0)}"

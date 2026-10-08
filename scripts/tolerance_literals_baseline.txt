@@ -7,7 +7,7 @@ crates/ketchup-app/src/app/export.rs limit 2
 crates/ketchup-app/src/assistant_runtime.rs limit 3
 crates/ketchup-app/src/export_bundle.rs limit 1
 crates/ketchup-app/src/lib.rs limit 3
-crates/ketchup-app/src/live_bridge.rs limit 3
+crates/ketchup-app/src/live_bridge.rs limit 1
 crates/ketchup-app/src/live_bridge/bootstrap.rs limit 1
 crates/ketchup-app/src/live_bridge/consent.rs limit 1
 crates/ketchup-app/src/live_bridge/image.rs limit 1

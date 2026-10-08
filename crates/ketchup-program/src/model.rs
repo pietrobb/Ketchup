@@ -1647,6 +1647,16 @@ impl ProgramModel {
         self.parts.iter().find(|part| part.name == name)
     }
 
+    /// Every part by name, for callers that look up many parts: [`Self::part`]
+    /// scans the list on every call.
+    #[must_use]
+    pub fn parts_by_name(&self) -> BTreeMap<&str, &Part> {
+        self.parts
+            .iter()
+            .map(|part| (part.name.as_str(), part))
+            .collect()
+    }
+
     /// Whether two parts belong to different alternative representations, so they
     /// may occupy the same space: each carries a tag of one declared set and they
     /// share none of that set's tags.

@@ -1229,11 +1229,9 @@ impl RigidPose {
     }
 
     fn rotate(self, vector: [f64; 3]) -> [f64; 3] {
-        [
-            dot(self.rotation[0], vector),
-            dot(self.rotation[1], vector),
-            dot(self.rotation[2], vector),
-        ]
+        Mat3::from_rows(self.rotation)
+            .mul_vec(vector.into())
+            .to_array()
     }
 
     fn transform_point(self, point: [f64; 3]) -> [f64; 3] {

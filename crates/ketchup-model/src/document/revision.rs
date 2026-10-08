@@ -243,8 +243,23 @@ pub(super) struct HumanConfirmationPolicy {
     pub(super) consumed_signatures: BTreeSet<[u8; 64]>,
 }
 
+/// A snapshot a single-revision store validated when it was loaded, with the
+/// feature states that store computed, so a restored history keeps them instead
+/// of validating the revision a second time.
+#[derive(Clone)]
+pub(crate) struct ValidatedSnapshot {
+    pub(super) snapshot: Snapshot,
+    pub(super) feature_states: BTreeMap<FeatureId, FeatureEvaluationState>,
+}
+
+impl ValidatedSnapshot {
+    pub(crate) const fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+}
+
 pub(crate) type StoredRevision = (
-    Snapshot,
+    ValidatedSnapshot,
     String,
     RevisionOrigin,
     Option<String>,

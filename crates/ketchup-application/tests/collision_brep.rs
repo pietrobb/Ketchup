@@ -351,6 +351,28 @@ fn scoped_collision_cancel_is_explicit_and_incomplete() {
 }
 
 #[test]
+fn scoped_collision_past_its_timeout_names_the_timeout_and_is_incomplete() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    let scope = CollisionScope::bind(&document.current(), [OccurrenceId(1)]);
+    let report = scoped_collision_report_with_worker(
+        &document.current(),
+        &ContainerData::default(),
+        None,
+        Duration::ZERO,
+        &scope,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    assert_eq!(report["state"], "not_evaluated", "{report}");
+    assert_eq!(report["complete"], false, "{report}");
+    assert_eq!(
+        report["not_evaluated"],
+        serde_json::json!([{"reason": "exact_collision_timeout", "timeout_ms": 0}]),
+        "{report}"
+    );
+}
+
+#[test]
 fn full_assistant_validation_cancellation_is_explicit_and_incomplete() {
     let mut document = DocumentStore::new();
     add(&mut document, 1, rectangle(), 0.0);

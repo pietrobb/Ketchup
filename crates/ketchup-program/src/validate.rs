@@ -562,38 +562,69 @@ fn support<'a>(
     if model.floor_z_mm.is_none() && !supported.iter().any(|value| *value) {
         return;
     }
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for left in 0..count {
-            if supported[left] {
+    // Who touches or is joined to whom, decided once per pair; support then
+    // spreads through it from the parts that stand.
+    let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); count];
+    let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
+    for (position, &left) in order.iter().enumerate() {
+        for &right in &order[position + 1..] {
+            if bounds[right].0[0] > bounds[left].1[0] + TOLERANCE_MM {
+                break;
+            }
+            if (0..3).any(|axis| {
+                bounds[left].0[axis] > bounds[right].1[axis] + TOLERANCE_MM
+                    || bounds[right].0[axis] > bounds[left].1[axis] + TOLERANCE_MM
+            }) {
                 continue;
             }
-            let part = &model.parts[left];
-            let mut joined = |other: &'a Part| {
-                let touching = match exact.decides(part, other) {
-                    Some(pair) => pair.penetrating() || pair.touching(),
-                    None => {
-                        faces.contact(part, other).is_some()
-                            || overlap(part, other).is_some()
-                            || ((part.is_rotated() || other.is_rotated())
-                                && gap(part, other) <= TOLERANCE_MM)
-                    }
-                };
-                touching
-                    || model.joints.iter().any(|joint| {
-                        joint.parts.contains(&part.name)
-                            && joint.parts.contains(&other.name)
-                            && gap(part, other) <= joint.max_gap_mm + TOLERANCE_MM
-                            && exact.decides(part, other).is_none_or(|pair| {
-                                pair.gap_mm()
-                                    .is_some_and(|gap| gap <= joint.max_gap_mm + TOLERANCE_MM)
-                            })
-                    })
+            let (part, other) = (&model.parts[left], &model.parts[right]);
+            let touching = match exact.decides(part, other) {
+                Some(pair) => pair.penetrating() || pair.touching(),
+                None => {
+                    faces.contact(part, other).is_some()
+                        || overlap(part, other).is_some()
+                        || ((part.is_rotated() || other.is_rotated())
+                            && gap(part, other) <= TOLERANCE_MM)
+                }
             };
-            if (0..count).any(|right| supported[right] && joined(&model.parts[right])) {
-                supported[left] = true;
-                changed = true;
+            if touching {
+                neighbours[left].push(right);
+                neighbours[right].push(left);
+            }
+        }
+    }
+    let index: std::collections::BTreeMap<&str, usize> = model
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(item, part)| (part.name.as_str(), item))
+        .collect();
+    for joint in &model.joints {
+        let (Some(&left), Some(&right)) = (
+            index.get(joint.parts[0].as_str()),
+            index.get(joint.parts[1].as_str()),
+        ) else {
+            continue;
+        };
+        let (part, other) = (&model.parts[left], &model.parts[right]);
+        let reach = joint.max_gap_mm + TOLERANCE_MM;
+        if gap(part, other) <= reach
+            && exact
+                .decides(part, other)
+                .is_none_or(|pair| pair.gap_mm().is_some_and(|gap| gap <= reach))
+        {
+            neighbours[left].push(right);
+            neighbours[right].push(left);
+        }
+    }
+    let mut pending: Vec<usize> = (0..count).filter(|item| supported[*item]).collect();
+    while let Some(item) = pending.pop() {
+        for &next in &neighbours[item] {
+            if !supported[next] {
+                supported[next] = true;
+                pending.push(next);
             }
         }
     }
@@ -627,17 +658,25 @@ pub fn validate(model: &ProgramModel) -> Vec<Issue> {
 /// misstate its solids.
 #[must_use]
 pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
+    validate_with_faces(model, exact, &mut ContactFaces::default())
+}
+
+/// [`validate_with`] measuring contacts into `faces`, which the loads reuse.
+pub(crate) fn validate_with_faces<'a>(
+    model: &'a ProgramModel,
+    exact: &ExactShapes,
+    faces: &mut ContactFaces<'a>,
+) -> Vec<Issue> {
     let mut issues = model.declared_issues.clone();
     params(model, &mut issues);
     crate::motion::issues(model, &mut issues);
     collisions(model, exact, &mut issues);
     crate::clearance::issues(model, &mut issues);
     holes(model, &mut issues);
-    let mut faces = ContactFaces::default();
-    joints(model, exact, &mut issues, &mut faces);
+    joints(model, exact, &mut issues, faces);
     crate::connectivity::issues(model, exact, &mut issues);
-    support(model, exact, &mut issues, &mut faces);
-    crate::load_path::issues(model, &mut issues, &mut faces);
+    support(model, exact, &mut issues, faces);
+    crate::load_path::issues(model, &mut issues, faces);
     crate::expect::check(model, exact, &mut issues);
     issues.sort_by_key(|issue| issue.severity);
     issues

@@ -390,3 +390,61 @@ fn entities_and_constraints_must_be_in_id_order() {
         Err(SketchError::ConstraintsNotCanonical)
     );
 }
+
+/// A 10 m arch is flattened with a tolerance relative to its size, so its pieces
+/// lie up to about 0.02 mm inside the curve. A loop touching the curve between
+/// two pieces still touches it, and one a millimetre away still does not.
+#[test]
+fn a_loop_touching_a_large_curve_between_its_flattened_pieces_is_rejected() {
+    let controls = [
+        [0.0, 0.0],
+        [3000.0, 6000.0],
+        [7000.0, 6000.0],
+        [10_000.0, 0.0],
+    ];
+    let t = 1.0 / 3.0;
+    let weights = [
+        (1.0 - t) * (1.0 - t) * (1.0 - t),
+        3.0 * (1.0 - t) * (1.0 - t) * t,
+        3.0 * (1.0 - t) * t * t,
+        t * t * t,
+    ];
+    let on_curve = [0, 1].map(|axis| (0..4).map(|i| weights[i] * controls[i][axis]).sum::<f64>());
+    // Derivative at t = 1/3 is 3 * (4/9 (P1-P0) + 4/9 (P2-P1) + 1/9 (P3-P2)).
+    let tangent: [f64; 2] = [3_444.444_444_444_444, 2000.0];
+    let length = tangent[0].hypot(tangent[1]);
+    let along = [tangent[0] / length, tangent[1] / length];
+    let outward = [-along[1], along[0]];
+    let regions = |gap: f64| {
+        let tip = [
+            on_curve[0] + gap * outward[0],
+            on_curve[1] + gap * outward[1],
+        ];
+        let corner = |side: f64| {
+            [
+                tip[0] + 500.0 * outward[0] + side * 300.0 * along[0],
+                tip[1] + 500.0 * outward[1] + side * 300.0 * along[1],
+            ]
+        };
+        sketch(
+            vec![
+                SketchEntity::CubicBezier {
+                    id: SketchEntityId(1),
+                    start_mm: controls[0],
+                    control_1_mm: controls[1],
+                    control_2_mm: controls[2],
+                    end_mm: controls[3],
+                },
+                line(2, controls[3], controls[0]),
+                line(3, tip, corner(1.0)),
+                line(4, corner(1.0), corner(-1.0)),
+                line(5, corner(-1.0), tip),
+            ],
+            Vec::new(),
+        )
+        .solved_regions()
+        .map(|regions| regions.len())
+    };
+    assert_eq!(regions(1.0), Ok(2));
+    assert_eq!(regions(0.0), Err(SketchError::InvalidRegionIdentity));
+}

@@ -333,7 +333,7 @@ pub fn fabrication_collision_validation_with_worker(
     // The cases only bind the participant set to the report: the native check
     // below covers every pair with a participant, not just the listed ones. A
     // chain names each participant with n - 1 cases; all n² pairs would be
-    // gigabytes for a house of 1800 members.
+    // gigabytes for a model of 1800 members.
     let cases = participants
         .windows(2)
         .map(|pair| {
@@ -343,7 +343,7 @@ pub fn fabrication_collision_validation_with_worker(
         .collect::<Result<Vec<_>, _>>()?;
 
     // Scoped to the participants' occurrences: each is checked against every
-    // visible body, and the scope admits whole houses (the unscoped scene stops
+    // visible body, and the scope admits whole buildings (the unscoped scene stops
     // at 512 occurrences). Without participants the whole model is checked.
     let scope = (!participants.is_empty()).then(|| {
         CollisionScope::bind(
@@ -532,15 +532,12 @@ fn receive_pair_batch(
     }
 }
 
-const MAX_PAIR_WORKERS: usize = 12;
 const RANGES_PER_WORKER: usize = 6;
 
 /// Isolated workers for `left_graphs` distinct left solids: one per eight of
 /// them, so process startup never dominates, and at most one per two cores.
 fn pair_worker_count(left_graphs: usize) -> usize {
-    let cores = std::thread::available_parallelism().map_or(2, usize::from);
-    (cores / 2)
-        .clamp(2, MAX_PAIR_WORKERS)
+    crate::worker_pool::parallel_worker_limit()
         .min(left_graphs / 8)
         .max(1)
 }
@@ -925,6 +922,29 @@ fn visible_scene(snapshot: &Snapshot, report: &mut Value) -> Option<Vec<SceneOcc
     }
 }
 
+/// The report of a check that stopped before it finished, for `reason`.
+fn not_evaluated(mut report: Value, reason: Value) -> Value {
+    report["state"] = json!("not_evaluated");
+    report["not_evaluated"] = json!([reason]);
+    report
+}
+
+/// Why the check has to stop now: the request was cancelled, or a scoped check
+/// ran past the worker's `timeout`.
+fn interrupted(
+    cancellation: Option<&Arc<AtomicBool>>,
+    scoped: bool,
+    timeout: Option<Duration>,
+    started: Instant,
+) -> Option<Value> {
+    if cancellation.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
+        return Some(json!({"reason": "exact_collision_cancelled"}));
+    }
+    timeout
+        .filter(|timeout| scoped && started.elapsed() >= *timeout)
+        .map(|timeout| json!({"reason": "exact_collision_timeout", "timeout_ms": timeout.as_millis()}))
+}
+
 fn collision_report(
     snapshot: &Snapshot,
     selection: &AssistantValidationSelection,
@@ -935,6 +955,7 @@ fn collision_report(
     pair_facts: Option<&mut ExactPairFacts>,
 ) -> Value {
     let started = Instant::now();
+    let worker_timeout = worker.as_ref().map(|(_, _, timeout)| *timeout);
     let mut group_facts = ExactPairFacts::new();
     let mut pair_facts = if selection.requested.contains("group_connectivity") {
         Some(&mut group_facts)
@@ -969,13 +990,8 @@ fn collision_report(
     {
         return report;
     }
-    if cancellation
-        .as_ref()
-        .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-    {
-        report["state"] = json!("not_evaluated");
-        report["not_evaluated"] = json!([{"reason": "exact_collision_cancelled"}]);
-        return report;
+    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), None, started) {
+        return not_evaluated(report, reason);
     }
     if let Some(scope) = scope {
         report["scope"] = json!({
@@ -984,23 +1000,20 @@ fn collision_report(
             "snapshot_bound": true,
         });
         if !scope.is_current(snapshot) {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "stale_collision_scope"}]);
-            return report;
+            return not_evaluated(report, json!({"reason": "stale_collision_scope"}));
         }
         if scope.occurrence_ids.is_empty() {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "empty_collision_scope"}]);
-            return report;
+            return not_evaluated(report, json!({"reason": "empty_collision_scope"}));
         }
         if scope.occurrence_ids.len() > MAX_SCOPED_COLLISION_OCCURRENCES {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{
-                "reason": "collision_scope_resource_limit",
-                "actual": scope.occurrence_ids.len(),
-                "limit": MAX_SCOPED_COLLISION_OCCURRENCES,
-            }]);
-            return report;
+            return not_evaluated(
+                report,
+                json!({
+                    "reason": "collision_scope_resource_limit",
+                    "actual": scope.occurrence_ids.len(),
+                    "limit": MAX_SCOPED_COLLISION_OCCURRENCES,
+                }),
+            );
         }
         let missing = scope
             .occurrence_ids
@@ -1009,18 +1022,19 @@ fn collision_report(
             .map(|id| id.0)
             .collect::<Vec<_>>();
         if !missing.is_empty() {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{
-                "reason": "missing_collision_scope_occurrences",
-                "occurrence_ids": missing,
-            }]);
-            return report;
+            return not_evaluated(
+                report,
+                json!({
+                    "reason": "missing_collision_scope_occurrences",
+                    "occurrence_ids": missing,
+                }),
+            );
         }
     }
     let Some(visible) = visible_scene(snapshot, &mut report) else {
         return report;
     };
-    // A whole model past the small-scene limit (a house) is checked by the
+    // A whole model past the small-scene limit (1800 parts) is checked by the
     // spatially indexed scoped pass with every visible occurrence in scope.
     let whole_model_scope = (scope.is_none() && visible.len() > MAX_COLLISION_BODIES).then(|| {
         report["scope"] = json!({
@@ -1036,42 +1050,28 @@ fn collision_report(
         )
     });
     let scope = scope.or(whole_model_scope.as_ref());
-    if cancellation
-        .as_ref()
-        .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-    {
-        report["state"] = json!("not_evaluated");
-        report["not_evaluated"] = json!([{"reason": "exact_collision_cancelled"}]);
-        return report;
+    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), None, started) {
+        return not_evaluated(report, reason);
     }
     let exact_preparation = match ExactSnapshotPreparation::new(snapshot) {
         Ok(preparation) => preparation,
         Err(error) => {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{
-                "reason": "invalid_exact_dependency_graph",
-                "detail": format!("{error:?}"),
-            }]);
-            return report;
+            return not_evaluated(
+                report,
+                json!({
+                    "reason": "invalid_exact_dependency_graph",
+                    "detail": format!("{error:?}"),
+                }),
+            );
         }
     };
-    if cancellation
-        .as_ref()
-        .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-    {
-        report["state"] = json!("not_evaluated");
-        report["not_evaluated"] = json!([{"reason": "exact_collision_cancelled"}]);
-        return report;
-    }
-    if scope.is_some()
-        && worker
-            .as_ref()
-            .is_some_and(|(_, _, timeout)| started.elapsed() >= *timeout)
-    {
-        report["state"] = json!("not_evaluated");
-        report["not_evaluated"] = json!([{"reason": "exact_collision_timeout",
-            "timeout_ms": worker.as_ref().expect("worker checked").2.as_millis()}]);
-        return report;
+    if let Some(reason) = interrupted(
+        cancellation.as_ref(),
+        scope.is_some(),
+        worker_timeout,
+        started,
+    ) {
+        return not_evaluated(report, reason);
     }
     report["visible_occurrence_count"] = json!(visible.len());
     let mut bodies = Vec::new();
@@ -1084,23 +1084,13 @@ fn collision_report(
     let mut unavailable = Vec::new();
     let mut failures = Vec::new();
     for occurrence in &visible {
-        if cancellation
-            .as_ref()
-            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-        {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "exact_collision_cancelled"}]);
-            return report;
-        }
-        if scope.is_some()
-            && worker
-                .as_ref()
-                .is_some_and(|(_, _, timeout)| started.elapsed() >= *timeout)
-        {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "exact_collision_timeout",
-                "timeout_ms": worker.as_ref().expect("worker checked").2.as_millis()}]);
-            return report;
+        if let Some(reason) = interrupted(
+            cancellation.as_ref(),
+            scope.is_some(),
+            worker_timeout,
+            started,
+        ) {
+            return not_evaluated(report, reason);
         }
         let terminals = terminal_cache
             .entry(occurrence.definition_id)
@@ -1124,34 +1114,26 @@ fn collision_report(
                 .and_then(|definition| definition.body(*id))
                 .is_some_and(|body| body.visible())
         }) {
-            if cancellation
-                .as_ref()
-                .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-            {
-                report["state"] = json!("not_evaluated");
-                report["not_evaluated"] = json!([{"reason": "exact_collision_cancelled"}]);
-                return report;
-            }
-            if scope.is_some()
-                && worker
-                    .as_ref()
-                    .is_some_and(|(_, _, timeout)| started.elapsed() >= *timeout)
-            {
-                report["state"] = json!("not_evaluated");
-                report["not_evaluated"] = json!([{"reason": "exact_collision_timeout",
-                    "timeout_ms": worker.as_ref().expect("worker checked").2.as_millis()}]);
-                return report;
+            if let Some(reason) = interrupted(
+                cancellation.as_ref(),
+                scope.is_some(),
+                worker_timeout,
+                started,
+            ) {
+                return not_evaluated(report, reason);
             }
             if scope.is_none() && bodies.len() == MAX_COLLISION_BODIES {
-                report["state"] = json!("not_evaluated");
-                report["not_evaluated"] = json!([{"reason": "collision_body_resource_limit", "limit": MAX_COLLISION_BODIES}]);
-                return report;
+                return not_evaluated(
+                    report,
+                    json!({"reason": "collision_body_resource_limit", "limit": MAX_COLLISION_BODIES}),
+                );
             }
             if scope.is_some() && bodies.len() == MAX_SCOPED_COLLISION_BODIES {
-                report["state"] = json!("not_evaluated");
-                report["not_evaluated"] = json!([{"reason": "scoped_collision_body_resource_limit",
-                    "limit": MAX_SCOPED_COLLISION_BODIES}]);
-                return report;
+                return not_evaluated(
+                    report,
+                    json!({"reason": "scoped_collision_body_resource_limit",
+                    "limit": MAX_SCOPED_COLLISION_BODIES}),
+                );
             }
             // Never accept render packages as proof that the canonical solid is a box.
             // Native-worker validation does not consume this analytic fallback.
@@ -1185,33 +1167,27 @@ fn collision_report(
                     unavailable.push(entry);
                 } else {
                     if graph_attempt_count == MAX_COLLISION_UNIQUE_GRAPHS {
-                        report["state"] = json!("not_evaluated");
-                        report["not_evaluated"] = json!([{
-                            "reason": "exact_graph_count_resource_limit",
-                            "limit": MAX_COLLISION_UNIQUE_GRAPHS,
-                        }]);
-                        return report;
+                        return not_evaluated(
+                            report,
+                            json!({
+                                "reason": "exact_graph_count_resource_limit",
+                                "limit": MAX_COLLISION_UNIQUE_GRAPHS,
+                            }),
+                        );
                     }
                     graph_attempt_count += 1;
-                    match exact_preparation.graph(occurrence.definition_id, producer) {
-                        Ok(_)
-                            if cancellation
-                                .as_ref()
-                                .is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) =>
-                        {
-                            report["state"] = json!("not_evaluated");
-                            report["not_evaluated"] =
-                                json!([{"reason": "exact_collision_cancelled"}]);
-                            return report;
-                        }
-                        Ok(_) if scope.is_some() && started.elapsed() >= *timeout => {
-                            report["state"] = json!("not_evaluated");
-                            report["not_evaluated"] = json!([{
-                                "reason": "exact_collision_timeout",
-                                "timeout_ms": timeout.as_millis(),
-                            }]);
-                            return report;
-                        }
+                    let graph = exact_preparation.graph(occurrence.definition_id, producer);
+                    if let Some(reason) = interrupted(
+                        cancellation.as_ref(),
+                        scope.is_some(),
+                        Some(*timeout),
+                        started,
+                    )
+                    .filter(|_| graph.is_ok())
+                    {
+                        return not_evaluated(report, reason);
+                    }
+                    match graph {
                         Ok(graph) => match graph.to_bytes() {
                             Ok(bytes)
                                 if graph_bytes.saturating_add(bytes.len())
@@ -1223,13 +1199,14 @@ fn collision_report(
                                 graphs.push(graph);
                             }
                             Ok(bytes) => {
-                                report["state"] = json!("not_evaluated");
-                                report["not_evaluated"] = json!([{
-                                    "reason": "exact_graph_bytes_resource_limit",
-                                    "limit": MAX_COLLISION_GRAPH_BYTES,
-                                    "observed_at_least": graph_bytes.saturating_add(bytes.len()),
-                                }]);
-                                return report;
+                                return not_evaluated(
+                                    report,
+                                    json!({
+                                        "reason": "exact_graph_bytes_resource_limit",
+                                        "limit": MAX_COLLISION_GRAPH_BYTES,
+                                        "observed_at_least": graph_bytes.saturating_add(bytes.len()),
+                                    }),
+                                );
                             }
                             Err(error) => {
                                 let reason = format!("exact_graph_unavailable: {error}");
@@ -1297,19 +1274,13 @@ fn collision_report(
     let mut broad_rejected = 0;
     let mut checked_bodies = BTreeSet::new();
     if let Some((container, worker_path, timeout)) = worker {
-        if cancellation
-            .as_ref()
-            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-        {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "exact_collision_cancelled"}]);
-            return report;
-        }
-        if scope.is_some() && started.elapsed() >= timeout {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "exact_collision_timeout",
-                "timeout_ms": timeout.as_millis()}]);
-            return report;
+        if let Some(reason) = interrupted(
+            cancellation.as_ref(),
+            scope.is_some(),
+            Some(timeout),
+            started,
+        ) {
+            return not_evaluated(report, reason);
         }
         let sources = (|| -> Result<BTreeMap<String, Vec<u8>>, CollisionSourceError> {
             let mut sources = BTreeMap::new();
@@ -1443,19 +1414,13 @@ fn collision_report(
                 .flat_map(|left| (left + 1..bodies.len()).map(move |right| (left, right)))
                 .collect(),
         };
-        if cancellation
-            .as_ref()
-            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-        {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "exact_collision_cancelled"}]);
-            return report;
-        }
-        if scope.is_some() && started.elapsed() >= timeout {
-            report["state"] = json!("not_evaluated");
-            report["not_evaluated"] = json!([{"reason": "exact_collision_timeout",
-                "timeout_ms": timeout.as_millis()}]);
-            return report;
+        if let Some(reason) = interrupted(
+            cancellation.as_ref(),
+            scope.is_some(),
+            Some(timeout),
+            started,
+        ) {
+            return not_evaluated(report, reason);
         }
         candidates.extend(contact_pairs.iter().copied());
         let unbounded = world_bounds
@@ -1780,6 +1745,24 @@ mod tests {
             session.snapshot().scene_query(),
             applied.snapshot.scene_query()
         );
+    }
+
+    #[test]
+    fn every_worker_a_pair_check_can_start_stays_warm_for_the_next_check() {
+        let _turn = super::integration_support::file_turn();
+        let path = crate::evaluation::exact_worker_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+            .expect("native exact worker required");
+        let most = pair_worker_count(usize::MAX);
+        let cancelled = AtomicBool::new(false);
+        let workers: Vec<_> = (0..most)
+            .map(|_| crate::worker_pool::checkout(Some(&path), &cancelled).unwrap())
+            .collect();
+        for worker in workers {
+            worker.release();
+        }
+        assert_eq!(crate::worker_pool::idle_count(), most);
     }
 
     #[test]

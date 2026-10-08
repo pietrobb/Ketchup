@@ -52,7 +52,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 756,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 672,
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 793,
-    "crates/ketchup-application/src/collision.rs::collision_report": 774,
+    "crates/ketchup-application/src/collision.rs::collision_report": 719,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
     "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1988,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
@@ -62,9 +62,9 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 702,
     "crates/ketchup-model/src/document/feature_validation.rs::validate_feature_kind": 408,
     "crates/ketchup-model/src/document/product_validation.rs::validate_features": 708,
-    "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 930,
+    "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 904,
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 477,
-    "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2103,
+    "crates/ketchup-model/src/document/store.rs::apply_batch_with_origin_and_validation": 2079,
     "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 615,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 558,
@@ -266,10 +266,20 @@ HAND_WRITTEN_LINEAR_ALGEBRA = (
     re.compile(r"\b(\w+)\[1\] \* (\w+)\[2\] - \1\[2\] \* \2\[1\]"),
     re.compile(r"\b(\w+)\[0\] \* (\w+)\[0\] \+ \1\[1\] \* \2\[1\]"),
     re.compile(r"\blet determinant = (?!.*\b(?:determinant|dot|cross2?)\()"),
+    # A free vector helper (methods of a type such as Transform are its API).
+    re.compile(
+        r"\bfn (?:normalize|sub|transform_point)\d*\((?!&?self\b)\w+: (?:\[f(?:32|64); [23]\]|Point\b|Vec3\b)"
+    ),
 )
 # The remaining hand-written spots per file; the counts may only fall.
 LINEAR_ALGEBRA = {
     "crates/ketchup-analysis/src/fea.rs": 1,
+    # GPU single-precision wrapper over linalg::normalize.
+    "crates/ketchup-app/src/renderer.rs": 1,
+    # 2D wrapper over Affine3::transform_point that checks the coordinate range.
+    "crates/ketchup-manufacturing/src/dxf_export.rs": 1,
+    # 2D point difference; linalg has dot2/cross2 but no 2D subtraction.
+    "crates/ketchup-program/src/contact_polygon.rs": 1,
 }
 
 
@@ -305,6 +315,85 @@ def hand_written_linear_algebra(counts, recorded=LINEAR_ALGEBRA):
                 f"{module}: hand-written linear algebra fell to {counts.get(module, 0)}; "
                 "lower LINEAR_ALGEBRA to it"
             )
+    return problems
+
+
+# Numeric `as` casts truncate, wrap or round without saying so, and `#[allow(` switches a
+# lint off; both are counted per crate in production source and may only fall.
+NUMERIC_CAST = re.compile(r"\bas\s+(?:[ui](?:8|16|32|64|128|size)|f32|f64)\b")
+LINT_ALLOW = re.compile(r"#!?\[allow\(")
+CASTS_AND_ALLOWS = {
+    "ketchup-analysis allows": 1,
+    "ketchup-analysis casts": 6,
+    "ketchup-app allows": 10,
+    "ketchup-app casts": 251,
+    "ketchup-application allows": 9,
+    "ketchup-application casts": 38,
+    "ketchup-assistant allows": 3,
+    "ketchup-assistant casts": 8,
+    "ketchup-exact allows": 4,
+    "ketchup-exact casts": 43,
+    "ketchup-geometry allows": 1,
+    "ketchup-geometry casts": 5,
+    "ketchup-headless casts": 4,
+    "ketchup-interaction casts": 21,
+    "ketchup-manufacturing allows": 11,
+    "ketchup-manufacturing casts": 43,
+    "ketchup-mcp allows": 2,
+    "ketchup-mcp casts": 10,
+    "ketchup-model allows": 16,
+    "ketchup-model casts": 419,
+    "ketchup-pdm casts": 5,
+    "ketchup-program allows": 10,
+    "ketchup-program casts": 53,
+    "ketchup-scheduler allows": 3,
+    "ketchup-scheduler casts": 86,
+}
+
+
+def production_lines(path):
+    """The lines of a production module with its inline `#[cfg(test)] mod` removed."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = []
+    index = 0
+    while index < len(lines):
+        test_module = TEST_MODULE.match(lines[index])
+        if test_module and index and lines[index - 1].strip() == "#[cfg(test)]":
+            index = lines.index(test_module.group(1) + "}", index + 1) + 1
+            continue
+        kept.append(lines[index])
+        index += 1
+    return kept
+
+
+def cast_and_allow_counts(root):
+    """{"<crate> casts"|"<crate> allows": count} over production source."""
+    counts = {}
+    for path in sorted((root / "crates").glob("*/src/**/*.rs")):
+        relative = path.relative_to(root)
+        if is_test_module(relative):
+            continue
+        crate = relative.parts[1]
+        for line in production_lines(path):
+            code = line.split("//", 1)[0]
+            for kind, pattern in (("casts", NUMERIC_CAST), ("allows", LINT_ALLOW)):
+                found = len(pattern.findall(code if kind == "casts" else line))
+                if found:
+                    counts[f"{crate} {kind}"] = counts.get(f"{crate} {kind}", 0) + found
+    return counts
+
+
+def grown_casts_and_allows(counts, recorded=CASTS_AND_ALLOWS):
+    problems = []
+    for key in sorted(set(counts) | set(recorded)):
+        found, allowed = counts.get(key, 0), recorded.get(key, 0)
+        if found > allowed:
+            problems.append(
+                f"{key}: {found}, limit {allowed}; use From/TryFrom or a named conversion, "
+                "and fix the lint instead of allowing it"
+            )
+        elif found < allowed:
+            problems.append(f"{key}: fell to {found}; lower CASTS_AND_ALLOWS to it")
     return problems
 
 
@@ -401,6 +490,7 @@ def main():
     problems += oversized_tests(long_tests(root))
     problems += milestone_named_tests(test_files(root))
     problems += hand_written_linear_algebra(linear_algebra_counts(root))
+    problems += grown_casts_and_allows(cast_and_allow_counts(root))
     problems += direct_program_evaluations(root)
     problems += waiting_program_evaluations(root)
     model = (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")

@@ -121,12 +121,15 @@ pub fn run(
 /// skip it.
 #[must_use]
 pub fn report(evaluated: &Evaluated) -> Report {
-    let issues = validate(&evaluated.model);
+    // The loads reuse the contacts the load path measured.
+    let mut faces = contact::ContactFaces::default();
+    let issues =
+        validate::validate_with_faces(&evaluated.model, &ExactShapes::default(), &mut faces);
     let errors = issues
         .iter()
         .filter(|issue| issue.severity == Severity::Error)
         .count();
-    let loads = loads::loads(&evaluated.model);
+    let loads = loads::loads_with(&evaluated.model, &mut faces);
     Report {
         ok: errors == 0,
         errors,

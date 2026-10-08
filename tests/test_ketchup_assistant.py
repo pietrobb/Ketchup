@@ -138,6 +138,34 @@ def test_python_sdk_validates_mixed_fabrication_classification_program():
         assistant._validate_cad_edit_program(invalid)
 
 
+def test_python_sdk_accepts_and_rejects_classification_text_at_the_rust_limits():
+    # Rust (sidecar.rs) bounds a category name by limits::TEXT_BYTES and a
+    # dimension name by limits::NAME_BYTES; the SDK must agree at both edges.
+    def dimension(name, category):
+        return {
+            "operations": [
+                {
+                    "operation": "upsert_classification_dimension",
+                    "dimension_id": 200,
+                    "name": name,
+                    "categories": [{"id": 201, "name": category}],
+                }
+            ]
+        }
+
+    longest_category = "č" * (assistant.MAX_TEXT_BYTES // 2)
+    accepted = dimension("d" * assistant.MAX_NAME_BYTES, longest_category)
+    assert assistant._validate_cad_edit_program(accepted) == accepted
+    for rejected in (
+        dimension("d" * (assistant.MAX_NAME_BYTES + 1), "kept"),
+        dimension("Phase", longest_category + "x"),
+        dimension("Phase", "line\nbreak"),
+    ):
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(rejected)
+    assert (assistant.MAX_NAME_BYTES, assistant.MAX_TEXT_BYTES) == (128, 1024)
+
+
 def test_provider_accepts_only_complete_bounded_typed_cam_setup():
     operation = {
         "operation": "upsert_cam_plan", "plan_id": 7, "name": "Reviewed top setup",

@@ -3806,6 +3806,8 @@ struct TagDeletionSourcePlan {
     original_name: String,
     original_visible: bool,
     occurrence_ids: BTreeSet<OccurrenceId>,
+    /// Parts inside definitions that carry the tag, e.g. given it by a program.
+    local_occurrences: BTreeSet<ketchup_model::document::LocalOccurrenceKey>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -2,6 +2,17 @@
 
 use crate::*;
 
+/// Why a save wrote nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SaveFailure {
+    /// The request lost its authority (cancelled or out of time) before writing.
+    Cancelled,
+    /// The user refused a confirmation: overwriting a file or keeping only the current state.
+    Declined,
+    /// The file could not be prepared or written; the status line names why.
+    Failed,
+}
+
 impl KetchupApp {
     #[must_use]
     pub const fn build_version() -> &'static str {
@@ -505,16 +516,16 @@ impl KetchupApp {
     }
 
     pub(crate) fn save_document_to(&mut self, path: &Path) -> bool {
-        self.save_document_to_while(path, || true)
+        self.save_document_to_while(path, || true).is_ok()
     }
 
     pub(crate) fn save_document_to_while(
         &mut self,
         path: &Path,
         request_authorized: impl Fn() -> bool,
-    ) -> bool {
+    ) -> Result<(), SaveFailure> {
         if !request_authorized() {
-            return false;
+            return Err(SaveFailure::Cancelled);
         }
         if path.is_dir() {
             self.digest = self.catalog.format(
@@ -524,7 +535,7 @@ impl KetchupApp {
                     ("reason", "the target path is a directory".to_owned()),
                 ]),
             );
-            return false;
+            return Err(SaveFailure::Failed);
         }
         if let Err(error) = self.retry_pending_work_recovery_cleanup() {
             self.digest = self.catalog.format(
@@ -534,7 +545,7 @@ impl KetchupApp {
                     ("reason", error.to_string()),
                 ]),
             );
-            return false;
+            return Err(SaveFailure::Failed);
         }
         let active_target = self.file.path.as_deref() == Some(path)
             || self
@@ -549,7 +560,7 @@ impl KetchupApp {
                 Ok(lock) => Some(lock),
                 Err(error) => {
                     self.report_file_persistence_error("error-save-document", path, &error);
-                    return false;
+                    return Err(SaveFailure::Failed);
                 }
             }
         };
@@ -561,7 +572,7 @@ impl KetchupApp {
             ketchup_model::persistence::check_work_recovery_identity(path, expected_recovery)
         {
             self.report_file_persistence_error("error-save-document", path, &error);
-            return false;
+            return Err(SaveFailure::Failed);
         }
         self.store_assistant_conversation();
         self.store_assistant_memory();
@@ -587,7 +598,7 @@ impl KetchupApp {
                                 ("reason", error.to_string()),
                             ]),
                         );
-                        return false;
+                        return Err(SaveFailure::Failed);
                     }
                 };
                 let title = self.catalog.text("dialog-save-current-only-title");
@@ -612,10 +623,10 @@ impl KetchupApp {
                             ("reason", self.catalog.text("save-current-only-refused")),
                         ]),
                     );
-                    return false;
+                    return Err(SaveFailure::Declined);
                 }
                 if !request_authorized() {
-                    return false;
+                    return Err(SaveFailure::Cancelled);
                 }
                 (bytes, true)
             }
@@ -627,7 +638,7 @@ impl KetchupApp {
                         ("reason", error.to_string()),
                     ]),
                 );
-                return false;
+                return Err(SaveFailure::Failed);
             }
         };
         let saved_identity = ketchup_model::persistence::FileIdentity::from_bytes(&prepared);
@@ -650,7 +661,7 @@ impl KetchupApp {
                             ("reason", error.to_string()),
                         ]),
                     );
-                    return false;
+                    return Err(SaveFailure::Failed);
                 }
             };
         if owned_identity.is_some_and(|owned| Some(owned) != expected_identity) {
@@ -665,7 +676,7 @@ impl KetchupApp {
                     ),
                 ]),
             );
-            return false;
+            return Err(SaveFailure::Failed);
         }
         // Saving over this document's own, unchanged file is a plain Save: only
         // replacing some other existing file needs the user's consent.
@@ -680,10 +691,10 @@ impl KetchupApp {
                     ("reason", error.reason_text().to_owned()),
                 ]),
             );
-            return false;
+            return Err(SaveFailure::Declined);
         }
         if !request_authorized() {
-            return false;
+            return Err(SaveFailure::Cancelled);
         }
         let result = match (truncate_history, expected_identity) {
             (true, Some(expected)) => ketchup_model::persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
@@ -760,9 +771,9 @@ impl KetchupApp {
                 );
                 if let Some(error) = publication_error {
                     self.report_file_persistence_error("error-save-document", path, &error);
-                    return false;
+                    return Err(SaveFailure::Failed);
                 }
-                true
+                Ok(())
             }
             Err(error) => {
                 self.digest = self.catalog.format(
@@ -772,7 +783,7 @@ impl KetchupApp {
                         ("reason", error.to_string()),
                     ]),
                 );
-                false
+                Err(SaveFailure::Failed)
             }
         }
     }

@@ -105,7 +105,7 @@ fn revision_digests(document: &DocumentStore) -> Vec<String> {
 
 #[test]
 fn a_format_102_file_with_history_opens_with_every_revision_and_saves_the_same_bytes() {
-    if std::env::var_os("KETCHUP_UPDATE_GOLDEN").is_some() {
+    if ketchup_test_env::update_golden() {
         let document = written();
         let bytes = persistence::save_document_store(&document, &ContainerData::default()).unwrap();
         std::fs::write(FIXTURE, bytes).unwrap();

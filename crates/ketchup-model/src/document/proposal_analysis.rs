@@ -736,6 +736,7 @@ pub(super) fn authoritative_writes(
             }
             CanonicalCommand::SetLocalOccurrenceTransform { key, .. }
             | CanonicalCommand::SetLocalOccurrenceColor { key, .. }
+            | CanonicalCommand::SetLocalOccurrenceTags { key, .. }
             | CanonicalCommand::RenameLocalOccurrence { key, .. }
             | CanonicalCommand::SetLocalOccurrenceParent { key, .. }
             | CanonicalCommand::RepointLocalOccurrence { key, .. } => {
@@ -885,6 +886,7 @@ fn add_local_edit_dependencies(
             (*key, Some(*definition_id), None, &none)
         }
         CanonicalCommand::SetLocalOccurrenceParent { key, parent } => (*key, None, *parent, &none),
+        CanonicalCommand::SetLocalOccurrenceTags { key, tags } => (*key, None, None, tags),
         CanonicalCommand::DeleteLocalOccurrence { key }
         | CanonicalCommand::RenameLocalOccurrence { key, .. }
         | CanonicalCommand::SetLocalOccurrenceColor { key, .. }
@@ -977,6 +979,39 @@ fn add_direct_member_dependencies(
             ));
         }
     }
+}
+
+/// Cloning a definition for one occurrence reads the source definition, its
+/// features and bindings, and the pin joints with physical holes on the occurrence.
+fn add_clone_definition_dependencies(
+    snapshot: &Snapshot,
+    plan: &CloneDefinitionPlan,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    dependencies.insert(AuthoritativeDependency::OccurrenceCollections(
+        plan.occurrence_id,
+    ));
+    dependencies.insert(AuthoritativeDependency::AssemblyRecipe);
+    let path = InstancePath::root(plan.occurrence_id);
+    for joint in snapshot.pin_joints().filter(|joint| {
+        joint.physical_hole_pairs.is_some()
+            && (joint.first.instance_path == path || joint.second.instance_path == path)
+    }) {
+        dependencies.insert(AuthoritativeDependency::PinJoint(joint.id));
+    }
+    dependencies.insert(AuthoritativeDependency::Occurrence(plan.occurrence_id));
+    dependencies.insert(AuthoritativeDependency::Definition(
+        plan.source_definition_id,
+    ));
+    dependencies.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
+    for (source_id, new_id) in &plan.feature_id_map {
+        add_feature_dependency_closure(snapshot, *source_id, dependencies);
+        dependencies.insert(AuthoritativeDependency::FeatureParameterBindings(
+            *source_id,
+        ));
+        dependencies.insert(AuthoritativeDependency::Feature(*new_id));
+    }
+    add_direct_member_dependencies(snapshot, plan.source_definition_id, dependencies);
 }
 
 /// Converting a group moves its occurrences, so every collection that names them by path
@@ -1618,6 +1653,7 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::SetLocalOccurrenceParent { .. }
             | CanonicalCommand::SetLocalOccurrenceTransform { .. }
             | CanonicalCommand::SetLocalOccurrenceColor { .. }
+            | CanonicalCommand::SetLocalOccurrenceTags { .. }
             | CanonicalCommand::RenameLocalOccurrence { .. }
             | CanonicalCommand::CreateLocalGroup { .. }
             | CanonicalCommand::DeleteLocalGroup { .. }
@@ -1638,34 +1674,7 @@ pub(super) fn authoritative_dependencies(
                 add_structure_command_dependencies(snapshot, command, &mut dependencies);
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
-                dependencies.insert(AuthoritativeDependency::OccurrenceCollections(
-                    plan.occurrence_id,
-                ));
-                dependencies.insert(AuthoritativeDependency::AssemblyRecipe);
-                let path = InstancePath::root(plan.occurrence_id);
-                for joint in snapshot.pin_joints().filter(|joint| {
-                    joint.physical_hole_pairs.is_some()
-                        && (joint.first.instance_path == path || joint.second.instance_path == path)
-                }) {
-                    dependencies.insert(AuthoritativeDependency::PinJoint(joint.id));
-                }
-                dependencies.insert(AuthoritativeDependency::Occurrence(plan.occurrence_id));
-                dependencies.insert(AuthoritativeDependency::Definition(
-                    plan.source_definition_id,
-                ));
-                dependencies.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
-                for (source_id, new_id) in &plan.feature_id_map {
-                    add_feature_dependency_closure(snapshot, *source_id, &mut dependencies);
-                    dependencies.insert(AuthoritativeDependency::FeatureParameterBindings(
-                        *source_id,
-                    ));
-                    dependencies.insert(AuthoritativeDependency::Feature(*new_id));
-                }
-                add_direct_member_dependencies(
-                    snapshot,
-                    plan.source_definition_id,
-                    &mut dependencies,
-                );
+                add_clone_definition_dependencies(snapshot, plan, &mut dependencies);
             }
             CanonicalCommand::ConvertGroupToComponent(plan) => {
                 add_group_conversion_dependencies(snapshot, plan, &mut dependencies);

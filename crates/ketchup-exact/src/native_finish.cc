@@ -310,7 +310,15 @@ bool rebuild_on_neighbour_surface(
       gp_Pnt target_point;
       gp_Vec tdu, tdv;
       located_target->D1(tu, tv, target_point, tdu, tdv);
-      same_sense += du.Crossed(dv).Normalized().Dot(tdu.Crossed(tdv).Normalized());
+      const gp_Vec side_normal = du.Crossed(dv);
+      const gp_Vec target_normal = tdu.Crossed(tdv);
+      // A singular point (a cubic without a tangent at its end) has no normal to
+      // compare; the side then stays unmerged rather than failing the offset.
+      if (side_normal.Magnitude() <= gp::Resolution()
+          || target_normal.Magnitude() <= gp::Resolution()) {
+        return false;
+      }
+      same_sense += side_normal.Normalized().Dot(target_normal.Normalized());
     }
   }
   if (std::abs(same_sense) < 8.0) {

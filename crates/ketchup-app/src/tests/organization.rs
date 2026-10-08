@@ -1260,8 +1260,10 @@ fn edit_context_blocks_selection_leakage_and_exits_one_level_at_a_time() {
     assert!(app.selection.edit_context.is_empty());
 }
 
+/// A layer a part inside a component carries (as a program gives it) can be
+/// deleted: the part loses it in the same Undo step.
 #[test]
-fn used_local_tag_deletion_fails_closed_without_mutation() {
+fn a_layer_held_by_a_part_inside_a_component_can_be_deleted() {
     let mut app = KetchupApp::new();
     assert!(app.create_box());
     let tag = TagId(91_002);
@@ -1284,30 +1286,26 @@ fn used_local_tag_deletion_fails_closed_without_mutation() {
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
     assert!(app.group_selected());
     assert!(app.make_component());
-    assert!(!app.can_delete_tag(tag));
-    let revision = app.document_revision();
-    let digest = app.canonical_digest();
-    let undo_steps = app.undo_step_count();
-    let action_digest = app.action_digest().to_owned();
-
-    app.begin_tag_deletion(tag);
-    app.begin_tag_clear(tag);
-
-    assert!(!app.tag_deletion_visible());
-    assert!(!app.confirm_tag_deletion());
-    assert!(!app.tag_clear_visible());
-    assert!(!app.confirm_tag_clear());
-    assert_eq!(app.document_revision(), revision);
-    assert_eq!(app.canonical_digest(), digest);
-    assert_eq!(app.undo_step_count(), undo_steps);
-    assert_eq!(app.action_digest(), action_digest);
-    assert!(app.document.current().tag(tag).is_some());
-    assert!(
+    let holds_tag = |app: &KetchupApp| {
         app.document
             .current()
             .local_occurrences()
-            .any(|occurrence| occurrence.tags().first().copied() == Some(tag))
-    );
+            .any(|occurrence| occurrence.tags().contains(&tag))
+    };
+    assert!(holds_tag(&app), "the nested part carries the layer");
+    assert!(app.can_delete_tag(tag));
+    let undo_steps = app.undo_step_count();
+
+    app.begin_tag_deletion(tag);
+    assert!(app.tag_deletion_visible());
+    assert!(app.confirm_tag_deletion());
+    assert!(app.document.current().tag(tag).is_none());
+    assert!(!holds_tag(&app));
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+
+    assert!(app.undo());
+    assert!(app.document.current().tag(tag).is_some());
+    assert!(holds_tag(&app), "Undo gives the nested part its layer back");
 }
 
 #[test]

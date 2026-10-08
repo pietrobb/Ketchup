@@ -181,19 +181,45 @@ def test_hand_written_linear_algebra_is_counted_and_only_falls(tmp_path):
         "let p = m[0] * q[0] + m[1] * q[1] + m[3];\n"
         "let determinant = a * d - b * c;\n"
         "let determinant = linear.determinant();\n"
-        "let product = dot(a, cross(b, c));\n",
+        "let product = dot(a, cross(b, c));\n"
+        "fn normalize(vector: [f32; 3]) -> [f32; 3] {}\n"
+        "fn sub(a: Point, b: Point) -> Point {}\n"
+        "pub fn transform_point(self, point: [f64; 3]) -> [f64; 3] {}\n"
+        "fn normalize(shape: &mut Shape) {}\n",
         encoding="utf-8",
     )
     shared = tmp_path / "crates" / "ketchup-geometry" / "src" / "linalg.rs"
     shared.parent.mkdir(parents=True)
     shared.write_text("fn dot(a: V, b: V) {}\n", encoding="utf-8")
     counts = checker.linear_algebra_counts(tmp_path)
-    assert counts == {"crates/a/src/lib.rs": 4}
-    assert checker.hand_written_linear_algebra(counts, {"crates/a/src/lib.rs": 4}) == []
+    assert counts == {"crates/a/src/lib.rs": 6}
+    assert checker.hand_written_linear_algebra(counts, {"crates/a/src/lib.rs": 6}) == []
     assert len(checker.hand_written_linear_algebra(counts, {})) == 1
     assert "lower LINEAR_ALGEBRA" in checker.hand_written_linear_algebra(
-        counts, {"crates/a/src/lib.rs": 5}
+        counts, {"crates/a/src/lib.rs": 7}
     )[0]
+
+
+def test_numeric_casts_and_lint_allows_are_counted_per_crate_and_only_fall(tmp_path):
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#[allow(clippy::too_many_arguments)]\n"
+        "fn f(x: f64) -> u32 { (x as u32) + (x as usize as u32) } // y as f32\n"
+        "use std::fmt as format; let r = &x as &dyn Any;\n"
+        "#[cfg(test)]\nmod tests {\n    #[allow(dead_code)]\n    const N: u8 = 1.0 as u8;\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "crates" / "a" / "src" / "lib_tests.rs").write_text("let n = 1.0 as u8;\n", encoding="utf-8")
+    counts = checker.cast_and_allow_counts(tmp_path)
+    assert counts == {"a casts": 3, "a allows": 1}
+    assert checker.grown_casts_and_allows(counts, {"a casts": 3, "a allows": 1}) == []
+    assert "limit 2" in checker.grown_casts_and_allows(counts, {"a casts": 2, "a allows": 1})[0]
+    assert "lower CASTS_AND_ALLOWS" in checker.grown_casts_and_allows(counts, {"a casts": 4, "a allows": 1})[0]
+
+
+def test_workspace_casts_and_allows_only_fall():
+    assert checker.grown_casts_and_allows(checker.cast_and_allow_counts(ROOT)) == []
 
 
 def test_workspace_linear_algebra_stays_in_ketchup_geometry():

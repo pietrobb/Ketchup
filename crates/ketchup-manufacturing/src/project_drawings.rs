@@ -12,7 +12,8 @@
 
 use crate::sheet_pdf::{Anchor, Mark, Page, PdfInfo, Stroke, page_pdf};
 use crate::title_block::{
-    SheetFormat, TITLE_BLOCK_MM, TitleBlock, TitleField, draw_frame_and_title_block, drawing_area,
+    DEFAULT_COARSEST_SCALE, DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, TITLE_BLOCK_MM,
+    TitleBlock, TitleField, draw_frame_and_title_block, drawing_area,
 };
 use ketchup_geometry::linalg::{Vec3, cross, dot, normalize_within, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
@@ -72,8 +73,11 @@ pub struct ProjectSheetOptions {
     /// Height of the horizontal plan cut; [`default_plan_cut_z`] when absent.
     pub plan_cut_z_mm: Option<f64>,
     /// The sheet format; when absent the smallest one that holds the views at
-    /// 1:50 or finer.
+    /// `coarsest_scale` or finer.
     pub format: Option<SheetFormat>,
+    /// The coarsest scale 1:N the automatic format may use;
+    /// [`DEFAULT_COARSEST_SCALE`] when absent.
+    pub coarsest_scale: Option<u32>,
     /// Captions of the title block cells.
     pub title_labels: BTreeMap<TitleField, String>,
     /// The title block values; scale and format are filled in by the sheet.
@@ -539,15 +543,12 @@ fn view_frames(min: Point, max: Point, plan_cut_z: f64) -> [(ProjectView, ViewFr
     ]
 }
 
-const PLAN_CUT_ABOVE_FLOOR_MM: f64 = 1200.0;
 /// Share of the largest horizontal level a level needs to be the floor (not a
 /// tolerance: a ratio of areas).
 const FLOOR_SHARE_OF_LARGEST_LEVEL: f64 = 0.5;
 /// Room around a view for its dimensions and title, in page millimetres.
 const VIEW_PAD_MM: f64 = 22.0;
-const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
-/// The coarsest scale a format is chosen for: building drawings are read at 1:50.
-const PREFERRED_SCALE: u32 = 50;
+pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
 
 const EDGE_STROKE_MM: f64 = 0.18;
 const EDGE_COLOR: [u8; 3] = [34, 34, 34];
@@ -594,8 +595,12 @@ fn choose_scale(views: &[DrawnView], format: SheetFormat) -> Option<u32> {
 }
 
 /// The requested format at its best scale, or the smallest format that holds
-/// the views at 1:50 or finer (A0 at whatever fits when none does).
-fn choose_layout(views: &[DrawnView], requested: Option<SheetFormat>) -> (SheetFormat, u32) {
+/// the views at `preferred` or finer (A0 at whatever fits when none does).
+fn choose_layout(
+    views: &[DrawnView],
+    requested: Option<SheetFormat>,
+    preferred: u32,
+) -> (SheetFormat, u32) {
     let coarsest = SCALES[SCALES.len() - 1];
     if let Some(format) = requested {
         return (format, choose_scale(views, format).unwrap_or(coarsest));
@@ -604,7 +609,7 @@ fn choose_layout(views: &[DrawnView], requested: Option<SheetFormat>) -> (SheetF
         .into_iter()
         .find_map(|format| {
             choose_scale(views, format)
-                .filter(|scale| *scale <= PREFERRED_SCALE)
+                .filter(|scale| *scale <= preferred)
                 .map(|scale| (format, scale))
         })
         .unwrap_or_else(|| {
@@ -753,12 +758,12 @@ fn floor_z(solids: &[DrawingSolid]) -> Option<f64> {
         .map(|(level, _)| level as f64)
 }
 
-/// The usual plan cut: 1.2 m above the floor, or the middle of a model with
-/// no floor that far below its top.
+/// The plan cut `above_floor_mm` above the floor, or the middle of a model
+/// with no floor that far below its top.
 #[must_use]
-pub fn default_plan_cut_z(solids: &[DrawingSolid]) -> Option<f64> {
+pub fn default_plan_cut_z(solids: &[DrawingSolid], above_floor_mm: f64) -> Option<f64> {
     let (min, max) = bounds(solids)?;
-    let above_floor = floor_z(solids).map(|floor| floor + PLAN_CUT_ABOVE_FLOOR_MM);
+    let above_floor = floor_z(solids).map(|floor| floor + above_floor_mm);
     Some(match above_floor {
         Some(cut) if cut < max[2] => cut,
         _ => f64::midpoint(min[2], max[2]),
@@ -776,7 +781,7 @@ pub fn project_sheet(
     let (min, max) = bounds(solids).ok_or(ProjectDrawingError::Empty)?;
     let plan_cut_z = options
         .plan_cut_z_mm
-        .or_else(|| default_plan_cut_z(solids))
+        .or_else(|| default_plan_cut_z(solids, f64::from(DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM)))
         .ok_or(ProjectDrawingError::Empty)?;
     let edges = solids.iter().map(feature_edges).collect::<Vec<_>>();
     let views = view_frames(min, max, plan_cut_z)
@@ -784,7 +789,11 @@ pub fn project_sheet(
         .map(|(view, frame)| draw_view(view, frame, solids, &edges))
         .filter(|view| view.min[0].is_finite())
         .collect::<Vec<_>>();
-    let (format, scale) = choose_layout(&views, options.format);
+    let (format, scale) = choose_layout(
+        &views,
+        options.format,
+        options.coarsest_scale.unwrap_or(DEFAULT_COARSEST_SCALE),
+    );
     let title_of = |view: ProjectView| {
         options
             .view_titles
@@ -1008,10 +1017,30 @@ mod tests {
             ));
         }
         // Slab top at 1512: the cut is 1.2 m above it, through the walls only.
-        assert_eq!(default_plan_cut_z(&house), Some(2712.0));
+        assert_eq!(default_plan_cut_z(&house, 1200.0), Some(2712.0));
+        // A height set in the sheet settings moves the cut with it.
+        assert_eq!(default_plan_cut_z(&house, 900.0), Some(2412.0));
         // A model with no floor below head height is cut through its middle.
         let table = [cuboid("top", [0.0; 3], [1600.0, 800.0, 40.0])];
-        assert_eq!(default_plan_cut_z(&table), Some(20.0));
+        assert_eq!(default_plan_cut_z(&table, 1200.0), Some(20.0));
+    }
+
+    #[test]
+    fn a_coarser_scale_in_the_settings_lets_the_automatic_format_shrink() {
+        let at = |coarsest_scale| {
+            let sheet = project_sheet(
+                &room(),
+                &ProjectSheetOptions {
+                    coarsest_scale,
+                    ..ProjectSheetOptions::default()
+                },
+            )
+            .unwrap();
+            (sheet.format, sheet.scale)
+        };
+        assert_eq!(at(None), (SheetFormat::A2, 50));
+        assert_eq!(at(Some(50)), (SheetFormat::A2, 50));
+        assert_eq!(at(Some(100)), (SheetFormat::A3, 100));
     }
 
     #[test]

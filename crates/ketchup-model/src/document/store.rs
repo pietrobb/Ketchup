@@ -43,6 +43,32 @@ fn retain_anchored_evidence(
 
 /// Stores the feature graph a revision was checked with; after a view-only change the
 /// exact graphs of `previous` carry over instead of being compiled again.
+/// The features a batch changed and the dependency graph of the new features. A
+/// feature kept by the batch is the same `Arc`, so it is not compared by value, and
+/// a batch that keeps every feature (a layer or colour change) reuses the graph.
+fn feature_changes(
+    current: &Snapshot,
+    product: &ProductModel,
+) -> Result<(BTreeSet<FeatureId>, Arc<FeatureDependencyGraph>), CanonicalError> {
+    let (before, after) = (&current.product.features, &product.features);
+    if super::product_validation::same_entries(before, after) {
+        return Ok((BTreeSet::new(), current.feature_dependency_graph()?));
+    }
+    let changed = before
+        .keys()
+        .chain(after.keys())
+        .filter(|id| match (before.get(id), after.get(id)) {
+            (Some(before), Some(after)) => !Arc::ptr_eq(before, after) && before != after,
+            (before, after) => before.is_some() != after.is_some(),
+        })
+        .copied()
+        .collect();
+    Ok((
+        changed,
+        Arc::new(FeatureDependencyGraph::from_product(product)?),
+    ))
+}
+
 fn keep_exact_caches(
     product: &mut ProductModel,
     previous: &ProductModel,
@@ -177,6 +203,16 @@ impl DocumentStore {
             evaluation_registry: BTreeMap::new(),
             human_confirmation_policy: None,
         })
+    }
+
+    /// The revision of a store `from_product` just built, as `from_revision_history`
+    /// takes it.
+    pub(crate) fn validated_current(&self) -> ValidatedSnapshot {
+        let revision = &self.revisions[self.cursor];
+        ValidatedSnapshot {
+            snapshot: revision.snapshot.clone(),
+            feature_states: revision.feature_states.clone(),
+        }
     }
 
     #[must_use]
@@ -322,7 +358,7 @@ impl DocumentStore {
         revisions: Vec<StoredRevision>,
         cursor: usize,
         next_revision_id: u64,
-    ) -> Result<Self, CanonicalError> {
+    ) -> Self {
         // A file written before the shared Undo limit can hold more revisions than an
         // editing session keeps; restore only those within the limit around the cursor.
         let first = cursor.saturating_sub(limits::UNDO_REVISIONS);
@@ -332,10 +368,11 @@ impl DocumentStore {
             .skip(first)
             .take(cursor + limits::UNDO_REVISIONS + 1);
         let mut restored = Vec::with_capacity(revisions.len());
-        for (snapshot, batch_digest, origin, checkpoint, rule_program) in revisions {
-            let validated =
-                Self::from_product(snapshot.revision_id(), snapshot.product.as_ref().clone())?;
-            let feature_states = validated.revisions[0].feature_states.clone();
+        for (validated, batch_digest, origin, checkpoint, rule_program) in revisions {
+            let ValidatedSnapshot {
+                snapshot,
+                feature_states,
+            } = validated;
             restored.push(Arc::new(Revision {
                 id: snapshot.revision_id(),
                 snapshot,
@@ -349,14 +386,14 @@ impl DocumentStore {
                 evaluation: None,
             }));
         }
-        Ok(Self {
+        Self {
             revisions: restored,
             cursor,
             next_revision_id,
             mutation_epoch: Self::fresh_mutation_epoch(),
             evaluation_registry: BTreeMap::new(),
             human_confirmation_policy: None,
-        })
+        }
     }
 
     pub fn register_exact_reference_evidence(
@@ -1403,17 +1440,7 @@ impl DocumentStore {
                     );
                 }
                 CanonicalCommand::DeleteTag { id } => {
-                    if product
-                        .occurrences
-                        .values()
-                        .any(|occurrence| occurrence.tags.contains(id))
-                        || product
-                            .local_occurrences
-                            .values()
-                            .any(|occurrence| occurrence.tags.contains(id))
-                    {
-                        return Err(CanonicalError::TagInUse(*id));
-                    }
+                    ensure_tag_unassigned(&product, *id)?;
                     product
                         .tags
                         .remove(id)
@@ -2878,6 +2905,9 @@ impl DocumentStore {
                 CanonicalCommand::SetLocalOccurrenceColor { key, color } => {
                     group_conversion::local_occurrence_mut(&mut product, *key)?.color = *color;
                 }
+                CanonicalCommand::SetLocalOccurrenceTags { key, tags } => {
+                    set_local_occurrence_tags(&mut product, *key, tags)?;
+                }
                 CanonicalCommand::SetOccurrenceVisibility { id, visible } => {
                     let existing = product
                         .occurrences
@@ -2892,14 +2922,7 @@ impl DocumentStore {
                     );
                 }
                 CanonicalCommand::SetOccurrenceTags { id, tags } => {
-                    if let Some(missing) = tags.iter().find(|tag| !product.tags.contains_key(tag)) {
-                        return Err(CanonicalError::TagNotFound(*missing));
-                    }
-                    let existing = product
-                        .occurrences
-                        .get_mut(id)
-                        .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
-                    Arc::make_mut(existing).tags = tags.clone();
+                    set_occurrence_tags(&mut product, *id, tags)?;
                 }
                 CanonicalCommand::RepointOccurrence { id, definition_id } => {
                     let existing = product
@@ -3106,17 +3129,7 @@ impl DocumentStore {
             &recomputed_nodes,
         )
         .map_err(CanonicalError::Graph)?;
-        let changed_features = current
-            .product
-            .features
-            .keys()
-            .chain(product.features.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|id| current.product.features.get(id) != product.features.get(id))
-            .collect::<BTreeSet<_>>();
-        let feature_graph = Arc::new(FeatureDependencyGraph::from_product(&product)?);
+        let (changed_features, feature_graph) = feature_changes(&current, &product)?;
         let dirty_features = feature_graph.dependent_closure(
             changed_features
                 .iter()

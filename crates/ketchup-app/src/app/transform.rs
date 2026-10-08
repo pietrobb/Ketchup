@@ -3007,11 +3007,11 @@ fn rotate_transform_90(
 
 /// A length the tool computed (`120.1 + 13.2`) as the decimal a person would
 /// write (`133.3`): the shortest token of at most nine decimals that differs
-/// from it only by float noise (a relative 1e-12), with that value, so the
+/// from it only by float noise (relative `NEGLIGIBLE`), with that value, so the
 /// noise never reaches the history or the document while a snapped
 /// `26.876543211` stays exact.
 pub(crate) fn computed_length(mm: f64) -> Option<Dimension> {
-    let noise = 1e-12 * mm.abs().max(1.0);
+    let noise = ketchup_model::tolerance::NEGLIGIBLE * mm.abs().max(1.0);
     (0..=9)
         .find_map(|places| {
             let token = format!("{mm:.places$}");

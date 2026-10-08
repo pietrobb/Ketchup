@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DocumentStore, EvaluationIdentity,
     EvaluatorNode, FeatureId, FeatureKind, FeatureParameterFreshnessAudit, NodeId,
-    ProposalPrincipal, Revision, RevisionOrigin, Snapshot,
+    ProposalPrincipal, Revision, RevisionOrigin, Snapshot, ValidatedSnapshot,
 };
 use crate::graph::SlotResolution;
 
@@ -1565,8 +1565,9 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             (LoadOutcome::Editable { audit, .. }, Err(error)) => {
                 audit.history_discarded = Some(error.to_string());
             }
-            (LoadOutcome::ReviewOnly(_), restored) => {
-                restored?;
+            // A review never restores Undo steps, so only the reason is kept.
+            (LoadOutcome::ReviewOnly(candidate), restored) => {
+                candidate.audit.history_discarded = restored.err().map(|error| error.to_string());
             }
         }
     }
@@ -1752,13 +1753,22 @@ fn decode_revision_history(
 
     let snapshots = if schema >= 4 {
         // Every revision a format-4 history holds was written in the current format,
-        // so each loads on its own: on all cores, as a house revision takes ~0.4 s.
-        // The current revision is document.bin, which is already loaded.
-        let expected_snapshot = expected_current.snapshot();
+        // so each loads on its own: on all cores, as a revision of 1800 parts takes ~0.4 s.
+        // The current revision is document.bin, which is already loaded and validated.
+        let expected_validated = match expected_current {
+            LoadOutcome::Editable { document, .. } => document.validated_current(),
+            // A review restores no history, but a damaged one is still reported.
+            LoadOutcome::ReviewOnly(candidate) => DocumentStore::from_product(
+                candidate.snapshot.revision_id(),
+                candidate.snapshot.product().clone(),
+            )
+            .map_err(PersistenceError::InvalidCanonicalData)?
+            .validated_current(),
+        };
         let expected_digest = expected_current.audit().source_canonical_digest.clone();
         load_in_parallel(&records, |index, record| {
             if index == cursor {
-                return Ok((expected_snapshot.clone(), expected_digest.clone()));
+                return Ok((expected_validated.clone(), expected_digest.clone()));
             }
             load_history_snapshot(
                 &record.encoded_snapshot,
@@ -1783,7 +1793,8 @@ fn decode_revision_history(
     let current_source_digest = Some(snapshots[cursor].1.clone());
     let mut revisions = Vec::with_capacity(count);
     let mut document_id = None;
-    for (record, (snapshot, _)) in records.into_iter().zip(snapshots) {
+    for (record, (validated, _)) in records.into_iter().zip(snapshots) {
+        let snapshot = validated.snapshot();
         if snapshot.revision_id() != record.revision_id
             || document_id.is_some_and(|id| id != snapshot.document_id())
         {
@@ -1791,7 +1802,7 @@ fn decode_revision_history(
         }
         document_id = Some(snapshot.document_id());
         revisions.push((
-            snapshot,
+            validated,
             record.batch_digest,
             record.origin,
             record.checkpoint,
@@ -1800,7 +1811,7 @@ fn decode_revision_history(
     }
     // The revision a history names as current is the saved document. Both were written by
     // one version, so they agree on the digest that version computed.
-    let current = &revisions[cursor].0;
+    let current = revisions[cursor].0.snapshot();
     let expected_snapshot = expected_current.snapshot();
     if current.document_id() != expected_snapshot.document_id()
         || current.revision_id() != expected_snapshot.revision_id()
@@ -1812,8 +1823,11 @@ fn decode_revision_history(
     {
         return Err(PersistenceError::InvalidRevisionHistory);
     }
-    DocumentStore::from_revision_history(revisions, cursor, next_revision_id)
-        .map_err(PersistenceError::InvalidCanonicalData)
+    Ok(DocumentStore::from_revision_history(
+        revisions,
+        cursor,
+        next_revision_id,
+    ))
 }
 
 struct HistoryRecord<'a> {
@@ -1832,7 +1846,7 @@ fn load_history_snapshot(
     encoded: &[u8],
     container_data: &ContainerData,
     migrated_digests: &mut BTreeMap<String, String>,
-) -> Result<(Snapshot, String), PersistenceError> {
+) -> Result<(ValidatedSnapshot, String), PersistenceError> {
     let loaded = load_document(encoded, container_data.clone(), migrated_digests)?;
     let source_schema = loaded.source_schema();
     let source_digest = loaded.audit().source_canonical_digest.clone();
@@ -1859,7 +1873,7 @@ fn load_history_snapshot(
             }
         }
     }
-    Ok((snapshot, source_digest))
+    Ok((store.validated_current(), source_digest))
 }
 
 /// `load` of every record, spread over the available cores, in record order.
@@ -2069,14 +2083,25 @@ fn load_document(
     }
     // A stored face or edge reference must still name the body its producer
     // builds. Evaluator digests may differ: older files were evaluated by other
-    // code paths, and the next evaluation refreshes the evidence.
+    // code paths, and the next evaluation refreshes the evidence. Each producer's
+    // graph is compiled once for all the references it carries.
+    let mut graphs = BTreeMap::new();
     for reference in loaded_snapshot.exact_reference_evidence() {
-        let names_current_body = crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
-            &loaded_snapshot,
-            reference.definition_id,
-            reference.producer_feature_id,
-        )
-        .is_ok_and(|graph| graph.names_durable_reference(reference));
+        let graph = graphs
+            .entry((reference.definition_id, reference.producer_feature_id))
+            .or_insert_with(|| {
+                #[cfg(test)]
+                tests::EVIDENCE_GRAPH_COMPILES.with(|count| count.set(count.get() + 1));
+                crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
+                    &loaded_snapshot,
+                    reference.definition_id,
+                    reference.producer_feature_id,
+                )
+                .ok()
+            });
+        let names_current_body = graph
+            .as_ref()
+            .is_some_and(|graph| graph.names_durable_reference(reference));
         if !names_current_body {
             return Err(PersistenceError::InvalidExactReference);
         }
@@ -2449,6 +2474,102 @@ fn push_string(bytes: &mut Vec<u8>, value: &str) {
 mod tests {
     use super::*;
     use crate::document::DefinitionId;
+
+    thread_local! {
+        pub(super) static EVIDENCE_GRAPH_COMPILES: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn opening_compiles_one_graph_per_producer_not_per_face_reference() {
+        use crate::exact_product::ExactFaceRole;
+        use ketchup_geometry::sketch::{
+            FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane,
+            SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+        };
+
+        const DEFINITION: DefinitionId = DefinitionId(1);
+        let (plane, sketch, pads) = (FeatureId(1), FeatureId(2), [FeatureId(3), FeatureId(4)]);
+        let corners = [[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]];
+        let profile = SketchSpec {
+            workplane: plane,
+            entities: (0..4)
+                .map(|index| SketchEntity::Line {
+                    id: SketchEntityId(index as u64 + 1),
+                    start_mm: corners[index],
+                    end_mm: corners[(index + 1) % 4],
+                })
+                .collect(),
+            constraints: Vec::new(),
+        };
+        let region = profile.solved_regions().unwrap()[0].id;
+        let mut commands = vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Two pads".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: plane,
+                definition_id: DEFINITION,
+                name: "Plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch,
+                definition_id: DEFINITION,
+                name: "Sketch".into(),
+                kind: FeatureKind::Sketch(profile),
+            },
+        ];
+        for (index, pad) in pads.into_iter().enumerate() {
+            commands.push(CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: DEFINITION,
+                name: format!("Pad {index}"),
+                kind: FeatureKind::Pad(PadSpec {
+                    profile: PadProfile::SketchRegion { sketch, region },
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(
+                        crate::document::Dimension::new(
+                            format!("{}", 10 + index),
+                            10.0 + index as f64,
+                        )
+                        .unwrap(),
+                    ),
+                    operation: PadOperation::NewBody,
+                }),
+            });
+        }
+        let mut document = DocumentStore::new();
+        document.apply_batch(&CommandBatch::new(commands)).unwrap();
+        let roles = [
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::LinearSide,
+        ];
+        for pad in pads {
+            let package = crate::testing::box_package(
+                &document.current(),
+                DEFINITION,
+                pad,
+                &format!("pad-{}", pad.0),
+                &roles,
+            )
+            .unwrap();
+            for role in roles {
+                document
+                    .register_exact_reference_evidence(package.reference(role).unwrap().clone())
+                    .unwrap();
+            }
+        }
+        let bytes = save(&document.current());
+
+        EVIDENCE_GRAPH_COMPILES.with(|count| count.set(0));
+        let reopened = load(&bytes).unwrap().snapshot();
+
+        assert_eq!(reopened.exact_reference_evidence().count(), 6);
+        assert_eq!(EVIDENCE_GRAPH_COMPILES.with(std::cell::Cell::get), 2);
+    }
 
     #[test]
     fn work_recovery_cleanup_preserves_replacement_after_identity_check() {

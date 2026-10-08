@@ -72,13 +72,42 @@ impl TitleField {
 pub type TitleBlock = BTreeMap<TitleField, String>;
 
 /// What a document keeps for its drawing sheets: the format (automatic when
-/// absent) and the title block.
+/// absent), the title block, the height of the plan cut and the scale the
+/// automatic format is chosen for.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SheetSettings {
     #[serde(default)]
     pub format: Option<SheetFormat>,
     #[serde(default)]
     pub title_block: TitleBlock,
+    /// Height of the plan cut above the floor, whole millimetres;
+    /// [`DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM`] when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_cut_above_floor_mm: Option<u32>,
+    /// The coarsest scale 1:N the automatic format may use;
+    /// [`DEFAULT_COARSEST_SCALE`] when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coarsest_scale: Option<u32>,
+}
+
+/// The usual plan cut: at window-sill height, 1.2 m above the floor.
+pub const DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM: u32 = 1200;
+/// Building drawings are read at 1:50.
+pub const DEFAULT_COARSEST_SCALE: u32 = 50;
+
+impl SheetSettings {
+    #[must_use]
+    pub fn plan_cut_above_floor_mm(&self) -> f64 {
+        f64::from(
+            self.plan_cut_above_floor_mm
+                .unwrap_or(DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM),
+        )
+    }
+
+    #[must_use]
+    pub fn coarsest_scale(&self) -> u32 {
+        self.coarsest_scale.unwrap_or(DEFAULT_COARSEST_SCALE)
+    }
 }
 
 /// ISO 216 A sheets, used in landscape.

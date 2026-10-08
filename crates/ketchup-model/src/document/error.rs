@@ -110,6 +110,13 @@ pub enum CanonicalError {
     InvalidProductionCode,
     DuplicateProductionCode(String),
     InvalidProductionCodePath(InstancePath),
+    /// A part of the named contact joint does not resolve to a placed instance.
+    ContactJointPartNotFound {
+        joint: String,
+        path: InstancePath,
+    },
+    /// A grounded path does not resolve to a placed instance.
+    GroundedPathNotFound(InstancePath),
     IdExhausted,
     WrongNodeKind(NodeId),
     OverrideAlreadyExists(u64),
@@ -126,8 +133,16 @@ pub enum CanonicalError {
     PersistentDimensionAlreadyExists(PersistentDimensionId),
     TagAlreadyExists(TagId),
     TagNotFound(TagId),
-    TagInUse(TagId),
-    InvalidSavedView(SavedViewId),
+    /// The tag is still assigned; `holder` is the first part that carries it, of `holders`.
+    TagInUse {
+        tag: TagId,
+        holder: TagHolder,
+        holders: usize,
+    },
+    InvalidSavedView {
+        id: SavedViewId,
+        problem: SavedViewProblem,
+    },
     SavedViewNotFound(SavedViewId),
     InvalidClassificationDimension(ClassificationDimensionId),
     ClassificationDimensionNotFound(ClassificationDimensionId),
@@ -296,6 +311,8 @@ impl CanonicalError {
             Self::InvalidProductionCode => "canonical.invalid_production_code",
             Self::DuplicateProductionCode(_) => "canonical.duplicate_production_code",
             Self::InvalidProductionCodePath(_) => "canonical.invalid_production_code_path",
+            Self::ContactJointPartNotFound { .. } => "canonical.contact_joint_part_not_found",
+            Self::GroundedPathNotFound(_) => "canonical.grounded_path_not_found",
             Self::IdExhausted => "canonical.id_exhausted",
             Self::WrongNodeKind(..) => "canonical.wrong_node_kind",
             Self::OverrideAlreadyExists(..) => "canonical.override_already_exists",
@@ -314,8 +331,8 @@ impl CanonicalError {
             }
             Self::TagAlreadyExists(..) => "canonical.tag_already_exists",
             Self::TagNotFound(..) => "canonical.tag_not_found",
-            Self::TagInUse(..) => "canonical.tag_in_use",
-            Self::InvalidSavedView(..) => "canonical.invalid_saved_view",
+            Self::TagInUse { .. } => "canonical.tag_in_use",
+            Self::InvalidSavedView { .. } => "canonical.invalid_saved_view",
             Self::SavedViewNotFound(..) => "canonical.saved_view_not_found",
             Self::InvalidClassificationDimension(..) => {
                 "canonical.invalid_classification_dimension"
@@ -658,6 +675,8 @@ impl fmt::Display for CanonicalError {
             Self::InvalidProductionCode => formatter.write_str("production code must be 1..64 bytes of A-Z, 0-9, underscore or hyphen"),
             Self::DuplicateProductionCode(code) => write!(formatter, "production code {code} is already assigned in this document"),
             Self::InvalidProductionCodePath(path) => write!(formatter, "production code path {path:?} is not a physical instance or has been rebound; clear its code first"),
+            Self::ContactJointPartNotFound { joint, path } => write!(formatter, "contact joint {joint:?} names part {path:?}, which is not placed in the model"),
+            Self::GroundedPathNotFound(path) => write!(formatter, "grounded part {path:?} is not placed in the model"),
             Self::IdExhausted => formatter.write_str("canonical ID space is exhausted"),
             Self::WrongNodeKind(id) => write!(formatter, "node {} has the wrong kind", id.0),
             Self::OverrideAlreadyExists(id) => write!(formatter, "override {id} already exists"),
@@ -684,12 +703,20 @@ impl fmt::Display for CanonicalError {
             }
             Self::TagAlreadyExists(id) => write!(formatter, "tag {} already exists", id.0),
             Self::TagNotFound(id) => write!(formatter, "tag {} does not exist", id.0),
-            Self::TagInUse(id) => write!(formatter, "tag {} is still assigned", id.0),
-            Self::InvalidSavedView(id) => write!(
-                formatter,
-                "saved view {} needs a unique name, a finite camera and existing tags",
-                id.0
-            ),
+            Self::TagInUse {
+                tag,
+                holder,
+                holders,
+            } => {
+                write!(formatter, "tag {} is still assigned to {holder}", tag.0)?;
+                if *holders > 1 {
+                    write!(formatter, " and {} more parts", holders - 1)?;
+                }
+                Ok(())
+            }
+            Self::InvalidSavedView { id, problem } => {
+                write!(formatter, "saved view {} {problem}", id.0)
+            }
             Self::SavedViewNotFound(id) => write!(formatter, "saved view {} does not exist", id.0),
             Self::InvalidClassificationDimension(id) => {
                 write!(formatter, "classification dimension {} is invalid", id.0)
@@ -750,6 +777,62 @@ impl fmt::Display for CanonicalError {
             Self::Prismatic(error) => error.fmt(formatter),
             Self::Space(error) => error.fmt(formatter),
             Self::Caused { error, cause } => write!(formatter, "{error}: {cause}"),
+        }
+    }
+}
+
+/// A part that carries a tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TagHolder {
+    Occurrence(OccurrenceId),
+    LocalOccurrence(LocalOccurrenceKey),
+}
+
+impl fmt::Display for TagHolder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Occurrence(id) => write!(formatter, "occurrence {}", id.0),
+            Self::LocalOccurrence(key) => write!(
+                formatter,
+                "local occurrence {} of definition {}",
+                key.local_id.0, key.definition_id.0
+            ),
+        }
+    }
+}
+
+/// Why a saved view cannot be stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SavedViewProblem {
+    /// Stored under another ID than its own.
+    IdMismatch,
+    /// Another saved view already has this name.
+    NameTaken(SavedViewId),
+    CameraNotFinite,
+    /// The section plane has no direction or a non-finite point.
+    InvalidSection,
+    /// A display switch name is empty or blank.
+    BlankStyle,
+    /// It hides a tag that does not exist.
+    MissingTag(TagId),
+}
+
+impl fmt::Display for SavedViewProblem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IdMismatch => write!(formatter, "is stored under another ID"),
+            Self::NameTaken(other) => {
+                write!(formatter, "has the same name as saved view {}", other.0)
+            }
+            Self::CameraNotFinite => write!(formatter, "has a camera that is not finite"),
+            Self::InvalidSection => {
+                write!(
+                    formatter,
+                    "has a section plane without a direction or a finite point"
+                )
+            }
+            Self::BlankStyle => write!(formatter, "has a blank display switch name"),
+            Self::MissingTag(tag) => write!(formatter, "hides tag {} that does not exist", tag.0),
         }
     }
 }

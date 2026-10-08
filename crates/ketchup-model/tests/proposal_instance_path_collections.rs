@@ -294,3 +294,43 @@ fn an_anchor_outside_the_reshaped_definition_does_not_stale_a_local_deletion() {
             .instance_is_grounded(&InstancePath::root(OccurrenceId(22)))
     );
 }
+
+#[test]
+fn an_unplaced_joint_part_or_grounded_path_is_rejected_by_name_and_path() {
+    let mut document = assembly();
+    let missing = InstancePath::root(OccurrenceId(30))
+        .with_step(InstancePathStep::Occurrence(LocalOccurrenceId(9)));
+    let before = document.current().canonical_digest();
+
+    let joint_error = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetContactJoints {
+                joints: vec![ContactJoint {
+                    name: "spoj 81".into(),
+                    parts: [InstancePath::root(OccurrenceId(20)), missing.clone()],
+                    max_gap_mm: 0.5,
+                }],
+            },
+        ]))
+        .err()
+        .unwrap();
+    assert_eq!(
+        joint_error,
+        CanonicalError::ContactJointPartNotFound {
+            joint: "spoj 81".into(),
+            path: missing.clone(),
+        }
+    );
+    assert!(joint_error.to_string().contains("spoj 81"), "{joint_error}");
+
+    let ground_error = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetGroundedInstances {
+                paths: [InstancePath::root(OccurrenceId(20)), missing.clone()].into(),
+            },
+        ]))
+        .err()
+        .unwrap();
+    assert_eq!(ground_error, CanonicalError::GroundedPathNotFound(missing));
+    assert_eq!(document.current().canonical_digest(), before);
+}

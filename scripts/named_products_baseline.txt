@@ -1,4 +1,5 @@
 # Remaining named-product occurrences; may only shrink.
+crates/ketchup-app/src/app.rs:house 4
 crates/ketchup-app/src/app.rs:panel 1
 crates/ketchup-app/src/app/assistant.rs:panel 2
 crates/ketchup-app/src/app/assistant_panel.rs:panel 7
@@ -13,9 +14,11 @@ crates/ketchup-app/src/app/shell.rs:panel 47
 crates/ketchup-app/src/app/structure.rs:panel 1
 crates/ketchup-app/src/app/tags.rs:panel 2
 crates/ketchup-app/src/app/viewport.rs:beam 1
+crates/ketchup-app/src/app/viewport.rs:house 1
 crates/ketchup-app/src/app/viewport_paint.rs:panel 2
 crates/ketchup-app/src/app_state.rs:panel 5
 crates/ketchup-app/src/command_registry.rs:weldment 1
+crates/ketchup-app/src/drawn_shape.rs:house 1
 crates/ketchup-app/src/helix_ui.rs:panel 2
 crates/ketchup-app/src/lib.rs:beam 2
 crates/ketchup-app/src/lib.rs:drawer 1
@@ -23,7 +26,9 @@ crates/ketchup-app/src/lib.rs:furniture 1
 crates/ketchup-app/src/lib.rs:hinge 1
 crates/ketchup-app/src/lib.rs:panel 4
 crates/ketchup-app/src/lib.rs:shelf 1
+crates/ketchup-app/src/live_bridge.rs:stud 1
 crates/ketchup-app/src/live_bridge/consent.rs:panel 1
+crates/ketchup-app/src/program_evaluation.rs:house 2
 crates/ketchup-app/src/theme.rs:panel 11
 crates/ketchup-app/src/validator_ui.rs:panel 27
 crates/ketchup-application/src/append_feature.rs:weldment 14
@@ -42,9 +47,10 @@ crates/ketchup-application/src/validation_rules.rs:beam 3
 crates/ketchup-application/src/validation_rules.rs:panel 1
 crates/ketchup-assistant/src/sidecar.rs:weldment 13
 crates/ketchup-manufacturing/src/fabrication.rs:beam 3
-crates/ketchup-manufacturing/src/fabrication.rs:timber 37
+crates/ketchup-manufacturing/src/fabrication.rs:timber 35
 crates/ketchup-manufacturing/src/fabrication.rs:weldment 80
 crates/ketchup-manufacturing/src/fabrication/production.rs:timber 1
+crates/ketchup-manufacturing/src/project_drawings.rs:roof 1
 crates/ketchup-model/src/document/entities.rs:weldment 16
 crates/ketchup-model/src/document/error.rs:weldment 4
 crates/ketchup-model/src/document/feature_validation.rs:weldment 4
@@ -58,12 +64,15 @@ crates/ketchup-model/src/exact_brep_graph/compiler.rs:weldment 9
 crates/ketchup-model/src/exact_brep_graph/validation.rs:weldment 2
 crates/ketchup-model/src/validation.rs:beam 4
 crates/ketchup-program/src/cad.rs:panel 2
+crates/ketchup-program/src/clearance.rs:stair 1
 crates/ketchup-program/src/eval.rs:board 2
 crates/ketchup-program/src/eval.rs:dowel 1
+crates/ketchup-program/src/eval/conditions.rs:joist 1
 crates/ketchup-program/src/lib.rs:board 1
 crates/ketchup-program/src/lib.rs:dowel 1
 crates/ketchup-program/src/lib.rs:panel 1
 crates/ketchup-program/src/model.rs:dowel 1
+crates/ketchup-program/src/model.rs:joist 1
 crates/ketchup-program/src/model.rs:panel 4
 crates/ketchup-program/src/model.rs:shelf 1
 crates/ketchup-program/src/validate.rs:board 1

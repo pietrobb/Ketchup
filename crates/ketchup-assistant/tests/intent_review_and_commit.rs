@@ -2815,7 +2815,11 @@ fn delete_tag_rejects_denied_missing_assigned_and_stale_assignment() {
     assert!(matches!(
         concurrent_store.commit_verified_proposal(&proposal),
         Err(ProposalCommitError::Preparation(
-            ProposalPrepareError::Canonical(ketchup_model::document::CanonicalError::TagInUse(TAG))
+            ProposalPrepareError::Canonical(ketchup_model::document::CanonicalError::TagInUse {
+                tag: TAG,
+                holder: ketchup_model::document::TagHolder::Occurrence(OCCURRENCE),
+                holders: 1,
+            })
         ))
     ));
     assert_eq!(

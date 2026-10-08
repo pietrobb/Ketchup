@@ -683,7 +683,13 @@ struct SolvedSketchLoop {
 
 #[derive(Clone, Copy)]
 enum RegionCurve {
-    Line { start: [f64; 2], end: [f64; 2] },
+    /// `slack` is how far the true boundary may lie from this piece: zero for a
+    /// drawn line, the flattening tolerance for a piece of a cubic.
+    Line {
+        start: [f64; 2],
+        end: [f64; 2],
+        slack: f64,
+    },
     Arc(RegionArc),
 }
 

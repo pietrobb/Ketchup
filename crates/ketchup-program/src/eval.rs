@@ -67,6 +67,37 @@ struct State {
     log: RefCell<Vec<String>>,
     part_sources: RefCell<BTreeMap<String, BTreeSet<SourceLines>>>,
     faces: face_cache::FaceCache,
+    /// Every part, tool and group name so far, and the group each member
+    /// joined. Names only grow during an evaluation, so the uniqueness checks
+    /// look them up here instead of scanning the model for every new part.
+    names: RefCell<BTreeMap<String, Named>>,
+    group_of: RefCell<BTreeMap<String, String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Named {
+    Part,
+    Tool,
+    Group,
+}
+
+impl State {
+    fn name_taken(&self, name: &str) -> bool {
+        self.names.borrow().contains_key(name)
+    }
+
+    fn take_name(&self, name: &str, named: Named) {
+        self.names.borrow_mut().insert(name.to_owned(), named);
+    }
+
+    /// Records a group and the parent of each of its members.
+    fn take_group(&self, group: &crate::model::ProgramGroup) {
+        self.take_name(&group.name, Named::Group);
+        let mut group_of = self.group_of.borrow_mut();
+        for member in &group.members {
+            group_of.insert(member.clone(), group.name.clone());
+        }
+    }
 }
 
 /// An inclusive, 1-based line range of the user's program.
@@ -799,10 +830,7 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
     part.refresh_feature_tree();
     let mut model = state.model.borrow_mut();
     let name = &part.name;
-    if model.part(name).is_some()
-        || model.tool(name).is_some()
-        || model.groups.iter().any(|group| &group.name == name)
-    {
+    if state.name_taken(name) {
         anyhow::bail!("part {name:?} already exists; part names are identities and must be unique");
     }
     if model.parts.len() + model.tools.len() >= MAX_PARTS {
@@ -813,6 +841,7 @@ fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part
     } else {
         model.parts.push(part.clone());
     }
+    state.take_name(&part.name, if tool { Named::Tool } else { Named::Part });
     Ok(part)
 }
 

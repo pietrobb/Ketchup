@@ -169,12 +169,6 @@ impl KetchupApp {
     pub(crate) fn tag_deletion_source_plan(&self, id: TagId) -> Option<TagDeletionSourcePlan> {
         let snapshot = self.document.current();
         let tag = snapshot.tag(id)?;
-        if snapshot
-            .local_occurrences()
-            .any(|occurrence| occurrence.tags().contains(&id))
-        {
-            return None;
-        }
         Some(TagDeletionSourcePlan {
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
@@ -189,6 +183,11 @@ impl KetchupApp {
                 .occurrences_with_tag(id)
                 .map(|occurrence| occurrence.id())
                 .collect(),
+            local_occurrences: snapshot
+                .local_occurrences()
+                .filter(|occurrence| occurrence.tags().contains(&id))
+                .map(ketchup_model::document::LocalOccurrence::key)
+                .collect(),
         })
     }
 
@@ -197,12 +196,18 @@ impl KetchupApp {
         source: &TagDeletionSourcePlan,
     ) -> Option<TagDeletionPlan> {
         (self.tag_deletion_source_plan(source.id).as_ref() == Some(source)).then_some(())?;
+        let snapshot = self.document.current();
         let mut commands = tag_membership_commands(
-            &self.document.current(),
+            &snapshot,
             source.occurrence_ids.iter().copied(),
             source.id,
             false,
         );
+        for key in &source.local_occurrences {
+            let mut tags = snapshot.local_occurrence(*key)?.tags().clone();
+            tags.remove(&source.id);
+            commands.push(CanonicalCommand::SetLocalOccurrenceTags { key: *key, tags });
+        }
         commands.push(CanonicalCommand::DeleteTag { id: source.id });
         Some(TagDeletionPlan {
             source: source.clone(),

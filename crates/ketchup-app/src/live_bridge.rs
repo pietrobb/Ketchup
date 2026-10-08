@@ -11,7 +11,9 @@
 //! an optional `expected` stamp only guards against a concurrent human edit.
 //! Images are callback-correlated CAD-only PNG thumbnails; geometry completeness is not claimed.
 
-use crate::{ActiveTool, AppCommand, KetchupApp, SelectionId, WorkRecoveryMutationError};
+use crate::{
+    ActiveTool, AppCommand, KetchupApp, SaveFailure, SelectionId, WorkRecoveryMutationError,
+};
 use eframe::egui;
 use ketchup_application::rejections::rejected;
 use ketchup_application::{
@@ -494,6 +496,14 @@ program action=apply.";
 /// A text field left focused in a window the user switched away from does not count.
 fn ui_busy(context: &egui::Context) -> bool {
     busy::sample_input(context).is_busy()
+}
+
+const fn save_rejection(failure: SaveFailure) -> &'static str {
+    match failure {
+        SaveFailure::Cancelled => "request_cancelled",
+        SaveFailure::Declined => "save_declined",
+        SaveFailure::Failed => "save_rejected",
+    }
 }
 
 fn program_owned(app: &KetchupApp) -> bool {
@@ -1946,14 +1956,19 @@ impl LiveBridge {
             let saved = app.save_document_to_while(path, || {
                 !cancelled.load(Ordering::Acquire) && started.elapsed() <= deadline
             });
-            if saved {
-                (true, "saved", None)
-            } else if cancelled.load(Ordering::Acquire) {
-                (false, "committed_but_unsaved", Some("request_cancelled"))
-            } else if started.elapsed() > deadline {
-                (false, "committed_but_unsaved", Some("job_timeout"))
-            } else {
-                (false, "committed_but_unsaved", Some("save_rejected"))
+            match saved {
+                Ok(()) => (true, "saved", None),
+                Err(_) if cancelled.load(Ordering::Acquire) => {
+                    (false, "committed_but_unsaved", Some("request_cancelled"))
+                }
+                Err(_) if started.elapsed() > deadline => {
+                    (false, "committed_but_unsaved", Some("job_timeout"))
+                }
+                Err(failure) => (
+                    false,
+                    "committed_but_unsaved",
+                    Some(save_rejection(failure)),
+                ),
             }
         } else {
             (false, "not_requested", None)
@@ -2475,9 +2490,8 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
                 let path = app.file.path.clone().ok_or("save_path_required")?;
-                if !app.save_document_to_while(&path, || !cancelled.load(Ordering::Acquire)) {
-                    return Err("save_rejected");
-                }
+                app.save_document_to_while(&path, || !cancelled.load(Ordering::Acquire))
+                    .map_err(save_rejection)?;
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
             }
             Request::SaveAs { expected, path } => {
@@ -2486,11 +2500,8 @@ impl LiveBridge {
                 if !drawings::local_absolute_path(&path) {
                     return Err("invalid_path");
                 }
-                if !app
-                    .save_document_to_while(Path::new(&path), || !cancelled.load(Ordering::Acquire))
-                {
-                    return Err("save_rejected");
-                }
+                app.save_document_to_while(Path::new(&path), || !cancelled.load(Ordering::Acquire))
+                    .map_err(save_rejection)?;
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
             }
             request @ Request::ExportDrawings { .. } => {
@@ -2505,10 +2516,10 @@ impl LiveBridge {
                     return Err("invalid_path");
                 }
                 if !app.confirm_live_open_path(Path::new(&path)) {
-                    return Err("open_rejected");
+                    return Err("open_declined");
                 }
                 if !app.confirm_discard_if_dirty() {
-                    return Err("open_rejected");
+                    return Err("discard_declined");
                 }
                 Self::require_request_authority(cancelled)?;
                 if !app.open_document_with_discard(Path::new(&path), true) {

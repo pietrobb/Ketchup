@@ -15,7 +15,7 @@ use crate::continuous_span::{self, Piece};
 use crate::eval::TOLERANCE_MM;
 use crate::load_path::{joint_points, on_floor};
 use crate::model::{Part, ProgramModel, ProgramPartBody};
-use ketchup_geometry::linalg::{self, cross, dot, length};
+use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -134,10 +134,6 @@ fn add(into: &mut Loads, from: &Loads, factor: f64) {
     for (kind, value) in from {
         *into.entry(kind.clone()).or_default() += value * factor;
     }
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] - b[i])
 }
 
 /// Area of a planar polygon in space.
@@ -687,6 +683,11 @@ fn rounded(loads: &Loads) -> Loads {
 /// Loads on every load-path member, when the program declares weights or area loads.
 #[must_use]
 pub fn loads(model: &ProgramModel) -> LoadReport {
+    loads_with(model, &mut ContactFaces::default())
+}
+
+/// [`loads`] reusing the contacts the load path already measured into `faces`.
+pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'a>) -> LoadReport {
     if model.load_paths.is_empty() || (model.weight_scope.is_empty() && model.area_loads.is_empty())
     {
         return LoadReport::default();
@@ -721,7 +722,6 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
     // What each part rests on, and what else it touches from below or the side.
     let mut rests: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
     let mut leans: Vec<Vec<Support>> = parts.iter().map(|_| Vec::new()).collect();
-    let mut faces = ContactFaces::default();
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..parts.len()).collect();
     order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
@@ -783,7 +783,7 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
         let (Some(a), Some(b)) = (index(&joint.parts[0]), index(&joint.parts[1])) else {
             continue;
         };
-        let points = joint_points(joint, &mut faces, &parts[a], &parts[b]);
+        let points = joint_points(joint, faces, &parts[a], &parts[b]);
         rests[a].push(Support {
             supporter: b,
             points,
@@ -1015,4 +1015,35 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
         });
     }
     report
+}
+
+#[cfg(test)]
+mod shared_contact_tests {
+    use super::*;
+    use crate::exact::ExactShapes;
+
+    /// The loads take the contacts the load path measured instead of
+    /// measuring every pair a second time, and come out the same.
+    #[test]
+    fn the_loads_reuse_the_contacts_the_load_path_measured() {
+        let source = "
+load_path(only = [\"frame\"])
+self_weight([\"frame\"])
+box(\"post a\", (100, 100, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"post b\", (100, 100, 2000), at = (2900, 0, 0), material = \"C24\", tags = [\"frame\"])
+box(\"beam\", (3000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+";
+        let model = crate::evaluate("shared.star", source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        let mut faces = ContactFaces::default();
+        crate::validate::validate_with_faces(&model, &ExactShapes::default(), &mut faces);
+        let (measured, reused) = faces.measured_and_reused();
+        assert!(measured > 0);
+        let shared = loads_with(&model, &mut faces);
+        // Every pair the loads look at was already measured.
+        assert_eq!(faces.measured_and_reused(), (measured, reused + measured));
+        assert_eq!(shared.members.len(), 3);
+        assert_eq!(shared, loads(&model));
+    }
 }

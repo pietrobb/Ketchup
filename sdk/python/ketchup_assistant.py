@@ -20,6 +20,8 @@ from ketchup_assistant_protocol import (  # noqa: E402, F401
     MAX_INSPECT_ROUNDS,
     MAX_LINE_BYTES,
     MAX_MESSAGE_CHARS,
+    MAX_NAME_BYTES,
+    MAX_TEXT_BYTES,
     MAX_U64,
     MEASURE_BOUNDS_PARAMETERS,
     PLAN_LINEAR_ARRAY_PARAMETERS,

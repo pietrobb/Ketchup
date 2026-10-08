@@ -135,7 +135,10 @@ fn definition_inputs_unchanged(before: &ProductModel, product: &ProductModel) ->
         && same_entries(&before.tags, &product.tags)
 }
 
-fn same_entries<K: Ord, V>(before: &BTreeMap<K, Arc<V>>, after: &BTreeMap<K, Arc<V>>) -> bool {
+pub(super) fn same_entries<K: Ord, V>(
+    before: &BTreeMap<K, Arc<V>>,
+    after: &BTreeMap<K, Arc<V>>,
+) -> bool {
     before.len() == after.len()
         && before
             .iter()
@@ -308,20 +311,14 @@ fn validate_document_entries(
         ensure_product_id(tag.id.0)?;
         ensure_name(&tag.name)?;
     }
-    let mut view_names = BTreeSet::new();
     for (id, view) in &product.saved_views {
-        if *id != view.id
-            || ensure_product_id(id.0).is_err()
-            || ensure_name(&view.name).is_err()
-            || !view_names.insert(view.name.as_str())
-            || !view.is_well_formed()
-            || !view
-                .hidden_tags
-                .iter()
-                .all(|tag| product.tags.contains_key(tag))
-        {
-            return Err(CanonicalError::InvalidSavedView(*id));
+        if *id != view.id {
+            return Err(CanonicalError::InvalidSavedView {
+                id: *id,
+                problem: SavedViewProblem::IdMismatch,
+            });
         }
+        super::saved_view_commands::validate_saved_view(product, view)?;
     }
     for (id, collection) in &product.collections {
         if *id != collection.id {

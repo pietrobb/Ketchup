@@ -1964,11 +1964,17 @@ impl SavedView {
         &self.name
     }
 
-    /// Finite camera and section and non-blank display switch names.
-    pub(crate) fn is_well_formed(&self) -> bool {
-        self.camera.is_finite()
-            && self.section.is_none_or(|section| section.is_valid())
-            && self.style.iter().all(|flag| !flag.trim().is_empty())
+    /// What is wrong with the camera, section or display switch names, if anything.
+    pub(crate) fn shape_problem(&self) -> Option<SavedViewProblem> {
+        if !self.camera.is_finite() {
+            Some(SavedViewProblem::CameraNotFinite)
+        } else if self.section.is_some_and(|section| !section.is_valid()) {
+            Some(SavedViewProblem::InvalidSection)
+        } else if self.style.iter().any(|flag| flag.trim().is_empty()) {
+            Some(SavedViewProblem::BlankStyle)
+        } else {
+            None
+        }
     }
 }
 

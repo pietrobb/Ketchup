@@ -248,6 +248,42 @@ fn face_offset_of_a_curved_extrusion_cap_keeps_each_side_one_smooth_face() {
     }
 }
 
+/// A cubic whose first handle sits on its start has no tangent there, so the side
+/// face built on it has no normal along that edge. Merging the offset's side with
+/// it must fall back to the unmerged shape there instead of failing the offset.
+/// (Cutting the unmerged side inward is beyond OCCT's boolean and stays an error.)
+#[test]
+fn face_offset_over_a_side_without_a_normal_at_its_edge_still_completes() {
+    let backend = ExactBackend::new();
+    let profile = [
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [40.0, 0.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [40.0, 0.0],
+            control_1_mm: [40.0, 0.0],
+            control_2_mm: [40.0, 30.0],
+            end_mm: [0.0, 30.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 30.0],
+            end_mm: [0.0, 0.0],
+        },
+    ];
+    let base = backend.extrude_mixed_profile(&profile, 30.0).unwrap();
+    let top = top_face_ordinal(&backend, &base.body, 30.0);
+    let offset = backend.offset_body_face(&base.body, top, 12.0).unwrap();
+    assert_valid(&offset);
+    assert_close(offset.body.topology.bounds_mm.max.z, 42.0);
+    let expected_volume = base.body.topology.volume_mm3 * 42.0 / 30.0;
+    assert!(
+        (offset.body.topology.volume_mm3 - expected_volume).abs() < expected_volume * 1e-6,
+        "{} != {expected_volume}",
+        offset.body.topology.volume_mm3
+    );
+}
+
 #[test]
 fn maximum_length_may_end_exactly_at_positive_coordinate_limit() {
     let output = ExactBackend::new()

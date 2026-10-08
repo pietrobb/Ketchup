@@ -324,6 +324,12 @@ pub enum CanonicalCommand {
         key: LocalOccurrenceKey,
         color: Option<[u8; 3]>,
     },
+    /// The layers of a part inside a definition, as `SetOccurrenceTags` sets
+    /// them for a root part.
+    SetLocalOccurrenceTags {
+        key: LocalOccurrenceKey,
+        tags: BTreeSet<TagId>,
+    },
     RenameLocalOccurrence {
         key: LocalOccurrenceKey,
         name: String,

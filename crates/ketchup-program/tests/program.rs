@@ -462,6 +462,42 @@ fn params_take_overrides_report_unknown_ones_and_check_ranges() {
     );
 }
 
+/// A program at the part limit still evaluates and still refuses a name
+/// that a part, a tool or a group already has, at any position.
+#[test]
+fn a_program_of_the_maximum_part_count_keeps_part_names_unique() {
+    let parts = ketchup_program::eval::MAX_PARTS - 2;
+    let source = format!(
+        "for i in range({parts}):\n    box(\"part %d\" % i, (1, 1, 1), at = (2 * i, 0, 0))\n\
+         box(\"cutter\", (1, 1, 1), tool = True)\ngroup(\"set\", [\"part 0\", \"part 1\"])\n"
+    );
+    let started = std::time::Instant::now();
+    let evaluated = ketchup_program::evaluate("many.star", &source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+    eprintln!("evaluated {parts} parts in {:?}", started.elapsed());
+    assert_eq!(evaluated.model.parts.len(), parts);
+    assert_eq!(
+        evaluated
+            .model
+            .part(&format!("part {}", parts - 1))
+            .map(|part| part.at_mm),
+        Some([2.0 * (parts - 1) as f64, 0.0, 0.0])
+    );
+    for taken in ["part 0", &format!("part {}", parts - 1), "cutter", "set"] {
+        let error = ketchup_program::evaluate(
+            "many.star",
+            &format!("{source}box(\"{taken}\", (1, 1, 1))\n"),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("already exists"),
+            "{taken}: {}",
+            error.message
+        );
+    }
+}
+
 #[test]
 fn errors_name_the_line_and_the_cause() {
     let error = run(

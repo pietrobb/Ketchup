@@ -170,9 +170,14 @@ fn contacts_with_faces(
     found
 }
 
+/// Face frames by part and the contacts of each pair asked for, so the load
+/// path and the loads measure every pair once.
 #[derive(Default)]
 pub(crate) struct ContactFaces<'a> {
     faces: std::collections::BTreeMap<&'a str, Vec<FaceFrame>>,
+    pairs: std::collections::BTreeMap<(&'a str, &'a str), Vec<Contact>>,
+    #[cfg(test)]
+    reused: usize,
 }
 impl<'a> ContactFaces<'a> {
     fn cache(&mut self, a: &'a Part, b: &'a Part) -> bool {
@@ -201,18 +206,36 @@ impl<'a> ContactFaces<'a> {
 
     /// Every face patch the parts share, not only the largest.
     pub fn contacts(&mut self, a: &'a Part, b: &'a Part) -> Vec<Contact> {
-        if !self.cache(a, b) {
-            return Vec::new();
+        let key = (a.name.as_str(), b.name.as_str());
+        if let Some(found) = self.pairs.get(&key) {
+            #[cfg(test)]
+            {
+                self.reused += 1;
+            }
+            return found.clone();
         }
-        contacts_with_faces(
-            a,
-            b,
-            &self.faces[a.name.as_str()],
-            &self.faces[b.name.as_str()],
-        )
-        .into_iter()
-        .map(|(_, found)| found)
-        .collect()
+        let found: Vec<Contact> = if self.cache(a, b) {
+            contacts_with_faces(
+                a,
+                b,
+                &self.faces[a.name.as_str()],
+                &self.faces[b.name.as_str()],
+            )
+            .into_iter()
+            .map(|(_, found)| found)
+            .collect()
+        } else {
+            Vec::new()
+        };
+        self.pairs.insert(key, found.clone());
+        found
+    }
+
+    /// How many pairs had their contacts measured, and how many answers
+    /// came from that cache.
+    #[cfg(test)]
+    pub fn measured_and_reused(&self) -> (usize, usize) {
+        (self.pairs.len(), self.reused)
     }
 }
 fn planar_faces(part: &Part) -> Vec<FaceFrame> {

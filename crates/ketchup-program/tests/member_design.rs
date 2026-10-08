@@ -324,13 +324,49 @@ fn every_member_of_the_house_has_a_utilization_and_passes_once_the_snow_is_given
     assert_eq!(members.len(), with.loads.members.len());
     assert!(members.len() > 200, "{}", members.len());
     assert!(!with.design.basis.is_empty());
+    let mut spans = 0;
     for member in members {
-        assert!(member.utilization.is_some(), "{member:?}");
         assert_eq!(member.missing, Vec::<String>::new(), "{}", member.part);
         assert_eq!(member.status, "pass", "{member:?}");
+        // A pass stands on every check of its role having run with a load,
+        // not on checks that were skipped.
+        // A plate bedded along its whole length has no span to bend; a beam
+        // with a span has every span check.
+        let spanning = member.checks.iter().any(|check| check.name == "bending");
+        if spanning {
+            spans += 1;
+        }
+        let required: &[&str] = if member.role == "column" {
+            &["compression"]
+        } else if spanning {
+            &["bending", "shear", "deflection_inst", "deflection_fin"]
+        } else {
+            &[]
+        };
+        for check in required {
+            let value = utilization(member, check);
+            assert!((0.0..=1.0).contains(&value), "{check} {value} {member:?}");
+        }
+        let governing = member
+            .checks
+            .iter()
+            .max_by(|a, b| a.utilization.total_cmp(&b.utilization))
+            .expect("checks");
+        assert_eq!(
+            member.utilization,
+            Some(governing.utilization),
+            "{member:?}"
+        );
+        assert_eq!(
+            member.governing.as_deref(),
+            Some(governing.name),
+            "{member:?}"
+        );
     }
     let columns = members.iter().filter(|m| m.role == "column").count();
     assert!(columns > 50, "{columns}");
+    // Joists, rafters, headers and plates over gaps: fewer means checks were skipped.
+    assert!(spans >= 75, "{spans} of {}", members.len());
     // The rafters sit on the wall plate with a birdsmouth: the notch is checked.
     let rafter = member(&with, "konštrukcia/strecha južná/krokva 3");
     for check in [

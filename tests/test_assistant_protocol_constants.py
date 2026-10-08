@@ -42,7 +42,26 @@ def handwritten_protocol_constants(source):
     return found
 
 
+BARE_BYTE_LIMIT = re.compile(r"""\.encode\("utf-8"\)\)\s*[<>]=?\s*\d""")
+
+
+def bare_byte_limits(source):
+    """Byte-length checks against a number literal instead of a generated limit."""
+    return [
+        number
+        for number, line in enumerate(source.splitlines(), start=1)
+        if BARE_BYTE_LIMIT.search(line)
+    ]
+
+
 class AssistantProtocolConstantsTest(unittest.TestCase):
+    def test_byte_length_limits_use_the_generated_constants(self):
+        self.assertEqual(bare_byte_limits(PROTOCOL.read_text(encoding="utf-8")), [])
+
+    def test_guard_reports_a_bare_byte_limit(self):
+        source = 'ok = len(a.encode("utf-8")) > MAX_NAME_BYTES\nbad = len(b.encode("utf-8")) > 128\n'
+        self.assertEqual(bare_byte_limits(source), [2])
+
     def test_protocol_constants_come_only_from_the_generated_block(self):
         self.assertEqual(handwritten_protocol_constants(PROTOCOL.read_text(encoding="utf-8")), [])
 

@@ -111,6 +111,35 @@ fn assembly_grounding_is_inherited_and_instance_override_only_changes_its_root()
     );
 }
 
+/// Support spreads up a tall stack declared from the top down, the order
+/// in which one pass over the parts settles only one more level, and through
+/// a joint across a gap. Only the box touching nothing floats.
+#[test]
+fn support_reaches_the_top_of_a_stack_declared_top_down_and_across_a_joint_gap() {
+    const LEVELS: usize = 400;
+    let mut source = String::new();
+    for level in (0..LEVELS).rev() {
+        source.push_str(&format!(
+            "box('level {level}',(10,10,10),at=(0,0,{}))\n",
+            level * 10
+        ));
+    }
+    source.push_str(&format!(
+        "box('tag',(10,10,10),at=(12,0,{}))\njoint('tag','level {}',kind='screw',max_gap=5)\n",
+        (LEVELS - 1) * 10,
+        LEVELS - 1
+    ));
+    source.push_str("box('detached',(10,10,10),at=(100,0,50))\n");
+    let (_, report) = run("stack.star", &source, &BTreeMap::new()).unwrap();
+    let floating: Vec<_> = report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == "floating_part")
+        .map(|issue| issue.parts.clone())
+        .collect();
+    assert_eq!(floating, [["detached"]]);
+}
+
 #[test]
 fn floor_requires_one_finite_world_height() {
     for (source, reason) in [

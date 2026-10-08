@@ -31,6 +31,13 @@ fn a_beam_touching_posts_only_from_the_side_is_not_carried_until_hangers_carry_i
 joint(beam, \"post b\", kind = \"hanger\", bearing = True)\n"
     );
     assert_eq!(not_carried(&hung), Vec::<String>::new());
+    // A bearing joint carries its first part into its second, as the loads
+    // read it: the posts hanging from the beam do not hold the beam up.
+    let reversed = format!(
+        "{hanging}joint(\"post a\", beam, kind = \"hanger\", bearing = True)
+joint(\"post b\", beam, kind = \"hanger\", bearing = True)\n"
+    );
+    assert_eq!(not_carried(&reversed), ["beam"]);
     // A joint that only holds the beam in place carries nothing.
     let held = format!(
         "{hanging}joint(beam, \"post a\", kind = \"screw\")

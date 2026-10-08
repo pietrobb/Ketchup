@@ -129,6 +129,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Send the cursor with the unchanged query that returned it, or drop the cursor.",
     ),
     entry(
+        "discard_declined",
+        Validation,
+        "document",
+        "The window has unsaved changes and the user kept them; nothing was opened.",
+        "Save the document first, or ask the user to discard the changes.",
+    ),
+    entry(
         "drawings_target_exists",
         Request,
         "path",
@@ -332,11 +339,18 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Create the workset again from the current document.",
     ),
     entry(
+        "open_declined",
+        Validation,
+        "path",
+        "The user did not allow opening this file in the window.",
+        "Ask the user to open it, or confirm the open prompt in the window.",
+    ),
+    entry(
         "open_rejected",
         Validation,
         "path",
-        "The window did not open the file.",
-        "Pass an existing Kečup document and confirm discarding unsaved changes when asked.",
+        "The file could not be opened as a Kečup document; the window status names why.",
+        "Pass a readable Kečup document, or a file that needs no migration review.",
     ),
     entry(
         "output_too_large",
@@ -437,6 +451,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "The connection stays open: read inspect action=status (it answers once the window is free) before sending the request again.",
     ),
     entry(
+        "save_declined",
+        Validation,
+        "save",
+        "The user refused to overwrite the file or to save without the Undo history.",
+        "Ask the user, or save as a new path; nothing was written.",
+    ),
+    entry(
         "save_path_required",
         Validation,
         "save",
@@ -447,7 +468,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "save_rejected",
         Io,
         "save",
-        "The document could not be written.",
+        "The document could not be written; the window status names why.",
         "Choose a writable path and save again.",
     ),
     entry(

@@ -54,6 +54,7 @@ mod viewport_paint;
 
 pub(crate) use assistant::*;
 pub(crate) use commands::*;
+pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;
 #[cfg(test)]
 pub(crate) use section::SECTION_COLOR;

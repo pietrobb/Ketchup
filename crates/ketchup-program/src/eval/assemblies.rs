@@ -2,26 +2,24 @@
 use super::*;
 use crate::model::{ProgramComponent, ProgramGroup, ProgramInstance};
 
-fn check_name(model: &ProgramModel, name: &str) -> anyhow::Result<()> {
+fn check_name(state: &State, name: &str) -> anyhow::Result<()> {
     if name.trim().is_empty() || name.chars().any(char::is_control) {
         anyhow::bail!("group name must be non-empty printable text");
     }
-    if model.part(name).is_some()
-        || model.tool(name).is_some()
-        || model.groups.iter().any(|group| group.name == name)
-    {
+    if state.name_taken(name) {
         anyhow::bail!("group {name:?} already exists; use a unique part or group name");
     }
     Ok(())
 }
 
 fn add_group(
+    state: &State,
     model: &mut ProgramModel,
     name: &str,
     members: Vec<String>,
     grounded: bool,
 ) -> anyhow::Result<()> {
-    check_name(model, name)?;
+    check_name(state, name)?;
     if model.groups.len() >= MAX_PARTS {
         anyhow::bail!("more than {MAX_PARTS} groups; check the program for a runaway loop");
     }
@@ -30,27 +28,27 @@ fn add_group(
         if !unique.insert(member) {
             anyhow::bail!("group {name:?} lists {member:?} twice; list each member once");
         }
-        if model.part(member).is_none() && !model.groups.iter().any(|group| &group.name == member) {
+        if !matches!(
+            state.names.borrow().get(member),
+            Some(Named::Part | Named::Group)
+        ) {
             anyhow::bail!(
                 "group {name:?} refers to unknown member {member:?}; declare the part or group first"
             );
         }
-        if let Some(parent) = model
-            .groups
-            .iter()
-            .find(|group| group.members.contains(member))
-        {
+        if let Some(parent) = state.group_of.borrow().get(member) {
             anyhow::bail!(
-                "{member:?} already belongs to group {:?}; a member can have only one parent",
-                parent.name
+                "{member:?} already belongs to group {parent:?}; a member can have only one parent"
             );
         }
     }
-    model.groups.push(ProgramGroup {
+    let group = ProgramGroup {
         name: name.to_owned(),
         grounded,
         members,
-    });
+    };
+    state.take_group(&group);
+    model.groups.push(group);
     Ok(())
 }
 
@@ -253,8 +251,10 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         let members = members(items, heap)?;
+        let state = state(eval)?;
         add_group(
-            &mut state(eval)?.model.borrow_mut(),
+            &state,
+            &mut state.model.borrow_mut(),
             name,
             members,
             grounded,
@@ -334,7 +334,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let members = members(items, heap)?;
         let state = state(eval)?;
         let mut model = state.model.borrow_mut();
-        add_group(&mut model, name, members, grounded)?;
+        add_group(&state, &mut model, name, members, grounded)?;
         let component = capture(&model, name)?;
         model.components.push(component);
         Ok(heap.alloc(AllocStruct([("name", heap.alloc(name))])))
@@ -407,7 +407,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             .map(|part| &part.name)
             .chain(groups.iter().map(|group| &group.name))
         {
-            check_name(&model, name)?;
+            check_name(&state, name)?;
             if !names.insert(name) {
                 anyhow::bail!(
                     "instance {name:?} has colliding member names; rename the source members"
@@ -421,6 +421,12 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             sources.entry(part.name.clone()).or_default().extend(lines);
             drop(sources);
             record_source(eval, &state, &[&part.name]);
+        }
+        for part in &parts {
+            state.take_name(&part.name, Named::Part);
+        }
+        for group in &groups {
+            state.take_group(group);
         }
         model.parts.extend(parts);
         model.groups.extend(groups);

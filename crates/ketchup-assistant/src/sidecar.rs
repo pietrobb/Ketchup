@@ -17,11 +17,10 @@ use std::fmt;
 
 use crate::protocol::{
     MAX_CAD_EDIT_OPERATIONS, MAX_CAD_GENERATED_OCCURRENCES, MAX_CAD_SELECTOR_TARGETS,
-    PROTOCOL_VERSION,
+    MAX_MODEL_BYTES, PROTOCOL_VERSION,
 };
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
-const MAX_ASSISTANT_MODEL_BYTES: usize = 128;
 const MAX_ASSISTANT_BOXES: usize = 64;
 const MAX_ASSISTANT_SUBTRACTIONS: usize = 64;
 const MAX_ASSISTANT_TRANSLATIONS: usize = 100;
@@ -4165,9 +4164,9 @@ pub struct AssistantApiDiagnostics {
 impl AssistantApiDiagnostics {
     pub fn validate(&self) -> Result<(), AssistantRequestInvalid> {
         if self.provider.is_empty()
-            || self.provider.len() > MAX_ASSISTANT_MODEL_BYTES
+            || self.provider.len() > MAX_MODEL_BYTES
             || self.model.is_empty()
-            || self.model.len() > MAX_ASSISTANT_MODEL_BYTES
+            || self.model.len() > MAX_MODEL_BYTES
             || self.system_prompt.len() > MAX_ASSISTANT_DIAGNOSTIC_TEXT_BYTES
             || self.response_text.len() > MAX_ASSISTANT_DIAGNOSTIC_TEXT_BYTES
             || serde_json::to_vec(&self.request_payload).map_or(true, |bytes| {
@@ -4299,7 +4298,7 @@ impl AssistantHandshake {
             ));
         }
         if self.model.is_empty()
-            || self.model.len() > MAX_ASSISTANT_MODEL_BYTES
+            || self.model.len() > MAX_MODEL_BYTES
             || !self.model.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':')
             })

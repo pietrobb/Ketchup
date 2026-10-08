@@ -99,6 +99,51 @@ fn every_visible_body_is_drawn_and_a_part_without_its_exact_solid_stops_the_shee
     assert_eq!(drawn(&app, "wall B"), 1);
 }
 
+/// The plan cut height and the scale of the automatic format are document
+/// settings, not constants: changing them moves the cut and the scale.
+#[test]
+fn the_plan_cut_height_and_the_automatic_scale_follow_the_sheet_settings() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    add_box(&mut app, 902, "wall B", 9000.0);
+    // The floor the walls stand on: its top at 0.
+    app.document
+        .apply_batch(&crate::app::drawing::create_box_batch(
+            DefinitionId(903),
+            [FeatureId(9030), FeatureId(9031)],
+            OccurrenceId(903),
+            ["slab", "profile", "extrusion", "slab"],
+            Vec3::new(0.0, 0.0, -200.0),
+            Vec3::new(10_000.0, 3000.0, 200.0),
+        ))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let plan_cut = |sheet: &ProjectSheet| {
+        sheet
+            .views
+            .iter()
+            .find(|summary| summary.view == ProjectView::Plan)
+            .and_then(|summary| summary.cut_at_mm)
+    };
+    let default = app.project_drawings().unwrap();
+    assert_eq!(plan_cut(&default), Some(1200.0));
+    assert_eq!(default.scale, 50);
+
+    let mut settings = app.sheet_settings();
+    settings.plan_cut_above_floor_mm = Some(900);
+    settings.coarsest_scale = Some(100);
+    app.store_sheet_settings(settings);
+    let stored = app.stored_sheet_settings().unwrap();
+    assert_eq!(
+        (stored.plan_cut_above_floor_mm, stored.coarsest_scale),
+        (Some(900), Some(100))
+    );
+    let set = app.project_drawings().unwrap();
+    assert_eq!(plan_cut(&set), Some(900.0));
+    assert!(set.scale > 50 && set.scale <= 100, "{}", set.scale);
+    assert!(set.format <= default.format, "{:?}", set.format);
+}
+
 #[test]
 fn the_house_sheet_has_plan_sections_and_elevations_of_the_visible_layers() {
     let worker = ketchup_application::evaluation::exact_worker_candidates()

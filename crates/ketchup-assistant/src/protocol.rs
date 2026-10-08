@@ -39,6 +39,12 @@ macro_rules! protocol_constants {
 
 protocol_constants! {
     PROTOCOL_VERSION: u16 = 3;
+    /// Longest name (part, operation, parameter path, load case), in UTF-8 bytes.
+    MAX_NAME_BYTES: usize = ketchup_tolerance::limits::NAME_BYTES;
+    /// Longest free text (classification category, occurrence name in context), in UTF-8 bytes.
+    MAX_TEXT_BYTES: usize = ketchup_tolerance::limits::TEXT_BYTES;
+    /// Longest provider model id, in bytes (ASCII only).
+    MAX_MODEL_BYTES: usize = 128;
     /// Longest newline-terminated JSON line either side writes, in bytes.
     MAX_LINE_BYTES: usize = 256 * 1024;
     /// Longest chat message, and longest serialized document context, in characters.

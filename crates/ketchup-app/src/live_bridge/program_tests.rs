@@ -647,7 +647,7 @@ fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("views.ketchup");
-    assert!(app.save_document_to_while(&path, || true));
+    assert_eq!(app.save_document_to_while(&path, || true), Ok(()));
     let (mut reopened, mut bridge) = setup();
     assert!(reopened.open_document_path(&path));
     let listed = bridge

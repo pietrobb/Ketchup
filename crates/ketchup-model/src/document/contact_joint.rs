@@ -24,7 +24,10 @@ pub(super) fn validate(
         }
         for path in &joint.parts {
             if resolve_product_instance_path(product, path).is_none() {
-                return Err(CanonicalError::InvalidInstancePath);
+                return Err(CanonicalError::ContactJointPartNotFound {
+                    joint: joint.name.clone(),
+                    path: path.clone(),
+                });
             }
         }
     }
