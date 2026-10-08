@@ -31,6 +31,11 @@ potom oprava s testom, ktorý tvrdí výsledok, alebo dôkaz, prečo nález nepl
 | ST-7 | opravené (označením rozsahu) | Prvá položka `BASIS` hovorí, že výpočet zahŕňa len zvislé (gravitačné) zaťaženia. Vietor, vodorovná stabilita a kombinácia ohybu s osovou silou (6.23/6.24) sa nekontrolujú. `load_capacity` aj súhrn statiky majú `loads_considered: gravity_only` a `not_checked` (`member_check::NOT_CHECKED`), rovnako popis sekcie `members` v MCP. Samotný výpočet vetra a 6.23/6.24 nie je súčasťou nálezu (review: „kým sa to nedoplní, označiť“). Test v `an_overloaded_hanger_fails_the_load_check_and_a_strong_one_passes_it`. |
 | NaN ≠ pass | opravené | Kontrola s využitím NaN nechá prvok `not_verified` s dôvodom a neskryje inú kontrolu nad 1 (`settle`). Spoj s NaN je tiež `not_verified`. Test `a_utilization_that_is_not_a_number_never_passes_and_never_hides_a_failure`. |
 
+Ručne prepočítané testy CR7-B: konzola a spojitý nosník (riešič aj kontrola prútu, vyššie), kh
+(`member_design.rs`, prierez 145 mm), kc (`a_slender_post_buckles_with_kc_from_its_relative_slenderness`,
+λrel 2,94, kc 0,108), kv (`a_beam_notched_over_its_bearing_is_checked_in_shear_with_kv`, h_ef 160/200,
+kv 0,636), doska na nerovnakých podperách (ST-1), spoj nad únosnosťou (ST-5).
+
 Vedľajšia úprava kvôli ratchetu `check_crate_layers.py`: inline testy
 `fabrication.rs` sú presunuté do `fabrication/tests.rs` (súbor prekročil 5000
 riadkov), determinant v teste ide cez `linalg::Mat3`.

@@ -193,6 +193,63 @@ box(\"deck\", (60, 140, 20), at = (0, 0, 550), material = \"OSB\", tags = [\"dec
 }
 
 #[test]
+fn a_slender_post_buckles_with_kc_from_its_relative_slenderness() {
+    // The post of `post` 3000 mm high: lambda_rel about the 60 mm side.
+    let source = post(false)
+        .replace("(60, 500), (0, 500)", "(60, 3000), (0, 3000)")
+        .replace("at = (0, 0, 550)", "at = (0, 0, 3050)");
+    let report = report(&source, &[]);
+    let post = member(&report, "post");
+    assert_eq!(post.role, "column");
+    // C24: fc,0,k 21, E0,05 7400 MPa; solid timber beta_c 0.2 (6.3.2).
+    let lambda = 3000.0 * 12f64.sqrt() / 60.0 / std::f64::consts::PI * (21.0f64 / 7400.0).sqrt();
+    let k = 0.5 * (1.0 + 0.2 * (lambda - 0.3) + lambda * lambda);
+    let kc = 1.0 / (k + (k * k - lambda * lambda).sqrt());
+    assert!((kc - 0.108).abs() < 0.001, "{kc}");
+    // 60 x 140 mm of deck at 2000 kN/m², 1.5 Q, medium term (kmod 0.8).
+    let force = 1.5 * 2000.0e-3 * 60.0 * 140.0;
+    close(
+        utilization(post, "compression"),
+        force / (60.0 * 140.0) / (kc * 0.8 * 21.0 / 1.3),
+    );
+    assert_eq!(post.status, "fail");
+}
+
+#[test]
+fn a_beam_notched_over_its_bearing_is_checked_in_shear_with_kv() {
+    // The beam of `beam` 100 x 200, its underside notched 40 mm deep over
+    // the first 150 mm; the left post reaches up into the notch.
+    let report = report(
+        "load_path(only = [\"frame\"], carriers = [\"deck\"])
+area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")
+timber_design({\"C24\": \"C24\"})
+box(\"post a\", (100, 100, 2040), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+part = extrude(\"beam\", profile = [(0, 40), (150, 40), (150, 0), (4000, 0), (4000, 200), (0, 200)],
+               distance = 100, material = \"C24\", tags = [\"frame\"])
+place(part, origin = (0, 100, 2000), z = (0, -1, 0), x = (1, 0, 0))
+box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+",
+        &[],
+    );
+    let beam = member(&report, "beam");
+    // 6.5.2 (6.62), right-angled (i = 0): h_ef = 160, alpha = 0.8, kn = 5,
+    // x = 50 mm (half the bearing).
+    let (h, alpha, x) = (200.0f64, 0.8f64, 50.0);
+    let kv = 5.0
+        / (h.sqrt()
+            * ((alpha * (1.0 - alpha)).sqrt()
+                + 0.8 * x / h * (1.0 / alpha - alpha * alpha).sqrt()));
+    assert!((kv - 0.636).abs() < 0.001, "{kv}");
+    // Half of 1.2 N/mm over 4000 mm, 1.5 Q, on the net 100 x 160 mm.
+    let reaction = 1.5 * 1.2 * 4000.0 / 2.0;
+    close(
+        utilization(beam, "shear_notch"),
+        1.5 * reaction / (0.67 * 100.0 * 160.0) / (kv * 0.8 * 4.0 / 1.3),
+    );
+}
+
+#[test]
 fn a_notch_in_a_side_of_a_short_post_governs_its_compression_on_the_net_section() {
     let compression = |notched: bool| {
         let report = report(&post(notched), &[]);
