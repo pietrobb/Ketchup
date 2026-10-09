@@ -270,6 +270,19 @@ impl DocumentStore {
         self.revisions[self.cursor].rule_program()
     }
 
+    /// The program an edit in the Undo history detached: `None` while a program
+    /// owns the document or when none ever did. Undo back to it restores it.
+    #[must_use]
+    pub fn detached_rule_program(&self) -> Option<&RuleProgramSource> {
+        if self.current_rule_program().is_some() {
+            return None;
+        }
+        self.revisions[..self.cursor]
+            .iter()
+            .rev()
+            .find_map(|revision| revision.rule_program())
+    }
+
     fn validate_rule_program_source(source: &RuleProgramSource) -> Result<(), RuleProgramError> {
         if source.source.is_empty() {
             return Err(RuleProgramError::EmptySource);
@@ -1072,7 +1085,7 @@ impl DocumentStore {
         self.apply_batch_with_origin_and_validation(batch, origin, true)
     }
 
-    /// Showing or hiding a tag or keeping a saved view only changes what is viewed, so the
+    /// Showing or hiding a tag or a part or keeping a saved view only changes what is viewed, so the
     /// program keeps owning the model; any other edit detaches it.
     fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<RuleProgramSource> {
         batch

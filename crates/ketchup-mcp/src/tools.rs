@@ -193,13 +193,34 @@ impl Tools {
     fn program(&mut self, mut args: Map<String, Value>) -> Result<ToolOutput, ToolError> {
         match take_action(
             &mut args,
-            &["read", "apply", "patch", "report", "docs", "validate"],
+            &[
+                "read",
+                "apply",
+                "patch",
+                "check",
+                "set_params",
+                "report",
+                "docs",
+                "validate",
+            ],
         )?
         .as_str()
         {
             "read" => {
+                let piece = ["lines", "search", "part"]
+                    .iter()
+                    .any(|key| args.contains_key(*key));
                 let mode = take_text(&mut args, "mode")?.unwrap_or_else(|| "source".into());
                 match mode.as_str() {
+                    "source" if piece => self.send("program_piece", args, DEFAULT_WAIT),
+                    "outline" if !piece => {
+                        args.insert("outline".into(), json!(true));
+                        self.send("program_piece", args, DEFAULT_WAIT)
+                    }
+                    _ if piece => Err(ToolError::new(
+                        "invalid_arguments",
+                        "lines, search and part read a piece of the source; give one of them without mode.",
+                    )),
                     "full" => self.send("program", args, DEFAULT_WAIT),
                     "source" | "selection" => {
                         args.insert("selection_context".into(), json!(mode == "selection"));
@@ -207,17 +228,18 @@ impl Tools {
                     }
                     _ => Err(ToolError::new(
                         "invalid_arguments",
-                        "Read mode must be source, selection or full.",
+                        "Read mode must be source, selection, outline or full.",
                     )),
                 }
             }
             "patch" => self.send("patch_program", args, APPLY_PROGRAM_WAIT),
+            "set_params" => self.send("set_program_params", args, APPLY_PROGRAM_WAIT),
             "report" => {
                 args.entry("limit").or_insert(json!(50));
                 self.send("program_report", args, DEFAULT_WAIT)
             }
             "validate" => self.send("validate_program", args, APPLY_PROGRAM_WAIT),
-            "apply" => {
+            action @ ("apply" | "check") => {
                 if let Some(path) = take_text(&mut args, "source_path")? {
                     if args.contains_key("source") {
                         return Err(ToolError::new(
@@ -228,7 +250,12 @@ impl Tools {
                     let source = read_program_source(Path::new(&path))?;
                     args.insert("source".into(), source.into());
                 }
-                self.send("apply_program", args, APPLY_PROGRAM_WAIT)
+                let method = if action == "check" {
+                    "check_program"
+                } else {
+                    "apply_program"
+                };
+                self.send(method, args, APPLY_PROGRAM_WAIT)
             }
             _ => {
                 let name = take_text(&mut args, "name")?;

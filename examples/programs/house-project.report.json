@@ -23,7 +23,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4391,
+          "last": 4397
+        },
+        {
+          "first": 4398,
+          "last": 4404
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -45,7 +71,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        },
+        {
+          "first": 4391,
+          "last": 4397
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -67,7 +119,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        },
+        {
+          "first": 4398,
+          "last": 4404
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -89,7 +167,33 @@
           7248.694
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 3965,
+          "last": 3965
+        },
+        {
+          "first": 4047,
+          "last": 4050
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -111,7 +215,33 @@
           7248.694
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 3966,
+          "last": 3966
+        },
+        {
+          "first": 4051,
+          "last": 4054
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -133,7 +263,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4063,
+          "last": 4066
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -155,7 +311,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        },
+        {
+          "first": 4405,
+          "last": 4411
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -177,7 +359,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4071,
+          "last": 4074
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -199,7 +407,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        },
+        {
+          "first": 4419,
+          "last": 4425
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -221,7 +455,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4079,
+          "last": 4082
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -243,7 +503,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        },
+        {
+          "first": 4433,
+          "last": 4439
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -265,7 +551,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4087,
+          "last": 4090
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -287,7 +599,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        },
+        {
+          "first": 4447,
+          "last": 4453
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -309,7 +647,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        },
+        {
+          "first": 4461,
+          "last": 4467
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -331,7 +695,33 @@
           8841.977
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4095,
+          "last": 4098
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -353,7 +743,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4177,
+          "last": 4181
+        },
+        {
+          "first": 4475,
+          "last": 4482
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -375,7 +791,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4067,
+          "last": 4070
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -397,7 +839,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        },
+        {
+          "first": 4412,
+          "last": 4418
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -419,7 +887,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4075,
+          "last": 4078
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -441,7 +935,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        },
+        {
+          "first": 4426,
+          "last": 4432
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -463,7 +983,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4083,
+          "last": 4086
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -485,7 +1031,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        },
+        {
+          "first": 4440,
+          "last": 4446
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -507,7 +1079,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4091,
+          "last": 4094
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -529,7 +1127,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        },
+        {
+          "first": 4454,
+          "last": 4460
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -551,7 +1175,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        },
+        {
+          "first": 4468,
+          "last": 4474
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -573,7 +1223,33 @@
           8841.977
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4099,
+          "last": 4102
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -595,7 +1271,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4182,
+          "last": 4186
+        },
+        {
+          "first": 4483,
+          "last": 4490
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -617,7 +1319,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4019,
+          "last": 4019
+        },
+        {
+          "first": 4063,
+          "last": 4066
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -639,7 +1367,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4020,
+          "last": 4020
+        },
+        {
+          "first": 4067,
+          "last": 4070
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -661,7 +1415,33 @@
           6599.393
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 3152,
+          "last": 3155
+        },
+        {
+          "first": 4047,
+          "last": 4050
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -683,7 +1463,33 @@
           6599.393
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 2515,
+          "last": 2519
+        },
+        {
+          "first": 4051,
+          "last": 4054
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -705,7 +1511,33 @@
           1802.047
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 574,
+          "last": 581
+        },
+        {
+          "first": 5164,
+          "last": 5183
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -727,7 +1559,33 @@
           678.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 241,
+          "last": 245
+        },
+        {
+          "first": 246,
+          "last": 249
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -749,7 +1607,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 341,
+          "last": 351
+        },
+        {
+          "first": 398,
+          "last": 414
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -771,7 +1655,33 @@
           438.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 95,
+          "last": 111
+        },
+        {
+          "first": 165,
+          "last": 181
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -793,7 +1703,33 @@
           438.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 112,
+          "last": 129
+        },
+        {
+          "first": 182,
+          "last": 201
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -815,7 +1751,33 @@
           438.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 130,
+          "last": 147
+        },
+        {
+          "first": 202,
+          "last": 221
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -837,7 +1799,33 @@
           438.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 148,
+          "last": 164
+        },
+        {
+          "first": 222,
+          "last": 238
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -859,7 +1847,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 352,
+          "last": 369
+        },
+        {
+          "first": 690,
+          "last": 694
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -881,7 +1895,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 398,
+          "last": 414
+        },
+        {
+          "first": 685,
+          "last": 689
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -903,7 +1943,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 398,
+          "last": 414
+        },
+        {
+          "first": 695,
+          "last": 695
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -925,7 +1991,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4019,
+          "last": 4019
+        },
+        {
+          "first": 4071,
+          "last": 4074
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -947,7 +2039,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4020,
+          "last": 4020
+        },
+        {
+          "first": 4075,
+          "last": 4078
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -969,7 +2087,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4405,
+          "last": 4411
+        },
+        {
+          "first": 4412,
+          "last": 4418
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -991,7 +2135,33 @@
           2433.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 5164,
+          "last": 5183
+        },
+        {
+          "first": 5190,
+          "last": 5194
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1013,7 +2183,33 @@
           3718.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 1817,
+          "last": 1826
+        },
+        {
+          "first": 2021,
+          "last": 2029
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1035,7 +2231,33 @@
           3718.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 1817,
+          "last": 1826
+        },
+        {
+          "first": 2040,
+          "last": 2042
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1057,7 +2279,33 @@
           3718.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 1827,
+          "last": 1838
+        },
+        {
+          "first": 2021,
+          "last": 2029
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1079,7 +2327,33 @@
           2394.184
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 5088,
+          "last": 5103
+        },
+        {
+          "first": 5186,
+          "last": 5189
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1101,7 +2375,33 @@
           2395.764
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 5104,
+          "last": 5119
+        },
+        {
+          "first": 5186,
+          "last": 5189
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1123,7 +2423,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4419,
+          "last": 4425
+        },
+        {
+          "first": 4426,
+          "last": 4432
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1145,7 +2471,33 @@
           2414.954
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 5088,
+          "last": 5103
+        },
+        {
+          "first": 5190,
+          "last": 5194
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1167,7 +2519,33 @@
           642.195
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 271,
+          "last": 271
+        },
+        {
+          "first": 5088,
+          "last": 5103
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1189,7 +2567,33 @@
           2416.529
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 5104,
+          "last": 5119
+        },
+        {
+          "first": 5190,
+          "last": 5194
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1211,7 +2615,33 @@
           643.675
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 271,
+          "last": 271
+        },
+        {
+          "first": 5104,
+          "last": 5119
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1233,7 +2663,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4021,
+          "last": 4021
+        },
+        {
+          "first": 4079,
+          "last": 4082
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1255,7 +2711,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4022,
+          "last": 4022
+        },
+        {
+          "first": 4083,
+          "last": 4086
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1277,7 +2759,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4433,
+          "last": 4439
+        },
+        {
+          "first": 4440,
+          "last": 4446
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1299,7 +2807,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4021,
+          "last": 4021
+        },
+        {
+          "first": 4087,
+          "last": 4090
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1321,7 +2855,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4022,
+          "last": 4022
+        },
+        {
+          "first": 4091,
+          "last": 4094
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1343,7 +2903,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4447,
+          "last": 4453
+        },
+        {
+          "first": 4454,
+          "last": 4460
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1365,7 +2951,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4461,
+          "last": 4467
+        },
+        {
+          "first": 4468,
+          "last": 4474
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1387,7 +2999,33 @@
           8114.05
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4023,
+          "last": 4025
+        },
+        {
+          "first": 4095,
+          "last": 4098
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1409,7 +3047,33 @@
           8114.05
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4026,
+          "last": 4028
+        },
+        {
+          "first": 4099,
+          "last": 4102
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1431,7 +3095,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4475,
+          "last": 4482
+        },
+        {
+          "first": 4483,
+          "last": 4490
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1453,7 +3143,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4273,
+          "last": 4276
+        },
+        {
+          "first": 4475,
+          "last": 4482
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1475,7 +3191,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4273,
+          "last": 4276
+        },
+        {
+          "first": 4483,
+          "last": 4490
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1497,7 +3239,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4023,
+          "last": 4025
+        },
+        {
+          "first": 4103,
+          "last": 4106
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1519,7 +3287,33 @@
           8113.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4026,
+          "last": 4028
+        },
+        {
+          "first": 4107,
+          "last": 4110
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1541,7 +3335,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4103,
+          "last": 4106
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1563,7 +3383,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        },
+        {
+          "first": 4491,
+          "last": 4497
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1585,7 +3431,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        },
+        {
+          "first": 4505,
+          "last": 4512
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1607,7 +3479,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4111,
+          "last": 4114
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1629,7 +3527,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        },
+        {
+          "first": 4521,
+          "last": 4527
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1651,7 +3575,33 @@
           8861.977
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4119,
+          "last": 4122
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1673,7 +3623,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        },
+        {
+          "first": 4535,
+          "last": 4542
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1695,7 +3671,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        },
+        {
+          "first": 4551,
+          "last": 4557
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1717,7 +3719,33 @@
           8861.977
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4127,
+          "last": 4130
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1739,7 +3767,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4187,
+          "last": 4194
+        },
+        {
+          "first": 4565,
+          "last": 4572
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1761,7 +3815,33 @@
           8841.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4107,
+          "last": 4110
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1783,7 +3863,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        },
+        {
+          "first": 4498,
+          "last": 4504
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1805,7 +3911,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        },
+        {
+          "first": 4513,
+          "last": 4520
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1827,7 +3959,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4115,
+          "last": 4118
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1849,7 +4007,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        },
+        {
+          "first": 4528,
+          "last": 4534
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1871,7 +4055,33 @@
           8861.977
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4123,
+          "last": 4126
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1893,7 +4103,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        },
+        {
+          "first": 4543,
+          "last": 4550
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1915,7 +4151,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        },
+        {
+          "first": 4558,
+          "last": 4564
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1937,7 +4199,33 @@
           8861.977
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4131,
+          "last": 4134
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1959,7 +4247,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4195,
+          "last": 4202
+        },
+        {
+          "first": 4573,
+          "last": 4580
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -1981,7 +4295,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 441,
+          "last": 450
+        },
+        {
+          "first": 555,
+          "last": 557
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2003,7 +4343,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 441,
+          "last": 450
+        },
+        {
+          "first": 549,
+          "last": 551
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2025,7 +4391,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4491,
+          "last": 4497
+        },
+        {
+          "first": 4498,
+          "last": 4504
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2047,7 +4439,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4505,
+          "last": 4512
+        },
+        {
+          "first": 4513,
+          "last": 4520
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2069,7 +4487,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4289,
+          "last": 4292
+        },
+        {
+          "first": 4505,
+          "last": 4512
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2091,7 +4535,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4289,
+          "last": 4292
+        },
+        {
+          "first": 4513,
+          "last": 4520
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2113,7 +4583,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4029,
+          "last": 4031
+        },
+        {
+          "first": 4111,
+          "last": 4114
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2135,7 +4631,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4032,
+          "last": 4034
+        },
+        {
+          "first": 4115,
+          "last": 4118
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2157,7 +4679,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4521,
+          "last": 4527
+        },
+        {
+          "first": 4528,
+          "last": 4534
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2179,7 +4727,33 @@
           8134.05
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4029,
+          "last": 4031
+        },
+        {
+          "first": 4119,
+          "last": 4122
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2201,7 +4775,33 @@
           8134.05
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4032,
+          "last": 4034
+        },
+        {
+          "first": 4123,
+          "last": 4126
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2223,7 +4823,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 476,
+          "last": 479
+        },
+        {
+          "first": 549,
+          "last": 551
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2245,7 +4871,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4535,
+          "last": 4542
+        },
+        {
+          "first": 4543,
+          "last": 4550
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2267,7 +4919,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4305,
+          "last": 4308
+        },
+        {
+          "first": 4535,
+          "last": 4542
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2289,7 +4967,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4305,
+          "last": 4308
+        },
+        {
+          "first": 4543,
+          "last": 4550
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2311,7 +5015,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4551,
+          "last": 4557
+        },
+        {
+          "first": 4558,
+          "last": 4564
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2333,7 +5063,33 @@
           8134.05
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4035,
+          "last": 4037
+        },
+        {
+          "first": 4127,
+          "last": 4130
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2355,7 +5111,33 @@
           8134.05
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4038,
+          "last": 4040
+        },
+        {
+          "first": 4131,
+          "last": 4134
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2377,7 +5159,33 @@
           798.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 480,
+          "last": 494
+        },
+        {
+          "first": 1462,
+          "last": 1467
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2399,7 +5207,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4565,
+          "last": 4572
+        },
+        {
+          "first": 4573,
+          "last": 4580
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2421,7 +5255,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4321,
+          "last": 4324
+        },
+        {
+          "first": 4565,
+          "last": 4572
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2443,7 +5303,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4321,
+          "last": 4324
+        },
+        {
+          "first": 4573,
+          "last": 4580
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2465,7 +5351,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4035,
+          "last": 4037
+        },
+        {
+          "first": 4135,
+          "last": 4138
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2487,7 +5399,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4038,
+          "last": 4040
+        },
+        {
+          "first": 4139,
+          "last": 4142
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2509,7 +5447,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4135,
+          "last": 4138
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2531,7 +5495,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        },
+        {
+          "first": 4581,
+          "last": 4587
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2553,7 +5543,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        },
+        {
+          "first": 4595,
+          "last": 4602
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2575,7 +5591,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4143,
+          "last": 4146
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2597,7 +5639,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        },
+        {
+          "first": 4611,
+          "last": 4617
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2619,7 +5687,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4151,
+          "last": 4154
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2641,7 +5735,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        },
+        {
+          "first": 4625,
+          "last": 4634
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2663,7 +5783,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4159,
+          "last": 4162
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2685,7 +5831,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4167,
+          "last": 4170
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2707,7 +5879,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        },
+        {
+          "first": 4656,
+          "last": 4665
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2729,7 +5927,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4203,
+          "last": 4212
+        },
+        {
+          "first": 4674,
+          "last": 4680
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2751,7 +5975,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4139,
+          "last": 4142
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2773,7 +6023,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        },
+        {
+          "first": 4588,
+          "last": 4594
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2795,7 +6071,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        },
+        {
+          "first": 4603,
+          "last": 4610
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2817,7 +6119,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4147,
+          "last": 4150
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2839,7 +6167,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        },
+        {
+          "first": 4618,
+          "last": 4624
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2861,7 +6215,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4155,
+          "last": 4158
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2883,7 +6263,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        },
+        {
+          "first": 4635,
+          "last": 4642
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2905,7 +6311,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4163,
+          "last": 4166
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2927,7 +6359,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        },
+        {
+          "first": 4649,
+          "last": 4655
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2949,7 +6407,33 @@
           8861.997
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4171,
+          "last": 4174
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2971,7 +6455,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        },
+        {
+          "first": 4666,
+          "last": 4673
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -2993,7 +6503,33 @@
           8991.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4213,
+          "last": 4222
+        },
+        {
+          "first": 4681,
+          "last": 4687
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3015,7 +6551,33 @@
           7248.694
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 3986,
+          "last": 3986
+        },
+        {
+          "first": 4055,
+          "last": 4058
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3037,7 +6599,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4581,
+          "last": 4587
+        },
+        {
+          "first": 4588,
+          "last": 4594
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3059,7 +6647,33 @@
           7248.694
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 3987,
+          "last": 3990
+        },
+        {
+          "first": 4059,
+          "last": 4062
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3081,7 +6695,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4595,
+          "last": 4602
+        },
+        {
+          "first": 4603,
+          "last": 4610
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3103,7 +6743,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4337,
+          "last": 4340
+        },
+        {
+          "first": 4595,
+          "last": 4602
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3125,7 +6791,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4337,
+          "last": 4340
+        },
+        {
+          "first": 4603,
+          "last": 4610
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3147,7 +6839,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4041,
+          "last": 4041
+        },
+        {
+          "first": 4143,
+          "last": 4146
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3169,7 +6887,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4042,
+          "last": 4042
+        },
+        {
+          "first": 4147,
+          "last": 4150
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3191,7 +6935,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4611,
+          "last": 4617
+        },
+        {
+          "first": 4618,
+          "last": 4624
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3213,7 +6983,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4041,
+          "last": 4041
+        },
+        {
+          "first": 4151,
+          "last": 4154
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3235,7 +7031,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4042,
+          "last": 4042
+        },
+        {
+          "first": 4155,
+          "last": 4158
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3257,7 +7079,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4625,
+          "last": 4634
+        },
+        {
+          "first": 4635,
+          "last": 4642
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3279,7 +7127,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4353,
+          "last": 4357
+        },
+        {
+          "first": 4625,
+          "last": 4634
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3301,7 +7175,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4353,
+          "last": 4357
+        },
+        {
+          "first": 4635,
+          "last": 4642
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3323,7 +7223,33 @@
           9602.099
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4691,
+          "last": 4695
+        },
+        {
+          "first": 4769,
+          "last": 4772
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3345,7 +7271,33 @@
           9602.099
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4691,
+          "last": 4695
+        },
+        {
+          "first": 4773,
+          "last": 4776
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3367,7 +7319,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4043,
+          "last": 4043
+        },
+        {
+          "first": 4159,
+          "last": 4162
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3389,7 +7367,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4044,
+          "last": 4044
+        },
+        {
+          "first": 4163,
+          "last": 4166
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3411,7 +7415,33 @@
           9744.606
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4649,
+          "last": 4655
+        },
+        {
+          "first": 4696,
+          "last": 4698
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3433,7 +7463,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4043,
+          "last": 4043
+        },
+        {
+          "first": 4167,
+          "last": 4170
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3455,7 +7511,33 @@
           8133.993
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4044,
+          "last": 4044
+        },
+        {
+          "first": 4171,
+          "last": 4174
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3477,7 +7559,33 @@
           678.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 321,
+          "last": 325
+        },
+        {
+          "first": 326,
+          "last": 329
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3499,7 +7607,33 @@
           6998.0
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 3869,
+          "last": 3872
+        },
+        {
+          "first": 3951,
+          "last": 3951
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3521,7 +7655,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4656,
+          "last": 4665
+        },
+        {
+          "first": 4666,
+          "last": 4673
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3543,7 +7703,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4381,
+          "last": 4384
+        },
+        {
+          "first": 4656,
+          "last": 4665
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3565,7 +7751,33 @@
           9151.3
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4381,
+          "last": 4384
+        },
+        {
+          "first": 4666,
+          "last": 4673
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -3587,7 +7799,33 @@
           9744.608
         ]
       ],
-      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot."
+      "hint": "The Kečup window (program apply) settles this on the exact solids; a box-only check cannot.",
+      "source_lines": [
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 38,
+          "last": 38
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 44,
+          "last": 44
+        },
+        {
+          "first": 4674,
+          "last": 4680
+        },
+        {
+          "first": 4681,
+          "last": 4687
+        }
+      ]
     }
   ],
   "relations": [

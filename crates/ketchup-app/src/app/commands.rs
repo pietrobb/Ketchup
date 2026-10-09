@@ -333,10 +333,10 @@ impl KetchupApp {
                 }
             }
             AppCommand::Copy => {
-                self.copy_selection_to_clipboard();
+                self.clipboard.announce |= self.copy_selection_to_clipboard();
             }
             AppCommand::Cut => {
-                self.cut_selection_to_clipboard();
+                self.clipboard.announce |= self.cut_selection_to_clipboard();
             }
             AppCommand::Paste => {
                 self.paste_clipboard();
@@ -454,6 +454,10 @@ impl KetchupApp {
             AppCommand::ZoomIn => self.zoom_by(CAMERA_ZOOM_STEP, "digest-zoom-in"),
             AppCommand::ZoomOut => self.zoom_by(CAMERA_ZOOM_STEP.recip(), "digest-zoom-out"),
             AppCommand::Shortcuts => self.panels.shortcuts_open = true,
+            AppCommand::CommandSearch => {
+                self.command_search.focus = true;
+                self.command_search.highlight = 0;
+            }
             AppCommand::About => self.panels.about_open = true,
             AppCommand::MaterialTakeoff => self.takeoff.open = true,
             AppCommand::Select
@@ -517,9 +521,17 @@ impl KetchupApp {
         publish: impl FnOnce(&mut Self, P),
     ) -> Result<T, WorkRecoveryMutationError<E>> {
         self.exact.mutation_readiness = MutationReadiness::Pending;
+        let owned_by_program = self.document.current_rule_program().is_some();
         let result = self.mutate_document_with_work_recovery(mutate);
         match result {
             Ok(((value, publication), publication_error)) => {
+                if owned_by_program
+                    && !self.program_detach_warned
+                    && let Some(program) = self.document.detached_rule_program()
+                {
+                    self.program_detach_notice = Some(program.file_name.clone());
+                    self.program_detach_warned = true;
+                }
                 publish(self, publication);
                 self.forget_scene_no_longer_shown();
                 let snapshot = self.document.current();
@@ -689,7 +701,7 @@ impl KetchupApp {
             // which is how a part gets set down exactly 25 mm higher. There a
             // single comma is a decimal comma ("12,5"), not a two-value vector.
             let axis_travel = self.gesture.transform.move_axis_lock.and_then(|axis| {
-                let distance = parse_axis_distance_mm(&self.value_box.input)?;
+                let distance = parse_distance_mm(&self.value_box.input)?;
                 (distance.abs() >= 0.01).then(|| axis_direction(axis) * distance)
             });
             let exact_vector = axis_travel
@@ -840,55 +852,184 @@ impl KetchupApp {
         }
     }
 
+    /// Why a disabled command cannot run now, in the user's words.
+    pub(crate) fn command_unavailable_reason(&self, id: AppCommand) -> String {
+        let key = match id {
+            AppCommand::Undo => "command-unavailable-nothing-to-undo",
+            AppCommand::Redo => "command-unavailable-nothing-to-redo",
+            AppCommand::Paste => "command-unavailable-nothing-to-paste",
+            AppCommand::PreviousView => "command-unavailable-no-previous-view",
+            AppCommand::ZoomIn | AppCommand::ZoomOut => "command-unavailable-zoom-limit",
+            AppCommand::UnhideAll | AppCommand::View(ViewFlag::HiddenObjects) => {
+                "command-unavailable-nothing-hidden"
+            }
+            AppCommand::ViewShaded => "command-unavailable-already-shaded",
+            AppCommand::PurgeUnused => "command-unavailable-nothing-unused",
+            AppCommand::SolidSubtract
+            | AppCommand::SolidTrim
+            | AppCommand::SolidUnion
+            | AppCommand::SolidIntersect
+            | AppCommand::SolidSplit => "command-unavailable-two-solids",
+            _ => "command-unavailable-selection",
+        };
+        self.catalog.text(key)
+    }
+
+    /// Commands whose name in the shown language or in English matches
+    /// `query`, ignoring case and diacritics; names that start with it first.
+    pub fn command_search_matches(&self, query: &str) -> Vec<(AppCommand, String, bool)> {
+        static ENGLISH: std::sync::LazyLock<LocaleCatalog> =
+            std::sync::LazyLock::new(LocaleCatalog::english);
+        let query = fold_for_search(query.trim());
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let mut ranked = CommandRegistry::COMMANDS
+            .iter()
+            .filter(|spec| spec.implemented && spec.id != AppCommand::CommandSearch)
+            .filter_map(|spec| {
+                let label = self.catalog.text(spec.label_key);
+                let rank = [
+                    fold_for_search(&label),
+                    fold_for_search(&ENGLISH.text(spec.label_key)),
+                ]
+                .iter()
+                .filter_map(|name| {
+                    if name.starts_with(&query) {
+                        Some(0)
+                    } else if name
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word.starts_with(&query))
+                    {
+                        Some(1)
+                    } else {
+                        name.contains(&query).then_some(2)
+                    }
+                })
+                .min()?;
+                Some((rank, spec.id, label))
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by_key(|(rank, ..)| *rank);
+        ranked
+            .into_iter()
+            .take(MAX_COMMAND_SEARCH_RESULTS)
+            .map(|(_, id, label)| (id, label, self.command_enabled(id)))
+            .collect()
+    }
+
+    /// The command search: Ctrl+K focuses it, arrows move the highlight,
+    /// Enter runs it, Escape clears. Each row shows its shortcut, and a
+    /// command that cannot run now says why.
     pub(crate) fn show_command_search(&mut self, ui: &mut egui::Ui) {
         let label = self.catalog.text("command-search");
         let response = ui.add(
-            egui::TextEdit::singleline(&mut self.panels.command_search)
+            egui::TextEdit::singleline(&mut self.command_search.query)
                 .hint_text(self.catalog.text("command-search-placeholder"))
                 .desired_width(170.0),
         );
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label.clone())
         });
-        let query = self.panels.command_search.trim().to_lowercase();
-        if query.is_empty() {
+        if std::mem::take(&mut self.command_search.focus) {
+            response.request_focus();
+        }
+        if response.changed() {
+            self.command_search.highlight = 0;
+        }
+        let query = self.command_search.query.clone();
+        if query.trim().is_empty() {
             return;
         }
-        let matches = CommandRegistry::COMMANDS
-            .iter()
-            .filter(|spec| spec.implemented)
-            .filter_map(|spec| {
-                let label = self.catalog.text(spec.label_key);
-                label.to_lowercase().contains(&query).then_some((
-                    spec.id,
-                    label,
-                    self.command_enabled(spec.id),
-                ))
+        let matches = self.command_search_matches(&query);
+        let typing = response.has_focus() || response.lost_focus();
+        let (down, up, enter, escape) = if typing {
+            ui.input_mut(|input| {
+                (
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    input.key_pressed(egui::Key::Enter),
+                    input.key_pressed(egui::Key::Escape),
+                )
             })
-            .take(8)
+        } else {
+            (false, false, false, false)
+        };
+        let count = matches.len().max(1);
+        let mut highlight = self.command_search.highlight.min(count - 1);
+        if down {
+            highlight = (highlight + 1) % count;
+        }
+        if up {
+            highlight = (highlight + count - 1) % count;
+        }
+        self.command_search.highlight = highlight;
+        if escape {
+            self.command_search.query.clear();
+            response.surrender_focus();
+            return;
+        }
+        let rows = matches
+            .iter()
+            .map(|(command, label, enabled)| {
+                (
+                    *command,
+                    label.clone(),
+                    *enabled,
+                    keymap::shortcut_text(&self.catalog, *command),
+                    (!enabled).then(|| self.command_unavailable_reason(*command)),
+                )
+            })
             .collect::<Vec<_>>();
-        let mut chosen = None;
+        let mut chosen = (enter && !rows.is_empty()).then_some(highlight);
         egui::Area::new(egui::Id::new("command-search-results"))
             .order(egui::Order::Foreground)
             .fixed_pos(response.rect.left_bottom())
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(response.rect.width().max(220.0));
-                    if matches.is_empty() {
+                    ui.set_min_width(response.rect.width().max(260.0));
+                    if rows.is_empty() {
                         ui.label(self.catalog.text("command-search-empty"));
                     }
-                    for (command, label, enabled) in matches {
-                        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                            chosen = Some(command);
+                    for (index, (_, label, enabled, shortcut, reason)) in rows.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let button =
+                                egui::Button::new(label.as_str()).selected(index == highlight);
+                            let row = ui.add_enabled(*enabled, button);
+                            // Screen readers hear which row Enter will run.
+                            row.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::WidgetType::Button,
+                                    *enabled,
+                                    index == highlight,
+                                    label.as_str(),
+                                )
+                            });
+                            if row.clicked() {
+                                chosen = Some(index);
+                            }
+                            if !shortcut.is_empty() {
+                                ui.weak(shortcut.as_str());
+                            }
+                        });
+                        if let Some(reason) = reason {
+                            ui.weak(reason.as_str());
                         }
                     }
                 });
             });
-        if let Some(command) = chosen {
-            ui.memory_mut(|memory| memory.surrender_focus(response.id));
-            self.panels.command_search.clear();
-            self.dispatch_command(command);
+        let Some((command, _, enabled, _, reason)) = chosen.and_then(|index| rows.get(index))
+        else {
+            return;
+        };
+        if !enabled {
+            self.digest = reason.clone().unwrap_or_default();
+            return;
         }
+        ui.memory_mut(|memory| memory.surrender_focus(response.id));
+        self.command_search.query.clear();
+        self.command_search.highlight = 0;
+        self.dispatch_command(*command);
     }
 
     pub(crate) fn parameter_expression_nodes(&self) -> Vec<(NodeId, String, String)> {
@@ -1230,6 +1371,32 @@ impl KetchupApp {
     }
 }
 
+const MAX_COMMAND_SEARCH_RESULTS: usize = 8;
+
+/// Lower case without diacritics, so "posun" finds "Posunúť".
+fn fold_for_search(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'ä' => 'a',
+            'č' => 'c',
+            'ď' => 'd',
+            'é' | 'ě' => 'e',
+            'í' => 'i',
+            'ĺ' | 'ľ' => 'l',
+            'ň' => 'n',
+            'ó' | 'ô' | 'ö' => 'o',
+            'ŕ' | 'ř' => 'r',
+            'š' => 's',
+            'ť' => 't',
+            'ú' | 'ů' | 'ü' => 'u',
+            'ý' => 'y',
+            'ž' => 'z',
+            other => other,
+        })
+        .collect()
+}
+
 fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
     let trimmed = input.trim();
     let (mode, count) = if let Some(count) = trimmed
@@ -1246,14 +1413,6 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
     (1..=MAX_PATTERN_COUNT)
         .contains(&count)
         .then_some((mode, count))
-}
-
-fn parse_axis_distance_mm(input: &str) -> Option<f64> {
-    parse_distance_mm(input).or_else(|| {
-        (input.matches(',').count() == 1)
-            .then(|| parse_distance_mm(&input.replace(',', ".")))
-            .flatten()
-    })
 }
 
 fn parse_move_vector(input: &str) -> Option<Vec3> {

@@ -35,7 +35,73 @@
           1340.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -63,7 +129,53 @@
           2600.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -97,7 +209,73 @@
           1340.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -125,7 +303,53 @@
           2600.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -159,7 +383,73 @@
           1340.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -187,7 +477,53 @@
           2600.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -221,7 +557,73 @@
           1340.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -249,7 +651,53 @@
           2600.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -325,7 +773,73 @@
           1340.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -377,7 +891,53 @@
           2600.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ]
     },
     {
       "severity": "warning",
@@ -485,7 +1045,77 @@
           2600.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 13,
+          "last": 13
+        },
+        {
+          "first": 14,
+          "last": 14
+        },
+        {
+          "first": 15,
+          "last": 15
+        },
+        {
+          "first": 18,
+          "last": 18
+        },
+        {
+          "first": 19,
+          "last": 19
+        },
+        {
+          "first": 20,
+          "last": 20
+        },
+        {
+          "first": 24,
+          "last": 24
+        },
+        {
+          "first": 26,
+          "last": 26
+        },
+        {
+          "first": 28,
+          "last": 28
+        },
+        {
+          "first": 29,
+          "last": 29
+        },
+        {
+          "first": 33,
+          "last": 33
+        },
+        {
+          "first": 34,
+          "last": 34
+        },
+        {
+          "first": 37,
+          "last": 37
+        },
+        {
+          "first": 39,
+          "last": 39
+        },
+        {
+          "first": 41,
+          "last": 41
+        },
+        {
+          "first": 48,
+          "last": 48
+        },
+        {
+          "first": 49,
+          "last": 49
+        }
+      ]
     }
   ],
   "relations": [

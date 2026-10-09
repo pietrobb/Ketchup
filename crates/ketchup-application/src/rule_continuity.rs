@@ -16,6 +16,7 @@ fn invalid(name: &str, previous: &str, reason: &str) -> RuleProgramApplyError {
         message: format!(
             "continue_part({name:?}, was={previous:?}): {reason}; use the name of one existing previous part, or remove was for a new part"
         ),
+        location: None,
     }
 }
 

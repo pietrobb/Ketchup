@@ -1651,17 +1651,37 @@ pub(super) fn constraint_residuals(
                 if actual.len() != expected.len() {
                     return Err(SketchError::InvalidProjectionSource);
                 }
-                residuals.extend(
-                    actual
-                        .into_iter()
-                        .zip(expected)
-                        .map(|(actual, expected)| actual - expected),
-                );
+                residuals.extend(projection_residuals(target, &actual, &expected));
             }
             SketchConstraintKind::Construction { .. } => {}
         }
     }
     Ok(residuals)
+}
+
+/// Packed parameters minus their projected target. An arc's start and end
+/// angles (parameters 3 and 4) differ by their shortest turn: an end at
+/// angle pi solved a rounding error below the x axis reads -pi, which is
+/// the same point, not a 2 pi residual.
+fn projection_residuals<'a>(
+    target: &'a SketchEntity,
+    actual: &'a [f64],
+    expected: &'a [f64],
+) -> impl Iterator<Item = f64> + 'a {
+    let arc = matches!(target, SketchEntity::Arc { .. });
+    actual
+        .iter()
+        .zip(expected)
+        .enumerate()
+        .map(move |(index, (actual, expected))| {
+            let difference = actual - expected;
+            if arc && index >= 3 {
+                (difference + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI
+            } else {
+                difference
+            }
+        })
 }
 
 pub(super) fn entity_ref<'a>(
@@ -2025,4 +2045,29 @@ pub(super) fn distance2(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 pub(super) fn distance3(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    /// Review 2026-10-09 (P3): an arc ending at angle pi read back as -pi
+    /// left a 2 pi residual, and the sketch did not converge.
+    #[test]
+    fn an_arc_end_at_pi_solved_a_rounding_error_below_the_axis_has_no_residual() {
+        let arc = |end_y: f64| SketchEntity::Arc {
+            id: SketchEntityId(1),
+            start_mm: [10.0, 0.0],
+            end_mm: [-10.0, end_y],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        };
+        let target = arc(0.0);
+        let actual = pack_solver_parameters(&[arc(-1.0e-15)]);
+        let expected = pack_solver_parameters(std::slice::from_ref(&target));
+        let largest = projection_residuals(&target, &actual, &expected)
+            .map(f64::abs)
+            .fold(0.0, f64::max);
+        assert!(largest < 1.0e-12, "{largest}");
+    }
 }

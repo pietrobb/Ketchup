@@ -11,7 +11,12 @@ use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueTyp
 
 #[derive(Debug)]
 pub enum RuleProgramApplyError {
-    Program { code: String, message: String },
+    Program {
+        code: String,
+        message: String,
+        /// Where in the user's program it failed, when known.
+        location: Option<Box<ketchup_program::ErrorLocation>>,
+    },
     IncrementalUnsupported,
     ReplacementConfirmationRequired,
     UnsavedChanges,
@@ -74,6 +79,7 @@ pub fn rewrite_rule_program_push_pull(
         return Err(RuleProgramApplyError::Program {
             code: "invalid_push_pull".to_owned(),
             message: "Push/Pull distance must be finite and non-zero".to_owned(),
+            location: None,
         });
     }
     let evaluated = evaluate(source)?;
@@ -83,6 +89,7 @@ pub fn rewrite_rule_program_push_pull(
         .ok_or_else(|| RuleProgramApplyError::Program {
             code: "unknown_part".to_owned(),
             message: format!("program part {part_name:?} does not exist"),
+            location: None,
         })?;
     let controlled_value = |model: &ProgramModel| {
         let part = model.part(part_name)?;
@@ -521,6 +528,7 @@ fn evaluate(
         |error| RuleProgramApplyError::Program {
             code: error.code.to_owned(),
             message: error.message,
+            location: error.location,
         },
     )
 }

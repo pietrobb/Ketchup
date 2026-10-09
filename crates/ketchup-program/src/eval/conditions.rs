@@ -8,8 +8,14 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] message: &str,
         #[starlark(require = named)] parts: Value<'v>,
         #[starlark(require = named)] hint: &str,
+        #[starlark(require = named, default = "error")] severity: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<bool> {
+        let severity = match severity {
+            "error" => crate::validate::Severity::Error,
+            "warning" => crate::validate::Severity::Warning,
+            other => anyhow::bail!("check(): severity is \"error\" or \"warning\", not {other:?}"),
+        };
         let heap = eval.heap();
         let parts = items(parts, heap, "check parts")?
             .into_iter()
@@ -22,7 +28,8 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         }
         if !condition {
             model.declared_issues.push(crate::validate::Issue {
-                severity: crate::validate::Severity::Error,
+                source_lines: Vec::new(),
+                severity,
                 kind: "program_condition_failed",
                 parts,
                 message: message.to_owned(),

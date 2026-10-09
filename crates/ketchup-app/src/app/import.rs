@@ -118,6 +118,11 @@ impl KetchupApp {
             .map_err(|error| ImportError::failed(ImportFormat::Dxf, error))?
             {
                 Ok(review) => return Ok(review),
+                // A syntax or limit error is the same in every unit.
+                Err(error) if !error.depends_on_units() => {
+                    last_error = Some(error);
+                    break;
+                }
                 Err(error) => last_error = Some(error),
             }
         }

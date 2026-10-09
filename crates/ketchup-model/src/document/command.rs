@@ -543,13 +543,16 @@ pub enum ToolBodyPolicy {
 }
 
 impl CanonicalCommand {
-    /// Whether the command changes only how the model is viewed: tag visibility and saved
-    /// views. A batch of such commands keeps the document's program.
+    /// Whether the command changes only how the model is viewed: tag or occurrence
+    /// visibility and saved views. A batch of such commands keeps the document's program.
     #[must_use]
     pub const fn is_view_only(&self) -> bool {
         matches!(
             self,
-            Self::SetTagVisibility { .. } | Self::UpsertSavedView(_) | Self::DeleteSavedView { .. }
+            Self::SetTagVisibility { .. }
+                | Self::SetOccurrenceVisibility { .. }
+                | Self::UpsertSavedView(_)
+                | Self::DeleteSavedView { .. }
         )
     }
 }

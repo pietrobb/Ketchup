@@ -215,10 +215,14 @@ impl From<PdmWorkflowError> for Error {
 impl From<RuleProgramApplyError> for Error {
     fn from(error: RuleProgramApplyError) -> Self {
         match error {
-            RuleProgramApplyError::Program { code, message } => Self {
+            RuleProgramApplyError::Program {
+                code,
+                message,
+                location,
+            } => Self {
                 code: format!("program.{code}"),
                 message,
-                details: None,
+                details: location.and_then(|location| serde_json::to_value(location).ok()),
             },
             RuleProgramApplyError::IncrementalUnsupported => Self::new(
                 "program_incremental_unsupported",

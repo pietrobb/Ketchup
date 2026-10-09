@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 128] = [
+    pub(crate) const COMMANDS: [CommandSpec; 129] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -757,6 +757,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::Shortcuts,
             label_key: "help-shortcuts",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::CommandSearch,
+            label_key: "command-search",
             tool: None,
             implemented: true,
         },

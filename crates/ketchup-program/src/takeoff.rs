@@ -3,6 +3,7 @@
 //!
 //! Sizes are the part's blank (as in the cut list). The volume is the exact
 //! solid's when the caller knows it, else the blank's; every row says which.
+//! The area follows the same basis.
 
 use crate::model::{Part, ProgramModel};
 use serde::Serialize;
@@ -50,7 +51,8 @@ pub struct TakeoffRow {
     pub count: usize,
     /// Sum of the blanks' longest sides.
     pub length_m: f64,
-    /// Sum of the blanks' largest faces (length × width).
+    /// Sum of the largest faces: exact volume over thickness when the exact
+    /// solid is known, else the blank's length × width.
     pub area_m2: f64,
     pub volume_m3: f64,
     pub volume_basis: VolumeBasis,
@@ -75,6 +77,9 @@ pub struct Takeoff {
     pub counted_parts: usize,
     /// Parts of the model left out, e.g. on hidden layers.
     pub excluded_parts: usize,
+    /// Parts named in `counted` that the program did not make (drawn or
+    /// imported): the takeoff cannot size them, so it says how many.
+    pub outside_program_parts: usize,
     pub exact_volume_parts: usize,
 }
 
@@ -113,7 +118,12 @@ impl Sums {
     fn add(&mut self, sides: [f64; 3], exact_volume_mm3: Option<f64>) {
         self.count += 1;
         self.length_mm += sides[0];
-        self.area_mm2 += sides[0] * sides[1];
+        // A triangular part has half its blank's face: with the exact
+        // solid known, the face is its volume over the thickness.
+        self.area_mm2 += match exact_volume_mm3 {
+            Some(volume) if sides[2] > 0.0 => volume / sides[2],
+            _ => sides[0] * sides[1],
+        };
         self.volume_mm3 += exact_volume_mm3.unwrap_or(sides[0] * sides[1] * sides[2]);
         self.exact += usize::from(exact_volume_mm3.is_some());
     }
@@ -206,6 +216,7 @@ pub fn material_takeoff(model: &ProgramModel, counted: &BTreeMap<String, Option<
             .collect(),
         counted_parts,
         excluded_parts: model.parts.len() - counted_parts,
+        outside_program_parts: counted.len().saturating_sub(counted_parts),
         exact_volume_parts,
     }
 }
@@ -221,19 +232,35 @@ pub fn material_takeoff_of_all(model: &ProgramModel) -> Takeoff {
     material_takeoff(model, &counted)
 }
 
+/// A text cell. A leading `=`, `+`, `-`, `@` or control character would make
+/// a spreadsheet run the name as a formula, so such a name is written after an
+/// apostrophe, which the spreadsheet shows as plain text.
 fn csv_field(text: &str) -> String {
+    let text = if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{text}")
+    } else {
+        text.to_owned()
+    };
     if text.contains([';', '"', '\n', '\r']) {
         format!("\"{}\"", text.replace('"', "\"\""))
     } else {
-        text.to_owned()
+        text
     }
 }
 
-/// Semicolon-separated rows, then one total per material, for spreadsheets.
+/// A number with a decimal comma, which is what a spreadsheet that splits
+/// columns on `;` reads as a number.
+fn csv_number(value: f64) -> String {
+    value.to_string().replace('.', ",")
+}
+
+/// Semicolon-separated rows, then one total per material, for spreadsheets:
+/// UTF-8 with a byte order mark (so diacritics survive), decimal commas and
+/// the rounded values of the takeoff.
 #[must_use]
 pub fn takeoff_csv(takeoff: &Takeoff) -> String {
     let mut csv = String::from(
-        "category;material;width_mm;thickness_mm;count;length_m;area_m2;volume_m3;volume_basis\n",
+        "\u{feff}category;material;width_mm;thickness_mm;count;length_m;area_m2;volume_m3;volume_basis\n",
     );
     for row in &takeoff.rows {
         let _ = writeln!(
@@ -241,12 +268,12 @@ pub fn takeoff_csv(takeoff: &Takeoff) -> String {
             "{};{};{};{};{};{};{};{};{}",
             csv_field(&row.category),
             csv_field(&row.material),
-            row.section_mm[0],
-            row.section_mm[1],
+            csv_number(row.section_mm[0]),
+            csv_number(row.section_mm[1]),
             row.count,
-            row.length_m,
-            row.area_m2,
-            row.volume_m3,
+            csv_number(row.length_m),
+            csv_number(row.area_m2),
+            csv_number(row.volume_m3),
             row.volume_basis.as_str()
         );
     }
@@ -256,9 +283,9 @@ pub fn takeoff_csv(takeoff: &Takeoff) -> String {
             "TOTAL;{};;;{};{};{};{};{}",
             csv_field(&total.material),
             total.count,
-            total.length_m,
-            total.area_m2,
-            total.volume_m3,
+            csv_number(total.length_m),
+            csv_number(total.area_m2),
+            csv_number(total.volume_m3),
             total.volume_basis.as_str()
         );
     }
@@ -358,8 +385,53 @@ box("Stĺpik2", (100, 100, 100), at = (600, 600, 0), material = "drevo")
         assert_eq!(row.volume_basis, VolumeBasis::Mixed);
         assert_eq!(row.volume_m3, 0.041);
         let csv = takeoff_csv(&takeoff);
-        assert!(csv.starts_with("category;material;width_mm"));
-        assert!(csv.contains("stena;drevo;140;60;2;5;0.7;0.041;mixed\n"));
-        assert!(csv.contains("TOTAL;drevo;;;2;5;0.7;0.041;mixed\n"));
+        assert!(csv.starts_with("\u{feff}category;material;width_mm"));
+        assert!(csv.contains("stena;drevo;140;60;2;5;0,683;0,041;mixed\n"));
+        assert!(csv.contains("TOTAL;drevo;;;2;5;0,683;0,041;mixed\n"));
+    }
+
+    /// Review 2026-10-09 (P3): the CSV had decimal points beside `;` columns,
+    /// no byte order mark, and wrote a name like `=1+1` as a formula.
+    #[test]
+    fn the_csv_opens_in_a_spreadsheet_as_numbers_and_plain_names() {
+        let source = "box(\"=HYPERLINK(1)/doska\", (1000, 200, 25), material = \"@drevo\")\n";
+        let model = crate::evaluate("csv.star", source, &BTreeMap::new())
+            .expect("program evaluates")
+            .model;
+        let csv = takeoff_csv(&material_takeoff_of_all(&model));
+        assert!(csv.starts_with('\u{feff}'), "{csv}");
+        assert!(
+            csv.contains("\n'=HYPERLINK(1);'@drevo;200;25;1;1;0,2;0,005;blank\n"),
+            "{csv}"
+        );
+        assert!(
+            csv.contains("\nTOTAL;'@drevo;;;1;1;0,2;0,005;blank\n"),
+            "{csv}"
+        );
+    }
+
+    /// Review 2026-10-09 (P3): a triangular part counted twice its area.
+    #[test]
+    fn an_exact_triangular_part_counts_its_own_area_not_its_blank() {
+        let half_blank = 1200.0 * 15.0 * 2500.0 / 2.0;
+        let counted = BTreeMap::from([("stena/doska".to_owned(), Some(half_blank))]);
+        let takeoff = material_takeoff(&model(), &counted);
+        let osb = &takeoff.materials[0];
+        assert_eq!((osb.area_m2, osb.volume_m3), (1.5, 0.0225));
+    }
+
+    /// Review 2026-10-09 (P3): a visible part the program did not make was
+    /// left out without a word.
+    #[test]
+    fn a_visible_part_not_made_by_the_program_is_reported_not_dropped() {
+        let counted = BTreeMap::from([
+            ("stena/doska".to_owned(), None),
+            ("nakreslený kváder".to_owned(), Some(1.0e6)),
+        ]);
+        let takeoff = material_takeoff(&model(), &counted);
+        assert_eq!(
+            (takeoff.counted_parts, takeoff.outside_program_parts),
+            (1, 1)
+        );
     }
 }

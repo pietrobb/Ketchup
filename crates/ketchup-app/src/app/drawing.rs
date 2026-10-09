@@ -3064,6 +3064,13 @@ impl KetchupApp {
         let cycle_with_alt = self.face_workflow.update_alt_pick_through(alt_pick_through);
         self.face_workflow.set_xray_preview(alt_pick_through);
         let typing = context.wants_keyboard_input();
+        // Read before the keymap consumes the paste event.
+        let pasting_other_content = context.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(event, egui::Event::Paste(text)
+                    if text != crate::app_state::SYSTEM_CLIPBOARD_TEXT)
+            })
+        });
         let command = context.input_mut(|input| keymap::pressed(input, typing));
         let cycle_overlap = cycle_with_alt
             || (!typing
@@ -3179,11 +3186,8 @@ impl KetchupApp {
                 // Esc first cancels whatever is in progress; only with nothing
                 // left to cancel does it deselect.
                 AppCommand::Deselect => self.cancel_or_deselect(),
-                AppCommand::Copy => {
-                    if self.command_enabled(AppCommand::Copy) {
-                        self.dispatch_command(AppCommand::Copy);
-                        context.copy_text("Ketchup object selection".to_owned());
-                    }
+                AppCommand::Paste if pasting_other_content => {
+                    self.digest = self.catalog.text("digest-clipboard-holds-other-content");
                 }
                 command => self.dispatch_command(command),
             }
@@ -3200,6 +3204,10 @@ impl KetchupApp {
             self.confirm_sweep_preview();
         } else if confirm && self.tool_preview.get::<LoftPreview>().is_some() {
             self.confirm_loft_preview();
+        }
+        // A menu copy of the previous frame is written here as well.
+        if std::mem::take(&mut self.clipboard.announce) {
+            context.copy_text(crate::app_state::SYSTEM_CLIPBOARD_TEXT.to_owned());
         }
     }
 
@@ -3248,14 +3256,15 @@ impl KetchupApp {
                 );
                 self.paint_rail_button(ui, &response, id, enabled, active);
                 name_widget(&response, enabled, &label);
+                let arguments = BTreeMap::from([
+                    ("tool", label.clone()),
+                    ("shortcut", keymap::shortcut_text(&self.catalog, spec.id)),
+                ]);
                 if response
-                    .on_hover_text(self.catalog.format(
-                        "tool-tooltip",
-                        &BTreeMap::from([
-                            ("tool", label.clone()),
-                            ("shortcut", keymap::shortcut_text(&self.catalog, spec.id)),
-                        ]),
-                    ))
+                    .on_hover_text(self.catalog.format("tool-tooltip", &arguments))
+                    .on_disabled_hover_text(
+                        self.catalog.format("tool-tooltip-unavailable", &arguments),
+                    )
                     .clicked()
                 {
                     self.dispatch_command(id);
@@ -3273,6 +3282,7 @@ impl KetchupApp {
             name_widget(&response, enabled, &self.command_label(AppCommand::Delete));
             if response
                 .on_hover_text(self.catalog.text("tooltip-delete"))
+                .on_disabled_hover_text(self.catalog.text("tooltip-delete-unavailable"))
                 .clicked()
             {
                 self.dispatch_command(AppCommand::Delete);

@@ -3,7 +3,7 @@ crates/ketchup-app/src/app.rs:house 4
 crates/ketchup-app/src/app.rs:panel 1
 crates/ketchup-app/src/app/assistant.rs:panel 2
 crates/ketchup-app/src/app/assistant_panel.rs:panel 7
-crates/ketchup-app/src/app/commands.rs:panel 31
+crates/ketchup-app/src/app/commands.rs:panel 28
 crates/ketchup-app/src/app/document.rs:panel 14
 crates/ketchup-app/src/app/document.rs:weldment 1
 crates/ketchup-app/src/app/drawing.rs:panel 4
@@ -20,6 +20,7 @@ crates/ketchup-app/src/app_state.rs:panel 5
 crates/ketchup-app/src/command_registry.rs:weldment 1
 crates/ketchup-app/src/drawn_shape.rs:house 1
 crates/ketchup-app/src/helix_ui.rs:panel 2
+crates/ketchup-app/src/language.rs:panel 1
 crates/ketchup-app/src/lib.rs:beam 2
 crates/ketchup-app/src/lib.rs:drawer 1
 crates/ketchup-app/src/lib.rs:furniture 1

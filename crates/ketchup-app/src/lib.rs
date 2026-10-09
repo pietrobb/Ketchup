@@ -168,6 +168,8 @@ mod import_source;
 mod migration_review;
 use import_source::{ImportError, ImportFailure, ImportSourcePlan, read_import_source};
 mod keymap;
+pub mod language;
+mod length_input;
 pub mod live_bridge;
 mod mesh_conversion_ui;
 mod modal;
@@ -1969,6 +1971,7 @@ pub enum AppCommand {
     ZoomIn,
     ZoomOut,
     Shortcuts,
+    CommandSearch,
     About,
     MaterialTakeoff,
 }
@@ -4301,6 +4304,15 @@ pub struct KetchupApp {
     btlx_profile_strategy: BtlxProfileStrategy,
     btlx_intermediate_saw_cuts: u8,
     catalog: LocaleCatalog,
+    /// The language `catalog` is in; `None` for a test catalog such as pseudo.
+    language: Option<language::UiLanguage>,
+    /// Whether a language picked in the menu is remembered for the next start.
+    remember_language: bool,
+    /// The program the last edit detached, while the one-time notice about it
+    /// is on screen.
+    program_detach_notice: Option<String>,
+    /// The notice is shown for the first detaching edit of a session only.
+    program_detach_warned: bool,
     assembly_editor: assembly_ui::AssemblyEditorState,
     body_editor: body_ui::BodyEditorState,
     face_workflow: face_workflow_ui::FaceWorkflowUiState,
@@ -4326,6 +4338,7 @@ pub struct KetchupApp {
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,
+    command_search: app_state::CommandSearch,
     takeoff: app_state::TakeoffState,
     drawings: app_state::DrawingsState,
     digest: String,
@@ -4696,14 +4709,7 @@ fn arc_geometry(start: Vec3, end: Vec3, bulge: Vec3) -> Option<ArcGeometry> {
 }
 
 fn parse_distance_mm(input: &str) -> Option<f64> {
-    let trimmed = input.trim();
-    let numeric = trimmed
-        .strip_suffix("mm")
-        .or_else(|| trimmed.strip_suffix("MM"))
-        .unwrap_or(trimmed)
-        .trim();
-    let distance = numeric.parse::<f64>().ok()?;
-    distance.is_finite().then_some(distance)
+    length_input::parse_length_mm(input)
 }
 
 fn parse_dimension(input: &str) -> Option<Dimension> {

@@ -109,6 +109,7 @@ pub(crate) fn issues(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec
             },
         );
         issues.push(Issue {
+            source_lines: Vec::new(),
             severity: Severity::Warning,
             kind: if detached { "disconnected_group" } else { "group_contact_unverified" },
             parts: leaves.into_iter().map(str::to_owned).collect(),

@@ -587,6 +587,26 @@ fn a_decimal_comma_on_a_pinned_axis_is_one_distance_not_a_vector() {
 }
 
 #[test]
+fn a_typed_length_expression_moves_by_its_value_and_previews_it() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
+
+    app.dispatch_command(AppCommand::Move);
+    app.set_move_axis_lock(Some(Axis::Z));
+    app.value_box.input = "25".to_owned();
+    assert_eq!(app.value_box_length_preview(), None);
+    app.value_box.input = "2cm + 2*2,5".to_owned();
+    assert!(app.value_box_length_preview().unwrap().contains("25 mm"));
+    assert!(app.apply_value_input());
+
+    assert_eq!(
+        app.occurrence_box_geometry(1).unwrap().0,
+        initial_origin + Vec3::new(0.0, 0.0, 25.0)
+    );
+}
+
+#[test]
 fn rotate_previews_commits_and_corrects_the_entire_multi_selection_atomically() {
     let mut app = KetchupApp::new();
     assert!(app.create_box());

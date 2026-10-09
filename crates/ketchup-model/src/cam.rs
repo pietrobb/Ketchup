@@ -1869,7 +1869,7 @@ fn depth_passes(top: f64, bottom: f64, stepdown: f64) -> Result<Vec<f64>, CamPla
 fn whole_steps(span: f64, step: f64) -> usize {
     let quotient = span / step;
     let nearest = quotient.round();
-    if (quotient - nearest).abs() <= 1e-9 * nearest.max(1.0) {
+    if (quotient - nearest).abs() <= ketchup_tolerance::ROUNDING * nearest.max(1.0) {
         nearest as usize
     } else {
         quotient.ceil() as usize

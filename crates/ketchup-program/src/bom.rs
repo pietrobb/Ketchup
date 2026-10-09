@@ -50,7 +50,7 @@ pub struct Bom {
     pub total_parts: usize,
 }
 
-fn key(value: f64) -> i64 {
+pub(crate) fn key(value: f64) -> i64 {
     #[allow(clippy::cast_possible_truncation)]
     {
         (value * 1000.0).round() as i64

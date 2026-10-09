@@ -24,7 +24,29 @@
           600.0
         ]
       ],
-      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected."
+      "hint": "Apply the program to measure native solid contacts; bounding boxes alone cannot prove this group is connected.",
+      "source_lines": [
+        {
+          "first": 3,
+          "last": 3
+        },
+        {
+          "first": 4,
+          "last": 4
+        },
+        {
+          "first": 5,
+          "last": 5
+        },
+        {
+          "first": 6,
+          "last": 6
+        },
+        {
+          "first": 7,
+          "last": 7
+        }
+      ]
     }
   ],
   "relations": [

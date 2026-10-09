@@ -222,6 +222,7 @@ pub(crate) fn issues(model: &ProgramModel, issues: &mut Vec<crate::Issue>) {
     for motion in &model.motions {
         if !motion.limits.contains(motion.position) {
             issues.push(crate::Issue {
+                source_lines: Vec::new(),
                 severity: crate::Severity::Error,
                 kind: "joint_out_of_range",
                 parts: motion.endpoints.to_vec(),

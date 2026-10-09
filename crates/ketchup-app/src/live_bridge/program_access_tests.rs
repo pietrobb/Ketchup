@@ -248,6 +248,49 @@ fn ambiguous_missing_overlapping_or_invalid_patch_publishes_nothing() {
     assert_eq!(app.undo_step_count(), undo);
 }
 
+/// Review 2026-10-09 §5.1 (4): a patch that breaks the program answers with
+/// the line and column and the patched lines around them, which the agent
+/// never saw as a whole.
+#[test]
+fn a_rejected_patch_names_the_line_column_and_the_patched_text_around_it() {
+    let (mut app, mut bridge) = setup();
+    let source = "a=box(\"a\", (10,20,30))\nb=box(\"b\", (10,20,30), at=(100,0,0))\nc=box(\"c\", (10,20,30), at=(200,0,0))\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let stamp = app.live_bridge_stamp();
+    assert!(
+        bridge
+            .execute(
+                &mut app,
+                patch(stamp, "(10,20,30), at=(100", "(10,20,missing), at=(100"),
+                false
+            )
+            .is_err()
+    );
+    let details = take_error_details().unwrap();
+    let location = &details["details"]["location"];
+    assert_eq!(location["file"], "local.star", "{details}");
+    assert_eq!(location["line"], 2, "{details}");
+    assert!(location["column"].as_u64().unwrap() > 1, "{details}");
+    let excerpt = location["excerpt"].as_array().unwrap();
+    assert_eq!(
+        excerpt
+            .iter()
+            .map(|line| (
+                line["line"].as_u64().unwrap(),
+                line["text"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (1, "a=box(\"a\", (10,20,30))"),
+            (2, "b=box(\"b\", (10,20,missing), at=(100,0,0))"),
+            (3, "c=box(\"c\", (10,20,30), at=(200,0,0))"),
+        ]
+    );
+    assert_eq!(app.document.current_rule_program().unwrap().source, source);
+}
+
 fn all_rows(app: &mut KetchupApp, bridge: &mut LiveBridge, section: ReportSection) -> Vec<Value> {
     let expected = app.live_bridge_stamp();
     let mut offset = 0;

@@ -100,13 +100,28 @@ pub enum FeaError {
     InvalidNode,
     DuplicateMaterialId,
     InvalidMaterial,
-    DuplicateElementId,
-    DuplicateElement,
-    InvalidElementNode,
-    RepeatedElementNode,
-    DegenerateElement,
-    MissingMaterial,
-    InvalidArea,
+    /// Each element error names the element by its id.
+    DuplicateElementId {
+        element: u64,
+    },
+    DuplicateElement {
+        element: u64,
+    },
+    InvalidElementNode {
+        element: u64,
+    },
+    RepeatedElementNode {
+        element: u64,
+    },
+    DegenerateElement {
+        element: u64,
+    },
+    MissingMaterial {
+        element: u64,
+    },
+    InvalidArea {
+        element: u64,
+    },
     MissingConstraint,
     InvalidConstraint,
     ConflictingConstraint,
@@ -387,54 +402,75 @@ impl FeaModel {
         let mut tetrahedron_connectivities = BTreeSet::new();
         let mut tetrahedron_faces = BTreeMap::<[usize; 3], usize>::new();
         for element in &self.elements {
-            if !element_ids.insert(element.id) {
-                return Err(FeaError::DuplicateElementId);
+            let element_id = element.id;
+            if !element_ids.insert(element_id) {
+                return Err(FeaError::DuplicateElementId {
+                    element: element_id,
+                });
             }
             let (nodes, material_id) = match element.kind {
                 FeaElementKind::LinearTruss2 {
-                    nodes,
-                    material_id,
-                    area_mm2,
+                    nodes, material_id, ..
+                } => (nodes.to_vec(), material_id),
+                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
+                    (nodes.to_vec(), material_id)
+                }
+            };
+            // A node outside the mesh is named as such, not as a degenerate shape.
+            if nodes.iter().any(|node| *node >= self.nodes.len()) {
+                return Err(FeaError::InvalidElementNode {
+                    element: element_id,
+                });
+            }
+            if nodes.iter().copied().collect::<BTreeSet<_>>().len() != nodes.len() {
+                return Err(FeaError::RepeatedElementNode {
+                    element: element_id,
+                });
+            }
+            match element.kind {
+                FeaElementKind::LinearTruss2 {
+                    nodes, area_mm2, ..
                 } => {
                     if !finite_positive(area_mm2) {
-                        return Err(FeaError::InvalidArea);
-                    }
-                    if nodes[0] == nodes[1] {
-                        return Err(FeaError::RepeatedElementNode);
+                        return Err(FeaError::InvalidArea {
+                            element: element_id,
+                        });
                     }
                     let mut canonical_nodes = nodes;
                     canonical_nodes.sort_unstable();
                     if !truss_connectivities.insert(canonical_nodes) {
-                        return Err(FeaError::DuplicateElement);
+                        return Err(FeaError::DuplicateElement {
+                            element: element_id,
+                        });
                     }
                     if self.truss_geometry(nodes).is_none() {
-                        return Err(FeaError::DegenerateElement);
+                        return Err(FeaError::DegenerateElement {
+                            element: element_id,
+                        });
                     }
-                    (nodes.to_vec(), material_id)
                 }
-                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
-                    if nodes.iter().copied().collect::<BTreeSet<_>>().len() != 4 {
-                        return Err(FeaError::RepeatedElementNode);
-                    }
+                FeaElementKind::LinearTetrahedron4 { nodes, .. } => {
                     let mut canonical_nodes = nodes;
                     canonical_nodes.sort_unstable();
                     if !tetrahedron_connectivities.insert(canonical_nodes) {
-                        return Err(FeaError::DuplicateElement);
+                        return Err(FeaError::DuplicateElement {
+                            element: element_id,
+                        });
                     }
                     if self.tetrahedron_geometry(nodes).is_none() {
-                        return Err(FeaError::DegenerateElement);
+                        return Err(FeaError::DegenerateElement {
+                            element: element_id,
+                        });
                     }
                     for face in tetrahedron_faces_of(nodes) {
                         *tetrahedron_faces.entry(face).or_default() += 1;
                     }
-                    (nodes.to_vec(), material_id)
                 }
-            };
-            if nodes.iter().any(|node| *node >= self.nodes.len()) {
-                return Err(FeaError::InvalidElementNode);
             }
             if !material_ids.contains(&material_id) {
-                return Err(FeaError::MissingMaterial);
+                return Err(FeaError::MissingMaterial {
+                    element: element_id,
+                });
             }
         }
 

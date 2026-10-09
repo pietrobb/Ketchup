@@ -31,6 +31,9 @@ pub struct Issue {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub where_mm: Option<([f64; 3], [f64; 3])>,
     pub hint: String,
+    /// The program lines that define the issue's parts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub source_lines: Vec<crate::SourceLines>,
 }
 
 /// Bounds of `b` in the frame of `a` when both share one orientation.
@@ -288,6 +291,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
                 match exact.pair(&a.name, &b.name) {
                     Some(pair) if pair.penetrating() => {
                         issues.push(Issue {
+                            source_lines: Vec::new(),
                             severity: Severity::Error,
                             kind: "collision",
                             parts: vec![a.name.clone(), b.name.clone()],
@@ -308,6 +312,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
                     None => {}
                 }
                 issues.push(Issue {
+                    source_lines: Vec::new(),
                     severity: Severity::Warning,
                     kind: COLLISION_UNVERIFIED,
                     parts: vec![a.name.clone(), b.name.clone()],
@@ -328,6 +333,7 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
                 continue;
             }
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: Severity::Error,
                 kind: "collision",
                 parts: vec![a.name.clone(), b.name.clone()],
@@ -377,6 +383,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 });
             if let Some((false, at, face)) = fit {
                 issues.push(Issue {
+                    source_lines: Vec::new(),
                     severity: Severity::Error,
                     kind: "hole_outside_face",
                     parts: vec![part.name.clone()],
@@ -397,6 +404,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
             }
             if hole.through && hole.depth_mm < thickness - TOLERANCE_MM {
                 issues.push(Issue {
+                    source_lines: Vec::new(),
                     severity: Severity::Error,
                     kind: "through_hole_too_shallow",
                     parts: vec![part.name.clone()],
@@ -413,6 +421,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 });
             } else if !hole.through && hole.depth_mm >= thickness - TOLERANCE_MM {
                 issues.push(Issue {
+                    source_lines: Vec::new(),
                     severity: Severity::Error,
                     kind: "hole_breaks_through",
                     parts: vec![part.name.clone()],
@@ -430,6 +439,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 });
             } else if !hole.through && thickness - hole.depth_mm < THIN_WALL_MM - TOLERANCE_MM {
                 issues.push(Issue {
+                    source_lines: Vec::new(),
                     severity: Severity::Warning,
                     kind: "hole_wall_too_thin",
                     parts: vec![part.name.clone()],
@@ -480,6 +490,7 @@ fn joints<'a>(
                 continue;
             }
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: Severity::Error,
                 kind: "joint_without_contact",
                 parts: joint.parts.to_vec(),
@@ -510,6 +521,7 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
         let high = param.max.is_some_and(|max| param.value > max);
         if low || high {
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: Severity::Error,
                 kind: "param_out_of_range",
                 parts: Vec::new(),
@@ -631,6 +643,7 @@ fn support<'a>(
     for (index, part) in model.parts.iter().enumerate() {
         if !supported[index] {
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: Severity::Warning,
                 kind: "floating_part",
                 parts: vec![part.name.clone()],

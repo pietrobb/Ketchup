@@ -675,6 +675,83 @@ fn an_unclosed_bracket_at_the_end_names_its_line() {
     }
 }
 
+/// A failure inside the library is located at the user's own line that led
+/// there, with the lines around it and the calls on the way.
+#[test]
+fn a_failure_names_the_users_line_column_excerpt_and_call_stack() {
+    let source = "a = box(\"a\", (10, 10, 10))\nb = box(\"b\", (10, 10, 10), at = (50, 0, 0))\ndef join(x, y):\n    dowels(x, y, dowel=\"unknown\")\n\njoin(a, b)\n";
+    let error = run("dowel.star", source, &BTreeMap::new()).unwrap_err();
+    let location = error
+        .location
+        .expect("the failure has a line in dowel.star");
+    assert_eq!(
+        (
+            location.at.file.as_str(),
+            location.at.line,
+            location.at.column
+        ),
+        ("dowel.star", 4, 5)
+    );
+    let excerpt = location
+        .excerpt
+        .iter()
+        .map(|line| (line.line, line.text.as_str()))
+        .collect::<Vec<_>>();
+    let lines = source.lines().collect::<Vec<_>>();
+    assert_eq!(
+        excerpt,
+        (2..=6)
+            .map(|line| (line, lines[line - 1]))
+            .collect::<Vec<_>>()
+    );
+    let calls = location
+        .call_stack
+        .iter()
+        .map(|frame| (frame.function.as_str(), frame.at.line))
+        .collect::<Vec<_>>();
+    assert_eq!(&calls[..2], &[("join", 6), ("dowels", 4)], "{calls:?}");
+
+    let error = run("t.star", "a = 1\nb = (1, 2\n", &BTreeMap::new()).unwrap_err();
+    let location = error.location.expect("a syntax error has a position");
+    assert_eq!(location.at.line, 2, "{location:?}");
+    assert!(location.excerpt.iter().any(|line| line.text == "b = (1, 2"));
+}
+
+/// Review 2026-10-09 §5.1 (4): every issue names the program lines of its
+/// parts, also after the issues are replaced by an exact check.
+#[test]
+fn every_issue_names_the_program_lines_of_its_parts() {
+    let source = "a = box(\"a\", (10, 10, 10))\n\nb = box(\"b\", (10, 10, 10), at = (5, 0, 0))\n";
+    let (_, mut report) = run("t.star", source, &BTreeMap::new()).unwrap();
+    let collision = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "collision")
+        .expect("the boxes overlap");
+    let lines = |issue: &ketchup_program::Issue| {
+        issue
+            .source_lines
+            .iter()
+            .map(|lines| (lines.first, lines.last))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(lines(collision), [(1, 1), (3, 3)]);
+    let json = serde_json::to_value(collision).unwrap();
+    assert_eq!(json["source_lines"][1]["first"], 3, "{json}");
+
+    let mut replaced = report.issues.clone();
+    for issue in &mut replaced {
+        issue.source_lines.clear();
+    }
+    report.set_issues(replaced);
+    let collision = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "collision")
+        .unwrap();
+    assert_eq!(lines(collision), [(1, 1), (3, 3)]);
+}
+
 #[test]
 fn the_interpreter_leaves_workspace_json_parsing_intact() {
     // serde_json's `arbitrary_precision` is unified into every crate of a

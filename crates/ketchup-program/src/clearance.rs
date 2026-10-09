@@ -146,6 +146,7 @@ pub(crate) fn issues(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 ),
             };
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity,
                 kind,
                 parts: vec![part.name.clone()],

@@ -4,6 +4,8 @@
 
 use crate::app_state::{TakeoffCache, TakeoffError};
 use crate::*;
+use ketchup_program::cut_list::cut_list_table;
+use ketchup_program::table::DecimalSeparator;
 use ketchup_program::takeoff::{Takeoff, material_takeoff, takeoff_csv};
 
 impl KetchupApp {
@@ -112,7 +114,7 @@ impl KetchupApp {
     /// Writes the takeoff of the visible parts as semicolon-separated CSV.
     pub fn export_material_takeoff_to(&mut self, path: &Path) -> bool {
         let result = self.material_takeoff().and_then(|takeoff| {
-            std::fs::write(path, takeoff_csv(&takeoff))
+            write_atomically(path, takeoff_csv(&takeoff).as_bytes())
                 .map_err(|error| TakeoffError::Write(Arc::new(error)))
         });
         let (key, mut arguments) = match &result {
@@ -127,13 +129,54 @@ impl KetchupApp {
         result.is_ok()
     }
 
+    /// Writes the cut list of the visible parts: XLSX for a `.xlsx` path,
+    /// otherwise CSV with the decimal separator of the interface language.
+    pub fn export_cut_list_to(&mut self, path: &Path) -> bool {
+        let result = self.material_takeoff().and_then(|_| {
+            let snapshot = self.document.current();
+            let visible = self.visible_takeoff_parts(&snapshot, |_| true);
+            let table = {
+                let cache = self.takeoff.cache.borrow();
+                let model = cache
+                    .as_ref()
+                    .and_then(|cached| cached.model.as_ref().ok())
+                    .ok_or(TakeoffError::NoProgram)?;
+                cut_list_table(model, |name| visible.contains_key(name))
+            };
+            let xlsx = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xlsx"));
+            let bytes = if xlsx {
+                table.xlsx()
+            } else {
+                let decimal = match self.language {
+                    Some(language::UiLanguage::English) => DecimalSeparator::Point,
+                    Some(language::UiLanguage::Slovak) | None => DecimalSeparator::Comma,
+                };
+                table.csv(decimal).into_bytes()
+            };
+            write_atomically(path, &bytes).map_err(|error| TakeoffError::Write(Arc::new(error)))
+        });
+        let (key, mut arguments) = match &result {
+            Ok(()) => ("digest-exported-cut-list", BTreeMap::new()),
+            Err(reason) => (
+                "error-export-cut-list",
+                BTreeMap::from([("reason", self.takeoff_error_text(reason))]),
+            ),
+        };
+        arguments.insert("path", path.display().to_string());
+        self.digest = self.catalog.format(key, &arguments);
+        result.is_ok()
+    }
+
     pub(crate) fn show_material_takeoff_window(&mut self, context: &egui::Context) {
         if !self.takeoff.open {
             return;
         }
         let takeoff = self.material_takeoff();
         let mut open = true;
-        let mut export = false;
+        let mut export = None;
         egui::Window::new(self.catalog.text("window-material-takeoff"))
             .open(&mut open)
             .default_size([720.0, 480.0])
@@ -150,9 +193,29 @@ impl KetchupApp {
                             ("exact", takeoff.exact_volume_parts.to_string()),
                         ]),
                     ));
-                    if ui.button(self.catalog.text("takeoff-export-csv")).clicked() {
-                        export = true;
+                    if takeoff.outside_program_parts > 0 {
+                        ui.label(self.catalog.format(
+                            "takeoff-outside-program",
+                            &BTreeMap::from([("count", takeoff.outside_program_parts.to_string())]),
+                        ));
                     }
+                    ui.horizontal(|ui| {
+                        if ui.button(self.catalog.text("takeoff-export-csv")).clicked() {
+                            export = Some("takeoff");
+                        }
+                        if ui
+                            .button(self.catalog.text("takeoff-export-cut-list-csv"))
+                            .clicked()
+                        {
+                            export = Some("csv");
+                        }
+                        if ui
+                            .button(self.catalog.text("takeoff-export-cut-list-xlsx"))
+                            .clicked()
+                        {
+                            export = Some("xlsx");
+                        }
+                    });
                     ui.separator();
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         self.takeoff_material_grid(ui, takeoff);
@@ -164,8 +227,18 @@ impl KetchupApp {
         if !open {
             self.takeoff.open = false;
         }
-        if export && let Some(path) = self.choose_export_path("csv") {
-            self.export_material_takeoff_to(&path);
+        match export {
+            Some("takeoff") => {
+                if let Some(path) = self.choose_export_path("csv") {
+                    self.export_material_takeoff_to(&path);
+                }
+            }
+            Some(extension) => {
+                if let Some(path) = self.choose_export_path(extension) {
+                    self.export_cut_list_to(&path);
+                }
+            }
+            None => {}
         }
     }
 
@@ -252,4 +325,19 @@ impl KetchupApp {
                 .text(&format!("takeoff-basis-{}", basis.as_str()))
         )
     }
+}
+
+/// Write through a temporary file beside `path`, so an interrupted export
+/// never leaves a half-written takeoff in place of the previous one.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }

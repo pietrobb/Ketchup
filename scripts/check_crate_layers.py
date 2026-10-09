@@ -465,6 +465,7 @@ MAY_WAIT_FOR_EVALUATION = {
     PROGRAM_EVALUATION_SERVICE,
     "crates/ketchup-app/src/program_edit.rs",
     "crates/ketchup-app/src/live_bridge/program_access.rs",
+    "crates/ketchup-app/src/live_bridge/program_navigation.rs",
     "crates/ketchup-app/src/live_bridge/program_pick.rs",
 }
 

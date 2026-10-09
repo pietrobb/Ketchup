@@ -93,7 +93,26 @@ fn reversed_connectivity_duplicate_element_is_rejected() {
 
     assert_eq!(
         model.solve(FeaSolveSettings::default()),
-        Err(FeaError::DuplicateElement)
+        Err(FeaError::DuplicateElement { element: 2 })
+    );
+}
+
+/// Review 2026-10-09 (P3): a node outside the mesh was reported as a
+/// degenerate element, and no element error said which element.
+#[test]
+fn an_element_node_outside_the_mesh_is_named_with_its_element() {
+    let mut model = axial_bar(1, 10_000.0);
+    model.elements.push(FeaElement {
+        id: 7,
+        kind: FeaElementKind::LinearTruss2 {
+            nodes: [1, 99],
+            material_id: 1,
+            area_mm2: 100.0,
+        },
+    });
+    assert_eq!(
+        model.solve(FeaSolveSettings::default()),
+        Err(FeaError::InvalidElementNode { element: 7 })
     );
 }
 
@@ -253,7 +272,7 @@ fn incomplete_singular_and_out_of_scope_models_fail_closed() {
     missing_material.materials.clear();
     assert_eq!(
         missing_material.solve(FeaSolveSettings::default()),
-        Err(FeaError::MissingMaterial)
+        Err(FeaError::MissingMaterial { element: 1 })
     );
 
     let mut unsupported = axial_bar(1, 10_000.0);

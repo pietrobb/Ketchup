@@ -61,6 +61,7 @@ pub(super) enum ProgramCheckJob {
     Checking(Box<ExactCheckJob>),
     Validating(super::program_validate::ProgramValidationJob),
     Measuring(super::measurement::MeasurementJob),
+    DryRun(super::program_dry_run::DryRunJob),
 }
 
 pub(super) struct ProgramPlanJob {
@@ -88,7 +89,7 @@ fn unfinished(reason: &str) -> Value {
 }
 
 impl LiveBridge {
-    fn program_source(
+    pub(super) fn program_source(
         app: &KetchupApp,
         request: Request,
         ui_busy: bool,
@@ -382,6 +383,10 @@ impl LiveBridge {
             }
             ProgramCheckJob::Validating(job) => {
                 self.poll_program_validation(app, context, job);
+                return;
+            }
+            ProgramCheckJob::DryRun(job) => {
+                self.poll_program_dry_run(app, context, job);
                 return;
             }
         };

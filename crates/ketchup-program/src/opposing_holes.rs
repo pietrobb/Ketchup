@@ -58,6 +58,7 @@ pub(crate) fn issues(part: &Part, issues: &mut Vec<Issue>) {
             let round = |x: f64| (x * 1000.).round() / 1000.;
             let meeting = clearance <= TOLERANCE_MM;
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: if meeting { Severity::Error } else { Severity::Warning },
                 kind: if meeting { "opposing_holes_intersect" } else { "opposing_holes_wall_too_thin" },
                 parts: vec![part.name.clone()],

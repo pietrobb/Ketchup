@@ -48,6 +48,9 @@ pub const PRELUDE: &str = include_str!("../library/prelude.star");
 pub struct ProgramError {
     pub code: &'static str,
     pub message: String,
+    /// Where in the user's program it failed, when the failure has a position there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<Box<ErrorLocation>>,
 }
 
 impl std::fmt::Display for ProgramError {
@@ -1409,6 +1412,8 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
 mod assemblies;
 mod conditions;
 mod continuity;
+mod error_location;
+pub use error_location::{CallFrame, ErrorLocation, NumberedLine, Position};
 mod face_cache;
 mod joints;
 mod machining;
@@ -2335,6 +2340,20 @@ fn evaluation_error(code: &'static str, error: impl std::fmt::Display) -> Progra
     ProgramError {
         code,
         message: error.to_string(),
+        location: None,
+    }
+}
+
+/// An interpreter error of the program `file_name`, located in its `source`.
+fn located_error(
+    code: &'static str,
+    file_name: &str,
+    source: &str,
+    error: &starlark::Error,
+) -> ProgramError {
+    ProgramError {
+        location: error_location::locate(file_name, source, error),
+        ..evaluation_error(code, error)
     }
 }
 
@@ -2390,7 +2409,7 @@ pub fn evaluate(
                 _ => error,
             }
         })
-        .map_err(|error| evaluation_error("syntax_error", error))?;
+        .map_err(|error| located_error("syntax_error", file_name, source, &error))?;
     let state = std::rc::Rc::new(State {
         file_name: file_name.to_owned(),
         overrides: overrides.clone(),
@@ -2405,7 +2424,7 @@ pub fn evaluate(
         eval.set_print_handler(state.as_ref());
         eval.eval_module(ast, &globals)
             .map(|_| ())
-            .map_err(|error| evaluation_error("evaluation_error", error))
+            .map_err(|error| located_error("evaluation_error", file_name, source, &error))
     };
     drop(module);
     STATE.with(|slot| *slot.borrow_mut() = None);

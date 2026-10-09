@@ -69,6 +69,8 @@ mod drawings;
 mod image;
 mod program_access;
 mod program_check;
+mod program_dry_run;
+mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 mod measurement;
 pub(crate) mod program_pick;
@@ -232,6 +234,25 @@ pub enum Request {
         expected: Stamp,
         edits: Vec<SourceEdit>,
     },
+    /// One piece of a large program: a line range, the lines matching a
+    /// text, the lines of a part, or the outline.
+    ProgramPiece {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        lines: Option<[usize; 2]>,
+        #[serde(default)]
+        search: Option<String>,
+        #[serde(default)]
+        part: Option<String>,
+        #[serde(default)]
+        outline: bool,
+    },
+    /// Applies the current program with new values for some parameters.
+    SetProgramParams {
+        expected: Stamp,
+        params: std::collections::BTreeMap<String, f64>,
+    },
     ProgramReport {
         expected: Stamp,
         section: ReportSection,
@@ -253,6 +274,20 @@ pub enum Request {
         /// Replace a saved document that no program owns.
         #[serde(default)]
         replace_document: bool,
+    },
+    /// Plans and exactly checks a whole program (`source`) or a patch (`edits`)
+    /// like `ApplyProgram`, without publishing anything.
+    CheckProgram {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        source: Option<String>,
+        #[serde(default)]
+        edits: Option<Vec<SourceEdit>>,
+        #[serde(default)]
+        overrides: Option<std::collections::BTreeMap<String, f64>>,
+        #[serde(default)]
+        file_name: Option<String>,
     },
     MeasureFaces {
         expected: Stamp,
@@ -582,7 +617,7 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
     let (reason, hint) = match &error {
         Error::Program { code, .. } => (
             code.clone(),
-            "Fix the line named in the message and send the whole program again.",
+            "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again.",
         ),
         Error::IncrementalUnsupported => (
             "incremental_unsupported".to_owned(),
@@ -602,9 +637,17 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
         ),
     };
     let message = shortened_message(&error.to_string());
+    let mut details = json!({"program_code": reason, "published": false});
+    if let Error::Program {
+        location: Some(location),
+        ..
+    } = &error
+    {
+        details["location"] = json!(location);
+    }
     record_rejection(
         &rejected("program_rejected").reason(message).fix_hint(hint),
-        json!({"program_code": reason, "published": false}),
+        details,
     );
     "program_rejected"
 }
@@ -1121,10 +1164,21 @@ impl KetchupApp {
                     );
                     continue;
                 }
-                request @ (Request::ApplyProgram { .. } | Request::PatchProgram { .. }) => {
+                request @ (Request::ApplyProgram { .. }
+                | Request::PatchProgram { .. }
+                | Request::SetProgramParams { .. }) => {
                     bridge.start_queued_apply_program(
                         self, context, id, reply, cancelled, request, ui_busy,
                     );
+                    continue;
+                }
+                request @ Request::CheckProgram { .. } => {
+                    let queued = program_dry_run::QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    bridge.start_queued_check_program(self, context, queued, request, ui_busy);
                     continue;
                 }
                 request => request,
@@ -2281,7 +2335,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","patch_program","program_report","validate_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","program_context","program_piece","patch_program","set_program_params","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -2495,10 +2549,16 @@ impl LiveBridge {
             | Request::MeasureFaces { .. }
             | Request::ValidateProgram { .. }
             | Request::ProgramContext { .. }
+            | Request::ProgramPiece { .. }
             | Request::ProgramReport { .. }) => self.read_program_request(app, request, cancelled),
-            request @ (Request::ApplyProgram { .. } | Request::PatchProgram { .. }) => self
+            request @ (Request::ApplyProgram { .. }
+            | Request::PatchProgram { .. }
+            | Request::SetProgramParams { .. }) => self
                 .apply_program(app, request, ui_busy, cancelled)
                 .map(|applied| applied.result(None)),
+            request @ Request::CheckProgram { .. } => {
+                Self::check_program_now(app, request, ui_busy, cancelled)
+            }
             Request::Undo { expected } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;

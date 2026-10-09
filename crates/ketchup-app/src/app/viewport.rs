@@ -1603,6 +1603,23 @@ impl KetchupApp {
             Pos2::new(value_rect.center().x - 6.0, value_rect.top() + 8.0),
             Pos2::new(value_rect.right() - 34.0, value_rect.bottom() - 8.0),
         );
+        if let Some(preview) = self.value_box_length_preview() {
+            let preview_rect = painter.text(
+                Pos2::new(value_rect.right() - 12.0, value_rect.top() - 4.0),
+                egui::Align2::RIGHT_BOTTOM,
+                preview.clone(),
+                egui::FontId::monospace(SHELL_SMALL_SIZE),
+                palette.accent,
+            );
+            ui.interact(
+                preview_rect,
+                ui.id().with("value-box-preview"),
+                Sense::hover(),
+            )
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, preview.clone())
+            });
+        }
 
         // The hint card names the armed tool and then explains it, so the two
         // read as a title and a body rather than as one wall of grey text.

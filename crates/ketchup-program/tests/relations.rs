@@ -176,6 +176,7 @@ fn exact_verdicts_settle_unverified_overlaps() {
     );
     let mut collision = report.clone();
     collision.set_issues(vec![Issue {
+        source_lines: Vec::new(),
         severity: Severity::Error,
         kind: "collision",
         parts: vec!["seat".to_owned(), "post".to_owned()],

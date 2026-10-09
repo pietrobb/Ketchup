@@ -284,6 +284,105 @@ fn window_menu_toggles_outliner_and_tags_without_mutating_the_document() {
     }
 }
 
+/// Review 2026-10-09 §5.1 (1): the Slovak translation existed but nothing in
+/// the window could switch to it. Window > Language switches the whole
+/// interface at once, and back, without touching the document.
+#[test]
+fn ctrl_k_searches_commands_in_slovak_or_english_and_enter_runs_the_highlighted_one() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .set_ui_language(ketchup_app::language::UiLanguage::Slovak);
+    shell.settle();
+    let slovak = LocaleCatalog::slovak();
+
+    // An English alias finds the Slovak command; its row shows the shortcut.
+    shell.key(Key::K, ctrl());
+    shell.type_text("shortcuts");
+    let matches = shell.app().command_search_matches("shortcuts");
+    assert_eq!(
+        matches.first().map(|row| row.0),
+        Some(AppCommand::Shortcuts)
+    );
+    assert!(shell.has_visible_label(&slovak.text("help-shortcuts")));
+    assert!(shell.has_visible_label("F1"));
+
+    // Arrows move the highlight; Enter runs the highlighted command.
+    shell.key(Key::A, ctrl());
+    shell.type_text("zoom");
+    let matches = shell.app().command_search_matches("zoom");
+    assert!(matches.len() >= 2, "{matches:?}");
+    assert!(shell.button_is_selected(&matches[0].1));
+    shell.key(Key::ArrowDown, Modifiers::NONE);
+    assert!(shell.button_is_selected(&matches[1].1));
+    assert!(!shell.button_is_selected(&matches[0].1));
+    shell.key(Key::A, ctrl());
+    shell.type_text("shortcuts");
+    shell.key(Key::Enter, Modifiers::NONE);
+    shell.settle();
+    assert!(shell.has_visible_label(&slovak.text("shortcuts-title")));
+
+    // A command that cannot run now says why, and Enter does not run it.
+    let undo_steps = shell.app().undo_step_count();
+    let reason = slovak.text("command-unavailable-nothing-to-undo");
+    shell.key(Key::K, ctrl());
+    shell.key(Key::A, ctrl());
+    shell.type_text("undo");
+    assert!(!shell.app().command_is_enabled(AppCommand::Undo));
+    assert!(shell.has_visible_label(&reason));
+    shell.key(Key::Enter, Modifiers::NONE);
+    shell.settle();
+    assert_eq!(shell.app().action_digest(), reason);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn window_language_menu_switches_the_interface_to_slovak_and_back() {
+    let mut shell = Shell::new();
+    assert_eq!(
+        shell.app().ui_language(),
+        Some(ketchup_app::language::UiLanguage::English)
+    );
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    let english_file = LocaleCatalog::english().text("menu-file");
+    let slovak_file = LocaleCatalog::slovak().text("menu-file");
+    assert_ne!(english_file, slovak_file);
+    assert!(shell.has_visible_label(&english_file));
+
+    for (name, language, visible, gone) in [
+        (
+            "Slovenčina",
+            ketchup_app::language::UiLanguage::Slovak,
+            &slovak_file,
+            &english_file,
+        ),
+        (
+            "English",
+            ketchup_app::language::UiLanguage::English,
+            &english_file,
+            &slovak_file,
+        ),
+    ] {
+        shell.open_menu("menu-window");
+        // egui names a submenu button by its text and the arrow it draws.
+        let submenu = format!("{} ⏵", shell.catalog().text("menu-language"));
+        shell.click_button_label(&submenu);
+        shell.settle();
+        shell.click_role_and_label(Role::RadioButton, name);
+        shell.settle();
+        assert_eq!(shell.app().ui_language(), Some(language));
+        assert!(shell.has_visible_label(visible), "{name}");
+        assert!(!shell.has_visible_label(gone), "{name}");
+        assert_eq!(
+            shell.app().action_digest(),
+            language.catalog().text("digest-language-changed")
+        );
+    }
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
 /// A document with layers must show them at the top of the dock, above the
 /// assistant and the outliner, so toggling a layer needs no scrolling.
 #[test]
@@ -3002,6 +3101,49 @@ fn copy_paste_is_localized_atomic_stale_safe_and_context_bound() {
         assert_eq!(context_shell.app().undo_step_count(), undo_steps);
         assert_eq!(context_shell.app().action_digest(), action_digest);
     }
+}
+
+/// Review 2026-10-09 (P3): a greyed-out tool showed nothing on hover.
+#[test]
+fn an_unavailable_tool_says_so_on_hover() {
+    let mut shell = Shell::new();
+    assert!(!shell.app().command_is_enabled(AppCommand::PlanarOffset));
+    shell.hover(shell.command_rect(AppCommand::PlanarOffset).center());
+    let label = shell.app().command_label(AppCommand::PlanarOffset);
+    let tooltip = shell.catalog().format(
+        "tool-tooltip-unavailable",
+        &BTreeMap::from([("tool", label.clone()), ("shortcut", "\u{1}".to_owned())]),
+    );
+    let (_, why) = tooltip.split_once('\u{1}').unwrap();
+    let visible = shell.visible_accesskit_rects();
+    assert!(
+        visible
+            .iter()
+            .any(|(text, _)| text.contains(&label) && text.contains(why)),
+        "{why} not in {visible:?}"
+    );
+}
+
+/// Review 2026-10-09 (P3): Ctrl+V pasted the old parts even after text was
+/// copied in another program.
+#[test]
+fn ctrl_v_does_not_paste_old_parts_over_text_copied_elsewhere() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    shell.native_copy();
+    assert_eq!(shell.app().occurrence_count(), 1);
+
+    let revision = shell.app().document_revision();
+    shell.native_paste_text("a line from a text editor");
+    assert_eq!(shell.app().occurrence_count(), 1);
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-clipboard-holds-other-content")
+    );
+
+    shell.native_paste();
+    assert_eq!(shell.app().occurrence_count(), 2);
 }
 
 #[test]

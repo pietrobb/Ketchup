@@ -3144,6 +3144,38 @@ fn malformed_non_planar_and_ambiguous_geometry_fail_closed_with_typed_errors() {
 }
 
 #[test]
+fn only_errors_that_depend_on_the_unit_are_worth_reading_again_in_another_unit() {
+    let units = [
+        ImportLengthUnit::Millimetre,
+        ImportLengthUnit::Centimetre,
+        ImportLengthUnit::Metre,
+        ImportLengthUnit::Inch,
+        ImportLengthUnit::Foot,
+    ];
+    let read =
+        |entities: &str, unit| inspect_dxf(&dxf(None, entities), DxfImportOptions::new(Some(unit)));
+    for entities in [
+        "0\nCIRCLE\n10\n0\n20\n0\n",
+        "0\nCIRCLE\n10\nabc\n20\n0\n40\n1\n",
+        "0\nCIRCLE\n10\n0\n20\n0\n40\n-1\n",
+        "0\nCIRCLE\n10\n0\n20\n0\n39\n1\n40\n1\n",
+    ] {
+        let first = read(entities, units[0]).unwrap_err();
+        if !first.depends_on_units() {
+            for unit in units {
+                assert_eq!(read(entities, unit).unwrap_err(), first, "{entities}");
+            }
+        }
+    }
+    let syntax = read("0\nCIRCLE\n10\n0\n20\n0\n", units[0]).unwrap_err();
+    assert!(!syntax.depends_on_units(), "{syntax}");
+    let far = "0\nCIRCLE\n10\n0\n20\n0\n40\n0.0000000001\n";
+    let tiny = read(far, units[0]).unwrap_err();
+    assert!(tiny.depends_on_units(), "{tiny}");
+    assert!(read(far, ImportLengthUnit::Metre).is_ok());
+}
+
+#[test]
 fn arc_and_bulge_sweeps_must_remain_inside_the_coordinate_envelope() {
     let options = DxfImportOptions::new(None);
     let outward_arc = dxf(

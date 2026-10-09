@@ -530,6 +530,13 @@ impl Shell {
         self.run_idle();
     }
 
+    /// Whether a button with `label` is marked selected (a highlighted row).
+    pub fn button_is_selected(&self, label: &str) -> bool {
+        self.harness
+            .query_all_by_role_and_label(Role::Button, label)
+            .any(|node| node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True))
+    }
+
     pub fn has_role_and_label(&self, role: Role, label: &str) -> bool {
         self.harness
             .query_all_by_role_and_label(role, label)
@@ -719,6 +726,14 @@ impl Shell {
         self.event(egui::Event::PointerMoved(position));
     }
 
+    /// Rest the pointer on `position` long enough for its tooltip to open.
+    pub fn hover(&mut self, position: Pos2) {
+        self.move_pointer(position);
+        self.run_idle();
+        self.advance(1.0);
+        self.run_idle();
+    }
+
     /// Scroll the wheel over `position` by a point delta.
     pub fn scroll_at(&mut self, position: Pos2, delta_y: f32) {
         self.move_pointer(position);
@@ -898,7 +913,12 @@ impl Shell {
 
     /// Send the native event emitted by egui-winit for Ctrl+V.
     pub fn native_paste(&mut self) {
-        self.event(egui::Event::Paste("Ketchup object selection".to_owned()));
+        self.native_paste_text("Ketchup object selection");
+    }
+
+    /// Ctrl+V while the system clipboard holds `text`.
+    pub fn native_paste_text(&mut self, text: &str) {
+        self.event(egui::Event::Paste(text.to_owned()));
         self.run_idle();
     }
 

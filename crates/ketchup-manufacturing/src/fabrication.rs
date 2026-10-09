@@ -117,37 +117,6 @@ pub struct FullBomProjection {
     pub rows: Vec<FullBomRow>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DimensionDatumRef {
-    pub piece: DerivedIdentity,
-    pub datum: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct DimensionSegment {
-    pub stable_segment_id: String,
-    pub from: DimensionDatumRef,
-    pub to: DimensionDatumRef,
-    pub value_mm: f64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct DimensionChain {
-    pub stable_chain_id: String,
-    pub axis: String,
-    pub segments: Vec<DimensionSegment>,
-    pub grouped_labels: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct PieceDimensionSheet {
-    pub envelope: FabricationProjectionEnvelope,
-    pub stable_sheet_id: String,
-    pub piece: DerivedIdentity,
-    pub named_view: String,
-    pub chains: Vec<DimensionChain>,
-}
-
 fn push_projection_path(output: &mut Vec<u8>, path: &InstancePath) {
     output.extend_from_slice(&path.root_occurrence().0.to_le_bytes());
     output.extend_from_slice(&(path.steps().len() as u64).to_le_bytes());

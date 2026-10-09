@@ -84,6 +84,32 @@ fn a_framed_wall_stacks_its_layers_around_the_openings_without_overlaps() {
     assert!(model.groups.iter().any(|group| group.name == "wall"));
 }
 
+/// Review 2026-10-09 (P3): the two anchors were squeezed onto a short plate
+/// beside a door, a few millimetres from its ends.
+#[test]
+fn a_plate_too_short_for_its_anchors_edge_distance_is_an_error() {
+    let anchored = |door_at: f64| {
+        let source = WALL
+            .replace("(600, 0, 900, 2100)", &format!("({door_at}, 0, 900, 2100)"))
+            .replace(
+                r#"tags = ["construction"])"#,
+                r#"tags = ["construction"], anchor = {"to": "slab", "fastener": "M12"})"#,
+            );
+        eval(
+            &format!("box(\"slab\", (5000, 400, 200), at = (-500, -100, -200))\n{source}"),
+            &[],
+        )
+    };
+    assert_eq!(errors(&anchored(600.0)), Vec::<String>::new());
+    let short = errors(&anchored(200.0));
+    assert_eq!(short.len(), 1, "{short:?}");
+    assert!(
+        short[0].contains("frame/bottom plate 1 is 200 mm long")
+            && short[0].contains("minimum 80 mm"),
+        "{short:?}"
+    );
+}
+
 #[test]
 fn the_build_up_is_rebuilt_from_its_numbers() {
     let short = eval(WALL, &[]);

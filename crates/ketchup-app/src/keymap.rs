@@ -122,6 +122,7 @@ pub(crate) const KEYMAP: &[Binding] = &[
     ),
     on_canvas(AppCommand::ZoomOut, &[chord(CTRL, Key::Minus)]),
     everywhere(AppCommand::Shortcuts, &[chord(NONE, Key::F1)]),
+    everywhere(AppCommand::CommandSearch, &[chord(CTRL, Key::K)]),
     everywhere(AppCommand::Deselect, &[chord(NONE, Key::Escape)]),
 ];
 

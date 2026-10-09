@@ -83,6 +83,12 @@ impl KetchupApp {
             side_effect_receipts: Vec::new(),
             btlx_profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
             btlx_intermediate_saw_cuts: 0,
+            language: language::UiLanguage::ALL
+                .into_iter()
+                .find(|language| language.catalog() == catalog),
+            remember_language: false,
+            program_detach_notice: None,
+            program_detach_warned: false,
             catalog,
             assembly_editor: assembly_ui::AssemblyEditorState::default(),
             body_editor: body_ui::BodyEditorState::default(),
@@ -157,8 +163,8 @@ impl KetchupApp {
                 manual_cad_panels_visible: false,
                 shortcuts_open: false,
                 about_open: false,
-                command_search: String::new(),
             },
+            command_search: app_state::CommandSearch::default(),
             takeoff: app_state::TakeoffState::default(),
             drawings: app_state::DrawingsState::default(),
             saved_views_ui: Default::default(),
@@ -206,6 +212,7 @@ impl KetchupApp {
             clipboard: app_state::Clipboard {
                 occurrences: Vec::new(),
                 cut_occurrences: Vec::new(),
+                announce: false,
             },
             modal: None,
             tool_preview: None,
@@ -248,7 +255,9 @@ impl KetchupApp {
 
     #[must_use]
     pub fn from_creation_context(context: &eframe::CreationContext<'_>) -> Self {
-        let mut app = Self::with_catalog_and_initial_box(LocaleCatalog::english(), false);
+        let mut app =
+            Self::with_catalog_and_initial_box(language::UiLanguage::at_startup().catalog(), false);
+        app.remember_language = true;
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
         ));
@@ -525,6 +534,27 @@ impl KetchupApp {
         self.panels.manual_cad_panels_visible = visible;
     }
 
+    #[must_use]
+    pub const fn ui_language(&self) -> Option<language::UiLanguage> {
+        self.language
+    }
+
+    /// Switch the whole interface to `language` at once; the window started
+    /// by the user also remembers it for the next start.
+    pub fn set_ui_language(&mut self, language: language::UiLanguage) {
+        self.catalog = language.catalog();
+        self.language = Some(language);
+        self.digest = self.catalog.text("digest-language-changed");
+        if self.remember_language
+            && let Err(error) = language::save_choice(language)
+        {
+            self.digest = self.catalog.format(
+                "digest-language-not-remembered",
+                &BTreeMap::from([("error", error.to_string())]),
+            );
+        }
+    }
+
     /// Restore ordinary material and tonal face painting without changing independent overlays.
     pub fn restore_shaded(&mut self) {
         self.view.set(ViewFlag::Wireframe, false);
@@ -569,6 +599,28 @@ impl KetchupApp {
             ActiveTool::PushPull | ActiveTool::Move | ActiveTool::Measure => "value-label-distance",
             _ => "value-label-dimensions",
         }
+    }
+
+    /// What a typed length expression comes to, shown above the value box
+    /// ("600+2*18" → "= 636 mm"). Angles, counts and factors get none.
+    pub(crate) fn value_box_length_preview(&self) -> Option<String> {
+        let length_field = matches!(
+            self.value_label_key(),
+            "value-label-distance"
+                | "value-label-radius"
+                | "value-label-second-radius"
+                | "value-label-bulge"
+                | "value-label-thickness"
+                | "value-label-radius-distance"
+                | "value-label-mirror-offset"
+        );
+        let value = length_field
+            .then(|| crate::length_input::length_preview_mm(&self.value_box.input))
+            .flatten()?;
+        Some(self.catalog.format(
+            "value-length-preview",
+            &BTreeMap::from([("value", format_height(value))]),
+        ))
     }
 
     /// Colours every surface of the shell paints with.
@@ -1016,6 +1068,18 @@ impl KetchupApp {
                 );
                 ui.separator();
                 self.menu_command(ui, AppCommand::MaterialTakeoff);
+                ui.separator();
+                ui.menu_button(self.catalog.text("menu-language"), |ui| {
+                    for language in language::UiLanguage::ALL {
+                        if ui
+                            .radio(self.language == Some(language), language.native_name())
+                            .clicked()
+                        {
+                            self.set_ui_language(language);
+                            ui.close();
+                        }
+                    }
+                });
             });
             ui.menu_button(self.catalog.text("menu-help"), |ui| {
                 self.menu_command(ui, AppCommand::Shortcuts);
@@ -1064,6 +1128,43 @@ impl KetchupApp {
             });
         if !open {
             self.panels.about_open = false;
+        }
+    }
+
+    /// The program the edit just detached, shown once per session: the model
+    /// is no longer driven by it, and one click undoes the edit to keep it.
+    pub(crate) fn show_program_detach_notice(&mut self, context: &egui::Context) {
+        let Some(file_name) = self.program_detach_notice.clone() else {
+            return;
+        };
+        let arguments = BTreeMap::from([("file", file_name)]);
+        let mut open = true;
+        let mut undo = false;
+        egui::Window::new(self.catalog.text("program-detached-title"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 96.0))
+            .show(context, |ui| {
+                ui.label(self.catalog.format("program-detached-body", &arguments));
+                ui.horizontal(|ui| {
+                    undo = ui
+                        .button(self.catalog.text("program-detached-undo"))
+                        .clicked();
+                    if ui
+                        .button(self.catalog.text("program-detached-keep"))
+                        .clicked()
+                    {
+                        self.program_detach_notice = None;
+                    }
+                });
+            });
+        if !open {
+            self.program_detach_notice = None;
+        }
+        if undo {
+            self.program_detach_notice = None;
+            self.undo();
         }
     }
 
@@ -1118,7 +1219,19 @@ impl KetchupApp {
 
             // The measured facts are pinned right, in the same mono pill the
             // viewport readouts use, so they line up down the whole session.
-            let mut chips = vec![
+            let mut chips = Vec::new();
+            if let Some(program) = self.document.current_rule_program() {
+                chips.push(self.catalog.format(
+                    "status-program-owned",
+                    &BTreeMap::from([("file", program.file_name.clone())]),
+                ));
+            } else if let Some(program) = self.document.detached_rule_program() {
+                chips.push(self.catalog.format(
+                    "status-program-detached",
+                    &BTreeMap::from([("file", program.file_name.clone())]),
+                ));
+            }
+            chips.extend([
                 self.catalog.text(if self.face_workflow.snaps_enabled() {
                     "status-snap-on"
                 } else {
@@ -1131,7 +1244,7 @@ impl KetchupApp {
                     self.catalog.text("status-grid-hidden")
                 },
                 self.catalog.text("status-refs-guaranteed"),
-            ];
+            ]);
             chips.push(if self.exact.results.is_empty() {
                 self.catalog.text("status-exact-unavailable")
             } else {
@@ -1340,6 +1453,7 @@ impl KetchupApp {
         self.show_mesh_conversion_window(context);
         self.show_shortcuts_window(context);
         self.show_about_window(context);
+        self.show_program_detach_notice(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
         self.show_live_consent(context);
@@ -1459,10 +1573,11 @@ fn status_chip(ui: &mut egui::Ui, palette: Palette, text: &str) {
     let galley =
         ui.painter()
             .layout_no_wrap(text.to_owned(), egui::FontId::monospace(10.5), palette.dim);
-    let (rect, _) = ui.allocate_exact_size(
+    let (rect, response) = ui.allocate_exact_size(
         Vec2::new(galley.size().x + 26.0, galley.size().y + 6.0),
         Sense::hover(),
     );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let painter = ui.painter();
     let corner = egui::CornerRadius::same(5);
     painter.rect_filled(rect, corner, palette.panel);

@@ -163,6 +163,7 @@ pub fn check(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>)
             // A part or face the final model does not have: the condition
             // cannot be measured and must not look met.
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: Severity::Error,
                 kind: "expectation_unmeasurable",
                 parts: expectation.parts.clone(),
@@ -177,6 +178,7 @@ pub fn check(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>)
         };
         if measured.is_nan() {
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: Severity::Warning,
                 kind: "expectation_unverified",
                 parts: expectation.parts.clone(),
@@ -197,6 +199,7 @@ pub fn check(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>)
         }
         let unit = &expectation.unit;
         issues.push(Issue {
+            source_lines: Vec::new(),
             severity: Severity::Error,
             kind: "expectation_failed",
             parts: expectation.parts.clone(),

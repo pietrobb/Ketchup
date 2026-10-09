@@ -149,6 +149,8 @@ fn response_wait(request: &Request) -> Duration {
         }
         Request::ApplyProgram { .. }
         | Request::PatchProgram { .. }
+        | Request::SetProgramParams { .. }
+        | Request::CheckProgram { .. }
         | Request::ValidateProgram { .. }
         | Request::MeasureFaces { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         // The user confirms the open in the window, then a large document loads.

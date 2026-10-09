@@ -9,7 +9,7 @@
 #
 #   param(name, default, min=, max=, doc=)  -> number the user can override
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
-#   board(name, size, at=, material=, grain=, color=)  -> a panel for the cut list
+#   board(name, size, at=, material=, grain=, edges=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=
 #   (0-255 channels), attributes= (a dict of strings), tags= and grounded=False.
 #   tags= names document tags (layers), one name or a list, e.g. tags=["concept", "roof"].
@@ -20,7 +20,10 @@
 #   alternatives(["concept", "construction"]) declares tags that represent the same thing
 #     in different detail: parts carrying different ones of them may overlap without a
 #     collision. Show one at a time with saved views; see buildup() in topic buildup.
-#   grain= of board() and member() is the attribute "grain": "x", "y" or "z".
+#   grain= of board() and member() is the attribute "grain": "x", "y" or "z"; the cut-list
+#     export writes it as the dimension that axis became ("length", "width", "thickness").
+#   edges= of board() is the attribute "edges", text for the edge banding column of the
+#     cut list, e.g. edges="L1 L2 W1" (both long edges and one short edge).
 #   member(name, start, end, section, across=)  -> a bar from point to point
 #   floor(z) -> set one horizontal support plane at world z millimetres in program and document reports.
 #     Defaults to z=0; does not move parts. An explicit floor reports unsupported bodies even with no contact seed.
@@ -134,9 +137,14 @@ def grain_attributes(grain):
         fail("grain must be \"x\", \"y\" or \"z\", got %r" % grain)
     return {"grain": grain}
 
-def board(name, size, at = (0, 0, 0), material = "board", grain = None, color = None):
+def board(name, size, at = (0, 0, 0), material = "board", grain = None, edges = None, color = None):
     """A flat panel: an axis-aligned cuboid with a material for the cut list."""
-    return box(name, size, at = at, material = material, color = color, attributes = grain_attributes(grain))
+    attributes = grain_attributes(grain)
+    if edges != None:
+        if type(edges) != "string":
+            fail("edges must be text such as \"L1 L2 W1\", got %r" % edges)
+        attributes["edges"] = edges
+    return box(name, size, at = at, material = material, color = color, attributes = attributes)
 
 def vec_sub(a, b):
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -823,6 +831,8 @@ def boss(part, face, profile, height, name = "boss"):
 #   arunda(a, b, template="80 B", name=None) -> None
 #     an Arunda routed dovetail (wood to wood, no hardware): carried a hangs on b, rated
 #     from the maker's load table; checks a's width and height against the template.
+#     The dovetail is not cut (its geometry is not in the library): a warning says the
+#     cut list, BTLx and CNC exports do not contain it.
 #     Templates "50 B", "80 B", "120 B", "160 B" (square), "50 N", "80 N", "120 N" (tilting
 #     up to 50 degrees, rafters).
 #
@@ -919,6 +929,11 @@ def arunda(a, b, template = "80 B", name = None):
           (part_info(a).name, part_info(b).name, template, low, high, height, part_info(a).name, fmt_mm(dims[0]), fmt_mm(dims[1])),
           parts = [a, b], hint = "Choose the template for the width of the carried timber.")
     joint(a, b, kind = kind, bearing = True, rating = CONNECTOR_RATINGS[kind], name = name)
+    # The template's dovetail geometry is not published in the library, so it is not cut.
+    check(False, "arunda(%s, %s): the %s dovetail is not cut into either part; the cut list, BTLx and CNC exports do not contain it" %
+          (part_info(a).name, part_info(b).name, template),
+          parts = [a, b], hint = "Rout the dovetail with the maker's template; the exports carry the parts uncut at this joint.",
+          severity = "warning")
 
 def fmt_mm(value, decimals = 1):
     """Millimetres as text, with 0-9 decimal places, trailing zeros omitted.
@@ -1170,8 +1185,9 @@ def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup
 
 #@topic intent: Stating intent that the check measures (expect_*)
 #
-#   check(condition, message, parts=[...], hint=) returns the boolean condition.
-#     A false condition records a program_condition_failed error without aborting.
+#   check(condition, message, parts=[...], hint=, severity="error") returns the boolean condition.
+#     A false condition records a program_condition_failed error (severity="warning": a
+#     warning, for what the model cannot do yet, e.g. a joint no export contains) without aborting.
 #     It evaluates now (for library design rules); use expect_* for final geometry.
 #     Parts remain editable. No missing geometry or hardware is silently generated.
 # Stating intent. Each helper records a condition that is measured on the
@@ -1381,7 +1397,8 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     hangs the headers on the joists beside the opening and the cut joists on the
 #     headers with bearing joints; "hanger_rating" (connector_rating(...)) is the maker's
 #     published rating of that hanger, else CONNECTOR_RATINGS gives it or none. anchor={"to": part, "fastener": name, "spacing": 1000,
-#     "edge": 300} anchors every bottom plate to `to` (a slab) with at least two anchors.
+#     "edge": 300, "min_edge": 80} anchors every bottom plate to `to` (a slab) with at least two anchors;
+#     a plate too short to keep them min_edge from its ends is a program_condition_failed error.
 #     openings: [(u, v, width, height), ...] in panel coordinates, apart along u.
 #     Pieces are "<name>/<layer>", "<name>/<layer>/stud 3", ... with `tags` plus their
 #     layer's tags. Only extrusions, no booleans: every piece is rebuilt from the numbers.
@@ -1563,9 +1580,14 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         bottom = _spans(length, [(o[0], o[0] + o[2]) for o in holes if o[1] < 0.001])
         for k in range(len(bottom)):
             a, b = bottom[k]
-            plate = piece("%s/bottom plate%s" % (label, "" if len(bottom) == 1 else " %d" % (k + 1)), _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags)
+            plate_name = "%s/bottom plate%s" % (label, "" if len(bottom) == 1 else " %d" % (k + 1))
+            plate = piece(plate_name, _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags)
             if anchor != None:
                 edge = min(anchor.get("edge", 300), (b - a) / 4.0)
+                min_edge = anchor.get("min_edge", 80)
+                check(edge >= min_edge,
+                      "%s is %d mm long: its two anchors would sit %d mm from its ends, under the minimum %d mm" % (plate_name, b - a, edge, min_edge),
+                      parts = [plate], hint = "Lengthen the plate (at least %d mm), move the opening, or anchor it another way" % (4 * min_edge))
                 count = max(2, int((b - a - 2 * edge) / anchor.get("spacing", 1000) + 0.999) + 1)
                 joint(plate, anchor["to"], kind = "anchor", fastener = anchor["fastener"],
                       fasteners = [at(u, stud / 2.0, offset + thickness / 2.0) for u in spread(a + edge, b - edge, count)])

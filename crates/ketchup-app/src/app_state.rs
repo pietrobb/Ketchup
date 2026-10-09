@@ -120,7 +120,7 @@ pub(crate) struct HoverState {
     pub(crate) projection_cache: RefCell<Option<InteractionProjectionCache>>,
 }
 
-/// Which side panels and windows are open, and the command search text.
+/// Which side panels and windows are open.
 pub(crate) struct Panels {
     pub(crate) outliner_visible: bool,
     pub(crate) tags_visible: bool,
@@ -128,7 +128,16 @@ pub(crate) struct Panels {
     pub(crate) manual_cad_panels_visible: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) about_open: bool,
-    pub(crate) command_search: String,
+}
+
+/// The command search field: typed text, highlighted result, focus request.
+#[derive(Default)]
+pub(crate) struct CommandSearch {
+    pub(crate) query: String,
+    /// The result Enter runs; arrows move it.
+    pub(crate) highlight: usize,
+    /// Ctrl+K asked for keyboard focus in the search field.
+    pub(crate) focus: bool,
 }
 
 /// Typed names in the classification panel.
@@ -168,10 +177,17 @@ pub(crate) struct AssistantState {
     pub(crate) verification: Option<AssistantVerification>,
 }
 
+/// What a copy or cut puts on the system clipboard. Ctrl+V pastes the parts
+/// only while the system clipboard still holds it: text copied elsewhere since
+/// then is not a request to paste old parts.
+pub(crate) const SYSTEM_CLIPBOARD_TEXT: &str = "Ketchup object selection";
+
 /// Copied and cut occurrences waiting for Paste.
 pub(crate) struct Clipboard {
     pub(crate) occurrences: Vec<OccurrenceId>,
     pub(crate) cut_occurrences: Vec<CutClipboardOccurrence>,
+    /// A copy or cut not yet written to the system clipboard.
+    pub(crate) announce: bool,
 }
 
 /// CAM, FEA and PDM review workflows and their open dialogs.

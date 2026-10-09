@@ -137,6 +137,17 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 Self::program_context(app, selection_context)
             }
+            Request::ProgramPiece {
+                expected,
+                lines,
+                search,
+                part,
+                outline,
+            } => {
+                let piece =
+                    super::program_navigation::Piece::from_request(lines, search, part, outline)?;
+                Self::program_piece(app, &expected, &piece)
+            }
             Request::ProgramReport {
                 expected,
                 section,
@@ -178,8 +189,12 @@ impl LiveBridge {
         app: &KetchupApp,
         request: Request,
     ) -> Result<Request, &'static str> {
-        let Request::PatchProgram { expected, edits } = request else {
-            return Ok(request);
+        let (expected, edits) = match request {
+            Request::PatchProgram { expected, edits } => (expected, edits),
+            Request::SetProgramParams { expected, params } => {
+                return Self::expand_set_params(app, expected, params);
+            }
+            request => return Ok(request),
         };
         Self::guard(app, &Some(expected.clone()))?;
         let program = app.document.current_rule_program().ok_or_else(|| {
@@ -297,7 +312,8 @@ impl LiveBridge {
                 limit,
                 json!({"basis": basis, "counted_parts": takeoff.counted_parts,
                     "excluded_parts": takeoff.excluded_parts, "exact_volume_parts": takeoff.exact_volume_parts,
-                    "hint": "Only visible parts count: parts on hidden layers (tags) are excluded. Sizes are blanks; volume_basis says whether volume is the exact solid's or the blank's."}),
+                    "outside_program_parts": takeoff.outside_program_parts,
+                    "hint": "Only visible program parts count: parts on hidden layers (tags) are excluded, and outside_program_parts visible parts not made by the program (drawn or imported) are not in the takeoff. Sizes are blanks; volume_basis says whether volume and area are the exact solid's or the blank's."}),
             );
         }
         if self.program_check_job.is_some() {

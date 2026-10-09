@@ -102,6 +102,9 @@ fn compact_program_schema_docs_and_routes_agree() {
         let request = received.recv().unwrap();
         if mode == "full" {
             assert_eq!(request["method"], "program");
+        } else if mode == "outline" {
+            assert_eq!(request["method"], "program_piece");
+            assert_eq!(request["outline"], true);
         } else {
             assert_eq!(request["method"], "program_context");
             assert_eq!(request["selection_context"], mode == "selection");
@@ -221,6 +224,90 @@ fn escaped_source_envelope_is_refused_before_send_and_connection_remains_usable(
         received.recv().unwrap(),
         json!({"method":"apply_program", "source":source})
     );
+}
+
+/// Review 2026-10-09 §5.1 (3): check sends a whole program, a file or a patch
+/// to the window's dry run, never to apply.
+#[test]
+fn program_check_sends_source_file_or_patch_to_the_dry_run() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let path = root.path().join("check.star");
+    let source = "box(\"a\", (10, 10, 10))\n";
+    std::fs::write(&path, source).unwrap();
+    let stamp = json!({"document_id":1,"revision":7,"canonical_digest":"d","mutation_epoch":0});
+    let edits = json!([{"old":"10, 10, 10","new":"10, 10, 20"}]);
+    for (arguments, sent) in [
+        (
+            json!({"action":"check", "source":source}),
+            json!({"method":"check_program", "source":source}),
+        ),
+        (
+            json!({"action":"check", "source_path":path}),
+            json!({"method":"check_program", "source":source}),
+        ),
+        (
+            json!({"action":"check", "expected":stamp, "edits":edits}),
+            json!({"method":"check_program", "expected":stamp, "edits":edits}),
+        ),
+    ] {
+        let result = call(&mut tools, "program", arguments);
+        assert_eq!(result["isError"], false, "{result}");
+        let request = received.recv().unwrap();
+        if request["method"] == "status" {
+            assert_eq!(received.recv().unwrap(), sent);
+        } else {
+            assert_eq!(request, sent);
+        }
+    }
+}
+
+/// Review 2026-10-09 §5.1 (5): pieces of a large program and new parameter
+/// values travel without the whole source.
+#[test]
+fn program_pieces_and_set_params_reach_their_window_methods() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let stamp = json!({"document_id":1,"revision":7,"canonical_digest":"d","mutation_epoch":0});
+    for (arguments, sent) in [
+        (
+            json!({"action":"read", "lines":[10, 20]}),
+            json!({"method":"program_piece", "lines":[10, 20]}),
+        ),
+        (
+            json!({"action":"read", "search":"leg"}),
+            json!({"method":"program_piece", "search":"leg"}),
+        ),
+        (
+            json!({"action":"read", "part":"seat"}),
+            json!({"method":"program_piece", "part":"seat"}),
+        ),
+        (
+            json!({"action":"read", "mode":"outline"}),
+            json!({"method":"program_piece", "outline":true}),
+        ),
+        (
+            json!({"action":"set_params", "expected":stamp, "params":{"width":900}}),
+            json!({"method":"set_program_params", "expected":stamp, "params":{"width":900}}),
+        ),
+    ] {
+        let result = call(&mut tools, "program", arguments);
+        assert_eq!(result["isError"], false, "{result}");
+        let request = received.recv().unwrap();
+        if request["method"] == "status" {
+            assert_eq!(received.recv().unwrap(), sent);
+        } else {
+            assert_eq!(request, sent);
+        }
+    }
+    let mixed = call(
+        &mut tools,
+        "program",
+        json!({"action":"read", "mode":"selection", "lines":[1, 2]}),
+    );
+    assert_eq!(mixed["isError"], true, "{mixed}");
 }
 
 #[test]

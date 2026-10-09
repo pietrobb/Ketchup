@@ -14,6 +14,7 @@ pub mod clearance;
 mod connectivity;
 pub mod contact;
 mod continuous_span;
+pub mod cut_list;
 pub mod document;
 pub mod eval;
 pub mod exact;
@@ -31,11 +32,15 @@ pub mod motion;
 mod opposing_holes;
 pub mod path;
 pub mod relations;
+pub mod table;
 pub mod takeoff;
 pub mod validate;
 
 pub use bom::{Bom, bom};
-pub use eval::{Evaluated, PRELUDE, ProgramError, SourceLines, evaluate, use_prelude};
+pub use eval::{
+    CallFrame, ErrorLocation, Evaluated, NumberedLine, PRELUDE, Position, ProgramError,
+    SourceLines, evaluate, use_prelude,
+};
 pub use exact::{ExactPair, ExactShapes, exact_candidates};
 pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
@@ -78,11 +83,15 @@ pub struct Report {
     pub design: member_check::DesignReport,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
+    /// The program lines of every part, to name the lines of later issues.
+    #[serde(skip)]
+    part_sources: BTreeMap<String, Vec<SourceLines>>,
 }
 
 impl Report {
     /// Replaces the issues (e.g. after an exact check) and recounts them.
     pub fn set_issues(&mut self, mut issues: Vec<Issue>) {
+        locate_issues(&mut issues, &self.part_sources);
         issues.sort_by_key(|issue| issue.severity);
         self.errors = issues
             .iter()
@@ -123,8 +132,9 @@ pub fn run(
 pub fn report(evaluated: &Evaluated) -> Report {
     // The loads reuse the contacts the load path measured.
     let mut faces = contact::ContactFaces::default();
-    let issues =
+    let mut issues =
         validate::validate_with_faces(&evaluated.model, &ExactShapes::default(), &mut faces);
+    locate_issues(&mut issues, &evaluated.part_sources);
     let errors = issues
         .iter()
         .filter(|issue| issue.severity == Severity::Error)
@@ -143,5 +153,26 @@ pub fn report(evaluated: &Evaluated) -> Report {
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
+        part_sources: evaluated.part_sources.clone(),
+    }
+}
+
+/// Names on every issue the program lines that define its parts, in order and
+/// without repeats; an issue that already names its lines keeps them.
+fn locate_issues(issues: &mut [Issue], part_sources: &BTreeMap<String, Vec<SourceLines>>) {
+    for issue in issues
+        .iter_mut()
+        .filter(|issue| issue.source_lines.is_empty())
+    {
+        let mut lines = issue
+            .parts
+            .iter()
+            .filter_map(|part| part_sources.get(part))
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        lines.sort_unstable();
+        lines.dedup();
+        issue.source_lines = lines;
     }
 }

@@ -346,6 +346,7 @@ pub(crate) fn issues<'a>(
             }
             let (min, max) = bounds[item];
             issues.push(Issue {
+                source_lines: Vec::new(),
                 severity: Severity::Error,
                 kind: "member_not_carried",
                 parts: vec![part.name.clone()],

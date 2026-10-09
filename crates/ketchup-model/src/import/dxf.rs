@@ -140,6 +140,21 @@ pub enum DxfImportError {
     InvalidReport(ImportContractError),
 }
 
+impl DxfImportError {
+    /// Whether reading the same source in another length unit could avoid
+    /// this error: only coordinate range and millimetre tolerances scale.
+    #[must_use]
+    pub const fn depends_on_units(&self) -> bool {
+        matches!(
+            self,
+            Self::CoordinateOutOfRange
+                | Self::DegenerateGeometry
+                | Self::AmbiguousGeometry
+                | Self::NonPlanarGeometry
+        )
+    }
+}
+
 impl fmt::Display for DxfImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {

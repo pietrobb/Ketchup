@@ -49,8 +49,28 @@ All nonempty old texts must match once in the original source and must not overl
 Stale, ambiguous or invalid patches leave the document unchanged. Patches retain
 overrides, filename and program ownership, use normal validation, and publish one Undo step.
 
+In a large program read only what you need: `mode=outline` lists the top-level `def`s,
+`param(...)` lines and comment sections with their line numbers (a section reaches to `last`);
+`lines=[first, last]`, `search=<text>` (ignoring case) or `part=<name>` return just those
+numbered lines (at most 400 per answer; `truncated` says to read on). To change parameter
+values only, send `action=set_params expected=<stamp> params={"width": 900}`: the current
+source is applied again with those values, the other stored values stay, and an unknown
+name is rejected with the list of declared parameters.
+
+To try a change first, send the same `source`/`source_path` or `expected`+`edits` with
+`action=check`. It plans the program on a copy of the document, builds the changed parts there
+and runs the same exact check as apply, then answers like apply (`change`, `added`, `removed`,
+report, `exact_collisions`) with `check_only: true`. Nothing is published: the source, the
+model, the selection and the Undo history stay as they were.
+
+A program that does not evaluate is rejected with `details.location`: `file`, `line` and
+`column` (1-based) of the innermost place in your own program that led to the failure, an
+`excerpt` of that line and two lines on each side from the evaluated text (after a patch,
+the patched lines), and `call_stack` (each called `function` and where it was called).
+
 Full report fields:
-- `issues`: severity, kind, parts, message, location in mm, and a hint;
+- `issues`: severity, kind, parts, message, location in mm, a hint, and
+  `source_lines` (`first`/`last`) of the program lines that define the parts;
 - `relations`: how parts sit against each other, one entry per pair that
   touches, overlaps, is jointed, or is within 20 mm: `kind` `contact` (the
   touching `faces` of each part in its own frame and `area_mm2`), `touch`

@@ -40,6 +40,27 @@ fn an_arunda_joint_carries_its_published_allowable_load_but_stays_unverified_wit
     assert_eq!(check.missing, [NO_LOAD]);
 }
 
+/// Review 2026-10-09 (P3): the dovetail was missing from BTLx without a word.
+#[test]
+fn an_arunda_dovetail_that_no_export_cuts_is_a_warning() {
+    let report = report(&format!("{FRAME}arunda(joist, header, \"50 B\")\n"));
+    assert_eq!(report.errors, 0, "{:?}", report.issues);
+    let not_cut = report
+        .issues
+        .iter()
+        .find(|issue| issue.message.contains("dovetail is not cut"))
+        .unwrap_or_else(|| panic!("{:?}", report.issues));
+    assert_eq!(not_cut.severity, ketchup_program::Severity::Warning);
+    assert!(not_cut.message.contains("BTLx"), "{}", not_cut.message);
+    assert_eq!(not_cut.parts, ["joist", "header"]);
+    assert!(
+        rejected(&format!(
+            "{FRAME}check(False, \"x\", parts = [joist], hint = \"y\", severity = \"note\")\n"
+        ))
+        .contains("severity is \"error\" or \"warning\"")
+    );
+}
+
 #[test]
 fn a_hanger_without_a_published_rating_is_listed_as_not_verified() {
     let report = report(&format!(

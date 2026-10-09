@@ -1,6 +1,6 @@
 use ketchup_model::cam::{
-    CamFixture, CamOperation, CamPlanId, CamPostprocessorDialect, CamPostprocessorOutput,
-    CamSimulationEvidence, CamToolpath,
+    CamFixture, CamOperation, CamPlanId, CamPlannerError, CamPostprocessorDialect,
+    CamPostprocessorOutput, CamSimulationEvidence, CamToolpath,
 };
 use ketchup_model::document::{DocumentId, Snapshot};
 use ketchup_scheduler::ExactWorkerSupervisor;
@@ -49,7 +49,7 @@ pub struct CamReviewSummary {
 pub enum CamReviewError {
     PlanMissing,
     WorkerUnavailable,
-    Planning(String),
+    Planning(CamPlannerError),
     Simulation(String),
     Postprocessing(String),
     ReviewLimit,
@@ -154,7 +154,7 @@ impl CamReviewWorkflow {
             .cam_plan(request.plan_id)
             .ok_or(CamReviewError::PlanMissing)?;
         let toolpath = CamToolpath::plan(snapshot, plan, &request.operations)
-            .map_err(|error| CamReviewError::Planning(error.to_string()))?;
+            .map_err(CamReviewError::Planning)?;
         let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
             self.worker_path
                 .as_deref()
@@ -248,7 +248,7 @@ impl CamReviewWorkflow {
             .cam_plan(review.request.plan_id)
             .ok_or(CamReviewError::StaleReview)?;
         let toolpath = CamToolpath::plan(snapshot, plan, &review.request.operations)
-            .map_err(|error| CamReviewError::Planning(error.to_string()))?;
+            .map_err(CamReviewError::Planning)?;
         let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
             self.worker_path
                 .as_deref()

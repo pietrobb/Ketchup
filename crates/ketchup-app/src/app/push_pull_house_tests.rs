@@ -103,16 +103,14 @@ pub(super) fn house() -> KetchupApp {
     app
 }
 
-/// Hiding one part by hand is an edit outside the program, so the house parts
+/// Renaming one part by hand is an edit outside the program, so the house parts
 /// stay but no program owns the document any more.
 pub(super) fn detach(app: &mut KetchupApp) {
     let first = app.document.current().occurrences().next().unwrap().id();
-    app.apply_batch_with_work_recovery(&CommandBatch::new(vec![
-        CanonicalCommand::SetOccurrenceVisibility {
-            id: first,
-            visible: false,
-        },
-    ]))
+    app.apply_batch_with_work_recovery(&CommandBatch::new(vec![CanonicalCommand::RenameEntity {
+        id: first,
+        name: "renamed by hand".into(),
+    }]))
     .unwrap();
     assert!(app.document.current_rule_program().is_none());
 }
