@@ -46,7 +46,7 @@ pub fn cut_list_table(model: &ProgramModel, counted: impl Fn(&str) -> bool) -> T
     let parts: Vec<_> = model
         .parts
         .iter()
-        .filter(|part| counted(&part.name))
+        .filter(|part| model.in_production(part) && counted(&part.name))
         .collect();
     let attribute_names: BTreeSet<&str> = parts
         .iter()

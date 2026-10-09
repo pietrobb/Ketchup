@@ -1,26 +1,31 @@
-//! Material takeoff of the visible program parts: a window with the totals
-//! and a CSV export. Parts on hidden layers are not counted, so turning off
-//! the concept layer counts only the construction.
+//! Material takeoff of the program parts: a window with the totals and a CSV
+//! export. A program that declares `production(tags=…)` counts exactly those
+//! parts, shown or hidden; otherwise parts on hidden layers are not counted,
+//! so turning off the concept layer counts only the construction.
 
 use crate::app_state::{TakeoffCache, TakeoffError};
 use crate::*;
+use ketchup_program::ProgramModel;
 use ketchup_program::cut_list::cut_list_table;
 use ketchup_program::table::DecimalSeparator;
 use ketchup_program::takeoff::{Takeoff, material_takeoff, takeoff_csv};
 
 impl KetchupApp {
-    /// The visible program parts by program name, each with its published
-    /// exact solid volume when there is one.
-    fn visible_takeoff_parts(
+    /// The counted program parts by program name, each with its published
+    /// exact solid volume when there is one: with a production scope every
+    /// part (the model keeps those in scope), else the visible ones.
+    fn takeoff_parts(
         &self,
         snapshot: &Snapshot,
+        model: &ProgramModel,
         counted: impl Fn(&InstancePath) -> bool,
     ) -> BTreeMap<String, Option<f64>> {
         let exact = self.exact.results.render_by_definition(snapshot);
+        let every = !model.production_scope.is_empty();
         snapshot
             .scene_query()
             .into_iter()
-            .filter(|part| part.visible && counted(&part.instance_path))
+            .filter(|part| (every || part.visible) && counted(&part.instance_path))
             .filter_map(|part| {
                 let name =
                     ketchup_application::rule_program_part_name(snapshot, &part.instance_path)?;
@@ -83,7 +88,7 @@ impl KetchupApp {
                 .map(|model| {
                     Arc::new(material_takeoff(
                         model,
-                        &self.visible_takeoff_parts(&snapshot, |_| true),
+                        &self.takeoff_parts(&snapshot, model, |_| true),
                     ))
                 });
         }
@@ -96,22 +101,22 @@ impl KetchupApp {
         self.material_takeoff()?;
         let selected = self.selected_instance_paths();
         let snapshot = self.document.current();
-        let counted = self.visible_takeoff_parts(&snapshot, |path| {
+        let cache = self.takeoff.cache.borrow();
+        let model = cache
+            .as_ref()
+            .and_then(|cached| cached.model.as_ref().ok())
+            .ok_or(TakeoffError::NoProgram)?;
+        let counted = self.takeoff_parts(&snapshot, model, |path| {
             selected.iter().any(|selected| {
                 selected == path
                     || (selected.steps().is_empty()
                         && selected.root_occurrence() == path.root_occurrence())
             })
         });
-        let cache = self.takeoff.cache.borrow();
-        let model = cache
-            .as_ref()
-            .and_then(|cached| cached.model.as_ref().ok())
-            .ok_or(TakeoffError::NoProgram)?;
         Ok(material_takeoff(model, &counted))
     }
 
-    /// Writes the takeoff of the visible parts as semicolon-separated CSV.
+    /// Writes the takeoff of the counted parts as semicolon-separated CSV.
     pub fn export_material_takeoff_to(&mut self, path: &Path) -> bool {
         let result = self.material_takeoff().and_then(|takeoff| {
             write_atomically(path, takeoff_csv(&takeoff).as_bytes())
@@ -129,19 +134,19 @@ impl KetchupApp {
         result.is_ok()
     }
 
-    /// Writes the cut list of the visible parts: XLSX for a `.xlsx` path,
+    /// Writes the cut list of the counted parts: XLSX for a `.xlsx` path,
     /// otherwise CSV with the decimal separator of the interface language.
     pub fn export_cut_list_to(&mut self, path: &Path) -> bool {
         let result = self.material_takeoff().and_then(|_| {
             let snapshot = self.document.current();
-            let visible = self.visible_takeoff_parts(&snapshot, |_| true);
             let table = {
                 let cache = self.takeoff.cache.borrow();
                 let model = cache
                     .as_ref()
                     .and_then(|cached| cached.model.as_ref().ok())
                     .ok_or(TakeoffError::NoProgram)?;
-                cut_list_table(model, |name| visible.contains_key(name))
+                let counted = self.takeoff_parts(&snapshot, model, |_| true);
+                cut_list_table(model, |name| counted.contains_key(name))
             };
             let xlsx = path
                 .extension()

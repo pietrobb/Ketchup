@@ -149,7 +149,7 @@ pub fn material_takeoff(model: &ProgramModel, counted: &BTreeMap<String, Option<
     let mut rows: BTreeMap<RowKey, (TakeoffRow, Sums)> = BTreeMap::new();
     let mut materials: BTreeMap<String, Sums> = BTreeMap::new();
     let mut counted_parts = 0;
-    for part in &model.parts {
+    for part in model.parts.iter().filter(|part| model.in_production(part)) {
         let Some(exact_volume) = counted.get(&part.name) else {
             continue;
         };
@@ -216,7 +216,13 @@ pub fn material_takeoff(model: &ProgramModel, counted: &BTreeMap<String, Option<
             .collect(),
         counted_parts,
         excluded_parts: model.parts.len() - counted_parts,
-        outside_program_parts: counted.len().saturating_sub(counted_parts),
+        outside_program_parts: {
+            let names = model.parts_by_name();
+            counted
+                .keys()
+                .filter(|name| !names.contains_key(name.as_str()))
+                .count()
+        },
         exact_volume_parts,
     }
 }

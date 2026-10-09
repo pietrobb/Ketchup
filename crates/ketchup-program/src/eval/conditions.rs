@@ -180,6 +180,25 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
+    /// The parts that are made: those with one of these tags. The cut list,
+    /// hardware, machining and takeoff count only them, whatever is shown;
+    /// without production() every part is made.
+    fn production<'v>(
+        #[starlark(require = named)] tags: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let tags = tag_names(tags, eval.heap())?;
+        if tags.is_empty() {
+            anyhow::bail!("production(): name at least one tag");
+        }
+        state(eval)?
+            .model
+            .borrow_mut()
+            .production_scope
+            .extend(tags);
+        Ok(NoneType)
+    }
+
     /// A uniform load in kN/m² on the upward face of the parts tagged `on`
     /// (per plan area when `projected`). kn_m2=None declares a load whose
     /// value is not known: the members under it stay not verified.

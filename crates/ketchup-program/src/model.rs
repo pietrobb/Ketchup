@@ -1662,6 +1662,11 @@ pub struct ProgramModel {
     /// Tags of the parts whose own weight loads the members (`weight_scope()`).
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub weight_scope: BTreeSet<String>,
+    /// Tags of the parts that are made (`production()`): the cut list, the
+    /// hardware, the machining plan and the takeoff count only parts with one
+    /// of them. Empty: every part is made.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub production_scope: BTreeSet<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub area_loads: Vec<crate::loads::AreaLoad>,
     /// Strength classes of timber materials (`timber_strength()`), by material name.
@@ -1688,6 +1693,24 @@ impl ProgramModel {
             .iter()
             .map(|part| (part.name.as_str(), part))
             .collect()
+    }
+
+    /// Whether the part is made: it carries a tag of `production()`, or the
+    /// program declares no production scope.
+    #[must_use]
+    pub fn in_production(&self, part: &Part) -> bool {
+        self.production_scope.is_empty() || !part.tags.is_disjoint(&self.production_scope)
+    }
+
+    /// Whether the joint's hardware is bought: one of its parts is made (a
+    /// name that is not a part, e.g. a group, counts as made).
+    #[must_use]
+    pub fn joint_in_production(&self, joint: &Joint) -> bool {
+        self.production_scope.is_empty()
+            || joint
+                .parts
+                .iter()
+                .any(|name| self.part(name).is_none_or(|part| self.in_production(part)))
     }
 
     /// Whether two parts belong to different alternative representations, so they

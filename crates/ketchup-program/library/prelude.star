@@ -20,6 +20,12 @@
 #   alternatives(["concept", "construction"]) declares tags that represent the same thing
 #     in different detail: parts carrying different ones of them may overlap without a
 #     collision. Show one at a time with saved views; see buildup() in topic buildup.
+#   production(tags=["construction", "windows"]) names the parts that are made: the cut
+#     list, hardware, machining and material takeoff (window, CSV/XLSX, report)
+#     count only parts carrying one of these tags, whether shown or hidden, so a concept
+#     body, furniture or a mattress never reaches the cut list. Hardware counts when one
+#     of the joined parts is made. Without production() every part is made and the
+#     takeoff counts the visible parts.
 #   grain= of board() and member() is the attribute "grain": "x", "y" or "z"; the cut-list
 #     export writes it as the dimension that axis became ("length", "width", "thickness").
 #   edges= of board() is the attribute "edges", text for the edge banding column of the

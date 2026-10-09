@@ -94,6 +94,75 @@ fn a_named_fastener_without_positions_counts_one_piece_per_joint() {
     assert_eq!(report.bom.hardware[0].count, 2);
 }
 
+/// Review 2026-10-09 (BOM-1, §5.2 step 10): the cut list counted the concept
+/// bodies next to the construction, and furniture with them. production()
+/// names the parts that are made; the cut list, hardware, machining and the
+/// takeoff count only those.
+#[test]
+fn only_production_parts_reach_the_cut_list_hardware_machining_and_takeoff() {
+    let source = format!(
+        "{}tag([side, shelf], \"construction\")\n\
+         box(\"concept wall\", (18, 450, 600), tags = \"concept\")\n\
+         bed = box(\"bed\", (900, 450, 200), at = (0, 0, 1000))\n\
+         mattress = box(\"mattress\", (900, 450, 150), at = (0, 0, 1200))\n\
+         joint(mattress, bed, kind = \"strap\", fastener = \"strap\")\n\
+         production(tags = [\"construction\"])\n",
+        side_and_shelf(18.0, "8x30")
+    );
+    let (evaluated, report) = run("t.star", &source, &BTreeMap::new()).unwrap();
+    fn made(rows: Vec<&String>) -> Vec<&str> {
+        let mut rows: Vec<_> = rows.into_iter().map(String::as_str).collect();
+        rows.sort_unstable();
+        rows
+    }
+    assert_eq!(
+        made(
+            report
+                .bom
+                .cut_list
+                .iter()
+                .flat_map(|row| &row.parts)
+                .collect()
+        ),
+        ["shelf", "side"]
+    );
+    assert_eq!(report.bom.total_parts, 2);
+    assert_eq!(
+        made(report.bom.hardware.iter().map(|row| &row.item).collect()),
+        ["dowel 8x30"]
+    );
+    assert_eq!(
+        made(report.bom.machining.iter().map(|row| &row.part).collect()),
+        ["shelf", "side"]
+    );
+    let model = &evaluated.model;
+    let takeoff = ketchup_program::takeoff::material_takeoff_of_all(model);
+    assert_eq!(takeoff.counted_parts, 2);
+    assert_eq!(takeoff.excluded_parts, 3);
+    assert_eq!(takeoff.outside_program_parts, 0);
+    let table = ketchup_program::cut_list::cut_list_table(model, |_| true);
+    let csv = table.csv(ketchup_program::table::DecimalSeparator::Point);
+    assert!(csv.contains("side") && csv.contains("shelf"), "{csv}");
+    assert!(
+        !csv.contains("concept") && !csv.contains("mattress"),
+        "{csv}"
+    );
+
+    // Without production() every part is made, as before.
+    let everything = source.replace("production(tags = [\"construction\"])\n", "");
+    let (_, report) = run("t.star", &everything, &BTreeMap::new()).unwrap();
+    assert_eq!(report.bom.total_parts, 5);
+    assert_eq!(report.bom.hardware.len(), 2);
+
+    let error = run(
+        "t.star",
+        "box(\"a\", (1, 1, 1))\nproduction(tags = [])\n",
+        &BTreeMap::new(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("name at least one tag"), "{error}");
+}
+
 #[test]
 fn the_cut_list_gives_the_blank_a_push_pull_grew() {
     let (_, report) = run(

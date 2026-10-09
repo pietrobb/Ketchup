@@ -60,7 +60,7 @@ pub(crate) fn key(value: f64) -> i64 {
 #[must_use]
 pub fn bom(model: &ProgramModel) -> Bom {
     let mut rows: BTreeMap<(String, [i64; 3]), CutListRow> = BTreeMap::new();
-    for part in &model.parts {
+    for part in model.parts.iter().filter(|part| model.in_production(part)) {
         // The blank: grown by push_pull and union, unlike the declared size.
         let (min, max) = part.local_bounds();
         let mut dimensions: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
@@ -81,7 +81,11 @@ pub fn bom(model: &ProgramModel) -> Bom {
         row.parts.push(part.name.clone());
     }
     let mut hardware: BTreeMap<String, usize> = BTreeMap::new();
-    for joint in &model.joints {
+    for joint in model
+        .joints
+        .iter()
+        .filter(|joint| model.joint_in_production(joint))
+    {
         if let Some(fastener) = &joint.fastener {
             // A named fastener without positions is one piece, e.g. one hanger.
             *hardware.entry(fastener.clone()).or_default() += joint.fasteners_mm.len().max(1);
@@ -90,7 +94,10 @@ pub fn bom(model: &ProgramModel) -> Bom {
     let machining = model
         .parts
         .iter()
-        .filter(|part| part.holes().next().is_some() || part.pockets().next().is_some())
+        .filter(|part| {
+            model.in_production(part)
+                && (part.holes().next().is_some() || part.pockets().next().is_some())
+        })
         .map(|part| PartMachining {
             part: part.name.clone(),
             size_mm: part.size_mm,
@@ -124,6 +131,10 @@ pub fn bom(model: &ProgramModel) -> Bom {
             .map(|(item, count)| HardwareRow { item, count })
             .collect(),
         machining,
-        total_parts: model.parts.len(),
+        total_parts: model
+            .parts
+            .iter()
+            .filter(|part| model.in_production(part))
+            .count(),
     }
 }
