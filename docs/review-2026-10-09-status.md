@@ -58,4 +58,6 @@ krok míľnika §5.2 (#2452), nie oprava správnosti.
 | `.star` nie sú `eol=lf` | opravené | `.gitattributes`: `*.star text eol=lf` (v indexe už všetky LF) |
 | `material_weight`, `weight_scope`, `timber_strength` nezdokumentované | opravené | opísané v témach `loads` a `member_check`; test dokumentácie builtinov teraz zahŕňa `conditions::builtins` (`every_builtin_is_documented_in_the_library_comments`) |
 | `program-language.md` uvádza 7 z 12 tém | opravené | uvádza všetkých 12; test `the_language_guide_names_every_library_topic` |
+| GLB odmietne `alphaMode` BLEND a neznáme chunky | opravené | MASK/BLEND sa importuje ako nepriehľadná farba s upozornením `glb_material_transparency_ignored`; chunky neznámeho typu za JSON sa preskočia (podľa špecifikácie), duplicitný JSON/BIN ostáva chybou. Test: `glb_imports_transparent_materials_and_skips_unknown_chunks` |
+| CAM: `ceil` dá o prechod viac | opravené | podiel o zaokrúhľovaciu chybu nad celým číslom (20 − 18,9)/0,1 = 11,000000000000014 je 11 prechodov; posledný prechod a dráha ležia presne na dne a na okraji. Pozn.: samotné 1,1/0,1 dáva v f64 presne 11. Test: `cam::step_tests::a_depth_a_rounding_error_above_whole_passes_takes_no_extra_pass` |
 | ostatné P3 | neoverené | |

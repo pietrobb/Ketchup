@@ -649,6 +649,45 @@ fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
     plan_glb_import(&imported.current(), &source, "two-materials.glb").unwrap();
 }
 
+/// Review 2026-10-09 (P3): a transparent material, even an unused one, and a
+/// chunk of an unknown type (which readers must skip) refused the whole file.
+#[test]
+fn glb_imports_transparent_materials_and_skips_unknown_chunks() {
+    let mut source = rewrite_glb_json(&sample_glb(), |document| {
+        document["materials"] = serde_json::json!([
+            {"name": "glass", "alphaMode": "BLEND"},
+            {"name": "leaves", "alphaMode": "MASK"}
+        ]);
+    });
+    let extra = b"XTRA\0\0\0\0";
+    source.extend_from_slice(&4_u32.to_le_bytes());
+    source.extend_from_slice(&extra[..4]);
+    source.extend_from_slice(&extra[4..]);
+    let total = source.len() as u32;
+    source[8..12].copy_from_slice(&total.to_le_bytes());
+
+    let inspection = inspect_glb(&source).unwrap();
+    let codes = inspection
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code())
+        .collect::<Vec<_>>();
+    assert!(
+        codes.contains(&"glb_material_transparency_ignored"),
+        "{codes:?}"
+    );
+    let imported = DocumentStore::new();
+    plan_glb_import(&imported.current(), &source, "glass.glb").unwrap();
+
+    let unknown_mode = rewrite_glb_json(&sample_glb(), |document| {
+        document["materials"] = serde_json::json!([{"alphaMode": "GLOW"}]);
+    });
+    assert_eq!(
+        inspect_glb(&unknown_mode),
+        Err(GlbImportError::UnsupportedFeature)
+    );
+}
+
 #[test]
 fn glb_rejects_future_minimum_versions_numerically() {
     let source = rewrite_glb_json(&sample_glb(), |document| {

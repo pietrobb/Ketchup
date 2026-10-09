@@ -1832,14 +1832,15 @@ fn lane_coordinates(minimum: f64, maximum: f64, step: f64) -> Result<Vec<f64>, C
     {
         return Err(CamPlannerError::InvalidOperations);
     }
-    let intervals = ((maximum - minimum) / step).ceil() as usize;
+    let intervals = whole_steps(maximum - minimum, step);
     if intervals > 50_000 {
         return Err(CamPlannerError::InvalidOperations);
     }
     let mut lanes = Vec::with_capacity(intervals + 1);
-    for index in 0..=intervals {
+    for index in 0..intervals {
         lanes.push((minimum + step * index as f64).min(maximum));
     }
+    lanes.push(maximum);
     Ok(lanes)
 }
 
@@ -1852,13 +1853,27 @@ fn depth_passes(top: f64, bottom: f64, stepdown: f64) -> Result<Vec<f64>, CamPla
     {
         return Err(CamPlannerError::InvalidOperations);
     }
-    let count = ((top - bottom) / stepdown).ceil() as usize;
-    if count == 0 || count > 50_000 {
+    let count = whole_steps(top - bottom, stepdown).max(1);
+    if count > 50_000 {
         return Err(CamPlannerError::InvalidOperations);
     }
-    Ok((1..=count)
+    Ok((1..count)
         .map(|index| (top - stepdown * index as f64).max(bottom))
+        .chain([bottom])
         .collect())
+}
+
+/// Steps of `step` needed to cover `span`. A quotient a rounding error above a
+/// whole number ((20 - 18.9) / 0.1 = 11.000000000000014) is that number, so no extra
+/// pass repeats the last depth or lane.
+fn whole_steps(span: f64, step: f64) -> usize {
+    let quotient = span / step;
+    let nearest = quotient.round();
+    if (quotient - nearest).abs() <= 1e-9 * nearest.max(1.0) {
+        nearest as usize
+    } else {
+        quotient.ceil() as usize
+    }
 }
 
 fn validate_path(
@@ -2104,4 +2119,23 @@ fn orthonormal_xy(x: [f64; 3], y: [f64; 3]) -> bool {
     (length(x) - 1.0).abs() <= ROUNDING
         && (length(y) - 1.0).abs() <= ROUNDING
         && dot.abs() <= ROUNDING
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::*;
+
+    /// Review 2026-10-09 (P3): 1.1 mm at 0.1 mm per pass gave 12 passes, the
+    /// last two at the same depth.
+    #[test]
+    fn a_depth_a_rounding_error_above_whole_passes_takes_no_extra_pass() {
+        let passes = depth_passes(20.0, 18.9, 0.1).unwrap();
+        assert_eq!(passes.len(), 11, "{passes:?}");
+        assert_eq!(passes.last(), Some(&18.9));
+        assert!(passes.windows(2).all(|pair| pair[1] < pair[0]));
+        assert_eq!(depth_passes(2.1, 0.0, 0.7).unwrap().len(), 3);
+        assert_eq!(depth_passes(20.0, 18.85, 0.1).unwrap().len(), 12);
+        let lanes = lane_coordinates(0.0, 2.1, 0.7).unwrap();
+        assert_eq!(lanes, [0.0, 0.7, 1.4, 2.1]);
+    }
 }

@@ -515,7 +515,10 @@ fn parse_container(source: &[u8]) -> Result<(&[u8], &[u8]), GlbImportError> {
         }
         match kind {
             JSON_CHUNK if chunk_index == 0 && json.is_none() => json = Some(&source[start..end]),
-            BIN_CHUNK if json.is_some() && binary.is_none() => binary = Some(&source[start..end]),
+            BIN_CHUNK if chunk_index == 1 => binary = Some(&source[start..end]),
+            // The GLB specification has readers skip chunks of unknown types.
+            JSON_CHUNK | BIN_CHUNK => return Err(GlbImportError::InvalidContainer),
+            _ if chunk_index > 0 => {}
             _ => return Err(GlbImportError::InvalidContainer),
         }
         offset = end;
@@ -1362,11 +1365,14 @@ fn parse_materials(
         .iter()
         .map(|material| {
             let material = object(material)?;
-            if material
-                .get("alphaMode")
-                .is_some_and(|mode| mode.as_str() != Some("OPAQUE"))
-            {
-                return Err(GlbImportError::UnsupportedFeature);
+            // Transparency changes only how a solid looks, so a glass or
+            // cut-out material imports as an opaque colour with a note.
+            match material.get("alphaMode").map(Value::as_str) {
+                None | Some(Some("OPAQUE")) => {}
+                Some(Some("MASK" | "BLEND")) => {
+                    bump(diagnostics, "glb_material_transparency_ignored", 1)?;
+                }
+                Some(_) => return Err(GlbImportError::UnsupportedFeature),
             }
             if material
                 .get("doubleSided")
