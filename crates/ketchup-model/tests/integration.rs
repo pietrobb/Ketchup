@@ -34,6 +34,7 @@ mod orthographic_drawing;
 mod pad_migration;
 mod pad_pocket;
 mod parameter_graph;
+mod parser_fuzz;
 mod product_document;
 mod production_codes;
 mod profile_migration;
