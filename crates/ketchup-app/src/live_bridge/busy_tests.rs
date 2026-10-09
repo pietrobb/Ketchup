@@ -15,6 +15,38 @@ fn busy_diagnostics_selection_alone_allows_edit() {
 }
 
 #[test]
+fn busy_diagnostics_untouched_property_panels_allow_edit() {
+    let (mut app, mut bridge) = setup();
+    // Selecting a part with a pocket opens its panel loaded with the current value.
+    app.solid_tools.pocket_editor_feature = Some(FeatureId(999));
+    app.solid_tools.pocket_depth_input = "8".into();
+    app.solid_tools.pocket_depth_source = "8".into();
+    app.parameter.editor_node = Some(NodeId(999));
+    app.parameter.expression_input = "width / 2".into();
+    app.parameter.canonical_source = "width / 2".into();
+    let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(status["busy_reasons"], json!([]));
+    let commit = proposal(&mut app, &mut bridge);
+
+    app.solid_tools.pocket_depth_input = "12".into();
+    let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(status["busy_reasons"][0]["target"], "pocket_editor");
+    assert_eq!(bridge.execute(&mut app, commit.clone(), false), Err("busy"));
+    assert_eq!(app.solid_tools.pocket_depth_input, "12");
+
+    app.solid_tools.pocket_depth_input = "8".into();
+    app.parameter.expression_input = "width / 3".into();
+    let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(status["busy_reasons"][0]["target"], "parameter_editor");
+
+    app.parameter.expression_input = "width / 2".into();
+    assert_eq!(
+        bridge.execute(&mut app, commit, false).unwrap()["committed"],
+        true
+    );
+}
+
+#[test]
 fn busy_diagnostics_report_all_blockers_and_preserve_human_work() {
     let (mut app, mut bridge) = setup();
     let commit = proposal(&mut app, &mut bridge);

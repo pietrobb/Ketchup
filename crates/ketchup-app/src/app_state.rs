@@ -48,6 +48,8 @@ pub(crate) struct SolidToolInputs {
     pub(crate) loft_input_sections: Option<(DefinitionId, Vec<LoftSection>)>,
     pub(crate) pocket_editor_feature: Option<FeatureId>,
     pub(crate) pocket_depth_input: String,
+    /// The depth the input was loaded from; the input differs only after typing.
+    pub(crate) pocket_depth_source: String,
 }
 
 /// The running Move/Rotate/Scale session, its typed input and a correction of

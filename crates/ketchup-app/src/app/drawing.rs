@@ -3282,11 +3282,19 @@ impl KetchupApp {
         let Some((feature_id, depth)) = self.selected_pocket() else {
             self.solid_tools.pocket_editor_feature = None;
             self.solid_tools.pocket_depth_input.clear();
+            self.solid_tools.pocket_depth_source.clear();
             return;
         };
-        if self.solid_tools.pocket_editor_feature != Some(feature_id) {
-            self.solid_tools.pocket_editor_feature = Some(feature_id);
-            self.solid_tools.pocket_depth_input = depth.source_token().to_owned();
+        // An untouched input follows the document, e.g. after an AI edit.
+        let source = depth.source_token();
+        let tools = &mut self.solid_tools;
+        let untouched = tools.pocket_depth_input == tools.pocket_depth_source;
+        if tools.pocket_editor_feature != Some(feature_id)
+            || (untouched && tools.pocket_depth_source != source)
+        {
+            tools.pocket_editor_feature = Some(feature_id);
+            tools.pocket_depth_input = source.to_owned();
+            tools.pocket_depth_source = source.to_owned();
         }
         section_header(
             ui,
@@ -3305,6 +3313,7 @@ impl KetchupApp {
             if let Some(depth_mm) = parse_distance_mm(&self.solid_tools.pocket_depth_input) {
                 if self.set_selected_pocket_depth(depth_mm) {
                     self.solid_tools.pocket_depth_input = format_height(depth_mm);
+                    self.solid_tools.pocket_depth_source = format_height(depth_mm);
                 }
             } else {
                 self.digest = self.catalog.text("digest-pocket-invalid-depth");

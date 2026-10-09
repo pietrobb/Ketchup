@@ -105,6 +105,7 @@ impl KetchupApp {
                 loft_input_sections: None,
                 pocket_editor_feature: None,
                 pocket_depth_input: String::new(),
+                pocket_depth_source: String::new(),
             },
             helix_tool: helix_ui::HelixUiState::default(),
             parameter: app_state::ParameterEditor {

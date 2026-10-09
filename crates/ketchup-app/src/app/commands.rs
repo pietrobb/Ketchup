@@ -1181,15 +1181,21 @@ impl KetchupApp {
             .find(|(id, _, _)| *id == selected)
             .map(|(_, _, source)| source.clone())
             .expect("the selected evaluator node is present");
-        if selected != previous_selected || canonical_source != self.parameter.canonical_source {
+        let snapshot = self.document.current();
+        let current_provenance = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            snapshot.canonical_digest(),
+        );
+        // An untouched input follows the document, e.g. after an AI edit.
+        let untouched = self.parameter.expression_input == self.parameter.canonical_source;
+        if selected != previous_selected
+            || canonical_source != self.parameter.canonical_source
+            || (untouched && self.parameter.provenance.as_ref() != Some(&current_provenance))
+        {
             self.parameter.expression_input = canonical_source.clone();
             self.parameter.canonical_source = canonical_source;
-            let snapshot = self.document.current();
-            self.parameter.provenance = Some((
-                snapshot.document_id(),
-                snapshot.revision_id(),
-                snapshot.canonical_digest(),
-            ));
+            self.parameter.provenance = Some(current_provenance);
         }
 
         let input_label = self.catalog.text("parameters-expression");

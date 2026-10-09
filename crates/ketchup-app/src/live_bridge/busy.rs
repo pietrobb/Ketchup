@@ -99,9 +99,9 @@ pub(super) fn blockers(app: &KetchupApp, ui_busy: bool) -> Vec<Blocker> {
         (app.solid_tools.revolve.is_some(), "tool", "revolve", "A Revolve session is unfinished."),
         (app.active_tool == ActiveTool::Helix, "tool", "helix", "The Helix tool session is active."),
         (app.solid_tools.loft_input_sections.is_some(), "tool", "loft", "Loft input sections are retained."),
-        (app.solid_tools.pocket_editor_feature.is_some(), "editor", "pocket_editor", "The pocket depth editor is open."),
-        (app.parameter.editor_node.is_some(), "editor", "parameter_editor", "The parameter expression editor is open."),
-        (app.parameter.provenance.is_some(), "editor", "parameter_provenance", "A parameter provenance edit is retained."),
+        // Property editors open with the selection; only a typed, unapplied value is human work.
+        (app.solid_tools.pocket_editor_feature.is_some() && app.solid_tools.pocket_depth_input != app.solid_tools.pocket_depth_source, "editor", "pocket_editor", "The pocket depth editor has an unapplied typed value."),
+        (app.parameter.editor_node.is_some() && app.parameter.expression_input != app.parameter.canonical_source, "editor", "parameter_editor", "The parameter expression editor has an unapplied typed expression."),
         (app.assistant.proposal.is_some(), "preview", "assistant_proposal", "The built-in Assistant has a proposal awaiting review."),
         (app.assistant.pending_execution.is_some(), "job", "assistant_execution", "The built-in Assistant has a pending execution."),
         (app.assistant.chat_task.is_some(), "job", "assistant_chat", "The built-in Assistant is processing a request."),

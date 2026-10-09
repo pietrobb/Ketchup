@@ -76,6 +76,7 @@ impl KetchupApp {
         self.solid_tools.loft_input_sections = None;
         self.solid_tools.pocket_editor_feature = None;
         self.solid_tools.pocket_depth_input.clear();
+        self.solid_tools.pocket_depth_source.clear();
         self.parameter.editor_node = None;
         self.parameter.expression_input.clear();
         self.parameter.canonical_source.clear();
