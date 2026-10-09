@@ -1,6 +1,12 @@
 [workspace]
 members = ["crates/ketchup-analysis", "crates/ketchup-app", "crates/ketchup-application", "crates/ketchup-assistant", "crates/ketchup-model", "crates/ketchup-exact", "crates/ketchup-geometry", "crates/ketchup-headless", "crates/ketchup-interaction", "crates/ketchup-manufacturing", "crates/ketchup-mcp", "crates/ketchup-pdm", "crates/ketchup-program", "crates/ketchup-rejection", "crates/ketchup-scheduler", "crates/ketchup-test-env", "crates/ketchup-tolerance"]
 resolver = "3"
+exclude = ["third_party/starlark"]
+
+# starlark 0.13.0 with one change: every loop and comprehension iteration reaches the
+# `before_stmt` hook, so the program execution budget bounds them (third_party/starlark/PATCH.md).
+[patch.crates-io]
+starlark = { path = "third_party/starlark" }
 
 [workspace.package]
 version = "0.1.0"

@@ -1,4 +1,4 @@
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, NEGLIGIBLE};
 use ketchup_geometry::linalg::Affine3;
 use ketchup_tolerance::limits;
 use std::collections::{BTreeMap, BTreeSet};
@@ -442,6 +442,18 @@ pub fn inspect_sketchup_scene(
             return Err(SketchupSceneImportError::MissingDefinition);
         }
         let mut matrix = instance.transform;
+        // SketchUp keeps a uniform scale as the homogeneous divisor m[15]
+        // (scale 2 is m[15] = 0.5); divided out it is an ordinary affine matrix.
+        let divisor = matrix[15];
+        if matrix[12..15].iter().any(|value| *value != 0.0)
+            || !divisor.is_finite()
+            || divisor.abs() <= NEGLIGIBLE
+        {
+            return Err(SketchupSceneImportError::InvalidTransform);
+        }
+        for value in &mut matrix {
+            *value /= divisor;
+        }
         for index in [3, 7, 11] {
             matrix[index] *= 25.4;
         }

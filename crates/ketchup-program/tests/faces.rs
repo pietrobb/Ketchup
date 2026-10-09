@@ -143,6 +143,50 @@ fn a_box_is_its_rectangle_extruded_and_measured_from_its_minimum_corner() {
     assert_eq!(shifted.size_mm, [400.0, 300.0, 18.0]);
 }
 
+/// The faces of a profile point out of the material whichever way the profile
+/// runs, also when its chords enclose nothing (a half disc, a circle of two arcs):
+/// a clockwise half disc used to get both faces pointing inward.
+#[test]
+fn faces_point_outward_for_a_clockwise_profile_of_arcs() {
+    let outward = |profile: &str, face: &str| {
+        let source = format!("extrude(\"p\", distance = 10, profile = {profile})");
+        let face = world(&part(&source, "p"), face);
+        let mid = [(face.min[0] + face.max[0]) / 2.0, 5.0];
+        let at = face.point(mid);
+        let normal = face.normal_at(mid);
+        // The profile is centred on the origin, so out of the material is away from z.
+        ketchup_geometry::linalg::dot2([normal[0], normal[1]], [at[0], at[1]])
+    };
+    let ccw = "[[\"flat\", [-50, 0], [50, 0]], \
+               [\"round\", [50, 0], [-50, 0], {\"center\": (0, 0)}]]";
+    let cw = "[[\"round\", [-50, 0], [50, 0], {\"center\": (0, 0), \"clockwise\": True}], \
+              [\"flat\", [50, 0], [-50, 0]]]";
+    for profile in [ccw, cw] {
+        let flat = world(
+            &part(
+                &format!("extrude(\"p\", distance = 10, profile = {profile})"),
+                "p",
+            ),
+            "flat",
+        );
+        assert_near(flat.normal, [0.0, -1.0, 0.0], profile);
+        assert!(outward(profile, "round") > 0.0, "{profile}");
+    }
+    let circle = |clockwise: &str| {
+        format!(
+            "[[\"a\", [50, 0], [-50, 0], {{\"center\": (0, 0){clockwise}}}], \
+             [\"b\", [-50, 0], [50, 0], {{\"center\": (0, 0){clockwise}}}]]"
+        )
+    };
+    for half in ["a", "b"] {
+        assert!(outward(&circle(""), half) > 0.0, "{half}");
+        assert!(
+            outward(&circle(", \"clockwise\": True"), half) > 0.0,
+            "{half}"
+        );
+    }
+}
+
 #[test]
 fn extruded_sides_are_planes_and_rounded_corners_cylinders() {
     let top = part(

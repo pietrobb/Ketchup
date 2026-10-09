@@ -154,7 +154,7 @@ impl fmt::Display for DxfImportError {
             }
             Self::Empty => "DXF source is empty",
             Self::SourceTooLarge => "DXF source exceeds the bounded 8 MiB envelope",
-            Self::NonAscii => "DXF must use the bounded ASCII encoding; binary DXF is unsupported",
+            Self::NonAscii => "DXF must be ASCII or UTF-8 text; binary DXF and older code pages are unsupported",
             Self::LineTooLong => "DXF contains a line longer than 512 bytes",
             Self::TooManyPairs => "DXF exceeds the 100,000 group-code pair limit",
             Self::MalformedPairs => "DXF group-code/value pairs are malformed",
@@ -250,7 +250,16 @@ impl DiagnosticCounts {
         subject: Option<String>,
         count: u32,
     ) -> Result<(), DxfImportError> {
-        let key = (severity, code.to_owned(), subject);
+        let mut key = (severity, code.to_owned(), subject);
+        // A file with very many layers or ignored groups still imports: past
+        // the report's size the rest is counted in one entry.
+        if !self.entries.contains_key(&key) && self.entries.len() + 1 >= MAX_IMPORT_DIAGNOSTICS {
+            key = (
+                ImportDiagnosticSeverity::Warning,
+                "dxf.diagnostics-omitted".to_owned(),
+                None,
+            );
+        }
         let entry = self.entries.entry(key).or_default();
         *entry = entry
             .checked_add(count)
@@ -360,6 +369,9 @@ pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf
     let mut profiles = assemble_loose_segments(parsed_entities.loose)?;
     profiles.append(&mut parsed_entities.explicit_profiles);
     let layers = parsed_entities.layers;
+    if profiles.len() > MAX_DXF_PROFILES {
+        return Err(DxfImportError::TooManyProfiles);
+    }
     reject_duplicate_segments(&profiles)?;
     for left in 0..profiles.len() {
         if profiles[left + 1..]
@@ -374,9 +386,6 @@ pub fn inspect_dxf(source: &[u8], options: DxfImportOptions) -> Result<ParsedDxf
     });
     if profiles.is_empty() {
         return Err(DxfImportError::NoSupportedGeometry);
-    }
-    if profiles.len() > MAX_DXF_PROFILES {
-        return Err(DxfImportError::TooManyProfiles);
     }
     for layer in &layers {
         diagnostics.add(
@@ -513,11 +522,9 @@ fn parse_pairs(source: &[u8]) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
     if source.len() as u64 > MAX_DXF_SOURCE_BYTES {
         return Err(DxfImportError::SourceTooLarge);
     }
-    if !source.is_ascii() {
-        return Err(DxfImportError::NonAscii);
-    }
+    // DXF 2007 and later are UTF-8: layer and block names may hold any letter.
     let Ok(text) = std::str::from_utf8(source) else {
-        unreachable!("ASCII is valid UTF-8");
+        return Err(DxfImportError::NonAscii);
     };
     let lines = text.lines().collect::<Vec<_>>();
     if lines.iter().any(|line| line.len() > MAX_DXF_LINE_BYTES) {
@@ -538,6 +545,8 @@ fn parse_pairs(source: &[u8]) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
                 value: pair[1].trim(),
             })
         })
+        // Group 999 is a comment and may stand anywhere.
+        .filter(|pair| !matches!(pair, Ok(DxfPair { code: 999, .. })))
         .collect()
 }
 
@@ -1006,6 +1015,11 @@ fn parse_entities(
                 1,
             )?,
         }
+        // Many INSERTs of a block each within the limit must not build millions
+        // of profiles before the whole drawing is checked.
+        if output.explicit_profiles.len() > MAX_DXF_PROFILES {
+            return Err(DxfImportError::TooManyProfiles);
+        }
     }
     Ok(())
 }
@@ -1044,7 +1058,7 @@ fn parse_circle(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<OrderedProfile, DxfImportError> {
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    let mirrored = ensure_planar_ocs(record)?;
     report_ignored_groups(
         "CIRCLE",
         record,
@@ -1062,23 +1076,28 @@ fn parse_circle(
     normalize_coordinate(center[1] + radius)?;
     normalize_coordinate(center[1] - radius)?;
     ensure_distinct(right, left)?;
+    let segments = vec![
+        ProfileSegment::CircularArc {
+            start_mm: right,
+            end_mm: left,
+            center_mm: center,
+            clockwise: false,
+        },
+        ProfileSegment::CircularArc {
+            start_mm: left,
+            end_mm: right,
+            center_mm: center,
+            clockwise: false,
+        },
+    ];
     Ok(OrderedProfile {
         layer,
         ordinal,
-        segments: vec![
-            ProfileSegment::CircularArc {
-                start_mm: right,
-                end_mm: left,
-                center_mm: center,
-                clockwise: false,
-            },
-            ProfileSegment::CircularArc {
-                start_mm: left,
-                end_mm: right,
-                center_mm: center,
-                clockwise: false,
-            },
-        ],
+        segments: if mirrored {
+            segments.into_iter().map(mirror_ocs).collect()
+        } else {
+            segments
+        },
         closed: true,
     })
 }
@@ -2667,7 +2686,7 @@ fn parse_arc(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<LooseSegment, DxfImportError> {
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    let mirrored = ensure_planar_ocs(record)?;
     report_ignored_groups(
         "ARC",
         record,
@@ -2698,14 +2717,19 @@ fn parse_arc(
     ];
     validate_arc_sweep_envelope(start, end, center, radius, false, sweep > 180.0)?;
     ensure_distinct(start, end)?;
+    let segment = ProfileSegment::CircularArc {
+        start_mm: start,
+        end_mm: end,
+        center_mm: center,
+        clockwise: false,
+    };
     Ok(LooseSegment {
         layer,
         ordinal: 0,
-        segment: ProfileSegment::CircularArc {
-            start_mm: start,
-            end_mm: end,
-            center_mm: center,
-            clockwise: false,
+        segment: if mirrored {
+            mirror_ocs(segment)
+        } else {
+            segment
         },
     })
 }
@@ -3547,7 +3571,7 @@ fn parse_lwpolyline(
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<OrderedProfile, DxfImportError> {
     let layer = parse_layer(record)?;
-    ensure_planar(record)?;
+    let mirrored = ensure_planar_ocs(record)?;
     report_ignored_groups(
         "LWPOLYLINE",
         record,
@@ -3599,7 +3623,11 @@ fn parse_lwpolyline(
     {
         return Err(DxfImportError::MalformedPairs);
     }
-    build_polyline_profile(layer, ordinal, vertices, closed, units, diagnostics)
+    let mut profile = build_polyline_profile(layer, ordinal, vertices, closed, units, diagnostics)?;
+    if mirrored {
+        profile.segments = profile.segments.into_iter().map(mirror_ocs).collect();
+    }
+    Ok(profile)
 }
 
 fn build_polyline_profile(
@@ -3794,6 +3822,68 @@ fn ensure_planar(record: &[DxfPair<'_>]) -> Result<(), DxfImportError> {
     Ok(())
 }
 
+/// Like `ensure_planar` for an entity whose points are in its object coordinate
+/// system: extrusion (0, 0, -1), which AutoCAD's Mirror leaves on arcs, circles
+/// and polylines, is accepted. Returns whether the entity is so mirrored.
+fn ensure_planar_ocs(record: &[DxfPair<'_>]) -> Result<bool, DxfImportError> {
+    let mirrored = record
+        .iter()
+        .rev()
+        .find(|pair| pair.code == 230)
+        .map(|pair| parse_number(pair.value))
+        .transpose()?
+        == Some(-1.0);
+    if mirrored {
+        let upright = record
+            .iter()
+            .filter(|pair| pair.code != 230)
+            .copied()
+            .collect::<Vec<_>>();
+        ensure_planar(&upright)?;
+    } else {
+        ensure_planar(record)?;
+    }
+    Ok(mirrored)
+}
+
+/// A segment from an object coordinate system with extrusion (0, 0, -1) in world
+/// coordinates: the arbitrary axis algorithm turns its x axis to world -x.
+fn mirror_ocs(segment: ProfileSegment) -> ProfileSegment {
+    // `0.0 - x` and not `-x`, so that 0 stays +0 and joins bit for bit.
+    let flip = |point: [f64; 2]| [0.0 - point[0], point[1]];
+    match segment {
+        ProfileSegment::Line { start_mm, end_mm } => ProfileSegment::Line {
+            start_mm: flip(start_mm),
+            end_mm: flip(end_mm),
+        },
+        ProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => ProfileSegment::CircularArc {
+            start_mm: flip(start_mm),
+            end_mm: flip(end_mm),
+            center_mm: flip(center_mm),
+            clockwise: !clockwise,
+        },
+        ProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => ProfileSegment::CubicBezier {
+            start_mm: flip(start_mm),
+            control_1_mm: flip(control_1_mm),
+            control_2_mm: flip(control_2_mm),
+            end_mm: flip(end_mm),
+        },
+        ProfileSegment::Spline { points_mm } => ProfileSegment::Spline {
+            points_mm: points_mm.into_iter().map(flip).collect(),
+        },
+    }
+}
+
 fn report_ignored_groups(
     entity: &str,
     record: &[DxfPair<'_>],
@@ -3880,6 +3970,8 @@ fn scale_coordinate(value: f64, scale: f64) -> Result<f64, DxfImportError> {
 
 fn deterministic_sin_cos_degrees(degrees: f64) -> (f64, f64) {
     let normalized = degrees.rem_euclid(360.0);
+    // `rem_euclid` of a tiny negative angle rounds up to exactly 360.
+    let normalized = if normalized >= 360.0 { 0.0 } else { normalized };
     let quadrant = (normalized / 90.0).floor() as u8;
     let offset = normalized - f64::from(quadrant) * 90.0;
     let reflected = offset > 45.0;
@@ -3916,8 +4008,7 @@ fn deterministic_sin_cos_degrees(degrees: f64) -> (f64, f64) {
         0 => (sine, cosine),
         1 => (cosine, -sine),
         2 => (-sine, -cosine),
-        3 => (-cosine, sine),
-        _ => unreachable!("angle was reduced to one turn"),
+        _ => (-cosine, sine),
     }
 }
 
@@ -4047,11 +4138,9 @@ fn directed_arc_contains(
     }
 }
 
-fn snap_lines_to_unambiguous_arc_endpoints(
-    segments: &mut [LooseSegment],
-) -> Result<(), DxfImportError> {
+fn arc_endpoint_buckets(segments: &[LooseSegment]) -> BTreeMap<[i64; 2], Vec<[f64; 2]>> {
     let mut arc_endpoints: BTreeMap<[i64; 2], Vec<[f64; 2]>> = BTreeMap::new();
-    for segment in segments.iter() {
+    for segment in segments {
         if matches!(segment.segment, ProfileSegment::CircularArc { .. }) {
             for point in [segment.segment.start_mm(), segment.segment.end_mm()] {
                 arc_endpoints
@@ -4061,6 +4150,27 @@ fn snap_lines_to_unambiguous_arc_endpoints(
             }
         }
     }
+    arc_endpoints
+}
+
+fn snap_lines_to_unambiguous_arc_endpoints(
+    segments: &mut [LooseSegment],
+) -> Result<(), DxfImportError> {
+    // Arc ends come from a centre, a radius and angles, so two arcs with
+    // different centres rarely meet bit for bit. Two ends within the tolerance
+    // become one of them, the same one for both.
+    let arc_endpoints = arc_endpoint_buckets(segments);
+    for segment in segments.iter_mut() {
+        if let ProfileSegment::CircularArc {
+            start_mm, end_mm, ..
+        } = &mut segment.segment
+        {
+            *start_mm = shared_arc_endpoint(*start_mm, &arc_endpoints)?;
+            *end_mm = shared_arc_endpoint(*end_mm, &arc_endpoints)?;
+            ensure_distinct(*start_mm, *end_mm)?;
+        }
+    }
+    let arc_endpoints = arc_endpoint_buckets(segments);
     for segment in segments.iter_mut() {
         let ProfileSegment::Line { start_mm, end_mm } = &mut segment.segment else {
             continue;
@@ -4072,10 +4182,22 @@ fn snap_lines_to_unambiguous_arc_endpoints(
     Ok(())
 }
 
-fn unambiguous_arc_endpoint(
+/// The point an arc end shares with at most one other arc end near it.
+fn shared_arc_endpoint(
     point: [f64; 2],
     arc_endpoints: &BTreeMap<[i64; 2], Vec<[f64; 2]>>,
 ) -> Result<[f64; 2], DxfImportError> {
+    let near = nearby_arc_endpoints(point, arc_endpoints);
+    if near.len() > 2 {
+        return Err(DxfImportError::AmbiguousGeometry);
+    }
+    Ok(near.into_values().next().unwrap_or(point))
+}
+
+fn nearby_arc_endpoints(
+    point: [f64; 2],
+    arc_endpoints: &BTreeMap<[i64; 2], Vec<[f64; 2]>>,
+) -> BTreeMap<[u64; 2], [f64; 2]> {
     let bucket = connectivity_bucket(point);
     let mut candidates = BTreeMap::new();
     for x_offset in -1..=1 {
@@ -4090,6 +4212,14 @@ fn unambiguous_arc_endpoint(
             }
         }
     }
+    candidates
+}
+
+fn unambiguous_arc_endpoint(
+    point: [f64; 2],
+    arc_endpoints: &BTreeMap<[i64; 2], Vec<[f64; 2]>>,
+) -> Result<[f64; 2], DxfImportError> {
+    let candidates = nearby_arc_endpoints(point, arc_endpoints);
     match candidates.len() {
         0 => Ok(point),
         1 => Ok(*candidates.values().next().expect("one endpoint candidate")),

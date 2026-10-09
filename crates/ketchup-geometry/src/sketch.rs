@@ -2196,6 +2196,16 @@ impl SketchSpec {
                 } else {
                     (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
                 };
+                // An arc stops short of a full turn; past it the end would wrap
+                // round and the arc would become a short one.
+                let extended_sweep = if extends_end {
+                    sweep * parameter
+                } else {
+                    sweep * (1.0 - parameter)
+                };
+                if extended_sweep.abs() >= std::f64::consts::TAU - ROUNDING {
+                    return Err(SketchError::InvalidExtendParameter);
+                }
                 let angle = start_angle + sweep * parameter;
                 let radius = distance2(start_mm, center_mm);
                 let point = [
@@ -2942,7 +2952,7 @@ impl fmt::Display for SketchError {
                 "sketch trim cannot preserve a constraint on removed geometry or the whole source curve",
             ),
             Self::InvalidExtendParameter => formatter.write_str(
-                "sketch extend requires Start below zero or End above one with a finite parameter",
+                "sketch extend requires Start below zero or End above one with a finite parameter, and an arc shorter than a full turn",
             ),
             Self::UnsupportedExtendEntity(id) => {
                 write!(formatter, "closed sketch entity {} cannot be extended", id.0)

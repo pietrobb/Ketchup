@@ -28,7 +28,6 @@ pub enum DxfProfileExportError {
     Empty,
     TooManyProfiles,
     TooManySegments,
-    InvalidLayer,
     InvalidGeometry,
     Sketch(SketchError),
     UnsupportedCurve,
@@ -53,7 +52,6 @@ impl fmt::Display for DxfProfileExportError {
             Self::Empty => "the visible model contains no exportable planar profiles",
             Self::TooManyProfiles => "DXF export exceeds the bounded 170 profile limit",
             Self::TooManySegments => "DXF export exceeds the bounded 10,000 segment limit",
-            Self::InvalidLayer => "DXF layer name is empty, unsafe, non-ASCII, or too long",
             Self::InvalidGeometry => "DXF profile contains invalid or out-of-envelope geometry",
             Self::UnsupportedCurve => "DXF export does not approximate cubic profile curves",
             Self::UnsupportedTransform => {
@@ -75,37 +73,29 @@ impl std::error::Error for DxfProfileExportError {
     }
 }
 
+/// One profile as one 2D polyline: each vertex with the bulge of the segment
+/// that starts there (0 for a line, tan(sweep / 4) for an arc, negative when
+/// clockwise). An open profile ends with its last point and bulge 0.
 #[derive(Clone, Debug)]
 struct ExportProfile {
     layer: String,
-    block_name: String,
-    entities: Vec<ExportEntity>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum ExportEntity {
-    Line {
-        start: [f64; 2],
-        end: [f64; 2],
-    },
-    Arc {
-        center: [f64; 2],
-        radius: f64,
-        start_degrees: f64,
-        end_degrees: f64,
-    },
+    closed: bool,
+    vertices: Vec<([f64; 2], f64)>,
 }
 
 /// Export every visible canonical polygon, segment, or solved Sketch profile as bounded ASCII DXF.
 ///
-/// Each profile is isolated in a block so two profiles on the same layer cannot
-/// be accidentally joined by a receiving importer. Native DWG is deliberately
-/// outside this open, deterministic workflow and is called out in the report.
+/// The file is AutoCAD R12 (AC1009), which needs no handles or subclass markers
+/// and is read by AutoCAD and CAM software alike. Each profile is one POLYLINE,
+/// so two profiles on the same layer cannot be joined by a receiving importer.
+/// Native DWG is deliberately outside this open, deterministic workflow and is
+/// called out in the report.
 pub fn export_visible_profiles_dxf(
     snapshot: &Snapshot,
 ) -> Result<DxfProfileExport, DxfProfileExportError> {
     let mut profiles = Vec::new();
     let mut segment_count = 0_usize;
+    let mut renamed_layers = BTreeSet::new();
     for occurrence in snapshot
         .scene_query()
         .into_iter()
@@ -118,13 +108,13 @@ pub fn export_visible_profiles_dxf(
             let feature = snapshot
                 .feature(*feature_id)
                 .ok_or(DxfProfileExportError::InvalidGeometry)?;
-            let layer = feature
+            let source_layer = feature
                 .name()
                 .strip_prefix(IMPORTED_LAYER_PREFIX)
                 .unwrap_or_else(|| definition.name());
             let (source_profiles, transform) = match feature.kind() {
-                FeatureKind::Profile { segments, .. } => {
-                    (vec![segments.clone()], occurrence.transform)
+                FeatureKind::Profile { segments, closed } => {
+                    (vec![(segments.clone(), *closed)], occurrence.transform)
                 }
                 FeatureKind::Sketch(sketch) => {
                     let workplane = snapshot
@@ -142,25 +132,21 @@ pub fn export_visible_profiles_dxf(
                 }
                 _ => continue,
             };
-            validate_layer(layer)?;
-            for source_segments in source_profiles {
+            let layer = layer_name(source_layer);
+            if layer != source_layer {
+                renamed_layers.insert(source_layer.to_owned());
+            }
+            for (source_segments, closed) in source_profiles {
                 segment_count = segment_count
                     .checked_add(source_segments.len())
                     .ok_or(DxfProfileExportError::TooManySegments)?;
                 if segment_count > MAX_EXPORT_SEGMENTS {
                     return Err(DxfProfileExportError::TooManySegments);
                 }
-                let entities = transform_segments(&source_segments, transform)?;
-                let block_name = format!(
-                    "KETCHUP_P_{:016X}_{:016X}_{:04}",
-                    occurrence.occurrence_id.0,
-                    feature.id().0,
-                    profiles.len() + 1
-                );
                 profiles.push(ExportProfile {
-                    layer: layer.to_owned(),
-                    block_name,
-                    entities,
+                    layer: layer.clone(),
+                    closed,
+                    vertices: polyline_vertices(&source_segments, closed, transform)?,
                 });
                 if profiles.len() > MAX_EXPORT_PROFILES {
                     return Err(DxfProfileExportError::TooManyProfiles);
@@ -195,7 +181,8 @@ pub fn export_visible_profiles_dxf(
         })
         .count();
     let loss_report = format!(
-        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF AC1027\nunit=millimetre\ngeometry=LINE and circular ARC entities grouped into one block per profile\nlayers=preserved from imported DXF layer identity or canonical definition name\nprofile_count={}\nsegment_count={segment_count}\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are represented only by deterministic block identities\ndwg=unsupported; native DWG import/export is refused because no open deterministic DWG codec is present\nomitted_non_profile_feature_count={omitted_feature_count}\n",
+        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=unsupported; native DWG import/export is refused because no open deterministic DWG codec is present\nomitted_non_profile_feature_count={omitted_feature_count}\n",
+        renamed_layers.len(),
         profiles.len(),
         layers.len(),
         snapshot.canonical_digest(),
@@ -216,15 +203,17 @@ fn polygon_segments(points: &[[f64; 2]]) -> Result<Vec<ProfileSegment>, DxfProfi
         .collect())
 }
 
-fn sketch_profiles(sketch: &SketchSpec) -> Result<Vec<Vec<ProfileSegment>>, DxfProfileExportError> {
+fn sketch_profiles(
+    sketch: &SketchSpec,
+) -> Result<Vec<(Vec<ProfileSegment>, bool)>, DxfProfileExportError> {
     let regions = sketch
         .solved_regions()
         .map_err(DxfProfileExportError::Sketch)?;
     let mut profiles = Vec::new();
     for region in regions {
-        profiles.push(solved_profile_segments(&region.outer)?);
+        profiles.push((solved_profile_segments(&region.outer)?, true));
         for hole in &region.holes {
-            profiles.push(solved_profile_segments(hole)?);
+            profiles.push((solved_profile_segments(hole)?, true));
         }
     }
     Ok(profiles)
@@ -313,10 +302,43 @@ fn workplane_transform(frame: WorkplaneFrame) -> Result<Transform, DxfProfileExp
     .map_err(DxfProfileExportError::Transform)
 }
 
+fn polyline_vertices(
+    segments: &[ProfileSegment],
+    closed: bool,
+    transform: Transform,
+) -> Result<Vec<([f64; 2], f64)>, DxfProfileExportError> {
+    let pieces = transform_segments(segments, transform)?;
+    let joined = |end: [f64; 2], start: [f64; 2]| {
+        distance(end, start) <= EPSILON * end[0].abs().max(end[1].abs()).max(1.0)
+    };
+    if pieces
+        .windows(2)
+        .any(|pair| !joined(pair[0].end, pair[1].start))
+        || (closed && !joined(pieces[pieces.len() - 1].end, pieces[0].start))
+    {
+        return Err(DxfProfileExportError::InvalidGeometry);
+    }
+    let mut vertices = pieces
+        .iter()
+        .map(|piece| (piece.start, piece.bulge))
+        .collect::<Vec<_>>();
+    if !closed {
+        vertices.push((pieces[pieces.len() - 1].end, 0.0));
+    }
+    Ok(vertices)
+}
+
+/// One segment in world XY, with the bulge of the polyline vertex at its start.
+struct ExportPiece {
+    start: [f64; 2],
+    end: [f64; 2],
+    bulge: f64,
+}
+
 fn transform_segments(
     segments: &[ProfileSegment],
     transform: Transform,
-) -> Result<Vec<ExportEntity>, DxfProfileExportError> {
+) -> Result<Vec<ExportPiece>, DxfProfileExportError> {
     if segments.is_empty() {
         return Err(DxfProfileExportError::InvalidGeometry);
     }
@@ -348,7 +370,11 @@ fn transform_segments(
                 if distance(start, end) <= EPSILON {
                     return Err(DxfProfileExportError::InvalidGeometry);
                 }
-                Ok(ExportEntity::Line { start, end })
+                Ok(ExportPiece {
+                    start,
+                    end,
+                    bulge: 0.0,
+                })
             }
             ProfileSegment::CircularArc {
                 start_mm,
@@ -369,16 +395,23 @@ fn transform_segments(
                     return Err(DxfProfileExportError::InvalidGeometry);
                 }
                 let world_clockwise = *clockwise != reflected;
-                let (dxf_start, dxf_end) = if world_clockwise {
+                let (from, to) = if world_clockwise {
                     (end, start)
                 } else {
                     (start, end)
                 };
-                Ok(ExportEntity::Arc {
-                    center,
-                    radius: start_radius,
-                    start_degrees: angle_degrees(dxf_start, center),
-                    end_degrees: angle_degrees(dxf_end, center),
+                // Counter-clockwise sweep from `from` to `to`, in (0, 360).
+                let sweep = (angle_degrees(to, center) - angle_degrees(from, center))
+                    .rem_euclid(360.0)
+                    .to_radians();
+                if sweep <= 0.0 {
+                    return Err(DxfProfileExportError::InvalidGeometry);
+                }
+                let bulge = (sweep / 4.0).tan();
+                Ok(ExportPiece {
+                    start,
+                    end,
+                    bulge: if world_clockwise { -bulge } else { bulge },
                 })
             }
             ProfileSegment::CubicBezier { .. } | ProfileSegment::Spline { .. } => {
@@ -421,79 +454,95 @@ fn angle_degrees(point: [f64; 2], center: [f64; 2]) -> f64 {
     }
 }
 
-fn validate_layer(layer: &str) -> Result<(), DxfProfileExportError> {
-    if layer.is_empty()
-        || layer.len() > 255
-        || !layer.is_ascii()
-        || layer.bytes().any(|byte| !(32..=126).contains(&byte))
-        || layer.contains(['<', '>', '/', '\\', '"', ':', ';', '?', '*', '|', ',', '='])
-    {
-        Err(DxfProfileExportError::InvalidLayer)
+/// A layer name every DXF reader accepts: R12 names are ASCII without the
+/// characters AutoCAD reserves, so accents are dropped (`Pôdorys` → `Podorys`)
+/// and anything else becomes `_`.
+fn layer_name(source: &str) -> String {
+    let mut name = String::new();
+    for character in source.chars() {
+        let lower = character.to_lowercase().next().unwrap_or(character);
+        let folded = match lower {
+            'á' | 'ä' | 'à' | 'â' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+            'č' | 'ć' | 'ç' => "c",
+            'ď' | 'đ' => "d",
+            'é' | 'ě' | 'ë' | 'è' | 'ê' | 'ē' | 'ę' => "e",
+            'í' | 'ì' | 'î' | 'ï' => "i",
+            'ľ' | 'ĺ' | 'ł' => "l",
+            'ň' | 'ń' | 'ñ' => "n",
+            'ó' | 'ô' | 'ö' | 'ò' | 'õ' | 'ő' | 'ø' => "o",
+            'ŕ' | 'ř' => "r",
+            'š' | 'ś' | 'ş' => "s",
+            'ť' | 'ţ' => "t",
+            'ú' | 'ů' | 'ü' | 'ù' | 'û' | 'ű' => "u",
+            'ý' | 'ÿ' => "y",
+            'ž' | 'ź' | 'ż' => "z",
+            'ß' => "ss",
+            '<' | '>' | '/' | '\\' | '"' | ':' | ';' | '?' | '*' | '|' | ',' | '=' | '`' => "_",
+            other if other.is_ascii_graphic() || other == ' ' => {
+                name.push(character);
+                continue;
+            }
+            _ => "_",
+        };
+        if character.is_uppercase() {
+            name.push_str(&folded.to_ascii_uppercase());
+        } else {
+            name.push_str(folded);
+        }
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        "0".to_owned()
     } else {
-        Ok(())
+        name.chars().take(255).collect()
     }
 }
 
 fn encode_dxf(profiles: &[ExportProfile]) -> Vec<u8> {
-    let mut output = String::from(
-        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1027\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nBLOCKS\n",
+    let layers = profiles
+        .iter()
+        .map(|profile| profile.layer.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut output = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nTABLES\n\
+         0\nTABLE\n2\nLTYPE\n70\n1\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nENDTAB\n\
+         0\nTABLE\n2\nLAYER\n70\n{}\n",
+        layers.len()
     );
-    for profile in profiles {
+    for layer in layers {
         write!(
             output,
-            "0\nBLOCK\n8\n0\n2\n{}\n3\n{}\n70\n0\n10\n0\n20\n0\n30\n0\n",
-            profile.block_name, profile.block_name
+            "0\nLAYER\n2\n{layer}\n70\n0\n62\n7\n6\nCONTINUOUS\n"
         )
         .expect("writing to a String cannot fail");
-        for entity in &profile.entities {
-            encode_entity(&mut output, entity, "0");
-        }
-        output.push_str("0\nENDBLK\n8\n0\n");
     }
-    output.push_str("0\nENDSEC\n0\nSECTION\n2\nENTITIES\n");
+    output.push_str("0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n");
     for profile in profiles {
+        let layer = &profile.layer;
         write!(
             output,
-            "0\nINSERT\n8\n{}\n2\n{}\n10\n0\n20\n0\n30\n0\n",
-            profile.layer, profile.block_name
+            "0\nPOLYLINE\n8\n{layer}\n66\n1\n10\n0\n20\n0\n30\n0\n70\n{}\n",
+            u8::from(profile.closed)
         )
         .expect("writing to a String cannot fail");
+        for (point, bulge) in &profile.vertices {
+            write!(
+                output,
+                "0\nVERTEX\n8\n{layer}\n10\n{}\n20\n{}\n30\n0\n",
+                number(point[0]),
+                number(point[1]),
+            )
+            .expect("writing to a String cannot fail");
+            if *bulge != 0.0 {
+                write!(output, "42\n{}\n", number(*bulge))
+                    .expect("writing to a String cannot fail");
+            }
+        }
+        write!(output, "0\nSEQEND\n8\n{layer}\n").expect("writing to a String cannot fail");
     }
     output.push_str("0\nENDSEC\n0\nEOF\n");
     output.into_bytes()
-}
-
-fn encode_entity(output: &mut String, entity: &ExportEntity, layer: &str) {
-    match entity {
-        ExportEntity::Line { start, end } => {
-            write!(
-                output,
-                "0\nLINE\n8\n{layer}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n",
-                number(start[0]),
-                number(start[1]),
-                number(end[0]),
-                number(end[1]),
-            )
-            .expect("writing to a String cannot fail");
-        }
-        ExportEntity::Arc {
-            center,
-            radius,
-            start_degrees,
-            end_degrees,
-        } => {
-            write!(
-                output,
-                "0\nARC\n8\n{layer}\n10\n{}\n20\n{}\n30\n0\n40\n{}\n50\n{}\n51\n{}\n",
-                number(center[0]),
-                number(center[1]),
-                number(*radius),
-                number(*start_degrees),
-                number(*end_degrees),
-            )
-            .expect("writing to a String cannot fail");
-        }
-    }
 }
 
 fn number(value: f64) -> String {

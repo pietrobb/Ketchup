@@ -693,6 +693,7 @@ fn intersection_snap(
     let primary_occurrence = occurrences
         .iter()
         .find(|occurrence| occurrence.instance_path == primary.reference.instance_path)?;
+    let mut best: Option<SnapResult> = None;
     for (primary_edge, (left, right)) in BOX_EDGE_ENDPOINTS.iter().enumerate() {
         let primary_start =
             primary_occurrence.origin_mm + primary_occurrence.geometry.endpoints[*left];
@@ -711,29 +712,65 @@ fn intersection_snap(
             for (other_edge, (other_left, other_right)) in BOX_EDGE_ENDPOINTS.iter().enumerate() {
                 let other_start = other.origin_mm + other.geometry.endpoints[*other_left];
                 let other_end = other.origin_mm + other.geometry.endpoints[*other_right];
-                if point_segment_distance(primary.position_mm, other_start, other_end)
-                    <= tolerance + SNAP_EPSILON
-                    && !segments_parallel(primary_end - primary_start, other_end - other_start)
+                // The snap is the point where the two edges meet, not the
+                // cursor; edges that pass each other at a distance do not meet.
+                let Some((on_primary, on_other)) =
+                    closest_points_of_segments(primary_start, primary_end, other_start, other_end)
+                else {
+                    continue;
+                };
+                let distance_mm = primary.position_mm.distance(on_primary);
+                if on_primary.distance(on_other) > SNAP_EPSILON
+                    || distance_mm > tolerance + SNAP_EPSILON
                 {
-                    return Some(SnapResult {
-                        kind: SnapKind::Intersection,
-                        reference: SelectionId {
-                            definition_id: primary.reference.definition_id,
-                            instance_path: primary.reference.instance_path.clone(),
-                            element: ElementId::Intersection {
-                                primary_edge: primary_edge as u8,
-                                other_instance_path: other.instance_path.clone(),
-                                other_edge: other_edge as u8,
-                            },
+                    continue;
+                }
+                let candidate = SnapResult {
+                    kind: SnapKind::Intersection,
+                    reference: SelectionId {
+                        definition_id: primary.reference.definition_id,
+                        instance_path: primary.reference.instance_path.clone(),
+                        element: ElementId::Intersection {
+                            primary_edge: primary_edge as u8,
+                            other_instance_path: other.instance_path.clone(),
+                            other_edge: other_edge as u8,
                         },
-                        position_mm: primary.position_mm,
-                        distance_mm: 0.0,
-                    });
+                    },
+                    position_mm: on_primary,
+                    distance_mm,
+                };
+                if best
+                    .as_ref()
+                    .is_none_or(|current| better_snap(&candidate, current))
+                {
+                    best = Some(candidate);
                 }
             }
         }
     }
-    None
+    best
+}
+
+/// The closest points of two segments, or `None` when they are parallel (they
+/// then share no single crossing point).
+fn closest_points_of_segments(
+    first_start: Vec3,
+    first_end: Vec3,
+    second_start: Vec3,
+    second_end: Vec3,
+) -> Option<(Vec3, Vec3)> {
+    let first = first_end - first_start;
+    let second = second_end - second_start;
+    if segments_parallel(first, second) {
+        return None;
+    }
+    let offset = first_start - second_start;
+    let (a, b, e) = (first.dot(first), first.dot(second), second.dot(second));
+    let (c, f) = (first.dot(offset), second.dot(offset));
+    let s = ((b * f - c * e) / (a * e - b * b)).clamp(0.0, 1.0);
+    let t = ((b * s + f) / e).clamp(0.0, 1.0);
+    let s = ((b * t - c) / a).clamp(0.0, 1.0);
+    Some((first_start + first * s, second_start + second * t))
 }
 
 fn segments_parallel(left: Vec3, right: Vec3) -> bool {

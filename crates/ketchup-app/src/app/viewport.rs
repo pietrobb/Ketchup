@@ -3645,15 +3645,21 @@ impl KetchupApp {
         let cache = cache.as_ref().expect("interaction cache was built");
         let scale =
             f64::from(self.camera.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
-        let exact_hits = cache.exact.exact_surface_picks(ray);
+        let mut exact_hits = cache.exact.exact_surface_picks(ray);
+        exact_hits.retain(|hit| self.section_keeps(hit.position_mm));
         let exact_hit = exact_hits.first().cloned();
-        let mesh_hits = cache.mesh.exact_surface_picks(ray);
+        let mut mesh_hits = cache.mesh.exact_surface_picks(ray);
+        mesh_hits.retain(|hit| self.section_keeps(hit.position_mm));
         let mut mesh_hit = mesh_hits.first().cloned().or_else(|| {
             cache
                 .mesh
                 .surface_pick_with_tolerance(ray, tolerance_px / scale)
+                .filter(|hit| self.section_keeps(hit.position_mm))
         });
-        let box_pick = cache.boxes.exact_pick(ray, tolerance_px / scale);
+        let box_pick = cache
+            .boxes
+            .exact_pick(ray, tolerance_px / scale)
+            .and_then(|pick| self.section_kept_pick(pick));
         // A profile drawn onto a solid's face lies in that face's plane, so the ray
         // reaches both at the same distance. The profile is what the user sees on
         // top and wants to push/pull; the face stays reachable where no profile is.
@@ -3736,7 +3742,10 @@ impl KetchupApp {
             };
             let scale =
                 f64::from(self.camera.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
-            let proxy_pick = cache.proxies.exact_pick(ray, tolerance_px / scale);
+            let proxy_pick = cache
+                .proxies
+                .exact_pick(ray, tolerance_px / scale)
+                .and_then(|pick| self.section_kept_pick(pick));
             let snap = self
                 .scene_snap_at_screen(pointer, rect, tolerance_px as f32, None)
                 .filter(|snap| snap.reference.instance_path == primary.reference.instance_path)

@@ -120,6 +120,35 @@ impl KetchupApp {
         self.set_section(plane_at([0.0, 0.0, 1.0], middle_z));
     }
 
+    /// Whether a world point is on the side the section keeps; picks and snaps
+    /// never reach what the cut hides.
+    pub(crate) fn section_keeps(&self, point: Vec3) -> bool {
+        self.section
+            .is_none_or(|section| distance(&section, point) <= DEFAULT_LINEAR_TOLERANCE_MM)
+    }
+
+    /// A pick without its hits the section hides; `None` when nothing is left.
+    pub(crate) fn section_kept_pick(&self, mut pick: PickResult) -> Option<PickResult> {
+        if self.section.is_none() {
+            return Some(pick);
+        }
+        pick.overlapping
+            .retain(|hit| self.section_keeps(hit.position_mm));
+        let primary_moved = !self.section_keeps(pick.primary.position_mm);
+        if primary_moved {
+            pick.primary = pick.overlapping.first()?.clone();
+        }
+        if primary_moved || !self.section_keeps(pick.snap.position_mm) {
+            pick.snap = SnapResult {
+                kind: SnapKind::Face,
+                reference: pick.primary.reference.clone(),
+                position_mm: pick.primary.position_mm,
+                distance_mm: 0.0,
+            };
+        }
+        Some(pick)
+    }
+
     /// Whether faces turned away from the camera are painted: only through an open cut.
     pub(crate) fn paints_back_faces(&self) -> bool {
         self.section.is_some()

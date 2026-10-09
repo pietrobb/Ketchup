@@ -1266,7 +1266,7 @@ pub(super) fn validate_imported_exact_body(
 pub(super) const MESH_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
 pub(super) const MESH_VOLUME_EPSILON: f64 = APPROXIMATION;
 
-pub(super) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
+pub(crate) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
     if spec.schema != MESH_BODY_SCHEMA_V1
         || !(4..=limits::MESH_VERTICES).contains(&spec.vertices_mm.len())
         || !(4..=limits::MESH_TRIANGLES).contains(&spec.triangles.len())

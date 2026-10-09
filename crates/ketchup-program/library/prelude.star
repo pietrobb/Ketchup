@@ -1379,7 +1379,8 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     notches "noggin_notch" (default 10 mm) deep in the studs' sides; "noggin_tags"
 #     (default the layer's tags). In a floor or roof, a framed layer's "hanger" (fastener name)
 #     hangs the headers on the joists beside the opening and the cut joists on the
-#     headers with bearing joints. anchor={"to": part, "fastener": name, "spacing": 1000,
+#     headers with bearing joints; "hanger_rating" (connector_rating(...)) is the maker's
+#     published rating of that hanger, else CONNECTOR_RATINGS gives it or none. anchor={"to": part, "fastener": name, "spacing": 1000,
 #     "edge": 300} anchors every bottom plate to `to` (a slab) with at least two anchors.
 #     openings: [(u, v, width, height), ...] in panel coordinates, apart along u.
 #     Pieces are "<name>/<layer>", "<name>/<layer>/stud 3", ... with `tags` plus their
@@ -1729,7 +1730,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                         carried, carrier = (beam, other) if abs(_dot(touch.normal, along)) > 0.7 else (other, beam)
                         joint(carried, carrier, kind = "hanger", fastener = hanger, bearing = True,
                               fasteners = [vec_scale(vec_add(touch.min, touch.max), 0.5)],
-                              rating = connector_rating_of(hanger))
+                              rating = layer.get("hanger_rating", connector_rating_of(hanger)))
         if layer.get("infill") != None:
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
             bays = []
@@ -1747,6 +1748,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 #     parts tagged one of `scope` load the members with their weight: material ->
 #     {"kg_m3" or "kg_m2" (of the largest face, a layer modelled as one slab), "source"}.
 #     A part in scope whose material has no weight makes the members under it incomplete.
+#     It calls the builtins material_weight(material, kg_m3= or kg_m2=, source=) for one
+#     material and weight_scope([tags]); call them directly for a single material.
 #   area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)
 #     kN/m² on the broad face of every flat or sloped (<= 60 degrees) slab tagged `on`,
 #     per plan area when projected. kind: "permanent", "imposed", "roof" (maintenance)
@@ -1796,6 +1799,9 @@ IMPOSED_LOADS = {
 #     materials: {material name: strength class}, e.g. {"KVH C24": "C24"}. Each load_path()
 #     member of such a material is checked on the loads of the loads topic.
 #   TIMBER_CLASSES: C16, C24 (EN 338:2016), GL24h, GL28h (EN 14080:2013) characteristic values.
+#   timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=,
+#     fc90_k=, e0_mean=, e0_05=, source=): the builtin behind timber_design for one material
+#     with its own characteristic values in N/mm².
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
 #   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =

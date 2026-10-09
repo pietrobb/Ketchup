@@ -120,7 +120,7 @@ fn live_program_planner_publishes_one_undo_step() {
             expected: None,
             source: source.source.clone(),
             file_name: Some(source.file_name.clone()),
-            overrides: source.overrides.clone(),
+            overrides: Some(source.overrides.clone()),
             replace_document: false,
         },
         false,

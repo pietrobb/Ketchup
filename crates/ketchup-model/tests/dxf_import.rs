@@ -2483,6 +2483,29 @@ fn rotated_uniformly_scaled_inserts_transform_about_the_block_base_point() {
     ));
 }
 
+/// A rotation a hair below zero (as CAD programs write after rounding) is no
+/// rotation; it used to reduce to exactly 360° and abort the import.
+#[test]
+fn an_insert_turned_a_hair_below_zero_is_not_turned() {
+    let source = dxf_with_blocks(
+        5,
+        concat!(
+            "0\nBLOCK\n8\n0\n2\npart\n70\n0\n10\n0\n20\n0\n30\n0\n",
+            "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n3\n21\n0\n",
+            "0\nENDBLK\n8\n0\n"
+        ),
+        "0\nINSERT\n8\nparts\n2\npart\n10\n10\n20\n20\n50\n-0.00000000000001\n",
+    );
+    let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+    assert!(matches!(
+        parsed.profiles()[0].segments(),
+        [ProfileSegment::Line {
+            start_mm: [100.0, 200.0],
+            end_mm: [130.0, 200.0]
+        }]
+    ));
+}
+
 #[test]
 fn rotated_non_uniform_line_only_inserts_and_arrays_remain_exact() {
     let source = dxf_with_blocks(
@@ -2942,6 +2965,31 @@ fn block_and_entity_streams_share_one_global_entity_budget() {
     );
 }
 
+/// Thousands of INSERTs of a full block are each within the profile limit; the
+/// drawing as a whole is refused before its profiles are compared pairwise
+/// (a 300 KB file used to build 1.7 million profiles and hang the import).
+#[test]
+fn many_inserts_of_a_full_block_are_refused_before_comparing_their_profiles() {
+    let mut block = String::from("0\nBLOCK\n2\nfull\n70\n0\n10\n0\n20\n0\n");
+    for index in 0..170 {
+        block.push_str(&format!("0\nCIRCLE\n10\n{}\n20\n0\n40\n1\n", index * 3));
+    }
+    block.push_str("0\nENDBLK\n");
+    let inserts: String = (0..3_000)
+        .map(|index| format!("0\nINSERT\n2\nfull\n10\n0\n20\n{}\n", index * 10))
+        .collect();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        inspect_dxf(
+            &dxf_with_blocks(4, &block, &inserts),
+            DxfImportOptions::new(None)
+        )
+        .map(|parsed| parsed.profiles().len()),
+        Err(DxfImportError::TooManyProfiles)
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
 #[test]
 fn unitless_files_require_review_and_scale_user_units_before_validation() {
     let source = dxf(None, "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n1\n21\n0\n");
@@ -3129,6 +3177,89 @@ fn arc_and_bulge_sweeps_must_remain_inside_the_coordinate_envelope() {
         "0\nLWPOLYLINE\n8\n0\n90\n2\n70\n0\n10\n999999.5\n20\n-1\n42\n-1\n10\n999999.5\n20\n1\n",
     );
     assert!(inspect_dxf(&inward_bulge, options).is_ok());
+}
+
+#[test]
+fn arcs_with_different_centres_join_where_their_ends_meet() {
+    // Review 2026-10-09 (DXF-3): the ends of two arcs come from different centres
+    // and angles, so they rarely agree bit for bit; the closed lens fell apart
+    // into two open profiles.
+    let lens = dxf(
+        Some(4),
+        concat!(
+            "0\nARC\n8\n0\n10\n0\n20\n0\n40\n10\n50\n331.3061891821522\n51\n75.09099184514417\n",
+            "0\nARC\n8\n0\n10\n7\n20\n3\n40\n8\n50\n123.60017498949236\n51\n282.79700603780407\n"
+        ),
+    );
+    let parsed = inspect_dxf(&lens, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(parsed.profiles().len(), 1, "{:?}", parsed.profiles());
+    let profile = &parsed.profiles()[0];
+    assert!(profile.closed());
+    let segments = profile.segments();
+    assert_eq!(segments[0].end_mm(), segments[1].start_mm());
+    assert_eq!(segments[1].end_mm(), segments[0].start_mm());
+}
+
+/// Review 2026-10-09 (DXF-4): ordinary files were refused whole.
+#[test]
+fn utf8_names_comments_mirrored_arcs_and_many_layers_import() {
+    let options = DxfImportOptions::new(None);
+    let square = |layer: &str, x: usize| {
+        let x2 = x + 10;
+        format!(
+            "0\nLWPOLYLINE\n8\n{layer}\n90\n4\n70\n1\n10\n{x}\n20\n0\n10\n{x2}\n20\n0\n10\n{x2}\n20\n10\n10\n{x}\n20\n10\n"
+        )
+    };
+    // A UTF-8 layer name (DXF 2007+) and a 999 comment before the first section.
+    let mut named = b"999\nkreslil Kecup\n".to_vec();
+    named.extend(dxf(Some(4), &square("Pôdorys", 0)));
+    let parsed = inspect_dxf(&named, options).unwrap();
+    assert_eq!(parsed.layers(), ["Pôdorys"]);
+
+    // Mirror in AutoCAD leaves extrusion (0,0,-1): the OCS x axis is world -x.
+    let mirrored = dxf(
+        Some(4),
+        "0\nARC\n8\n0\n10\n10\n20\n0\n40\n5\n50\n0\n51\n90\n210\n0\n220\n0\n230\n-1\n",
+    );
+    let parsed = inspect_dxf(&mirrored, options).unwrap();
+    // The same quarter arc either way round; never the unmirrored one at +x.
+    let forward = ProfileSegment::CircularArc {
+        start_mm: [-15.0, 0.0],
+        end_mm: [-10.0, 5.0],
+        center_mm: [-10.0, 0.0],
+        clockwise: true,
+    };
+    let backward = ProfileSegment::CircularArc {
+        start_mm: [-10.0, 5.0],
+        end_mm: [-15.0, 0.0],
+        center_mm: [-10.0, 0.0],
+        clockwise: false,
+    };
+    let segments = parsed.profiles()[0].segments();
+    assert!(
+        segments == [forward] || segments == [backward],
+        "{segments:?}"
+    );
+
+    // More distinct notes than the report holds: the rest is counted, the file imports.
+    let extra_groups = (2000..3100)
+        .map(|code| format!("{code}\nx\n"))
+        .collect::<String>();
+    let many = inspect_dxf(
+        &dxf(
+            Some(4),
+            &format!("0\nLINE\n8\n0\n10\n0\n20\n0\n11\n5\n21\n0\n{extra_groups}"),
+        ),
+        options,
+    )
+    .unwrap();
+    assert_eq!(many.profiles().len(), 1);
+    assert!(many.diagnostics().len() <= 1024);
+    assert!(
+        many.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == "dxf.diagnostics-omitted")
+    );
 }
 
 #[test]

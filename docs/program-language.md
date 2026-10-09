@@ -129,7 +129,8 @@ height (2 up to 900 mm, 3 to 1600, 4 to 2000, then 5); a door further than
 `max_gap` (4 mm) from the side is refused with the distance. Each cup and its two plate holes are explicitly linked to their hinge; `dowels()` likewise links both mating holes. Generic `joint(..., links=[joint_link([operation_refs], hardware=[parts])])` records ownership without inventing it from proximity. Delete or replace the generating helper through a source patch to regenerate only its holes; deleting a metadata-only declaration does not erase independent machining. Pick context distinguishes linked solid hardware from catalog metadata. A surface not matched to supported drilling reports `machining_provenance.state=not_identified`, not an inferred owner or a claim that no cut exists.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
-`placement`, `profiles`, `machining`, `joinery`, `intent`, `report`). Each
+`placement`, `profiles`, `machining`, `joinery`, `intent`, `space`, `buildup`,
+`loads`, `member_check`, `validation`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
 belong to it, so an AI reads the index and then only the topics it needs;
 concise topic answers contain signatures, rules and a short example; helper code is

@@ -897,6 +897,37 @@ fn a_section_plane_cuts_the_painted_model_open_without_touching_the_document() {
     assert_eq!(app.document.current().revision_id(), revision);
 }
 
+/// Review 2026-10-09 (UI-3): the cut-away part could still be picked, dragged
+/// and snapped to, although it is not painted.
+#[test]
+fn a_section_keeps_what_it_hides_out_of_picking_and_snapping() {
+    let mut app = KetchupApp::new();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+    let (low, high) = app.active_frame_bounds()[0];
+    let top = Vec3::new((low.x + high.x) / 2.0, (low.y + high.y) / 2.0, high.z);
+    let pointer = app.project(top, rect);
+    let corner = app.project(high, rect);
+    let whole = app.pick_result_at_screen(pointer, rect, 8.0).unwrap();
+    assert!((whole.primary.position_mm.z - high.z).abs() < 1e-6);
+    let snap = app.scene_snap_at_screen(corner, rect, 8.0, None).unwrap();
+    assert!((snap.position_mm.z - high.z).abs() < 1e-6);
+
+    let cut_z = (low.z + high.z) / 2.0;
+    app.set_section(crate::app::plane_at([0.0, 0.0, 1.0], cut_z));
+    let kept = |z: f64| z <= cut_z + 1e-6;
+    let cut = app.pick_result_at_screen(pointer, rect, 8.0);
+    if let Some(pick) = &cut {
+        assert!(kept(pick.primary.position_mm.z), "{:?}", pick.primary);
+        assert!(kept(pick.snap.position_mm.z), "{:?}", pick.snap);
+        assert!(pick.overlapping.iter().all(|hit| kept(hit.position_mm.z)));
+    }
+    let snap = app.scene_snap_at_screen(corner, rect, 8.0, None);
+    assert!(
+        snap.as_ref().is_none_or(|snap| kept(snap.position_mm.z)),
+        "{snap:?}"
+    );
+}
+
 #[test]
 fn xray_projected_faces_use_translucent_fill() {
     let mut app = KetchupApp::new();

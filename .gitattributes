@@ -19,3 +19,4 @@ artifacts/r0/occt-cmake-config.json -text !eol
 *.dll binary
 *.lib binary
 *.cmd text eol=crlf
+*.star text eol=lf

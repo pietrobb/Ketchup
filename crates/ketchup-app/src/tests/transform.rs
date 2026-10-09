@@ -570,6 +570,23 @@ fn exact_topological_selection_ends_numeric_move_correction() {
 }
 
 #[test]
+fn a_decimal_comma_on_a_pinned_axis_is_one_distance_not_a_vector() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
+
+    app.dispatch_command(AppCommand::Move);
+    app.set_move_axis_lock(Some(Axis::Z));
+    app.value_box.input = "12,5".to_owned();
+    assert!(app.apply_value_input());
+
+    assert_eq!(
+        app.occurrence_box_geometry(1).unwrap().0,
+        initial_origin + Vec3::new(0.0, 0.0, 12.5)
+    );
+}
+
+#[test]
 fn rotate_previews_commits_and_corrects_the_entire_multi_selection_atomically() {
     let mut app = KetchupApp::new();
     assert!(app.create_box());

@@ -31,7 +31,7 @@ fn opposing_holes_report_world_gap_and_parameter_repair_through_native_mcp() {
     let undo_steps = wire.app.undo_step_count();
     let mut request = apply(source, false);
     if let Request::ApplyProgram { overrides, .. } = &mut request {
-        overrides.insert("depth".into(), 7.);
+        overrides.get_or_insert_default().insert("depth".into(), 7.);
     }
     let response = wire.call_within(request, Duration::from_secs(60));
     assert!(response.ok, "{response:?}");

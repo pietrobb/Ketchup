@@ -4,7 +4,7 @@ fn apply_source(source: &str) -> Request {
     Request::ApplyProgram {
         expected: None,
         source: source.into(),
-        overrides: BTreeMap::from([("width".into(), 25.)]),
+        overrides: Some(BTreeMap::from([("width".into(), 25.)])),
         file_name: Some("local.star".into()),
         replace_document: true,
     }
@@ -189,18 +189,27 @@ fn ambiguous_missing_overlapping_or_invalid_patch_publishes_nothing() {
     let before = app.document.current().scene_query();
     let undo = app.undo_step_count();
     let stamp = app.live_bridge_stamp();
-    for (old, new) in [
-        ("box", "other"),
-        ("absent", "value"),
-        ("", "value"),
-        ("aa", "b"),
-        ("a=box", "a=invalid("),
+    // Review 2026-10-09 (P3): missing and repeated text got the same message.
+    for (old, new, reason) in [
+        ("box", "other", Some("more than once")),
+        ("absent", "value", Some("does not occur")),
+        ("", "value", Some("empty")),
+        ("aa", "b", Some("more than once")),
+        ("a=box", "a=invalid(", None),
     ] {
         assert!(
             bridge
                 .execute(&mut app, patch(stamp.clone(), old, new), false)
                 .is_err()
         );
+        let details = take_error_details();
+        if let Some(reason) = reason {
+            let details = details.unwrap();
+            assert!(
+                details["reason"].as_str().unwrap().contains(reason),
+                "{old:?}: {details}"
+            );
+        }
         assert_eq!(app.document.current().scene_query(), before);
         assert_eq!(app.document.current_rule_program().unwrap().source, source);
         assert_eq!(app.undo_step_count(), undo);

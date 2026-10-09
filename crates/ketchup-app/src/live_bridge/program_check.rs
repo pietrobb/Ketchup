@@ -108,12 +108,21 @@ impl LiveBridge {
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
         Self::require_request_authority(cancelled)?;
+        let current = app.document.current_rule_program();
+        // A whole program sent again for the same file keeps what the window
+        // stored for it; dropping that silently undid a Push/Pull.
+        let overrides = overrides.unwrap_or_else(|| {
+            current
+                .filter(|program| {
+                    file_name
+                        .as_ref()
+                        .is_none_or(|name| *name == program.file_name)
+                })
+                .map(|program| program.overrides.clone())
+                .unwrap_or_default()
+        });
         let file_name = file_name
-            .or_else(|| {
-                app.document
-                    .current_rule_program()
-                    .map(|program| program.file_name.clone())
-            })
+            .or_else(|| current.map(|program| program.file_name.clone()))
             .unwrap_or_else(|| "model.star".to_owned());
         Ok((
             RuleProgramSource {

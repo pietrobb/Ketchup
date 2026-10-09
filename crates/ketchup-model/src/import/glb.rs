@@ -693,6 +693,7 @@ fn parse_meshes(
             return Err(GlbImportError::TooManyMeshes);
         }
         let mut primitive_indices = Vec::with_capacity(primitives.len());
+        let mut pieces = Vec::with_capacity(primitives.len());
         for (primitive_index, primitive) in primitives.iter().enumerate() {
             let primitive = object(primitive)?;
             if primitive.contains_key("targets") || primitive.contains_key("extensions") {
@@ -743,17 +744,83 @@ fn parse_meshes(
                 validate_text(&name)?;
                 name
             };
-            primitive_indices.push(parsed.len());
-            parsed.push(ParsedPrimitive {
+            pieces.push(ParsedPrimitive {
                 name,
                 vertices_mm,
                 triangles,
                 color,
             });
         }
+        for shell in closed_shells(&mesh_name, pieces, diagnostics)? {
+            primitive_indices.push(parsed.len());
+            parsed.push(shell);
+        }
         mesh_primitives.push(primitive_indices);
     }
     Ok((parsed, mesh_primitives, total_triangles))
+}
+
+/// The solids of one mesh. glTF holds one primitive per material, so a closed
+/// Blender object with two materials arrives as open pieces, and a pane of glass
+/// is an open surface. Closed primitives stay as they are; the open ones are
+/// joined, and what is still no solid is left out with a warning instead of
+/// refusing the whole scene.
+fn closed_shells(
+    mesh_name: &str,
+    primitives: Vec<ParsedPrimitive>,
+    diagnostics: &mut BTreeMap<&'static str, u32>,
+) -> Result<Vec<ParsedPrimitive>, GlbImportError> {
+    let (mut shells, open): (Vec<_>, Vec<_>) = primitives.into_iter().partition(is_solid);
+    let Some(first) = open.first() else {
+        return Ok(shells);
+    };
+    let mut vertices = Vec::new();
+    let mut triangles = Vec::new();
+    for piece in &open {
+        let offset = u32::try_from(vertices.len())
+            .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyVertices)?;
+        vertices.extend_from_slice(&piece.vertices_mm);
+        triangles.extend(
+            piece
+                .triangles
+                .iter()
+                .map(|triangle| triangle.map(|index| index + offset)),
+        );
+    }
+    let joined = weld_indexed_geometry(vertices, triangles)
+        .ok()
+        .map(|(vertices_mm, triangles)| ParsedPrimitive {
+            name: if shells.is_empty() {
+                mesh_name.to_owned()
+            } else {
+                first.name.clone()
+            },
+            vertices_mm,
+            triangles,
+            color: first.color,
+        })
+        .filter(is_solid);
+    let pieces = u32::try_from(open.len())
+        .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyMeshes)?;
+    if let Some(joined) = joined {
+        bump(diagnostics, "glb_material_pieces_joined", pieces)?;
+        shells.push(joined);
+    } else {
+        bump(diagnostics, "glb_non_solid_pieces_skipped", pieces)?;
+    }
+    Ok(shells)
+}
+
+fn is_solid(primitive: &ParsedPrimitive) -> bool {
+    crate::document::validate_mesh_body(&MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm: primitive.vertices_mm.clone(),
+        triangles: primitive.triangles.clone(),
+        authority: MeshAuthority::Authored {
+            provenance: GLB_PARSER_ID.to_owned(),
+        },
+    })
+    .is_ok()
 }
 
 fn weld_indexed_geometry(
@@ -867,7 +934,7 @@ fn decode_triangles(
             UNSIGNED_BYTE | UNSIGNED_SHORT | UNSIGNED_INT
         )
         || accessor.count % 3 != 0
-        || !(12..=limits::MESH_TRIANGLES * 3).contains(&accessor.count)
+        || !(3..=limits::MESH_TRIANGLES * 3).contains(&accessor.count)
     {
         return Err(GlbImportError::InvalidAccessor);
     }

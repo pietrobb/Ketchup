@@ -81,7 +81,7 @@ pub fn tools() -> Value {
                 "detail": {"type": "string", "enum": ["concise", "implementation"], "description": "For docs: concise by default; implementation only on explicit request."},
                 "source": {"type": "string", "description": "For apply: the complete program text (at most ~8 MB)."},
                 "source_path": {"type": "string", "description": "For apply: absolute path of a .star file to send instead of source."},
-                "overrides": {"type": "object", "additionalProperties": {"type": "number"}, "description": "For apply: parameter values by name, e.g. {\"width\": 900}."},
+                "overrides": {"type": "object", "additionalProperties": {"type": "number"}, "description": "For apply: parameter values by name, e.g. {\"width\": 900}. Omitted keeps the values the window stored for this program (e.g. after Push/Pull); {} clears them."},
                 "file_name": {"type": "string", "description": "For apply: program file name for a new program."},
                 "replace_document": {"type": "boolean", "description": "For apply: replace a saved document that no program owns."},
                 "name": {"type": "string", "description": "For docs: topic id or example file."},

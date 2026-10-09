@@ -79,6 +79,21 @@ fn cabinet_evaluates_without_issues_and_lists_parts_and_hardware() {
     assert_eq!(sides.count, 2);
 }
 
+/// A joint that names its fastener without positions (one hanger per joint)
+/// used to put 0 pieces in the hardware list.
+#[test]
+fn a_named_fastener_without_positions_counts_one_piece_per_joint() {
+    let source = "a = box(\"a\", (100, 100, 18))\n\
+         b = box(\"b\", (100, 100, 18), at = (0, 0, 18))\n\
+         c = box(\"c\", (100, 100, 18), at = (0, 0, 36))\n\
+         joint(b, a, kind = \"hanger\", fastener = \"hanger 60\")\n\
+         joint(c, b, kind = \"hanger\", fastener = \"hanger 60\")\n";
+    let (_, report) = run("t.star", source, &BTreeMap::new()).unwrap();
+    assert_eq!(report.bom.hardware.len(), 1);
+    assert_eq!(report.bom.hardware[0].item, "hanger 60");
+    assert_eq!(report.bom.hardware[0].count, 2);
+}
+
 #[test]
 fn the_cut_list_gives_the_blank_a_push_pull_grew() {
     let (_, report) = run(

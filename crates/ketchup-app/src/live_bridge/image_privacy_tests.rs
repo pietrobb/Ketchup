@@ -620,7 +620,7 @@ fn selection_framing_finds_program_parts_that_are_not_boxes() {
             Request::ApplyProgram {
                 expected: None,
                 source: program.to_owned(),
-                overrides: BTreeMap::new(),
+                overrides: Some(BTreeMap::new()),
                 file_name: Some("chair.star".to_owned()),
                 replace_document: true,
             },

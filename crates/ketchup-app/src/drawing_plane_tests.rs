@@ -280,6 +280,26 @@ fn drawing_plane_rotation_axis_keys_preserve_typed_angle() {
     let size = harness.state().occurrence_box_geometry(1).unwrap().1;
     near(size, Vec3::new(100.0, 20.0, 60.0));
 }
+/// Review 2026-10-09 (UI-1): Space with its text event must switch to Select
+/// without leaving a space in the value field that holds the next shortcut.
+#[test]
+fn space_selects_without_opening_the_value_field() {
+    let mut harness = shell(KetchupApp::new());
+    press(&mut harness, egui::Key::L);
+    assert_eq!(harness.state().active_tool, ActiveTool::Line);
+    harness.key_press(egui::Key::Space);
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text(" ".into()));
+    harness.step();
+    assert_eq!(harness.state().active_tool, ActiveTool::Select);
+    assert_eq!(harness.state().value_input(), "");
+    assert!(!harness.state().value_box.focus);
+    press(&mut harness, egui::Key::R);
+    assert_eq!(harness.state().active_tool, ActiveTool::Rectangle);
+}
+
 #[test]
 fn drawing_plane_axis_keys_do_not_steal_foreign_text_focus() {
     let mut app = KetchupApp::new();

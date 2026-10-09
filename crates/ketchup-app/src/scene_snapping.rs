@@ -628,6 +628,7 @@ impl KetchupApp {
                 return;
             }
             if dot(point - pointer_ray.origin, pointer_ray.direction) < 0.0
+                || !self.section_keeps(point)
                 || frame.is_some_and(|f| !drawing_plane::point_in_frame(point, f))
             {
                 return;

@@ -53,6 +53,28 @@ fn list_validators_is_discoverable_read_only_and_routes_to_the_host() {
 }
 
 #[test]
+fn a_section_through_the_origin_keeps_its_zero_offset() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"section","normal":[0,0,1],"offset_mm":0}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"section","normal":[0,0,1],"offset_mm":0})
+    );
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"close_section","normal":[0,0,1],"offset_mm":0}),
+    );
+    assert_eq!(received.recv().unwrap(), json!({"method":"section"}));
+}
+
+#[test]
 fn compact_program_schema_docs_and_routes_agree() {
     let root = tempfile::tempdir().unwrap();
     let received = stand_in_window(root.path());

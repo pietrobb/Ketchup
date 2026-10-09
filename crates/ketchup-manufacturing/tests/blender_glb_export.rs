@@ -578,6 +578,77 @@ fn glb_accepts_ignored_blender_attributes_and_isolates_the_selected_scene() {
     assert!(codes.contains(&"glb_unselected_nodes_ignored"));
 }
 
+/// Review 2026-10-09 (GLB-1): Blender writes one primitive per material, so a
+/// box with two materials came as two open halves, and one pane of glass (an
+/// open surface) refused the whole scene with a confusing document error.
+#[test]
+fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
+    let source = rewrite_glb_json(&sample_glb(), |document| {
+        let primitive = document["meshes"][0]["primitives"][0].clone();
+        let indices = primitive["indices"].as_u64().unwrap() as usize;
+        let accessor = document["accessors"][indices].clone();
+        let count = accessor["count"].as_u64().unwrap();
+        let size = match accessor["componentType"].as_u64().unwrap() {
+            5121 => 1,
+            5123 => 2,
+            _ => 4,
+        };
+        let offset = accessor["byteOffset"].as_u64().unwrap_or(0);
+        let half = count / 6 * 3;
+        let piece = |first: u64, count: u64| {
+            let mut piece = accessor.clone();
+            piece["byteOffset"] = serde_json::json!(offset + first * size);
+            piece["count"] = serde_json::json!(count);
+            piece.as_object_mut().unwrap().remove("min");
+            piece.as_object_mut().unwrap().remove("max");
+            piece
+        };
+        let accessors = document["accessors"].as_array_mut().unwrap();
+        let first = accessors.len();
+        accessors.push(piece(0, half));
+        accessors.push(piece(half, count - half));
+        accessors.push(piece(0, 6));
+        document["materials"] = serde_json::json!([
+            {"name": "wood", "pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.3, 0.1, 1.0]}},
+            {"name": "paint", "pbrMetallicRoughness": {"baseColorFactor": [0.9, 0.9, 0.9, 1.0]}}
+        ]);
+        let with = |accessor: usize, material: usize| {
+            let mut split = primitive.clone();
+            split["indices"] = serde_json::json!(accessor);
+            split["material"] = serde_json::json!(material);
+            split
+        };
+        document["meshes"][0]["primitives"] =
+            serde_json::json!([with(first, 0), with(first + 1, 1)]);
+        let glass = document["meshes"].as_array().unwrap().len();
+        document["meshes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"name": "glass", "primitives": [with(first + 2, 1)]}));
+        let node = document["nodes"].as_array().unwrap().len();
+        document["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"name": "pane", "mesh": glass}));
+        document["scenes"][0]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!(node));
+    });
+
+    let inspection = inspect_glb(&source).unwrap();
+    assert_eq!(inspection.mesh_primitive_count(), 1);
+    let codes = inspection
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"glb_material_pieces_joined"), "{codes:?}");
+    assert!(codes.contains(&"glb_non_solid_pieces_skipped"), "{codes:?}");
+    let imported = DocumentStore::new();
+    plan_glb_import(&imported.current(), &source, "two-materials.glb").unwrap();
+}
+
 #[test]
 fn glb_rejects_future_minimum_versions_numerically() {
     let source = rewrite_glb_json(&sample_glb(), |document| {

@@ -208,6 +208,42 @@ impl ProgramProfileSegment {
         self.arc.is_none() && self.bezier.is_none()
     }
 
+    /// Twice the signed area of a closed loop of segments: positive when it runs
+    /// counter-clockwise. Arcs add the circular segment beyond their chord and
+    /// Bezier curves their flattened bulge, so a loop whose chords enclose
+    /// nothing (a half disc, a circle of two arcs) still has its true turn.
+    #[must_use]
+    pub fn doubled_signed_area(segments: &[Self]) -> f64 {
+        const BEZIER_STEPS: u32 = 32;
+        let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - b[0] * a[1];
+        segments
+            .iter()
+            .map(|s| {
+                if s.bezier.is_some() {
+                    let points: Vec<[f64; 2]> = (0..=BEZIER_STEPS)
+                        .map(|i| s.bezier_point(f64::from(i) / f64::from(BEZIER_STEPS)))
+                        .collect();
+                    return points.windows(2).map(|w| cross(w[0], w[1])).sum();
+                }
+                let chord = cross(s.start_mm, s.end_mm);
+                let Some(arc) = s.arc else {
+                    return chord;
+                };
+                let c = arc.center_mm;
+                let radius = (s.start_mm[0] - c[0]).hypot(s.start_mm[1] - c[1]);
+                let angle = |p: [f64; 2]| (p[1] - c[1]).atan2(p[0] - c[0]);
+                let ccw = (angle(s.end_mm) - angle(s.start_mm)).rem_euclid(std::f64::consts::TAU);
+                let sweep = match (arc.clockwise, ccw <= ROUNDING) {
+                    (false, true) => std::f64::consts::TAU,
+                    (true, true) => -std::f64::consts::TAU,
+                    (false, false) => ccw,
+                    (true, false) => ccw - std::f64::consts::TAU,
+                };
+                chord + radius * radius * (sweep - sweep.sin())
+            })
+            .sum()
+    }
+
     /// The point at `t` in 0..=1 of a Bezier segment (or of the chord).
     #[must_use]
     pub fn bezier_point(&self, t: f64) -> [f64; 2] {
@@ -1084,10 +1120,7 @@ impl Part {
         segments: &[ProgramProfileSegment],
         caps: Option<&[String; 2]>,
     ) -> ([f64; 3], [f64; 3]) {
-        let doubled_area: f64 = segments
-            .iter()
-            .map(|s| s.start_mm[0] * s.end_mm[1] - s.end_mm[0] * s.start_mm[1])
-            .sum();
+        let doubled_area = ProgramProfileSegment::doubled_signed_area(segments);
         let turn = if doubled_area < 0.0 { -1.0 } else { 1.0 };
         for offset in self.face_offsets().filter(|o| o.distance_mm > 0.0) {
             let d = offset.distance_mm;

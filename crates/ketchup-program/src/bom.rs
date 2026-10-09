@@ -83,7 +83,8 @@ pub fn bom(model: &ProgramModel) -> Bom {
     let mut hardware: BTreeMap<String, usize> = BTreeMap::new();
     for joint in &model.joints {
         if let Some(fastener) = &joint.fastener {
-            *hardware.entry(fastener.clone()).or_default() += joint.fasteners_mm.len();
+            // A named fastener without positions is one piece, e.g. one hanger.
+            *hardware.entry(fastener.clone()).or_default() += joint.fasteners_mm.len().max(1);
         }
     }
     let machining = model

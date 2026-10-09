@@ -244,8 +244,10 @@ pub enum Request {
         #[serde(default)]
         expected: Option<Stamp>,
         source: String,
+        /// Absent keeps the overrides of the program being edited (e.g. a
+        /// Push/Pull from the window); `{}` clears them.
         #[serde(default)]
-        overrides: std::collections::BTreeMap<String, f64>,
+        overrides: Option<std::collections::BTreeMap<String, f64>>,
         #[serde(default)]
         file_name: Option<String>,
         /// Replace a saved document that no program owns.
@@ -558,6 +560,21 @@ fn add_detach_warning(value: &mut Value, owned_before: bool, app: &KetchupApp) {
 
 const MAX_PROGRAM_MESSAGE_CHARS: usize = 4000;
 const MAX_PROGRAM_LOG_LINES: usize = 20;
+const MAX_PROGRAM_LOG_LINE_CHARS: usize = 1000;
+const MAX_REPORTED_PARAMS: usize = 200;
+
+/// Keeps the start and the end of a long message: a Starlark error states its
+/// cause after the traceback, so cutting only the tail would lose it.
+fn shortened_message(message: &str) -> String {
+    let count = message.chars().count();
+    if count <= MAX_PROGRAM_MESSAGE_CHARS {
+        return message.to_owned();
+    }
+    let half = MAX_PROGRAM_MESSAGE_CHARS / 2;
+    let head = message.chars().take(half).collect::<String>();
+    let tail = message.chars().skip(count - half).collect::<String>();
+    format!("{head}\n…\n{tail}")
+}
 
 /// A rejected program with its reason and what to do next; nothing was published.
 fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'static str {
@@ -584,11 +601,7 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
             "The program is valid but its geometry could not be published; simplify the changed part.",
         ),
     };
-    let message = error
-        .to_string()
-        .chars()
-        .take(MAX_PROGRAM_MESSAGE_CHARS)
-        .collect::<String>();
+    let message = shortened_message(&error.to_string());
     record_rejection(
         &rejected("program_rejected").reason(message).fix_hint(hint),
         json!({"program_code": reason, "published": false}),
@@ -637,7 +650,26 @@ fn program_edit_result(
         .take(MAX_REPORTED_ISSUES)
         .map(|issue| compact_issue(&serde_json::to_value(issue).unwrap_or(Value::Null)))
         .collect::<Vec<_>>();
-    let log = &report.log[report.log.len().saturating_sub(MAX_PROGRAM_LOG_LINES)..];
+    // The change is already published: its answer must fit one frame, or the
+    // agent reads `response_limit` and sends the change again.
+    let last_lines = &report.log[report.log.len().saturating_sub(MAX_PROGRAM_LOG_LINES)..];
+    let log = last_lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .take(MAX_PROGRAM_LOG_LINE_CHARS)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let truncated = truncated
+        || log
+            .iter()
+            .zip(last_lines)
+            .any(|(kept, line)| kept.len() < line.len());
+    let params = &report.params[..report.params.len().min(MAX_REPORTED_PARAMS)];
+    let truncated = truncated
+        || params.len() < report.params.len()
+        || report.unused_overrides.len() > MAX_REPORTED_PARAMS;
     json!({
         "change": edit.as_str(),
         "after": stamp,
@@ -661,8 +693,9 @@ fn program_edit_result(
                 "machining_operations": report.bom.machining.iter().map(|part| part.operations.len()).sum::<usize>()},
             "statics": statics_summary(report),
             "details": "program action=report with expected=after, section=cut_list/hardware/machining/relations/issues/material_takeoff/joints/loads/members; follow next_offset until null",
-            "params": report.params,
-            "unused_overrides": report.unused_overrides,
+            "params": params,
+            "params_total": report.params.len(),
+            "unused_overrides": &report.unused_overrides[..report.unused_overrides.len().min(MAX_REPORTED_PARAMS)],
             "log": log,
         },
         "geometry_evaluated": exact.as_ref().is_some_and(|exact| exact["state"] == "verified"),

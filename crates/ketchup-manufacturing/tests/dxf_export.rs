@@ -81,6 +81,55 @@ fn visible_profile_dxf_round_trip_is_deterministic_layered_and_non_mutating() {
     assert!(moved.segments()[0].start_mm()[1] >= 43.0);
 }
 
+/// Review 2026-10-09 (DXF-5): the file claimed AC1027 without the tables,
+/// handles and subclass markers that version needs, wrapped every profile in a
+/// BLOCK, and a Slovak definition name stopped the export.
+#[test]
+fn profiles_export_as_r12_polylines_and_a_slovak_name_becomes_an_ascii_layer() {
+    let mut document = DocumentStore::new();
+    commit(
+        &mut document,
+        CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Pôdorys: Štít".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "obrys".to_owned(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]]),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "štít".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]),
+    );
+    let exported = export_visible_profiles_dxf(&document.current()).unwrap();
+    let text = String::from_utf8(exported.dxf.clone()).unwrap();
+    assert!(text.contains("$ACADVER\n1\nAC1009\n"), "{text}");
+    assert!(text.contains("0\nTABLE\n2\nLAYER\n"));
+    assert!(
+        !text.contains("BLOCK") && !text.contains("INSERT"),
+        "{text}"
+    );
+    assert_eq!(text.matches("0\nPOLYLINE\n").count(), 1);
+    assert_eq!(text.matches("0\nVERTEX\n").count(), 4);
+    assert!(exported.loss_report.contains("renamed_layer_count=1"));
+
+    let inspected = inspect_dxf(&exported.dxf, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(inspected.layers(), &["Podorys_ Stit"]);
+    assert_eq!(inspected.profiles().len(), 1);
+    assert!(inspected.profiles()[0].closed());
+    assert_eq!(inspected.profiles()[0].segments().len(), 4);
+}
+
 #[test]
 fn solved_sketch_profiles_export_line_arc_circle_and_composed_workplane_frame() {
     let definition = DefinitionId(1);

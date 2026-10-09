@@ -317,10 +317,13 @@ impl Tools {
         }
         if matches!(action.as_str(), "section" | "close_section") {
             // A cut changes only the viewport; closing it ignores any defaulted plane fields.
-            args.retain(|key, value| {
-                (key == "expected"
-                    || (action == "section" && (key == "normal" || key == "offset_mm")))
-                    && is_set(value)
+            // An offset of 0 is a real plane through the origin, so it stays with a normal.
+            let has_normal = action == "section" && args.get("normal").is_some_and(is_set);
+            args.retain(|key, value| match key.as_str() {
+                "expected" => is_set(value),
+                "normal" => has_normal,
+                "offset_mm" => has_normal && value.is_number(),
+                _ => false,
             });
             return self.send("section", args, DEFAULT_WAIT);
         }

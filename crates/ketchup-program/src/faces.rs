@@ -322,11 +322,11 @@ impl FaceFrame {
 
 /// +1 for a counter-clockwise loop, -1 for a clockwise one.
 fn turn(segments: &[ProgramProfileSegment]) -> f64 {
-    let doubled_area: f64 = segments
-        .iter()
-        .map(|s| s.start_mm[0] * s.end_mm[1] - s.end_mm[0] * s.start_mm[1])
-        .sum();
-    if doubled_area < 0.0 { -1.0 } else { 1.0 }
+    if ProgramProfileSegment::doubled_signed_area(segments) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
 }
 
 /// Unit direction and length of a straight side.

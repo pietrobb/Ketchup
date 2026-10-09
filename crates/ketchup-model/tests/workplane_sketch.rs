@@ -2218,6 +2218,31 @@ fn canonical_extend_is_reviewed_persistent_and_fails_closed() {
     );
     assert_eq!(circle, circle_before);
 
+    // A 270° arc extended by half again would pass a full turn and wrap to 45°.
+    let three_quarters = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Arc {
+            id: SketchEntityId(1),
+            start_mm: [10.0, 0.0],
+            end_mm: [0.0, -10.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        }],
+        constraints: Vec::new(),
+    };
+    for (endpoint, parameter) in [(SketchPointKind::End, 1.5), (SketchPointKind::Start, -0.5)] {
+        let mut rejected = three_quarters.clone();
+        assert_eq!(
+            rejected.extend_entity(SketchEntityId(1), endpoint, parameter),
+            Err(SketchError::InvalidExtendParameter)
+        );
+        assert_eq!(rejected, three_quarters);
+    }
+    let mut extended = three_quarters.clone();
+    extended
+        .extend_entity(SketchEntityId(1), SketchPointKind::End, 1.2)
+        .unwrap();
+
     let constrained = SketchSpec {
         workplane: XY,
         entities: vec![SketchEntity::Line {

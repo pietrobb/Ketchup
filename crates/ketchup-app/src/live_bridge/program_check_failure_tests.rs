@@ -14,7 +14,7 @@ fn missing_exact_result_and_worker_failure_never_claim_verified_or_revert_the_ed
                     source: "a=box('a',(10,10,10))\nhole(a,'z+',at=(5,5),diameter=2,depth=2)"
                         .into(),
                     file_name: None,
-                    overrides: BTreeMap::new(),
+                    overrides: Some(BTreeMap::new()),
                     replace_document: false,
                 },
                 false,

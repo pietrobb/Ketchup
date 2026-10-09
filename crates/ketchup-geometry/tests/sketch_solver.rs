@@ -391,6 +391,45 @@ fn entities_and_constraints_must_be_in_id_order() {
     );
 }
 
+/// A circle is a hole of a board only when it lies inside it. The ray test from
+/// the circle passes exactly through the joint of the board's rounded corner and
+/// its straight side; counting that joint twice made a circle beside the board
+/// its hole, and its own region disappeared.
+#[test]
+fn a_circle_level_with_a_rounded_corner_joint_is_a_hole_only_inside_the_board() {
+    let regions = |circle_center: [f64; 2]| {
+        let board = sketch(
+            vec![
+                line(1, [0.0, 0.0], [90.0, 0.0]),
+                SketchEntity::Arc {
+                    id: SketchEntityId(2),
+                    start_mm: [90.0, 0.0],
+                    end_mm: [100.0, 10.0],
+                    center_mm: [90.0, 10.0],
+                    clockwise: false,
+                },
+                line(3, [100.0, 10.0], [100.0, 50.0]),
+                line(4, [100.0, 50.0], [0.0, 50.0]),
+                line(5, [0.0, 50.0], [0.0, 0.0]),
+                SketchEntity::Circle {
+                    id: SketchEntityId(6),
+                    center_mm: circle_center,
+                    radius_mm: 5.0,
+                },
+            ],
+            Vec::new(),
+        );
+        board
+            .solved_regions()
+            .unwrap()
+            .iter()
+            .map(|region| region.holes.len())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(regions([-30.0, 10.0]), [0, 0], "circle beside the board");
+    assert_eq!(regions([50.0, 10.0]), [1], "circle inside the board");
+}
+
 /// A 10 m arch is flattened with a tolerance relative to its size, so its pieces
 /// lie up to about 0.02 mm inside the curve. A loop touching the curve between
 /// two pieces still touches it, and one a millimetre away still does not.

@@ -380,39 +380,61 @@ pub(super) fn point_in_profile(
                     winding -= 1;
                 }
             }
-            RegionCurve::Arc(
-                arc @ RegionArc {
-                    start,
-                    center,
-                    clockwise,
-                    ..
-                },
-            ) => {
-                let radius = distance2(start, center);
-                let relative_y = (point[1] - center[1]) / radius;
-                if relative_y.abs() > 1.0 {
-                    continue;
-                }
-                let angle = relative_y.clamp(-1.0, 1.0).asin();
-                for candidate in [angle, std::f64::consts::PI - angle] {
-                    let crossing = [
-                        center[0] + radius * candidate.cos(),
-                        center[1] + radius * candidate.sin(),
-                    ];
-                    if crossing[0] <= point[0] + EPSILON_MM || !point_on_arc(crossing, arc) {
-                        continue;
-                    }
-                    let derivative = candidate.cos() * if clockwise { -1.0 } else { 1.0 };
-                    if derivative > EPSILON_MM {
-                        winding += 1;
-                    } else if derivative < -EPSILON_MM {
-                        winding -= 1;
-                    }
-                }
-            }
+            RegionCurve::Arc(arc) => winding += arc_winding(point, arc),
         }
     }
     Ok(winding != 0)
+}
+
+/// The arc's share of the winding number of `point` for a ray towards +x. The
+/// arc is split where it turns in y, and each monotone piece counts its lower
+/// end but not its upper one, as a line does, so a ray through the joint of an
+/// arc and its neighbour counts once.
+fn arc_winding(point: [f64; 2], arc: RegionArc) -> i32 {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let RegionArc {
+        start,
+        end,
+        center,
+        clockwise,
+    } = arc;
+    let radius = distance2(start, center);
+    let angle = |p: [f64; 2]| (p[1] - center[1]).atan2(p[0] - center[0]);
+    let start_angle = angle(start);
+    let closed = distance2(start, end) <= radius.max(1.0) * ACCUMULATED_ROUNDING;
+    let sweep = match (closed, clockwise) {
+        (true, _) => TAU,
+        (false, false) => (angle(end) - start_angle).rem_euclid(TAU),
+        (false, true) => (start_angle - angle(end)).rem_euclid(TAU),
+    };
+    let direction = if clockwise { -1.0 } else { 1.0 };
+    // Angles past the start, in the arc's direction, where y turns (±90°).
+    let first_turn = (direction * (FRAC_PI_2 - start_angle)).rem_euclid(PI);
+    let mut cuts = vec![(0.0, start)];
+    let mut turn = if first_turn <= 0.0 { PI } else { first_turn };
+    while turn < sweep {
+        let at = start_angle + direction * turn;
+        cuts.push((turn, [center[0], center[1] + radius * at.sin().signum()]));
+        turn += PI;
+    }
+    cuts.push((sweep, end));
+    let mut winding = 0;
+    for pair in cuts.windows(2) {
+        let ((from, a), (to, b)) = (pair[0], pair[1]);
+        let (y0, y1) = (a[1], b[1]);
+        if !((y0 <= point[1] && point[1] < y1) || (y1 <= point[1] && point[1] < y0)) {
+            continue;
+        }
+        let middle = start_angle + direction * (from + to) / 2.0;
+        let half_chord = (radius * radius - (point[1] - center[1]).powi(2))
+            .max(0.0)
+            .sqrt();
+        let x = center[0] + half_chord * middle.cos().signum();
+        if x > point[0] + EPSILON_MM {
+            winding += if y1 > y0 { 1 } else { -1 };
+        }
+    }
+    winding
 }
 
 pub(super) fn cubic_control_polygon_length(points: [[f64; 2]; 4]) -> f64 {

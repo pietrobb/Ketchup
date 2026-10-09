@@ -16,7 +16,7 @@ fn apply(source: &str, replace_document: bool) -> Request {
     Request::ApplyProgram {
         expected: None,
         source: source.to_owned(),
-        overrides: BTreeMap::new(),
+        overrides: Some(BTreeMap::new()),
         file_name: Some("table.star".to_owned()),
         replace_document,
     }
@@ -462,6 +462,25 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
     );
     assert_eq!(app.live_bridge_stamp(), before_error);
 
+    // Review 2026-10-09 (P3): a long message lost its end, where the cause is.
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            apply(
+                &format!("{with_apron}fail(\"x\" * 6000 + \" the real \" + \"cause\")\n"),
+                false
+            ),
+            false
+        ),
+        Err("program_rejected")
+    );
+    let reason = take_error_details().unwrap()["reason"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(reason.contains("the real cause"), "{reason}");
+    assert!(reason.chars().count() < 4100, "{}", reason.chars().count());
+
     bridge
         .execute(&mut app, Request::Undo { expected: None }, false)
         .unwrap();
@@ -711,7 +730,9 @@ fn the_house_switches_concept_and_construction_by_views_after_a_new_length() {
 
     let mut longer = apply(house, false);
     if let Request::ApplyProgram { overrides, .. } = &mut longer {
-        overrides.insert("length".to_owned(), 7400.0);
+        overrides
+            .get_or_insert_default()
+            .insert("length".to_owned(), 7400.0);
     }
     bridge.execute(&mut app, longer, false).unwrap();
     for (shown, visible_prefix) in [("Koncept", "steny/"), ("Konštrukcia", "konštrukcia/")] {
@@ -890,6 +911,66 @@ fn a_typed_edit_says_it_detaches_the_program_and_strict_refuses_it() {
         .unwrap();
     assert_eq!(undone["program_owned"], true, "{undone}");
     assert_eq!(app.document.current_rule_program().unwrap().source, TABLE);
+}
+
+/// Review 2026-10-09 (AI-2): a whole program sent again without overrides used
+/// to drop the stored ones (e.g. a Push/Pull from the window) without a word.
+#[test]
+fn a_whole_program_sent_again_keeps_the_stored_overrides_unless_it_gives_its_own() {
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
+    let with = |overrides: Option<BTreeMap<String, f64>>, source: &str| Request::ApplyProgram {
+        expected: None,
+        source: source.to_owned(),
+        overrides,
+        file_name: None,
+        replace_document: false,
+    };
+    let wide = BTreeMap::from([("width".to_owned(), 900.0)]);
+    bridge
+        .execute(&mut app, with(Some(wide.clone()), TABLE), false)
+        .unwrap();
+    let stored = |app: &KetchupApp| {
+        app.document
+            .current_rule_program()
+            .unwrap()
+            .overrides
+            .clone()
+    };
+    assert_eq!(stored(&app), wide);
+
+    let edited = format!("{TABLE}{APRON}");
+    let applied = bridge
+        .execute(&mut app, with(None, &edited), false)
+        .unwrap();
+    assert_eq!(applied["report"]["ok"], true, "{applied}");
+    assert_eq!(stored(&app), wide);
+
+    bridge
+        .execute(&mut app, with(Some(BTreeMap::new()), &edited), false)
+        .unwrap();
+    assert!(stored(&app).is_empty());
+}
+
+/// Review 2026-10-09 (AI-3): one long printed line made the answer of a
+/// published change too big, so the agent read `response_limit` and sent the
+/// change again.
+#[test]
+fn a_published_change_with_a_huge_log_still_fits_one_response() {
+    let (mut app, mut bridge) = setup();
+    let source = "box(\"a\", (10, 10, 10))\nprint(\"x\" * 300000)\n";
+    let applied = bridge
+        .execute(&mut app, apply(source, true), false)
+        .unwrap();
+    assert_eq!(applied["change"], "created");
+    let bytes = serde_json::to_vec(&applied).unwrap().len();
+    assert!(bytes < MAX_RESPONSE_FRAME_BYTES / 2, "{bytes}");
+    let line = applied["report"]["log"][0].as_str().unwrap();
+    assert!(
+        line.starts_with("xxx") && line.chars().count() <= 1000,
+        "{}",
+        line.len()
+    );
 }
 
 fn evaluate_exact(app: &mut KetchupApp) {

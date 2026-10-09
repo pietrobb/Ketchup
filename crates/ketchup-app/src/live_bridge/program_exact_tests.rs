@@ -125,7 +125,7 @@ fn program_reports_disconnected_grounded_members_and_override_repairs_contact() 
     let before = wire.app.document.current().scene_query();
     let mut request = apply(source, false);
     if let Request::ApplyProgram { overrides, .. } = &mut request {
-        overrides.insert("d".into(), 0.);
+        overrides.get_or_insert_default().insert("d".into(), 0.);
     }
     let fixed = wire
         .call_within(request, Duration::from_secs(60))
@@ -165,7 +165,9 @@ fn grounded_member_override_and_typed_edit_do_not_anchor_its_sibling() {
     let anchors = wire.app.document.current().grounded_instances().clone();
     let mut request = apply(source, false);
     if let Request::ApplyProgram { overrides, .. } = &mut request {
-        overrides.insert("locked".into(), 0.);
+        overrides
+            .get_or_insert_default()
+            .insert("locked".into(), 0.);
     }
     let changed = wire
         .call_within(request, Duration::from_secs(60))
@@ -237,7 +239,9 @@ fn floor_override_and_typed_edit_use_the_same_persistent_support_plane() {
     let before = wire.app.document.current().scene_query();
     let mut request = apply(source, false);
     if let Request::ApplyProgram { overrides, .. } = &mut request {
-        overrides.insert("floor-z".into(), 0.);
+        overrides
+            .get_or_insert_default()
+            .insert("floor-z".into(), 0.);
     }
     let changed = wire
         .call_within(request, Duration::from_secs(60))
@@ -300,7 +304,9 @@ fn internal_motion_override_updates_shared_paths_and_exact_clearance_in_every_co
         .unwrap();
     let mut request = apply(source, false);
     if let Request::ApplyProgram { overrides, .. } = &mut request {
-        overrides.insert("open".into(), -85.);
+        overrides
+            .get_or_insert_default()
+            .insert("open".into(), -85.);
     }
     let result = wire
         .call_within(request, Duration::from_secs(60))
@@ -346,7 +352,9 @@ fn motion_override_moves_whole_component_and_preserves_program_and_exact_paths()
         .unwrap();
     let mut request = apply(source, false);
     if let Request::ApplyProgram { overrides, .. } = &mut request {
-        overrides.insert("open".into(), -85.0);
+        overrides
+            .get_or_insert_default()
+            .insert("open".into(), -85.0);
     }
     let changed = wire.call_within(request, Duration::from_secs(60));
     assert!(changed.ok, "{changed:?}");

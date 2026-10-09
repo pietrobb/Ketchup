@@ -114,6 +114,37 @@ fn sketchup_scene_preserves_shared_instances_and_is_one_persistent_undo_step() {
     );
 }
 
+/// SketchUp writes a uniformly scaled component with the scale in the
+/// homogeneous divisor: scale 2 is m[15] = 0.5. It used to refuse the scene.
+#[test]
+fn a_uniform_scale_in_the_homogeneous_divisor_is_imported_as_scale() {
+    let mut value: serde_json::Value = serde_json::from_slice(&shared_tetrahedron_scene()).unwrap();
+    value["instances"][1]["transform"] = json!([
+        1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.5
+    ]);
+    let source = serde_json::to_vec(&value).unwrap();
+    let document = DocumentStore::new();
+    let batch = plan_sketchup_scene_import(&document.current(), &source, "scaled.kscene").unwrap();
+    let mut document = document;
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    let right = committed
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Right")
+        .unwrap();
+    let transform = right.transform();
+    let matrix = transform.matrix();
+    assert_eq!([matrix[0], matrix[5], matrix[10]], [2.0, 2.0, 2.0]);
+    assert_eq!(matrix[3], 50.8);
+    assert_eq!(matrix[15], 1.0);
+
+    value["instances"][1]["transform"][12] = json!(0.1);
+    assert!(matches!(
+        inspect_sketchup_scene(&serde_json::to_vec(&value).unwrap()),
+        Err(SketchupSceneImportError::InvalidTransform)
+    ));
+}
+
 #[test]
 fn schema_30_sketchup_document_remains_losslessly_loadable() {
     let source = shared_tetrahedron_scene();

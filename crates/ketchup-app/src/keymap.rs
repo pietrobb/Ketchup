@@ -72,8 +72,11 @@ pub(crate) const KEYMAP: &[Binding] = &[
     everywhere(AppCommand::Open, &[chord(CTRL, Key::O)]),
     everywhere(AppCommand::SaveAs, &[chord(CTRL_SHIFT, Key::S)]),
     everywhere(AppCommand::Save, &[chord(CTRL, Key::S)]),
+    on_canvas(
+        AppCommand::Redo,
+        &[chord(CTRL, Key::Y), chord(CTRL_SHIFT, Key::Z)],
+    ),
     on_canvas(AppCommand::Undo, &[chord(CTRL, Key::Z)]),
-    on_canvas(AppCommand::Redo, &[chord(CTRL, Key::Y)]),
     clipboard(
         AppCommand::Copy,
         &[chord(CTRL, Key::C)],

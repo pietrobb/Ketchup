@@ -38,6 +38,25 @@ fn intent_that_holds_on_rotated_parts_reports_nothing() {
     assert_eq!(messages(&source), Vec::<String>::new());
 }
 
+/// A condition measured along a face the part does not have used to be skipped,
+/// so the intent looked met.
+#[test]
+fn intent_along_a_face_the_part_lacks_is_an_error_not_a_pass() {
+    let source = "a = box(\"a\", (100, 100, 18))\n\
+         expect(\"reach\", terms = [(1, (\"reach\", a, (a, \"no_such_face\")))], value = 5)\n";
+    let issues = run("test.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .1
+        .issues;
+    let unmeasurable: Vec<_> = issues
+        .iter()
+        .filter(|issue| issue.kind == "expectation_unmeasurable")
+        .collect();
+    assert_eq!(unmeasurable.len(), 1, "{issues:#?}");
+    assert_eq!(unmeasurable[0].severity, ketchup_program::Severity::Error);
+    assert_eq!(unmeasurable[0].parts, ["a"]);
+}
+
 #[test]
 fn intent_is_measured_after_the_whole_program() {
     // Stated before the move that makes it true.

@@ -3086,7 +3086,9 @@ impl KetchupApp {
                     })
                     .collect::<String>()
             });
-            if !typed.is_empty() {
+            // Space alone is the Select shortcut; it must not open the value
+            // field, which would then hold the keyboard against every shortcut.
+            if !typed.trim().is_empty() {
                 self.value_box.input.clear();
                 self.value_box.input.push_str(&typed);
                 self.value_box.focus = true;

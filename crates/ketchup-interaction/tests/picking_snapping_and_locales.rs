@@ -202,6 +202,35 @@ fn crossing_exact_edges_produce_an_explicit_intersection_snap() {
     ));
 }
 
+/// The intersection snap is the point where the edges cross, at its true
+/// distance from the cursor; it used to be the cursor itself at distance 0 and
+/// so beat a nearer real endpoint.
+#[test]
+fn an_intersection_snap_lands_on_the_crossing_and_yields_to_a_nearer_endpoint() {
+    let scene = projected_scene(
+        &[BoxDefinition {
+            id: DefinitionId(1),
+            profile_id: FeatureId(1),
+            extrusion_id: FeatureId(2),
+            size_mm: Vec3::new(10.0, 10.0, 10.0),
+        }],
+        &[
+            (OccurrenceId(1), DefinitionId(1), Vec3::new(0.0, 5.0, 0.0)),
+            (OccurrenceId(2), DefinitionId(1), Vec3::new(5.0, 0.0, 0.0)),
+        ],
+    );
+    let near_crossing = Ray::new(Vec3::new(5.6, 5.3, 100.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    let result = scene.exact_pick(near_crossing, 1.0).unwrap();
+    assert_eq!(result.snap.kind, SnapKind::Intersection);
+    assert_eq!(result.snap.position_mm, Vec3::new(5.0, 5.0, 10.0));
+    assert!(result.snap.distance_mm > 0.5, "{:?}", result.snap);
+
+    let near_corner = Ray::new(Vec3::new(9.6, 5.2, 100.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    let result = scene.exact_pick(near_corner, 6.0).unwrap();
+    assert_eq!(result.snap.kind, SnapKind::Endpoint, "{:?}", result.snap);
+    assert_eq!(result.snap.position_mm, Vec3::new(10.0, 5.0, 10.0));
+}
+
 #[test]
 fn overlapping_candidates_are_stable_and_nearest_first() {
     let scene = projected_scene(

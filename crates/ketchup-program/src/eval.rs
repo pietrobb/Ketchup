@@ -2490,6 +2490,7 @@ mod tests {
         for name in GlobalsBuilder::new()
             .with(builtins)
             .with(assemblies::builtins)
+            .with(conditions::builtins)
             .with(continuity::builtins)
             .with(joints::builtins)
             .with(support::builtins)
@@ -2512,5 +2513,21 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "undocumented builtins: {missing:?}");
+    }
+
+    /// Review 2026-10-09 (P3): the language guide listed 7 of the 12 topics.
+    #[test]
+    fn the_language_guide_names_every_library_topic() {
+        let guide = include_str!("../../../docs/program-language.md");
+        let missing = PRELUDE
+            .lines()
+            .filter_map(|line| line.strip_prefix("#@topic "))
+            .filter_map(|line| line.split(':').next())
+            .filter(|id| !guide.contains(&format!("`{id}`")))
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "topics missing in the guide: {missing:?}"
+        );
     }
 }

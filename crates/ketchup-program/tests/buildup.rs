@@ -452,6 +452,40 @@ fn the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() 
     }
 }
 
+/// Review 2026-10-09 (LIB-1): the hangers of a floor opening could only take a
+/// rating from the frozen CONNECTOR_RATINGS, so every other hanger stayed
+/// not verified.
+#[test]
+fn a_floor_layer_gives_its_hangers_the_makers_rating() {
+    let floor = |rating: &str| {
+        format!(
+            "buildup(\"floor\", (0, 0, 0), (1, 0, 0), (0, 1, 0), 4000, [{{\"name\": \"j\", \
+             \"thickness\": 200, \"material\": \"C24\", \"spacing\": 625, \"hanger\": \"H 1\"{rating}}}], \
+             height = 3000, openings = [(1000, 1000, 1200, 1000)])\n"
+        )
+    };
+    let hangers = |model: &ProgramModel| {
+        model
+            .joints
+            .iter()
+            .filter(|joint| joint.kind == "hanger" && joint.bearing)
+            .map(|joint| joint.rating.as_ref().map(|rating| rating.load_n))
+            .collect::<Vec<_>>()
+    };
+    let unrated = hangers(&eval(&floor(""), &[]));
+    assert!(!unrated.is_empty());
+    assert!(unrated.iter().all(Option::is_none), "{unrated:?}");
+    let rated = hangers(&eval(
+        &floor(
+            ", \"hanger_rating\": connector_rating(load_n = 4200, basis = \"characteristic\", \
+             source = \"maker's table\")",
+        ),
+        &[],
+    ));
+    assert_eq!(rated.len(), unrated.len());
+    assert!(rated.iter().all(|load| *load == Some(4200.0)), "{rated:?}");
+}
+
 #[test]
 fn bad_build_ups_name_the_problem() {
     for (source, message) in [

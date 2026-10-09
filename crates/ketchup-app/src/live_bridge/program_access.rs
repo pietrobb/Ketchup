@@ -54,12 +54,30 @@ fn patched(source: &str, edits: &[SourceEdit]) -> Result<String, &'static str> {
             .filter_map(|(start, _)| source[start..].starts_with(&edit.old).then_some(start))
             .take(2)
             .collect::<Vec<_>>();
-        if edit.old.is_empty() || matches.len() != 1 {
+        let field = format!("edits[{index}].old");
+        if edit.old.is_empty() {
             return Err(invalid(
-                &format!("edits[{index}].old"),
-                "Old text must occur exactly once in the current source.",
-                "Read source or selection context and include enough surrounding text to identify one occurrence.",
+                &field,
+                "Old text is empty.",
+                "Give the exact text to replace, with enough surrounding text to identify one occurrence.",
             ));
+        }
+        match matches.len() {
+            0 => {
+                return Err(invalid(
+                    &field,
+                    "Old text does not occur in the current source.",
+                    "Read the source again (it may have changed) and copy the old text exactly, including whitespace.",
+                ));
+            }
+            1 => {}
+            _ => {
+                return Err(invalid(
+                    &field,
+                    "Old text occurs more than once in the current source.",
+                    "Include enough surrounding text to identify one occurrence.",
+                ));
+            }
         }
         ranges.push((matches[0], matches[0] + edit.old.len(), &edit.new));
     }
@@ -174,7 +192,7 @@ impl LiveBridge {
         Ok(Request::ApplyProgram {
             expected: Some(expected),
             source: patched(&program.source, &edits)?,
-            overrides: program.overrides.clone(),
+            overrides: Some(program.overrides.clone()),
             file_name: Some(program.file_name.clone()),
             replace_document: false,
         })

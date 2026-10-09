@@ -557,6 +557,17 @@ fn every_shortcut_in_the_keymap_runs_its_command_and_prints_the_same_chord() {
     );
     assert_eq!(keymap::shortcut_text(&english, AppCommand::Orbit), "O");
     assert!(keymap::shortcut_text(&english, AppCommand::ImportMeshStl).is_empty());
+    // Review 2026-10-09 (P3): Ctrl+Shift+Z undid instead of redoing.
+    assert_eq!(
+        press_in_a_frame(
+            vec![key_event(&egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                egui::Key::Z
+            ))],
+            false
+        ),
+        Some(AppCommand::Redo)
+    );
 }
 
 #[test]

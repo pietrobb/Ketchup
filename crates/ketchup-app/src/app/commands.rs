@@ -686,13 +686,17 @@ impl KetchupApp {
                 return false;
             }
             // A pinned axis turns a plain number into travel along that axis,
-            // which is how a part gets set down exactly 25 mm higher.
-            let exact_vector = parse_move_vector(&self.value_box.input);
-            let typed = exact_vector.or_else(|| {
-                let axis = self.gesture.transform.move_axis_lock?;
-                let distance = parse_distance_mm(&self.value_box.input)?;
+            // which is how a part gets set down exactly 25 mm higher. There a
+            // single comma is a decimal comma ("12,5"), not a two-value vector.
+            let axis_travel = self.gesture.transform.move_axis_lock.and_then(|axis| {
+                let distance = parse_axis_distance_mm(&self.value_box.input)?;
                 (distance.abs() >= 0.01).then(|| axis_direction(axis) * distance)
             });
+            let exact_vector = axis_travel
+                .is_none()
+                .then(|| parse_move_vector(&self.value_box.input))
+                .flatten();
+            let typed = axis_travel.or(exact_vector);
             // A gesture in flight already knows its target and its copy mode;
             // typing a value replaces the one the pointer is showing.
             if let Some(delta_mm) = typed.filter(|delta_mm| length(*delta_mm) > 0.0)
@@ -1242,6 +1246,14 @@ fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
     (1..=MAX_PATTERN_COUNT)
         .contains(&count)
         .then_some((mode, count))
+}
+
+fn parse_axis_distance_mm(input: &str) -> Option<f64> {
+    parse_distance_mm(input).or_else(|| {
+        (input.matches(',').count() == 1)
+            .then(|| parse_distance_mm(&input.replace(',', ".")))
+            .flatten()
+    })
 }
 
 fn parse_move_vector(input: &str) -> Option<Vec3> {

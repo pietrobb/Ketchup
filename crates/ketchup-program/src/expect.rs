@@ -160,6 +160,19 @@ pub fn check(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>)
             .map(|(coefficient, term)| measure(model, exact, term).map(|value| coefficient * value))
             .sum();
         let Some(measured) = measured else {
+            // A part or face the final model does not have: the condition
+            // cannot be measured and must not look met.
+            issues.push(Issue {
+                severity: Severity::Error,
+                kind: "expectation_unmeasurable",
+                parts: expectation.parts.clone(),
+                message: format!(
+                    "{}: a measure names a part or face the model does not have",
+                    expectation.name
+                ),
+                where_mm: None,
+                hint: "Name an existing part and one of its faces.".to_owned(),
+            });
             continue;
         };
         if measured.is_nan() {
