@@ -341,6 +341,9 @@ fn exact_face_placement_flip_offset_preview_cancel_confirm_is_nested_and_one_und
     shell.focus_text_input(&offset);
     shell.key(Key::A, Modifiers::CTRL);
     shell.type_text("12.5");
+    // The reference-face list stays open over the viewport until a click
+    // elsewhere; the reference image must show the model, not the list.
+    shell.press_key(Key::Escape);
 
     let before = shell.app().canonical_digest();
     let steps = shell.app().undo_step_count();

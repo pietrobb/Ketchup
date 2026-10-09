@@ -178,6 +178,7 @@ mod program_edit;
 mod program_evaluation;
 mod program_source_ui;
 mod refusal;
+mod selection_measures_ui;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use refusal::{Refuse, failed, invalid_field};
 mod slot;
@@ -4786,5 +4787,7 @@ mod push_pull_snapping_tests;
 mod rotation_input_tests;
 #[cfg(test)]
 mod scene_snapping_tests;
+#[cfg(test)]
+mod selection_measures_ui_tests;
 #[cfg(test)]
 mod tests;

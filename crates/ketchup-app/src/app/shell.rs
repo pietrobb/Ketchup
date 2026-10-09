@@ -1241,6 +1241,7 @@ impl KetchupApp {
                         if layers_first {
                             self.show_layers_section(ui, true);
                         }
+                        self.show_selection_measures(ui);
                         self.show_program_source(ui);
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
@@ -1279,6 +1280,7 @@ impl KetchupApp {
                         if layers_first {
                             self.show_layers_section(ui, true);
                         }
+                        self.show_selection_measures(ui);
                         self.show_program_source(ui);
                         self.show_outliner_without_assistant(ui);
                         if !layers_first {
