@@ -619,6 +619,7 @@ pub(crate) fn program_feature_references_match(
     let same_operation = |left: &ProgramOperation, right: &ProgramOperation| match (left, right) {
         (ProgramOperation::Cut(left), ProgramOperation::Cut(right)) => {
             left.name == right.name
+                && left.depth_mm.is_some() == right.depth_mm.is_some()
                 && segment_names(&left.segments) == segment_names(&right.segments)
         }
         (ProgramOperation::Finish(left), ProgramOperation::Finish(right)) => {

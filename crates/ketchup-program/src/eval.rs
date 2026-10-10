@@ -1633,19 +1633,27 @@ fn builtins(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
-    /// Cuts a named closed profile down from the body's current top face.
+    /// Cuts a named closed profile down from the body's current top face, by
+    /// `depth` or, with `through=True`, through the whole part.
     fn cut<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         #[starlark(require = named)] profile: Value<'v>,
-        #[starlark(require = named)] depth: Value<'v>,
+        #[starlark(require = named)] depth: Option<Value<'v>>,
         #[starlark(require = named)] name: &str,
+        #[starlark(require = named, default = false)] through: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let part_name = part_name(part, heap)?;
         let segments = profile_segments(profile, heap, "profile")?;
-        let depth_mm = number(depth, "depth")?;
-        if depth_mm <= TOLERANCE_MM {
+        let depth_mm = match (depth, through) {
+            (_, true) => None,
+            (Some(depth), false) => Some(number(depth, "depth")?),
+            (None, false) => {
+                anyhow::bail!("cut on {part_name:?}: give depth=, or through=True to cut through")
+            }
+        };
+        if depth_mm.is_some_and(|depth| depth <= TOLERANCE_MM) {
             anyhow::bail!("cut on {part_name:?}: depth must be positive");
         }
         check_name("cut name", name)?;

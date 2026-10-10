@@ -383,10 +383,12 @@ def distribute(parts, a, b, face = None):
 #     fillet(top, edges=[["front", "end"], ["right", "end"]], radius=3)
 #   chamfer(part, edges=[[face_a, face_b], ...], distance=, name=)
 #     bevels the same way, e.g. chamfer(ring, edges=[["top", "outer"]], distance=2)
-#   cut(part, profile=, depth=, name=)
+#   cut(part, profile=, depth=, name=, through=False)
 #     removes a closed profile (same form as above, local XY) from the "end"
-#     cap down by `depth`; let the profile overshoot the part to cut through
-#     an edge, e.g. cut(board, profile=[["in", [150, -1], [158, -1]],
+#     cap down by `depth`, which must stay below the part's thickness;
+#     through=True (no depth) cuts through the whole part, e.g. a sink
+#     opening. Let the profile overshoot the part to cut through an edge,
+#     e.g. cut(board, profile=[["in", [150, -1], [158, -1]],
 #     ["right", [158, -1], [158, 301]], ["out", [158, 301], [150, 301]],
 #     ["left", [150, 301], [150, -1]]], depth=6, name="groove")
 #   push_pull(part, face=, distance=, name=)

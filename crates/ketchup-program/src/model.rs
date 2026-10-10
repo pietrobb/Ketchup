@@ -390,7 +390,8 @@ pub struct ProgramEdgeFillet {
 pub struct ProgramCut {
     pub name: String,
     pub segments: Vec<ProgramProfileSegment>,
-    pub depth_mm: f64,
+    /// Blind depth down from the top; `None` cuts through the whole part.
+    pub depth_mm: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1461,7 +1462,9 @@ impl Part {
             features.push(feature(
                 cut.name.clone(),
                 ProgramFeatureKind::Cut,
-                vec![length("extent.distance", cut.depth_mm)],
+                cut.depth_mm
+                    .map(|depth| vec![length("extent.distance", depth)])
+                    .unwrap_or_default(),
             ));
         }
         for hole in self.holes() {

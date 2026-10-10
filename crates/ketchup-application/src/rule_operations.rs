@@ -283,11 +283,11 @@ impl<'a> OperationPlanner<'a> {
                 closed: true,
             },
         )?;
-        let depth = self.dimension(cut.depth_mm)?;
-        self.feature(
-            cut.name.clone(),
-            FeatureKind::pocket(target, profile, depth),
-        )
+        let kind = match cut.depth_mm {
+            Some(depth) => FeatureKind::pocket(target, profile, self.dimension(depth)?),
+            None => FeatureKind::through_cut(target, profile),
+        };
+        self.feature(cut.name.clone(), kind)
     }
 
     fn finish(

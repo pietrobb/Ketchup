@@ -225,6 +225,41 @@ fn box_push_pull_and_cut_now_shape_the_part() {
     );
 }
 
+/// A sink opening in a 20 mm worktop placed 900 mm up: `through=True` cuts
+/// the whole board, and a blind cut as deep as the board is refused with a
+/// reason the author can act on instead of an internal ownership error.
+#[test]
+fn a_through_cut_opens_a_placed_board_and_a_too_deep_blind_cut_is_explained() {
+    let mut worker = worker();
+    let board = "top = extrude(\"top\", profile=[[0, 0], [100, 0], [100, 60], [0, 60]], \
+                 distance=20, at=(0, 0, 900))\n";
+    let opening = "profile=[[40, 20], [60, 20], [60, 40], [40, 40]]";
+    for through in [
+        format!("{board}cut(top, {opening}, through=True, name=\"sink\")"),
+        format!("{board}cut(top, {opening}, depth=21, through=True, name=\"sink\")"),
+    ] {
+        assert_volume(
+            volume(&mut worker, &through, "top"),
+            100.0 * 60.0 * 20.0 - 20.0 * 20.0 * 20.0,
+        );
+    }
+    let blind = format!("{board}cut(top, {opening}, depth=5, name=\"sink\")");
+    assert_volume(
+        volume(&mut worker, &blind, "top"),
+        100.0 * 60.0 * 20.0 - 20.0 * 20.0 * 5.0,
+    );
+    for depth in [20, 21] {
+        let error = apply_error(&format!(
+            "{board}cut(top, {opening}, depth={depth}, name=\"sink\")"
+        ));
+        assert!(error.contains("only 20 mm thick"), "{error}");
+        assert!(error.contains("through=True"), "{error}");
+        assert!(!error.contains("ownership"), "{error}");
+    }
+    let error = apply_error(&format!("{board}cut(top, {opening}, name=\"sink\")"));
+    assert!(error.contains("give depth="), "{error}");
+}
+
 #[test]
 fn a_wrong_face_or_too_large_radius_is_explained() {
     let mut worker = worker();
