@@ -41,6 +41,8 @@ wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 winreg = "0.56.0"
 
 [dev-dependencies]
+ketchup-view-format = { path = "../ketchup-view-format" }
+ketchup-viewer = { path = "../ketchup-viewer" }
 ketchup-test-env = { path = "../ketchup-test-env" }
 ketchup-app = { path = ".", features = ["testing"] }
 ketchup-model = { path = "../ketchup-model", features = ["testing"] }

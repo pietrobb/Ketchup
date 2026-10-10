@@ -68,6 +68,7 @@ impl KetchupApp {
         self.cancel_mesh_conversion();
         self.tool_preview = None;
         self.drawings = crate::app_state::DrawingsState::default();
+        self.viewer_prep = crate::app_state::ViewerPrepState::default();
         self.push_pull.smart_proposal = None;
         self.push_pull.smart_planning = None;
         self.solid_tools.target = None;
@@ -761,6 +762,7 @@ impl KetchupApp {
                 self.assistant.saved_conversation_digest =
                     assistant_conversation_digest(&self.assistant.messages);
                 self.drawings.unsaved = false;
+                self.viewer_prep.unsaved = false;
                 let digest_key = if truncate_history {
                     "digest-saved-document-current-only"
                 } else {
@@ -992,6 +994,11 @@ impl KetchupApp {
                     self.export_current_model_glb_to(&path);
                 }
             }
+            AppCommand::ExportViewer => {
+                if let Some(path) = self.choose_export_path("ketchup-view") {
+                    self.export_current_model_viewer_to(&path);
+                }
+            }
             AppCommand::ExportGeneralFabrication => {
                 if let Some(path) = self.choose_export_path("csv") {
                     self.export_current_general_fabrication_to(&path);
@@ -1156,6 +1163,7 @@ impl KetchupApp {
             || assistant_conversation_digest(&self.assistant.messages)
                 != self.assistant.saved_conversation_digest
             || self.drawings.unsaved
+            || self.viewer_prep.unsaved
     }
 
     /// Opens a native Kečup document from a caller-provided path.

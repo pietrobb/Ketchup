@@ -1,7 +1,7 @@
 use ketchup_geometry::linalg::Vec3;
 use ketchup_model::document::{
-    DefinitionId, FeatureId, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
-    SceneOccurrence, Snapshot, Transform,
+    DefinitionId, FeatureId, GroupId, InstancePath, InstancePathStep, LocalGroupKey,
+    LocalOccurrenceKey, SceneOccurrence, Snapshot, Transform,
 };
 use ketchup_model::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
 use ketchup_model::import::{gltf_point_from_ketchup, gltf_transform_from_ketchup};
@@ -9,6 +9,8 @@ use ketchup_model::tolerance::limits;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::num::TryFromIntError;
+
+mod edges;
 
 const GLB_MAGIC: u32 = 0x4654_6c67;
 const GLB_JSON_CHUNK: u32 = 0x4e4f_534a;
@@ -23,6 +25,8 @@ const MAX_GLB_EXPORT_BYTES: usize = 256 * 1024 * 1024;
 pub struct ExactGlbExport {
     pub glb: Vec<u8>,
     pub loss_report: String,
+    /// Exact source paths to hierarchy nodes, independent of names and body count.
+    pub occurrence_nodes: BTreeMap<InstancePath, usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -47,6 +51,13 @@ struct GeometryKey {
 struct GeometryLayout {
     position_accessor: usize,
     index_accessor: usize,
+    edge_accessor: Option<usize>,
+}
+
+struct SceneLayout {
+    nodes: Vec<SceneNode>,
+    root_nodes: Vec<usize>,
+    occurrence_nodes: BTreeMap<InstancePath, usize>,
 }
 
 struct SceneNode {
@@ -92,6 +103,29 @@ pub fn model_glb_export(
     snapshot: &Snapshot,
     instances: &[MeshGlbInstance<'_>],
 ) -> Result<ExactGlbExport, ExactProductError> {
+    if instances
+        .iter()
+        .any(|instance| !instance.occurrence.visible)
+    {
+        return Err(ExactProductError::StaleResult);
+    }
+    export_model(snapshot, instances, false)
+}
+
+/// Scene packages need the supplied geometry even when the current layer state
+/// hides it. Placements, visibility and source currency are still validated.
+pub(crate) fn model_glb_export_including_hidden(
+    snapshot: &Snapshot,
+    instances: &[MeshGlbInstance<'_>],
+) -> Result<ExactGlbExport, ExactProductError> {
+    export_model(snapshot, instances, true)
+}
+
+fn export_model(
+    snapshot: &Snapshot,
+    instances: &[MeshGlbInstance<'_>],
+    include_edges: bool,
+) -> Result<ExactGlbExport, ExactProductError> {
     if instances.is_empty() {
         return Err(ExactProductError::EmptyModelExport);
     }
@@ -100,7 +134,7 @@ pub fn model_glb_export(
     }
     if instances
         .iter()
-        .any(|instance| !instance.occurrence.visible || !instance.source.is_current(snapshot))
+        .any(|instance| !instance.source.is_current(snapshot))
     {
         return Err(ExactProductError::StaleResult);
     }
@@ -140,6 +174,7 @@ pub fn model_glb_export(
         )?;
         let layout = append_geometry(
             instance.source,
+            include_edges,
             &mut binary,
             &mut buffer_views,
             &mut accessors,
@@ -175,10 +210,18 @@ pub fn model_glb_export(
                 });
                 primitive["material"] = json!(material_index);
             }
+            let mut primitives = vec![primitive];
+            if let Some(indices) = geometry.edge_accessor {
+                primitives.push(json!({
+                    "attributes": {"POSITION": geometry.position_accessor},
+                    "indices": indices,
+                    "mode": 1
+                }));
+            }
             let index = meshes.len();
             meshes.push(json!({
                 "name": instance.occurrence.definition_name,
-                "primitives": [primitive]
+                "primitives": primitives
             }));
             mesh_indices.insert(mesh_key, index);
             index
@@ -186,7 +229,11 @@ pub fn model_glb_export(
         instance_meshes.push(mesh_index);
     }
 
-    let (nodes, root_nodes) = build_scene_nodes(snapshot, instances, &instance_meshes)?;
+    let SceneLayout {
+        nodes,
+        root_nodes,
+        occurrence_nodes,
+    } = build_scene_nodes(snapshot, instances, &instance_meshes)?;
     let nodes = nodes
         .into_iter()
         .map(SceneNode::into_json)
@@ -230,17 +277,22 @@ pub fn model_glb_export(
         limits::EXPORT_VERTICES,
         limits::EXPORT_TRIANGLES,
     );
-    Ok(ExactGlbExport { glb, loss_report })
+    Ok(ExactGlbExport {
+        glb,
+        loss_report,
+        occurrence_nodes,
+    })
 }
 
 fn build_scene_nodes(
     snapshot: &Snapshot,
     instances: &[MeshGlbInstance<'_>],
     instance_meshes: &[usize],
-) -> Result<(Vec<SceneNode>, Vec<usize>), ExactProductError> {
+) -> Result<SceneLayout, ExactProductError> {
     let mut nodes = Vec::new();
     let mut root_nodes = Vec::new();
     let mut hierarchy = BTreeMap::<String, usize>::new();
+    let mut occurrence_nodes = BTreeMap::new();
     let identity = gltf_matrix(Transform::identity())?;
     for (instance, mesh_index) in instances.iter().zip(instance_meshes) {
         let root_id = instance.occurrence.instance_path.root_occurrence();
@@ -272,6 +324,7 @@ fn build_scene_nodes(
                     children: Vec::new(),
                     extras: json!({
                         "ketchupEntity": "occurrence",
+                        "ketchupDefinitionId": root_occurrence.definition_id().0,
                         "ketchupDefinition": snapshot
                             .definition(root_occurrence.definition_id())
                             .ok_or(ExactProductError::InvalidMeshExport)?
@@ -285,10 +338,13 @@ fn build_scene_nodes(
             index
         };
 
+        let mut source_path = InstancePath::root(root_id);
+        occurrence_nodes.insert(source_path.clone(), root_index);
         let mut owner_definition_id = root_occurrence.definition_id();
         let mut parent_index = root_index;
         let mut path_key = root_key;
         for step in instance.occurrence.instance_path.steps() {
+            source_path = source_path.with_step(*step);
             match step {
                 InstancePathStep::Group(local_id) => {
                     path_key.push_str(&format!("/group:{}", local_id.0));
@@ -308,6 +364,7 @@ fn build_scene_nodes(
                         local.transform(),
                         json!({
                             "ketchupEntity": "group",
+                            "ketchupOwnerDefinitionId": owner_definition_id.0,
                             "ketchupInstancePath": path_key
                         }),
                     )?;
@@ -333,17 +390,21 @@ fn build_scene_nodes(
                         local.transform(),
                         json!({
                             "ketchupEntity": "occurrence",
+                            "ketchupOwnerDefinitionId": owner_definition_id.0,
+                            "ketchupDefinitionId": local.definition_id().0,
                             "ketchupDefinition": definition.name(),
                             "ketchupInstancePath": path_key
                         }),
                     )?;
                     owner_definition_id = local.definition_id();
+                    occurrence_nodes.insert(source_path.clone(), parent_index);
                 }
             }
         }
         if owner_definition_id != instance.occurrence.definition_id {
             return Err(ExactProductError::InvalidMeshExport);
         }
+        occurrence_nodes.insert(instance.occurrence.instance_path.clone(), parent_index);
         if nodes[parent_index].mesh.is_none() {
             nodes[parent_index].mesh = Some(*mesh_index);
             nodes[parent_index].extras["ketchupProducerFeatureId"] =
@@ -369,7 +430,11 @@ fn build_scene_nodes(
             attach_scene_node(&mut nodes, &mut root_nodes, Some(parent_index), body_index);
         }
     }
-    Ok((nodes, root_nodes))
+    Ok(SceneLayout {
+        nodes,
+        root_nodes,
+        occurrence_nodes,
+    })
 }
 
 fn ensure_global_group(
@@ -472,6 +537,7 @@ fn geometry_key(source: MeshExportSource<'_>) -> GeometryKey {
 
 fn append_geometry(
     source: MeshExportSource<'_>,
+    include_edges: bool,
     binary: &mut Vec<u8>,
     buffer_views: &mut Vec<Value>,
     accessors: &mut Vec<Value>,
@@ -543,10 +609,50 @@ fn append_geometry(
         "count": source.triangle_count() * 3,
         "type": "SCALAR"
     }));
+    let edge_accessor = if include_edges {
+        append_edges(source, binary, buffer_views, accessors)?
+    } else {
+        None
+    };
     Ok(GeometryLayout {
         position_accessor,
         index_accessor,
+        edge_accessor,
     })
+}
+
+fn append_edges(
+    source: MeshExportSource<'_>,
+    binary: &mut Vec<u8>,
+    buffer_views: &mut Vec<Value>,
+    accessors: &mut Vec<Value>,
+) -> Result<Option<usize>, ExactProductError> {
+    let edges = edges::feature_edges(source)?;
+    if edges.is_empty() {
+        return Ok(None);
+    }
+    let byte_length = edges
+        .len()
+        .checked_mul(8)
+        .ok_or(ExactProductError::ExportResourceLimit)?;
+    add_with_limit(binary.len(), byte_length, MAX_GLB_EXPORT_BYTES)?;
+    let byte_offset = binary.len();
+    for edge in &edges {
+        for index in edge {
+            binary.extend_from_slice(&index.to_le_bytes());
+        }
+    }
+    let view = buffer_views.len();
+    buffer_views.push(json!({
+        "buffer": 0, "byteOffset": byte_offset, "byteLength": byte_length,
+        "target": GLTF_ELEMENT_ARRAY_BUFFER
+    }));
+    let accessor = accessors.len();
+    accessors.push(json!({
+        "bufferView": view, "byteOffset": 0, "componentType": GLTF_UNSIGNED_INT,
+        "count": edges.len() * 2, "type": "SCALAR"
+    }));
+    Ok(Some(accessor))
 }
 
 fn ketchup_point_to_gltf(point_mm: [f64; 3]) -> Result<[f32; 3], ExactProductError> {
@@ -554,7 +660,11 @@ fn ketchup_point_to_gltf(point_mm: [f64; 3]) -> Result<[f32; 3], ExactProductErr
     if !point.is_finite() {
         return Err(ExactProductError::InvalidMeshExport);
     }
-    Ok(point.to_array().map(|value| value as f32))
+    let point = point.to_array().map(|value| value as f32);
+    if point.iter().any(|value| !value.is_finite()) {
+        return Err(ExactProductError::InvalidMeshExport);
+    }
+    Ok(point)
 }
 
 fn gltf_matrix(transform: Transform) -> Result<[f64; 16], ExactProductError> {

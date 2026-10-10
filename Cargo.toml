@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ketchup-analysis", "crates/ketchup-app", "crates/ketchup-application", "crates/ketchup-assistant", "crates/ketchup-model", "crates/ketchup-exact", "crates/ketchup-geometry", "crates/ketchup-headless", "crates/ketchup-interaction", "crates/ketchup-manufacturing", "crates/ketchup-mcp", "crates/ketchup-pdm", "crates/ketchup-program", "crates/ketchup-rejection", "crates/ketchup-scheduler", "crates/ketchup-test-env", "crates/ketchup-tolerance"]
+members = ["crates/ketchup-analysis", "crates/ketchup-app", "crates/ketchup-application", "crates/ketchup-assistant", "crates/ketchup-model", "crates/ketchup-exact", "crates/ketchup-geometry", "crates/ketchup-headless", "crates/ketchup-interaction", "crates/ketchup-manufacturing", "crates/ketchup-mcp", "crates/ketchup-pdm", "crates/ketchup-program", "crates/ketchup-rejection", "crates/ketchup-scheduler", "crates/ketchup-test-env", "crates/ketchup-tolerance", "crates/ketchup-view-format", "crates/ketchup-viewer", "viewer/android"]
 resolver = "3"
 exclude = ["third_party/starlark"]
 

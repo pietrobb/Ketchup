@@ -1,0 +1,25 @@
+# Kečup Viewer interface text, Slovak. Keys must match en-US.ftl exactly.
+viewer-language-name = Slovenčina
+viewer-title = Kečup Viewer
+viewer-file-filter = Balík Kečup Viewer
+viewer-open = Otvoriť model
+viewer-open-prompt = Otvorte súbor .ketchup-view
+viewer-fit = Celý model
+viewer-component = Komponent
+viewer-pick-prompt = Ťuknite alebo kliknite na komponent
+viewer-material = Materiál: { $material }
+viewer-size = Rozmer: { $x } × { $y } × { $z } mm
+viewer-own-size = Vlastný rozmer: { $x } × { $y } × { $z } mm
+viewer-attributes = Vlastnosti
+viewer-source-path = Zdrojová cesta: { $path }
+viewer-hide = Skryť
+viewer-isolate = Izolovať
+viewer-show-scene = Obnoviť scénu
+viewer-viewport = Pohľad na model
+viewer-error = Model sa nedá zobraziť.
+viewer-view-iso = Izo
+viewer-view-front = Spredu
+viewer-view-back = Zozadu
+viewer-view-left = Zľava
+viewer-view-right = Sprava
+viewer-view-top = Zhora

@@ -51,6 +51,7 @@ impl KetchupApp {
             "stl" => ("file-filter-stl", "stl"),
             "3mf" => ("file-filter-3mf", "3mf"),
             "glb" => ("file-filter-glb", "glb"),
+            "ketchup-view" => ("file-filter-viewer", "ketchup-view"),
             "csv" => ("file-filter-general-bom", "csv"),
             "xlsx" => ("file-filter-cut-list-xlsx", "xlsx"),
             "nc" => ("file-filter-cam-gcode", "nc"),
@@ -58,7 +59,7 @@ impl KetchupApp {
             "btlx" => ("file-filter-btlx", "btlx"),
             "svg" => ("file-filter-svg", "svg"),
             _ => unreachable!(
-                "the File menu and the takeoff window export only DXF, STEP, IGES, STL, 3MF, GLB, CSV, XLSX, NC, MPR, BTLx and SVG"
+                "the File menu and the takeoff window export only DXF, STEP, IGES, STL, 3MF, GLB, KETCHUP-VIEW, CSV, XLSX, NC, MPR, BTLx and SVG"
             ),
         };
         let filter_label = self.catalog.text(filter_key);
@@ -1001,7 +1002,7 @@ fn exact_glb_export_evidence(path: &Path, bundle: &ExactGlbExport) -> Vec<u8> {
     )
 }
 
-fn export_bundle_evidence(
+pub(super) fn export_bundle_evidence(
     domain: &[u8],
     primary_path: &Path,
     primary: &[u8],

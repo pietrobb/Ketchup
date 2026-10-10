@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 129] = [
+    pub(crate) const COMMANDS: [CommandSpec; 130] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -103,6 +103,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportBlenderGlb,
             label_key: "file-export-blender-glb",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportViewer,
+            label_key: "file-export-viewer",
             tool: None,
             implemented: true,
         },

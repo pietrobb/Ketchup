@@ -26,21 +26,27 @@ fn harness() -> egui_kittest::Harness<'static, KetchupApp> {
 
 /// The glyph literal of every `icon_button(...)` call in the app sources.
 fn icon_glyphs() -> Vec<(String, String)> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let mut pending = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app")];
     let mut glyphs = Vec::new();
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.to_string_lossy().ends_with("_tests.rs") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap();
-        for call in text.split("icon_button(").skip(1) {
-            let Some(arguments) = call.split(';').next() else {
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
                 continue;
-            };
-            if let Some(glyph) = arguments.split('"').nth(1) {
-                let file = path.file_name().unwrap().to_string_lossy().into_owned();
-                glyphs.push((file, glyph.to_owned()));
+            }
+            if path.to_string_lossy().ends_with("_tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for call in text.split("icon_button(").skip(1) {
+                let Some(arguments) = call.split(';').next() else {
+                    continue;
+                };
+                if let Some(glyph) = arguments.split('"').nth(1) {
+                    let file = path.file_name().unwrap().to_string_lossy().into_owned();
+                    glyphs.push((file, glyph.to_owned()));
+                }
             }
         }
     }

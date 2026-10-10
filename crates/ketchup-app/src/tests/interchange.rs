@@ -102,6 +102,198 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
 }
 
 #[test]
+fn viewer_menu_exports_saved_scenes_and_package_without_editing_cad() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("current-model.ketchup-view");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&path)
+        .always_confirm_high_risk_as(84);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    let first = app.save_view("Parallel").unwrap();
+    app.camera.projection_mode = ProjectionMode::Perspective;
+    let second = app.save_view("Perspective").unwrap();
+    install_initial_graph_result(&mut app);
+    let before = (app.document_revision(), app.undo_step_count());
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    let file_menu = harness.state().catalog.text("menu-file");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    let export = harness.state().command_label(AppCommand::ExportViewer);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+    let package = ketchup_view_format::Package::read(std::fs::File::open(&path).unwrap()).unwrap();
+    assert_eq!(package.manifest.start_scene, Some(first.0));
+    assert_eq!(package.manifest.scenes.len(), 2);
+    assert!(
+        package
+            .manifest
+            .scenes
+            .iter()
+            .any(|scene| scene.id == second.0
+                && matches!(
+                    scene.camera.projection,
+                    ketchup_view_format::Projection::Perspective { .. }
+                ))
+    );
+    assert_eq!(package.manifest.occurrences.len(), 1);
+    assert!(package.manifest.definitions[0].local_dimensions.is_some());
+    viewer_renders_every_exported_scene(&path);
+    let report = std::fs::read_to_string(path.with_extension("ketchup-view.loss.txt")).unwrap();
+    assert!(report.contains("including hidden components"));
+    assert_eq!(script.export_requests()[0].extension, "ketchup-view");
+    assert_eq!(
+        script.export_requests()[0].suggested_name,
+        "Untitled.ketchup-view"
+    );
+    assert!(script.high_risk_prompts()[0].contains("hidden"));
+    assert_eq!(
+        harness.state().digest,
+        harness.state().catalog.format(
+            "digest-exported-viewer",
+            &BTreeMap::from([("path", path.display().to_string())]),
+        )
+    );
+    assert_eq!(
+        before,
+        (
+            harness.state().document_revision(),
+            harness.state().undo_step_count()
+        )
+    );
+}
+
+/// The desktop file must open in the standalone Viewer and draw the part in
+/// every saved scene, with source millimetres and Z-up restored.
+fn viewer_renders_every_exported_scene(path: &std::path::Path) {
+    use ketchup_view_format::{DisplayStyle, LocalDimensions};
+    use ketchup_viewer::{camera::Camera, gpu, model::Model};
+    let model = Model::read(std::fs::File::open(path).unwrap()).expect("Viewer opens export");
+    let manifest = model.manifest();
+    let Some(LocalDimensions::LocalBounds { min_mm, max_mm }) =
+        &manifest.definitions[0].local_dimensions
+    else {
+        panic!("box exports its local bounds");
+    };
+    for axis in 0..3 {
+        let shown = model.bounds_mm[1][axis] - model.bounds_mm[0][axis];
+        let source = max_mm[axis] - min_mm[axis];
+        assert!(
+            (shown - source).abs() < 1e-3,
+            "axis {axis}: Viewer {shown} mm vs source {source} mm"
+        );
+    }
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("GPU adapter required, never skip rendering proof");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("GPU device");
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let renderer = gpu::MeshRenderer::new(&device, &model).expect("upload exported geometry");
+    let target = gpu::RenderTarget::new(&device, [96, 64]);
+    let visible = vec![true; manifest.occurrences.len()];
+    for scene in &manifest.scenes {
+        let camera = Camera::from_scene(&model, &scene.camera).expect("portable scene camera");
+        renderer.render(
+            &device,
+            &queue,
+            &target,
+            &camera,
+            &gpu::RenderView {
+                selected: None,
+                visible: &visible,
+                style: &DisplayStyle::Shaded,
+                section: None,
+            },
+        );
+        let pixels = target.read_rgba(&device, &queue).expect("readback");
+        let background = &pixels[..4];
+        let painted = pixels.chunks_exact(4).filter(|p| *p != background).count();
+        assert!(
+            painted > 200,
+            "scene {:?} draws the exported part",
+            scene.name
+        );
+    }
+    assert!(pollster::block_on(device.pop_error_scope()).is_none());
+}
+
+#[test]
+fn viewer_export_cancel_refusal_and_concurrent_overwrite_preserve_both_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("protected.ketchup-view");
+    let report = path.with_extension("ketchup-view.loss.txt");
+    std::fs::write(&path, b"original package").unwrap();
+    std::fs::write(&report, b"original report").unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_cancelled_export()
+        .queue_export(&path)
+        .queue_export(&path)
+        .queue_export(&path)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(85)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval_after_write(86, &path, b"external update".to_vec())
+        .queue_high_risk_approval(87)
+        .queue_high_risk_approval(88);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.camera.viewport_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)));
+    app.save_view("Scene").unwrap();
+    install_initial_graph_result(&mut app);
+    let before = (app.document_revision(), app.undo_step_count());
+    app.dispatch_command(AppCommand::ExportViewer);
+    assert!(script.high_risk_prompts().is_empty());
+    for _ in 0..2 {
+        app.dispatch_command(AppCommand::ExportViewer);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original package");
+        assert_eq!(std::fs::read(&report).unwrap(), b"original report");
+    }
+    app.dispatch_command(AppCommand::ExportViewer);
+    assert_eq!(std::fs::read(&path).unwrap(), b"external update");
+    assert_eq!(std::fs::read(&report).unwrap(), b"original report");
+    assert_eq!(before, (app.document_revision(), app.undo_step_count()));
+}
+
+#[test]
+fn viewer_file_export_requires_saved_scene_current_geometry_and_correct_destination() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("model.ketchup-view");
+    let dialogs = dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(89);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    assert!(!app.export_current_model_viewer_to(&path));
+    app.camera.viewport_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)));
+    assert!(!app.export_current_model_viewer_to(&path));
+    assert!(app.digest.contains("Save a view"));
+    app.save_view("Scene").unwrap();
+    assert!(!app.export_current_model_viewer_to(&path));
+    install_initial_graph_result(&mut app);
+    assert!(!app.export_current_model_viewer_to(&path.with_extension("glb")));
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: FeatureId(2),
+                dimension: Dimension::from_decimal("55").unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert!(!app.export_current_model_viewer_to(&path));
+    assert!(!path.exists());
+    assert!(!path.with_extension("ketchup-view.loss.txt").exists());
+    assert!(script.high_risk_prompts().is_empty());
+}
+
+#[test]
 fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent() {
     use ketchup_model::sheet_metal::{SheetMetalBend, SheetMetalSpec};
     let bend = |edge, length, angle_degrees| SheetMetalBend {

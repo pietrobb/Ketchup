@@ -38,6 +38,8 @@ LAYERS = {
     "ketchup-mcp": 5,
     "ketchup-headless": 6,
     "ketchup-app": 6,
+    "ketchup-viewer": 2,
+    "ketchup-view-format": 1,
 }
 
 MAX_MODULE_LINES = 5_000

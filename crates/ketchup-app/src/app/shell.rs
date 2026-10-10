@@ -167,6 +167,7 @@ impl KetchupApp {
             command_search: app_state::CommandSearch::default(),
             takeoff: app_state::TakeoffState::default(),
             drawings: app_state::DrawingsState::default(),
+            viewer_prep: app_state::ViewerPrepState::default(),
             saved_views_ui: Default::default(),
             section: None,
             digest,
@@ -299,10 +300,18 @@ impl KetchupApp {
         &self,
         snapshot: &Snapshot,
     ) -> Result<Vec<CurrentVisibleMesh>, ExportError> {
+        self.current_mesh_scene(snapshot, false)
+    }
+
+    pub(crate) fn current_mesh_scene(
+        &self,
+        snapshot: &Snapshot,
+        include_hidden: bool,
+    ) -> Result<Vec<CurrentVisibleMesh>, ExportError> {
         let occurrences = snapshot
             .scene_query()
             .into_iter()
-            .filter(|occurrence| occurrence.visible)
+            .filter(|occurrence| include_hidden || occurrence.visible)
             .filter(|occurrence| {
                 snapshot
                     .definition(occurrence.definition_id)
@@ -317,7 +326,11 @@ impl KetchupApp {
             .collect::<Vec<_>>();
         if occurrences.is_empty() {
             return Err(ExportError::NothingToExport {
-                subject: "visible body",
+                subject: if include_hidden {
+                    "body"
+                } else {
+                    "visible body"
+                },
             });
         }
 
@@ -885,6 +898,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ExportMeshStl);
                 self.menu_command(ui, AppCommand::ExportPrintThreeMf);
                 self.menu_command(ui, AppCommand::ExportBlenderGlb);
+                self.menu_command(ui, AppCommand::ExportViewer);
                 self.menu_command(ui, AppCommand::ExportGeneralFabrication);
                 self.menu_command(ui, AppCommand::ExportWeldmentCutList);
                 self.menu_command(ui, AppCommand::ExportProjectDrawings);
@@ -1358,6 +1372,7 @@ impl KetchupApp {
                         self.show_program_source(ui);
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
+                        self.show_viewer_notes(ui);
                         self.show_helix_tool(ui);
                         self.show_parameter_editor(ui);
                         if !Self::is_manual_alpha_build() {
@@ -1401,6 +1416,7 @@ impl KetchupApp {
                         }
                         self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
+                        self.show_viewer_notes(ui);
                         self.show_helix_tool(ui);
                         self.show_parameter_editor(ui);
                         self.show_validator_panel(ui);

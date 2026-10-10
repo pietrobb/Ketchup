@@ -2274,6 +2274,8 @@ dependencies = [
  "ketchup-rejection",
  "ketchup-scheduler",
  "ketchup-test-env",
+ "ketchup-view-format",
+ "ketchup-viewer",
  "pollster",
  "raw-window-handle",
  "rfd",
@@ -2368,7 +2370,9 @@ dependencies = [
  "epaint_default_fonts",
  "ketchup-geometry",
  "ketchup-model",
+ "ketchup-rejection",
  "ketchup-test-env",
+ "ketchup-view-format",
  "miniz_oxide",
  "serde",
  "serde_json",
@@ -2469,6 +2473,45 @@ name = "ketchup-tolerance"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "ketchup-view-format"
+version = "0.1.0"
+dependencies = [
+ "ketchup-manufacturing",
+ "ketchup-model",
+ "ketchup-rejection",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "ketchup-viewer"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_kittest",
+ "ketchup-geometry",
+ "ketchup-rejection",
+ "ketchup-view-format",
+ "num-traits",
+ "pollster",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "wgpu",
+]
+
+[[package]]
+name = "ketchup-viewer-android"
+version = "0.1.0"
+dependencies = [
+ "android-activity",
+ "eframe",
+ "ketchup-viewer",
 ]
 
 [[package]]
@@ -4380,6 +4423,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "sys-locale"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

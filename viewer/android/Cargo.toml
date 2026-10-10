@@ -1,0 +1,22 @@
+[package]
+name = "ketchup-viewer-android"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6.1", features = ["native-activity"] }
+eframe = { version = "0.32.3", default-features = false, features = ["wgpu", "default_fonts", "android-native-activity"] }
+ketchup-viewer = { path = "../../crates/ketchup-viewer" }
+
+[lints.rust]
+# NativeActivity requires an exported Rust-ABI symbol; no unsafe blocks.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "deny"

@@ -1,26 +1,21 @@
 [package]
-name = "ketchup-manufacturing"
-description = "Manufacturing output of a Ketchup model: fabrication, production packages and exporters"
+name = "ketchup-view-format"
+description = "Offline Kečup Viewer package schema and bounded reader"
+autotests = false
 version.workspace = true
 edition.workspace = true
-autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ketchup-model = { path = "../ketchup-model" }
-ketchup-view-format = { path = "../ketchup-view-format" }
 ketchup-rejection = { path = "../ketchup-rejection" }
-ketchup-geometry = { path = "../ketchup-geometry" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-epaint_default_fonts = "0.32.3"
-miniz_oxide = "0.8.9"
-ttf-parser = "0.25.1"
+sha2 = "0.10.9"
 
 [dev-dependencies]
-ketchup-test-env = { path = "../ketchup-test-env" }
+ketchup-manufacturing = { path = "../ketchup-manufacturing" }
 ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 
 [lints]

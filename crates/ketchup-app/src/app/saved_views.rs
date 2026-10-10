@@ -5,6 +5,8 @@
 use crate::*;
 use ketchup_model::document::{SavedCamera, SavedView, SavedViewId};
 
+mod viewer;
+
 /// What the saved-view controls remember between frames.
 #[derive(Default)]
 pub(crate) struct SavedViewsUi {
@@ -439,6 +441,7 @@ impl KetchupApp {
                 if delete.clicked() {
                     self.delete_saved_view(id);
                 }
+                self.viewer_scene_controls(ui, id, &name);
             });
         }
     }

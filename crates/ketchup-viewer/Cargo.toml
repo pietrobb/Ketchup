@@ -1,0 +1,40 @@
+[package]
+name = "ketchup-viewer"
+description = "Offline read-only Kečup Viewer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eframe = { version = "0.32.3", default-features = false, features = ["default_fonts", "wgpu"] }
+ketchup-rejection = { path = "../ketchup-rejection" }
+ketchup-view-format = { path = "../ketchup-view-format" }
+ketchup-geometry = { path = "../ketchup-geometry" }
+num-traits = "0.2.19"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sys-locale = "0.3"
+wgpu = { version = "25.0.2", default-features = false, features = ["wgsl"] }
+
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+wgpu = { version = "25.0.2", default-features = false, features = ["metal"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.32.3", default-features = false, features = ["android-native-activity"] }
+wgpu = { version = "25.0.2", default-features = false, features = ["vulkan"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rfd = "0.15.4"
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit"] }
+
+[dev-dependencies]
+pollster = "0.4.0"
+egui_kittest = { version = "0.32.0", features = ["wgpu"] }
+
+[lints]
+workspace = true

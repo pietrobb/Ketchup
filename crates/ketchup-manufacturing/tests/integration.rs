@@ -5,6 +5,7 @@ mod blender_glb_export;
 mod dxf_export;
 mod fabrication_validation;
 mod three_mf_export;
+mod viewer_export;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
 mod integration_support;

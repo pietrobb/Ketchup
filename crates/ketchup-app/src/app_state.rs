@@ -240,6 +240,13 @@ pub(crate) struct DrawingsState {
     pub(crate) unsaved: bool,
 }
 
+/// Viewer sharing preparation kept as project companion data, not CAD.
+#[derive(Default)]
+pub(crate) struct ViewerPrepState {
+    /// Notes or sharing choices changed since the document was opened or saved.
+    pub(crate) unsaved: bool,
+}
+
 pub(crate) struct TakeoffCache {
     pub(crate) program: (String, String, BTreeMap<String, f64>),
     pub(crate) model: Result<Arc<ketchup_program::ProgramModel>, ketchup_program::ProgramError>,

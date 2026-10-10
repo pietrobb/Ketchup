@@ -49,6 +49,11 @@ mod takeoff;
 #[path = "app/takeoff_tests.rs"]
 mod takeoff_tests;
 mod transform;
+mod viewer_export;
+pub(crate) mod viewer_settings;
+#[cfg(test)]
+#[path = "app/viewer_settings_tests.rs"]
+mod viewer_settings_tests;
 mod viewport;
 mod viewport_paint;
 
