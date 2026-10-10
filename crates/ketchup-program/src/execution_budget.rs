@@ -1,16 +1,48 @@
 //! Bounds interpreted work, including loops inside the frozen standard library.
 use starlark::codemap::FileSpanRef;
 use starlark::eval::{BeforeStmtFuncDyn, Evaluator};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAX_STATEMENTS: u64 = 5_000_000;
 const MAX_TIME: Duration = Duration::from_secs(20);
+/// Statements between two looks at the clock and the cancel flag.
+const CHECK_EVERY: u64 = 256;
+
+/// Stops an evaluation running on another thread: the program ends at its
+/// next statement check with the error code `cancelled`. Clones share one flag.
+#[derive(Clone, Debug, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
 
 struct ExecutionBudget {
     statements: u64,
     max_statements: u64,
     started: Instant,
+    cancel: CancelToken,
 }
+
+#[derive(Debug)]
+struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("program evaluation cancelled: a newer program replaced it")
+    }
+}
+
+impl std::error::Error for Cancelled {}
 
 #[derive(Debug)]
 struct ExecutionLimit;
@@ -30,8 +62,11 @@ impl<'a, 'e: 'a> BeforeStmtFuncDyn<'a, 'e> for ExecutionBudget {
         _eval: &mut Evaluator<'v, 'a, 'e>,
     ) -> starlark::Result<()> {
         self.statements += 1;
+        if self.statements.is_multiple_of(CHECK_EVERY) && self.cancel.is_cancelled() {
+            return Err(starlark::Error::new_other(Cancelled));
+        }
         if self.statements > self.max_statements
-            || (self.statements.is_multiple_of(1024) && self.started.elapsed() > MAX_TIME)
+            || (self.statements.is_multiple_of(CHECK_EVERY) && self.started.elapsed() > MAX_TIME)
         {
             return Err(starlark::Error::new_other(ExecutionLimit));
         }
@@ -39,18 +74,19 @@ impl<'a, 'e: 'a> BeforeStmtFuncDyn<'a, 'e> for ExecutionBudget {
     }
 }
 
-pub(crate) fn install(eval: &mut Evaluator<'_, '_, '_>) {
-    install_with(eval, MAX_STATEMENTS);
+pub(crate) fn install(eval: &mut Evaluator<'_, '_, '_>, cancel: &CancelToken) {
+    install_with(eval, MAX_STATEMENTS, cancel);
 }
 
 /// Every statement and every loop or comprehension iteration counts once
 /// (`third_party/starlark/PATCH.md`).
-fn install_with(eval: &mut Evaluator<'_, '_, '_>, max_statements: u64) {
+fn install_with(eval: &mut Evaluator<'_, '_, '_>, max_statements: u64, cancel: &CancelToken) {
     // Starlark 0.13 exposes the fallible statement hook through its DAP API.
     let hook: Box<dyn BeforeStmtFuncDyn<'_, '_>> = Box::new(ExecutionBudget {
         statements: 0,
         max_statements,
         started: Instant::now(),
+        cancel: cancel.clone(),
     });
     eval.before_stmt_for_dap(hook.into());
 }
@@ -65,7 +101,7 @@ mod tests {
         let ast = AstModule::parse("budget.star", source.to_owned(), &Dialect::Extended).unwrap();
         let module = Module::new();
         let mut eval = Evaluator::new(&module);
-        install_with(&mut eval, max_statements);
+        install_with(&mut eval, max_statements, &CancelToken::default());
         eval.eval_module(ast, &Globals::standard()).map(|_| ())
     }
 

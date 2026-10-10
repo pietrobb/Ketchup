@@ -11,25 +11,42 @@ fn house_takeoff_groups_the_construction_by_material_and_section() {
     let model = ketchup_program::evaluate("tiny-house.star", HOUSE, &BTreeMap::new())
         .expect("the house evaluates")
         .model;
+    // production(tags = ["konštrukcia"]) makes the timber frame only: the
+    // takeoff of everything counts exactly those parts.
+    let made = model
+        .parts
+        .iter()
+        .filter(|part| part.tags.contains("konštrukcia"))
+        .count();
+    assert!(made > 0 && made < model.parts.len());
     let all = material_takeoff_of_all(&model);
-    assert_eq!(all.counted_parts, model.parts.len());
+    assert_eq!(all.counted_parts, made);
+    assert_eq!(all.counted_parts + all.excluded_parts, model.parts.len());
     assert!(
-        all.rows.iter().all(|row| row.material != "unspecified"),
+        model
+            .parts
+            .iter()
+            .all(|part| part.material.as_deref().is_some_and(|m| m != "unspecified")),
         "every house part names its material"
     );
 
-    let construction = model
+    // Showing everything does not reach the concept, the slab or the furniture.
+    let shown = model
         .parts
         .iter()
-        .filter(|part| !part.tags.contains("koncept"))
         .map(|part| (part.name.clone(), None))
         .collect::<BTreeMap<_, _>>();
-    let takeoff = material_takeoff(&model, &construction);
-    assert!(takeoff.excluded_parts > 0, "the concept parts are left out");
-    assert_eq!(
-        takeoff.counted_parts + takeoff.excluded_parts,
-        model.parts.len()
-    );
+    let takeoff = material_takeoff(&model, &shown);
+    assert_eq!(takeoff.counted_parts, made);
+    for outside in ["drevostavba", "betón", "matrac", "liatina"] {
+        assert!(
+            takeoff
+                .materials
+                .iter()
+                .all(|total| total.material != outside),
+            "{outside} is not made"
+        );
+    }
     for material in [
         "OSB 3",
         "sadrokartón",

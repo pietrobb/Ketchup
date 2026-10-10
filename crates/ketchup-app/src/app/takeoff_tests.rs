@@ -173,6 +173,39 @@ fn the_first_detaching_edit_says_so_and_undo_keeps_the_program() {
     assert!(harness.query_by_label(&keep).is_none());
 }
 
+/// Review 2026-10-09 BOM-1 (§5.2 step 10): with `production(tags=…)` the
+/// takeoff and the cut list count the production parts whether their layer is
+/// shown or hidden, and never the concept body, even when it is shown.
+#[test]
+fn a_production_scope_counts_hidden_production_parts_and_never_the_concept() {
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        file_name: "house.star".into(),
+        source: format!("{SOURCE}production(tags = [\"konštrukcia\"])\n"),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    let construction = app
+        .document
+        .current()
+        .tags()
+        .find(|tag| tag.name() == "konštrukcia")
+        .unwrap()
+        .id();
+    assert!(app.set_tag_visibility(construction, false));
+    assert_eq!(app.document.current_rule_program(), Some(&program));
+    app.program_evaluations.get_blocking(&program).unwrap();
+
+    let takeoff = app.material_takeoff().unwrap();
+    assert_eq!((takeoff.counted_parts, takeoff.excluded_parts), (5, 1));
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("kusovnik.csv");
+    assert!(app.export_cut_list_to(&path), "{}", app.digest);
+    let csv = std::fs::read_to_string(&path).unwrap();
+    assert!(csv.contains(",drevo,2500,140,60,5\n"), "{csv}");
+    assert!(!csv.contains("obal"), "{csv}");
+}
+
 fn snapshot_visible(app: &KetchupApp, path: &InstancePath) -> bool {
     app.document
         .current()

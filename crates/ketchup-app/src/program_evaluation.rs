@@ -8,7 +8,7 @@
 //! planning until it is ready. Only answers owed in the same call (a live-bridge
 //! request, the built-in assistant) wait, with `get_blocking`.
 use ketchup_model::document::RuleProgramSource;
-use ketchup_program::{Evaluated, ProgramError};
+use ketchup_program::{CancelToken, Evaluated, ProgramError};
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, mpsc};
 
@@ -26,13 +26,35 @@ pub(crate) enum Lookup {
 #[derive(Default)]
 pub(crate) struct ProgramEvaluations {
     ready: RefCell<Option<(RuleProgramSource, Evaluation)>>,
-    pending: RefCell<Option<(RuleProgramSource, mpsc::Receiver<Evaluation>)>>,
+    pending: RefCell<Option<Pending>>,
     repaint: RefCell<Option<eframe::egui::Context>>,
     on_ui_thread: Cell<usize>,
 }
 
-fn evaluate(source: &RuleProgramSource) -> Evaluation {
-    ketchup_program::evaluate(&source.file_name, &source.source, &source.overrides).map(Arc::new)
+/// The evaluation running on a background thread, with the flag that stops it
+/// once a newer program replaces it.
+struct Pending {
+    source: RuleProgramSource,
+    receiver: mpsc::Receiver<Evaluation>,
+    cancel: CancelToken,
+}
+
+impl Drop for Pending {
+    /// Nobody will read this evaluation any more: its thread stops at the
+    /// program's next statement instead of finishing a superseded program.
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+fn evaluate(source: &RuleProgramSource, cancel: &CancelToken) -> Evaluation {
+    ketchup_program::evaluate_cancellable(
+        &source.file_name,
+        &source.source,
+        &source.overrides,
+        cancel,
+    )
+    .map(Arc::new)
 }
 
 impl ProgramEvaluations {
@@ -41,7 +63,7 @@ impl ProgramEvaluations {
         *self.ready.borrow_mut() = Some((source.clone(), Ok(Arc::new(evaluated.clone()))));
         self.pending
             .borrow_mut()
-            .take_if(|(pending, _)| pending == source);
+            .take_if(|pending| &pending.source == source);
     }
 
     /// Starts evaluating `source` on a background thread unless it is ready or
@@ -77,11 +99,11 @@ impl ProgramEvaluations {
         let waited = self
             .pending
             .borrow_mut()
-            .take_if(|(pending, _)| pending == source)
-            .and_then(|(_, receiver)| receiver.recv().ok());
+            .take_if(|pending| &pending.source == source)
+            .and_then(|pending| pending.receiver.recv().ok());
         let evaluation = waited.unwrap_or_else(|| {
             self.on_ui_thread.set(self.on_ui_thread.get() + 1);
-            evaluate(source)
+            evaluate(source, &CancelToken::default())
         });
         *self.ready.borrow_mut() = Some((source.clone(), evaluation.clone()));
         evaluation
@@ -108,14 +130,27 @@ impl ProgramEvaluations {
     pub(crate) fn hold(&self, source: &RuleProgramSource) -> mpsc::SyncSender<Evaluation> {
         let (sender, receiver) = mpsc::sync_channel(1);
         self.ready.borrow_mut().take();
-        *self.pending.borrow_mut() = Some((source.clone(), receiver));
+        *self.pending.borrow_mut() = Some(Pending {
+            source: source.clone(),
+            receiver,
+            cancel: CancelToken::default(),
+        });
         sender
     }
 
     /// Evaluates `source` the way the background thread does.
     #[cfg(test)]
     pub(crate) fn evaluate_for_test(source: &RuleProgramSource) -> Evaluation {
-        evaluate(source)
+        evaluate(source, &CancelToken::default())
+    }
+
+    /// The cancel flag of the evaluation being made, if any.
+    #[cfg(test)]
+    fn pending_cancel(&self) -> Option<CancelToken> {
+        self.pending
+            .borrow()
+            .as_ref()
+            .map(|pending| pending.cancel.clone())
     }
 
     /// How many evaluations ran on the calling (UI) thread.
@@ -135,28 +170,36 @@ impl ProgramEvaluations {
             .pending
             .borrow()
             .as_ref()
-            .is_some_and(|(pending, _)| pending == source)
+            .is_some_and(|pending| &pending.source == source)
         {
             return true;
         }
+        // A newer program replaces the one being evaluated, which stops.
+        self.pending.borrow_mut().take();
         let (sender, receiver) = mpsc::sync_channel(1);
+        let cancel = CancelToken::default();
         let worker_source = source.clone();
+        let worker_cancel = cancel.clone();
         let repaint = self.repaint.borrow().clone();
         let spawned = std::thread::Builder::new()
             .name("ketchup-program-evaluation".into())
             .spawn(move || {
-                let _ = sender.send(evaluate(&worker_source));
+                let _ = sender.send(evaluate(&worker_source, &worker_cancel));
                 if let Some(repaint) = repaint {
                     repaint.request_repaint();
                 }
             });
         if spawned.is_ok() {
-            *self.pending.borrow_mut() = Some((source.clone(), receiver));
+            *self.pending.borrow_mut() = Some(Pending {
+                source: source.clone(),
+                receiver,
+                cancel,
+            });
             return true;
         }
         // Without a thread the evaluation happens here, once.
         self.on_ui_thread.set(self.on_ui_thread.get() + 1);
-        *self.ready.borrow_mut() = Some((source.clone(), evaluate(source)));
+        *self.ready.borrow_mut() = Some((source.clone(), evaluate(source, &cancel)));
         false
     }
 
@@ -170,17 +213,17 @@ impl ProgramEvaluations {
     fn poll(&self) {
         let finished = {
             let pending = self.pending.borrow();
-            match pending.as_ref().map(|(_, receiver)| receiver.try_recv()) {
+            match pending.as_ref().map(|pending| pending.receiver.try_recv()) {
                 Some(Ok(evaluation)) => Some(Some(evaluation)),
                 Some(Err(mpsc::TryRecvError::Disconnected)) => Some(None),
                 Some(Err(mpsc::TryRecvError::Empty)) | None => None,
             }
         };
         if let Some(evaluation) = finished
-            && let Some((source, _)) = self.pending.borrow_mut().take()
+            && let Some(pending) = self.pending.borrow_mut().take()
             && let Some(evaluation) = evaluation
         {
-            *self.ready.borrow_mut() = Some((source, evaluation));
+            *self.ready.borrow_mut() = Some((pending.source.clone(), evaluation));
         }
     }
 }
@@ -281,6 +324,40 @@ mod tests {
         );
         assert!(ready(evaluations.try_get(&other)).is_some_and(|evaluation| evaluation.is_ok()));
         assert_eq!(evaluations.on_ui_thread(), 1);
+    }
+
+    /// Review 2026-10-09 §5.2 step 12: editing the program while the old one
+    /// is still being evaluated stops the old evaluation; it does not keep a
+    /// core busy until its budget runs out. Forgetting stops it too.
+    #[test]
+    fn a_newer_program_cancels_the_evaluation_it_replaces() {
+        let evaluations = ProgramEvaluations::default();
+        let spin = program("def spin():\n    for n in range(2000000000):\n        pass\nspin()\n");
+        assert!(matches!(evaluations.try_get(&spin), Lookup::Pending));
+        let spinning = evaluations.pending_cancel().unwrap();
+        assert!(!spinning.is_cancelled());
+
+        let block = program("box(\"block\", (100, 60, 40))\n");
+        assert!(matches!(evaluations.try_get(&block), Lookup::Pending));
+        assert!(
+            spinning.is_cancelled(),
+            "the replaced evaluation is stopped"
+        );
+        let current = evaluations.pending_cancel().unwrap();
+        assert!(!current.is_cancelled());
+        assert!(
+            settle(&evaluations, &block)
+                .unwrap()
+                .model
+                .part("block")
+                .is_some()
+        );
+
+        assert!(matches!(evaluations.try_get(&spin), Lookup::Pending));
+        let again = evaluations.pending_cancel().unwrap();
+        evaluations.forget();
+        assert!(again.is_cancelled(), "nobody shows the program any more");
+        assert_eq!(evaluations.on_ui_thread(), 0);
     }
 
     #[test]

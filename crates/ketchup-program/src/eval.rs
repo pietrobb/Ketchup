@@ -8,6 +8,7 @@
 // parameters; the macro-generated wrappers inherit that.
 #![allow(clippy::too_many_arguments)]
 
+pub use crate::execution_budget::CancelToken;
 use crate::expect::{Comparison, Direction, Expectation, Measure};
 use crate::faces::{FaceFrame, FaceKind};
 use crate::frame::{self, Mat3};
@@ -1667,6 +1668,15 @@ fn builtins(builder: &mut GlobalsBuilder) {
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
             reject_swept(part, "cut")?;
+            let (min, max) = part.local_bounds();
+            let thickness = max[2] - min[2];
+            if let Some(depth) = depth_mm.filter(|depth| *depth >= thickness - TOLERANCE_MM) {
+                anyhow::bail!(
+                    "cut {name:?} on {part_name:?} is {depth} mm deep but the part is only \
+                     {thickness} mm thick; a blind cut must leave a floor. Use through=True \
+                     to cut through, or a smaller depth"
+                );
+            }
             add_operation(
                 part,
                 ProgramOperation::Cut(ProgramCut {
@@ -2374,11 +2384,27 @@ fn located_error(
 /// A prelude read from a file instead of the built-in one, with its path.
 static PRELUDE_OVERRIDE: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
 
+/// The builtins and the frozen library, made once per process: every program
+/// evaluation imports the same frozen prelude instead of evaluating it again.
+static LIBRARY: std::sync::OnceLock<Result<(Globals, FrozenModule), ProgramError>> =
+    std::sync::OnceLock::new();
+
 /// Makes every later evaluation in this process use `source` (read from
 /// `path`) as the prelude instead of the built-in [`PRELUDE`], so an edited
-/// prelude is checked without rebuilding. `false` when one was already set.
+/// prelude is checked without rebuilding. `false` when one was already set or
+/// a program was already evaluated with the built-in one.
 pub fn use_prelude(path: String, source: String) -> bool {
-    PRELUDE_OVERRIDE.set((path, source)).is_ok()
+    LIBRARY.get().is_none() && PRELUDE_OVERRIDE.set((path, source)).is_ok()
+}
+
+fn library() -> Result<(Globals, FrozenModule), ProgramError> {
+    LIBRARY
+        .get_or_init(|| {
+            let globals = globals();
+            let prelude = prelude(&globals)?;
+            Ok((globals, prelude))
+        })
+        .clone()
 }
 
 fn prelude(globals: &Globals) -> Result<FrozenModule, ProgramError> {
@@ -2392,7 +2418,7 @@ fn prelude(globals: &Globals) -> Result<FrozenModule, ProgramError> {
     let module = Module::new();
     {
         let mut eval = Evaluator::new(&module);
-        crate::execution_budget::install(&mut eval);
+        crate::execution_budget::install(&mut eval, &CancelToken::default());
         eval.eval_module(ast, globals)
             .map_err(|error| evaluation_error("prelude_invalid", error))?;
     }
@@ -2411,8 +2437,21 @@ pub fn evaluate(
     source: &str,
     overrides: &BTreeMap<String, f64>,
 ) -> Result<Evaluated, ProgramError> {
-    let globals = globals();
-    let prelude = prelude(&globals)?;
+    evaluate_cancellable(file_name, source, overrides, &CancelToken::default())
+}
+
+/// [`evaluate`] that stops with the error code `cancelled` soon after another
+/// thread cancels `cancel`, as when a newer program replaces this one.
+///
+/// # Errors
+/// As [`evaluate`], plus `cancelled`.
+pub fn evaluate_cancellable(
+    file_name: &str,
+    source: &str,
+    overrides: &BTreeMap<String, f64>,
+    cancel: &CancelToken,
+) -> Result<Evaluated, ProgramError> {
+    let (globals, prelude) = library()?;
     let ast = AstModule::parse(file_name, source.to_owned(), &dialect())
         .map_err(|error| {
             // Before a trailing newline the parser reports an unclosed bracket at 1:1;
@@ -2434,11 +2473,17 @@ pub fn evaluate(
     module.import_public_symbols(&prelude);
     let result = {
         let mut eval = Evaluator::new(&module);
-        crate::execution_budget::install(&mut eval);
+        crate::execution_budget::install(&mut eval, cancel);
         eval.set_print_handler(state.as_ref());
         eval.eval_module(ast, &globals)
             .map(|_| ())
-            .map_err(|error| located_error("evaluation_error", file_name, source, &error))
+            .map_err(|error| {
+                if cancel.is_cancelled() {
+                    evaluation_error("cancelled", &error)
+                } else {
+                    located_error("evaluation_error", file_name, source, &error)
+                }
+            })
     };
     drop(module);
     STATE.with(|slot| *slot.borrow_mut() = None);
@@ -2503,6 +2548,34 @@ mod tests {
         .unwrap();
         assert_eq!(evaluated.model.parts.len(), 1);
         assert_eq!(evaluated.model.parts[0].size_mm, [10.0, 20.0, 30.0]);
+    }
+
+    /// Review 2026-10-09 §5.2 step 12: a program replaced by a newer one stops
+    /// at once instead of running to the end of its budget on its thread.
+    #[test]
+    fn a_cancelled_evaluation_stops_soon_with_the_code_cancelled() {
+        let source = "def spin():\n    for n in range(2000000000):\n        pass\nspin()\n";
+        let cancel = CancelToken::default();
+        let worker = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                let result = evaluate_cancellable("spin.star", source, &BTreeMap::new(), &cancel);
+                (result.map(|_| ()), started.elapsed())
+            })
+        };
+        let cancelled = std::time::Instant::now();
+        cancel.cancel();
+        let (result, ran) = worker.join().unwrap();
+        let stopped_after = cancelled.elapsed();
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "cancelled", "{error}");
+        assert!(error.message.contains("cancelled"), "{error}");
+        // Without the cancel it would spin until its budget ends (seconds).
+        assert!(
+            stopped_after < std::time::Duration::from_millis(200),
+            "stopped {stopped_after:?} after the cancel (ran {ran:?})"
+        );
     }
 
     /// The library's comments are the program documentation an AI reads

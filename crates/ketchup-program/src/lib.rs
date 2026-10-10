@@ -38,8 +38,8 @@ pub mod validate;
 
 pub use bom::{Bom, bom};
 pub use eval::{
-    CallFrame, ErrorLocation, Evaluated, NumberedLine, PRELUDE, Position, ProgramError,
-    SourceLines, evaluate, use_prelude,
+    CallFrame, CancelToken, ErrorLocation, Evaluated, NumberedLine, PRELUDE, Position,
+    ProgramError, SourceLines, evaluate, evaluate_cancellable, use_prelude,
 };
 pub use exact::{ExactPair, ExactShapes, exact_candidates};
 pub use model::{

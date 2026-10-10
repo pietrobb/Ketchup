@@ -110,6 +110,9 @@ ridge = eave + B / 2.0 * tan     # spodok strechy v hrebeni
 lift = ROOF_T / math.cos(a)      # zvislá hrúbka strešného plášťa
 
 alternatives(["koncept", "konštrukcia"])
+# Vyrába sa drevostavba: kusovník, kovanie a výkaz materiálu počítajú len diely konštrukcie,
+# aj keď je ich vrstva skrytá. Koncept, základová doska, schody, komín a nábytok nie.
+production(tags = ["konštrukcia"])
 # Nosné prvky musia preniesť svoju tiaž až na základ: ležať zhora na nesenom prvku
 # (trám pod oboma koncami) alebo visieť na nosnom spoji (joint(..., bearing = True)).
 load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB"], name = "nosná konštrukcia")
