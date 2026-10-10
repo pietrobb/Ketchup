@@ -452,7 +452,13 @@ fn profile_arc<'v>(
             "start and end must lie equally far from the arc center ({r_start} mm vs {r_end} mm)"
         );
     }
-    Ok(arc)
+    // Within the modelling tolerance the centre moves onto the chord's
+    // bisector, so the published sketch arc has exactly equal radii.
+    let along = (c[0] - middle[0]) * left[0] + (c[1] - middle[1]) * left[1];
+    Ok(ProgramArc {
+        center_mm: [middle[0] + left[0] * along, middle[1] + left[1] * along],
+        ..arc
+    })
 }
 
 fn named_edges<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Vec<[String; 2]>> {

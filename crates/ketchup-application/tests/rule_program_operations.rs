@@ -260,6 +260,27 @@ fn a_through_cut_opens_a_placed_board_and_a_too_deep_blind_cut_is_explained() {
     assert!(error.contains("give depth="), "{error}");
 }
 
+/// A corner arc whose centre was rounded to 4 decimals (radii differ by
+/// 1e-4 mm) publishes as the rounded board; a centre that is really off is
+/// refused by the program with both radii.
+#[test]
+fn a_corner_arc_with_a_rounded_centre_publishes_and_a_wrong_centre_is_explained() {
+    let board = |center: &str| {
+        format!(
+            "extrude(\"top\", distance=20, profile=[\
+             [\"front\", [0, 0], [100, 0]], [\"right\", [100, 0], [100, 70]], \
+             [\"corner\", [100, 70], [70, 100], {{\"center\": {center}, \"clockwise\": False}}], \
+             [\"back\", [70, 100], [0, 100]], [\"left\", [0, 100], [0, 0]]])"
+        )
+    };
+    assert_volume(
+        volume(&mut worker(), &board("[70.0001, 70]"), "top"),
+        (100.0 * 100.0 - (1.0 - PI / 4.0) * 30.0 * 30.0) * 20.0,
+    );
+    let error = apply_error(&board("[71, 70]"));
+    assert!(error.contains("equally far from the arc center"), "{error}");
+}
+
 #[test]
 fn a_wrong_face_or_too_large_radius_is_explained() {
     let mut worker = worker();
