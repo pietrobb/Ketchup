@@ -46,7 +46,7 @@ impl KetchupApp {
         })
     }
 
-    fn import_glb_from(&mut self, pending: &PendingGlbImport) -> bool {
+    fn import_glb_from(&mut self, pending: &PendingGlbImport) -> Result<(), ImportError> {
         let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
@@ -61,6 +61,36 @@ impl KetchupApp {
             Ok(())
         })();
         self.report_import_outcome(source, result)
+    }
+
+    /// Imports `path` without the review window; the answer is the review summary.
+    pub(crate) fn import_glb_file(
+        &mut self,
+        path: &Path,
+    ) -> Result<serde_json::Value, ImportError> {
+        let source = ImportSourcePlan::seal(
+            ImportFormat::Glb,
+            path.to_owned(),
+            read_import_source(ImportFormat::Glb, path)?,
+            (),
+            &self.document.current(),
+        );
+        let plan = self.prepare_glb_import_preview_plan(source)?;
+        let (diagnostics, diagnostics_total) =
+            crate::app::import_file::bounded(plan.review.diagnostics());
+        let summary = serde_json::json!({
+            "meshes": plan.review.mesh_primitive_count(),
+            "nodes": plan.review.node_count(),
+            "instances": plan.review.instance_count(),
+            "triangles": plan.review.triangle_count(),
+            "diagnostics": diagnostics,
+            "diagnostics_total": diagnostics_total,
+        });
+        self.import_glb_from(&PendingGlbImport {
+            plan,
+            invalidated: false,
+        })?;
+        Ok(summary)
     }
 
     pub(super) fn begin_glb_import(&mut self) {
@@ -172,7 +202,7 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingGlbImport>()
                 .expect("the GLB review window has a pending import");
-            self.import_glb_from(&pending);
+            self.import_glb_from(&pending).ok();
         }
     }
 }

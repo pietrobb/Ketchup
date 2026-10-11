@@ -11,7 +11,10 @@ use ketchup_model::document::SavedViewId;
 
 impl KetchupApp {
     /// Write the current model to `path`; `false` with a reported error otherwise.
-    pub(crate) fn export_current_model_viewer_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_viewer_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let result = (|| -> Result<(), ExportError> {
             let input = self.viewer_file_input(path)?;

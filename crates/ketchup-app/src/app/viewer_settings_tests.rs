@@ -261,7 +261,10 @@ fn unreadable_stored_notes_are_kept_and_stop_the_export() {
         .map(|entry| entry.bytes().to_vec());
     assert_eq!(stored, Some(corrupt));
     let directory = tempfile::tempdir().unwrap();
-    assert!(!app.export_current_model_viewer_to(&directory.path().join("x.ketchup-view")));
+    assert!(
+        app.export_current_model_viewer_to(&directory.path().join("x.ketchup-view"))
+            .is_err()
+    );
 }
 
 #[test]

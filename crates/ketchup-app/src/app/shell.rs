@@ -64,6 +64,7 @@ impl KetchupApp {
                 bridge: None,
                 consent_broker: None,
                 consent_attached: false,
+                client_export: false,
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
@@ -1420,6 +1421,7 @@ impl KetchupApp {
                         if !layers_first {
                             self.show_layers_section(ui, false);
                         }
+                        self.show_connect_ai(ui);
                     });
                 });
             egui::CentralPanel::default()
@@ -1457,6 +1459,7 @@ impl KetchupApp {
                         self.show_received_comments(ui);
                         self.show_helix_tool(ui);
                         self.show_parameter_editor(ui);
+                        self.show_connect_ai(ui);
                         self.show_validator_panel(ui);
                     });
                 });

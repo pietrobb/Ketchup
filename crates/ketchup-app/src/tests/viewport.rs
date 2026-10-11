@@ -58,7 +58,11 @@ fn hovering_and_selecting_a_canonical_mesh_body_paints_its_outline() {
         review_error: None,
         invalidated: false,
     };
-    assert!(app.import_stl_from(&pending), "{}", app.action_digest());
+    assert!(
+        app.import_stl_from(&pending).is_ok(),
+        "{}",
+        app.action_digest()
+    );
     let snapshot = app.document.current();
     let occurrence = snapshot.occurrences().next().unwrap().id();
     assert!(

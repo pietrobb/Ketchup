@@ -8,6 +8,8 @@ use crate::slot::Slot;
 mod busy_tests;
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
+#[path = "interchange_tests.rs"]
+mod interchange;
 #[path = "mesh_conversion_tests.rs"]
 mod mesh_conversion;
 #[path = "topology_recovery_tests.rs"]

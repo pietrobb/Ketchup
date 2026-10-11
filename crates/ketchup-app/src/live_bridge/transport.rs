@@ -153,8 +153,11 @@ fn response_wait(request: &Request) -> Duration {
         | Request::CheckProgram { .. }
         | Request::ValidateProgram { .. }
         | Request::MeasureFaces { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
-        // The user confirms the open in the window, then a large document loads.
-        Request::Open { .. } => ketchup_mcp::OPEN_RESPONSE_WAIT,
+        // The user confirms the open in the window, then a large document loads;
+        // imports and exports run the exact worker and may ask the user too.
+        Request::Open { .. } | Request::Import { .. } | Request::Export { .. } => {
+            ketchup_mcp::OPEN_RESPONSE_WAIT
+        }
         _ => DEFAULT_RESPONSE_WAIT,
     }
 }

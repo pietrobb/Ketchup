@@ -613,3 +613,31 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     mcp("file", action="open", path=str(saved))
     again = export()
     assert again["title_block"]["location"] == "Žilina, parc. č. 1234/5" and again["dirty"] is False, again
+
+
+def test_step_export_and_import_round_trip_through_public_mcp(mcp, tmp_path):
+    mcp("program", action="apply", file_name="part.star", source="box('plate',(100,60,20))\nbox('post',(20,20,80),at=(200,0,0))")
+    step = tmp_path / "part.step"
+    deadline = time.monotonic() + 300
+    while True:
+        # STEP is written from the exact solids, which may still be evaluating.
+        reply = mcp("file", action="export", export_format="step", path=str(step), error=None)
+        if reply.get("error") != "export_failed" or time.monotonic() > deadline:
+            break
+        time.sleep(2)
+    assert reply["result"]["exported"] is True and step.is_file(), reply
+    assert "ISO-10303-21" in step.read_text(encoding="utf-8", errors="replace")[:200]
+    again = mcp("file", action="export", export_format="step", path=str(step), error=True)
+    assert again["error"] == "export_failed", again
+    assert mcp("file", action="export", export_format="step", path=str(tmp_path / "part.stl"), error=True)["error"] == "invalid_path"
+
+    def parts():
+        return len(mcp("inspect", action="query", kind="occurrences", limit=100)["result"]["items"])
+
+    before = parts()
+    imported = mcp("file", action="import", path=str(step))["result"]
+    assert imported["imported"] is True and imported["dirty"] is True, imported
+    assert parts() > before
+    mcp("edit", action="undo")
+    assert parts() == before
+    assert mcp("file", action="import", path=str(tmp_path / "missing.step"), error=True)["error"] == "invalid_path"

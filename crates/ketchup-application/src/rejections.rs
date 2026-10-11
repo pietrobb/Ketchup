@@ -199,6 +199,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Check that the worker executable is installed beside the app, then retry.",
     ),
     entry(
+        "export_failed",
+        Io,
+        "path",
+        "The model could not be exported; caused_by names why (for example parts without an exact solid, or the user declined a lossy or replacing export).",
+        "Fix what caused_by names, or export to another path; nothing was written.",
+    ),
+    entry(
         "hidden_viewport",
         Validation,
         "capture_mode",
@@ -225,6 +232,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "image",
         "The window could not prepare an image capture.",
         "Request the image again; restart the window if it keeps failing.",
+    ),
+    entry(
+        "import_failed",
+        Validation,
+        "path",
+        "The file could not be imported; caused_by names why. Nothing was changed.",
+        "Fix what caused_by names (for a DXF without units pass unit), or convert the file to a supported format.",
     ),
     entry(
         "incomplete_image",
@@ -554,6 +568,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "validators",
         "A validator id is not known.",
         "Use validator ids from the validators discovery.",
+    ),
+    entry(
+        "unsupported_format",
+        Request,
+        "path",
+        "The file extension or export_format is not one Kečup imports or exports.",
+        "Use a format the reason lists.",
     ),
     entry(
         "unsupported_image_protocol",

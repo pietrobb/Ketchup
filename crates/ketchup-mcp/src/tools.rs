@@ -172,9 +172,18 @@ impl Tools {
                 self.send(&action, args, DEFAULT_WAIT)
             }
             "file" => {
-                let action =
-                    take_action(&mut args, &["save", "save_as", "open", "export_drawings"])?;
-                let wait = if action == "open" {
+                let action = take_action(
+                    &mut args,
+                    &[
+                        "save",
+                        "save_as",
+                        "open",
+                        "import",
+                        "export",
+                        "export_drawings",
+                    ],
+                )?;
+                let wait = if matches!(action.as_str(), "open" | "import" | "export") {
                     OPEN_WAIT
                 } else {
                     DEFAULT_WAIT

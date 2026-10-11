@@ -91,7 +91,7 @@ impl KetchupApp {
         match self.viewer_file_input(&path) {
             Ok(input) => self.queue_viewer_export(path, input, context, PreparedExport::prepare),
             Err(error) => {
-                self.report_export_outcome("viewer", &path, Err(error));
+                self.report_export_outcome("viewer", &path, Err(error)).ok();
             }
         }
     }
@@ -189,7 +189,8 @@ impl KetchupApp {
                         self.file.activity.viewer_export = Some(task);
                     }
                     Err(error) => {
-                        self.report_export_outcome("viewer", &task.path, Err(error));
+                        self.report_export_outcome("viewer", &task.path, Err(error))
+                            .ok();
                     }
                 }
             }
@@ -235,7 +236,8 @@ impl KetchupApp {
                         self.file.activity.viewer_export = Some(task);
                     }
                     Err(error) => {
-                        self.report_export_outcome("viewer", &task.path, Err(error));
+                        self.report_export_outcome("viewer", &task.path, Err(error))
+                            .ok();
                     }
                 }
             }
@@ -249,7 +251,7 @@ impl KetchupApp {
                     Err(error @ TryRecvError::Disconnected) => Err(ExportError::failed(error)),
                 };
                 let written = self.report_export_outcome("viewer", &task.path, result);
-                if written && task.close_requested {
+                if written.is_ok() && task.close_requested {
                     context.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }

@@ -290,14 +290,17 @@ fn viewer_file_export_requires_saved_scene_current_geometry_and_correct_destinat
     let dialogs = dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(89);
     let script = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
-    assert!(!app.export_current_model_viewer_to(&path));
+    assert!(app.export_current_model_viewer_to(&path).is_err());
     app.camera.viewport_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)));
-    assert!(!app.export_current_model_viewer_to(&path));
+    assert!(app.export_current_model_viewer_to(&path).is_err());
     assert!(app.digest.contains("Save a view"));
     app.save_view("Scene").unwrap();
-    assert!(!app.export_current_model_viewer_to(&path));
+    assert!(app.export_current_model_viewer_to(&path).is_err());
     install_initial_graph_result(&mut app);
-    assert!(!app.export_current_model_viewer_to(&path.with_extension("glb")));
+    assert!(
+        app.export_current_model_viewer_to(&path.with_extension("glb"))
+            .is_err()
+    );
     app.document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetFeatureDimension {
@@ -306,7 +309,7 @@ fn viewer_file_export_requires_saved_scene_current_geometry_and_correct_destinat
             },
         ]))
         .unwrap();
-    assert!(!app.export_current_model_viewer_to(&path));
+    assert!(app.export_current_model_viewer_to(&path).is_err());
     assert!(!path.exists());
     assert!(!path.with_extension("ketchup-view.loss.txt").exists());
     assert!(script.high_risk_prompts().is_empty());
@@ -660,6 +663,7 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
         harness
             .state_mut()
             .export_current_general_fabrication_to(&path)
+            .is_ok()
     );
     assert_eq!(harness.state().side_effect_receipts.len(), 3);
     assert_eq!(
@@ -919,33 +923,33 @@ fn sketchup_scene_import_confirmation_rederives_the_exact_reviewed_plan_atomical
 
     let mut review_tamper = pending.clone();
     review_tamper.plan.review = alternate.plan.review.clone();
-    assert!(!app.import_sketchup_scene_from(&review_tamper));
+    assert!(app.import_sketchup_scene_from(&review_tamper).is_err());
     assert_eq!(state(&app), baseline);
 
     let mut proposal_tamper = pending.clone();
     proposal_tamper.plan.proposal = alternate.plan.proposal;
-    assert!(!app.import_sketchup_scene_from(&proposal_tamper));
+    assert!(app.import_sketchup_scene_from(&proposal_tamper).is_err());
     assert_eq!(state(&app), baseline);
 
     let mut source_tamper = pending.clone();
     source_tamper.plan.source.source[0] ^= 1;
-    assert!(!app.import_sketchup_scene_from(&source_tamper));
+    assert!(app.import_sketchup_scene_from(&source_tamper).is_err());
     assert_eq!(state(&app), baseline);
 
     let mut stale = pending.clone();
     stale.plan.source.revision_id += 1;
-    assert!(!app.import_sketchup_scene_from(&stale));
+    assert!(app.import_sketchup_scene_from(&stale).is_err());
     assert_eq!(state(&app), baseline);
 
     assert!(
-        app.import_sketchup_scene_from(&pending),
+        app.import_sketchup_scene_from(&pending).is_ok(),
         "{}",
         app.action_digest()
     );
     assert_eq!(app.document_revision(), baseline.0 + 1);
     assert_eq!(app.undo_step_count(), baseline.2 + 1);
     let committed = state(&app);
-    assert!(!app.import_sketchup_scene_from(&pending));
+    assert!(app.import_sketchup_scene_from(&pending).is_err());
     assert_eq!(state(&app), committed);
 }
 
@@ -977,7 +981,7 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
 
     let mut evidence_tamper = pending.clone();
     evidence_tamper.plan.evidence.parts[0].exact.solid_count += 1;
-    assert!(!app.import_step_from(&evidence_tamper));
+    assert!(app.import_step_from(&evidence_tamper).is_err());
     assert_unchanged(&app);
 
     let mut proposal_tamper = pending.clone();
@@ -991,25 +995,29 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
             ProposalContext::canonical_preview(),
         )
         .unwrap();
-    assert!(!app.import_step_from(&proposal_tamper));
+    assert!(app.import_step_from(&proposal_tamper).is_err());
     assert_unchanged(&app);
 
     let mut blob_tamper = pending.clone();
     blob_tamper.plan.blob_hash = "tampered".to_owned();
-    assert!(!app.import_step_from(&blob_tamper));
+    assert!(app.import_step_from(&blob_tamper).is_err());
     assert_unchanged(&app);
 
     let mut source_tamper = pending.clone();
     source_tamper.plan.source.source[0] ^= 1;
-    assert!(!app.import_step_from(&source_tamper));
+    assert!(app.import_step_from(&source_tamper).is_err());
     assert_unchanged(&app);
 
     let mut stale = pending.clone();
     stale.plan.source.revision_id += 1;
-    assert!(!app.import_step_from(&stale));
+    assert!(app.import_step_from(&stale).is_err());
     assert_unchanged(&app);
 
-    assert!(app.import_step_from(&pending), "{}", app.action_digest());
+    assert!(
+        app.import_step_from(&pending).is_ok(),
+        "{}",
+        app.action_digest()
+    );
     assert_eq!(app.document_revision(), baseline_revision + 1);
     assert_eq!(app.undo_step_count(), baseline_undo + 1);
     assert_eq!(
@@ -1020,7 +1028,7 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
     let committed_digest = app.canonical_digest();
     let committed_undo = app.undo_step_count();
     let committed_container = app.file.container_data.clone();
-    assert!(!app.import_step_from(&pending));
+    assert!(app.import_step_from(&pending).is_err());
     assert_eq!(app.document_revision(), committed_revision);
     assert_eq!(app.canonical_digest(), committed_digest);
     assert_eq!(app.undo_step_count(), committed_undo);
@@ -1075,35 +1083,39 @@ endsolid tetrahedron\n";
 
     let mut unit_tamper = pending.clone();
     unit_tamper.plan.source.unit = ImportLengthUnit::Centimetre;
-    assert!(!app.import_stl_from(&unit_tamper));
+    assert!(app.import_stl_from(&unit_tamper).is_err());
     assert_eq!(state(&app), baseline);
 
     let alternate = pending_for(&app, &path, source, ImportLengthUnit::Centimetre);
     let mut review_tamper = pending.clone();
     review_tamper.plan.review = alternate.plan.review.clone();
-    assert!(!app.import_stl_from(&review_tamper));
+    assert!(app.import_stl_from(&review_tamper).is_err());
     assert_eq!(state(&app), baseline);
 
     let mut proposal_tamper = pending.clone();
     proposal_tamper.plan.proposal = alternate.plan.proposal;
-    assert!(!app.import_stl_from(&proposal_tamper));
+    assert!(app.import_stl_from(&proposal_tamper).is_err());
     assert_eq!(state(&app), baseline);
 
     let mut source_tamper = pending.clone();
     source_tamper.plan.source.source[0] ^= 1;
-    assert!(!app.import_stl_from(&source_tamper));
+    assert!(app.import_stl_from(&source_tamper).is_err());
     assert_eq!(state(&app), baseline);
 
     let mut stale = pending.clone();
     stale.plan.source.revision_id += 1;
-    assert!(!app.import_stl_from(&stale));
+    assert!(app.import_stl_from(&stale).is_err());
     assert_eq!(state(&app), baseline);
 
-    assert!(app.import_stl_from(&pending), "{}", app.action_digest());
+    assert!(
+        app.import_stl_from(&pending).is_ok(),
+        "{}",
+        app.action_digest()
+    );
     assert_eq!(app.document_revision(), baseline.0 + 1);
     assert_eq!(app.undo_step_count(), baseline.2 + 1);
     let committed = state(&app);
-    assert!(!app.import_stl_from(&pending));
+    assert!(app.import_stl_from(&pending).is_err());
     assert_eq!(state(&app), committed);
 }
 
@@ -1133,7 +1145,7 @@ endsolid tetrahedron\n";
         review_error: None,
         invalidated: false,
     };
-    assert!(app.import_stl_from(&pending));
+    assert!(app.import_stl_from(&pending).is_ok());
 
     let snapshot = app.document.current();
     let occurrence = snapshot.occurrences().next().unwrap().id();
@@ -1189,7 +1201,11 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
         review_error: None,
         invalidated: false,
     };
-    assert!(app.import_stl_from(&pending), "{}", app.action_digest());
+    assert!(
+        app.import_stl_from(&pending).is_ok(),
+        "{}",
+        app.action_digest()
+    );
 
     let snapshot = app.document.current();
     let mesh = definition_mesh_body(&snapshot, snapshot.definitions().next().unwrap().id())
@@ -1279,18 +1295,18 @@ fn dxf_import_confirmation_rederives_the_exact_reviewed_plan_atomically() {
     let mut valid = KetchupApp::new();
     let pending = pending_for(&valid, &path, source, ImportLengthUnit::Millimetre);
     let initial = state(&valid);
-    assert!(valid.import_dxf_from(&pending));
+    assert!(valid.import_dxf_from(&pending).is_ok());
     assert_eq!(valid.document_revision(), initial.0 + 1);
     assert_eq!(valid.undo_step_count(), initial.2 + 1);
     let committed = state(&valid);
-    assert!(!valid.import_dxf_from(&pending));
+    assert!(valid.import_dxf_from(&pending).is_err());
     assert_eq!(state(&valid), committed);
 
     let mut unit_tampered = KetchupApp::new();
     let mut pending = pending_for(&unit_tampered, &path, source, ImportLengthUnit::Millimetre);
     pending.plan.source.unit = ImportLengthUnit::Centimetre;
     let before = state(&unit_tampered);
-    assert!(!unit_tampered.import_dxf_from(&pending));
+    assert!(unit_tampered.import_dxf_from(&pending).is_err());
     assert_eq!(state(&unit_tampered), before);
 
     let mut review_tampered = KetchupApp::new();
@@ -1308,7 +1324,7 @@ fn dxf_import_confirmation_rederives_the_exact_reviewed_plan_atomically() {
     );
     pending.plan.review = alternate.plan.review;
     let before = state(&review_tampered);
-    assert!(!review_tampered.import_dxf_from(&pending));
+    assert!(review_tampered.import_dxf_from(&pending).is_err());
     assert_eq!(state(&review_tampered), before);
 
     let mut proposal_tampered = KetchupApp::new();
@@ -1326,14 +1342,14 @@ fn dxf_import_confirmation_rederives_the_exact_reviewed_plan_atomically() {
     );
     pending.plan.proposal = alternate.plan.proposal;
     let before = state(&proposal_tampered);
-    assert!(!proposal_tampered.import_dxf_from(&pending));
+    assert!(proposal_tampered.import_dxf_from(&pending).is_err());
     assert_eq!(state(&proposal_tampered), before);
 
     let mut unconfirmed = KetchupApp::new();
     let mut pending = pending_for(&unconfirmed, &path, source, ImportLengthUnit::Millimetre);
     pending.unit_confirmed = false;
     let before = state(&unconfirmed);
-    assert!(!unconfirmed.import_dxf_from(&pending));
+    assert!(unconfirmed.import_dxf_from(&pending).is_err());
     assert_eq!(state(&unconfirmed), before);
 
     let mut stale = KetchupApp::new();
@@ -1348,7 +1364,7 @@ fn dxf_import_confirmation_rederives_the_exact_reviewed_plan_atomically() {
         ]))
         .unwrap();
     let after_drift = state(&stale);
-    assert!(!stale.import_dxf_from(&pending));
+    assert!(stale.import_dxf_from(&pending).is_err());
     assert_eq!(state(&stale), after_drift);
 }
 
@@ -1380,7 +1396,7 @@ fn imported_dxf_profiles_remain_projected_and_pickable_after_persistence() {
         review_error: None,
         invalidated: false,
     };
-    assert!(app.import_dxf_from(&pending));
+    assert!(app.import_dxf_from(&pending).is_ok());
 
     let committed = app.document.current();
     let reopened =

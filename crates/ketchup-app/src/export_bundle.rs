@@ -247,6 +247,19 @@ impl KetchupApp {
         precondition: &ExportBundlePrecondition,
         evidence: &[u8],
     ) -> Result<(), ExportError> {
+        if self.live.client_export && consent.class == HighRiskClass::LossyConversion {
+            // Nobody in the window asked for this file, so nobody confirms
+            // replacing one; the client reads the loss report itself. A release
+            // to manufacturing still waits for the user's confirmation.
+            return if precondition.primary_sha256.is_some() || precondition.report_sha256.is_some()
+            {
+                Err(ExportError::Destination {
+                    requirement: "a new file name; a client export never replaces an existing file or loss report",
+                })
+            } else {
+                Ok(())
+            };
+        }
         let title = self.catalog.text(consent.title_key);
         let risk = self.catalog.text(consent.risk_key);
         self.authorize_path_side_effect(
@@ -280,20 +293,19 @@ impl KetchupApp {
     }
 
     /// Reports one finished export under its catalog key (`digest-exported-<key>` or
-    /// `error-export-<key>`); a refusal names its typed reason.
+    /// `error-export-<key>`); a refusal names its typed reason. The result is passed on.
     pub(crate) fn report_export_outcome(
         &mut self,
         catalog_key: &str,
         path: &Path,
         result: Result<(), ExportError>,
-    ) -> bool {
-        match result {
+    ) -> Result<(), ExportError> {
+        match &result {
             Ok(()) => {
                 self.digest = self.catalog.format(
                     &format!("digest-exported-{catalog_key}"),
                     &BTreeMap::from([("path", path.display().to_string())]),
                 );
-                true
             }
             Err(error) => {
                 self.digest = self.catalog.format(
@@ -303,9 +315,9 @@ impl KetchupApp {
                         ("reason", error.to_string()),
                     ]),
                 );
-                false
             }
         }
+        result
     }
 }
 
@@ -1065,7 +1077,10 @@ mod tests {
         assert!(cause.downcast_ref::<std::io::Error>().is_some());
 
         let mut app = KetchupApp::new();
-        assert!(!app.export_current_profiles_dxf_to(&directory.path().join("plan.dwg")));
+        assert!(
+            app.export_current_profiles_dxf_to(&directory.path().join("plan.dwg"))
+                .is_err()
+        );
         assert!(
             app.digest
                 .contains("an explicit .dxf destination; native DWG export is unavailable"),

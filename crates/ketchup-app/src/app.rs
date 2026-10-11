@@ -5,6 +5,7 @@
 mod assistant;
 mod assistant_panel;
 mod commands;
+mod connect_ai;
 mod document;
 mod drawing;
 mod exact;
@@ -17,6 +18,7 @@ mod hidden_selection_tests;
 #[path = "app/icon_button_tests.rs"]
 mod icon_button_tests;
 mod import;
+pub(crate) mod import_file;
 #[cfg(test)]
 #[path = "app/interactive_house_tests.rs"]
 mod interactive_house_tests;

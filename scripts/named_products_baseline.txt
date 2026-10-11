@@ -5,10 +5,9 @@ crates/ketchup-app/src/app/assistant.rs:panel 2
 crates/ketchup-app/src/app/assistant_panel.rs:panel 7
 crates/ketchup-app/src/app/commands.rs:panel 28
 crates/ketchup-app/src/app/document.rs:panel 14
-crates/ketchup-app/src/app/document.rs:weldment 1
 crates/ketchup-app/src/app/drawing.rs:panel 4
 crates/ketchup-app/src/app/export.rs:timber 1
-crates/ketchup-app/src/app/export.rs:weldment 15
+crates/ketchup-app/src/app/export.rs:weldment 14
 crates/ketchup-app/src/app/selection.rs:panel 3
 crates/ketchup-app/src/app/shell.rs:panel 47
 crates/ketchup-app/src/app/structure.rs:panel 1

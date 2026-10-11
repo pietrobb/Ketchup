@@ -26,6 +26,9 @@ pub(crate) struct LiveState {
     pub(crate) bridge: Option<live_bridge::LiveBridge>,
     pub(crate) consent_broker: Option<live_bridge::consent::ConsentBroker>,
     pub(crate) consent_attached: bool,
+    /// An export a client asked for is running: its loss report goes back to the
+    /// client instead of a lossy-conversion prompt, and it never replaces a file.
+    pub(crate) client_export: bool,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

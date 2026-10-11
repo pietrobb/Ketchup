@@ -201,24 +201,22 @@ impl std::error::Error for ImportError {
 
 impl KetchupApp {
     /// Reports one finished import in the action digest; a refusal names its typed reason.
+    /// The result is passed on.
     pub(crate) fn report_import_outcome(
         &mut self,
         source: &ImportSourcePlan<impl Sized>,
         result: Result<(), ImportError>,
-    ) -> bool {
-        match result {
+    ) -> Result<(), ImportError> {
+        match &result {
             Ok(()) => {
                 self.digest = self.catalog.format(
                     &format!("digest-imported-{}", import_catalog_key(source.format)),
                     &BTreeMap::from([("path", source.path.display().to_string())]),
                 );
-                true
             }
-            Err(error) => {
-                self.report_import_failure(&source.path, &error);
-                false
-            }
+            Err(error) => self.report_import_failure(&source.path, error),
         }
+        result
     }
 
     pub(crate) fn report_import_failure(&mut self, path: &Path, error: &ImportError) {

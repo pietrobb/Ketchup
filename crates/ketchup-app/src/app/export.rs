@@ -83,7 +83,10 @@ impl KetchupApp {
         })
     }
 
-    pub(crate) fn export_current_profiles_dxf_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_profiles_dxf_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = if path
@@ -129,7 +132,7 @@ impl KetchupApp {
         self.report_export_outcome("dxf", path, result)
     }
 
-    pub(crate) fn export_current_model_stl_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_stl_to(&mut self, path: &Path) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
@@ -187,7 +190,10 @@ impl KetchupApp {
         self.report_export_outcome("stl", path, result)
     }
 
-    pub(crate) fn export_current_model_three_mf_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_three_mf_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
@@ -234,7 +240,7 @@ impl KetchupApp {
         self.report_export_outcome("3mf", path, result)
     }
 
-    pub(crate) fn export_current_model_glb_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_glb_to(&mut self, path: &Path) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
@@ -318,11 +324,11 @@ impl KetchupApp {
         }
     }
 
-    pub fn export_current_sheet_metal_manufacturing_to(
+    pub(crate) fn export_current_sheet_metal_manufacturing_to(
         &mut self,
         feature_id: FeatureId,
         path: &Path,
-    ) -> bool {
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| -> Result<(), ExportError> {
@@ -380,7 +386,10 @@ impl KetchupApp {
         self.report_export_outcome("general-fabrication", path, result)
     }
 
-    pub(crate) fn export_current_general_fabrication_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_general_fabrication_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| -> Result<(), ExportError> {
@@ -437,7 +446,10 @@ impl KetchupApp {
         self.report_export_outcome("general-fabrication", path, result)
     }
 
-    pub fn export_current_weldment_cut_list_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_member_cut_list_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| -> Result<(), ExportError> {
@@ -517,7 +529,10 @@ impl KetchupApp {
         self.report_export_outcome("general-fabrication", path, result)
     }
 
-    pub(crate) fn export_current_model_homag_mpr_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_homag_mpr_to(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| -> Result<(), ExportError> {
@@ -570,7 +585,7 @@ impl KetchupApp {
         self.report_export_outcome("homag-mpr", path, result)
     }
 
-    pub(crate) fn export_current_model_btlx_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_btlx_to(&mut self, path: &Path) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
@@ -631,7 +646,7 @@ impl KetchupApp {
         self.report_export_outcome("btlx", path, result)
     }
 
-    pub(crate) fn export_current_model_step_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_step_to(&mut self, path: &Path) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| -> Result<(), ExportError> {
@@ -717,7 +732,7 @@ impl KetchupApp {
         self.report_export_outcome("step", path, result)
     }
 
-    pub(crate) fn export_current_model_iges_to(&mut self, path: &Path) -> bool {
+    pub(crate) fn export_current_model_iges_to(&mut self, path: &Path) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| -> Result<(), ExportError> {

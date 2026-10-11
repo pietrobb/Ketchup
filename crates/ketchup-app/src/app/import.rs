@@ -60,7 +60,10 @@ impl KetchupApp {
         })
     }
 
-    pub(crate) fn import_stl_from(&mut self, pending: &PendingStlImport) -> bool {
+    pub(crate) fn import_stl_from(
+        &mut self,
+        pending: &PendingStlImport,
+    ) -> Result<(), ImportError> {
         let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
@@ -162,7 +165,10 @@ impl KetchupApp {
         })
     }
 
-    pub(crate) fn import_dxf_from(&mut self, pending: &PendingDxfImport) -> bool {
+    pub(crate) fn import_dxf_from(
+        &mut self,
+        pending: &PendingDxfImport,
+    ) -> Result<(), ImportError> {
         let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
@@ -253,7 +259,10 @@ impl KetchupApp {
         })
     }
 
-    pub(crate) fn import_step_from(&mut self, pending: &PendingStepImport) -> bool {
+    pub(crate) fn import_step_from(
+        &mut self,
+        pending: &PendingStepImport,
+    ) -> Result<(), ImportError> {
         let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
@@ -341,7 +350,10 @@ impl KetchupApp {
         })
     }
 
-    pub(crate) fn import_iges_from(&mut self, pending: &PendingIgesImport) -> bool {
+    pub(crate) fn import_iges_from(
+        &mut self,
+        pending: &PendingIgesImport,
+    ) -> Result<(), ImportError> {
         let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
@@ -408,7 +420,7 @@ impl KetchupApp {
     pub(crate) fn import_sketchup_scene_from(
         &mut self,
         pending: &PendingSketchupSceneImport,
-    ) -> bool {
+    ) -> Result<(), ImportError> {
         let source = &pending.plan.source;
         let result = (|| {
             if pending.invalidated {
@@ -506,7 +518,7 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingStlImport>()
                 .expect("the STL review window has a pending import");
-            self.import_stl_from(&pending);
+            self.import_stl_from(&pending).ok();
         }
     }
 
@@ -647,7 +659,7 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingDxfImport>()
                 .expect("the DXF review window has a pending import");
-            self.import_dxf_from(&pending);
+            self.import_dxf_from(&pending).ok();
         }
     }
 
@@ -708,7 +720,7 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingStepImport>()
                 .expect("the STEP review window has a pending import");
-            self.import_step_from(&pending);
+            self.import_step_from(&pending).ok();
         }
     }
 
@@ -779,7 +791,7 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingIgesImport>()
                 .expect("the IGES review window has a pending import");
-            self.import_iges_from(&pending);
+            self.import_iges_from(&pending).ok();
         }
     }
 
@@ -863,7 +875,7 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingSketchupSceneImport>()
                 .expect("the SketchUp scene review window has a pending import");
-            self.import_sketchup_scene_from(&pending);
+            self.import_sketchup_scene_from(&pending).ok();
         }
     }
 }

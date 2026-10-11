@@ -987,47 +987,47 @@ impl KetchupApp {
             }
             AppCommand::ExportDrawingDxf => {
                 if let Some(path) = self.choose_export_path("dxf") {
-                    self.export_current_profiles_dxf_to(&path);
+                    self.export_current_profiles_dxf_to(&path).ok();
                 }
             }
             AppCommand::ExportExactStep => {
                 if let Some(path) = self.choose_export_path("step") {
-                    self.export_current_model_step_to(&path);
+                    self.export_current_model_step_to(&path).ok();
                 }
             }
             AppCommand::ExportExactIges => {
                 if let Some(path) = self.choose_export_path("iges") {
-                    self.export_current_model_iges_to(&path);
+                    self.export_current_model_iges_to(&path).ok();
                 }
             }
             AppCommand::ExportMeshStl => {
                 if let Some(path) = self.choose_export_path("stl") {
-                    self.export_current_model_stl_to(&path);
+                    self.export_current_model_stl_to(&path).ok();
                 }
             }
             AppCommand::ExportPrintThreeMf => {
                 if let Some(path) = self.choose_export_path("3mf") {
-                    self.export_current_model_three_mf_to(&path);
+                    self.export_current_model_three_mf_to(&path).ok();
                 }
             }
             AppCommand::ExportBlenderGlb => {
                 if let Some(path) = self.choose_export_path("glb") {
-                    self.export_current_model_glb_to(&path);
+                    self.export_current_model_glb_to(&path).ok();
                 }
             }
             AppCommand::ExportViewer => {
                 if let Some(path) = self.choose_export_path("ketchup-view") {
-                    self.export_current_model_viewer_to(&path);
+                    self.export_current_model_viewer_to(&path).ok();
                 }
             }
             AppCommand::ExportGeneralFabrication => {
                 if let Some(path) = self.choose_export_path("csv") {
-                    self.export_current_general_fabrication_to(&path);
+                    self.export_current_general_fabrication_to(&path).ok();
                 }
             }
             AppCommand::ExportWeldmentCutList => {
                 if let Some(path) = self.choose_export_path("csv") {
-                    self.export_current_weldment_cut_list_to(&path);
+                    self.export_current_member_cut_list_to(&path).ok();
                 }
             }
             AppCommand::ExportProjectDrawings => self.open_project_drawings_window(),
@@ -1035,7 +1035,8 @@ impl KetchupApp {
                 match self.sole_exportable_sheet_metal_feature_id() {
                     Ok(feature_id) => {
                         if let Some(path) = self.choose_export_path("dxf") {
-                            self.export_current_sheet_metal_manufacturing_to(feature_id, &path);
+                            self.export_current_sheet_metal_manufacturing_to(feature_id, &path)
+                                .ok();
                         }
                     }
                     Err(error) => {
@@ -1133,12 +1134,12 @@ impl KetchupApp {
             }
             AppCommand::ExportHomagMpr => {
                 if let Some(path) = self.choose_export_path("mpr") {
-                    self.export_current_model_homag_mpr_to(&path);
+                    self.export_current_model_homag_mpr_to(&path).ok();
                 }
             }
             AppCommand::ExportHundeggerBtlx => {
                 if let Some(path) = self.choose_export_path("btlx") {
-                    self.export_current_model_btlx_to(&path);
+                    self.export_current_model_btlx_to(&path).ok();
                 }
             }
             AppCommand::New | AppCommand::Open => {}
