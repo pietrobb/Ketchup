@@ -11,11 +11,15 @@ crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6.1", features = ["native-activity"] }
+android_logger = "0.15"
 eframe = { version = "0.32.3", default-features = false, features = ["wgpu", "default_fonts", "android-native-activity"] }
+jni = "0.22"
 ketchup-viewer = { path = "../../crates/ketchup-viewer" }
+log = "0.4"
 
 [lints.rust]
-# NativeActivity requires an exported Rust-ABI symbol; no unsafe blocks.
+# Allowed only where marked: the exported NativeActivity symbol and the JNI
+# pointers android-activity hands over for reading the system bar insets.
 unsafe_code = "deny"
 
 [lints.clippy]

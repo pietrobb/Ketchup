@@ -27,7 +27,7 @@ wgpu = { version = "25.0.2", default-features = false, features = ["metal"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["android-native-activity"] }
-wgpu = { version = "25.0.2", default-features = false, features = ["vulkan"] }
+wgpu = { version = "25.0.2", default-features = false, features = ["vulkan", "gles"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "25.0.2", default-features = false, features = ["webgpu", "webgl"] }
