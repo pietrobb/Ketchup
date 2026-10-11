@@ -151,36 +151,6 @@ pub(crate) struct ClassificationInputs {
     pub(crate) selected_dimension: Option<ClassificationDimensionId>,
 }
 
-/// The AI assistant: provider, conversation, memory, diagnostics and the
-/// proposal under review.
-pub(crate) struct AssistantState {
-    pub(crate) provider: AssistantProvider,
-    pub(crate) model: String,
-    pub(crate) workspace_mode: AssistantWorkspaceMode,
-    pub(crate) input: String,
-    pub(crate) messages: Vec<AssistantChatMessage>,
-    pub(crate) memory: AssistantProjectMemory,
-    pub(crate) diagnostics_enabled: bool,
-    pub(crate) api_logs: Vec<AssistantApiLogEntry>,
-    pub(crate) selected_api_log: Option<usize>,
-    pub(crate) inspector_tab: AssistantInspectorTab,
-    pub(crate) memory_search: String,
-    pub(crate) transport: Arc<dyn AssistantTransport>,
-    /// Test-only hold before context preparation, so a test can act while a request is
-    /// still being prepared.
-    #[cfg(feature = "testing")]
-    pub(crate) context_preparation_delay: Duration,
-    pub(crate) chat_task: Option<AssistantChatTask>,
-    pub(crate) pending_execution: Option<AssistantPendingExecution>,
-    pub(crate) request_sequence: u64,
-    pub(crate) saved_conversation_digest: String,
-    pub(crate) intent_kind: AssistantIntentKind,
-    pub(crate) target_input: String,
-    pub(crate) value_input: String,
-    pub(crate) proposal: Option<AssistantPreviewPlan>,
-    pub(crate) verification: Option<AssistantVerification>,
-}
-
 /// What a copy or cut puts on the system clipboard. Ctrl+V pastes the parts
 /// only while the system clipboard still holds it: text copied elsewhere since
 /// then is not a request to paste old parts.

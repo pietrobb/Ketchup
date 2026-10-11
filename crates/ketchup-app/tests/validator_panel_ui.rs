@@ -1,5 +1,5 @@
-//! The operator must be able to see what the validators say without asking the
-//! Assistant first: which validators exist, what each one checks, a button that
+//! The operator must be able to see what the validators say without asking an
+//! AI client first: which validators exist, what each one checks, a button that
 //! runs them on the current document, and findings that name concrete parts.
 
 use crate::harness;
@@ -7,20 +7,6 @@ use crate::harness;
 use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::KetchupApp;
-use ketchup_assistant::sidecar::{AssistantBoxIntent, AssistantModelIntent};
-
-fn empty_intent(boxes: Vec<AssistantBoxIntent>) -> AssistantModelIntent {
-    AssistantModelIntent {
-        replace_scene: true,
-        boxes,
-        translations: Vec::new(),
-        rotations: Vec::new(),
-        profile_translations: Vec::new(),
-        parameter_edits: Vec::new(),
-        linear_arrays: Vec::new(),
-    }
-}
-
 fn open_validator_panel(shell: &mut Shell) {
     let title = shell.catalog().text("validators-title");
     shell.click_role_and_label(Role::Button, &title);
@@ -28,25 +14,21 @@ fn open_validator_panel(shell: &mut Shell) {
 }
 
 fn build_two_colliding_columns(shell: &mut Shell) {
-    assert!(
-        shell
-            .app_mut()
-            .prepare_assistant_model_intent(empty_intent(vec![
-                AssistantBoxIntent {
-                    name: "Column A".to_owned(),
-                    size_mm: [400.0, 400.0, 2_500.0],
-                    origin_mm: [0.0, 0.0, 0.0],
-                    subtract_boxes: Vec::new(),
-                },
-                AssistantBoxIntent {
-                    name: "Column B".to_owned(),
-                    size_mm: [400.0, 400.0, 2_500.0],
-                    origin_mm: [200.0, 0.0, 0.0],
-                    subtract_boxes: Vec::new(),
-                },
-            ]))
+    harness::replace_scene_with_boxes(
+        shell.app_mut(),
+        &[
+            harness::BoxPart {
+                name: "Column A",
+                size_mm: [400.0, 400.0, 2_500.0],
+                origin_mm: [0.0, 0.0, 0.0],
+            },
+            harness::BoxPart {
+                name: "Column B",
+                size_mm: [400.0, 400.0, 2_500.0],
+                origin_mm: [200.0, 0.0, 0.0],
+            },
+        ],
     );
-    assert!(shell.app_mut().confirm_assistant_proposal());
 }
 
 #[test]

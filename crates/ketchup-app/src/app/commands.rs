@@ -1160,8 +1160,7 @@ impl KetchupApp {
             requested: self.validator_panel.selection.clone(),
             unknown: Vec::new(),
         };
-        let validation =
-            self.assistant_validation_context(&snapshot, &self.exact.results, &selection);
+        let validation = self.validation_context(&snapshot, &self.exact.results, &selection);
         self.validator_panel.state.report_source =
             Some(validator_ui::ValidatorSnapshot::new(&snapshot));
         self.validator_panel.state.notice = None;

@@ -1,6 +1,7 @@
 //! Groups, components, tags, clipboard and selection commands.
 
 use super::*;
+use ketchup_model::document::CollectionId;
 
 #[test]
 fn removing_the_last_topological_selection_clears_the_occurrence_selection() {
@@ -399,7 +400,6 @@ fn dimensions_panel_creates_categories_and_assigns_independent_values_in_one_und
         None
     );
 
-    app.assistant.workspace_mode = AssistantWorkspaceMode::Tab;
     app.classification.selected_dimension = Some(ClassificationDimensionId(1));
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
@@ -918,7 +918,7 @@ fn repeated_multi_level_instance_paths_keep_world_identity_while_root_only_opera
             paths: nested_paths
         })
     );
-    assert!(!app.prepare_assistant_assembly_joint_from_selection());
+    assert!(!app.preview_assembly_joint_from_selection());
     assert!(!app.preview_selection_drawing());
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);

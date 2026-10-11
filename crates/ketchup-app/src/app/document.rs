@@ -96,8 +96,6 @@ impl KetchupApp {
         self.hover.projection_cache.get_mut().take();
         self.gesture.drag.close::<ZoomWindowDrag>();
         self.active_tool = ActiveTool::Select;
-        self.cancel_pending_assistant_work();
-        self.assistant.verification = None;
         self.side_effect_receipts.clear();
         self.gesture.drag.close::<PushPullDrag>();
         self.gesture.drag.close::<PushPullAnchor>();
@@ -131,7 +129,6 @@ impl KetchupApp {
     }
 
     pub(crate) fn new_document(&mut self) {
-        self.cancel_pending_assistant_work();
         let mut live_bridge = self.live.bridge.take();
         if let Some(bridge) = live_bridge.as_mut() {
             bridge.invalidate_document_context();
@@ -139,10 +136,6 @@ impl KetchupApp {
         let live_consent_broker = self.live.consent_broker.take();
         let live_consent_attached = self.live.consent_attached;
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
-        let assistant_transport = Arc::clone(&self.assistant.transport);
-        let assistant_request_sequence = self.assistant.request_sequence;
-        let assistant_diagnostics_enabled = self.assistant.diagnostics_enabled;
-        let assistant_inspector_tab = self.assistant.inspector_tab;
         let catalog = self.catalog.clone();
         let outliner_visible = self.panels.outliner_visible;
         let tags_visible = self.panels.tags_visible;
@@ -156,9 +149,7 @@ impl KetchupApp {
         let wgpu_target_format = self.render.wgpu_target_format;
         let wgpu_device = self.render.wgpu_device.clone();
         let wgpu_queue = self.render.wgpu_queue.clone();
-        *self = Self::with_catalog_and_initial_box(catalog, false)
-            .with_dialogs(dialogs)
-            .with_assistant_transport(assistant_transport);
+        *self = Self::with_catalog_and_initial_box(catalog, false).with_dialogs(dialogs);
         self.live.bridge = live_bridge;
         self.live.consent_broker = live_consent_broker;
         self.live.consent_attached = live_consent_attached;
@@ -167,9 +158,6 @@ impl KetchupApp {
         self.render.wgpu_queue = wgpu_queue;
         self.exact.worker_path = exact_worker_path;
         self.exact.worker_attempted = exact_worker_attempted;
-        self.assistant.request_sequence = assistant_request_sequence;
-        self.assistant.diagnostics_enabled = assistant_diagnostics_enabled;
-        self.assistant.inspector_tab = assistant_inspector_tab;
         self.panels.outliner_visible = outliner_visible;
         self.panels.tags_visible = tags_visible;
         self.panels.dimensions_visible = dimensions_visible;
@@ -196,7 +184,6 @@ impl KetchupApp {
         discard_confirmed: bool,
         context: Option<&egui::Context>,
     ) -> bool {
-        self.cancel_pending_assistant_work();
         let discard_owned = discard_confirmed
             && self.file.work_recovery_lock.is_some()
             && (self.file.path.as_deref() == Some(path)
@@ -324,8 +311,6 @@ impl KetchupApp {
                 self.reset_document_presentation();
                 self.camera.zoom_fit_pending = true;
                 self.camera.zoom_fit_pending_quiet = true;
-                self.load_assistant_conversation();
-                self.load_assistant_memory();
                 if let Some(recovery) = &self.file.recovery_open {
                     self.status_key = "status-recovery";
                     self.digest = self.catalog.format(
@@ -492,11 +477,7 @@ impl KetchupApp {
             self.report_file_persistence_error("error-save-document", &path, &error);
             return;
         }
-        let checkpoint_digest = format!(
-            "{}:{}",
-            self.document.history_digest(),
-            assistant_conversation_digest(&self.assistant.messages)
-        );
+        let checkpoint_digest = self.document.history_digest();
         if !self.is_dirty() {
             if let Some(path) = self.file.path.clone()
                 && let Err(error) = ketchup_model::persistence::clear_work_recovery(
@@ -518,8 +499,6 @@ impl KetchupApp {
         let (Some(path), Some(identity)) = (self.file.path.clone(), self.file.identity) else {
             return;
         };
-        self.store_assistant_conversation();
-        self.store_assistant_memory();
         let result = self.acquire_work_recovery_lock().and_then(|()| {
             ketchup_model::persistence::save_work_recovery_document_store_with_container_if_unchanged(
                 &path,
@@ -618,8 +597,6 @@ impl KetchupApp {
             self.report_file_persistence_error("error-save-document", path, &error);
             return Err(SaveFailure::Failed);
         }
-        self.store_assistant_conversation();
-        self.store_assistant_memory();
         let (prepared, truncate_history) = match prepared.unwrap_or_else(|| {
             super::save_activity::prepare_save(&self.document, &self.file.container_data)
         }) {
@@ -780,8 +757,6 @@ impl KetchupApp {
                 self.file.work_recovery_identity = None;
                 self.file.work_recovery_digest = None;
                 self.file.saved_digest = self.document.history_digest();
-                self.assistant.saved_conversation_digest =
-                    assistant_conversation_digest(&self.assistant.messages);
                 self.drawings.unsaved = false;
                 self.viewer_prep.unsaved = false;
                 let digest_key = if truncate_history {
@@ -1182,8 +1157,6 @@ impl KetchupApp {
     pub fn is_dirty(&self) -> bool {
         self.file.recovery_open.is_some()
             || self.document.history_digest() != self.file.saved_digest
-            || assistant_conversation_digest(&self.assistant.messages)
-                != self.assistant.saved_conversation_digest
             || self.drawings.unsaved
             || self.viewer_prep.unsaved
     }
@@ -1260,14 +1233,10 @@ impl KetchupApp {
             self.report_file_persistence_error("error-save-document", &path, &error);
             return Err(WorkRecoveryMutationError::Recovery(error));
         }
-        self.store_assistant_conversation();
-        self.store_assistant_memory();
         let document_path = self.file.path.clone();
         let file_identity = self.file.identity;
         let recovery_open = self.file.recovery_open.is_some();
         let saved_digest = self.file.saved_digest.clone();
-        let conversation_digest = assistant_conversation_digest(&self.assistant.messages);
-        let saved_conversation_digest = self.assistant.saved_conversation_digest.clone();
         let container_data = &self.file.container_data;
         let work_recovery_identity = self.file.work_recovery_identity;
         let work_recovery_digest = self.file.work_recovery_digest.clone();
@@ -1276,9 +1245,7 @@ impl KetchupApp {
         let result = self.document.try_canonical_transaction(
             |document| mutate(document).map_err(WorkRecoveryMutationError::Mutation),
             |document| {
-                let dirty = recovery_open
-                    || document.history_digest() != saved_digest
-                    || conversation_digest != saved_conversation_digest;
+                let dirty = recovery_open || document.history_digest() != saved_digest;
                 if !dirty {
                     if let Some(path) = document_path.as_deref() {
                         ketchup_model::persistence::clear_work_recovery(
@@ -1297,7 +1264,7 @@ impl KetchupApp {
                 // (a carried-forward exact publication) has nothing new to recover.
                 if work_recovery_identity.is_some()
                     && work_recovery_digest.as_deref().is_some_and(|digest| {
-                        digest == format!("{}:{conversation_digest}", document.history_digest())
+                        *digest == document.history_digest()
                     })
                 {
                     return Ok(());
@@ -1326,10 +1293,9 @@ impl KetchupApp {
         match result {
             Ok(value) => {
                 self.file.work_recovery_identity = next_work_recovery_identity;
-                self.file.work_recovery_digest = (self.is_dirty()
-                    && document_path.is_some()
-                    && file_identity.is_some())
-                .then(|| format!("{}:{conversation_digest}", self.document.history_digest()));
+                self.file.work_recovery_digest =
+                    (self.is_dirty() && document_path.is_some() && file_identity.is_some())
+                        .then(|| self.document.history_digest());
                 if let Some(error) = &publication_error {
                     let path = document_path.as_deref().unwrap_or_else(|| Path::new(""));
                     self.report_file_persistence_error("error-save-document", path, error);
@@ -1431,14 +1397,10 @@ impl KetchupApp {
         if self.cancel_ephemeral_edit_for_history() {
             return false;
         }
-        let undoing_assistant_change = self.assistant_change_can_undo();
         if !self.mutate_history_with_work_recovery(DocumentStore::undo) {
             return false;
         }
         self.invalidate_pending_import_reviews();
-        if undoing_assistant_change {
-            self.assistant.verification = None;
-        }
         self.clear_ephemeral_edit_state();
         self.end_transform_correction();
         self.cancel_rectangle_sketch();

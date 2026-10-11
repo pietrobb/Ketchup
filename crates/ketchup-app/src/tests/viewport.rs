@@ -1,6 +1,8 @@
 //! Camera, picking, selection windows and how the viewport paints the model.
 
 use super::*;
+use ketchup_model::document::MESH_BODY_SCHEMA_V1;
+use ketchup_model::document::MeshAuthority;
 
 // Palette contrast is proved once for all four appearances in
 // `theme::tests::every_palette_keeps_text_and_accent_legible`, so this file
@@ -398,34 +400,74 @@ fn viewport_click_routes_through_exact_spatial_query() {
 #[test]
 fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
     let mut app = KetchupApp::new();
-    assert!(apply_reviewed_model_intent(
-        &mut app,
-        AssistantModelIntent {
-            replace_scene: true,
-            boxes: vec![
-                AssistantBoxIntent {
-                    name: "Grooved behind".to_owned(),
-                    size_mm: [100.0, 60.0, 20.0],
-                    origin_mm: [0.0, 0.0, 0.0],
-                    subtract_boxes: vec![ketchup_assistant::sidecar::AssistantSubtractionIntent {
-                        size_mm: [10.0, 60.0, 5.0],
-                        origin_mm: [45.0, 0.0, 15.0],
-                    }],
-                },
-                AssistantBoxIntent {
-                    name: "Plain in front".to_owned(),
-                    size_mm: [100.0, 60.0, 20.0],
-                    origin_mm: [0.0, 0.0, 40.0],
-                    subtract_boxes: Vec::new(),
-                },
-            ],
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-        }
-    ));
+    let definition_id = DefinitionId(100);
+    let vertices_mm = (0..8)
+        .map(|bits| {
+            [
+                if bits & 1 == 0 { 0.0 } else { 100.0 },
+                if bits & 2 == 0 { 0.0 } else { 60.0 },
+                if bits & 4 == 0 { 25.0 } else { 35.0 },
+            ]
+        })
+        .collect();
+    let triangles = vec![
+        [0, 2, 1],
+        [1, 2, 3],
+        [4, 5, 6],
+        [5, 7, 6],
+        [0, 1, 4],
+        [1, 5, 4],
+        [2, 6, 3],
+        [3, 6, 7],
+        [0, 4, 2],
+        [2, 4, 6],
+        [1, 3, 5],
+        [3, 7, 5],
+    ];
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: "Mesh behind".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(100),
+                definition_id,
+                name: "Mesh behind body".to_owned(),
+                kind: FeatureKind::MeshBody(MeshBodySpec {
+                    schema: MESH_BODY_SCHEMA_V1.to_owned(),
+                    vertices_mm,
+                    triangles,
+                    authority: MeshAuthority::Authored {
+                        provenance: "frontmost-pick-regression".to_owned(),
+                    },
+                }),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(100),
+                definition_id,
+                name: "Mesh behind".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let behind = app
+        .document
+        .current()
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<BTreeSet<_>>();
+    assert!(app.create_box_at(Vec3::new(0.0, 0.0, 40.0), Vec3::new(100.0, 60.0, 20.0)));
+    let front = app
+        .document
+        .current()
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .find(|id| !behind.contains(id))
+        .unwrap();
     app.camera.projection_mode = ProjectionMode::Parallel;
     app.camera.yaw = 0.0;
     app.camera.pitch = 0.0;
@@ -434,7 +476,21 @@ fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
     let pointer = app.project(Vec3::new(50.0, 30.0, 60.0), rect);
 
     let selected = app.exact_pick_at_screen(pointer, rect).unwrap();
-    assert_eq!(selected.instance_path, InstancePath::root(OccurrenceId(3)));
+    assert_eq!(selected.instance_path, InstancePath::root(front));
+
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: front,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let selected = app.exact_pick_at_screen(pointer, rect).unwrap();
+    assert_eq!(
+        selected.instance_path,
+        InstancePath::root(OccurrenceId(100))
+    );
 }
 
 #[test]

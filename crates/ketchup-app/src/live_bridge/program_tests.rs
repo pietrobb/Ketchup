@@ -1228,12 +1228,12 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
         ordinal,
     };
     let undo_steps = app.undo_step_count();
-    assert!(app.prepare_assistant_general_finish(
+    assert!(app.prepare_general_finish(
         locator.clone(),
         ketchup_application::topology::GeneralFinishKind::Fillet,
         5.0
     ));
-    assert!(app.confirm_assistant_general_finish(), "{}", app.digest);
+    assert!(app.confirm_general_finish(), "{}", app.digest);
     // Naming every picked edge and the fillet's two faces reused the
     // evaluation the apply made; none ran again on the UI thread.
     assert_eq!(app.program_evaluations.on_ui_thread(), 0);
@@ -1275,7 +1275,7 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     // freezing the window, and is written once the evaluation arrives.
     let program = app.document.current_rule_program().unwrap().clone();
     let held = app.program_evaluations.hold(&program);
-    assert!(app.prepare_assistant_general_finish(
+    assert!(app.prepare_general_finish(
         locator,
         ketchup_application::topology::GeneralFinishKind::Fillet,
         5.0
@@ -1330,14 +1330,14 @@ fn a_fillet_on_a_program_that_no_longer_evaluates_says_why() {
         kind: TopologicalElementKind::Edge,
         ordinal: 0,
     };
-    assert!(app.prepare_assistant_general_finish(
+    assert!(app.prepare_general_finish(
         locator,
         ketchup_application::topology::GeneralFinishKind::Fillet,
         5.0
     ));
     let digest = app.canonical_digest();
 
-    assert!(!app.confirm_assistant_general_finish());
+    assert!(!app.confirm_general_finish());
     assert!(app.digest.contains("the wall is gone"), "{}", app.digest);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.document.current_rule_program(), Some(&broken));

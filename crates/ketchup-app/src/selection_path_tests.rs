@@ -39,24 +39,10 @@ fn nested_and_mixed_selection_paths_are_preserved_and_diagnosed_without_mutation
     let nested_diagnostic = nested_refusal.reason_text().to_owned();
     for path in &nested_paths {
         assert!(
-            nested_diagnostic.contains(&KetchupApp::assistant_instance_path_label(path)),
+            nested_diagnostic.contains(&KetchupApp::instance_path_label(path)),
             "diagnostic must identify every selected path: {nested_diagnostic}"
         );
     }
-    let context = app.assistant_context_for("inspect selection");
-    assert_eq!(context["selection_scope"], "nested_instance_paths");
-    assert_eq!(context["selected_occurrence_ids"], serde_json::json!([]));
-    assert_eq!(
-        context["selected_instance_paths"],
-        serde_json::json!(
-            nested_paths
-                .iter()
-                .map(KetchupApp::assistant_instance_path_label)
-                .collect::<Vec<_>>()
-        )
-    );
-    assert_eq!(app.assistant_selection_summary(), nested_diagnostic);
-
     let revision = app.document_revision();
     let digest = app.canonical_digest();
     let undo_steps = app.undo_step_count();
@@ -68,7 +54,7 @@ fn nested_and_mixed_selection_paths_are_preserved_and_diagnosed_without_mutation
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
 
-    assert!(!app.prepare_assistant_assembly_joint_from_selection());
+    assert!(!app.preview_assembly_joint_from_selection());
     assert!(app.action_digest().contains(&nested_diagnostic));
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
@@ -92,17 +78,6 @@ fn nested_and_mixed_selection_paths_are_preserved_and_diagnosed_without_mutation
     let mixed_refusal = app.root_occurrence_selection_error(&mixed_error);
     assert_eq!(mixed_refusal.code(), "selection-error-mixed-instance-paths");
     let mixed_diagnostic = mixed_refusal.reason_text().to_owned();
-    let mixed_context = app.assistant_context_for("inspect mixed selection");
-    assert_eq!(mixed_context["selection_scope"], "mixed_instance_paths");
-    assert_eq!(
-        mixed_context["selected_instance_paths"],
-        serde_json::json!(
-            mixed_paths
-                .iter()
-                .map(KetchupApp::assistant_instance_path_label)
-                .collect::<Vec<_>>()
-        )
-    );
     app.begin_occurrence_align();
     assert_eq!(app.action_digest(), mixed_diagnostic);
     assert!(!app.occurrence_align_visible());

@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, ColorImage, Event, ViewportCommand, ViewportId, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
-use ketchup_app::{AppCommand, AssistantWorkspaceMode, KetchupApp, live_bridge::*};
+use ketchup_app::{AppCommand, KetchupApp, live_bridge::*};
 use std::{
     io::{Read, Write},
     net::{Shutdown, TcpStream},
@@ -18,8 +18,7 @@ use std::{
 
 static GPU_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn harness() -> Harness<'static, KetchupApp> {
-    let mut app = KetchupApp::new();
-    app.set_assistant_workspace_mode(AssistantWorkspaceMode::Dock);
+    let app = KetchupApp::new();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1600.0, 1000.0))
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
@@ -466,9 +465,7 @@ fn pending_gpu_capture_rejects_precise_hidden_and_stale_states() {
         // Do not render: change state before delivery, never fabricate private GPU data.
         match case {
             "camera" => queue_command(&mut h, AppCommand::ViewTop),
-            "hidden" => h
-                .state_mut()
-                .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab),
+            "hidden" => h.input_mut().focused = false,
             "document" => {
                 assert!(h.state_mut().create_box());
                 assert_eq!(
@@ -503,8 +500,7 @@ fn offscreen_capture_works_while_the_gui_canvas_is_not_visible() {
         GPU_TEST.lock().unwrap_or_else(|error| error.into_inner()),
     );
     let mut h = harness();
-    h.state_mut()
-        .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+    h.input_mut().focused = false;
     let stamp = h.state().live_bridge_stamp();
     let rx = request_mode(&h, CaptureMode::Offscreen);
     let pass = wait_callback(&mut h);

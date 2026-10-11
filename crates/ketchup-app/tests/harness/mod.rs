@@ -18,23 +18,17 @@
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_app::{AppCommand, AssistantTransport, AssistantTransportResponse, KetchupApp};
+use ketchup_app::{AppCommand, KetchupApp};
 use ketchup_assistant::sidecar::{
-    AssistantApiDiagnostics, AssistantCadEditProgram, AssistantChatResult,
-    AssistantFeaReviewRequest, AssistantHandshake,
+    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
+    AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation,
+    AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 use ketchup_interaction::{LocaleCatalog, Vec3};
-use ketchup_rejection::{Rejection, RejectionPhase};
-use ketchup_scheduler::assistant::AssistantCancellation;
 
 use crate::integration_support::{FileTurn, file_turn};
 
 use eframe::egui::{self, Key, Modifiers, Pos2, Rect, Vec2, accesskit::Role};
-use std::collections::{BTreeSet, VecDeque};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
 
 const SCREEN: Vec2 = Vec2::new(1600.0, 1000.0);
 /// Longest [`Shell::wait_until`] waits; generous because the whole workspace's tests share
@@ -58,164 +52,91 @@ pub fn poll_until(within: std::time::Duration, mut done: impl FnMut() -> bool) -
     }
 }
 
-pub struct ScriptedAssistantTransport {
-    responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
-    cad_edit_programs: Mutex<VecDeque<(String, AssistantCadEditProgram)>>,
-    fea_reviews: Mutex<VecDeque<(String, AssistantFeaReviewRequest)>>,
-    diagnostics: Mutex<VecDeque<AssistantApiDiagnostics>>,
-    request_ids: Mutex<Vec<String>>,
-    contexts: Mutex<Vec<serde_json::Value>>,
-    cancellation_requests: BTreeSet<String>,
-    started_cancellation_requests: AtomicUsize,
-    completed_cancellations: AtomicUsize,
+/// One extruded rectangular part: `size_mm` is plan width, plan depth and
+/// height; `origin_mm` is its minimum corner.
+pub struct BoxPart<'a> {
+    pub name: &'a str,
+    pub size_mm: [f64; 3],
+    pub origin_mm: [f64; 3],
 }
 
-impl ScriptedAssistantTransport {
-    pub fn new(responses: impl IntoIterator<Item = (String, AssistantChatResult)>) -> Self {
-        Self {
-            responses: Mutex::new(responses.into_iter().collect()),
-            cad_edit_programs: Mutex::new(VecDeque::new()),
-            fea_reviews: Mutex::new(VecDeque::new()),
-            diagnostics: Mutex::new(VecDeque::new()),
-            request_ids: Mutex::new(Vec::new()),
-            contexts: Mutex::new(Vec::new()),
-            cancellation_requests: BTreeSet::new(),
-            started_cancellation_requests: AtomicUsize::new(0),
-            completed_cancellations: AtomicUsize::new(0),
+/// Replace every occurrence with the given boxes as one typed CAD program, the
+/// way an MCP client builds a scene (one revision, one undo step).
+pub fn replace_scene_with_boxes(app: &mut KetchupApp, boxes: &[BoxPart<'_>]) {
+    let existing = app
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| occurrence.id().0)
+        .collect::<Vec<_>>();
+    let mut operations = vec![AssistantCadEditOperation::Delete {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: existing,
+        },
+        dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+    }];
+    operations.extend(boxes.iter().map(|part| {
+        let [width, depth, height] = part.size_mm;
+        let corners = [[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]];
+        AssistantCadEditOperation::CreatePart {
+            holes: Vec::new(),
+            pockets: Vec::new(),
+            name: part.name.to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: (0..4)
+                .map(|index| AssistantSketchEntity::Line {
+                    id: index as u64 + 1,
+                    start_mm: corners[index],
+                    end_mm: corners[(index + 1) % 4],
+                })
+                .collect(),
+            constraints: Vec::new(),
+            feature: AssistantCadPartFeature::Extrusion {
+                distance_mm: height,
+            },
+            translation_mm: part.origin_mm,
+            rotation: None,
         }
-    }
-
-    pub fn with_cancellation_request(mut self, message: impl Into<String>) -> Self {
-        self.cancellation_requests.insert(message.into());
-        self
-    }
-
-    pub fn queue_diagnostics(&self, diagnostics: AssistantApiDiagnostics) {
-        self.diagnostics.lock().unwrap().push_back(diagnostics);
-    }
-
-    pub fn queue_response(&self, message: impl Into<String>, response: AssistantChatResult) {
-        self.responses
-            .lock()
-            .unwrap()
-            .push_back((message.into(), response));
-    }
-
-    pub fn queue_cad_edit_program(
-        &self,
-        message: impl Into<String>,
-        program: AssistantCadEditProgram,
-    ) {
-        self.cad_edit_programs
-            .lock()
-            .unwrap()
-            .push_back((message.into(), program));
-    }
-
-    pub fn queue_fea_review(&self, message: impl Into<String>, request: AssistantFeaReviewRequest) {
-        self.fea_reviews
-            .lock()
-            .unwrap()
-            .push_back((message.into(), request));
-    }
-
-    pub fn remaining_responses(&self) -> usize {
-        self.responses.lock().unwrap().len()
-    }
-
-    pub fn request_ids(&self) -> Vec<String> {
-        self.request_ids.lock().unwrap().clone()
-    }
-
-    pub fn contexts(&self) -> Vec<serde_json::Value> {
-        self.contexts.lock().unwrap().clone()
-    }
-
-    pub fn started_cancellation_requests(&self) -> usize {
-        self.started_cancellation_requests.load(Ordering::Acquire)
-    }
-
-    pub fn completed_cancellations(&self) -> usize {
-        self.completed_cancellations.load(Ordering::Acquire)
-    }
+    }));
+    app.headless_apply_cad_program(&AssistantCadEditProgram { operations })
+        .unwrap();
 }
 
-fn scripted_cancellation() -> Rejection {
-    Rejection::new("scripted.cancelled", RejectionPhase::Io)
-        .reason("scripted assistant request was cancelled")
+/// Move one occurrence by `delta_mm` as one typed CAD program.
+pub fn translate_occurrence(app: &mut KetchupApp, occurrence_id: u64, delta_mm: [f64; 3]) {
+    let operations = vec![AssistantCadEditOperation::Transform {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![occurrence_id],
+        },
+        translation_mm: delta_mm,
+        rotation: None,
+    }];
+    app.headless_apply_cad_program(&AssistantCadEditProgram { operations })
+        .unwrap();
 }
 
-impl AssistantTransport for ScriptedAssistantTransport {
-    fn chat(
-        &self,
-        _handshake: AssistantHandshake,
-        request_id: &str,
-        message: &str,
-        context: &serde_json::Value,
-        cancellation: AssistantCancellation,
-    ) -> Result<AssistantChatResult, Rejection> {
-        self.request_ids.lock().unwrap().push(request_id.to_owned());
-        self.contexts.lock().unwrap().push(context.clone());
-        if self.cancellation_requests.contains(message) {
-            self.started_cancellation_requests
-                .fetch_add(1, Ordering::AcqRel);
-            while !cancellation.is_cancelled() {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            self.completed_cancellations.fetch_add(1, Ordering::AcqRel);
-            return Err(scripted_cancellation());
-        }
-        if cancellation.is_cancelled() {
-            return Err(scripted_cancellation());
-        }
-        let mut responses = self.responses.lock().unwrap();
-        if cancellation.is_cancelled() {
-            return Err(scripted_cancellation());
-        }
-        let index = responses
-            .iter()
-            .position(|(expected, _)| expected == message)
-            .ok_or_else(|| {
-                Rejection::new("scripted.no_response", RejectionPhase::Request).reason(format!(
-                    "scripted assistant has no response for {message:?}"
-                ))
-            })?;
-        let (_, result) = responses
-            .remove(index)
-            .expect("the matching scripted response exists");
-        Ok(result)
-    }
-
-    fn chat_with_diagnostics(
-        &self,
-        handshake: AssistantHandshake,
-        request_id: &str,
-        message: &str,
-        context: &serde_json::Value,
-        cancellation: AssistantCancellation,
-    ) -> Result<AssistantTransportResponse, Rejection> {
-        let result = self.chat(handshake, request_id, message, context, cancellation)?;
-        let cad_edit_program = {
-            let mut programs = self.cad_edit_programs.lock().unwrap();
-            programs
-                .iter()
-                .position(|(expected, _)| expected == message)
-                .and_then(|index| programs.remove(index).map(|(_, program)| program))
-        };
-        let fea_review = {
-            let mut requests = self.fea_reviews.lock().unwrap();
-            requests
-                .iter()
-                .position(|(expected, _)| expected == message)
-                .and_then(|index| requests.remove(index).map(|(_, request)| request))
-        };
-        Ok(AssistantTransportResponse {
-            result,
-            cad_edit_program,
-            fea_review,
-            diagnostics: self.diagnostics.lock().unwrap().pop_front(),
-        })
-    }
+/// Rotate one occurrence about a world axis through `pivot_mm` as one typed CAD program.
+pub fn rotate_occurrence(
+    app: &mut KetchupApp,
+    occurrence_id: u64,
+    pivot_mm: [f64; 3],
+    axis: [f64; 3],
+    angle_degrees: f64,
+) {
+    let operations = vec![AssistantCadEditOperation::Transform {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![occurrence_id],
+        },
+        translation_mm: [0.0; 3],
+        rotation: Some(AssistantCadRotation {
+            pivot_mm,
+            axis,
+            angle_degrees,
+        }),
+    }];
+    app.headless_apply_cad_program(&AssistantCadEditProgram { operations })
+        .unwrap();
 }
 
 /// A running instance of the shell, driven entirely in memory.
@@ -260,33 +181,6 @@ impl Shell {
 
     pub fn with_dialogs_at_size(dialogs: ScriptedFileDialogs, size: Vec2) -> Self {
         Self::build_at_size(KetchupApp::new().with_dialogs(Box::new(dialogs)), size)
-    }
-
-    pub fn with_assistant_transport(transport: Arc<dyn AssistantTransport>) -> Self {
-        Self::with_dialogs_and_assistant_transport(ScriptedFileDialogs::new(), transport)
-    }
-
-    pub fn with_assistant_transport_at_size(
-        transport: Arc<dyn AssistantTransport>,
-        size: Vec2,
-    ) -> Self {
-        Self::build_at_size(
-            KetchupApp::new()
-                .with_dialogs(Box::new(ScriptedFileDialogs::new()))
-                .with_assistant_transport(transport),
-            size,
-        )
-    }
-
-    pub fn with_dialogs_and_assistant_transport(
-        dialogs: ScriptedFileDialogs,
-        transport: Arc<dyn AssistantTransport>,
-    ) -> Self {
-        Self::build(
-            KetchupApp::new()
-                .with_dialogs(Box::new(dialogs))
-                .with_assistant_transport(transport),
-        )
     }
 
     fn build(app: KetchupApp) -> Self {
@@ -368,7 +262,7 @@ impl Shell {
     }
 
     /// Poll `done` (which drives frames with `step` or `settle` and checks the condition)
-    /// until it holds, letting background work (exact worker, Assistant, file I/O) publish
+    /// until it holds, letting background work (exact worker, file I/O) publish
     /// between polls. Returns false after [`WAIT_DEADLINE`] so the caller can report the
     /// state it was waiting on. This is the one place a UI test waits: a slow machine needs
     /// one deadline raised, not a guess in every test.

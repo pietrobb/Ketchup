@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 
-pub mod assistant;
 pub mod background;
 mod child_process;
 pub mod exact_worker;

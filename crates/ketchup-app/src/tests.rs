@@ -3,21 +3,14 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_assistant::sidecar::AssistantCadLoftSection;
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
-use ketchup_model::document::{
-    EdgeRef, FaceRef, InstancePathStep, ProposalGoal, SpatialPathSegment,
-};
+use ketchup_model::document::{EdgeRef, FaceRef, InstancePathStep, SpatialPathSegment};
 use ketchup_model::exact_brep_graph::{EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepOperation};
-use ketchup_model::graph::{EvaluatorNodeKind, PortSpec};
 
 #[path = "planning_topology_tests.rs"]
 mod planning_topology;
 
 #[path = "selection_path_tests.rs"]
 mod selection_path;
-
-fn apply_reviewed_model_intent(app: &mut KetchupApp, intent: AssistantModelIntent) -> bool {
-    app.prepare_assistant_model_intent(intent) && app.confirm_assistant_proposal()
-}
 
 fn select_initial_top_face(app: &mut KetchupApp) {
     app.selection.select_exact(
@@ -365,8 +358,6 @@ fn key_event(chord: &egui::KeyboardShortcut) -> egui::Event {
     }
 }
 
-mod assistant;
-mod assistant_reviews;
 mod cad_edit;
 mod drawing;
 mod exact_modeling;

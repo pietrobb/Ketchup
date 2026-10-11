@@ -3,11 +3,8 @@
 
 mod application_planner_parity;
 mod assembly_ui;
-mod assistant_sidecar_binary;
-mod assistant_validator_tools;
-mod assistant_validators_live;
-mod assistant_workflows;
 mod body_ui;
+mod cad_programs;
 mod capstone;
 mod capstone_chain;
 mod drawing_tools_ui;
@@ -35,6 +32,7 @@ mod rectangle_context_ui;
 mod rectangle_spatial_ui;
 mod scene_snapping_ui;
 mod timber_frame_house;
+mod validation_context;
 mod validator_panel_ui;
 mod viewer_export_house;
 mod viewer_release_smoke;

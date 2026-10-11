@@ -10,7 +10,6 @@ repository.workspace = true
 
 [features]
 default = []
-private-oauth = ["ketchup-assistant/private-oauth"]
 
 [dependencies]
 ketchup-analysis = { path = "../ketchup-analysis" }

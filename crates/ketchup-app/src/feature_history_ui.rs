@@ -1141,47 +1141,6 @@ impl KetchupApp {
         true
     }
 
-    pub(crate) fn assistant_profile_translation_target(
-        &self,
-    ) -> Option<(DefinitionId, BodyId, FeatureId, String)> {
-        let definition_id = self.feature_history.definition?;
-        let body_id = self.feature_history.selected_body?;
-        let profile_id = self.feature_history.selected_feature?;
-        let feature = self.document.current().feature(profile_id)?.clone();
-        (feature.definition_id() == definition_id).then(|| {
-            (
-                definition_id,
-                body_id,
-                profile_id,
-                feature.name().to_owned(),
-            )
-        })
-    }
-
-    pub(crate) fn assistant_parameter_edit_target(
-        &self,
-    ) -> Option<(DefinitionId, BodyId, ExactParameterEditTarget, String, f64)> {
-        let definition_id = self.feature_history.definition?;
-        let body_id = self.feature_history.selected_body?;
-        let target = self.feature_history.selected_parameter.clone()?;
-        let feature_id = match &target {
-            ExactParameterEditTarget::FeatureDimension(feature_id) => *feature_id,
-            ExactParameterEditTarget::FeatureParameter(target) => target.feature_id,
-            ExactParameterEditTarget::SketchConstraintDimension { sketch_id, .. } => *sketch_id,
-        };
-        let choice = self
-            .feature_parameter_choices(&self.document.current(), feature_id)
-            .into_iter()
-            .find(|choice| choice.target == target)?;
-        Some((
-            definition_id,
-            body_id,
-            target,
-            choice.label,
-            choice.value_mm,
-        ))
-    }
-
     fn prepare_feature_profile_translation(&mut self) -> bool {
         let (Some(definition_id), Some(body_id), Some(profile_id)) = (
             self.feature_history.definition,

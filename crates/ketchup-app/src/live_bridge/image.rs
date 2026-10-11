@@ -367,13 +367,6 @@ impl KetchupApp {
             bridge.image.painted = None;
         }
     }
-    pub(crate) fn live_offscreen_image_pending(&self) -> bool {
-        self.live
-            .bridge
-            .as_ref()
-            .and_then(|bridge| bridge.image.pending.as_ref())
-            .is_some_and(|request| request.mode == CaptureMode::Offscreen)
-    }
     /// Deliberately accepts CAD data, NOT a layer/range from the GUI context.
     /// No menus, chat, viewport readouts, debug plugins or externally supplied
     /// shapes can paint into this private context or its eventual GPU target.

@@ -2,9 +2,7 @@
 
 use ketchup_app::{
     KetchupApp, inspect_native_document, live_bridge::bootstrap::LiveStdinBootstrap,
-    verify_public_assistant_runtime,
 };
-use ketchup_assistant::sidecar::AssistantDistribution;
 use ketchup_model::persistence::{self, LoadOutcome};
 
 /// Reports why the launcher-requested live bridge could not start; never prints input.
@@ -36,39 +34,17 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|error| bootstrap_failed(error));
     let mut arguments = all_arguments.into_iter();
     let first_argument = arguments.next();
-    if first_argument.as_deref() == Some(std::ffi::OsStr::new("--verify-public-assistant-runtime"))
-    {
-        if arguments.next().is_some() {
-            eprintln!("--verify-public-assistant-runtime accepts no arguments");
-            std::process::exit(2);
-        }
-        if let Err(error) = verify_public_assistant_runtime() {
-            eprintln!("public Assistant runtime verification failed: {error}");
-            std::process::exit(2);
-        }
-        println!("public Assistant runtime verified");
-        return Ok(());
-    }
     if first_argument.as_deref() == Some(std::ffi::OsStr::new("--verify-manual-alpha")) {
         let persistence_path = arguments.next();
         if arguments.next().is_some() {
             eprintln!("--verify-manual-alpha accepts at most one persistence path");
             std::process::exit(2);
         }
-        if !KetchupApp::is_manual_alpha_build() || !cfg!(feature = "private-oauth") {
-            eprintln!("this is not an OAuth-enabled Manual Alpha build");
+        if !KetchupApp::is_manual_alpha_build() {
+            eprintln!("this is not a Manual Alpha build");
             std::process::exit(2);
         }
         let app = KetchupApp::new();
-        let handshake = app.assistant_handshake();
-        if handshake.distribution != AssistantDistribution::PrivateOauth
-            || handshake.provider != "codex-oauth"
-            || handshake.model != "gpt-5.6-sol"
-            || handshake.validate().is_err()
-        {
-            eprintln!("Manual Alpha Assistant defaults are invalid");
-            std::process::exit(2);
-        }
         if let Some(path) = persistence_path {
             let path = std::path::PathBuf::from(path);
             if !path.is_absolute() || path.exists() {
@@ -96,7 +72,7 @@ fn main() -> eframe::Result {
             }
         }
         println!(
-            "Ketchup Manual Alpha {} verified; private-oauth codex-oauth gpt-5.6-sol",
+            "Ketchup Manual Alpha {} verified",
             KetchupApp::build_version()
         );
         return Ok(());

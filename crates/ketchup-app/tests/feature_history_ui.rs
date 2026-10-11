@@ -889,15 +889,6 @@ fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_access
         shell.app().feature_history_selected_feature_id(),
         Some(FITTING_PROFILE)
     );
-    assert_eq!(
-        shell.app().assistant_context()["selected_profile_translation_target"],
-        serde_json::json!({
-            "definition_id": DEFINITION.0,
-            "body_id": BODY.0,
-            "profile_id": FITTING_PROFILE.0,
-            "name": "Rounded fitting slot",
-        })
-    );
 
     let move_label = shell.catalog().text("feature-history-move-profile-value");
     let preview_label = shell.catalog().text("feature-history-preview-move-profile");
@@ -1735,11 +1726,6 @@ fn general_revolve_parameter_previews_confirms_and_undoes_through_headless_histo
     open_history(&mut shell);
     shell.click_role_and_label(Role::Button, &feature_label(&shell, FeatureId(503)));
 
-    let context = shell.app().assistant_context();
-    assert_eq!(
-        context["selected_parameter_edit_target"]["parameter_path"],
-        serde_json::json!("axis_start.x")
-    );
     let before = stamp(&shell);
     replace_exact_value(&mut shell, "-1");
     shell.click_button_label(&shell.catalog().text("feature-history-preview-edit"));

@@ -1,12 +1,9 @@
 # Remaining tolerance literals (<file>) and size-limit literals (<file> limit); may only shrink.
 crates/ketchup-analysis/src/fea.rs limit 1
 crates/ketchup-analysis/src/validator_hosting.rs limit 3
-crates/ketchup-app/src/app/assistant.rs limit 3
 crates/ketchup-app/src/app/drawing.rs limit 1
 crates/ketchup-app/src/app/export.rs limit 2
-crates/ketchup-app/src/assistant_runtime.rs limit 3
 crates/ketchup-app/src/export_bundle.rs limit 1
-crates/ketchup-app/src/lib.rs limit 3
 crates/ketchup-app/src/live_bridge.rs limit 1
 crates/ketchup-app/src/live_bridge/bootstrap.rs limit 1
 crates/ketchup-app/src/live_bridge/consent.rs limit 1
@@ -42,4 +39,3 @@ crates/ketchup-model/src/persistence.rs limit 3
 crates/ketchup-model/src/pin_joint.rs limit 2
 crates/ketchup-model/src/validation.rs limit 1
 crates/ketchup-pdm/src/local.rs limit 1
-crates/ketchup-scheduler/src/assistant.rs limit 1

@@ -2,6 +2,8 @@
 
 use super::shell::step_until;
 use super::*;
+use ketchup_assistant::sidecar::AssistantCadEditOperation;
+use ketchup_assistant::sidecar::AssistantCadEntitySelector;
 
 #[test]
 fn homag_mpr_program_names_are_exactly_twelve_machine_safe_characters() {
@@ -556,22 +558,11 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
                 },
             ],
         };
-        app.assistant.pending_execution = Some(AssistantPendingExecution {
-            cad_edit_program: Some(cad_edit_program),
-            result: AssistantChatResult {
-                message: "Classified the purchased subassembly for review.".to_owned(),
-                model_intent: None,
-            },
-            message: "Classify the second subassembly as purchased bearing stock.".to_owned(),
-            replan_attempted: false,
-            document_id: app.document.current().document_id(),
-            revision_id: app.document.current().revision_id(),
-            canonical_digest: app.document.current().canonical_digest(),
-            source: "test assistant transport".to_owned(),
-        });
-        app.poll_assistant_chat(&egui::Context::default());
-        assert!(app.assistant.proposal.is_some());
-        assert!(app.confirm_assistant_proposal());
+        let proposal = app
+            .derive_assistant_cad_edit_proposal(&cad_edit_program)
+            .unwrap();
+        app.commit_verified_proposal_with_work_recovery(&proposal)
+            .unwrap();
         install_initial_graph_result(&mut app);
         app
     };

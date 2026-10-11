@@ -9,9 +9,8 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["private-oauth"]
-private-oauth = ["ketchup-assistant/private-oauth", "ketchup-scheduler/private-oauth"]
-manual-alpha = ["private-oauth"]
+default = []
+manual-alpha = []
 # Hooks only tests may use; the app's own tests enable it through the dev-dependency below.
 testing = []
 

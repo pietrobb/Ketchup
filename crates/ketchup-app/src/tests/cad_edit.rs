@@ -1,6 +1,30 @@
 //! Assistant CAD edit programs: host IDs, exact preflight, one Undo step.
 
 use super::*;
+use ketchup_assistant::sidecar::AssistantCadEditOperation;
+use ketchup_assistant::sidecar::AssistantCadEntitySelector;
+use ketchup_model::document::CollectionId;
+
+/// Commits a CAD edit program the way an MCP client's planned edit is committed.
+fn commit_cad_program(app: &mut KetchupApp, program: &AssistantCadEditProgram) {
+    let proposal = app.derive_assistant_cad_edit_proposal(program).unwrap();
+    app.commit_verified_proposal_with_work_recovery(&proposal)
+        .unwrap();
+}
+
+fn feature_two_reference_ids(app: &KetchupApp, kind: TopologicalElementKind) -> Vec<String> {
+    let snapshot = app.document.current();
+    ketchup_application::topology::assistant_topology_references(
+        &snapshot,
+        &app.exact.topology_results,
+        kind,
+    )
+    .into_iter()
+    .filter(|reference| reference.producer_feature_id == FeatureId(2))
+    .take(2)
+    .map(|reference| reference.lineage_digest.clone())
+    .collect()
+}
 
 #[test]
 fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {
@@ -137,15 +161,7 @@ fn cad_edit_append_boolean_is_host_id_assigned_exact_and_one_step() {
             }] if operation == &canonical_operation
         ));
 
-        app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-            .unwrap();
-        assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-        assert_eq!(
-            app.document.current().canonical_digest(),
-            baseline.canonical_digest()
-        );
-        assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-        assert!(app.confirm_assistant_proposal());
+        commit_cad_program(&mut app, &program);
         let committed = app.document.current();
         assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
         assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -201,15 +217,7 @@ fn cad_edit_append_pocket_is_host_id_assigned_exact_and_one_step() {
         }] if depth.millimetres() == 8.0
     ));
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -274,15 +282,7 @@ fn cad_edit_append_planar_offset_is_host_id_assigned_exact_and_one_step() {
         }] if distance.millimetres() == -5.0
     ));
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -357,15 +357,7 @@ fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
         }]
     ));
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -457,16 +449,7 @@ fn cad_edit_append_spatial_sweep_preflights_v12_without_mutation_and_is_one_step
     );
     assert_eq!(app.document.visible_undo_steps(), baseline_undo);
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     let committed_digest = committed.canonical_digest();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
@@ -710,15 +693,7 @@ fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
         ]
     ));
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -759,15 +734,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
         ]))
         .unwrap();
     install_initial_graph_result(&mut app);
-    let context = app.assistant_context_for("Shell the exact body");
-    assert_eq!(context["topology_face_references_complete"], true);
-    let references = context["topology_face_references"].as_array().unwrap();
-    let expected_reference_ids = references
-        .iter()
-        .filter(|reference| reference["target_feature_id"] == 2)
-        .take(2)
-        .map(|reference| reference["reference_id"].as_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
+    let expected_reference_ids = feature_two_reference_ids(&app, TopologicalElementKind::Face);
     assert_eq!(expected_reference_ids.len(), 2);
     let mut requested_reference_ids = expected_reference_ids.clone();
     requested_reference_ids.reverse();
@@ -813,15 +780,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
             && thickness.millimetres() == 2.0
     ));
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -844,15 +803,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
 fn cad_edit_fillet_edges_uses_host_references_and_one_step() {
     let mut app = KetchupApp::new();
     install_initial_graph_result(&mut app);
-    let context = app.assistant_context_for("Fillet the exact body edges");
-    assert_eq!(context["topology_edge_references_complete"], true);
-    let references = context["topology_edge_references"].as_array().unwrap();
-    let expected_reference_ids = references
-        .iter()
-        .filter(|reference| reference["target_feature_id"] == 2)
-        .take(2)
-        .map(|reference| reference["reference_id"].as_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
+    let expected_reference_ids = feature_two_reference_ids(&app, TopologicalElementKind::Edge);
     assert_eq!(expected_reference_ids.len(), 2);
     let mut requested_reference_ids = expected_reference_ids.clone();
     requested_reference_ids.reverse();
@@ -895,15 +846,7 @@ fn cad_edit_fillet_edges_uses_host_references_and_one_step() {
             && amount.millimetres() == 2.0
     ));
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -926,15 +869,7 @@ fn cad_edit_fillet_edges_uses_host_references_and_one_step() {
 fn cad_edit_chamfer_edges_uses_host_references_and_one_step() {
     let mut app = KetchupApp::new();
     install_initial_graph_result(&mut app);
-    let context = app.assistant_context_for("Chamfer an exact body edge");
-    let expected_reference_ids = context["topology_edge_references"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|reference| reference["target_feature_id"] == 2)
-        .take(2)
-        .map(|reference| reference["reference_id"].as_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
+    let expected_reference_ids = feature_two_reference_ids(&app, TopologicalElementKind::Edge);
     assert_eq!(expected_reference_ids.len(), 2);
     let mut requested_reference_ids = expected_reference_ids.clone();
     requested_reference_ids.reverse();
@@ -973,15 +908,7 @@ fn cad_edit_chamfer_edges_uses_host_references_and_one_step() {
             && amount.millimetres() == 2.0
     ));
 
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
-        .unwrap();
-    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        baseline.canonical_digest()
-    );
-    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
-    assert!(app.confirm_assistant_proposal());
+    commit_cad_program(&mut app, &program);
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
@@ -1547,66 +1474,6 @@ fn cad_edit_append_boolean_rejects_invalid_exact_inputs_without_mutation() {
 }
 
 #[test]
-fn cad_edit_current_selection_binds_to_request_time_occurrences() {
-    let explicit = AssistantCadEntitySelector::Occurrences {
-        occurrence_ids: vec![9],
-    };
-    let mut program = AssistantCadEditProgram {
-        operations: vec![
-            AssistantCadEditOperation::Copy {
-                selector: AssistantCadEntitySelector::CurrentSelection {},
-                translation_mm: [10.0, 0.0, 0.0],
-            },
-            AssistantCadEditOperation::Mirror {
-                selector: explicit.clone(),
-                plane_origin_mm: [0.0, 0.0, 0.0],
-                plane_normal: [1.0, 0.0, 0.0],
-            },
-        ],
-    };
-
-    bind_assistant_cad_current_selection(&mut program, &[3, 4]);
-
-    assert!(matches!(
-        &program.operations[0],
-        AssistantCadEditOperation::Copy {
-            selector: AssistantCadEntitySelector::Occurrences { occurrence_ids },
-            ..
-        } if occurrence_ids == &[3, 4]
-    ));
-    assert!(matches!(
-        &program.operations[1],
-        AssistantCadEditOperation::Mirror { selector, .. } if selector == &explicit
-    ));
-}
-
-#[test]
-fn cad_edit_program_enters_revision_bound_preview_without_mutating_document() {
-    let mut app = KetchupApp::new();
-    let snapshot = app.document.current().clone();
-    let undo_steps = app.document.visible_undo_steps();
-    let program = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::Copy {
-            selector: AssistantCadEntitySelector::Occurrences {
-                occurrence_ids: vec![1],
-            },
-            translation_mm: [10.0, 0.0, 0.0],
-        }],
-    };
-
-    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program.clone()))
-        .unwrap();
-
-    let preview = app.assistant.proposal.as_ref().unwrap();
-    assert_eq!(preview.source, AssistantPreviewSource::CadEdit(program));
-    assert_eq!(preview.document_id(), snapshot.document_id());
-    assert_eq!(preview.provenance_revision(), snapshot.revision_id());
-    assert_eq!(preview.provenance_digest(), snapshot.canonical_digest());
-    assert_eq!(app.occurrence_count(), 1);
-    assert_eq!(app.document.visible_undo_steps(), undo_steps);
-}
-
-#[test]
 fn cad_edit_delete_rejects_or_removes_canonical_references_atomically() {
     let mut app = KetchupApp::new();
     app.document
@@ -1665,5 +1532,71 @@ fn cad_edit_delete_rejects_or_removes_canonical_references_atomically() {
             .occurrence_ids()
             .count(),
         0
+    );
+}
+
+#[test]
+fn canonical_error_codes_are_stable_machine_identifiers() {
+    assert_eq!(
+        CanonicalError::OccurrenceInAssemblyMate(OccurrenceId(17)).code(),
+        "canonical.occurrence_in_assembly_mate"
+    );
+    assert_eq!(
+        CanonicalError::DefinitionNotFound(DefinitionId(9)).code(),
+        "canonical.definition_not_found"
+    );
+}
+
+#[test]
+fn deleting_occurrences_clears_collection_references_in_the_same_undo_step() {
+    let mut app = KetchupApp::new();
+    let collection = CollectionId(1);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateCollection {
+                id: collection,
+                name: "Original selection".to_owned(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: collection,
+                occurrence_ids: vec![OccurrenceId(1)],
+            },
+        ]))
+        .unwrap();
+    let before = app.document.current();
+
+    commit_cad_program(
+        &mut app,
+        &AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::Delete {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: vec![1],
+                },
+                dependency_policy:
+                    ketchup_assistant::sidecar::AssistantCadDeletePolicy::RemoveReferences,
+            }],
+        },
+    );
+
+    let replaced = app.document.current();
+    assert_eq!(replaced.revision_id(), before.revision_id() + 1);
+    assert_eq!(replaced.occurrences().count(), 0);
+    assert_eq!(
+        replaced
+            .collection(collection)
+            .unwrap()
+            .occurrence_ids()
+            .count(),
+        0
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.document
+            .current()
+            .collection(collection)
+            .unwrap()
+            .occurrence_ids()
+            .collect::<Vec<_>>(),
+        vec![OccurrenceId(1)]
     );
 }

@@ -1,4 +1,6 @@
 use super::*;
+use ketchup_model::document::MESH_BODY_SCHEMA_V1;
+use ketchup_model::document::MeshAuthority;
 
 fn mesh_app(
     mut vertices_mm: Vec<[f64; 3]>,

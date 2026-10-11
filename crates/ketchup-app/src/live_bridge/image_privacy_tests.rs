@@ -95,8 +95,7 @@ fn render_private_capture(h: &mut Harness<'_, KetchupApp>, description: &str) {
 #[test]
 fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
     let _gpu = gpu_test_guard();
-    let mut app = KetchupApp::new();
-    app.set_assistant_workspace_mode(crate::AssistantWorkspaceMode::Dock);
+    let app = KetchupApp::new();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1600.0, 1000.0))
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
@@ -191,8 +190,7 @@ fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
 #[test]
 fn discarded_capture_and_session_replacement_never_reuse_authority() {
     let _gpu = gpu_test_guard();
-    let mut app = KetchupApp::new();
-    app.set_assistant_workspace_mode(crate::AssistantWorkspaceMode::Dock);
+    let app = KetchupApp::new();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1600.0, 1000.0))
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
@@ -249,7 +247,6 @@ fn discarded_capture_and_session_replacement_never_reuse_authority() {
 
 fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, KetchupApp> {
     let mut app = KetchupApp::new();
-    app.set_assistant_workspace_mode(crate::AssistantWorkspaceMode::Dock);
     // Select the same ScenePaintCallback branch as the native app. No scene
     // resources are installed in the outer harness renderer: only the private
     // production target creates them. No desktop window or input is involved.

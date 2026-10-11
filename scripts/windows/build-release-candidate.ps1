@@ -24,8 +24,6 @@ $packageManifestPath = Join-Path $OutputDir "package-manifest.json"
 $platformDecisionRecordPath = Join-Path $repoRoot "docs\adr\0007-windows-x86-64-first-release.md"
 $expectedPlatformDecisionRecordSha256 = "cb91dbd3f8d2b96f7edb5f1f1eae01c49acf2846f85aeed5546c44c79ac5dc62"
 $expectedOcctManifestSha256 = "1212a72954ed503a6b06618b2813b1d7c04f5b422329d2327594268e431ef48a"
-$pinnedPublicPythonSha256 = "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec"
-$pinnedPublicPythonRegistryKey = "Software\Python\PythonCore\3.11\InstallPath"
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -116,11 +114,8 @@ function Verify-Package {
     $package = Get-Content $packageManifestPath -Raw | ConvertFrom-Json
     Assert-ExactProperties $package @(
         "schema_version", "kind", "platform", "platform_decision", "platform_decision_record",
-        "platform_decision_record_sha256", "release_eligible", "release_blockers", "cargo_lock_sha256", "assistant_runtime", "occt", "files"
+        "platform_decision_record_sha256", "release_eligible", "release_blockers", "cargo_lock_sha256", "occt", "files"
     ) "Package manifest"
-    Assert-ExactProperties $package.assistant_runtime @(
-        "kind", "python_version", "registry_hive", "registry_key", "executable_sha256"
-    ) "Package Assistant runtime"
     Assert-ExactProperties $package.occt @(
         "version", "source_commit", "manifest_sha256", "build_fingerprint", "runtime_dll_count"
     ) "Package OCCT provenance"
@@ -128,7 +123,7 @@ function Verify-Package {
     if ((Get-Sha256 $platformDecisionRecordPath) -cne $expectedPlatformDecisionRecordSha256) {
         throw "The accepted Windows-first platform-decision record differs from its immutable baseline."
     }
-    if ($package.schema_version -ne 2 -or
+    if ($package.schema_version -ne 3 -or
         $package.kind -ne "technical-release-candidate" -or
         $package.platform -ne "windows-x86_64" -or
         $package.platform_decision -cne "windows-x86_64-first-release" -or
@@ -137,13 +132,6 @@ function Verify-Package {
         $package.release_eligible -ne $false -or
         [string]::Join("|", @($package.release_blockers)) -cne "G19-02-physical-dialog-workflow|G19-03-canonical-tasks|G19-04-current-tree-hardware-certification") {
         throw "Package manifest does not match the accepted Windows-first decision and remaining M19 release blockers."
-    }
-    if ($package.assistant_runtime.kind -cne "pep-514-system" -or
-        $package.assistant_runtime.python_version -cne "3.11" -or
-        $package.assistant_runtime.registry_hive -cne "HKLM" -or
-        $package.assistant_runtime.registry_key -cne $pinnedPublicPythonRegistryKey -or
-        $package.assistant_runtime.executable_sha256 -cne $pinnedPublicPythonSha256) {
-        throw "Package Assistant runtime requirement differs from the product pin."
     }
     $pinnedOcct = Read-OcctManifest
     $lockPath = Join-Path $repoRoot "Cargo.lock"
@@ -159,8 +147,6 @@ function Verify-Package {
     $expectedRecords = [Collections.Generic.List[object]]::new()
     $expectedRecords.Add([ordered]@{ name = "ketchup-app.exe"; role = "desktop-application" })
     $expectedRecords.Add([ordered]@{ name = "ketchup-exact-worker.exe"; role = "exact-worker" })
-    $expectedRecords.Add([ordered]@{ name = "ketchup_assistant.py"; role = "public-assistant-entry" })
-    $expectedRecords.Add([ordered]@{ name = "ketchup_assistant_protocol.py"; role = "public-assistant-protocol" })
     foreach ($record in @($pinnedOcct.shared_libraries)) {
         $expectedRecords.Add([ordered]@{
             name = [IO.Path]::GetFileName([string]$record.path)
@@ -269,8 +255,6 @@ function Add-PackageFile([string]$Source, [string]$Name, [string]$Role) {
 
 Add-PackageFile $appSource "ketchup-app.exe" "desktop-application"
 Add-PackageFile $workerSource "ketchup-exact-worker.exe" "exact-worker"
-Add-PackageFile (Join-Path $repoRoot "sdk\python\ketchup_assistant.py") "ketchup_assistant.py" "public-assistant-entry"
-Add-PackageFile (Join-Path $repoRoot "sdk\python\ketchup_assistant_protocol.py") "ketchup_assistant_protocol.py" "public-assistant-protocol"
 foreach ($record in @($occtManifest.shared_libraries) | Sort-Object path) {
     $name = [IO.Path]::GetFileName([string]$record.path)
     $source = Join-Path $OcctRoot ([string]$record.path)
@@ -280,7 +264,7 @@ foreach ($record in @($occtManifest.shared_libraries) | Sort-Object path) {
 $lockPath = Join-Path $repoRoot "Cargo.lock"
 Assert-Leaf $lockPath "Cargo lockfile"
 $package = [ordered]@{
-    schema_version = 2
+    schema_version = 3
     kind = "technical-release-candidate"
     platform = "windows-x86_64"
     platform_decision = "windows-x86_64-first-release"
@@ -293,13 +277,6 @@ $package = [ordered]@{
         "G19-04-current-tree-hardware-certification"
     )
     cargo_lock_sha256 = Get-Sha256 $lockPath
-    assistant_runtime = [ordered]@{
-        kind = "pep-514-system"
-        python_version = "3.11"
-        registry_hive = "HKLM"
-        registry_key = $pinnedPublicPythonRegistryKey
-        executable_sha256 = $pinnedPublicPythonSha256
-    }
     occt = [ordered]@{
         version = [string]$occtManifest.source.release
         source_commit = [string]$occtManifest.source.commit

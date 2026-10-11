@@ -1,28 +1,26 @@
-//! End-to-end AI-native acceptance proof: a timber-frame house built from an
-//! empty document through the generic Assistant CAD edit program only.
+//! End-to-end acceptance proof: a timber-frame house built from an empty
+//! document through the generic typed CAD edit program only (the program an
+//! MCP client proposes and commits).
 //!
-//! No named-shape intent, no fixture, no mesh shortcut. Every step is a natural
-//! language request that the host compiles into canonical commands, applies,
-//! verifies, and commits as exactly one undo step.
+//! No named-shape intent, no fixture, no mesh shortcut. Every step is one typed
+//! program that the host compiles into canonical commands, applies, verifies,
+//! and commits as exactly one undo step.
 //!
 //! The second test pins the two generality limits this scenario hit, so that a
 //! later change which lifts them fails loudly instead of silently.
 use crate::harness;
 
-use eframe::egui::{self, accesskit::Role};
-use harness::{ScriptedAssistantTransport, Shell};
+use eframe::egui::accesskit::Role;
+use harness::Shell;
+use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_app::{AppCommand, AssistantMessageRole};
-use ketchup_application::validation::{
-    ASSISTANT_VALIDATOR_IDS, AssistantValidationSelection, assistant_validation_context_with_worker,
-};
+use ketchup_application::validation::ASSISTANT_VALIDATOR_IDS;
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadClassificationCategory, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantCadFeatureReference, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantChatResult,
-    AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantPrincipalPlane,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_manufacturing::fabrication::{
@@ -41,7 +39,7 @@ use ketchup_model::exact_validation::{
     GeneralClearanceCase, GravitySupportInput, GravitySupportParticipant, general_body_input_bytes,
     general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
-use ketchup_model::persistence::{self, ContainerData};
+use ketchup_model::persistence;
 use ketchup_model::tolerance::TolerancePolicy;
 use ketchup_model::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
@@ -122,52 +120,16 @@ fn timber(
     }
 }
 
-fn json_string_ending_with<'a>(value: &'a serde_json::Value, suffix: &str) -> Option<&'a str> {
-    match value {
-        serde_json::Value::String(text) => text.ends_with(suffix).then_some(text),
-        serde_json::Value::Array(values) => values
-            .iter()
-            .find_map(|value| json_string_ending_with(value, suffix)),
-        serde_json::Value::Object(values) => values
-            .values()
-            .find_map(|value| json_string_ending_with(value, suffix)),
-        _ => None,
-    }
-}
-
-/// Send one request, step the shell until the assistant answered it, and
-/// prove its program was applied as exactly one revision and one undo step.
-fn submit_applied_request(shell: &mut Shell, request: &str, timeout: Duration) {
+/// Apply one typed CAD program the way an MCP client's propose + commit does,
+/// and prove it landed as exactly one revision and one undo step.
+fn build_step(shell: &mut Shell, request: &str, program: AssistantCadEditProgram) {
     let revision_before = shell.app().document_revision();
     let digest_before = shell.app().canonical_digest();
     let undo_before = shell.app().undo_step_count();
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    let deadline = Instant::now() + timeout;
-    let reply = loop {
-        shell.step();
-        let messages = shell.app().assistant_messages();
-        let user = messages
-            .iter()
-            .rposition(|message| message.role == AssistantMessageRole::User);
-        if let Some(reply) = user.and_then(|index| messages.get(index + 1)) {
-            break reply.clone();
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{request}: the assistant did not answer: {:?}",
-            shell.app().assistant_messages()
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    assert_eq!(
-        reply.role,
-        AssistantMessageRole::Assistant,
-        "{request}: the program must apply: {:?}",
-        shell.app().assistant_messages()
-    );
+    if let Err(error) = shell.app_mut().headless_apply_cad_program(&program) {
+        panic!("{request}: the program must apply: {error}");
+    }
+    shell.step();
     assert_eq!(
         shell.app().document_revision(),
         revision_before + 1,
@@ -183,17 +145,6 @@ fn submit_applied_request(shell: &mut Shell, request: &str, timeout: Duration) {
         digest_before,
         "{request}: the edit must change the canonical digest"
     );
-}
-
-/// Queue one scripted CAD program and submit its natural-language request.
-fn build_step(
-    shell: &mut Shell,
-    transport: &Arc<ScriptedAssistantTransport>,
-    request: &str,
-    program: AssistantCadEditProgram,
-) {
-    transport.queue_cad_edit_program(request, program);
-    submit_applied_request(shell, request, Duration::from_secs(60));
 }
 
 fn definition_id_of(shell: &Shell, name: &str) -> DefinitionId {
@@ -220,144 +171,9 @@ fn body_feature_id_of(shell: &Shell, name: &str) -> FeatureId {
         .unwrap_or_else(|| panic!("definition {name} must own a pad"))
 }
 
-fn static_metadata_program(snapshot: &Snapshot) -> (AssistantCadEditProgram, usize) {
-    let dimension_id = snapshot
-        .classification_dimensions()
-        .map(|dimension| dimension.id().0)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let first_category_id = snapshot
-        .classification_dimensions()
-        .flat_map(|dimension| dimension.categories())
-        .map(|category| category.id().0)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let load_category_id = first_category_id;
-    let support_category_id = first_category_id + 1;
-    let fabrication_dimension_id = dimension_id + 1;
-    let timber_category_id = first_category_id + 2;
-    let mut next_node_id = snapshot
-        .evaluator_nodes()
-        .map(|node| node.id().0)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let support_ids = snapshot
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| {
-            matches!(
-                occurrence.occurrence_name.as_str(),
-                "Foundation beam" | "Rear foundation beam"
-            )
-        })
-        .map(|occurrence| occurrence.occurrence_id.0)
-        .collect::<Vec<_>>();
-    let load_ids = snapshot
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| {
-            occurrence.visible && !support_ids.contains(&occurrence.occurrence_id.0)
-        })
-        .map(|occurrence| occurrence.occurrence_id.0)
-        .collect::<Vec<_>>();
-    assert_eq!(support_ids.len(), 2);
-    assert_eq!(load_ids.len(), 10);
-    let all_ids = snapshot
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| occurrence.visible)
-        .map(|occurrence| occurrence.occurrence_id.0)
-        .collect::<Vec<_>>();
-    assert_eq!(all_ids.len(), 12);
-
-    let mut operations = vec![
-        AssistantCadEditOperation::UpsertClassificationDimension {
-            dimension_id,
-            name: "ketchup.validator-role.v1".to_owned(),
-            categories: vec![
-                AssistantCadClassificationCategory {
-                    id: load_category_id,
-                    name: "physics.static.load:live-house".to_owned(),
-                },
-                AssistantCadClassificationCategory {
-                    id: support_category_id,
-                    name: "physics.static.support:live-house".to_owned(),
-                },
-            ],
-        },
-        AssistantCadEditOperation::SetOccurrenceClassification {
-            selector: AssistantCadEntitySelector::Occurrences {
-                occurrence_ids: load_ids.clone(),
-            },
-            dimension_id,
-            category_id: Some(load_category_id),
-        },
-        AssistantCadEditOperation::SetOccurrenceClassification {
-            selector: AssistantCadEntitySelector::Occurrences {
-                occurrence_ids: support_ids.clone(),
-            },
-            dimension_id,
-            category_id: Some(support_category_id),
-        },
-        AssistantCadEditOperation::UpsertClassificationDimension {
-            dimension_id: fabrication_dimension_id,
-            name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
-            categories: vec![AssistantCadClassificationCategory {
-                id: timber_category_id,
-                name: TIMBER_MEMBER_ROLE_V1.to_owned(),
-            }],
-        },
-        AssistantCadEditOperation::SetOccurrenceClassification {
-            selector: AssistantCadEntitySelector::Occurrences {
-                occurrence_ids: all_ids,
-            },
-            dimension_id: fabrication_dimension_id,
-            category_id: Some(timber_category_id),
-        },
-    ];
-    for (name, value) in [
-        ("physics.gravity_x_m_s2".to_owned(), 0.0),
-        ("physics.gravity_y_m_s2".to_owned(), 0.0),
-        ("physics.gravity_z_m_s2".to_owned(), -9.81),
-    ] {
-        operations.push(AssistantCadEditOperation::CreateEvaluatorInput {
-            node_id: next_node_id,
-            name,
-            value,
-        });
-        next_node_id += 1;
-    }
-    for occurrence_id in &load_ids {
-        for (prefix, value) in [
-            ("physics.mass_kg.occurrence", 100.0),
-            ("physics.applied_load_n.occurrence", 500.0),
-        ] {
-            operations.push(AssistantCadEditOperation::CreateEvaluatorInput {
-                node_id: next_node_id,
-                name: format!("{prefix}.{occurrence_id}"),
-                value,
-            });
-            next_node_id += 1;
-        }
-    }
-    for occurrence_id in support_ids {
-        operations.push(AssistantCadEditOperation::CreateEvaluatorInput {
-            node_id: next_node_id,
-            name: format!("physics.support_capacity_n.occurrence.{occurrence_id}"),
-            value: 100_000.0,
-        });
-        next_node_id += 1;
-    }
-    assert_eq!(operations.len(), 30);
-    (AssistantCadEditProgram { operations }, load_ids.len())
-}
-
-/// Drive the whole frame from an empty document through the Assistant, and
+/// Drive the whole frame from an empty document through typed CAD programs, and
 /// return the shell plus the baseline the build started from.
-fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, String) {
+fn build_timber_frame_house() -> (Shell, u64, String) {
     let requests = [
         "Clear the document so the site is empty",
         "Lay the sill plate ring for a 6000 by 4000 mm timber frame house",
@@ -367,16 +183,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         "Stand the gable posts, carry the ridge beam on them and add a rafter sloping up to it",
         "Mark every completed house occurrence as a timber member for fabrication",
     ];
-    let transport = Arc::new(ScriptedAssistantTransport::new(requests.map(|request| {
-        (
-            request.to_owned(),
-            AssistantChatResult {
-                message: "Review the timber frame step.".to_owned(),
-                model_intent: None,
-            },
-        )
-    })));
-    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let mut shell = Shell::new();
     let baseline_revision = shell.app().document_revision();
     let baseline_digest = shell.app().canonical_digest();
 
@@ -390,7 +197,6 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
     assert!(!existing.is_empty(), "a new document must start occupied");
     build_step(
         &mut shell,
-        &transport,
         requests[0],
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::Delete {
@@ -407,7 +213,6 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
     let inner_width = HOUSE_WIDTH_MM - 2.0 * TIMBER_WIDTH_MM;
     build_step(
         &mut shell,
-        &transport,
         requests[1],
         AssistantCadEditProgram {
             operations: vec![
@@ -451,7 +256,6 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
     // 2. The first stud, standing on the sill.
     build_step(
         &mut shell,
-        &transport,
         requests[2],
         AssistantCadEditProgram {
             operations: vec![timber(
@@ -476,7 +280,6 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
     let before_pattern = shell.app().document_snapshot().occurrences().count();
     build_step(
         &mut shell,
-        &transport,
         requests[3],
         AssistantCadEditProgram {
             operations: vec![
@@ -521,7 +324,6 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
     let (sheathing_entities, sheathing_constraints) = rectangle(HOUSE_LENGTH_MM, WALL_HEIGHT_MM);
     build_step(
         &mut shell,
-        &transport,
         requests[4],
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
@@ -554,7 +356,6 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
     let rafter_pitch_degrees = RIDGE_RISE_MM.atan2(rafter_run).to_degrees();
     build_step(
         &mut shell,
-        &transport,
         requests[5],
         AssistantCadEditProgram {
             operations: vec![
@@ -624,7 +425,6 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         .collect::<Vec<_>>();
     build_step(
         &mut shell,
-        &transport,
         requests[6],
         AssistantCadEditProgram {
             operations: vec![
@@ -645,8 +445,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         },
     );
 
-    assert_eq!(transport.remaining_responses(), 0);
-    (shell, transport, baseline_revision, baseline_digest)
+    (shell, baseline_revision, baseline_digest)
 }
 
 /// Every structural member the Assistant authored, by name.
@@ -664,730 +463,10 @@ const HOUSE_MEMBERS: [&str; 11] = [
     "Rafter",
 ];
 
-/// Prove the production OAuth Assistant can author and extend real exact
-/// structure across revision-bound turns instead of replaying a Rust-authored
-/// program, including a pitched roof authored as general prismatic parts.
-#[test]
-#[ignore = "requires the production OAuth binary, login and live GPT-5.6 requests"]
-fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
-    let mut shell = Shell::new();
-    shell.app_mut().set_assistant_diagnostics_enabled(true);
-    let handshake = shell.app().assistant_handshake();
-    assert_eq!(handshake.distribution, AssistantDistribution::PrivateOauth);
-    assert_eq!(handshake.provider, "codex-oauth");
-    assert_eq!(handshake.model, "gpt-5.6-sol");
-
-    let baseline_revision = shell.app().document_revision();
-    let baseline_digest = shell.app().canonical_digest();
-    assert!(shell.app().document_snapshot().occurrences().count() > 0);
-
-    let request = "Use one typed cad_edit_program, not model_intent and not prose alone. First delete every existing occurrence listed in the current document context with remove_references so the site is empty. Then create exactly four separate rectangular extruded parts on the XY plane, all dimensions in millimetres: 'Foundation beam' is 4000 by 400 and extruded 300 at translation [0,0,0]; 'Left post' is 200 by 200 and extruded 2500 at [0,0,300]; 'Right post' is 200 by 200 and extruded 2500 at [3800,0,300]; 'Header beam' is 4000 by 200 and extruded 200 at [0,0,2800]. Omit the optional rotation field entirely for every part. Draw the Foundation beam rectangle with corners [0,0], [4000,0], [4000,400], [0,400]; both post rectangles with corners [0,0], [200,0], [200,200], [0,200]; and the Header beam rectangle with corners [0,0], [4000,0], [4000,200], [0,200]. Close each rectangle with four line entities and set constraints to an empty array for every part. Do not emit any constraint object. Do not add any other part and do not approximate with mesh geometry.";
-    submit_applied_request(&mut shell, request, Duration::from_secs(300));
-    assert!(shell.app().assistant_messages().iter().any(|message| {
-        message.role == AssistantMessageRole::Assistant
-            && message.source.contains("gpt-5.6-sol")
-            && !message.text.trim().is_empty()
-    }));
-    let diagnostics = shell
-        .app()
-        .last_assistant_api_diagnostics()
-        .expect("the live provider response must retain bounded diagnostics");
-    assert_eq!(diagnostics.provider, "codex-oauth");
-    assert_eq!(diagnostics.model, "gpt-5.6-sol");
-    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
-    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
-        .expect("the captured provider response must be JSON");
-    assert_eq!(
-        provider_response["cad_edit_program"]["operations"]
-            .as_array()
-            .expect("GPT-5.6 must return a typed CAD program")
-            .len(),
-        5
-    );
-
-    let committed = shell.app().document_snapshot();
-    assert_eq!(committed.occurrences().count(), 4);
-    let expected = [
-        ("Foundation beam", [4_000.0, 400.0, 300.0], [0.0, 0.0, 0.0]),
-        ("Left post", [200.0, 200.0, 2_500.0], [0.0, 0.0, 300.0]),
-        ("Right post", [200.0, 200.0, 2_500.0], [3_800.0, 0.0, 300.0]),
-        ("Header beam", [4_000.0, 200.0, 200.0], [0.0, 0.0, 2_800.0]),
-    ];
-    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    for &(name, size, translation) in &expected {
-        let occurrence = committed
-            .occurrences()
-            .find(|occurrence| occurrence.name() == name)
-            .unwrap_or_else(|| panic!("live-authored {name} must exist"));
-        let transform = occurrence.transform();
-        let matrix = transform.matrix();
-        assert_eq!([matrix[3], matrix[7], matrix[11]], translation);
-        assert_eq!(
-            [
-                [matrix[0], matrix[1], matrix[2]],
-                [matrix[4], matrix[5], matrix[6]],
-                [matrix[8], matrix[9], matrix[10]],
-            ],
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        );
-
-        let definition_id = definition_id_of(&shell, name);
-        let body = body_feature_id_of(&shell, name);
-        let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, body)
-            .unwrap_or_else(|error| panic!("live-authored {name} must compile exactly: {error}"));
-        let package = worker
-            .evaluate_exact_brep_graph(&graph)
-            .unwrap_or_else(|error| panic!("live-authored {name} must evaluate in OCCT: {error}"));
-        let expected_volume = size.iter().product::<f64>();
-        assert!((package.volume_mm3 - expected_volume).abs() <= expected_volume * 1.0e-9);
-        assert_eq!(package.bounds_mm, [[0.0, 0.0, 0.0], size]);
-        assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
-    }
-
-    let first_identities = expected.map(|(name, _, _)| {
-        let occurrence = committed
-            .occurrences()
-            .find(|occurrence| occurrence.name() == name)
-            .unwrap_or_else(|| panic!("live-authored {name} must exist before turn two"));
-        (
-            name,
-            occurrence.id(),
-            occurrence.definition_id(),
-            occurrence.transform(),
-        )
-    });
-    let first_revision = shell.app().document_revision();
-    let first_digest = shell.app().canonical_digest();
-    let second_request = "Use one typed cad_edit_program, not model_intent and not prose alone. Extend the existing front portal into a supported 4000 by 4000 mm house frame by creating exactly six additional separate rectangular extruded parts on the XY plane. Keep every existing occurrence and do not modify or delete it. 'Rear foundation beam' is 4000 by 400 and extruded 300 at translation [0,3600,0]. 'Rear left post' and 'Rear right post' are each 200 by 200 and extruded 2500 at [0,3800,300] and [3800,3800,300]. 'Rear header beam' is 4000 by 200 and extruded 200 at [0,3800,2800]. 'Left top tie' and 'Right top tie' are each 200 by 3600 and extruded 200 at [0,200,2800] and [3800,200,2800]. Draw each 4000 by 400 rectangle with corners [0,0], [4000,0], [4000,400], [0,400]; each 200 by 200 rectangle with corners [0,0], [200,0], [200,200], [0,200]; the 4000 by 200 rectangle with corners [0,0], [4000,0], [4000,200], [0,200]; and each 200 by 3600 rectangle with corners [0,0], [200,0], [200,3600], [0,3600]. Close every rectangle with four line entities whose objects use exactly the keys type, id, start_mm and end_mm; never use start or end. Set constraints to an empty array and omit the optional rotation field entirely for every part. Do not emit any constraint object, add any other part, or approximate with mesh geometry.";
-    submit_applied_request(&mut shell, second_request, Duration::from_secs(300));
-    let diagnostics = shell
-        .app()
-        .last_assistant_api_diagnostics()
-        .expect("the second live provider response must retain bounded diagnostics");
-    assert_eq!(diagnostics.provider, "codex-oauth");
-    assert_eq!(diagnostics.model, "gpt-5.6-sol");
-    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
-    let second_provider_message =
-        json_string_ending_with(&diagnostics.request_payload, second_request)
-            .expect("the provider payload must contain the second request");
-    let (document_context, provider_prompt) = second_provider_message
-        .strip_prefix("<document-context>")
-        .and_then(|message| message.split_once("</document-context>\n\n"))
-        .expect("the second request must carry a serialized document context");
-    assert_eq!(provider_prompt, second_request);
-    let document_context: serde_json::Value = serde_json::from_str(document_context)
-        .expect("the second provider context must remain valid JSON");
-    assert_eq!(document_context["revision"], first_revision);
-    assert_eq!(document_context["canonical_digest"], first_digest);
-    assert_eq!(document_context["occurrence_count"], 4);
-    let conversation = document_context["conversation"]
-        .as_array()
-        .expect("the second context must retain the first app turn");
-    assert!(
-        conversation.iter().any(|message| {
-            message["role"] == "user" && message["text"].as_str() == Some(request)
-        })
-    );
-    assert!(conversation.iter().any(|message| {
-        message["role"] == "assistant"
-            && message["text"]
-                .as_str()
-                .is_some_and(|text| !text.trim().is_empty())
-    }));
-    for (name, _, _) in expected {
-        assert!(
-            document_context["occurrences"]
-                .as_array()
-                .expect("the context must list the first-turn occurrences")
-                .iter()
-                .any(|occurrence| occurrence["name"] == name),
-            "the second provider context must expose {name}"
-        );
-    }
-
-    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
-        .expect("the second captured provider response must be JSON");
-    let operations = provider_response["cad_edit_program"]["operations"]
-        .as_array()
-        .expect("GPT-5.6 must return a second typed CAD program");
-    assert_eq!(operations.len(), 6);
-    assert!(
-        operations
-            .iter()
-            .all(|operation| operation["operation"] == "create_part"),
-        "turn two may only append the six requested parts"
-    );
-
-    assert_ne!(shell.app().canonical_digest(), first_digest);
-    let committed = shell.app().document_snapshot();
-    assert_eq!(committed.occurrences().count(), 10);
-    for (name, occurrence_id, definition_id, transform) in first_identities {
-        let occurrence = committed
-            .occurrences()
-            .find(|occurrence| occurrence.name() == name)
-            .unwrap_or_else(|| panic!("turn two must preserve {name}"));
-        assert_eq!(occurrence.id(), occurrence_id);
-        assert_eq!(occurrence.definition_id(), definition_id);
-        assert_eq!(occurrence.transform(), transform);
-    }
-    let extension = [
-        (
-            "Rear foundation beam",
-            [4_000.0, 400.0, 300.0],
-            [0.0, 3_600.0, 0.0],
-        ),
-        (
-            "Rear left post",
-            [200.0, 200.0, 2_500.0],
-            [0.0, 3_800.0, 300.0],
-        ),
-        (
-            "Rear right post",
-            [200.0, 200.0, 2_500.0],
-            [3_800.0, 3_800.0, 300.0],
-        ),
-        (
-            "Rear header beam",
-            [4_000.0, 200.0, 200.0],
-            [0.0, 3_800.0, 2_800.0],
-        ),
-        (
-            "Left top tie",
-            [200.0, 3_600.0, 200.0],
-            [0.0, 200.0, 2_800.0],
-        ),
-        (
-            "Right top tie",
-            [200.0, 3_600.0, 200.0],
-            [3_800.0, 200.0, 2_800.0],
-        ),
-    ];
-    for (name, size, translation) in extension {
-        let occurrence = committed
-            .occurrences()
-            .find(|occurrence| occurrence.name() == name)
-            .unwrap_or_else(|| panic!("live-authored {name} must exist"));
-        let transform = occurrence.transform();
-        let matrix = transform.matrix();
-        assert_eq!([matrix[3], matrix[7], matrix[11]], translation);
-        assert_eq!(
-            [
-                [matrix[0], matrix[1], matrix[2]],
-                [matrix[4], matrix[5], matrix[6]],
-                [matrix[8], matrix[9], matrix[10]],
-            ],
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        );
-        let definition_id = definition_id_of(&shell, name);
-        let body = body_feature_id_of(&shell, name);
-        let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, body)
-            .unwrap_or_else(|error| panic!("live-authored {name} must compile exactly: {error}"));
-        let package = worker
-            .evaluate_exact_brep_graph(&graph)
-            .unwrap_or_else(|error| panic!("live-authored {name} must evaluate in OCCT: {error}"));
-        let expected_volume = size.iter().product::<f64>();
-        assert!((package.volume_mm3 - expected_volume).abs() <= expected_volume * 1.0e-9);
-        assert_eq!(package.bounds_mm, [[0.0, 0.0, 0.0], size]);
-        assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
-    }
-
-    let frame_identities = committed
-        .occurrences()
-        .map(|occurrence| {
-            (
-                occurrence.name().to_owned(),
-                occurrence.id(),
-                occurrence.definition_id(),
-                occurrence.transform(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let frame_graphs = frame_identities
-        .iter()
-        .map(|(name, _, definition_id, _)| {
-            let body = body_feature_id_of(&shell, name);
-            let graph = ExactBRepGraph::from_snapshot(&committed, *definition_id, body)
-                .unwrap_or_else(|error| {
-                    panic!("{name} must compile before the roof turn: {error}")
-                });
-            (
-                name.clone(),
-                graph.definition_id,
-                graph.producer_feature_id,
-                graph.profiles,
-                graph.nodes,
-            )
-        })
-        .collect::<Vec<_>>();
-    let frame_revision = shell.app().document_revision();
-    let frame_digest = shell.app().canonical_digest();
-    let roof_request = "Use one typed cad_edit_program, not model_intent and not prose alone. Add a pitched roof to the existing 4000 by 4000 mm house frame by creating exactly two separate prismatic parts. Keep every existing occurrence unchanged and do not delete it. Create both parts on the YZ principal plane, extruded 4000 mm through the house length, translated [0,0,3000], with constraints as an empty array and with the optional rotation field omitted. 'Left roof plane' has one closed four-line profile with corners [0,0], [2000,1000], [2000,1100], [0,100]. 'Right roof plane' has one closed four-line profile with corners [2000,1000], [4000,0], [4000,100], [2000,1100]. For each profile use four line entity objects with exactly the keys type, id, start_mm and end_mm, where each end_mm equals the next line's start_mm and the fourth end_mm closes at the first start_mm. Use extrusion as the part feature with distance_mm 4000. Do not emit any constraint object, add any other part, or approximate with mesh geometry.";
-    submit_applied_request(&mut shell, roof_request, Duration::from_secs(300));
-    let diagnostics = shell
-        .app()
-        .last_assistant_api_diagnostics()
-        .expect("the roof response must retain bounded provider diagnostics");
-    assert_eq!(diagnostics.provider, "codex-oauth");
-    assert_eq!(diagnostics.model, "gpt-5.6-sol");
-    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
-    let roof_provider_message = json_string_ending_with(&diagnostics.request_payload, roof_request)
-        .expect("the provider payload must contain the roof request");
-    let (document_context, provider_prompt) = roof_provider_message
-        .strip_prefix("<document-context>")
-        .and_then(|message| message.split_once("</document-context>\n\n"))
-        .expect("the roof request must carry serialized frame context");
-    assert_eq!(provider_prompt, roof_request);
-    let document_context: serde_json::Value = serde_json::from_str(document_context)
-        .expect("the roof provider context must remain valid JSON");
-    assert_eq!(document_context["revision"], frame_revision);
-    assert_eq!(document_context["canonical_digest"], frame_digest);
-    assert_eq!(document_context["occurrence_count"], 10);
-    assert!(
-        document_context["conversation"]
-            .as_array()
-            .expect("the roof context must retain earlier turns")
-            .iter()
-            .any(|message| {
-                message["role"] == "user" && message["text"].as_str() == Some(second_request)
-            })
-    );
-    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
-        .expect("the captured roof provider response must be JSON");
-    let operations = provider_response["cad_edit_program"]["operations"]
-        .as_array()
-        .expect("GPT-5.6 must return a typed roof CAD program");
-    assert!(
-        operations
-            .iter()
-            .all(|operation| operation.get("rotation").is_none()),
-        "the provider must omit rotation instead of changing the roof placement"
-    );
-    let profile = |corners: [[f64; 2]; 4]| {
-        (0..4)
-            .map(|index| AssistantSketchEntity::Line {
-                id: index as u64 + 1,
-                start_mm: corners[index],
-                end_mm: corners[(index + 1) % 4],
-            })
-            .collect::<Vec<_>>()
-    };
-    let expected_roof_program = AssistantCadEditProgram {
-        operations: vec![
-            AssistantCadEditOperation::CreatePart {
-                holes: Vec::new(),
-                pockets: Vec::new(),
-                name: "Left roof plane".to_owned(),
-                workplane: AssistantWorkplaneSpec::Principal {
-                    plane: AssistantPrincipalPlane::Yz,
-                },
-                entities: profile([
-                    [0.0, 0.0],
-                    [2_000.0, 1_000.0],
-                    [2_000.0, 1_100.0],
-                    [0.0, 100.0],
-                ]),
-                constraints: Vec::new(),
-                feature: AssistantCadPartFeature::Extrusion {
-                    distance_mm: 4_000.0,
-                },
-                translation_mm: [0.0, 0.0, 3_000.0],
-                rotation: None,
-            },
-            AssistantCadEditOperation::CreatePart {
-                holes: Vec::new(),
-                pockets: Vec::new(),
-                name: "Right roof plane".to_owned(),
-                workplane: AssistantWorkplaneSpec::Principal {
-                    plane: AssistantPrincipalPlane::Yz,
-                },
-                entities: profile([
-                    [2_000.0, 1_000.0],
-                    [4_000.0, 0.0],
-                    [4_000.0, 100.0],
-                    [2_000.0, 1_100.0],
-                ]),
-                constraints: Vec::new(),
-                feature: AssistantCadPartFeature::Extrusion {
-                    distance_mm: 4_000.0,
-                },
-                translation_mm: [0.0, 0.0, 3_000.0],
-                rotation: None,
-            },
-        ],
-    };
-    let roof_program = serde_json::from_value::<AssistantCadEditProgram>(
-        provider_response["cad_edit_program"].clone(),
-    )
-    .expect("the roof response must deserialize through the public typed contract");
-    assert_eq!(roof_program, expected_roof_program);
-    assert_ne!(shell.app().canonical_digest(), frame_digest);
-    let roof_revision = shell.app().document_revision();
-    let roof_digest = shell.app().canonical_digest();
-    let roof_snapshot = shell.app().document_snapshot();
-    let (expected_static_program, static_load_count) = static_metadata_program(&roof_snapshot);
-    let static_program_json = serde_json::to_string(&expected_static_program).unwrap();
-    let static_request = format!(
-        "Use one typed cad_edit_program, not model_intent and not prose alone. Keep all 12 existing occurrences and their geometry unchanged. Add the canonical classification roles and explicit numeric evaluator inputs for a complete static-load check by returning exactly this cad_edit_program object: {static_program_json} Do not add, delete, transform or recolor any occurrence and do not emit any additional operation."
-    );
-    submit_applied_request(&mut shell, &static_request, Duration::from_secs(300));
-    let diagnostics = shell
-        .app()
-        .last_assistant_api_diagnostics()
-        .expect("the static metadata response must retain provider diagnostics");
-    assert_eq!(diagnostics.provider, "codex-oauth");
-    assert_eq!(diagnostics.model, "gpt-5.6-sol");
-    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
-    let static_provider_message =
-        json_string_ending_with(&diagnostics.request_payload, &static_request)
-            .expect("the provider payload must contain the static metadata request");
-    let (document_context, provider_prompt) = static_provider_message
-        .strip_prefix("<document-context>")
-        .and_then(|message| message.split_once("</document-context>\n\n"))
-        .expect("the static metadata request must carry serialized roof context");
-    assert_eq!(provider_prompt, static_request);
-    let document_context: serde_json::Value = serde_json::from_str(document_context)
-        .expect("the static metadata provider context must remain valid JSON");
-    assert_eq!(document_context["revision"], roof_revision);
-    assert_eq!(document_context["canonical_digest"], roof_digest);
-    assert_eq!(document_context["occurrence_count"], 12);
-    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
-        .expect("the captured static metadata provider response must be JSON");
-    let static_program = serde_json::from_value::<AssistantCadEditProgram>(
-        provider_response["cad_edit_program"].clone(),
-    )
-    .expect("the static metadata response must deserialize through the public typed contract");
-    assert_eq!(static_program, expected_static_program);
-    assert_ne!(shell.app().canonical_digest(), roof_digest);
-    let committed = shell.app().document_snapshot();
-    assert_eq!(committed.occurrences().count(), 12);
-    for (name, occurrence_id, definition_id, transform) in frame_identities {
-        let occurrence = committed
-            .occurrences()
-            .find(|occurrence| occurrence.name() == name)
-            .unwrap_or_else(|| panic!("the roof turn must preserve {name}"));
-        assert_eq!(occurrence.id(), occurrence_id);
-        assert_eq!(occurrence.definition_id(), definition_id);
-        assert_eq!(occurrence.transform(), transform);
-    }
-    for (name, definition_id, producer_feature_id, profiles, nodes) in frame_graphs {
-        let body = body_feature_id_of(&shell, &name);
-        let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(definition_id), body)
-            .unwrap_or_else(|error| panic!("{name} must compile after the roof turn: {error}"));
-        assert_eq!(graph.producer_feature_id, producer_feature_id);
-        assert_eq!(graph.profiles, profiles);
-        assert_eq!(graph.nodes, nodes);
-    }
-    for (name, expected_bounds) in [
-        (
-            "Left roof plane",
-            [[0.0, 0.0, 0.0], [4_000.0, 2_000.0, 1_100.0]],
-        ),
-        (
-            "Right roof plane",
-            [[0.0, 2_000.0, 0.0], [4_000.0, 4_000.0, 1_100.0]],
-        ),
-    ] {
-        let occurrence = committed
-            .occurrences()
-            .find(|occurrence| occurrence.name() == name)
-            .unwrap_or_else(|| panic!("live-authored {name} must exist"));
-        let transform = occurrence.transform();
-        let matrix = transform.matrix();
-        assert_eq!([matrix[3], matrix[7], matrix[11]], [0.0, 0.0, 3_000.0]);
-        assert_eq!(
-            [
-                [matrix[0], matrix[1], matrix[2]],
-                [matrix[4], matrix[5], matrix[6]],
-                [matrix[8], matrix[9], matrix[10]],
-            ],
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        );
-        let definition_id = definition_id_of(&shell, name);
-        let body = body_feature_id_of(&shell, name);
-        let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, body)
-            .unwrap_or_else(|error| panic!("live-authored {name} must compile exactly: {error}"));
-        let package = worker
-            .evaluate_exact_brep_graph(&graph)
-            .unwrap_or_else(|error| panic!("live-authored {name} must evaluate in OCCT: {error}"));
-        assert!((package.volume_mm3 - 800_000_000.0).abs() <= 0.8);
-        for (actual, expected) in package
-            .bounds_mm
-            .iter()
-            .flatten()
-            .zip(expected_bounds.iter().flatten())
-        {
-            assert!((*actual - *expected).abs() <= 1.0e-6);
-        }
-        let support_y_mm = if name == "Left roof plane" {
-            0.0
-        } else {
-            4_000.0
-        };
-        for support_x_mm in [0.0, 4_000.0] {
-            assert!(
-                package.vertices.iter().any(|vertex| {
-                    (vertex.position_mm[0] - support_x_mm).abs() <= 1.0e-6
-                        && (vertex.position_mm[1] - support_y_mm).abs() <= 1.0e-6
-                        && vertex.position_mm[2].abs() <= 1.0e-6
-                }),
-                "{name} must have an exact lower OCCT edge on its supporting header"
-            );
-        }
-        assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
-    }
-
-    let tolerance = TolerancePolicy::default();
-    let packages = committed
-        .occurrences()
-        .map(|occurrence| {
-            let name = occurrence.name();
-            let body = body_feature_id_of(&shell, name);
-            let graph = ExactBRepGraph::from_snapshot(&committed, occurrence.definition_id(), body)
-                .unwrap_or_else(|error| {
-                    panic!("live-authored {name} must compile for validation: {error}")
-                });
-            let package = worker
-                .evaluate_exact_brep_graph(&graph)
-                .unwrap_or_else(|error| {
-                    panic!("live-authored {name} must evaluate for validation: {error}")
-                });
-            Arc::new(ExactBodyPackage::from(package))
-        })
-        .collect::<Vec<_>>();
-    let registry = ExactResultRegistry::accept(&committed, packages).unwrap();
-    let participants = committed
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| occurrence.visible)
-        .map(|occurrence| {
-            GeneralBodyParticipant::accept(
-                &committed,
-                &registry,
-                InstancePath::root(occurrence.occurrence_id),
-                tolerance,
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{} must be an accepted live validation body: {error:?}",
-                    occurrence.occurrence_name
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(participants.len(), 12);
-
-    let mut collision_cases = Vec::new();
-    for left in 0..participants.len() {
-        for right in (left + 1)..participants.len() {
-            collision_cases.push(
-                GeneralClearanceCase::new(
-                    participants[left].clone(),
-                    participants[right].clone(),
-                    0.0,
-                )
-                .unwrap(),
-            );
-        }
-    }
-    assert_eq!(collision_cases.len(), 66);
-    let collision_report = general_report(&committed, &collision_cases, tolerance);
-    assert!(collision_report.invocation.is_current(&committed));
-    assert_eq!(collision_report.diagnostics.len(), collision_cases.len());
-    assert!(
-        collision_report
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.code == "collision.none"),
-        "{:#?}",
-        collision_report.diagnostics
-    );
-    assert_eq!(
-        collision_report.state,
-        ValidationState::Passed,
-        "{:#?}",
-        collision_report.diagnostics
-    );
-
-    let grounded_foundations = committed
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| {
-            occurrence.visible
-                && matches!(
-                    occurrence.occurrence_name.as_str(),
-                    "Foundation beam" | "Rear foundation beam"
-                )
-        })
-        .map(|occurrence| occurrence.occurrence_id)
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(grounded_foundations.len(), 2);
-    let gravity_participants = participants
-        .iter()
-        .cloned()
-        .map(|body| {
-            let occurrence_id = body.instance_path().root_occurrence();
-            let occurrence = committed
-                .occurrence(occurrence_id)
-                .expect("every validation body must retain its final occurrence identity");
-            assert!(
-                matches!(
-                    occurrence.name(),
-                    "Foundation beam" | "Rear foundation beam"
-                ) == grounded_foundations.contains(&occurrence_id)
-            );
-            GravitySupportParticipant::new(
-                body,
-                "live-house",
-                grounded_foundations.contains(&occurrence_id),
-            )
-        })
-        .collect::<Vec<_>>();
-    let gravity_input = GravitySupportInput::new(gravity_participants, [0.0, 0.0, -9.81]).unwrap();
-    let gravity_validator = BuiltinGravitySupportValidator::new(tolerance);
-    let gravity_policy = gravity_support_validation_policy();
-    let gravity_bytes = gravity_support_input_bytes(&gravity_input);
-    let gravity_invocation = ValidationInvocation::bind(
-        &committed,
-        gravity_validator.descriptor(),
-        &gravity_policy,
-        Vec::new(),
-        &gravity_bytes,
-    );
-    let gravity_report = gravity_validator.invoke(ValidationExecution {
-        snapshot: &committed,
-        invocation: gravity_invocation,
-        policy: &gravity_policy,
-        input: &gravity_input,
-    });
-    assert!(gravity_report.invocation.is_current(&committed));
-    assert_eq!(gravity_report.diagnostics.len(), participants.len());
-    assert!(
-        gravity_report
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.code != "gravity.unsupported"),
-        "{:#?}",
-        gravity_report.diagnostics
-    );
-    assert_eq!(
-        gravity_report.state,
-        ValidationState::Passed,
-        "{:#?}",
-        gravity_report.diagnostics
-    );
-
-    let static_validation = assistant_validation_context_with_worker(
-        &committed,
-        &registry,
-        &AssistantValidationSelection::only(&["static_load"]),
-        &ContainerData::default(),
-        Some(exact_worker_path()),
-        Duration::from_secs(30),
-    );
-    assert_eq!(static_validation["revision"], committed.revision_id());
-    assert_eq!(
-        static_validation["canonical_digest"],
-        committed.canonical_digest()
-    );
-    assert_eq!(
-        static_validation["state"], "passed",
-        "{static_validation:#}"
-    );
-    assert_eq!(static_validation["complete"], true, "{static_validation:#}");
-    assert_eq!(
-        static_validation["static_load"]["applicable_count"],
-        static_load_count
-    );
-    assert_eq!(static_validation["static_load"]["issue_count"], 0);
-
-    let fabrication = ketchup_manufacturing::fabrication::project_general_fabrication(
-        &committed,
-        &registry,
-        &collision_cases,
-        &collision_report,
-        tolerance,
-    )
-    .expect("the final live-authored revision must project a manufacturing handoff");
-    assert_eq!(fabrication.bom.envelope.status, ProjectionStatus::Complete);
-    assert_eq!(
-        fabrication.drawings.envelope.status,
-        ProjectionStatus::Complete
-    );
-    assert_eq!(
-        fabrication.manufacturing.envelope.status,
-        ProjectionStatus::Complete
-    );
-    assert!(fabrication.bom.envelope.is_current(&committed));
-    assert!(fabrication.drawings.envelope.is_current(&committed));
-    assert!(fabrication.manufacturing.envelope.is_current(&committed));
-    assert_eq!(fabrication.bom.rows.len(), participants.len());
-    assert!(
-        fabrication
-            .bom
-            .rows
-            .iter()
-            .all(|row| row.material_key == TIMBER_MATERIAL_V1)
-    );
-    assert_eq!(fabrication.drawings.drawings.len(), participants.len());
-    assert_eq!(
-        fabrication.manufacturing.operations.len(),
-        participants.len()
-    );
-    assert!(fabrication.manufacturing.unresolved_sources.is_empty());
-    assert!(
-        fabrication
-            .manufacturing
-            .operations
-            .iter()
-            .all(|operation| operation.kind == GeneralManufacturingKind::Stock)
-    );
-    let bom = fabrication.bom_export(&committed).unwrap();
-    let drawings = fabrication.drawing_svg(&committed).unwrap();
-    let manufacturing = fabrication.manufacturing_export(&committed).unwrap();
-    let bom_text = String::from_utf8_lossy(&bom);
-    assert!(bom_text.contains("ketchup.general-bom-export.v2"));
-    assert!(bom_text.contains(&format!("source_revision={}", committed.revision_id())));
-    assert!(bom_text.contains(&format!("source_digest={}", committed.canonical_digest())));
-    assert!(String::from_utf8_lossy(&drawings).contains("ketchup.general-drawing-svg.v3"));
-    assert!(String::from_utf8_lossy(&manufacturing).contains("kind=stock"));
-    publish_artifact("live-oauth-roofed-house-bom.txt", &bom);
-    publish_artifact("live-oauth-roofed-house-drawings.svg", &drawings);
-    publish_artifact("live-oauth-roofed-house-manufacturing.txt", &manufacturing);
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory
-        .path()
-        .join("live-oauth-roofed-house-frame.ketchup");
-    persistence::save_atomic(&path, &committed).unwrap();
-    let outcome = persistence::load_file(&path).unwrap();
-    assert!(outcome.is_editable());
-    assert_eq!(
-        outcome.snapshot().canonical_digest(),
-        committed.canonical_digest()
-    );
-    publish_artifact(
-        "live-oauth-roofed-house-frame.ketchup",
-        &std::fs::read(path).unwrap(),
-    );
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), roof_revision);
-    assert_eq!(shell.app().canonical_digest(), roof_digest);
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), frame_revision);
-    assert_eq!(shell.app().canonical_digest(), frame_digest);
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), first_revision);
-    assert_eq!(shell.app().canonical_digest(), first_digest);
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-}
-
 /// Prove the built frame is exact, editable, savable and undoable.
 #[test]
 fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
-    let (mut shell, _transport, baseline_revision, baseline_digest) = build_timber_frame_house();
+    let (mut shell, baseline_revision, baseline_digest) = build_timber_frame_house();
 
     // The rafter must really be tilted, not axis-aligned like every other member.
     let snapshot = shell.app().document_snapshot();
@@ -1497,7 +576,7 @@ fn general_report(
 /// each exportable only while it still matches the document it came from.
 #[test]
 fn the_timber_frame_house_projects_a_manufacturable_handoff() {
-    let (shell, _transport, _revision, _digest) = build_timber_frame_house();
+    let (shell, _revision, _digest) = build_timber_frame_house();
     let snapshot = shell.app().document_snapshot();
     let tolerance = TolerancePolicy::default();
 
@@ -1641,7 +720,7 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
 fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
     let total_started = Instant::now();
     let build_started = Instant::now();
-    let (mut shell, transport, _baseline_revision, _baseline_digest) = build_timber_frame_house();
+    let (mut shell, _baseline_revision, _baseline_digest) = build_timber_frame_house();
     let model_build = build_started.elapsed();
 
     let stud_definition = definition_id_of(&shell, "Front stud");
@@ -1649,16 +728,8 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
     let changed_body = body_feature_id_of(&shell, "Front sheathing");
     let change_started = Instant::now();
     let change_request = "Reduce the front sheathing thickness to 16 mm";
-    transport.queue_response(
-        change_request,
-        AssistantChatResult {
-            message: "Review the parametric stud change.".to_owned(),
-            model_intent: None,
-        },
-    );
     build_step(
         &mut shell,
-        &transport,
         change_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::SetDimension {
@@ -1872,7 +943,7 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
 /// it is what catches a ridge beam hanging in mid-air.
 #[test]
 fn the_timber_frame_house_must_stand_up_under_gravity() {
-    let (shell, _transport, _revision, _digest) = build_timber_frame_house();
+    let (shell, _revision, _digest) = build_timber_frame_house();
     let snapshot = shell.app().document_snapshot();
     let tolerance = TolerancePolicy::default();
 
@@ -1980,20 +1051,13 @@ fn the_timber_frame_house_must_stand_up_under_gravity() {
 #[test]
 fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
     let request = "Create a wall with a rectangular window opening";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        request.to_owned(),
-        AssistantChatResult {
-            message: "Review the wall and its opening.".to_owned(),
-            model_intent: None,
-        },
-    )]));
     let directory = tempfile::tempdir().unwrap();
     let saved = directory.path().join("assistant-wall-opening.ketchup");
     let dialogs = ScriptedFileDialogs::new()
         .queue_save(&saved)
         .queue_open(&saved)
         .always_discard();
-    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport.clone());
+    let mut shell = Shell::with_dialogs(dialogs);
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
@@ -2078,7 +1142,7 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
     };
 
     let baseline_digest = shell.app().canonical_digest();
-    build_step(&mut shell, &transport, request, program);
+    build_step(&mut shell, request, program);
     let committed_digest = shell.app().canonical_digest();
     let committed_revision = shell.app().document_revision();
     let sheathing = definition_id_of(&shell, "Front sheathing");
@@ -2191,18 +1255,7 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
     let profile_request = "Create a square sweep profile part";
     let path_request = "Create an open straight sweep path in that part";
     let sweep_request = "Sweep the authored square profile along the authored path";
-    let chat_result = || AssistantChatResult {
-        message: "Review the generic sweep step.".to_owned(),
-        model_intent: None,
-    };
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (clear_request.to_owned(), chat_result()),
-        (profile_request.to_owned(), chat_result()),
-        (path_request.to_owned(), chat_result()),
-        (sweep_request.to_owned(), chat_result()),
-        (sweep_request.to_owned(), chat_result()),
-    ]));
-    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let mut shell = Shell::new();
 
     let existing = shell
         .app()
@@ -2212,7 +1265,6 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
         .collect::<Vec<_>>();
     build_step(
         &mut shell,
-        &transport,
         clear_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::Delete {
@@ -2228,7 +1280,6 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
     let (entities, constraints) = rectangle(20.0, 20.0);
     build_step(
         &mut shell,
-        &transport,
         profile_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
@@ -2250,7 +1301,6 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
 
     build_step(
         &mut shell,
-        &transport,
         path_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreateSketch {
@@ -2302,7 +1352,7 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
             },
         }],
     };
-    build_step(&mut shell, &transport, sweep_request, sweep_program);
+    build_step(&mut shell, sweep_request, sweep_program);
 
     let committed = shell.app().document_snapshot();
     let sweep_id = committed
@@ -2349,16 +1399,7 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
     let clear_request = "Clear the document for a fillet test";
     let part_request = "Create a small rectangular part";
     let fillet_request = "Fillet one current edge of that part by 2 mm";
-    let chat_result = || AssistantChatResult {
-        message: "Review the generic fillet step.".to_owned(),
-        model_intent: None,
-    };
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (clear_request.to_owned(), chat_result()),
-        (part_request.to_owned(), chat_result()),
-        (fillet_request.to_owned(), chat_result()),
-    ]));
-    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let mut shell = Shell::new();
 
     let existing = shell
         .app()
@@ -2368,7 +1409,6 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
         .collect::<Vec<_>>();
     build_step(
         &mut shell,
-        &transport,
         clear_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::Delete {
@@ -2383,7 +1423,6 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
     let (entities, constraints) = rectangle(40.0, 30.0);
     build_step(
         &mut shell,
-        &transport,
         part_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
@@ -2426,17 +1465,8 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
             .app_mut()
             .headless_install_exact_package(ExactBodyPackage::Graph(base_package))
     );
-    assert!(
-        shell.app().assistant_context()["topology_edge_references"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|reference| reference["reference_id"] == edge_reference)
-    );
-
     build_step(
         &mut shell,
-        &transport,
         fillet_request,
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::AppendFeature {
@@ -2480,5 +1510,4 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
         "a convex edge fillet must remove exact material from the block"
     );
     assert_eq!(fillet_package.topology_counts[4], 1);
-    assert_eq!(transport.remaining_responses(), 0);
 }

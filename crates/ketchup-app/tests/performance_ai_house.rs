@@ -1,10 +1,8 @@
 use crate::harness;
 
-use harness::{ScriptedAssistantTransport, Shell};
+use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_assistant::sidecar::AssistantChatResult;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn exact_worker_path() -> std::path::PathBuf {
@@ -76,76 +74,9 @@ fn ai_house_fixture_orbits_interactively_with_exact_geometry() {
     );
 }
 
-#[test]
-fn ai_house_follow_up_fits_the_sidecar_request_envelope() {
-    let query = "Urob normálnu sedlovú strechu namiesto tých stupňov";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        query.to_owned(),
-        AssistantChatResult {
-            message: "Strechu viem opraviť.".to_owned(),
-            model_intent: None,
-        },
-    )]));
-    let directory = tempfile::tempdir().unwrap();
-    let fixture = directory.path().join("ai_house_orbit.ketchup");
-    std::fs::write(&fixture, include_bytes!("fixtures/ai_house_orbit.ketchup")).unwrap();
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_open(&fixture)
-        .always_discard();
-    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport.clone());
-    shell.click_menu_command("menu-file", AppCommand::Open);
-
-    let worker = exact_worker_path();
-    shell.app_mut().connect_exact_worker(&worker).unwrap();
-    for _ in 0..500 {
-        shell.step();
-        if shell.app().exact_render_body_count() == 64 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(shell.app().exact_render_body_count(), 64);
-
-    let input_label = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input_label);
-    shell.type_text(query);
-    shell.press_key(eframe::egui::Key::Enter);
-    for _ in 0..100 {
-        shell.step();
-        if !transport.contexts().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-
-    let mut context = transport.contexts().into_iter().next().unwrap();
-    // The sidecar keeps inspection data locally, outside the provider message.
-    let catalog = context
-        .as_object_mut()
-        .unwrap()
-        .remove("_local_inspection_catalog")
-        .unwrap();
-    assert_eq!(catalog["occurrences"].as_array().unwrap().len(), 64);
-    let encoded = serde_json::to_vec(&context).unwrap();
-    assert!(
-        encoded.len() <= 24 * 1024,
-        "AI house provider context uses {} bytes",
-        encoded.len()
-    );
-    assert_eq!(context["context_complete"], false);
-    assert_eq!(context["boxes_complete"], false);
-    assert_eq!(context["boxes"], serde_json::json!([]));
-    assert_eq!(context["occurrence_count"], 64);
-    assert_eq!(context["occurrences_complete"], false);
-    assert!(context["occurrences"].as_array().unwrap().len() < 64);
-    assert!(!context["occurrences"].as_array().unwrap().is_empty());
-    assert!(!context["conversation"].as_array().unwrap().is_empty());
-    assert!(context["state_view"]["content"].as_str().unwrap().len() <= 1024);
-}
-
 /// CPU-side equivalent of the GPU-enabled desktop path, not a GPU benchmark:
 /// egui_kittest builds the real instanced scene but never executes paint callbacks.
-/// Keep separate from the legacy 64-body fixture and use default OAuth features.
+/// Keep separate from the legacy 64-body fixture.
 #[test]
 fn garden_studio_exact_load_idle_and_orbit_performance() {
     exact_load_idle_and_orbit_performance("garden-studio.ketchup", 93);
@@ -175,9 +106,8 @@ fn exact_load_idle_and_orbit_performance(example: &str, bodies: usize) {
     .unwrap();
     let worker = exact_worker_path();
     eprintln!(
-        "{example} path=headless-instanced debug={} private-oauth={} fixture_bytes={} worker={}",
+        "{example} path=headless-instanced debug={} fixture_bytes={} worker={}",
         cfg!(debug_assertions),
-        cfg!(feature = "private-oauth"),
         std::fs::metadata(&fixture).unwrap().len(),
         worker.display()
     );

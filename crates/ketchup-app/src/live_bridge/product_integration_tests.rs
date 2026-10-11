@@ -496,11 +496,6 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
 #[test]
 fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_view_layers() {
     let (mut app, mut bridge) = setup();
-    #[cfg(feature = "private-oauth")]
-    {
-        assert_eq!(app.assistant.provider.protocol_name(), "codex-oauth");
-        assert_eq!(app.assistant.model, "gpt-5.6-sol");
-    }
     app.document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateTag {

@@ -2162,6 +2162,7 @@ impl LiveBridge {
         )?)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_assistant_cad_program(
         app: &mut KetchupApp,
         program: AssistantCadEditProgram,

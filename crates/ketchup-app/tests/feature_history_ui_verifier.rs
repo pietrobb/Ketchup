@@ -936,12 +936,11 @@ fn component_replacement_stale_confirm_preserves_intervening_state_and_outputs()
     assert!(
         shell
             .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
                 target: REPLACEMENT_SOURCE,
                 name: "Intervening source name".to_owned(),
             },)
     );
-    assert!(shell.app_mut().confirm_assistant_proposal());
     shell.settle();
     let intervening = stamp(&shell);
     let bounds = shell.app().exact_render_bounds();
@@ -1816,18 +1815,15 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     assert!(
         shell
             .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
                 target: DEFINITION,
                 name: "Intervening edit".to_owned(),
             },)
     );
     shell.settle();
-    let assistant_confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&assistant_confirm);
     let after_intervening_edit = stamp(&shell);
     assert_eq!(after_intervening_edit.0, before_intervening_edit.0 + 1);
     assert_eq!(after_intervening_edit.2, before_intervening_edit.2 + 1);
-    assert!(shell.app().assistant_proposal().is_none());
     assert!(shell.app().feature_history_preview_pending());
     assert_eq!(
         shell

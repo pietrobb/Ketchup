@@ -19,7 +19,7 @@
   Windows x86-64 · Rust · Open CASCADE Technology · wgpu · Apache-2.0
 </p>
 
-Ketchup is an AI-native desktop modeler for creating, editing, assembling, validating, and exporting real geometry. Manual tools and the Assistant share the same canonical command path: every accepted model change is validated, revision-bound, atomic, and undoable.
+Ketchup is an AI-native desktop modeler for creating, editing, assembling, validating, and exporting real geometry. Manual tools and AI clients connected over MCP share the same canonical command path: every accepted model change is validated, revision-bound, atomic, and undoable.
 
 <p align="center">
   <img src="pic/ketchup-modeler.png" alt="Ketchup desktop prototype showing a 480-occurrence timber scene" width="100%">
@@ -54,7 +54,7 @@ Other included scenes:
 ```mermaid
 flowchart LR
     UI[Manual tools] --> CMD[Canonical command batch]
-    AI[AI Assistant] --> PLAN[Bounded proposal]
+    AI[AI client over MCP] --> PLAN[Bounded proposal]
     SDK[Plugin / script] --> PLAN
     PLAN --> CMD
     CMD --> CHECK[Validate identity, limits, and revision]
@@ -68,7 +68,7 @@ flowchart LR
     DOC --> UNDO[Undo / Redo]
 ```
 
-Assistant model proposals cannot write around validation, persistence, or Undo/Redo. Stale, invalid, oversized, timed-out, or disconnected proposals are rejected without replacing the last valid model.
+AI proposals cannot write around validation, persistence, or Undo/Redo. Stale, invalid, oversized, timed-out, or disconnected proposals are rejected without replacing the last valid model.
 
 ## Modeling capabilities
 
@@ -96,21 +96,9 @@ Ketchup supports reusable occurrences, grounding, stable-reference planar/axial 
 - **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
 - **Export:** current visible exact model to STEP and current tessellation to STL, both with fail-closed freshness/loss checks.
 
-## AI Assistant
+## Use Ketchup from any AI client (MCP)
 
-The docked Assistant receives bounded document and selection context and can inspect a model, explain a plan, create supported sketches and parts, append exact features, edit dimensions, transform or copy occurrences, build patterns, and submit reviewed changes. Conversations and searchable project memory can be stored with the document.
-
-The normal application build includes the private OAuth provider surface and defaults to Codex OAuth with GPT-5.6. That OAuth path requires a separate external adapter that is not distributed in this public repository. A repository-complete public build can instead use the API-key providers:
-
-```powershell
-cargo run -p ketchup-app --no-default-features
-```
-
-Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, then choose the matching provider in the Assistant. Cloud AI is optional; ordinary modeling remains available without it.
-
-### Use Ketchup from any AI client (MCP)
-
-`ketchup-app --mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. Any MCP client (Claude Code, Claude Desktop, Codex, Cursor, ...) can then work in the Ketchup window you have open: read and apply the model's program, inspect parts, make verified edits, undo, save and render images. Nothing else is needed besides the executable.
+Ketchup has no built-in chat. `ketchup-app --mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. Any MCP client (Claude Code, Claude Desktop, Codex, Cursor, ...) can then work in the Ketchup window you have open: read and apply the model's program, inspect parts, make verified edits, undo, save and render images. This includes importing STEP, IGES, STL, DXF, GLB and SketchUp scene files and exporting STEP, IGES, STL and the other File-menu formats. Nothing else is needed besides the executable. The **Connect AI** section of the window's side panel shows whether a client is connected and has these set-up commands ready to copy.
 
 Claude Code:
 
@@ -135,12 +123,6 @@ The supported development platform is **Windows x86-64** with Rust 1.97.0 and OC
 ```powershell
 cargo build -p ketchup-scheduler --bin ketchup-exact-worker
 cargo run -p ketchup-app
-```
-
-Run the public API-key build without the private OAuth adapter:
-
-```powershell
-cargo run -p ketchup-app --no-default-features
 ```
 
 Validate the workspace:

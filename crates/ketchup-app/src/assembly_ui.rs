@@ -1539,7 +1539,7 @@ impl KetchupApp {
         })
     }
 
-    fn preview_assembly_joint_from_selection(&mut self) -> bool {
+    pub(crate) fn preview_assembly_joint_from_selection(&mut self) -> bool {
         match self.assembly_joint_preview_source() {
             Ok(source) => self.prepare_assembly_preview(source),
             Err(error) => {
@@ -1639,56 +1639,6 @@ impl KetchupApp {
     fn preview_assembly_motion_study_from_selection(&mut self) -> bool {
         match self.assembly_motion_study_preview_source() {
             Ok(source) => self.prepare_assembly_preview(source),
-            Err(error) => {
-                self.assembly_error(error);
-                false
-            }
-        }
-    }
-
-    fn prepare_assistant_assembly_source(&mut self, source: AssemblyPreviewSource) -> bool {
-        match self.derive_assembly_preview_proposal(&source) {
-            Ok(proposal) => {
-                self.digest = self.catalog.format(
-                    "assistant-digest-preview",
-                    &BTreeMap::from([
-                        (
-                            "reads",
-                            proposal.authoritative_dependencies().len().to_string(),
-                        ),
-                        ("writes", proposal.authoritative_writes().len().to_string()),
-                    ]),
-                );
-                self.status_key = "status-preview";
-                self.assistant.verification = None;
-                self.assistant.proposal = Some(AssistantPreviewPlan {
-                    source: AssistantPreviewSource::Assembly(source),
-                    proposal,
-                    repair: None,
-                });
-                true
-            }
-            Err(error) => {
-                self.assistant.proposal = None;
-                self.assembly_error(error);
-                false
-            }
-        }
-    }
-
-    pub fn prepare_assistant_assembly_joint_from_selection(&mut self) -> bool {
-        match self.assembly_joint_preview_source() {
-            Ok(source) => self.prepare_assistant_assembly_source(source),
-            Err(error) => {
-                self.assembly_error(error);
-                false
-            }
-        }
-    }
-
-    pub fn prepare_assistant_motion_study_from_selection(&mut self) -> bool {
-        match self.assembly_motion_study_preview_source() {
-            Ok(source) => self.prepare_assistant_assembly_source(source),
             Err(error) => {
                 self.assembly_error(error);
                 false

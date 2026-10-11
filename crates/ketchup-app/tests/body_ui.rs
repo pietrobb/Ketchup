@@ -331,19 +331,12 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     assert!(
         shell
             .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::SetFeatureDimension {
+            .headless_apply_workflow_intent(WorkflowIntent::SetFeatureDimension {
                 target: TOOL_EXTRUSION,
                 value_text: "120".to_owned(),
             })
     );
     shell.settle();
-    let assistant_confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&assistant_confirm);
-    assert!(
-        shell.app().assistant_proposal().is_none(),
-        "{}",
-        shell.app().action_digest()
-    );
     assert!(matches!(
         shell
             .app()
@@ -454,13 +447,12 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     assert!(
         shell
             .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::SetFeatureDimension {
+            .headless_apply_workflow_intent(WorkflowIntent::SetFeatureDimension {
                 target: failed_body_feature,
                 value_text: "120".to_owned(),
             })
     );
     shell.settle();
-    shell.click_row(&assistant_confirm);
     let after_failed_edit = (
         shell.app().document_revision(),
         shell.app().canonical_digest(),
@@ -535,14 +527,12 @@ fn invalid_selection_and_stale_confirmation_are_fail_closed() {
     assert!(
         shell
             .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
                 target: DefinitionId(1),
                 name: "Intervening body edit".to_owned(),
             })
     );
     shell.settle();
-    let assistant_confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&assistant_confirm);
     let after_intervening_edit = (
         shell.app().document_revision(),
         shell.app().canonical_digest(),

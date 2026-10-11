@@ -19,9 +19,6 @@ use crate::harness;
 use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::ValidatorPanelReport;
-use ketchup_assistant::sidecar::{
-    AssistantBoxIntent, AssistantModelIntent, AssistantTranslationIntent,
-};
 use ketchup_model::document::OccurrenceId;
 use std::collections::BTreeMap;
 
@@ -30,28 +27,11 @@ const POST_TOP_MM: f64 = 2_800.0;
 /// How far above the posts the ridge beam is left hanging.
 const FLOATING_GAP_MM: f64 = 700.0;
 
-fn model_intent(
-    replace_scene: bool,
-    boxes: Vec<AssistantBoxIntent>,
-    translations: Vec<AssistantTranslationIntent>,
-) -> AssistantModelIntent {
-    AssistantModelIntent {
-        replace_scene,
-        boxes,
-        translations,
-        rotations: Vec::new(),
-        profile_translations: Vec::new(),
-        parameter_edits: Vec::new(),
-        linear_arrays: Vec::new(),
-    }
-}
-
-fn timber(name: &str, size_mm: [f64; 3], origin_mm: [f64; 3]) -> AssistantBoxIntent {
-    AssistantBoxIntent {
-        name: name.to_owned(),
+fn timber<'a>(name: &'a str, size_mm: [f64; 3], origin_mm: [f64; 3]) -> harness::BoxPart<'a> {
+    harness::BoxPart {
+        name,
         size_mm,
         origin_mm,
-        subtract_boxes: Vec::new(),
     }
 }
 
@@ -65,9 +45,9 @@ fn build_frame_with_a_floating_ridge(shell: &mut Shell) {
 fn build_frame_with_a_floating_ridge_at(shell: &mut Shell, elevation_mm: f64) {
     let post_height_mm = POST_TOP_MM - FOUNDATION_TOP_MM;
     let z = elevation_mm;
-    assert!(shell.app_mut().prepare_assistant_model_intent(model_intent(
-        true,
-        vec![
+    harness::replace_scene_with_boxes(
+        shell.app_mut(),
+        &[
             timber(
                 "Foundation",
                 [4_000.0, 400.0, FOUNDATION_TOP_MM],
@@ -89,9 +69,7 @@ fn build_frame_with_a_floating_ridge_at(shell: &mut Shell, elevation_mm: f64) {
                 [0.0, 0.0, z + POST_TOP_MM + FLOATING_GAP_MM],
             ),
         ],
-        Vec::new(),
-    )));
-    assert!(shell.app_mut().confirm_assistant_proposal());
+    );
 }
 
 fn occurrence_id_of(shell: &Shell, name: &str) -> OccurrenceId {
@@ -259,15 +237,7 @@ fn the_panel_rejects_a_floating_member_by_name_and_accepts_it_once_it_is_carried
 
     // Repair: lower the ridge beam onto the posts that are meant to carry it.
     let ridge = occurrence_id_of(&shell, "Ridge beam");
-    assert!(shell.app_mut().prepare_assistant_model_intent(model_intent(
-        false,
-        Vec::new(),
-        vec![AssistantTranslationIntent {
-            occurrence_id: ridge.0,
-            delta_mm: [0.0, 0.0, -FLOATING_GAP_MM],
-        }],
-    )));
-    assert!(shell.app_mut().confirm_assistant_proposal());
+    harness::translate_occurrence(shell.app_mut(), ridge.0, [0.0, 0.0, -FLOATING_GAP_MM]);
     shell.settle();
 
     let accepted = run_validators(&mut shell);

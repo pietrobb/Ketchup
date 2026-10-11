@@ -95,9 +95,8 @@ fn exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
     let original_bytes = std::fs::read(&fixture).expect("140-body exact house fixture is required");
     let worker = PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"));
     eprintln!(
-        "exact-house debug={} private-oauth={} fixture={} bytes={} worker={} deadline_s=180 path=headless-instanced CPU-only",
+        "exact-house debug={} fixture={} bytes={} worker={} deadline_s=180 path=headless-instanced CPU-only",
         cfg!(debug_assertions),
-        cfg!(feature = "private-oauth"),
         fixture.display(),
         original_bytes.len(),
         worker.display(),

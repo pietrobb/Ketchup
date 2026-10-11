@@ -322,6 +322,7 @@ fn source_error(target: &str, reason: &str) -> Rejection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ketchup_model::document::FeatureParameterTarget;
     use ketchup_model::document::{RuleProgramSource, SavedViewId};
 
     fn viewport() -> Rect {

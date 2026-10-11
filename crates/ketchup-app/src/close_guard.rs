@@ -1,4 +1,4 @@
-use crate::{KetchupApp, assistant_conversation_digest};
+use crate::KetchupApp;
 use eframe::egui;
 use ketchup_model::document::DocumentId;
 
@@ -15,7 +15,6 @@ pub(crate) struct CloseGuard {
 struct CloseIdentity {
     document: DocumentId,
     history: String,
-    conversation: String,
 }
 
 impl KetchupApp {
@@ -23,7 +22,6 @@ impl KetchupApp {
         CloseIdentity {
             document: self.document.current().document_id(),
             history: self.document.history_digest(),
-            conversation: assistant_conversation_digest(&self.assistant.messages),
         }
     }
 

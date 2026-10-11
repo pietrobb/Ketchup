@@ -1,4 +1,6 @@
 use super::*;
+use ketchup_assistant::sidecar::AssistantCadEditOperation;
+use ketchup_assistant::sidecar::AssistantCadEntitySelector;
 
 fn finishes(app: &KetchupApp) -> Vec<AssistantCadBodyFeature> {
     let snapshot = app.document.current();

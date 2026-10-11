@@ -112,7 +112,7 @@ impl KetchupApp {
                 "paths",
                 paths
                     .iter()
-                    .map(Self::assistant_instance_path_label)
+                    .map(Self::instance_path_label)
                     .collect::<Vec<_>>()
                     .join(", "),
             )]),

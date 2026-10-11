@@ -21,7 +21,6 @@ pub(super) fn prepare_save(document: &DocumentStore, container: &ContainerData) 
 struct Source {
     document: DocumentId,
     history: String,
-    conversation: String,
     container: ContainerData,
     original_path: Option<PathBuf>,
 }
@@ -31,7 +30,6 @@ impl Source {
         Self {
             document: app.document.current().document_id(),
             history: app.document.history_digest(),
-            conversation: assistant_conversation_digest(&app.assistant.messages),
             container: app.file.container_data.clone(),
             original_path: app.file.path.clone(),
         }
@@ -40,7 +38,6 @@ impl Source {
     fn current(&self, app: &KetchupApp) -> bool {
         self.document == app.document.current().document_id()
             && self.history == app.document.history_digest()
-            && self.conversation == assistant_conversation_digest(&app.assistant.messages)
             && self.container == app.file.container_data
             && self.original_path == app.file.path
     }
@@ -73,8 +70,6 @@ impl KetchupApp {
         context: &egui::Context,
         prepare: impl FnOnce(&DocumentStore, &ContainerData) -> PreparedSave + Send + 'static,
     ) {
-        self.store_assistant_conversation();
-        self.store_assistant_memory();
         let source = Source::capture(self);
         let document = self.document.fork_for_planning();
         let container = source.container.clone();
@@ -227,7 +222,6 @@ impl KetchupApp {
                         self.file.path = Some(task.path.clone());
                         self.file.identity = Some(*identity);
                         self.file.saved_digest = task.source.history;
-                        self.assistant.saved_conversation_digest = task.source.conversation;
                     }
                 }
                 if self.is_dirty()

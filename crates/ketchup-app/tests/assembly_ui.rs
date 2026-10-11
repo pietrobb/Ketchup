@@ -459,9 +459,9 @@ fn rigid_assembly_authoring_is_previewed_atomic_undoable_and_losslessly_persiste
 }
 
 #[test]
-fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
+fn prismatic_joint_and_motion_study_previews_cancel_confirm_undo_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let saved = directory.path().join("assembly-kinematics-ui-ai.ketchup");
+    let saved = directory.path().join("assembly-kinematics-ui.ketchup");
     let dialogs = ScriptedFileDialogs::new()
         .queue_save(&saved)
         .queue_open(&saved)
@@ -507,42 +507,7 @@ fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
     assert_eq!(shell.app().assembly_joint_count(), 1);
     assert_eq!(shell.app().document_revision(), baseline.0 + 1);
     assert_eq!(shell.app().undo_step_count(), baseline.2 + 1);
-
-    let joint_position = shell.catalog().text("assembly-joint-position");
-    shell.focus_text_input(&joint_position);
-    shell.key(Key::A, Modifiers::CTRL);
-    shell.type_text("10");
-    let assistant_joint = shell.catalog().text("assistant-preview-assembly-joint");
-    shell.click_button_label(&assistant_joint);
-    assert!(
-        shell.app().assistant_proposal().is_some(),
-        "selected={}, digest={}",
-        shell.app().selected_occurrence_count(),
-        shell.app().action_digest()
-    );
-    assert!(matches!(
-        shell
-            .app()
-            .document_snapshot()
-            .assembly_joints()
-            .next()
-            .unwrap()
-            .kind(),
-        AssemblyJointKind::Prismatic {
-            position_mm: 0.0,
-            ..
-        }
-    ));
-    open_assembly_editor(&mut shell);
-    shell.settle();
-    let assistant_confirm = shell.catalog().text("assistant-confirm");
-    assert!(
-        shell.has_visible_label(&assistant_confirm),
-        "assistant review button missing: {}",
-        shell.app().action_digest()
-    );
-    shell.click_button_label(&assistant_confirm);
-    assert_eq!(
+    let joint_position = |shell: &Shell| {
         shell
             .app()
             .document_snapshot()
@@ -550,28 +515,19 @@ fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
             .next()
             .unwrap()
             .kind()
-            .position(),
-        Some(10.0),
-        "{}",
-        shell.app().action_digest()
-    );
-    open_assembly_editor(&mut shell);
+            .position()
+    };
+    assert_eq!(joint_position(&shell), Some(0.0));
 
-    let assistant_motion = shell.catalog().text("assistant-preview-motion-study");
-    shell.click_button_label(&assistant_motion);
-    assert!(shell.app().assistant_proposal().is_some());
-    assert_eq!(shell.app().assembly_motion_study_count(), 0);
-    open_assembly_editor(&mut shell);
+    shell
+        .app_mut()
+        .headless_set_assembly_joint_parameters(10.0, 0.0);
     shell.settle();
-    shell.click_button_label(&shell.catalog().text("assistant-cancel"));
-    assert_eq!(shell.app().assembly_motion_study_count(), 0);
+    shell.click_button_label(&joint_preview);
+    confirm_preview(&mut shell);
+    assert_eq!(joint_position(&shell), Some(10.0));
 
-    shell.click_button_label(&assistant_motion);
-    shell.settle();
-    shell.click_button_label(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(shell.app().assembly_motion_study_count(), 1);
-    open_assembly_editor(&mut shell);
-    assert_eq!(
+    let motion_position = |shell: &Shell| {
         shell
             .app()
             .document_snapshot()
@@ -579,12 +535,20 @@ fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
             .next()
             .unwrap()
             .drivers()[0]
-            .position(),
-        25.0
-    );
+            .position()
+    };
+    let motion_preview = shell.catalog().text("assembly-preview-motion-study");
+    shell.app_mut().headless_set_assembly_motion_position(25.0);
+    shell.click_button_label(&motion_preview);
+    assert_eq!(shell.app().assembly_motion_study_count(), 0);
+    shell.click_button_label(&assembly_cancel);
+    assert_eq!(shell.app().assembly_motion_study_count(), 0);
+    shell.click_button_label(&motion_preview);
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().assembly_motion_study_count(), 1);
+    assert_eq!(motion_position(&shell), 25.0);
 
     shell.app_mut().headless_set_assembly_motion_position(35.0);
-    let motion_preview = shell.catalog().text("assembly-preview-motion-study");
     shell.click_button_label(&motion_preview);
     assert!(shell.has_visible_label(&shell.catalog().format(
         "assembly-kinematic-summary",
@@ -602,62 +566,11 @@ fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
         ]),
     )));
     confirm_preview(&mut shell);
-    assert_eq!(
-        shell
-            .app()
-            .document_snapshot()
-            .assembly_motion_studies()
-            .next()
-            .unwrap()
-            .drivers()[0]
-            .position(),
-        35.0
-    );
-
+    assert_eq!(motion_position(&shell), 35.0);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
-    assert_eq!(
-        shell
-            .app()
-            .document_snapshot()
-            .assembly_motion_studies()
-            .next()
-            .unwrap()
-            .drivers()[0]
-            .position(),
-        25.0
-    );
+    assert_eq!(motion_position(&shell), 25.0);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
-    assert_eq!(
-        shell
-            .app()
-            .document_snapshot()
-            .assembly_motion_studies()
-            .next()
-            .unwrap()
-            .drivers()[0]
-            .position(),
-        35.0
-    );
-
-    shell.click_button_label(&assistant_motion);
-    open_assembly_editor(&mut shell);
-    let before_stale = (
-        shell.app().document_revision(),
-        shell.app().canonical_digest(),
-        shell.app().undo_step_count(),
-    );
-    shell.click_menu_command("menu-edit", AppCommand::Deselect);
-    shell.settle();
-    shell.click_button_label(&shell.catalog().text("assistant-confirm"));
-    assert!(shell.app().assistant_proposal().is_none());
-    assert_eq!(
-        (
-            shell.app().document_revision(),
-            shell.app().canonical_digest(),
-            shell.app().undo_step_count(),
-        ),
-        before_stale
-    );
+    assert_eq!(motion_position(&shell), 35.0);
 
     let persisted_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
@@ -1659,14 +1572,12 @@ fn definition_edit_requires_reviewed_assembly_recompute_before_solve() {
     assert!(
         shell
             .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::SetFeatureDimension {
+            .headless_apply_workflow_intent(WorkflowIntent::SetFeatureDimension {
                 target: FeatureId(2),
                 value_text: "120".to_owned(),
             },)
     );
     shell.settle();
-    let confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&confirm);
     assert_eq!(shell.app().document_revision(), definition_revision + 1);
     assert!(matches!(
         shell.app().document_snapshot().feature(FeatureId(2)).unwrap().kind(),
@@ -1801,14 +1712,12 @@ fn invalid_selection_stale_confirmation_and_conflict_are_fail_closed() {
     assert!(
         shell
             .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+            .headless_apply_workflow_intent(WorkflowIntent::RenameDefinition {
                 target: DefinitionId(1),
                 name: "Stale assembly definition".to_owned(),
             })
     );
     shell.settle();
-    let assistant_confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&assistant_confirm);
     let after_intervening_edit = (
         shell.app().document_revision(),
         shell.app().canonical_digest(),
@@ -1889,17 +1798,13 @@ fn lost_reference_solve_after_open_is_fail_closed_without_exact_results() {
         .app_mut()
         .connect_exact_worker(&unavailable_worker)
         .unwrap();
-    assert!(
-        reopened
-            .app_mut()
-            .prepare_assistant_intent(WorkflowIntent::SetFeatureDimension {
-                target: FeatureId(2),
-                value_text: "120".to_owned(),
-            })
-    );
+    assert!(reopened.app_mut().headless_apply_workflow_intent(
+        WorkflowIntent::SetFeatureDimension {
+            target: FeatureId(2),
+            value_text: "120".to_owned(),
+        }
+    ));
     reopened.settle();
-    let assistant_confirm = reopened.catalog().text("assistant-confirm");
-    reopened.click_row(&assistant_confirm);
     assert!(matches!(
         reopened
             .app()

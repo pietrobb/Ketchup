@@ -7,19 +7,19 @@
 use crate::harness;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::{Mutex, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{Key, Pos2, accesskit::Role};
-use harness::{ScriptedAssistantTransport, Shell};
+use harness::Shell;
+use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_app::{AppCommand, AssistantMessageRole};
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadProgramFeatureOutput,
     AssistantCadProgramFeatureReference, AssistantCadSheetMetalBend,
     AssistantCadWeldmentJointPolicy, AssistantCadWeldmentJointPrimary, AssistantCamToolKind,
-    AssistantCamWorkOffset, AssistantChatResult, AssistantFeaReviewRequest,
+    AssistantCamWorkOffset,
 };
 use ketchup_interaction::Vec3;
 use ketchup_model::document::{
@@ -171,39 +171,14 @@ fn wait_for_hovered_pick(shell: &mut Shell, position: Pos2) {
     );
 }
 
-/// Send one Assistant request, step the shell until the assistant answered it,
-/// and prove its CAD program was applied as one revision and one undo step.
-fn submit_applied_assistant_request(shell: &mut Shell, request: &str) {
+/// Apply one typed CAD program the way an MCP client's propose + commit does,
+/// and prove it landed as one revision and one undo step.
+fn apply_program(shell: &mut Shell, request: &str, program: &AssistantCadEditProgram) {
     let before = canonical_state(shell);
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(Key::Enter);
-    let reply = (0..2_000)
-        .find_map(|_| {
-            shell.step();
-            let messages = shell.app().assistant_messages();
-            let user = messages
-                .iter()
-                .rposition(|message| message.role == AssistantMessageRole::User);
-            let reply = user.and_then(|index| messages.get(index + 1)).cloned();
-            if reply.is_none() {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            reply
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "{request}: the assistant did not answer: {:?}",
-                shell.app().assistant_messages()
-            )
-        });
-    assert_eq!(
-        reply.role,
-        AssistantMessageRole::Assistant,
-        "{request}: the program must apply: {:?}",
-        shell.app().assistant_messages()
-    );
+    if let Err(error) = shell.app_mut().headless_apply_cad_program(program) {
+        panic!("{request}: the program must apply: {error}");
+    }
+    shell.step();
     assert_eq!(shell.app().document_revision(), before.revision + 1);
     assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
 }
@@ -459,48 +434,38 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
     .unwrap();
 
     let request = "Create a 100 by 50 millimetre sheet-metal bracket with opposite bends.";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        request.to_owned(),
-        AssistantChatResult {
-            message: "Review the exact sheet-metal feature.".into(),
-            model_intent: None,
-        },
-    )]));
-    transport.queue_cad_edit_program(
-        request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 80.into(),
-                name: "Opposite flanges".into(),
-                feature: AssistantCadBodyFeature::SheetMetal {
-                    base_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
-                    thickness_mm: 2.0,
-                    k_factor: 0.4,
-                    bends: vec![
-                        AssistantCadSheetMetalBend {
-                            parent: None,
-                            edge: 1,
-                            length_mm: 30.0,
-                            angle_degrees: -45.0,
-                            inner_radius_mm: 3.0,
-                        },
-                        AssistantCadSheetMetalBend {
-                            parent: None,
-                            edge: 3,
-                            length_mm: 20.0,
-                            angle_degrees: 90.0,
-                            inner_radius_mm: 3.0,
-                        },
-                    ],
-                },
-            }],
-        },
-    );
+    let program_request = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 80.into(),
+            name: "Opposite flanges".into(),
+            feature: AssistantCadBodyFeature::SheetMetal {
+                base_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+                thickness_mm: 2.0,
+                k_factor: 0.4,
+                bends: vec![
+                    AssistantCadSheetMetalBend {
+                        parent: None,
+                        edge: 1,
+                        length_mm: 30.0,
+                        angle_degrees: -45.0,
+                        inner_radius_mm: 3.0,
+                    },
+                    AssistantCadSheetMetalBend {
+                        parent: None,
+                        edge: 3,
+                        length_mm: 20.0,
+                        angle_degrees: 90.0,
+                        inner_radius_mm: 3.0,
+                    },
+                ],
+            },
+        }],
+    };
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&source)
         .queue_export(&flat_pattern)
         .always_confirm_high_risk_as(405);
-    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport);
+    let mut shell = Shell::with_dialogs(dialogs);
     shell.click_menu_command("menu-file", AppCommand::Open);
     shell
         .app_mut()
@@ -508,7 +473,7 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
         .unwrap();
 
     assert_eq!(shell.app().document_snapshot().features().count(), 0);
-    submit_applied_assistant_request(&mut shell, request);
+    apply_program(&mut shell, request, &program_request);
 
     let feature_id = shell
         .app()
@@ -580,49 +545,39 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
     .unwrap();
 
     let request = "Set up a reviewed 2.5D facing operation.";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        request.to_owned(),
-        AssistantChatResult {
-            message: "Review the canonical CAM setup.".into(),
-            model_intent: None,
-        },
-    )]));
-    transport.queue_cad_edit_program(
-        request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::UpsertCamPlan {
-                plan_id: 95,
-                name: "Reviewed facing".into(),
-                target_definition_id: definition.0,
-                target_feature_id: solid.0,
-                stock_minimum_mm: [0.0, 0.0, 0.0],
-                stock_maximum_mm: [20.0, 10.0, 7.0],
-                tool_number: 1,
-                tool_kind: AssistantCamToolKind::FlatEndMill,
-                tool_diameter_mm: 2.0,
-                flute_length_mm: 5.0,
-                overall_length_mm: 10.0,
-                holder_diameter_mm: 6.0,
-                holder_length_mm: 10.0,
-                spindle_rpm: 10_000,
-                feed_mm_per_min: 600.0,
-                plunge_mm_per_min: 200.0,
-                work_offset: AssistantCamWorkOffset::G54,
-                origin_mm: [0.0, 0.0, 0.0],
-                x_axis: [1.0, 0.0, 0.0],
-                y_axis: [0.0, 1.0, 0.0],
-                safe_height_mm: 10.0,
-                maximum_stepdown_mm: 2.0,
-                stepover_ratio: 0.5,
-                radial_allowance_mm: 0.0,
-                axial_allowance_mm: 0.0,
-            }],
-        },
-    );
+    let program_request = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::UpsertCamPlan {
+            plan_id: 95,
+            name: "Reviewed facing".into(),
+            target_definition_id: definition.0,
+            target_feature_id: solid.0,
+            stock_minimum_mm: [0.0, 0.0, 0.0],
+            stock_maximum_mm: [20.0, 10.0, 7.0],
+            tool_number: 1,
+            tool_kind: AssistantCamToolKind::FlatEndMill,
+            tool_diameter_mm: 2.0,
+            flute_length_mm: 5.0,
+            overall_length_mm: 10.0,
+            holder_diameter_mm: 6.0,
+            holder_length_mm: 10.0,
+            spindle_rpm: 10_000,
+            feed_mm_per_min: 600.0,
+            plunge_mm_per_min: 200.0,
+            work_offset: AssistantCamWorkOffset::G54,
+            origin_mm: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 1.0, 0.0],
+            safe_height_mm: 10.0,
+            maximum_stepdown_mm: 2.0,
+            stepover_ratio: 0.5,
+            radial_allowance_mm: 0.0,
+            axial_allowance_mm: 0.0,
+        }],
+    };
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&source)
         .queue_export(&output);
-    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport);
+    let mut shell = Shell::with_dialogs(dialogs);
     shell.click_menu_command("menu-file", AppCommand::Open);
     shell
         .app_mut()
@@ -630,7 +585,7 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
         .unwrap();
     let baseline = canonical_state(&shell);
 
-    submit_applied_assistant_request(&mut shell, request);
+    apply_program(&mut shell, request, &program_request);
     assert!(
         shell
             .app()
@@ -737,33 +692,8 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
         .unwrap(),
     )
     .unwrap();
-    let request = "Set up a converged static FEA review for the selected cylinder.";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        request.to_owned(),
-        AssistantChatResult {
-            message: "Review the exact FEA setup, then explicitly confirm the solve.".into(),
-            model_intent: None,
-        },
-    )]));
-    transport.queue_fea_review(
-        request,
-        AssistantFeaReviewRequest {
-            definition_id: definition.0,
-            feature_id: solid.0,
-            occurrence_id: occurrence.0,
-            case_id: "assistant-cylinder-static".into(),
-            youngs_modulus_mpa: 200_000.0,
-            poisson_ratio: 0.3,
-            yield_strength_mpa: 250.0,
-            constrained_face_ordinals: vec![0],
-            loaded_face_ordinal: 1,
-            traction_local_n_per_mm2: [0.0, 0.0, -1.0],
-            coarse_deflection_mm: 0.3,
-            fine_deflection_mm: 0.12,
-        },
-    );
     let dialogs = ScriptedFileDialogs::new().queue_open(&source);
-    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport);
+    let mut shell = Shell::with_dialogs(dialogs);
     shell.click_menu_command("menu-file", AppCommand::Open);
     shell
         .app_mut()
@@ -780,17 +710,10 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
     shell.click_button_label(&cancel);
     assert_eq!(canonical_state(&shell), baseline);
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(Key::Enter);
+    shell.click_menu_command("menu-file", AppCommand::ReviewStaticFea);
     let run = shell.catalog().text("fea-review-run-confirmed");
     wait_for_visible_label(&mut shell, &run);
-    let assistant_baseline = canonical_state(&shell);
-    assert_eq!(assistant_baseline.revision, baseline.revision);
-    assert_eq!(assistant_baseline.digest, baseline.digest);
-    assert_eq!(assistant_baseline.undo_steps, baseline.undo_steps);
-    assert_eq!(assistant_baseline.redo_steps, baseline.redo_steps);
+    assert_eq!(canonical_state(&shell), baseline);
     shell.click_button_label(&run);
     assert!(
         shell.app().action_digest().contains("without changing")
@@ -798,7 +721,7 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
         "{}",
         shell.app().action_digest()
     );
-    assert_eq!(canonical_state(&shell), assistant_baseline);
+    assert_eq!(canonical_state(&shell), baseline);
 }
 
 #[test]
@@ -1013,88 +936,66 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
 
     let create_request = "Create two square-section weldment members and miter their corner.";
     let resize_request = "Change the shared weldment profile width to 6 millimetres.";
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (
-            create_request.to_owned(),
-            AssistantChatResult {
-                message: "Review the exact weldment members and miter joint.".into(),
-                model_intent: None,
-            },
-        ),
-        (
-            resize_request.to_owned(),
-            AssistantChatResult {
-                message: "Review the associative profile change.".into(),
-                model_intent: None,
-            },
-        ),
-    ]));
     let body_output = |operation_index| {
         AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
             operation_index,
             output: AssistantCadProgramFeatureOutput::BodyFeature,
         })
     };
-    transport.queue_cad_edit_program(
-        create_request,
-        AssistantCadEditProgram {
-            operations: vec![
-                AssistantCadEditOperation::AppendFeature {
-                    definition_id: 80.into(),
-                    name: "Horizontal member".into(),
-                    feature: AssistantCadBodyFeature::WeldmentMember {
-                        profile_feature_id: 80,
-                        path_feature_id: 81,
-                        orientation_degrees: 0.0,
-                    },
+    let program_create_request = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::AppendFeature {
+                definition_id: 80.into(),
+                name: "Horizontal member".into(),
+                feature: AssistantCadBodyFeature::WeldmentMember {
+                    profile_feature_id: 80,
+                    path_feature_id: 81,
+                    orientation_degrees: 0.0,
                 },
-                AssistantCadEditOperation::AppendFeature {
-                    definition_id: 80.into(),
-                    name: "Vertical member".into(),
-                    feature: AssistantCadBodyFeature::WeldmentMember {
-                        profile_feature_id: 80,
-                        path_feature_id: 82,
-                        orientation_degrees: 0.0,
-                    },
+            },
+            AssistantCadEditOperation::AppendFeature {
+                definition_id: 80.into(),
+                name: "Vertical member".into(),
+                feature: AssistantCadBodyFeature::WeldmentMember {
+                    profile_feature_id: 80,
+                    path_feature_id: 82,
+                    orientation_degrees: 0.0,
                 },
-                AssistantCadEditOperation::AppendFeature {
-                    definition_id: 80.into(),
-                    name: "Miter corner".into(),
-                    feature: AssistantCadBodyFeature::WeldmentJoint {
-                        first_member_id: body_output(0),
-                        second_member_id: body_output(1),
-                        policy: AssistantCadWeldmentJointPolicy::Miter,
-                        primary: AssistantCadWeldmentJointPrimary::First,
-                    },
+            },
+            AssistantCadEditOperation::AppendFeature {
+                definition_id: 80.into(),
+                name: "Miter corner".into(),
+                feature: AssistantCadBodyFeature::WeldmentJoint {
+                    first_member_id: body_output(0),
+                    second_member_id: body_output(1),
+                    policy: AssistantCadWeldmentJointPolicy::Miter,
+                    primary: AssistantCadWeldmentJointPrimary::First,
                 },
-            ],
-        },
-    );
-    transport.queue_cad_edit_program(
-        resize_request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::SetFeatureParameter {
-                feature_id: 80,
-                parameter_path: "bounds.width".into(),
-                value_type: AssistantCadParameterValueType::Length,
-                value: 6.0,
-            }],
-        },
-    );
+            },
+        ],
+    };
+    let program_resize_request = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::SetFeatureParameter {
+            feature_id: 80,
+            parameter_path: "bounds.width".into(),
+            value_type: AssistantCadParameterValueType::Length,
+            value: 6.0,
+        }],
+    };
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&source)
         .queue_export(&cut_list)
         .queue_export(&cut_list)
         .queue_refused_high_risk()
         .always_confirm_high_risk_as(406);
-    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport);
+    let mut shell = Shell::with_dialogs(dialogs);
     shell.click_menu_command("menu-file", AppCommand::Open);
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
         .unwrap();
 
-    submit_applied_assistant_request(&mut shell, create_request);
+    apply_program(&mut shell, create_request, &program_create_request);
     assert_eq!(
         shell
             .app()
@@ -1139,7 +1040,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
         .collect::<Vec<_>>();
     let before_digest = before.cut_list_envelope.source_digest;
 
-    submit_applied_assistant_request(&mut shell, resize_request);
+    apply_program(&mut shell, resize_request, &program_resize_request);
     wait_for_current_exact_body(&mut shell);
     assert_eq!(shell.app().exact_current_producer_ids(), [joint_id]);
     let after = shell
@@ -3123,9 +3024,6 @@ fn blender_mesh_exact_conversion_requires_review_and_one_confirmed_undo_step() {
     let mut shell = Shell::with_dialogs(script);
     shell
         .app_mut()
-        .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
-    shell
-        .app_mut()
         .headless_force_exact_worker_path(exact_worker_path());
     shell.settle();
 
@@ -4177,14 +4075,6 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     let document_path = directory.path().join("imported-xde-assembly.ketchup");
     let exported_path = directory.path().join("roundtrip-xde-assembly.step");
     let exported_iges_path = directory.path().join("flat-xde-assembly.iges");
-    let assistant_query = "Inspect the imported exchange model without editing it";
-    let assistant_transport = Arc::new(ScriptedAssistantTransport::new([(
-        assistant_query.to_owned(),
-        AssistantChatResult {
-            message: "The imported exact model was inspected without mutation.".to_owned(),
-            model_intent: None,
-        },
-    )]));
     let script = ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Step, &source_path)
         .queue_save(&document_path)
@@ -4193,8 +4083,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
         .queue_export(&exported_iges_path)
         .always_confirm_high_risk_as(117)
         .always_discard();
-    let mut shell =
-        Shell::with_dialogs_and_assistant_transport(script, assistant_transport.clone());
+    let mut shell = Shell::with_dialogs(script);
     shell.app_mut().enable_headless_instanced_scene();
     shell
         .app_mut()
@@ -4326,60 +4215,16 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     reopened_producers.sort_unstable();
     assert_eq!(reopened_producers, expected_producers);
 
-    let assistant_context = shell.app().assistant_context();
-    assert_eq!(assistant_context["state_view"]["complete"], true);
-    let assistant_state = assistant_context["state_view"]["content"].as_str().unwrap();
-    assert_eq!(assistant_state.matches("ImportedExactBody:{").count(), 2);
-    assert!(assistant_state.contains("format:\"Step\""));
-    assert!(assistant_state.contains("source_part_index:0"));
-    assert!(assistant_state.contains("source_part_index:1"));
+    let state = ketchup_model::state_view::encode_semantic_state(&shell.app().document_snapshot())
+        .agent()
+        .to_owned();
+    assert_eq!(state.matches("ImportedExactBody:{").count(), 2);
+    assert!(state.contains("format:\"Step\""));
+    assert!(state.contains("source_part_index:0"));
+    assert!(state.contains("source_part_index:1"));
     assert!(
-        assistant_state
-            .contains("code:\"step_parametric_reconstruction_unavailable\",subject:none,count:2")
+        state.contains("code:\"step_parametric_reconstruction_unavailable\",subject:none,count:2")
     );
-    assert_eq!(
-        assistant_state,
-        ketchup_model::state_view::encode_semantic_state(&shell.app().document_snapshot()).agent()
-    );
-
-    let before_assistant = canonical_state(&shell);
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(assistant_query);
-    shell.press_key(Key::Enter);
-    for _ in 0..300 {
-        shell.settle();
-        if !assistant_transport.contexts().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let provider_contexts = assistant_transport.contexts();
-    assert_eq!(provider_contexts.len(), 1);
-    let interoperability = &provider_contexts[0]["interoperability"];
-    assert_eq!(interoperability["complete"], true);
-    assert_eq!(interoperability["import_count"], 1);
-    assert_eq!(interoperability["imports"][0]["format"], "step");
-    assert_eq!(
-        interoperability["imports"][0]["source_parametric_history"],
-        "unavailable"
-    );
-    assert_eq!(
-        interoperability["imports"][0]["canonical_editability"],
-        "exact_brep_and_occurrence_metadata"
-    );
-    assert!(
-        interoperability["imports"][0]["diagnostic_codes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|code| code == "step_parametric_reconstruction_unavailable")
-    );
-    assert_eq!(assistant_transport.remaining_responses(), 0);
-    assert_eq!(shell.app().document_revision(), before_assistant.revision);
-    assert_eq!(shell.app().canonical_digest(), before_assistant.digest);
-    assert_eq!(shell.app().undo_step_count(), before_assistant.undo_steps);
-    assert_eq!(shell.app().redo_step_count(), before_assistant.redo_steps);
 
     let loaded = ketchup_model::persistence::load_file(&document_path).unwrap();
     let loaded_snapshot = loaded.snapshot();

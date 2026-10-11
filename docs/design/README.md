@@ -1,7 +1,7 @@
 # Handoff: Ketchup — Modeler Main Window (R0/C interaction shell)
 
 ## Overview
-The design is the main desktop window of **Ketchup**, a fast parametric modeler for architecture, interiors and furniture (see `AGENTS.md` and the ADRs in `docs/adr` for the binding rules). It covers the *First Lovable Product* interaction surface: draw an exact profile, extrude it, edit dimensions, organise definitions/occurrences/tags, move/copy/pattern, measure, undo/redo, and drive a **Proposal-only** AI assistant.
+The design is the main desktop window of **Ketchup**, a fast parametric modeler for architecture, interiors and furniture (see `AGENTS.md` and the ADRs in `docs/adr` for the binding rules). It covers the *First Lovable Product* interaction surface: draw an exact profile, extrude it, edit dimensions, organise definitions/occurrences/tags, move/copy/pattern, measure and undo/redo. AI clients connect over MCP (see **Connect AI** below); the window has no built-in chat.
 
 Target platform: Windows desktop, ultrawide/large monitor. UI language: English (ADR 0001 — all user-facing strings must come from localization resources, never hard-coded in widgets).
 
@@ -49,7 +49,7 @@ Menu contents (✓ = checkable toggle, ● = wired in the prototype):
 | Draw | ● Line (L) · ● Rectangle (R) · ● Circle (C) · ● Arc (A) · ● Polygon (N) · ● Ellipse (E) · ● Spline (S) |
 | Tools | ● Select (Space) · ● Push / Pull (P) · ● Move (M) · ● Rotate (Q) · ● Mirror (I) · ● Scale · ● Measure (T) — ● Orbit (O) · ● Pan (H) |
 | Model | ● Planar Offset (F) · ● Make unique · ● Purge unused definitions — ● Statistics… · Reference audit… |
-| Window | ✓● Outliner · ✓● Tags · ✓● Assistant |
+| Window | ✓● Outliner · ✓● Tags |
 | Help | Keyboard shortcuts (F1) · Execution contract… · About Ketchup |
 
 Non-wired items still emit a localized digest describing what they would do (e.g. Export mesh → "Mesh export — explicit exact→mesh conversion with loss report"), so the intended contract semantics are documented in the UI itself. In production every menu item is a command-registry entry: same id, same validation path, same capability check as the toolbar, CLI, plugin and AI callers (contract §1) — the menu must never own behaviour of its own.
@@ -77,7 +77,7 @@ Order (tooltip / shortcut); a 24×1px `--line` divider, margin `6px 0`, separate
 16. Pan — H (or Shift+middle-drag)
 17. Spacer, then **Delete selection** (trash icon) pinned to the bottom.
 
-Tool matrix for the shapes and edits that the model, the program and the Assistant already had and the window gained in K9. Every row: a preview that never changes the document, snapping to scene points/edges on the drawing plane, the value box for exact input, Esc leaves without touching the document, and a finished shape or edit is one Undo step. Headless tests: `crates/ketchup-app/tests/drawing_tools_ui.rs`.
+Tool matrix for the shapes and edits that the model, the program and the MCP tools already had and the window gained in K9. Every row: a preview that never changes the document, snapping to scene points/edges on the drawing plane, the value box for exact input, Esc leaves without touching the document, and a finished shape or edit is one Undo step. Headless tests: `crates/ketchup-app/tests/drawing_tools_ui.rs`.
 
 | Tool (key) | Click-move-click | Click-drag | Value box | Esc |
 |---|---|---|---|---|
@@ -105,7 +105,7 @@ Viewport render content (all in mm, Z-up, right-handed):
 - Rubber-band preview: rect fill `rgba(240,78,35,.16)`, dashed 5/4 `#F04E23` outline 1.6px; line segments solid 1.8px accent with a dashed leader to the cursor.
 - Axis gizmo: bottom-left, origin at (46, H−46), 26px arms, labels X/Y/Z in `#d4553f` / `#5fa66b` / `#5f86d0`, mono 600 10px.
 
-### 5. Right dock (width 320px, bg `--panel`, left border 1px `--line`, three stacked sections)
+### 5. Right dock (width 320px, bg `--panel`, left border 1px `--line`, stacked sections)
 Section headers: height 34px, padding `0 12px`, label 11px uppercase letter-spacing .08em `--dim`, with a right-side meta item.
 
 **a) Outliner** (`flex: 1.15`, scrolls). Header meta: `4 occ · 2 defs`.
@@ -116,10 +116,7 @@ Per definition, a card: margin-bottom 6px, border 1px `--line`, radius 9px, bg `
 **b) Tags** (auto height). Header action on the right: **"Make unique"**, 11px `--accent`, clickable. Rows: padding `6px 8px`, radius 7px, gap 9px, 12px — 9px color swatch, name, mono count, `shown`/`hidden`. Hidden tag row: `opacity: .45`.
 Seed tags: Furniture `#F04E23`, Architecture `#4C8DFF`, Reference `#8A93A0`.
 
-**c) Assistant** (`flex: 1`, scrolls). Header meta pill: "local · proposal only" (10px, border 1px `--line`, radius 20px, padding `1px 8px`).
-- Message list: padding `0 12px 8px`, gap 8px, bubbles 12px/1.5, padding `8px 10px`, radius 9px. System: bg `--panel2`, border 1px `--line`, `--dim`. User: `rgba(240,78,35,.12)`, border `rgba(240,78,35,.28)`, `align-self: flex-end`.
-- **Proposal card** (only when a proposal exists): border 1px `--accent`, radius 10px, bg `--panel2`. Title row 12px/600, padding `9px 11px`, bottom border. Body: assumptions as `· text` lines (11.5px `--dim`), then diff rows in mono 11px on `rgba(240,78,35,.10)`, radius 5px, padding `4px 7px`; then the digest line in mono 10px `--dim`. Footer: **Commit** (flex 1, height 30px, radius 7px, bg `--accent`, white 12px/500) and **Discard** (height 30px, padding `0 12px`, border 1px `--line`, transparent, `--dim`).
-- Composer: top border 1px `--line`, padding `8px 10px 10px`, gap 6px. Input height 32px, radius 8px, border 1px `--line`, bg `--panel2`, 12px, placeholder `e.g. height 900 · array 4 x 700`. Send button 32×32, radius 8px, bg `--accent`, white arrow icon.
+**c) Connect AI** (collapsible, last in the dock). Shows whether an MCP client is connected and the set-up commands for Claude Code, Codex and a JSON configuration, each with a Copy button.
 
 ### 6. Status bar (height 26px, bg `--panel`, top border 1px `--line`, mono 11px `--dim`, gap 16px, padding `0 12px`)
 Left → right: `Tool: push` (in `--text`), `1 selected`, spacer, `snap on|off` (clickable toggle), `grid 100 mm`, `A0 refs: guaranteed` (reference-health indicator — in production it must reflect the real resolver state: `guaranteed` / `best-effort` / `ambiguous` / `lost`).
@@ -164,15 +161,6 @@ Whole-document JSON snapshot before every committed batch; stack capped at 60; r
 ### Value box (VCB)
 Typing any of `0-9 . , -` anywhere (outside another input) appends to the value box and focuses it — the user never has to click it. Enter parses `,`, `;`, `x`, `*` as separators and applies to, in priority order: an active rectangle, an active line segment, the last push/pull, the last move. Esc clears the pending gesture.
 
-### Assistant (Proposal → preview → commit)
-Requires an explicit selected occurrence; without one it returns a "no target" proposal that changes nothing. Recognised intents:
-- `height <mm>` / `make it <mm> tall` → change definition height (assumption states how many occurrences follow)
-- `array|pattern|copy <n> x <mm>` (`y` in the string switches axis) → linear pattern of occurrences
-- `move x|y|z <mm>` → exact vector move
-- `delete` / `remove` → delete occurrence, definition retained
-
-Every proposal renders title, assumptions, an authoritative diff (`def(cab).h  720 → 900`), and a digest line (`batch digest 1 command · risk low`). Nothing mutates until **Commit**; Discard leaves the document untouched and logs it in the message list. In production the diff, read/write set and digest are computed by the **core**, not the client, and the dependency digest is revalidated immediately before commit (contract §8).
-
 ### Keyboard
 `Space` select · `L` line · `R` rect · `P` push/pull · `M` move · `T` measure · `O` orbit · `H` pan · `Ctrl+A` select all · `Esc` cancel/deselect · `Delete`/`Backspace` delete selection · `Ctrl+Z` / `Ctrl+Y`.
 
@@ -191,7 +179,7 @@ All of these are placeholders for localization resource keys (ADR 0001: no hard-
 | Tooltips | `Undo (Ctrl+Z)`, `Redo (Ctrl+Y)`, `Hide / show`, `Delete selection` |
 | View segment | `Iso`, `Top`, `Front`, `Zoom fit` |
 | Unit chip | `mm` |
-| Dock headers | `OUTLINER`, `TAGS`, `ASSISTANT` (uppercase, letter-spaced) |
+| Dock headers | `OUTLINER`, `TAGS` (uppercase, letter-spaced) |
 | Outliner meta | `{occ} occ · {defs} defs` |
 | Definition spec line | `{w} × {d} × {h}` (profile bbox × height, mm, no unit suffix) |
 | Occurrence name | `{definitionName} #{index}` |
@@ -200,8 +188,6 @@ All of these are placeholders for localization resource keys (ADR 0001: no hard-
 | Definition count pill | `{n}×` |
 | Tags header action | `Make unique` |
 | Seed tags | `Furniture`, `Architecture`, `Reference` |
-| Assistant header pill | `local · proposal only` |
-| Assistant placeholder | `e.g. height 900 · array 4 x 700` |
 | Value box labels | `Dimensions` (default), `Width, Depth` (rectangle), `Distance` (push/pull, move), `Length` (line) |
 | Value box placeholder | `type exact value` |
 | Status bar | `Tool: {tool}` · `{n} selected` · `snap on` / `snap off` · `grid {step} mm` · `A0 refs: guaranteed` |
@@ -270,29 +256,12 @@ Menu items not yet wired still state their intended contract semantics:
 - Reference audit… → `Reference audit — all frozen Guaranteed refs resolved`
 - Keyboard shortcuts → `Space select · L line · R rect · P push/pull · M move · T measure · O orbit · H pan`
 
-### Assistant messages
-- Opening system message: "Local assistant. I propose a command batch; nothing changes until you commit."
-- Unparsed request: "I can plan: height <mm>, move x/y <mm>, array <n> x <mm>, delete. Nothing was changed."
-- After commit: "Committed: {proposalTitle}. Verification passed; one undo step created."
-- After discard: "Proposal discarded. Document unchanged."
-
-### Proposal cards
-| Intent | Title | Assumptions | Diff | Digest line |
-|---|---|---|---|---|
-| no selection | `No target selected` | "A proposal needs an explicit target occurrence." | `select 1 occurrence, then re-ask` | `digest —` |
-| height | `Change definition height` | "Target: definition “{name}”" · "{n} occurrence(s) will follow — this is not a per-instance override" | `def({id}).h  {old} → {new}` | `batch digest 1 command · risk low` |
-| array | `Linear pattern` | "Direction: {red (X)\|green (Y)} axis" · "Copies are occurrences of the same definition" | `+{n} occurrence(s) of {defId}` · `spacing {mm} mm` | `batch digest {n} commands · risk low` |
-| move | `Exact move` | "Vector move on the {X\|Y\|Z} axis" · "Only this occurrence transform changes" | `occ({id}).pos.{axis}  {old} → {new}` | `batch digest 1 command · risk low` |
-| delete | `Delete occurrence` | "Definition stays in the document" · "{n} occurrence(s) remain" | `- occ({id})` | `batch digest 1 command · risk medium` |
-
-Buttons: `Commit` (accent, primary) and `Discard` (ghost). The card never appears without at least one assumption and one diff row — an empty proposal is a bug.
-
 ### Tone rules for new copy
 1. State what the system did or will do, in the model's own vocabulary: *definition*, *occurrence*, *profile*, *command batch*, *undo step*.
 2. Always say how far a change reaches when it reaches beyond the clicked thing ("{n} occurrences follow").
 3. Never promise exactness the preview cannot guarantee — the preview digest describes the *intended* commit, and a post-commit mismatch is reported explicitly.
 4. Numbers carry their unit on first mention (`760 mm`), never inside dense mono readouts where the unit is in the status bar.
-5. No exclamation marks, no encouragement, no personality in the assistant — it reports assumptions and diffs.
+5. No exclamation marks, no encouragement, no personality — messages report assumptions and diffs.
 
 ## State Management
 Prototype state (the shape the real client should mirror, minus the transport):
@@ -357,7 +326,7 @@ accent washes rgba(240,78,35,.10 / .12 / .14 / .16) and border rgba(240,78,35,.2
 - Radius: 5 (diff row) · 6 (segment item) · 7 (buttons, tag row) · 8 (chips, small inputs) · 9 (cards, tool buttons, hint) · 10 (value box, proposal card) · 20 (pills) · 50% (dots).
 - Borders: always 1px `--line`. Selected/hover strokes 1.6–1.8px.
 - Shadow: only one — `0 10px 30px rgba(0,0,0,.35)` on the value box.
-- Icons: 18px, stroke 1.6, round joins, `currentColor`; assistant send arrow 14px stroke 2.
+- Icons: 18px, stroke 1.6, round joins, `currentColor`.
 
 ## Assets
 None external. All icons are inline stroke SVG authored in the prototype (select, line, rectangle, push/pull, move, measure, orbit, pan, trash, definition cube, send arrow) — reimplement with the codebase's icon system, keeping the 18px/1.6 stroke weight. Fonts are IBM Plex Sans + IBM Plex Mono (Google Fonts, SIL OFL) — self-host them in the desktop build.

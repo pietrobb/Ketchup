@@ -1,6 +1,7 @@
 //! Exact solid tools, finishes and their tamper/stale-safe plans.
 
 use super::*;
+use ketchup_assistant::sidecar::AssistantCadEditOperation;
 
 #[test]
 fn exact_history_releases_evicted_and_abandoned_packages_but_keeps_redo() {

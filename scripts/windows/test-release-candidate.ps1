@@ -53,25 +53,6 @@ try {
 
     [void](New-Item $foreignWorkingDir -ItemType Directory)
     $package = Get-Content (Join-Path $packageDir "package-manifest.json") -Raw | ConvertFrom-Json
-    [IO.File]::WriteAllText((Join-Path $foreignWorkingDir "ketchup_assistant.py"), "raise SystemExit('attacker CWD executed')", [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $foreignWorkingDir "ketchup_assistant_protocol.py"), "raise SystemExit('attacker PYTHONPATH executed')", [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $foreignWorkingDir "python.exe"), "attacker PATH executable", [Text.UTF8Encoding]::new($false))
-    $savedPath = $env:PATH
-    $savedPythonPath = $env:PYTHONPATH
-    try {
-        $env:PATH = $foreignWorkingDir
-        $env:PYTHONPATH = $foreignWorkingDir
-        Push-Location $foreignWorkingDir
-        try {
-            & (Join-Path $packageDir "ketchup-app.exe") --verify-public-assistant-runtime
-            if ($LASTEXITCODE -ne 0) { throw "Packaged public Assistant rejected its trusted runtime." }
-        } finally {
-            Pop-Location
-        }
-    } finally {
-        $env:PATH = $savedPath
-        $env:PYTHONPATH = $savedPythonPath
-    }
     $appProcess = Start-Process `
         -FilePath (Join-Path $packageDir "ketchup-app.exe") `
         -WorkingDirectory $foreignWorkingDir `
@@ -145,12 +126,6 @@ try {
     [IO.File]::WriteAllBytes($manifestPath, $originalManifest)
 
     $forgedManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-    $forgedManifest.assistant_runtime.executable_sha256 = "0" * 64
-    [IO.File]::WriteAllText($manifestPath, (($forgedManifest | ConvertTo-Json -Depth 8) + "`n"), [Text.UTF8Encoding]::new($false))
-    Invoke-VerifyExpectingFailure "a forged installer-managed Assistant runtime pin"
-    [IO.File]::WriteAllBytes($manifestPath, $originalManifest)
-
-    $forgedManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     @($forgedManifest.files | Where-Object { [string]$_.name -ceq "ketchup-app.exe" })[0].role = "Desktop-Application"
     [IO.File]::WriteAllText($manifestPath, (($forgedManifest | ConvertTo-Json -Depth 8) + "`n"), [Text.UTF8Encoding]::new($false))
     Invoke-VerifyExpectingFailure "a case-variant desktop application role"
@@ -212,7 +187,7 @@ try {
     [IO.File]::WriteAllBytes($manifestPath, $originalManifest)
 
     & $packager -VerifyOnly -OutputDir $packageDir
-    Write-Host "PASS: Windows-first packaged app/worker/DLL exact registry, installer-managed pinned Assistant runtime without test-only env injection, AMD64 PE32+ architecture, byte-bound decision record, immutable R0 OCCT-manifest binding, foreign-CWD app launch, co-located OCCT discovery, and fail-closed extra-payload/claim/tamper checks."
+    Write-Host "PASS: Windows-first packaged app/worker/DLL exact registry, AMD64 PE32+ architecture, byte-bound decision record, immutable R0 OCCT-manifest binding, foreign-CWD app launch, co-located OCCT discovery, and fail-closed extra-payload/claim/tamper checks."
 } finally {
     if ($null -ne $appProcess -and -not $appProcess.HasExited) {
         Stop-Process -Id $appProcess.Id -Force

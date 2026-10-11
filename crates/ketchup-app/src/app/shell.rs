@@ -55,7 +55,6 @@ impl KetchupApp {
                 .expect("the built-in initial document is valid");
             document.discard_history_before_current();
         }
-        let assistant_memory = AssistantProjectMemory::empty(document.current().document_id().0);
         let saved_digest = document.history_digest();
         let digest = catalog.text("status-ready");
         Self {
@@ -173,31 +172,6 @@ impl KetchupApp {
             saved_views_ui: Default::default(),
             section: None,
             digest,
-            assistant: app_state::AssistantState {
-                provider: AssistantProvider::initial(),
-                model: AssistantProvider::initial().default_model().to_owned(),
-                workspace_mode: AssistantWorkspaceMode::Dock,
-                input: String::new(),
-                messages: Vec::new(),
-                memory: assistant_memory,
-                diagnostics_enabled: false,
-                api_logs: Vec::new(),
-                selected_api_log: None,
-                inspector_tab: AssistantInspectorTab::default(),
-                memory_search: String::new(),
-                transport: Arc::new(ProcessAssistantTransport),
-                #[cfg(feature = "testing")]
-                context_preparation_delay: Duration::ZERO,
-                chat_task: None,
-                pending_execution: None,
-                request_sequence: 0,
-                saved_conversation_digest: assistant_conversation_digest(&[]),
-                intent_kind: AssistantIntentKind::FeatureDimension,
-                target_input: "2".to_owned(),
-                value_input: "35".to_owned(),
-                proposal: None,
-                verification: None,
-            },
             classification: app_state::ClassificationInputs {
                 dimension_name_input: String::new(),
                 category_name_input: String::new(),
@@ -285,12 +259,6 @@ impl KetchupApp {
     #[must_use]
     pub fn with_dialogs(mut self, dialogs: Box<dyn FileDialogs>) -> Self {
         self.dialogs = dialogs;
-        self
-    }
-
-    #[must_use]
-    pub fn with_assistant_transport(mut self, transport: Arc<dyn AssistantTransport>) -> Self {
-        self.assistant.transport = transport;
         self
     }
 
@@ -1384,107 +1352,44 @@ impl KetchupApp {
                     .stroke(hairline),
             )
             .show(context, |ui| self.show_tool_rail(ui));
-        if self.assistant.workspace_mode == AssistantWorkspaceMode::Dock {
-            egui::SidePanel::right("right-dock")
-                .resizable(true)
-                .default_width(440.0)
-                .width_range(380.0..=720.0)
-                .frame(
-                    egui::Frame::new()
-                        .fill(palette.chrome)
-                        .inner_margin(egui::Margin::symmetric(14, 8))
-                        .stroke(hairline),
-                )
-                .show(context, |ui| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    dock_scroll_area().show(ui, |ui| {
-                        let layers_first = self.layers_lead_dock();
-                        self.show_face_workflow_ui(ui);
-                        if layers_first {
-                            self.show_layers_section(ui, true);
-                        }
-                        self.show_selection_measures(ui);
-                        self.show_program_source(ui);
-                        self.show_manual_cad_panels(ui);
-                        self.show_occurrence_color_editor(ui);
-                        self.show_viewer_notes(ui);
-                        self.show_viewer_dimensions(ui);
-                        self.show_received_comments(ui);
-                        self.show_helix_tool(ui);
-                        self.show_parameter_editor(ui);
-                        if !Self::is_manual_alpha_build() {
-                            self.show_assistant(ui);
-                        }
-                        self.show_validator_panel(ui);
-                        // Below the docked assistant so its input stays in view.
-                        self.show_outliner_without_assistant(ui);
-                        if !layers_first {
-                            self.show_layers_section(ui, false);
-                        }
-                        self.show_connect_ai(ui);
-                    });
-                });
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(palette.viewport_outer))
-                .show(context, |ui| self.viewport(ui));
-        } else {
-            egui::SidePanel::right("right-dock")
-                .resizable(true)
-                .default_width(340.0)
-                .width_range(280.0..=520.0)
-                .frame(
-                    egui::Frame::new()
-                        .fill(palette.chrome)
-                        .inner_margin(egui::Margin::symmetric(14, 8))
-                        .stroke(hairline),
-                )
-                .show(context, |ui| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    dock_scroll_area().show(ui, |ui| {
-                        let layers_first = self.layers_lead_dock();
-                        self.show_face_workflow_ui(ui);
-                        if layers_first {
-                            self.show_layers_section(ui, true);
-                        }
-                        self.show_selection_measures(ui);
-                        self.show_program_source(ui);
-                        self.show_outliner_without_assistant(ui);
-                        if !layers_first {
-                            self.show_layers_section(ui, false);
-                        }
-                        self.show_manual_cad_panels(ui);
-                        self.show_occurrence_color_editor(ui);
-                        self.show_viewer_notes(ui);
-                        self.show_viewer_dimensions(ui);
-                        self.show_received_comments(ui);
-                        self.show_helix_tool(ui);
-                        self.show_parameter_editor(ui);
-                        self.show_connect_ai(ui);
-                        self.show_validator_panel(ui);
-                    });
-                });
-            egui::CentralPanel::default()
-                .frame(
-                    egui::Frame::new()
-                        .fill(palette.chrome)
-                        .inner_margin(egui::Margin::same(16)),
-                )
-                .show(context, |ui| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    if self.live_offscreen_image_pending() {
-                        let mut hidden_viewport = ui.new_child(
-                            egui::UiBuilder::new()
-                                .id_salt("live-offscreen-viewport")
-                                .max_rect(ui.max_rect())
-                                .invisible(),
-                        );
-                        self.viewport(&mut hidden_viewport);
+        egui::SidePanel::right("right-dock")
+            .resizable(true)
+            .default_width(440.0)
+            .width_range(380.0..=720.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.chrome)
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .stroke(hairline),
+            )
+            .show(context, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                dock_scroll_area().show(ui, |ui| {
+                    let layers_first = self.layers_lead_dock();
+                    self.show_face_workflow_ui(ui);
+                    if layers_first {
+                        self.show_layers_section(ui, true);
                     }
-                    if !Self::is_manual_alpha_build() {
-                        self.show_assistant(ui);
+                    self.show_selection_measures(ui);
+                    self.show_program_source(ui);
+                    self.show_manual_cad_panels(ui);
+                    self.show_occurrence_color_editor(ui);
+                    self.show_viewer_notes(ui);
+                    self.show_viewer_dimensions(ui);
+                    self.show_received_comments(ui);
+                    self.show_helix_tool(ui);
+                    self.show_parameter_editor(ui);
+                    self.show_connect_ai(ui);
+                    self.show_validator_panel(ui);
+                    self.show_outliner(ui);
+                    if !layers_first {
+                        self.show_layers_section(ui, false);
                     }
                 });
-        }
+            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(palette.viewport_outer))
+            .show(context, |ui| self.viewport(ui));
         self.show_occurrence_rename_window(context);
         self.show_definition_rename_window(context);
         self.show_component_replacement_window(context);
@@ -1514,7 +1419,6 @@ impl KetchupApp {
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
         self.show_live_consent(context);
-        self.poll_assistant_chat(context);
         self.finish_live_image_frame(context);
         self.finish_file_activity_frame(context);
         self.show_close_guard(context);

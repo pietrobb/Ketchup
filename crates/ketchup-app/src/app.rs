@@ -2,14 +2,14 @@
 //! `impl KetchupApp` block next to the free helpers it needs; the state stays
 //! in the crate root.
 
-mod assistant;
-mod assistant_panel;
+mod cad_program;
 mod commands;
 mod connect_ai;
 mod document;
 mod drawing;
 mod exact;
 mod export;
+mod fea_review;
 pub(crate) mod file_activity;
 #[cfg(test)]
 #[path = "app/hidden_selection_tests.rs"]
@@ -24,6 +24,7 @@ pub(crate) mod import_file;
 mod interactive_house_tests;
 mod local_outliner;
 mod mirror;
+mod outliner;
 mod patterns;
 #[cfg(test)]
 #[path = "program_outliner_tests.rs"]
@@ -63,7 +64,6 @@ mod viewer_settings_tests;
 mod viewport;
 mod viewport_paint;
 
-pub(crate) use assistant::*;
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;

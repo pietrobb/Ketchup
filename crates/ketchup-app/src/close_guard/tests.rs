@@ -1,5 +1,5 @@
 use crate::tests::shell::step_until;
-use crate::{AssistantChatMessage, AssistantMessageRole, KetchupApp, dialogs::ScriptedFileDialogs};
+use crate::{KetchupApp, dialogs::ScriptedFileDialogs};
 use eframe::egui::{self, ViewportCommand, ViewportEvent, ViewportId, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
 use std::time::Duration;
@@ -64,15 +64,6 @@ fn click(harness: &mut Harness<'_, KetchupApp>, key: &str) {
     harness.run();
 }
 
-fn chat(app: &mut KetchupApp) {
-    app.assistant.messages.push(AssistantChatMessage {
-        role: AssistantMessageRole::User,
-        text: "Keep this unsaved conversation.".to_owned(),
-        source: "test".to_owned(),
-        diagnostic: None,
-    });
-}
-
 #[test]
 fn clean_native_close_does_not_prompt() {
     let mut harness = shell(ScriptedFileDialogs::new(), false);
@@ -99,19 +90,6 @@ fn dirty_native_close_is_canceled_and_cancel_preserves_history() {
 }
 
 #[test]
-fn conversation_only_changes_also_block_close() {
-    let mut harness = shell(ScriptedFileDialogs::new(), false);
-    let before = harness.state().document.history_digest();
-    chat(harness.state_mut());
-    assert!(harness.state().is_dirty());
-    close_event(&mut harness);
-    assert!(canceled(&harness));
-    click(&mut harness, "action-cancel");
-    assert_eq!(harness.state().assistant.messages.len(), 1);
-    assert_eq!(harness.state().document.history_digest(), before);
-}
-
-#[test]
 fn discard_allows_one_close_without_mutating_or_marking_work_saved() {
     let mut harness = shell(ScriptedFileDialogs::new(), true);
     let before = harness.state().document.history_digest();
@@ -129,31 +107,23 @@ fn discard_allows_one_close_without_mutating_or_marking_work_saved() {
 }
 
 #[test]
-fn discard_does_not_authorize_later_model_or_conversation_changes() {
-    for change_conversation in [false, true] {
-        let mut harness = shell(ScriptedFileDialogs::new(), true);
-        close_event(&mut harness);
-        click(&mut harness, "dialog-close-discard");
-        if change_conversation {
-            chat(harness.state_mut());
-        } else {
-            assert!(harness.state_mut().create_box());
-        }
-        close_event(&mut harness);
-        assert!(canceled(&harness));
-        assert!(harness.state().close_guard.pending);
-        assert!(harness.state().close_guard.approved.is_none());
-    }
+fn discard_does_not_authorize_later_model_changes() {
+    let mut harness = shell(ScriptedFileDialogs::new(), true);
+    close_event(&mut harness);
+    click(&mut harness, "dialog-close-discard");
+    assert!(harness.state_mut().create_box());
+    close_event(&mut harness);
+    assert!(canceled(&harness));
+    assert!(harness.state().close_guard.pending);
+    assert!(harness.state().close_guard.approved.is_none());
 }
 
 #[test]
-fn save_on_close_preserves_model_conversation_and_undo_on_disk() {
+fn save_on_close_preserves_model_and_undo_on_disk() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("close-save.ketchup");
     let mut harness = shell(ScriptedFileDialogs::new().queue_save(&path), true);
-    chat(harness.state_mut());
     let history = harness.state().document.history_digest();
-    let conversation = harness.state().assistant.messages.clone();
     close_event(&mut harness);
     assert!(canceled(&harness));
     click(&mut harness, "file-save");
@@ -165,7 +135,6 @@ fn save_on_close_preserves_model_conversation_and_undo_on_disk() {
     let mut reopened = KetchupApp::new().with_dialogs(Box::new(ScriptedFileDialogs::new()));
     reopened.open_document_from(&path);
     assert_eq!(reopened.document.history_digest(), history);
-    assert_eq!(reopened.assistant.messages, conversation);
     assert!(!reopened.is_dirty());
 }
 

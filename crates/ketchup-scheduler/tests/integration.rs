@@ -1,7 +1,6 @@
 //! Single integration test binary for this crate: every `tests/*.rs` file is a
 //! module here, so the crate links one test executable instead of one per file.
 
-mod assistant_process;
 mod background_task;
 mod exact_brep_graph;
 mod exact_evidence_transport;

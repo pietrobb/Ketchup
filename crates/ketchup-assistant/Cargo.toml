@@ -1,16 +1,12 @@
 [package]
 name = "ketchup-assistant"
-description = "AI assistant surface of Ketchup: typed CAD edit programs, operation catalog, workflow intents and plugins"
+description = "Typed CAD edit programs, operation catalog, workflow intents and plugins that AI clients drive over MCP"
 version.workspace = true
 edition.workspace = true
 autotests = false
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-
-[features]
-default = []
-private-oauth = []
 
 [dependencies]
 ketchup-model = { path = "../ketchup-model" }
