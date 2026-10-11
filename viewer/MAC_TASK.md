@@ -78,7 +78,9 @@ zobrazí model, otáčanie/zoom gestami, výber dielu a otvorenie lokálneho sú
   `viewer/android` + Xcode projekt, prípadne vygenerovaný cez xcodegen).
 - Otvorenie súboru: `UIDocumentPickerViewController` a „Otvoriť v Kečup
   Viewer“ z Files/Mail/AirDrop (`CFBundleDocumentTypes` + `LSSupportsOpeningDocumentsInPlace`).
-  Uloženie pripomienok: zdieľanie `.ketchup-comments` cez share sheet.
+  Uloženie pripomienok: zdieľanie `.ketchup-comments` cez share sheet —
+  `ViewerApp::with_host_sharing()` ukáže tlačidlo „Poslať pripomienky autorovi“
+  a pošle `FileRequest::ShareComments` (vzor: `viewer/android/src/files.rs`).
 - Rozloženie pre úzku obrazovku už existuje (model hore, panel dole); over na
   výške aj šírke a s bezpečnými okrajmi (notch/home indicator).
 - Podpis pre reálny iPhone: tvoj vývojársky tím v Xcode. App Store ani
