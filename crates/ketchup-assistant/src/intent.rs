@@ -1,44 +1,22 @@
 use ketchup_model::document::{
-    AuthoritativeDependency, CanonicalCommand, CanonicalOverride, CloneDefinitionPlan,
-    CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, DerivedIdentity, Dimension,
-    DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
-    FeatureParameterTarget, GroupId, NodeId, OccurrenceId, PersistentDimension,
-    PersistentDimensionTarget, Proposal, ProposalAssumption, ProposalBudget, ProposalConfirmation,
-    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, SlotPath,
-    SlotResolution, SlotSegment, TagId, Transform,
+    AuthoritativeDependency, CanonicalCommand, CloneDefinitionPlan, CollectionId, CommandBatch,
+    ConvertGroupPlan, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId,
+    NodeId, OccurrenceId, Proposal, ProposalAssumption, ProposalBudget, ProposalConfirmation,
+    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, TagId,
+    Transform,
 };
-use ketchup_model::graph::ExpressionAst;
 use std::collections::BTreeSet;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IntentCapability {
     CreateEvaluatorInput,
-    CreateEvaluatorExpression,
-    CreateEvaluatorRule,
-    CreateRuleOverride,
-    DeleteRuleOverride,
-    CreateFeatureParameterBinding,
-    DeleteFeatureParameterBinding,
-    CreatePersistentDimension,
-    CreateSpace,
-    CreateClearanceVolume,
-    CreateJoint,
-    RecomputeFeatureParameter,
-    DeleteJoint,
-    DeleteSpace,
-    DeleteClearanceVolume,
-    DeletePersistentDimension,
     SetRuleDimension,
-    RenameEvaluatorNode,
-    SetEvaluatorExpression,
-    SetRuleOutputs,
     SetFeatureDimension,
     SetProfilePoints,
     RenameDefinition,
     SetOccurrenceVisibility,
     SetOccurrenceTranslation,
-    AtomicMultiCommandEdit,
     SetOccurrenceTag,
     SetTagVisibility,
     RepointOccurrence,
@@ -48,14 +26,11 @@ pub enum IntentCapability {
     SetCollectionOccurrences,
     CreateTag,
     DeleteTag,
-    CreateCollection,
-    DeleteCollection,
     DeleteGroup,
     DeleteOccurrence,
     CreateDefinition,
     DeleteDefinition,
     CreateProfileFeature,
-    DeleteProfileFeature,
     CreateGroup,
     CreateOccurrence,
     CloneProfileDefinitionAndRepoint,
@@ -92,31 +67,12 @@ impl IntentGrant {
             RequestingPrincipal::LocalAssistant,
             [
                 IntentCapability::CreateEvaluatorInput,
-                IntentCapability::CreateEvaluatorExpression,
-                IntentCapability::CreateEvaluatorRule,
-                IntentCapability::CreateRuleOverride,
-                IntentCapability::DeleteRuleOverride,
-                IntentCapability::CreateFeatureParameterBinding,
-                IntentCapability::DeleteFeatureParameterBinding,
-                IntentCapability::CreatePersistentDimension,
-                IntentCapability::CreateSpace,
-                IntentCapability::CreateClearanceVolume,
-                IntentCapability::CreateJoint,
-                IntentCapability::RecomputeFeatureParameter,
-                IntentCapability::DeleteJoint,
-                IntentCapability::DeleteSpace,
-                IntentCapability::DeleteClearanceVolume,
-                IntentCapability::DeletePersistentDimension,
                 IntentCapability::SetRuleDimension,
-                IntentCapability::RenameEvaluatorNode,
-                IntentCapability::SetEvaluatorExpression,
-                IntentCapability::SetRuleOutputs,
                 IntentCapability::SetFeatureDimension,
                 IntentCapability::SetProfilePoints,
                 IntentCapability::RenameDefinition,
                 IntentCapability::SetOccurrenceVisibility,
                 IntentCapability::SetOccurrenceTranslation,
-                IntentCapability::AtomicMultiCommandEdit,
                 IntentCapability::SetOccurrenceTag,
                 IntentCapability::SetTagVisibility,
                 IntentCapability::RepointOccurrence,
@@ -126,14 +82,11 @@ impl IntentGrant {
                 IntentCapability::SetCollectionOccurrences,
                 IntentCapability::CreateTag,
                 IntentCapability::DeleteTag,
-                IntentCapability::CreateCollection,
-                IntentCapability::DeleteCollection,
                 IntentCapability::DeleteGroup,
                 IntentCapability::DeleteOccurrence,
                 IntentCapability::CreateDefinition,
                 IntentCapability::DeleteDefinition,
                 IntentCapability::CreateProfileFeature,
-                IntentCapability::DeleteProfileFeature,
                 IntentCapability::CreateGroup,
                 IntentCapability::CreateOccurrence,
                 IntentCapability::CloneProfileDefinitionAndRepoint,
@@ -168,94 +121,9 @@ pub enum WorkflowIntent {
         name: String,
         value_text: String,
     },
-    CreateEvaluatorExpression {
-        target: NodeId,
-        name: String,
-        expression: String,
-    },
-    CreateEvaluatorRule {
-        target: NodeId,
-        name: String,
-        expression: String,
-    },
-    CreateRuleOverride {
-        target: u64,
-        rule: NodeId,
-        output_port: String,
-        semantic_key: String,
-        parameter: String,
-        value_text: String,
-    },
-    DeleteRuleOverride {
-        target: u64,
-    },
-    CreateFeatureParameterBinding {
-        target: FeatureParameterTarget,
-        rule: NodeId,
-        output_port: String,
-        semantic_key: String,
-    },
-    DeleteFeatureParameterBinding {
-        target: FeatureParameterTarget,
-    },
-    CreatePersistentDimension {
-        target: ketchup_model::document::PersistentDimensionId,
-        name: String,
-        dimension_target: FeatureParameterTarget,
-        presentation: ketchup_model::document::DimensionPresentation,
-    },
-    CreateSpace {
-        target: ketchup_model::space::SpaceId,
-        purpose: String,
-        volume_min: [f64; 3],
-        volume_max: [f64; 3],
-    },
-    CreateClearanceVolume {
-        target: ketchup_model::space::ClearanceVolumeId,
-        owner: ketchup_model::space::SpaceId,
-        reason: String,
-        volume_min: [f64; 3],
-        volume_max: [f64; 3],
-        tolerance_mm: f64,
-        severity: ketchup_model::space::ClearanceSeverity,
-    },
-    CreateJoint {
-        target: ketchup_geometry::prismatic::JointId,
-        participant_a: DerivedIdentity,
-        participant_b: DerivedIdentity,
-        volume_min: [f64; 3],
-        volume_max: [f64; 3],
-    },
-    RecomputeFeatureParameter {
-        target: FeatureParameterTarget,
-    },
-    DeleteJoint {
-        target: ketchup_geometry::prismatic::JointId,
-    },
-    DeleteSpace {
-        target: ketchup_model::space::SpaceId,
-    },
-    DeleteClearanceVolume {
-        target: ketchup_model::space::ClearanceVolumeId,
-    },
-    DeletePersistentDimension {
-        target: ketchup_model::document::PersistentDimensionId,
-    },
     SetRuleDimension {
         target: NodeId,
         value_text: String,
-    },
-    RenameEvaluatorNode {
-        target: NodeId,
-        name: String,
-    },
-    SetEvaluatorExpression {
-        target: NodeId,
-        expression: String,
-    },
-    SetRuleOutputs {
-        target: NodeId,
-        outputs: Vec<ketchup_model::document::RuleOutput>,
     },
     SetFeatureDimension {
         target: FeatureId,
@@ -278,14 +146,6 @@ pub enum WorkflowIntent {
         x_mm_text: String,
         y_mm_text: String,
         z_mm_text: String,
-    },
-    AtomicMultiCommandEdit {
-        target: OccurrenceId,
-        x_mm_text: String,
-        y_mm_text: String,
-        z_mm_text: String,
-        tag: TagId,
-        name: String,
     },
     SetOccurrenceTag {
         target: OccurrenceId,
@@ -325,13 +185,6 @@ pub enum WorkflowIntent {
     DeleteTag {
         target: TagId,
     },
-    CreateCollection {
-        target: CollectionId,
-        name: String,
-    },
-    DeleteCollection {
-        target: CollectionId,
-    },
     DeleteGroup {
         target: GroupId,
     },
@@ -350,9 +203,6 @@ pub enum WorkflowIntent {
         definition: DefinitionId,
         name: String,
         points_mm: Vec<[f64; 2]>,
-    },
-    DeleteProfileFeature {
-        target: FeatureId,
     },
     CreateGroup {
         target: GroupId,
@@ -383,35 +233,12 @@ impl WorkflowIntent {
     const fn required_capability(&self) -> IntentCapability {
         match self {
             Self::CreateEvaluatorInput { .. } => IntentCapability::CreateEvaluatorInput,
-            Self::CreateEvaluatorExpression { .. } => IntentCapability::CreateEvaluatorExpression,
-            Self::CreateEvaluatorRule { .. } => IntentCapability::CreateEvaluatorRule,
-            Self::CreateRuleOverride { .. } => IntentCapability::CreateRuleOverride,
-            Self::DeleteRuleOverride { .. } => IntentCapability::DeleteRuleOverride,
-            Self::CreateFeatureParameterBinding { .. } => {
-                IntentCapability::CreateFeatureParameterBinding
-            }
-            Self::DeleteFeatureParameterBinding { .. } => {
-                IntentCapability::DeleteFeatureParameterBinding
-            }
-            Self::CreatePersistentDimension { .. } => IntentCapability::CreatePersistentDimension,
-            Self::CreateSpace { .. } => IntentCapability::CreateSpace,
-            Self::CreateClearanceVolume { .. } => IntentCapability::CreateClearanceVolume,
-            Self::CreateJoint { .. } => IntentCapability::CreateJoint,
-            Self::RecomputeFeatureParameter { .. } => IntentCapability::RecomputeFeatureParameter,
-            Self::DeleteJoint { .. } => IntentCapability::DeleteJoint,
-            Self::DeleteSpace { .. } => IntentCapability::DeleteSpace,
-            Self::DeleteClearanceVolume { .. } => IntentCapability::DeleteClearanceVolume,
-            Self::DeletePersistentDimension { .. } => IntentCapability::DeletePersistentDimension,
             Self::SetRuleDimension { .. } => IntentCapability::SetRuleDimension,
-            Self::RenameEvaluatorNode { .. } => IntentCapability::RenameEvaluatorNode,
-            Self::SetEvaluatorExpression { .. } => IntentCapability::SetEvaluatorExpression,
-            Self::SetRuleOutputs { .. } => IntentCapability::SetRuleOutputs,
             Self::SetFeatureDimension { .. } => IntentCapability::SetFeatureDimension,
             Self::SetProfilePoints { .. } => IntentCapability::SetProfilePoints,
             Self::RenameDefinition { .. } => IntentCapability::RenameDefinition,
             Self::SetOccurrenceVisibility { .. } => IntentCapability::SetOccurrenceVisibility,
             Self::SetOccurrenceTranslation { .. } => IntentCapability::SetOccurrenceTranslation,
-            Self::AtomicMultiCommandEdit { .. } => IntentCapability::AtomicMultiCommandEdit,
             Self::SetOccurrenceTag { .. } => IntentCapability::SetOccurrenceTag,
             Self::SetTagVisibility { .. } => IntentCapability::SetTagVisibility,
             Self::RepointOccurrence { .. } => IntentCapability::RepointOccurrence,
@@ -421,14 +248,11 @@ impl WorkflowIntent {
             Self::SetCollectionOccurrences { .. } => IntentCapability::SetCollectionOccurrences,
             Self::CreateTag { .. } => IntentCapability::CreateTag,
             Self::DeleteTag { .. } => IntentCapability::DeleteTag,
-            Self::CreateCollection { .. } => IntentCapability::CreateCollection,
-            Self::DeleteCollection { .. } => IntentCapability::DeleteCollection,
             Self::DeleteGroup { .. } => IntentCapability::DeleteGroup,
             Self::DeleteOccurrence { .. } => IntentCapability::DeleteOccurrence,
             Self::CreateDefinition { .. } => IntentCapability::CreateDefinition,
             Self::DeleteDefinition { .. } => IntentCapability::DeleteDefinition,
             Self::CreateProfileFeature { .. } => IntentCapability::CreateProfileFeature,
-            Self::DeleteProfileFeature { .. } => IntentCapability::DeleteProfileFeature,
             Self::CreateGroup { .. } => IntentCapability::CreateGroup,
             Self::CreateOccurrence { .. } => IntentCapability::CreateOccurrence,
             Self::CloneProfileDefinitionAndRepoint { .. } => {
@@ -452,14 +276,10 @@ impl IntentRequest {
     #[must_use]
     pub fn m7a(intent: WorkflowIntent) -> Self {
         let requested_budget = match &intent {
-            WorkflowIntent::CreateProfileFeature { .. }
-            | WorkflowIntent::DeleteProfileFeature { .. } => ProposalBudget::M18C_CREATE_FEATURE,
+            WorkflowIntent::CreateProfileFeature { .. } => ProposalBudget::M18C_CREATE_FEATURE,
             WorkflowIntent::CloneProfileDefinitionAndRepoint { .. }
             | WorkflowIntent::ConvertEmptyGroupToComponent { .. } => {
                 ProposalBudget::M18C_CLONE_PROFILE_DEFINITION
-            }
-            WorkflowIntent::AtomicMultiCommandEdit { .. } => {
-                ProposalBudget::T18_ATOMIC_MULTI_COMMAND_EDIT
             }
             _ => ProposalBudget::M7A_SINGLE_CHANGE,
         };
@@ -469,81 +289,6 @@ impl IntentRequest {
             requested_budget,
         }
     }
-}
-
-/// Moves, tags and renames one occurrence as a single reviewed proposal.
-struct AtomicOccurrenceEdit {
-    target: OccurrenceId,
-    x_mm_text: String,
-    y_mm_text: String,
-    z_mm_text: String,
-    tag: TagId,
-    name: String,
-}
-
-fn propose_atomic_occurrence_edit(
-    store: &DocumentStore,
-    principal: RequestingPrincipal,
-    requested_budget: ProposalBudget,
-    edit: AtomicOccurrenceEdit,
-) -> Result<Proposal, IntentError> {
-    let AtomicOccurrenceEdit {
-        target,
-        x_mm_text,
-        y_mm_text,
-        z_mm_text,
-        tag,
-        name,
-    } = edit;
-    let parse = |value: &str| {
-        value
-            .trim()
-            .parse::<f64>()
-            .map_err(|_: std::num::ParseFloatError| {
-                ketchup_model::document::CanonicalError::InvalidTransform
-            })
-    };
-    let snapshot = store.current();
-    let mut matrix = *snapshot
-        .occurrence(target)
-        .ok_or(ketchup_model::document::CanonicalError::OccurrenceNotFound(
-            target,
-        ))?
-        .transform()
-        .matrix();
-    matrix[3] = parse(&x_mm_text)?;
-    matrix[7] = parse(&y_mm_text)?;
-    matrix[11] = parse(&z_mm_text)?;
-    let batch = CommandBatch::new(vec![
-        CanonicalCommand::SetOccurrenceTransform {
-            id: target,
-            transform: Transform::from_matrix(matrix)?,
-        },
-        CanonicalCommand::SetOccurrenceTags {
-            id: target,
-            tags: [tag].into(),
-        },
-        CanonicalCommand::RenameEntity { id: target, name },
-    ]);
-    store
-        .prepare_proposal_with_context(
-            batch,
-            ProposalContext {
-                principal: match principal {
-                    RequestingPrincipal::LocalAssistant => ProposalPrincipal::LocalAssistant,
-                    RequestingPrincipal::Plugin(id) => ProposalPrincipal::Plugin(id),
-                },
-                goal: ProposalGoal::AtomicMultiCommandEdit(target),
-                assumptions: vec![
-                    ProposalAssumption::TargetExists(AuthoritativeDependency::Occurrence(target)),
-                    ProposalAssumption::TargetExists(AuthoritativeDependency::Tag(tag)),
-                ],
-                risk: ProposalRisk::Standard,
-                confirmation: ProposalConfirmation::ReviewRequired,
-                requested_budget,
-            },
-        )
-        .map_err(IntentError::Proposal)
 }
 
 pub fn propose_intent(
@@ -578,21 +323,6 @@ pub fn propose_intent(
         | WorkflowIntent::CreateProfileFeature { definition, .. } => {
             vec![AuthoritativeDependency::Definition(*definition)]
         }
-        WorkflowIntent::CreateRuleOverride { rule, .. } => {
-            vec![AuthoritativeDependency::EvaluatorNode(*rule)]
-        }
-        WorkflowIntent::CreateFeatureParameterBinding { target, rule, .. } => vec![
-            AuthoritativeDependency::Feature(target.feature_id),
-            AuthoritativeDependency::EvaluatorNode(*rule),
-        ],
-        WorkflowIntent::CreatePersistentDimension {
-            dimension_target, ..
-        } => vec![AuthoritativeDependency::Feature(
-            dimension_target.feature_id,
-        )],
-        WorkflowIntent::CreateClearanceVolume { owner, .. } => {
-            vec![AuthoritativeDependency::Space(*owner)]
-        }
         WorkflowIntent::CloneProfileDefinitionAndRepoint {
             source_definition,
             source_feature,
@@ -601,30 +331,6 @@ pub fn propose_intent(
             AuthoritativeDependency::Definition(*source_definition),
             AuthoritativeDependency::Feature(*source_feature),
         ],
-        WorkflowIntent::CreateJoint {
-            participant_a,
-            participant_b,
-            ..
-        } => BTreeSet::from([
-            AuthoritativeDependency::EvaluatorNode(participant_a.root_rule_node_id),
-            AuthoritativeDependency::EvaluatorNode(participant_b.root_rule_node_id),
-        ])
-        .into_iter()
-        .collect(),
-        WorkflowIntent::CreateEvaluatorExpression { expression, .. }
-        | WorkflowIntent::CreateEvaluatorRule { expression, .. }
-        | WorkflowIntent::SetEvaluatorExpression { expression, .. } => {
-            ExpressionAst::parse(expression).map_or_else(
-                |_| Vec::new(),
-                |expression| {
-                    expression
-                        .dependencies()
-                        .into_iter()
-                        .map(AuthoritativeDependency::EvaluatorNode)
-                        .collect()
-                },
-            )
-        }
         _ => Vec::new(),
     };
     let requested_missing_targets = match &request.intent {
@@ -662,315 +368,6 @@ pub fn propose_intent(
                 dependencies: Vec::new(),
             },
         ),
-        WorkflowIntent::CreateEvaluatorExpression {
-            target,
-            name,
-            expression,
-        } => (
-            ProposalGoal::CreateEvaluatorExpression(target),
-            AuthoritativeDependency::EvaluatorNode(target),
-            CanonicalCommand::CreateExpressionNode {
-                id: target,
-                name,
-                expression,
-            },
-        ),
-        WorkflowIntent::CreateEvaluatorRule {
-            target,
-            name,
-            expression,
-        } => (
-            ProposalGoal::CreateEvaluatorRule(target),
-            AuthoritativeDependency::EvaluatorNode(target),
-            CanonicalCommand::CreateRuleNode {
-                id: target,
-                name,
-                expression,
-                input_ports: Vec::new(),
-                output_ports: vec![
-                    ketchup_model::document::PortSpec::number("result")
-                        .map_err(ketchup_model::document::CanonicalError::from)?,
-                ],
-                outputs: Vec::new(),
-                override_parameters: Vec::new(),
-            },
-        ),
-        WorkflowIntent::CreateRuleOverride {
-            target,
-            rule,
-            output_port,
-            semantic_key,
-            parameter,
-            value_text,
-        } => {
-            if store.current().override_by_id(target).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::OverrideAlreadyExists(target).into(),
-                );
-            }
-            let identity = DerivedIdentity::new(
-                rule,
-                SlotPath::new(vec![
-                    SlotSegment::new(rule, output_port, semantic_key)
-                        .map_err(ketchup_model::document::CanonicalError::from)?,
-                ])
-                .map_err(ketchup_model::document::CanonicalError::from)?,
-            )
-            .map_err(ketchup_model::document::CanonicalError::from)?;
-            let snapshot = store.current();
-            if snapshot.resolve_slot(&identity) != SlotResolution::Resolved {
-                return Err(
-                    ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into(),
-                );
-            }
-            if !snapshot.evaluator_node(rule).is_some_and(|node| {
-                node.allowed_parameters()
-                    .iter()
-                    .any(|spec| spec.name() == parameter)
-            }) {
-                return Err(
-                    ketchup_model::document::CanonicalError::UndeclaredOverrideParameter.into(),
-                );
-            }
-            let value = value_text
-                .parse::<f64>()
-                .map_err(|_: std::num::ParseFloatError| {
-                    ketchup_model::document::CanonicalError::Graph(
-                        ketchup_model::document::GraphError::NonFiniteOverride,
-                    )
-                })?;
-            let value = CanonicalOverride::new(
-                target,
-                identity,
-                parameter,
-                value,
-                SlotResolution::Resolved,
-            )
-            .map_err(ketchup_model::document::CanonicalError::from)?;
-            (
-                ProposalGoal::CreateRuleOverride(target),
-                AuthoritativeDependency::Override(target),
-                CanonicalCommand::UpsertOverride(value),
-            )
-        }
-        WorkflowIntent::DeleteRuleOverride { target } => (
-            ProposalGoal::DeleteRuleOverride(target),
-            AuthoritativeDependency::Override(target),
-            CanonicalCommand::DeleteOverride { id: target },
-        ),
-        WorkflowIntent::CreateFeatureParameterBinding {
-            target,
-            rule,
-            output_port,
-            semantic_key,
-        } => {
-            if store.current().feature_parameter_binding(&target).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::InvalidFeatureParameterBinding(target)
-                        .into(),
-                );
-            }
-            let derived_from = DerivedIdentity::new(
-                rule,
-                SlotPath::new(vec![
-                    SlotSegment::new(rule, output_port, semantic_key)
-                        .map_err(ketchup_model::document::CanonicalError::from)?,
-                ])
-                .map_err(ketchup_model::document::CanonicalError::from)?,
-            )
-            .map_err(ketchup_model::document::CanonicalError::from)?;
-            (
-                ProposalGoal::CreateFeatureParameterBinding(target.clone()),
-                AuthoritativeDependency::FeatureParameterBinding(target.clone()),
-                CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-                    target,
-                    derived_from,
-                }),
-            )
-        }
-        WorkflowIntent::DeleteFeatureParameterBinding { target } => (
-            ProposalGoal::DeleteFeatureParameterBinding(target.clone()),
-            AuthoritativeDependency::FeatureParameterBinding(target.clone()),
-            CanonicalCommand::DeleteFeatureParameterBinding { target },
-        ),
-        WorkflowIntent::CreatePersistentDimension {
-            target,
-            name,
-            dimension_target,
-            presentation,
-        } => {
-            let snapshot = store.current();
-            if snapshot.persistent_dimension(target).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::PersistentDimensionAlreadyExists(
-                        target,
-                    )
-                    .into(),
-                );
-            }
-            if !snapshot.has_feature_parameter(&dimension_target) {
-                return Err(
-                    ketchup_model::document::CanonicalError::InvalidPersistentDimensionTarget
-                        .into(),
-                );
-            }
-            (
-                ProposalGoal::CreatePersistentDimension(target),
-                AuthoritativeDependency::PersistentDimension(target),
-                CanonicalCommand::UpsertPersistentDimension(PersistentDimension::new(
-                    target,
-                    name,
-                    PersistentDimensionTarget::FeatureParameter(dimension_target),
-                    presentation,
-                )?),
-            )
-        }
-        WorkflowIntent::CreateSpace {
-            target,
-            purpose,
-            volume_min,
-            volume_max,
-        } => {
-            if store.current().space(target).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::SpaceAlreadyExists(target).into(),
-                );
-            }
-            (
-                ProposalGoal::CreateSpace(target),
-                AuthoritativeDependency::Space(target),
-                CanonicalCommand::UpsertSpace(
-                    ketchup_model::space::CanonicalSpace::new(
-                        target,
-                        purpose,
-                        ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
-                            .map_err(ketchup_model::document::CanonicalError::from)?,
-                        Vec::new(),
-                        Vec::new(),
-                    )
-                    .map_err(ketchup_model::document::CanonicalError::from)?,
-                ),
-            )
-        }
-        WorkflowIntent::CreateClearanceVolume {
-            target,
-            owner,
-            reason,
-            volume_min,
-            volume_max,
-            tolerance_mm,
-            severity,
-        } => {
-            let snapshot = store.current();
-            if snapshot.clearance_volume(target).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::ClearanceVolumeAlreadyExists(target)
-                        .into(),
-                );
-            }
-            if snapshot.space(owner).is_none() {
-                return Err(ketchup_model::document::CanonicalError::SpaceNotFound(owner).into());
-            }
-            (
-                ProposalGoal::CreateClearanceVolume(target),
-                AuthoritativeDependency::ClearanceVolume(target),
-                CanonicalCommand::UpsertClearanceVolume(
-                    ketchup_model::space::CanonicalClearanceVolume::new(
-                        target,
-                        ketchup_model::space::ClearanceOwner::Space(owner),
-                        reason,
-                        ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
-                            .map_err(ketchup_model::document::CanonicalError::from)?,
-                        ketchup_model::tolerance::TolerancePolicy::new(tolerance_mm)
-                            .map_err(ketchup_model::document::CanonicalError::from)?,
-                        severity,
-                        None,
-                    )
-                    .map_err(ketchup_model::document::CanonicalError::from)?,
-                ),
-            )
-        }
-        WorkflowIntent::CreateJoint {
-            target,
-            participant_a,
-            participant_b,
-            volume_min,
-            volume_max,
-        } => {
-            let snapshot = store.current();
-            if snapshot.joint(target).is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::JointAlreadyExists(target).into(),
-                );
-            }
-            if snapshot.resolve_slot(&participant_a) != SlotResolution::Resolved
-                || snapshot.resolve_slot(&participant_b) != SlotResolution::Resolved
-            {
-                return Err(
-                    ketchup_model::document::CanonicalError::UnresolvedDerivedOutput.into(),
-                );
-            }
-            (
-                ProposalGoal::CreateJoint(target),
-                AuthoritativeDependency::Joint(target),
-                CanonicalCommand::UpsertJoint(
-                    ketchup_geometry::prismatic::CanonicalJoint::new(
-                        target,
-                        participant_a,
-                        participant_b,
-                        ketchup_geometry::prismatic::Aabb::new(volume_min, volume_max)
-                            .map_err(ketchup_model::document::CanonicalError::from)?,
-                    )
-                    .map_err(ketchup_model::document::CanonicalError::from)?,
-                ),
-            )
-        }
-        WorkflowIntent::DeleteJoint { target } => (
-            ProposalGoal::DeleteJoint(target),
-            AuthoritativeDependency::Joint(target),
-            CanonicalCommand::DeleteJoint { id: target },
-        ),
-        WorkflowIntent::DeleteSpace { target } => (
-            ProposalGoal::DeleteSpace(target),
-            AuthoritativeDependency::Space(target),
-            CanonicalCommand::DeleteSpace { id: target },
-        ),
-        WorkflowIntent::DeleteClearanceVolume { target } => (
-            ProposalGoal::DeleteClearanceVolume(target),
-            AuthoritativeDependency::ClearanceVolume(target),
-            CanonicalCommand::DeleteClearanceVolume { id: target },
-        ),
-        WorkflowIntent::DeletePersistentDimension { target } => (
-            ProposalGoal::DeletePersistentDimension(target),
-            AuthoritativeDependency::PersistentDimension(target),
-            CanonicalCommand::DeletePersistentDimension { id: target },
-        ),
-        WorkflowIntent::RecomputeFeatureParameter { target } => {
-            let snapshot = store.current();
-            let mut bindings = snapshot.feature_parameter_bindings();
-            let Some(binding) = bindings.next() else {
-                return Err(
-                    ketchup_model::document::CanonicalError::FeatureParameterBindingNotFound(
-                        target,
-                    )
-                    .into(),
-                );
-            };
-            if binding.target != target || bindings.next().is_some() {
-                return Err(
-                    ketchup_model::document::CanonicalError::InvalidFeatureParameterBinding(target)
-                        .into(),
-                );
-            }
-            (
-                ProposalGoal::RecomputeFeatureParameter(target.clone()),
-                AuthoritativeDependency::Feature(target.feature_id),
-                CanonicalCommand::RecomputeFeatureParameters {
-                    identity: EvaluationIdentity::default(),
-                    scope: ketchup_model::document::FeatureParameterRecomputeScope::All,
-                },
-            )
-        }
         WorkflowIntent::SetRuleDimension { target, value_text } => {
             let authority = AuthoritativeDependency::EvaluatorNode(target);
             (
@@ -982,27 +379,6 @@ pub fn propose_intent(
                 },
             )
         }
-        WorkflowIntent::RenameEvaluatorNode { target, name } => (
-            ProposalGoal::RenameEvaluatorNode(target),
-            AuthoritativeDependency::EvaluatorNode(target),
-            CanonicalCommand::RenameEvaluatorNode { id: target, name },
-        ),
-        WorkflowIntent::SetEvaluatorExpression { target, expression } => (
-            ProposalGoal::SetEvaluatorExpression(target),
-            AuthoritativeDependency::EvaluatorNode(target),
-            CanonicalCommand::SetNodeExpression {
-                id: target,
-                expression,
-            },
-        ),
-        WorkflowIntent::SetRuleOutputs { target, outputs } => (
-            ProposalGoal::SetRuleOutputs(target),
-            AuthoritativeDependency::EvaluatorNode(target),
-            CanonicalCommand::SetRuleOutputs {
-                id: target,
-                outputs,
-            },
-        ),
         WorkflowIntent::SetFeatureDimension { target, value_text } => {
             let authority = AuthoritativeDependency::Feature(target);
             (
@@ -1116,16 +492,6 @@ pub fn propose_intent(
             AuthoritativeDependency::Tag(target),
             CanonicalCommand::DeleteTag { id: target },
         ),
-        WorkflowIntent::CreateCollection { target, name } => (
-            ProposalGoal::CreateCollection(target),
-            AuthoritativeDependency::Collection(target),
-            CanonicalCommand::CreateCollection { id: target, name },
-        ),
-        WorkflowIntent::DeleteCollection { target } => (
-            ProposalGoal::DeleteCollection(target),
-            AuthoritativeDependency::Collection(target),
-            CanonicalCommand::DeleteCollection { id: target },
-        ),
         WorkflowIntent::DeleteGroup { target } => (
             ProposalGoal::DeleteGroup(target),
             AuthoritativeDependency::Group(target),
@@ -1176,22 +542,6 @@ pub fn propose_intent(
                 kind: FeatureKind::polygon(&points_mm),
             },
         ),
-        WorkflowIntent::DeleteProfileFeature { target } => {
-            if store
-                .current()
-                .feature(target)
-                .is_some_and(|feature| !matches!(feature.kind(), FeatureKind::Profile { .. }))
-            {
-                return Err(
-                    ketchup_model::document::CanonicalError::FeatureIsNotProfile(target).into(),
-                );
-            }
-            (
-                ProposalGoal::DeleteProfileFeature(target),
-                AuthoritativeDependency::Feature(target),
-                CanonicalCommand::DeleteFeature { id: target },
-            )
-        }
         WorkflowIntent::CreateGroup { target, name } => (
             ProposalGoal::CreateGroup(target),
             AuthoritativeDependency::Group(target),
@@ -1366,28 +716,6 @@ pub fn propose_intent(
                 },
             )
         }
-        WorkflowIntent::AtomicMultiCommandEdit {
-            target,
-            x_mm_text,
-            y_mm_text,
-            z_mm_text,
-            tag,
-            name,
-        } => {
-            return propose_atomic_occurrence_edit(
-                store,
-                request.grant.principal,
-                request.requested_budget,
-                AtomicOccurrenceEdit {
-                    target,
-                    x_mm_text,
-                    y_mm_text,
-                    z_mm_text,
-                    tag,
-                    name,
-                },
-            );
-        }
         WorkflowIntent::SetOccurrenceTranslation {
             target,
             x_mm_text,
@@ -1431,16 +759,7 @@ pub fn propose_intent(
     let mut assumptions = if matches!(
         required,
         IntentCapability::CreateEvaluatorInput
-            | IntentCapability::CreateEvaluatorExpression
-            | IntentCapability::CreateEvaluatorRule
-            | IntentCapability::CreateRuleOverride
-            | IntentCapability::CreateFeatureParameterBinding
-            | IntentCapability::CreatePersistentDimension
-            | IntentCapability::CreateSpace
-            | IntentCapability::CreateClearanceVolume
-            | IntentCapability::CreateJoint
             | IntentCapability::CreateTag
-            | IntentCapability::CreateCollection
             | IntentCapability::CreateDefinition
             | IntentCapability::CreateProfileFeature
             | IntentCapability::CreateGroup
@@ -1449,10 +768,7 @@ pub fn propose_intent(
         vec![ProposalAssumption::TargetMissing(target)]
     } else if matches!(
         required,
-        IntentCapability::RenameEvaluatorNode
-            | IntentCapability::SetEvaluatorExpression
-            | IntentCapability::SetRuleOutputs
-            | IntentCapability::SetProfilePoints
+        IntentCapability::SetProfilePoints
             | IntentCapability::RenameDefinition
             | IntentCapability::SetOccurrenceVisibility
             | IntentCapability::SetOccurrenceTranslation
@@ -1463,19 +779,10 @@ pub fn propose_intent(
             | IntentCapability::SetGroupTranslation
             | IntentCapability::SetGroupParent
             | IntentCapability::SetCollectionOccurrences
-            | IntentCapability::DeleteRuleOverride
-            | IntentCapability::DeleteFeatureParameterBinding
-            | IntentCapability::RecomputeFeatureParameter
-            | IntentCapability::DeleteJoint
-            | IntentCapability::DeleteSpace
-            | IntentCapability::DeleteClearanceVolume
-            | IntentCapability::DeletePersistentDimension
             | IntentCapability::DeleteTag
-            | IntentCapability::DeleteCollection
             | IntentCapability::DeleteGroup
             | IntentCapability::DeleteOccurrence
             | IntentCapability::DeleteDefinition
-            | IntentCapability::DeleteProfileFeature
             | IntentCapability::CloneProfileDefinitionAndRepoint
             | IntentCapability::ConvertEmptyGroupToComponent
     ) {
