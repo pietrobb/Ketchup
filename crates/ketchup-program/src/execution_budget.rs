@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 
 const MAX_STATEMENTS: u64 = 5_000_000;
 const MAX_TIME: Duration = Duration::from_secs(20);
+/// Bytes the program heap may hold. Evaluation runs inside the window process,
+/// so a program that builds a huge string or list must fail instead of taking
+/// the memory of the whole computer.
+const MAX_HEAP_BYTES: usize = 1 << 30;
 /// Statements between two looks at the clock and the cancel flag.
 const CHECK_EVERY: u64 = 256;
 
@@ -55,15 +59,34 @@ impl std::fmt::Display for ExecutionLimit {
 
 impl std::error::Error for ExecutionLimit {}
 
+#[derive(Debug)]
+struct MemoryLimit;
+
+impl std::fmt::Display for MemoryLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("program memory limit exceeded; build smaller strings or lists")
+    }
+}
+
+impl std::error::Error for MemoryLimit {}
+
 impl<'a, 'e: 'a> BeforeStmtFuncDyn<'a, 'e> for ExecutionBudget {
     fn call<'v>(
         &mut self,
         _span: FileSpanRef,
-        _eval: &mut Evaluator<'v, 'a, 'e>,
+        eval: &mut Evaluator<'v, 'a, 'e>,
     ) -> starlark::Result<()> {
         self.statements += 1;
         if self.statements.is_multiple_of(CHECK_EVERY) && self.cancel.is_cancelled() {
             return Err(starlark::Error::new_other(Cancelled));
+        }
+        // Every statement: one statement can double a string (`s = s + s`).
+        if eval
+            .heap()
+            .allocation_limit()
+            .is_some_and(|limit| eval.heap().allocated_bytes() > limit)
+        {
+            return Err(starlark::Error::new_other(MemoryLimit));
         }
         if self.statements > self.max_statements
             || (self.statements.is_multiple_of(CHECK_EVERY) && self.started.elapsed() > MAX_TIME)
@@ -81,6 +104,9 @@ pub(crate) fn install(eval: &mut Evaluator<'_, '_, '_>, cancel: &CancelToken) {
 /// Every statement and every loop or comprehension iteration counts once
 /// (`third_party/starlark/PATCH.md`).
 fn install_with(eval: &mut Evaluator<'_, '_, '_>, max_statements: u64, cancel: &CancelToken) {
+    // The patched starlark checks single large strings, lists and tuples against
+    // this bound before allocating them; the hook checks the heap after each statement.
+    eval.heap().set_allocation_limit(Some(MAX_HEAP_BYTES));
     // Starlark 0.13 exposes the fallible statement hook through its DAP API.
     let hook: Box<dyn BeforeStmtFuncDyn<'_, '_>> = Box::new(ExecutionBudget {
         statements: 0,
@@ -122,6 +148,34 @@ mod tests {
                 "{source}: {error}"
             );
         }
+    }
+
+    /// Review 2026-10-11 PROG-1: one line took 2.8 GB (`"a" * 1500000000`, still
+    /// "ok") or over 4 GB in 1.4 s (`list(range(300000000))`) inside the window process.
+    #[test]
+    fn a_program_that_builds_a_huge_value_stops_before_taking_the_memory() {
+        let huge = [
+            "x = \"a\" * 1500000000",
+            "n = len(list(range(300000000)))",
+            "n = len(tuple(range(300000000)))",
+            "n = len([0] * 300000000)",
+            "n = len((0,) * 300000000)",
+            "s = \"a\" * 1000000\nn = len(\"\".join([s] * 2000))",
+            "def f():\n    s = \"a\" * 1000000\n    for i in range(40):\n        s = s + s\n    return len(s)\nf()",
+            "def f():\n    L = [0] * 1000000\n    for i in range(40):\n        L = L + L\n    return len(L)\nf()",
+        ];
+        for source in huge {
+            let error = run(source, MAX_STATEMENTS).unwrap_err();
+            assert!(
+                error.to_string().contains("memory limit exceeded"),
+                "{source}: {error}"
+            );
+        }
+        run(
+            "x = \"a\" * 1000000\nn = len(list(range(100000)))",
+            MAX_STATEMENTS,
+        )
+        .unwrap();
     }
 
     /// Each iteration counts once, also when its body has statements.

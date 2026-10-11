@@ -328,6 +328,8 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
         if let Some(other_str) = other.unpack_str() {
             if self.is_empty() {
                 Some(Ok(other))
+            } else if let Err(e) = heap.check_allocation(self.len() + other_str.len(), 1) {
+                Some(Err(e))
             } else {
                 Some(Ok(heap.alloc_str_concat(self, other_str).to_value()))
             }
@@ -342,6 +344,9 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
             Ok(None) => return None,
             Err(e) => return Some(Err(e)),
         };
+        if let Err(e) = heap.check_allocation(cmp::max(0, l) as usize, self.len()) {
+            return Some(Err(e));
+        }
         let mut result = String::with_capacity(self.len() * cmp::max(0, l) as usize);
         for _i in 0..l {
             result.push_str(self)

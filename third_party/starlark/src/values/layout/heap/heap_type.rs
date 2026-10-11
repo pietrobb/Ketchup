@@ -110,9 +110,23 @@ pub(crate) enum HeapKind {
 pub struct Heap {
     /// Peak memory seen when a garbage collection takes place (may be lower than currently allocated)
     peak_allocated: Cell<usize>,
+    /// Ketchup patch: bytes the heap may hold before a large allocation fails.
+    allocation_limit: Cell<Option<usize>>,
     arena: FastCell<Arena<Bump>>,
     str_interner: RefCell<StringValueInterner<'static>>,
 }
+
+/// Ketchup patch: the error of an operation that would exceed the heap bound.
+#[derive(Debug)]
+struct MemoryLimit;
+
+impl fmt::Display for MemoryLimit {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("program memory limit exceeded; build smaller strings or lists")
+    }
+}
+
+impl std::error::Error for MemoryLimit {}
 
 impl Debug for Heap {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -606,6 +620,32 @@ impl Heap {
     /// as a result of a subsequent garbage collection.
     pub fn peak_allocated_bytes(&self) -> usize {
         cmp::max(self.allocated_bytes(), self.peak_allocated.get())
+    }
+
+    /// Ketchup patch: bound the bytes this heap may hold. A single operation that
+    /// would build a larger string, list or tuple fails before it allocates;
+    /// `None` removes the bound.
+    pub fn set_allocation_limit(&self, bytes: Option<usize>) {
+        self.allocation_limit.set(bytes);
+    }
+
+    /// The bound set by [`Heap::set_allocation_limit`].
+    pub fn allocation_limit(&self) -> Option<usize> {
+        self.allocation_limit.get()
+    }
+
+    /// Fails when `count` items of `item_bytes` each would exceed the bound.
+    pub(crate) fn check_allocation(&self, count: usize, item_bytes: usize) -> crate::Result<()> {
+        let Some(limit) = self.allocation_limit.get() else {
+            return Ok(());
+        };
+        match count
+            .checked_mul(item_bytes)
+            .and_then(|bytes| bytes.checked_add(self.allocated_bytes()))
+        {
+            Some(total) if total <= limit => Ok(()),
+            _ => Err(crate::Error::new_other(MemoryLimit)),
+        }
     }
 
     /// Number of bytes allocated by the heap but not yet filled.

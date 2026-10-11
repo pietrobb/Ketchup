@@ -813,6 +813,7 @@ impl<'v> Value<'v> {
                 } else if rs.is_empty() {
                     return Ok(self);
                 } else {
+                    heap.check_allocation(ls.len() + rs.len(), 1)?;
                     return Ok(heap.alloc_str_concat(ls, rs).to_value());
                 }
             }

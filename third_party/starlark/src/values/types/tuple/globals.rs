@@ -57,6 +57,7 @@ pub(crate) fn register_tuple(globals: &mut GlobalsBuilder) {
             }
 
             let it = a.get().iterate(heap)?;
+            heap.check_allocation(it.size_hint().0, std::mem::size_of::<Value>())?;
             Ok(ValueOfUnchecked::new(heap.alloc_tuple_iter(it)))
         } else {
             Ok(ValueOfUnchecked::new(heap.alloc(AllocTuple::EMPTY)))

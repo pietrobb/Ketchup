@@ -648,6 +648,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
                         let n = it.size_hint().0 + 2;
                         let guess =
                             (cmp::max(s1.len(), s2.len()) * n) + (this.len() * (n - 1)) + 20;
+                        heap.check_allocation(guess, 1)?;
                         let mut r = String::with_capacity(guess);
                         r.push_str(s1);
                         r.push_str(this);
@@ -655,6 +656,9 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
                         for x in it {
                             r.push_str(this);
                             r.push_str(as_str(x)?.as_str());
+                            if r.len() > guess {
+                                heap.check_allocation(r.len(), 1)?;
+                            }
                         }
                         Ok(heap.alloc_typed_unchecked(r))
                     }

@@ -530,8 +530,13 @@ where
     }
 
     fn add(&self, other: Value<'v>, heap: &'v Heap) -> Option<crate::Result<Value<'v>>> {
-        ListRef::from_value(other)
-            .map(|other| Ok(heap.alloc_list_concat(self.0.content(), other.content())))
+        ListRef::from_value(other).map(|other| {
+            heap.check_allocation(
+                self.0.content().len() + other.content().len(),
+                std::mem::size_of::<Value>(),
+            )?;
+            Ok(heap.alloc_list_concat(self.0.content(), other.content()))
+        })
     }
 
     fn mul(&self, other: Value, heap: &'v Heap) -> Option<crate::Result<Value<'v>>> {
@@ -540,6 +545,15 @@ where
             Ok(None) => return None,
             Err(e) => return Some(Err(e)),
         };
+        if let Err(e) = heap.check_allocation(
+            self.0
+                .content()
+                .len()
+                .saturating_mul(cmp::max(0, l) as usize),
+            std::mem::size_of::<Value>(),
+        ) {
+            return Some(Err(e));
+        }
         let mut result = Vec::with_capacity(self.0.content().len() * cmp::max(0, l) as usize);
         for _ in 0..l {
             result.extend(self.0.content().iter());
